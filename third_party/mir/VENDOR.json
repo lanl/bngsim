@@ -34,13 +34,27 @@
     ]
   },
   "files": {
-    "mir.c":        { "sha256": "d0e10c8ac198c07e41af7a96182a095169c06bc6527b06b098710625ee7bc5aa" },
-    "mir-gen.c":    { "sha256": "d7cd6d68ba3395244768bf21dea37c39b1b6e51490f34b42a5326fdbed1b4522" },
-    "c2mir/c2mir.c":{ "sha256": "7f049525b34008f1911654a177e4c2be7640c7a37c65c516093dbd9ee68bb226" },
-    "mir.h":        { "sha256": "c1cd21d417ad0b19c5b8c8c0593e48a890ab784e19706126bc545b1edf1e020f" },
-    "mir-gen.h":    { "sha256": "2d8ef6af6764639152ab6c7ec6a4f3293d6890239382058043012667f1549c77" },
-    "c2mir/c2mir.h":{ "sha256": "7bff6e7eeec3f949240fbe3e781b489994397293d579533ee208001cd9cad8c0" },
-    "LICENSE":      { "sha256": "7dba19bef537b8b0acf1508470c8cf7654861aa8d3f0c6ceaadd4dd160f916d5" }
+    "mir.c": {
+      "sha256": "d0e10c8ac198c07e41af7a96182a095169c06bc6527b06b098710625ee7bc5aa"
+    },
+    "mir-gen.c": {
+      "sha256": "fff5042ec44838b3b36dd8f1fc7fa963250c0049ab546ba337cba89684d32d91"
+    },
+    "c2mir/c2mir.c": {
+      "sha256": "7f049525b34008f1911654a177e4c2be7640c7a37c65c516093dbd9ee68bb226"
+    },
+    "mir.h": {
+      "sha256": "c1cd21d417ad0b19c5b8c8c0593e48a890ab784e19706126bc545b1edf1e020f"
+    },
+    "mir-gen.h": {
+      "sha256": "2d8ef6af6764639152ab6c7ec6a4f3293d6890239382058043012667f1549c77"
+    },
+    "c2mir/c2mir.h": {
+      "sha256": "7bff6e7eeec3f949240fbe3e781b489994397293d579533ee208001cd9cad8c0"
+    },
+    "LICENSE": {
+      "sha256": "7dba19bef537b8b0acf1508470c8cf7654861aa8d3f0c6ceaadd4dd160f916d5"
+    }
   },
   "pruning": {
     "included_paths": [
@@ -60,7 +74,20 @@
     "api_find_func_by_iteration": "MIR_get_global_item is declared in mir.h but not defined in this commit; locate the JIT'd function by scanning module->items for a MIR_func_item whose name matches (the version-stable approach c2mir-driver uses).",
     "single_maintainer_upstream": "MIR is effectively single-maintainer. Pinned to an immutable commit; refresh deliberately."
   },
-  "local_carries": [],
+  "local_carries": [
+    {
+      "file": "mir-gen.c",
+      "function": "try_spilled_reg_mem",
+      "marker": "BNGsim local carry (lanl/bngsim#413)",
+      "issue": "https://github.com/lanl/bngsim/issues/413",
+      "upstream_status": "unreported; present in the pinned commit and in upstream master as of 2026-08-18",
+      "summary": "Stack buffer overflow in MIR_gen's register allocator at -O2/-O3. try_spilled_reg_mem records the operand indices it rewrote in a two-int array op_nums[MAX_INSN_RELOAD_MEM_OPS], guarded only by a gen_assert -- which is assert(), so -DNDEBUG (every release build) deletes it. An insn CAN name one spilled register in three operands: `x = x * x` reaches the allocator as `dmul r, r, r`, so the loop matches three times and stores op_nums[2] out of bounds. On glibc that trips __stack_chk_fail (`*** stack smashing detected ***`, SIGABRT); on toolchains that leave the frame unguarded it corrupts silently. The carry declines the memory operand once the table is full instead of overrunning it -- the same fallback the function already takes when target_insn_ok_p rejects the rewrite, and the outcome is identical here since an all-memory three-operand dmul is not encodable on x86-64 or aarch64.",
+      "reapply": "A refresh rewrites mir-gen.c from upstream and drops this. scripts/vendor_mir.py --check fails while the marker above is absent from the file; re-apply the bounds check in try_spilled_reg_mem (or drop this entry if the refresh picks up an upstream fix), then re-anchor. python/tests/test_codegen_jit_self_multiply.py is the behavioral regression.",
+      "upstream_file_sha256": "d7cd6d68ba3395244768bf21dea37c39b1b6e51490f34b42a5326fdbed1b4522",
+      "upstream_file_sha256_note": "sha256 of mir-gen.c as vendored from the pinned commit, before the carry. A refresh whose file matches this is upstream-unchanged, so the carry re-applies verbatim; a different hash means read the new code first.",
+      "minimal_reproducer": "Two lines of C, JIT'd with c2mir + MIR_gen at -O2 (a debug build of MIR fails its own assert on it): `extern void *memset (void *, int, unsigned long);` / `void f (double t, double *o) { memset (o, 0, 32); o[0] = t * t; }`. Both halves are needed -- the call is what forces `t` to spill (any resolvable call works; memcpy and pow do too), and the self-multiply is what makes all three operands of one insn name that spilled register. `o[0] = t + t` and `o[0] = t * 3.0` do not reproduce, and neither does the square without a call in front of it."
+    }
+  ],
   "notes": [
     "Prototype vendoring for GH #78. Gated behind the BNGSIM_ENABLE_MIR CMake option (default OFF); the cc-subprocess + dlopen codegen backend and the ExprTk fallback are unchanged when MIR is off.",
     "Refresh via bngsim/scripts/vendor_mir.py (prunes the tree from a vnmakarov/mir checkout and re-anchors this file's commit + files{} checksums); --check is the offline tripwire that the checked-in tree still matches this metadata. See bngsim/scripts/MIR_VENDORING.md."

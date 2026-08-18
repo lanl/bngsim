@@ -72,10 +72,64 @@ def test_mir_vendor_metadata_shape():
     assert metadata["source"]["commit"] == PINNED_COMMIT
     assert metadata["license"]["spdx"] == "MIT"
     assert metadata["build"]["translation_units"] == TRANSLATION_UNITS
-    assert metadata["local_carries"] == []
     # The hand-authored prune rationale must survive refreshes.
     assert metadata["pruning"]["included_paths"]
     assert metadata["pruning"]["excluded_paths"]
+
+
+def test_mir_local_carries_are_still_applied():
+    """Every declared local carry must still be present in the vendored file.
+
+    The tree is no longer stock upstream: issue #413 carries a bounds check in
+    mir-gen.c's ``try_spilled_reg_mem``. Checksum anchors cannot guard a carry —
+    a refresh rewrites the file from upstream AND re-anchors it, so the patch
+    vanishes with the tree still matching its own metadata. Each entry names a
+    ``marker`` comment the patch itself carries; grepping for it is the one
+    tripwire a re-vendor cannot satisfy by accident. Same check as
+    ``scripts/vendor_mir.py --check``.
+    """
+    metadata = json.loads(MIR_VENDOR_METADATA.read_text())
+    carries = metadata["local_carries"]
+    assert isinstance(carries, list)
+
+    for carry in carries:
+        for field in ("file", "marker", "issue", "summary", "reapply"):
+            assert carry.get(field), f"local carry missing {field!r}: {carry}"
+        path = MIR_DIR / carry["file"]
+        assert path.is_file(), f"local carry names a missing file: {carry['file']}"
+        assert carry["marker"] in path.read_text(), (
+            f"{carry['file']} no longer carries {carry['marker']!r} — the carry was "
+            f"dropped (a refresh?). See {carry['issue']}: {carry['reapply']}"
+        )
+
+
+def test_mir_gen_spill_reload_table_is_bounds_checked():
+    """Issue #413: the #413 carry, pinned to the property it restores.
+
+    ``try_spilled_reg_mem`` rewrites every operand naming one spilled register
+    into a memory operand and records the rewritten indices in a fixed
+    ``op_nums[MAX_INSN_RELOAD_MEM_OPS]`` so it can undo them. Upstream bounds
+    that loop with ``gen_assert`` only — i.e. ``assert``, which -DNDEBUG deletes
+    from every release build — and an insn CAN name the register three times:
+    ``x = x * x`` reaches the allocator as ``dmul r, r, r``. The third store
+    then lands past the array, which glibc reports as ``*** stack smashing
+    detected ***``.
+
+    A source-level assertion, because the behavior it guards needs -O2 MIR_gen
+    on a spilling function; test_codegen_jit_self_multiply.py is the end-to-end
+    half and runs only where the JIT is built.
+    """
+    src = (MIR_DIR / "mir-gen.c").read_text()
+    start = src.index("static int try_spilled_reg_mem")
+    body = src[start : src.index("\nstatic ", start + 1)]
+
+    assert "if (n >= MAX_INSN_RELOAD_MEM_OPS) {" in body, (
+        "the #413 bounds check is gone from try_spilled_reg_mem — op_nums can be "
+        "overrun again by an insn naming one spilled register three times"
+    )
+    # The check must not have been left as an assert(), which NDEBUG removes.
+    recorded = body[body.index("int n = 0, op_nums") :]
+    assert "gen_assert (n < MAX_INSN_RELOAD_MEM_OPS)" not in recorded
 
 
 def test_mir_anchored_checksums_match_tree():

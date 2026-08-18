@@ -7965,8 +7965,25 @@ static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR
   int n = 0, op_nums[MAX_INSN_RELOAD_MEM_OPS];
   for (int i = nop; i < (int) insn->nops; i++)
     if (insn->ops[i].mode == MIR_OP_VAR && insn->ops[i].u.var == reg) {
+      /* BNGsim local carry (lanl/bngsim#413) -- see VENDOR.json local_carries.
+         An insn can name one spilled register in MORE than MAX_INSN_RELOAD_MEM_OPS
+         operands: `x = x * x` reaches here as the three-operand `dmul r, r, r`,
+         so this loop matches three times.  The gen_assert that used to stand
+         here asserted the opposite, and it is `assert`, so every release build
+         (-DNDEBUG) compiles it out and stores op_nums[2] past the end of a
+         two-int array -- glibc's stack protector reports that as
+         `*** stack smashing detected ***` and aborts, while a toolchain that
+         leaves this frame unguarded corrupts it silently.  Decline the memory
+         operand instead once the table is full: the caller then falls back to
+         change_reg, exactly as it does whenever target_insn_ok_p below says no.
+         Nothing is lost in the case that motivated this -- an all-memory
+         three-operand dmul is not encodable on x86-64 or aarch64, so
+         target_insn_ok_p rejects it and this returns FALSE either way. */
+      if (n >= MAX_INSN_RELOAD_MEM_OPS) {
+        for (int j = 0; j < n; j++) insn->ops[op_nums[j]] = saved_op;
+        return FALSE;
+      }
       insn->ops[i] = mem_op;
-      gen_assert (n < MAX_INSN_RELOAD_MEM_OPS);
       op_nums[n++] = i;
     }
   if (target_insn_ok_p (gen_ctx, insn)) return TRUE;
