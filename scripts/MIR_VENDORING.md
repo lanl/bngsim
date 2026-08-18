@@ -201,10 +201,68 @@ These behaviors are required by `mir_jit.hpp` and recorded under
   `MIR_get_global_item`, the scan still works — but verify before relying on it.
 - **Single-maintainer upstream.** MIR is effectively single-maintainer and pinned
   to an immutable commit. Refresh deliberately.
-- **Local carries: none.** The tree is stock upstream at the pinned commit.
-  `vendor_mir.py --check` and `test_mir_vendoring.py` assert `local_carries == []`.
-  If a change must survive a refresh, land it upstream first or record it
-  explicitly in `VENDOR.json` → `local_carries`.
+- **Local carries: one.** The tree is otherwise stock upstream at the pinned
+  commit. `VENDOR.json` → `local_carries` records each deliberate BNGsim edit,
+  and both `vendor_mir.py --check` and `test_mir_vendoring.py` verify every
+  recorded carry is *still applied* — see "Local Carries" below.
+
+## Local Carries
+
+A carry is a deliberate BNGsim edit to upstream MIR source. Prefer landing a fix
+upstream; carry one only when waiting is not an option.
+
+A carry cannot be policed by the SHA256 anchors. A refresh rewrites the file from
+upstream **and re-anchors its checksum**, so a dropped carry leaves a tree that
+matches its own metadata perfectly. Each entry therefore names a `marker` — a
+comment string the patch itself carries — and `--check` greps the file for it.
+That is the one tripwire a re-vendor cannot satisfy by accident, and it is why
+`do_write` exits nonzero (after writing) when a refresh loses a carry.
+
+Each entry records:
+
+| field | meaning |
+|---|---|
+| `file` | vendored path the carry edits |
+| `marker` | comment string the patch carries; `--check` greps for it |
+| `issue` | the BNGsim issue that motivated it |
+| `upstream_status` | reported / merged / absent, and as of when |
+| `summary` | what the upstream code does wrong and what the carry does instead |
+| `reapply` | what to do when a refresh drops it |
+
+Those six are required — `--check` reports an entry missing any of them. An entry
+may carry more; the current one adds `function` and `upstream_file_sha256` (the
+hash of the file *before* the carry, so a refresh can tell "upstream unchanged,
+re-apply verbatim" from "upstream rewrote this, read it first"). Note that
+`files{}` is rebuilt wholesale on every refresh, so a per-file extra key there
+would not survive — carry-adjacent facts belong in the carry entry.
+
+### Current carries
+
+- **`mir-gen.c` — `try_spilled_reg_mem` bounds check (issue #413).** MIR_gen's
+  register allocator rewrites every operand naming one spilled register into a
+  memory operand and records the rewritten indices in a two-entry
+  `op_nums[MAX_INSN_RELOAD_MEM_OPS]`, bounded only by `gen_assert` — i.e.
+  `assert`, which `-DNDEBUG` deletes from every release build. An insn *can* name
+  the register three times: `x = x * x` reaches the allocator as the three-operand
+  `dmul r, r, r`. The third store then lands past the array; glibc's stack
+  protector reports it as `*** stack smashing detected ***` and aborts, and a
+  toolchain that leaves the frame unguarded corrupts it silently. The carry
+  declines the memory operand once the table is full — the same fallback the
+  function already takes when `target_insn_ok_p` rejects the rewrite, and the
+  identical outcome here, since an all-memory three-operand `dmul` is not
+  encodable on x86-64 or aarch64. Present in the pinned commit and in upstream
+  master as of 2026-08-18, and reported there as
+  [vnmakarov/mir#410](https://github.com/vnmakarov/mir/issues/410) — open since
+  2024-07-08 with no maintainer reply, and written up as a debug-build assertion
+  failure, so it does not record that a release build deletes the check and
+  overruns silently. Watch that issue when moving the pin. `python/tests/test_codegen_jit_self_multiply.py` is the
+  behavioral regression; `test_mir_vendoring.py` checks the carry is still there.
+
+  The entry's `minimal_reproducer` is two lines of C — a call, then `o[0] = t*t` —
+  which is what to hand upstream, and what to re-check a refresh against. Both
+  halves are load-bearing: the call is what spills `t`, and the self-multiply is
+  what makes all three operands of one insn name it. Neither `t + t` nor
+  `t * 3.0` reproduces, and neither does the square with no call before it.
 
 ## Build Wiring (for reference)
 

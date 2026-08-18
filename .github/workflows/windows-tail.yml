@@ -183,6 +183,7 @@ jobs:
           #
           # not-run: test_codegen_compile_reaping.py -- POSIX-only by construction (module-level skipif on os.name); 4 collected, 4 skipped here
           # not-run: test_codegen_jacobian_sparse.py -- every case is KLU-gated and this leg builds ENABLE_KLU=OFF; runs on windows-klu.yml instead (issue #296)
+          # not-run: test_codegen_jit_self_multiply.py -- the issue #413 reproducer needs MIR built AND selected; this leg builds the cc backend, so all five end-to-end cases would skip. mir.yml runs it
           #
           # The second one was a real Windows coverage gap when it was written:
           # no leg anywhere ran pytest on a Windows build with KLU (wheels.yml

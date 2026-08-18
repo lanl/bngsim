@@ -255,6 +255,46 @@ def anchored_checksums_from_tree() -> dict[str, str]:
     return out
 
 
+def local_carry_drift(metadata: dict) -> list[str]:
+    """Verify every recorded local carry is still applied to the vendored tree.
+
+    A carry is a deliberate BNGsim edit to upstream source (VENDOR.json
+    ``local_carries``). Checksum anchors cannot police one: a refresh rewrites
+    the file from upstream AND re-anchors it, so the carry disappears with the
+    tree still "matching". Each entry therefore names a ``marker`` comment that
+    the patch itself carries, and this greps for it — the one tripwire that a
+    re-vendor cannot satisfy by accident.
+    """
+    carries = metadata.get("local_carries")
+    if carries is None:
+        return ["local_carries: key missing from VENDOR.json"]
+    if not isinstance(carries, list):
+        return [f"local_carries: expected a list, found {carries!r}"]
+
+    drift: list[str] = []
+    for i, carry in enumerate(carries):
+        if not isinstance(carry, dict):
+            drift.append(f"local_carries[{i}]: expected an object, found {carry!r}")
+            continue
+        missing = [
+            k for k in ("file", "marker", "issue", "summary", "reapply") if not carry.get(k)
+        ]
+        if missing:
+            drift.append(f"local_carries[{i}]: missing field(s) {', '.join(missing)}")
+            continue
+        rel, marker = carry["file"], carry["marker"]
+        path = VENDOR_DIR / rel
+        if not path.is_file():
+            drift.append(f"local_carries[{i}]: file absent from vendored tree: {rel}")
+        elif marker not in path.read_text(encoding="utf-8", errors="replace"):
+            drift.append(
+                f"local_carries[{i}]: {rel} no longer carries {marker!r} — the "
+                f"carry was dropped (a refresh?). See {carry['issue']}; re-apply "
+                f"it or remove the entry."
+            )
+    return drift
+
+
 # ── Modes ─────────────────────────────────────────────────────────────────────
 def do_check() -> int:
     """Offline: the checked-in tree must match its own VENDOR.json + invariants."""
@@ -283,8 +323,7 @@ def do_check() -> int:
         if not (VENDOR_DIR / rel).exists():
             drift.append(f"BNGsim file missing: {rel}")
 
-    if metadata.get("local_carries") != []:
-        drift.append(f"local_carries: expected [], found {metadata.get('local_carries')!r}")
+    drift.extend(local_carry_drift(metadata))
 
     if drift:
         print("vendor_mir: DRIFT detected:", file=sys.stderr)
@@ -382,6 +421,21 @@ def do_write(repo: Path, resolved_ref: str, commit: str) -> int:
         f"vendor_mir: re-vendored bngsim/third_party/mir ({len(kept)} files) and "
         f"re-anchored VENDOR.json from {resolved_ref} ({commit})"
     )
+
+    # A refresh overwrites upstream files AND re-anchors their checksums, so a
+    # dropped local carry leaves a tree that "matches" its own metadata. Say so
+    # here, loudly, and exit nonzero — this is the one drift a re-anchor hides.
+    carry_drift = local_carry_drift(metadata)
+    if carry_drift:
+        print("vendor_mir: LOCAL CARRIES LOST IN THIS REFRESH:", file=sys.stderr)
+        for item in carry_drift:
+            print(f"  {item}", file=sys.stderr)
+        print(
+            "Re-apply each carry (or delete its VENDOR.json entry if upstream now "
+            "carries the fix), then re-run --check.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

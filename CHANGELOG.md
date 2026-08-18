@@ -307,6 +307,46 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A rate law that squares a value no longer smashes the stack under the MIR JIT
+  (issue #413).** A forward-sensitivity `run()` over `beta*I*time()*time()` on a
+  `-DBNGSIM_ENABLE_MIR=ON` build died with glibc's `*** stack smashing detected
+  ***` and SIGABRT on Linux — no `except` can see it, so the pytest session went
+  with it — while the same commit passed on macOS x86_64, macOS arm64 and Windows.
+  The defect is in MIR, not in bngsim's use of it. `MIR_gen`'s register allocator
+  (`try_spilled_reg_mem`, `third_party/mir/mir-gen.c`) rewrites every operand that
+  names one spilled register into a memory operand and records the rewritten
+  indices in a **two**-element `op_nums[MAX_INSN_RELOAD_MEM_OPS]`, bounded upstream
+  by `gen_assert` alone — and `gen_assert` is `assert`, which `-DNDEBUG` deletes
+  from every release build. An insn *can* name the register three times: `x = x*x`
+  reaches the allocator as the three-operand `dmul r, r, r`, so the loop matches
+  three times and the third store lands past the array. The three passing platforms
+  were never evidence of safety; they lay that frame out without a canary in the
+  way. Fixed by a bounds check carried locally in `mir-gen.c` — it declines the
+  memory operand once the table is full, the same fallback the function already
+  takes when `target_insn_ok_p` rejects the rewrite, and the identical outcome
+  here since an all-memory three-operand `dmul` is not encodable on x86-64 or
+  aarch64. The same assertion is reported upstream as `vnmakarov/mir#410`, open
+  since 2024-07-08 with no maintainer reply and written up as a debug-build
+  assertion failure, so the release-build overrun it becomes is not recorded there.
+  Two corrections to the diagnosis this shipped with: **sensitivity is
+  not the trigger** — it is what forces codegen on, since a four-species model is
+  far below the auto-codegen threshold and a plain ODE run therefore JITs nothing;
+  `codegen=True` reproduces it with no sensitivities at all. And it is **not the
+  `if()` / the threshold / the crossing** — the self-multiply alone is enough,
+  wherever the emitted C puts it. Only `-O2`/`-O3` `MIR_gen` is affected, which is
+  every source under 512 KB. `python/tests/test_codegen_jit_self_multiply.py` is
+  the regression.
+
+- **`vendor_mir.py --check` now verifies a local carry is still applied, not just
+  that checksums match (issue #413).** The `mir-gen.c` fix above is the vendored
+  MIR tree's first local carry, and the SHA256 anchors cannot police one: a
+  refresh rewrites the file from upstream *and* re-anchors its checksum, so a
+  dropped carry leaves a tree matching its own metadata perfectly. Each
+  `VENDOR.json` → `local_carries` entry now names a `marker` comment the patch
+  carries; `--check` and `test_mir_vendoring.py` grep for it, and `vendor_mir.py`
+  exits nonzero after a refresh that loses one. The old assertion was
+  `local_carries == []`.
+
 - **An equality in a rate-law switch condition no longer declines a model's
   analytic sensitivity RHS (issue #381).** `MODEL2003190004`'s forward-sensitivity
   solve stalled outright — `CVODE made no progress while integrating to the next

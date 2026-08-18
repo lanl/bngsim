@@ -58,6 +58,14 @@ name: mir-jit
 # issue #75 the steady-state d(func)/dp block resolves bngsim_codegen_output_sens
 # — the very symbol #85 was about — off whichever backend built the artifact, so
 # the JIT leg is the only thing that covers the MirJit half of that resolve.
+#
+# Issue #413 is the second bug only this job can surface, and the first one in
+# MIR itself rather than in bngsim's use of it: MIR_gen's register allocator
+# overran a two-entry table on `x = x * x`, which glibc's stack protector turned
+# into a SIGABRT on the Linux leg while the other three laid the frame out
+# harmlessly. test_codegen_jit_self_multiply.py is the regression, and the fix is
+# a local carry in third_party/mir/mir-gen.c — see VENDOR.json `local_carries`,
+# which test_mir_vendoring.py now checks is still applied.
 
 on:
   workflow_dispatch:
@@ -206,6 +214,7 @@ jobs:
             python/tests/test_codegen_power_denominator.py \
             python/tests/test_codegen_determinism.py \
             python/tests/test_codegen_jit_prelude.py \
+            python/tests/test_codegen_jit_self_multiply.py \
             python/tests/test_codegen_steady_state_mask.py \
             python/tests/test_codegen_steady_state_fd_step.py \
             python/tests/test_steady_state_output_sensitivities.py \

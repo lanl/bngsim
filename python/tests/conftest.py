@@ -229,6 +229,12 @@ _LOCAL_ONLY = "local-only"
 _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     # Build-configuration variants — the feature is genuinely absent from this build.
     ("without the MIR backend", _ANYWHERE, "MIR JIT is off unless -DBNGSIM_ENABLE_MIR=ON"),
+    (
+        "selected with BNGSIM_CODEGEN_JIT=mir",
+        _ANYWHERE,
+        "issue #413 lives in MIR's register allocator, so its reproducer needs the "
+        "backend BUILT and SELECTED; mir.yml sets both and runs it there",
+    ),
     ("KLU not compiled", _ANYWHERE, "KLU-off builds are a supported configuration"),
     (
         "KLU sparse solver not built",
