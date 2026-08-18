@@ -206,6 +206,31 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Changed
 
+- **Four NFsim carries are gone: RuleWorld/nfsim#89 merged and the vendored tree
+  now takes the fixes from upstream (issue #410).** The carry queue is 13 topics,
+  down from 17, and `third_party/nfsim` is rebuilt on upstream `master`
+  `5962ea9`. The four that left are the ones bngsim contributed upstream:
+  product molecularity tested against all the bonds a rule deletes at once,
+  complex tracking turned on by a Species observable independently of `-bscb`,
+  the reaction center symmetry factor applied on every rate law rather than only
+  `Ele`, and a pure context reactant counted once per complex. `git am` of the
+  remaining 13 patches replays onto the new base without a conflict, and
+  `python/tests/test_nfsim_symmetry_factor.py`,
+  `python/tests/test_nfsim_molecularity.py` and
+  `python/tests/test_nfsim_context_symmetry.py` — all written against the
+  carries — pass unchanged against the carry-free tree, which is what shows the
+  upstream versions behave the same.
+
+  Two things came back different from what left. Upstream's pure-context commit
+  is a superset of the carry it replaces: it also fixes `exactRuleMonkey_a()`,
+  which the carry skipped because the vendor export trims `src/NFsim.cpp` and
+  the RuleMonkey-exact path is unreachable here, and it drops a `ReactantList`
+  version counter the carry declared and bumped but never read. And the refresh
+  picks up upstream #88, which rewrites the free-substrate root in the MM rate
+  law to stop it cancelling to zero when `Km` is small and the enzyme is in
+  excess — unrelated to the prune, but it lands in the same file the symmetry
+  fix does, since upstream wrote the symmetry commit on top of it.
+
 - **The BNG2.pl resolver is now shipped, as `bngsim._bngpath` (issue #162).**
   It was `parity_checks/_core/bngpath.py`, which is developer-only and not
   packaged — and `bngsim.convert._bng2.find_bng2` had already grown a seventh,

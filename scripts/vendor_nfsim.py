@@ -64,7 +64,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "dcce96d80aca19c4a27f1881035a424cb1caae83",
+                "commit": "8d6900200e299f2e75227f3835528b4bf41e1419",
                 "summary": "bngsim: add NFsim v1.14.3 selector compat toggle",
             },
         ],
@@ -77,7 +77,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "8c6974906573d7897268cb4fd87948d9ce7929c0",
+                "commit": "5ab913963446f3b191a6e8544bef1147c2522b0c",
                 "summary": "bngsim: throw when molecule limit is exceeded",
             },
         ],
@@ -88,7 +88,7 @@ CARRY_QUEUE = (
         "status": "Ignore comment lines in TFUN data files used by BNG fixtures.",
         "commits": [
             {
-                "commit": "bd88bad22ee128680b0818070e758e5c51a90fd1",
+                "commit": "9c4a11835dfb22a280afd84cdcdae67f6c93aa30",
                 "summary": "bngsim: ignore comments in TFUN data files",
             },
         ],
@@ -102,7 +102,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "b7060fec03467885e7b50bf626ee06e36d1ac6fe",
+                "commit": "e0ff8d3894ccd4c8850e522c4fa388a1df103bb3",
                 "summary": "bngsim: don't force universal macOS arch in subprojects",
             },
         ],
@@ -121,55 +121,8 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "8321769384f69f0992be2373f718cd713bea5c2f",
+                "commit": "e279193196a7516fd61b58ff0664e382b0c08e62",
                 "summary": "bngsim: convert exit(1) calls to throw std::runtime_error",
-            },
-        ],
-    },
-    {
-        "topic": "bngsim/carry-multibond-molecularity",
-        "kind": "local",
-        "status": (
-            "Fix TransformationSet::checkMolecularity for rules that delete "
-            "several bonds at once to open a cyclic complex. The Issue #48 "
-            "product-molecularity check tested each deleted bond in isolation "
-            "(canReachExcludingBond, single bond), so a symmetric two-bond "
-            "homodimer dissociation never fired — each ring bond alone leaves "
-            "the partners connected through the other — and the dimer became a "
-            "kinetic trap, over-assembling versus the network ODE and upstream "
-            "NFsim (internal#57). Now the full set of bonds the rule "
-            "deletes is excluded at once (canReachExcludingBonds); single-bond "
-            "ring dissociations that genuinely fail molecularity "
-            "(internal#54/#55) stay blocked. Candidate to push upstream."
-        ),
-        "commits": [
-            {
-                "commit": "6de87b43674c8af566a4792b5b7c9176f6ec7643",
-                "summary": "bngsim: fix product-molecularity check for multi-bond ring-opening",
-            },
-        ],
-    },
-    {
-        "topic": "bngsim/carry-species-obs-complex-tracking",
-        "kind": "local",
-        "status": (
-            "Track complexes (System.useComplex) whenever the model declares a "
-            "Species-typed observable, independently of the -bscb policy. "
-            "useComplex was derived solely from blockSameComplexBinding, so with "
-            "same-complex binding allowed (-bscb off) Species observables were "
-            "counted with complex tracking disabled and reported wildly inflated "
-            "values (~1.5e6 interfaces from ~400 molecules, no real aggregation) "
-            "(internal#57, phenomenon 2). The retroactive setUsingComplex() "
-            "for Species observables (Issue #49) flips the flag too late to "
-            "repair the incremental counters. Pre-scan the XML for Species "
-            "observables before System construction and set useComplex = "
-            "blockSameComplexBinding || hasSpeciesObservable. Candidate to push "
-            "upstream."
-        ),
-        "commits": [
-            {
-                "commit": "cc920af56e765fc48e6b6314653c01376213ee04",
-                "summary": "bngsim: track complexes for Species observables regardless of -bscb",
             },
         ],
     },
@@ -196,7 +149,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "958058ba9e82a2b0d4354c5a935c4bba95d341b0",
+                "commit": "575790268280a0050d5a954358ceb7c9dbe82c7c",
                 "summary": "bngsim: forward mu::Parser reserved-symbol remap to host expr_compat",
             },
         ],
@@ -218,7 +171,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "b18a561a6676c4a79720ca55a4b872d7593efa6f",
+                "commit": "97a28d6c7440b5e48651109e99322ca32915713f",
                 "summary": "bngsim: forward mu::Parser mratio() built-in to host expr_compat",
             },
         ],
@@ -236,7 +189,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "e7223236dd5ce380243a984eb055bc8ca812bdc2",
+                "commit": "4a2bfb1877aae432e37f5c67da29d4f872fe3a7b",
                 "summary": "bngsim: guard reactant-count composite scope-free eval",
             },
         ],
@@ -254,7 +207,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "6f7f7a71208069bdc0a9989af35215f55a27b8b6",
+                "commit": "6f19aad5db25ab0ed16acfd9add116748f0a88ca",
                 "summary": "bngsim: restore hard stop for include_products/exclude_products",
             },
         ],
@@ -271,7 +224,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "6cffc8788c2964a77dd74161f2144e56e6c3588c",
+                "commit": "154f9e9dcd21c95b4cf06ccc1cc11982e158d7b6",
                 "summary": "bngsim: prune NFtest headers from vendored facade",
             },
         ],
@@ -288,7 +241,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "08f137b9d412ccb346bf62678ebc97a0874fbfad",
+                "commit": "9ff506c7c0bec9383df5c1a2b7e431a6c50d7843",
                 "summary": "bngsim: trim CLI sources from library-only NFsim build",
             },
         ],
@@ -306,7 +259,7 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "f1f21e84cd182e62263ece6ef56c69427c2c00ee",
+                "commit": "6a1728f561e00cfbf05139b8eba015ff4941688e",
                 "summary": "bngsim: restore stepTo cache compatibility hook",
             },
         ],
@@ -326,76 +279,10 @@ CARRY_QUEUE = (
         ),
         "commits": [
             {
-                "commit": "ea2ddcf05613df29dd3c2c6f724acb11f5d57c3a",
+                "commit": "5c547470600d00b1bbd64c087705b905b2e007f4",
                 "summary": (
                     "bngsim: keep zero-base-rate reactions so post-init "
                     "set_param can activate them"
-                ),
-            },
-        ],
-    },
-    {
-        "topic": "bngsim/carry-symmetry-factor-all-rate-laws",
-        "kind": "local",
-        "status": (
-            "Apply the reaction center symmetry factor on every rate law, not "
-            "just Ele. ReactionClass's constructor scaled its own baseRate "
-            "*argument*, which shadows the member the argument was already "
-            "copied into, so the correction was discarded; only Ele recovered "
-            "it, because NFinput follows the constructor with setBaseRate(), "
-            "which applies the factor itself. Every other rate law is built "
-            "with baseRate=1 and never calls setBaseRate, so a rule whose "
-            "reactant pattern has a non-trivial automorphism fired at "
-            "1/symmetryFactor times its intended rate -- 2x for a homodimer -- "
-            "under a global function (FunctionalRxnClass), a local function "
-            "(DORRxnClass), a function product (DOR2RxnClass), or "
-            "Michaelis-Menten (MMRxnClass). BNG emits symmetry_factor "
-            "independently of rate law type, so all four disagree with BNG's "
-            "own semantics and with NFsim's constant-rate path for the same "
-            "rule. Assigning through this-> repairs the two DOR classes, which "
-            "build the propensity as a = baseRate * ...; FunctionalRxnClass and "
-            "MMRxnClass override update_a() without reading baseRate at all and "
-            "additionally scale by it -- for MM on the substrate COUNT inside the "
-            "law, not on the finished propensity, since the factor corrects a match "
-            "multiplicity and MM is not linear in that count (scaling the propensity "
-            "is exact only below saturation). Candidate to push upstream. "
-            "See bngsim GH #195."
-        ),
-        "commits": [
-            {
-                "commit": "6688167a52acf9a5fa79dc45233d22d7cc969719",
-                "summary": ("bngsim: apply the reaction center symmetry factor on every rate law"),
-            },
-        ],
-    },
-    {
-        "topic": "bngsim/carry-pure-context-per-complex",
-        "kind": "local",
-        "status": (
-            "Count a reactant pattern the rule does not transform once per "
-            "matching complex, as BioNetGen does, rather than once per matching "
-            "molecule. Every embedding of such a pattern yields the identical "
-            "reaction -- same reactants, products and transformation -- so BNG "
-            "counts one instance; NFsim enumerates matches per molecule, so a "
-            "homodimeric catalyst fired twice as fast as a heterodimeric one and "
-            "a homotrimer ring three times as fast. Verified against BNG's "
-            "generated network: a whole homodimer, one subunit of it, a "
-            "heterodimer and a scaffold holding two DISTINGUISHABLE copies all "
-            "get a bare rate constant, while a homodimer whose subunit the rule "
-            "binds gets 2*k because there the subunits are two real reactive "
-            "sites. Not a symmetry effect -- the scaffold case has no "
-            "automorphism anywhere and is still over-counted -- so anything keyed "
-            "on automorphisms gets it wrong. A DOR reactant's propensity comes "
-            "from its tree's rate factor sum, so that path sums one "
-            "representative term per complex instead. Requires complex "
-            "bookkeeping. Candidate to push upstream; reported as "
-            "RuleWorld/nfsim#87. See bngsim GH #281."
-        ),
-        "commits": [
-            {
-                "commit": "12fad95034d8d79f1082dc78cc6955b612357213",
-                "summary": (
-                    "bngsim: count a pure context reactant once per complex, as BioNetGen does"
                 ),
             },
         ],

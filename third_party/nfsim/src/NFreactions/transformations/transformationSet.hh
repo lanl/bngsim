@@ -323,7 +323,7 @@ namespace NFcore
 				pattern is pure context.  Must be called after finalize(), which is where
 				this is decided; see the note there for why the transformation types alone
 				cannot answer it afterwards.
-				@author bngsim
+				
 			*/
 			bool isPureContextReactant(unsigned int reactantIndex) const;
 
@@ -355,13 +355,13 @@ namespace NFcore
 				when a set of bonds is removed. This is used to enforce product-side molecularity
 				for unimolecular unbinding rules (Issue #48). The full set of bonds that the firing
 				rule will delete is excluded at once, so multi-bond ring-opening dissociations are
-				judged on the post-reaction graph rather than one bond in isolation (#57).
+				judged on the post-reaction graph rather than one bond in isolation.
 				@param mol1 The molecule containing the binding site
 				@param mol2 The bonded partner molecule
 				@param excludedBonds The bonds to exclude, each recorded as both of its
 				       (molecule, component-index) half-edges
 				@return true if mol1 can be reached from mol2 through alternative paths, false otherwise
-				@author Fix for Issue #48 / #57
+				@author Fix for Issues #48 and #61
 			*/
 			bool canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
 				const std::vector< std::pair<Molecule *, int> > &excludedBonds);

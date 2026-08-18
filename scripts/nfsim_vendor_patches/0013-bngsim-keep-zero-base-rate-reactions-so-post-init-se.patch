@@ -1,7 +1,7 @@
-From 4f9bbeae9951e68860cf2da57c72f963122ae980 Mon Sep 17 00:00:00 2001
+From 5c547470600d00b1bbd64c087705b905b2e007f4 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Fri, 24 Jul 2026 14:44:10 -0600
-Subject: [PATCH 15/17] bngsim: keep zero-base-rate reactions so post-init
+Subject: [PATCH 13/13] bngsim: keep zero-base-rate reactions so post-init
  set_param can activate them
 
 NFsim drops reaction rules whose base rate is exactly zero at parse time
@@ -20,7 +20,7 @@ bngsim GH #44.
  3 files changed, 31 insertions(+), 5 deletions(-)
 
 diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
-index e0359b5..2991ad6 100644
+index 19eb59c..08ab145 100644
 --- a/src/NFcore/NFcore.hh
 +++ b/src/NFcore/NFcore.hh
 @@ -523,6 +523,17 @@ namespace NFcore
@@ -50,7 +50,7 @@ index e0359b5..2991ad6 100644
  		    bool printConnected; /* Whether to print connected reactions at the beginning of the simulation. Useful for debugging */
  			bool outputMoleculeTypesFile; /* Output molecule types (default: false) */
 diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
-index 8f5a72c..f1cb32c 100644
+index 2399630..cc55c40 100644
 --- a/src/NFinput/NFinput.cpp
 +++ b/src/NFinput/NFinput.cpp
 @@ -74,7 +74,8 @@ System * NFinput::initializeFromXML(

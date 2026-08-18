@@ -1,7 +1,7 @@
-From 80cae53c804c197d02dc4a4dacae498c63d611b9 Mon Sep 17 00:00:00 2001
+From 8d6900200e299f2e75227f3835528b4bf41e1419 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Fri, 15 May 2026 15:01:46 -0600
-Subject: [PATCH 01/17] bngsim: add NFsim v1.14.3 selector compat toggle
+Subject: [PATCH 01/13] bngsim: add NFsim v1.14.3 selector compat toggle
 
 ---
  src/NFcore/NFcore.hh  | 3 +++
@@ -9,7 +9,7 @@ Subject: [PATCH 01/17] bngsim: add NFsim v1.14.3 selector compat toggle
  2 files changed, 9 insertions(+)
 
 diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
-index 7aad629..594b9b4 100644
+index 16a156b..1126701 100644
 --- a/src/NFcore/NFcore.hh
 +++ b/src/NFcore/NFcore.hh
 @@ -516,6 +516,8 @@ namespace NFcore

@@ -212,10 +212,18 @@ double MMRxnClass::update_a()
 	// automorphisms, so it emits symmetry_factor=1 for an enzyme-side symmetry
 	// and this factor is always the substrate's. (NFsim does over-count a
 	// symmetric context pattern, but that is a separate defect with no
-	// symmetry_factor attached to it; see bngsim GH #281.)
+	// symmetry_factor attached to it; see issue #87.)
 	double S = (double)getCorrectedReactantCount(0) * this->baseRate;
 	double E = (double)getCorrectedReactantCount(1);
-	sFree=0.5*( (S-Km-E) + pow((pow( (S-Km-E),2.0) + 4.0*Km*S),  0.5) );
+	// Free substrate is the non-negative root of sFree^2 - b*sFree - Km*S = 0, b = S-Km-E.
+	// The textbook form 0.5*(b + sqrt(b*b + 4*Km*S)) cancels catastrophically when b < 0,
+	// and rounds to exactly zero once 4*Km*S drops below about 1e-16*b*b, which silently
+	// stops the reaction when Km is small and the enzyme is in excess. The two roots
+	// multiply to -Km*S, so the b < 0 case is written as a sum of like-signed quantities.
+	// See https://github.com/RuleWorld/bionetgen/issues/323
+	double b = S-Km-E;
+	double q = sqrt(b*b + 4.0*Km*S);
+	sFree = (b>=0.0) ? 0.5*(b+q) : 2.0*Km*S/(q-b);
 	a=kcat*sFree*E/(Km+sFree);
 	return a;
 }
@@ -239,7 +247,7 @@ void MMRxnClass::printDetails() const {
 
 
 
-/* --- pure context counting, shared by every reaction class (bngsim) ---------
+/* --- pure context counting, shared by every reaction class ------------------
  *
  * BioNetGen gives a reactant pattern the rule does not transform one reaction
  * instance per matching COMPLEX, however many molecules in that complex match
@@ -305,6 +313,41 @@ double NFcore::perComplexRateFactorSum(ReactantTree *tree)
 		}
 	}
 	return sum;
+}
+
+void NFcore::collectReactantRepresentatives(ReactantList *rl, bool perComplex,
+                                            std::vector<MappingSet*> &out,
+                                            std::vector<int> *flatIndices)
+{
+	out.clear();
+	if (flatIndices) flatIndices->clear();
+	int size = rl->size();
+
+	// Nothing to collapse: either this reactant is transformed by the rule, or
+	// every match sits in a single-molecule complex and one match already is one
+	// complex.  Enumerate every live mapping set, exactly as before.
+	if (!perComplex || !rl->mayShareComplexes()) {
+		for (int i = 0; i < size; ++i) {
+			MappingSet *ms = rl->getMappingSetByIndex(i);
+			if (ms) {
+				out.push_back(ms);
+				if (flatIndices) flatIndices->push_back(i);
+			}
+		}
+		return;
+	}
+
+	std::set<int> seen;
+	for (int i = 0; i < size; ++i) {
+		MappingSet *ms = rl->getMappingSetByIndex(i);
+		if (!ms || ms->getNumOfMappings() == 0) continue;
+		Mapping *mapping = ms->get(0);
+		if (!mapping || !mapping->getMolecule()) continue;
+		if (seen.insert(mapping->getMolecule()->getComplexID()).second) {
+			out.push_back(ms);
+			if (flatIndices) flatIndices->push_back(i);
+		}
+	}
 }
 
 
@@ -549,18 +592,24 @@ double BasicRxnClass::exactRuleMonkey_a()
 	} else if (n_reactants == 1) {
 		validCombinations = getCorrectedReactantCount(0);
 	} else if (n_reactants == 2) {
-		// Exact calculation: subtract null events
-		int size0 = getReactantCount(0);
-		int size1 = getReactantCount(1);
+		// Exact calculation: subtract null events.  Enumerate one representative
+		// per complex for a reactant the rule does not transform, so both the
+		// total and the invalid pairs subtracted from it are counted on the same
+		// footing as getCorrectedReactantCount(); for every other reactant this
+		// is still every live mapping set, and the arithmetic is unchanged.
+		static thread_local std::vector<MappingSet*> reps0, reps1;
+		collectReactantRepresentatives(reactantLists[0], contextCountsPerComplex[0], reps0);
+		collectReactantRepresentatives(reactantLists[1], contextCountsPerComplex[1], reps1);
+
 		// Use raw counts here because invalid self-pairs are removed explicitly below.
-		double totalCombinations = (double)getReactantCount(0) * (double)getReactantCount(1);
+		double totalCombinations = (double)reps0.size() * (double)reps1.size();
 		double invalidCombinations = 0;
 
-		for (int i = 0; i < size0; ++i) {
-			msPairBuffer[0] = reactantLists[0]->getMappingSet(i);
-			for (int j = 0; j < size1; ++j) {
-				msPairBuffer[1] = reactantLists[1]->getMappingSet(j);
-				
+		for (size_t i = 0; i < reps0.size(); ++i) {
+			msPairBuffer[0] = reps0[i];
+			for (size_t j = 0; j < reps1.size(); ++j) {
+				msPairBuffer[1] = reps1[j];
+
 				// check for collision
 				if (!transformationSet->checkMolecularity(msPairBuffer)) {
 					invalidCombinations++;

@@ -1,7 +1,7 @@
-From 99552d33fe6b5f4141990d23d261f7be7bccc4a9 Mon Sep 17 00:00:00 2001
+From 9c4a11835dfb22a280afd84cdcdae67f6c93aa30 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Fri, 15 May 2026 16:03:38 -0600
-Subject: [PATCH 03/17] bngsim: ignore comments in TFUN data files
+Subject: [PATCH 03/13] bngsim: ignore comments in TFUN data files
 
 ---
  src/NFutil/conversion.cpp | 22 ++++++++++++++++++++--

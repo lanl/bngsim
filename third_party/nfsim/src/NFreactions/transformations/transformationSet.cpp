@@ -486,7 +486,7 @@ bool TransformationSet::canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
 	// Excluding the full set of bonds that the firing rule deletes (rather than
 	// one bond at a time) is what lets a multi-bond ring-opening dissociation be
 	// recognized as genuinely separating its products: each individual bond may
-	// leave the partners connected, while removing all of them does not (#57).
+	// leave the partners connected, while removing all of them does not.
 
 	// Use a static queue for efficiency (reusing the BFS infrastructure)
 	static queue <Molecule *> q;
@@ -710,7 +710,7 @@ bool TransformationSet::checkMolecularity( MappingSet ** mappingSets )
 			// (e.g. a symmetric two-bond homodimer splitting into two monomers):
 			// each single bond's removal leaves the partners connected through
 			// the rule's other deleted bond, even though removing both genuinely
-			// separates the products (#57).
+			// separates the products.
 			std::vector< std::pair<Molecule *, int> > excludedBonds;       // half-edges
 			std::vector< std::pair<Molecule *, Molecule *> > brokenPairs;  // endpoints to test
 			for ( unsigned int t = 0; t < getNumOfTransformations(0); ++t )

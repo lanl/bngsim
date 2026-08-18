@@ -51,7 +51,7 @@ component::~component()
 // observables are tallied by iterating complexes, so the System must track
 // complexes (useComplex) for their counts to be correct. Detecting this from
 // the XML before the System is constructed lets complex tracking be enabled
-// independently of the -bscb policy (#57).
+// independently of the -bscb policy.
 static bool modelHasSpeciesObservable(TiXmlElement *pModel)
 {
 	if (pModel == NULL) return false;
@@ -104,8 +104,8 @@ System * NFinput::initializeFromXML(
 		//      tracking is on from System construction (before molecules and
 		//      observables are built). Deriving useComplex from -bscb alone left
 		//      Species counts wildly inflated whenever same-complex binding was
-		//      allowed (#57); the late retroactive setUsingComplex() does not
-		//      repair the already-wired incremental observable counters.
+		//      allowed; the retroactive setUsingComplex() added for issue #49
+		//      fires too late to repair the already-wired incremental counters.
 		// Complex tracking (counting) is thus decoupled here from the -bscb
 		// policy, which stays governed by blockSameComplexBinding downstream
 		// (TransformationSet::setComplexBookkeeping).

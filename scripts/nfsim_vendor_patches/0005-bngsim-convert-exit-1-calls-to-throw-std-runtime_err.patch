@@ -1,7 +1,7 @@
-From c1606d940575451069a5c11a84de870d0d45dc9c Mon Sep 17 00:00:00 2001
+From e279193196a7516fd61b58ff0664e382b0c08e62 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Sun, 22 Feb 2026 01:59:39 -0700
-Subject: [PATCH 05/17] bngsim: convert exit(1) calls to throw
+Subject: [PATCH 05/13] bngsim: convert exit(1) calls to throw
  std::runtime_error
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -358,7 +358,7 @@ index dafc4fc..01b5ff5 100644
  }
  StateCounter::~StateCounter() {
 diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
-index 97afbf2..1ea59dd 100644
+index ef3df43..1153899 100644
 --- a/src/NFinput/NFinput.cpp
 +++ b/src/NFinput/NFinput.cpp
 @@ -1,6 +1,7 @@
@@ -369,7 +369,7 @@ index 97afbf2..1ea59dd 100644
  
  
  #include <algorithm>
-@@ -1301,7 +1302,7 @@ bool NFinput::initReactionRulePermutation(
+@@ -1334,7 +1335,7 @@ bool NFinput::initReactionRulePermutation(
  						if (verbose) cout << "\t\t\tUsing symmetry factor = " << symmetryFactor << endl;
  					} catch (std::runtime_error &e1) {
  						cerr<<"Error!! Symmetry Factor for ReactionRule "<<rxnName<<" was not set properly.  quitting."<<endl;
@@ -378,7 +378,7 @@ index 97afbf2..1ea59dd 100644
  					}
  				}
  
-@@ -1861,7 +1862,7 @@ bool NFinput::initReactionRulePermutation(
+@@ -1894,7 +1895,7 @@ bool NFinput::initReactionRulePermutation(
  								//if(allowedStates.find(c->t->getMoleculeTypeName()+"_"+lookupname+"_"+finalState)==allowedStates.end()) {
  									cout<<"Error! in NFinput, when looking up state: "<<c->t->getMoleculeTypeName()+"_"+c->symPermutationName+"_"+finalState<<endl;
  									cout<<"Could not find this in the list of allowed states!  exiting!"<<endl;
@@ -387,7 +387,7 @@ index 97afbf2..1ea59dd 100644
  								//}
  							}
  							finalStateInt = allowedStates.find(c->t->getMoleculeTypeName()+"_"+lookupname+"_"+finalState)->second;
-@@ -2205,7 +2206,7 @@ bool NFinput::initReactionRulePermutation(
+@@ -2238,7 +2239,7 @@ bool NFinput::initReactionRulePermutation(
  								cerr<<"Error in adding an delete molecule operation in ReactionClass: '"+rxnName+"'."<<endl;
  
  								cerr<<"Invalid read!  Looking for "<<id<<" but could not find it!"<<endl;
@@ -396,7 +396,7 @@ index 97afbf2..1ea59dd 100644
  							}
  							//cout<<"Templates.size() "<<templates.size()<<endl;
  							//c.t->printDetails();
-@@ -2274,7 +2275,7 @@ bool NFinput::initReactionRulePermutation(
+@@ -2307,7 +2308,7 @@ bool NFinput::initReactionRulePermutation(
  					} catch (std::runtime_error &e1) {
  						//cerr<<e1.what()<<endl;
  						cerr<<"Error!! totalrate flag for ReactionRule "<<rxnName<<" was not set properly.  quitting."<<endl;
@@ -405,7 +405,7 @@ index 97afbf2..1ea59dd 100644
  					}
  				}
  
-@@ -2536,7 +2537,7 @@ bool NFinput::initReactionRulePermutation(
+@@ -2569,7 +2570,7 @@ bool NFinput::initReactionRulePermutation(
  							if(lf!=NULL) {
  								cout<<"Error!! call a local function through a composite function always!"<<endl;
  								cout<<"DOR rxn should never directly call a local function."<<endl;
@@ -414,7 +414,7 @@ index 97afbf2..1ea59dd 100644
  							} else {
  
  								ts->finalize();
-@@ -2634,13 +2635,13 @@ bool NFinput::initReactionRulePermutation(
+@@ -2667,13 +2668,13 @@ bool NFinput::initReactionRulePermutation(
  						if ( funcArgs1.size() < 1 )
  						{
  							cout<<"Error!! FunctionProduct ratelaw is missing argument for function1."<<endl;
@@ -430,7 +430,7 @@ index 97afbf2..1ea59dd 100644
  						}
  
  						//cout << "n_funcArgs1: " << funcArgs1.size() << endl;
-@@ -2651,7 +2652,7 @@ bool NFinput::initReactionRulePermutation(
+@@ -2684,7 +2685,7 @@ bool NFinput::initReactionRulePermutation(
  						if(lf1 != NULL) {
  							cout<<"Error!! call a local function through a composite function always!"<<endl;
  							cout<<"DOR rxn should never directly call a local function."<<endl;
@@ -439,7 +439,7 @@ index 97afbf2..1ea59dd 100644
  						}
  
  						string functionName2 = pRateLaw->Attribute("name2");
-@@ -2659,7 +2660,7 @@ bool NFinput::initReactionRulePermutation(
+@@ -2692,7 +2693,7 @@ bool NFinput::initReactionRulePermutation(
  						if(lf2 != NULL) {
  							cout<<"Error!! call a local function through a composite function always!"<<endl;
  							cout<<"DOR rxn should never directly call a local function."<<endl;
@@ -448,7 +448,7 @@ index 97afbf2..1ea59dd 100644
  						}
  
  						ts->finalize();
-@@ -3203,13 +3204,13 @@ TemplateMolecule *NFinput::readPattern(
+@@ -3236,13 +3237,13 @@ TemplateMolecule *NFinput::readPattern(
  				cerr<<"\n\nError!  You cannot include a 'null' molecule in any reactant or observable pattern!"<<endl;
  				cerr<<"Null is a keyword in NFsim used for degradation, so cannot be used.  Check your"<<endl;
  				cerr<<"rules and patterns and remove any usage of 'Null' or 'null' or 'NULL'."<<endl;
@@ -465,7 +465,7 @@ index 97afbf2..1ea59dd 100644
  
  
 diff --git a/src/NFreactions/reactions/reaction.cpp b/src/NFreactions/reactions/reaction.cpp
-index fc6bd35..9fa1ca9 100644
+index 141a2dc..e1d384f 100644
 --- a/src/NFreactions/reactions/reaction.cpp
 +++ b/src/NFreactions/reactions/reaction.cpp
 @@ -3,6 +3,7 @@
@@ -503,7 +503,7 @@ index fc6bd35..9fa1ca9 100644
  	}
  
  	a *= this->volumeConversionFactor;
-@@ -87,7 +88,7 @@ double FunctionalRxnClass::update_a() {
+@@ -94,7 +95,7 @@ double FunctionalRxnClass::update_a() {
  		cout<<"\nhere is the offending reaction: \n";
  		this->printDetails();
  		cout<<"\n\nquitting."<<endl;
@@ -512,7 +512,7 @@ index fc6bd35..9fa1ca9 100644
  	}
  
  
-@@ -168,7 +169,7 @@ MMRxnClass::MMRxnClass(string name, double kcat, double Km, TransformationSet *t
+@@ -175,7 +176,7 @@ MMRxnClass::MMRxnClass(string name, double kcat, double Km, TransformationSet *t
  		cerr<<"but you don't have the correct number of reactants!  Michaelis-Menten reactions require\n";
  		cerr<<"exactly 2 reactants.  A substrate (always given first) and an enzyme (always given second)\n";
  		cerr<<"Read your tutorial next time... now I will quit."<<endl;
@@ -521,7 +521,7 @@ index fc6bd35..9fa1ca9 100644
  	}
  }
  MMRxnClass::~MMRxnClass() {};
-@@ -400,7 +401,7 @@ void BasicRxnClass::remove(Molecule *m, unsigned int reactantPos)
+@@ -546,7 +547,7 @@ void BasicRxnClass::remove(Molecule *m, unsigned int reactantPos)
  	if(reactantPos<0 || reactantPos>=n_reactants || m==NULL)
  	{
  		cout<<"Error removing molecule from a reaction!!  Invalid molecule or reactant position given.  Quitting."<<endl;
@@ -530,7 +530,7 @@ index fc6bd35..9fa1ca9 100644
  	}
  
  
-@@ -426,7 +427,7 @@ void BasicRxnClass::notifyRateFactorChange(Molecule * m, int reactantIndex, int
+@@ -572,7 +573,7 @@ void BasicRxnClass::notifyRateFactorChange(Molecule * m, int reactantIndex, int
  {
  	cerr<<"You are trying to notify a Basic Reaction of a rate Factor Change!!! You should only use this"<<endl;
  	cerr<<"function for DORrxnClass rules!  For this offense, I must abort now."<<endl;
@@ -539,7 +539,7 @@ index fc6bd35..9fa1ca9 100644
  }
  
  double BasicRxnClass::exactRuleMonkey_a()
-@@ -627,4 +628,3 @@ void BasicRxnClass::pickMappingSets(double random_A_number) const
+@@ -771,4 +772,3 @@ void BasicRxnClass::pickMappingSets(double random_A_number) const
  }
  
  
