@@ -1143,9 +1143,9 @@ class TestANonAffineClockThresholdIsSolvedAndJumped:
 
         def traj(thresh, name):
             return np.asarray(
-                bngsim.Simulator(_model(tmp_path, net(thresh), name=name), method="ode").run(
-                    t_span=ts, n_points=n, rtol=1e-12, atol=1e-14
-                ).species
+                bngsim.Simulator(_model(tmp_path, net(thresh), name=name), method="ode")
+                .run(t_span=ts, n_points=n, rtol=1e-12, atol=1e-14)
+                .species
             )
 
         fd = (traj(9.0 + h, "hi.net") - traj(9.0 - h, "lo.net")) / (2.0 * h)
