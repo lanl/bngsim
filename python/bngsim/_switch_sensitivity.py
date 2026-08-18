@@ -1244,6 +1244,70 @@ def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
     return tuple(found)
 
 
+def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossingReason | None:
+    """The first rate-law branch crossing this model leaves uncompensated, or ``None``.
+
+    The model-level twin of the per-rate-law gate codegen runs
+    (:func:`uncompensated_condition_reason`, at its call site in
+    :func:`bngsim._codegen._functional_rate_law_partials`): it scans every
+    condition-bearing **reaction rate expression** — inlined exactly as codegen
+    inlines it — and returns the reason the first one carries that no machinery
+    can bracket (an equality, a comparison outside an ``if()`` head or buried in a
+    call argument, a clock threshold that does not reduce to a constant). ``None``
+    means every crossing this model has is one issue #48 stops at or issue #150
+    roots on, so its jump is applied at run time — by
+    :meth:`Simulator._apply_switch_time_sens` /
+    :meth:`Simulator._apply_state_switch_sens` — even when the analytic
+    sensitivity RHS is declined and the run is on CVODES' difference quotient, and
+    nothing is dropped.
+
+    This is the exact fact issue #414's refusal keys on, through the same
+    recognizer codegen declines with, so the run-time gate and the build cannot
+    disagree about which crossings are compensated. It differs from
+    :func:`model_moving_crossings` in two ways the refusal needs and the warning
+    does not. It reports only the crossings nothing brackets (that function is
+    coarse in the safe direction and reports compensated crossings too — right for
+    a warning, wrong for a refusal, because a compensated crossing on the
+    difference quotient still gets its jump). And it scans **only** reaction rate
+    expressions, not every function body: ``∂f/∂p`` is declined only over a rate
+    law, so a condition living in an observable or expression function that no
+    reaction uses as its rate law — ``if_fn() = if(A_obs>1, A_obs, 0)`` reported
+    as ``expression:if_fn`` — is not a rate-law crossing and must not refuse the
+    run (its own output-sensitivity request is refused on its own terms, GH #198).
+    """
+    from bngsim._jacobian import _inline_functions, has_condition_construct
+
+    if core.n_functions == 0:
+        return None
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    # Reaction rate expressions only — the exact texts _functional_dfdp_terms
+    # differentiates (frxn["rate_expr"] per functional reaction). A function that
+    # no rate law reaches is inert here, so it is never scanned. Inlined BEFORE
+    # the condition test and the recognizer, exactly as codegen inlines it: a
+    # rate law written as a bare function name — or one nesting the condition a
+    # level down — only reveals its ``if()`` after inlining.
+    texts = [str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]]
+    flats = [_inline_functions(t, func_map) or t for t in texts]
+    conditional = [f for f in flats if has_condition_construct(f)]
+    if not conditional:
+        return None
+    try:
+        scope = switch_condition_scope(core, ctx)
+    except Exception as exc:  # pragma: no cover - defensive
+        # Same fallback as the gate's and model_moving_crossings': with no scope
+        # nothing can be classified, so report no uncompensated crossing rather
+        # than refuse a run over a crossing we cannot actually name.
+        logger.debug("uncompensated-crossing scan: scope unavailable (%s)", exc)
+        return None
+    for flat in conditional:
+        reason = uncompensated_condition_reason(flat, scope)
+        if reason is not None:
+            return reason
+    return None
+
+
 def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     """Will :func:`compute_switch_time_sens` account for *atom*'s crossing?
 
