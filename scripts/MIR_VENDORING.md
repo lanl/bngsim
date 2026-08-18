@@ -251,7 +251,11 @@ would not survive — carry-adjacent facts belong in the carry entry.
   function already takes when `target_insn_ok_p` rejects the rewrite, and the
   identical outcome here, since an all-memory three-operand `dmul` is not
   encodable on x86-64 or aarch64. Present in the pinned commit and in upstream
-  master as of 2026-08-18. `python/tests/test_codegen_jit_self_multiply.py` is the
+  master as of 2026-08-18, and reported there as
+  [vnmakarov/mir#410](https://github.com/vnmakarov/mir/issues/410) — open since
+  2024-07-08 with no maintainer reply, and written up as a debug-build assertion
+  failure, so it does not record that a release build deletes the check and
+  overruns silently. Watch that issue when moving the pin. `python/tests/test_codegen_jit_self_multiply.py` is the
   behavioral regression; `test_mir_vendoring.py` checks the carry is still there.
 
   The entry's `minimal_reproducer` is two lines of C — a call, then `o[0] = t*t` —

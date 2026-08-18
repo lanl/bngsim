@@ -325,7 +325,10 @@ in `CMakeLists.txt`) is derived from it.
   memory operand once the table is full, the same fallback the function already
   takes when `target_insn_ok_p` rejects the rewrite, and the identical outcome
   here since an all-memory three-operand `dmul` is not encodable on x86-64 or
-  aarch64. Two corrections to the diagnosis this shipped with: **sensitivity is
+  aarch64. The same assertion is reported upstream as `vnmakarov/mir#410`, open
+  since 2024-07-08 with no maintainer reply and written up as a debug-build
+  assertion failure, so the release-build overrun it becomes is not recorded there.
+  Two corrections to the diagnosis this shipped with: **sensitivity is
   not the trigger** — it is what forces codegen on, since a four-species model is
   far below the auto-codegen threshold and a plain ODE run therefore JITs nothing;
   `codegen=True` reproduces it with no sensitivities at all. And it is **not the
