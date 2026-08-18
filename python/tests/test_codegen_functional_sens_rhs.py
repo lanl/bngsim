@@ -208,14 +208,19 @@ end groups
 
 # A condition puts the model in GH #68's class: sympy differentiates the
 # Piecewise to a clean 0 w.r.t. a condition-only parameter, dropping the jump.
-# #67 declined all three of these; #68 separated the first two — a threshold on
+# #67 declined all four of these; #68 separated the first two — a threshold on
 # simulation time is a crossing issue #48 compensates, a threshold on an
-# observable was not — and #150 admitted the second as well, by rooting on its
-# residual and jumping the saltation term there. The third is what neither can
-# bracket: an equality holds on a measure-zero set of a continuous trajectory.
+# observable was not — #150 admitted the second by rooting on its residual and
+# jumping the saltation term there, and #381 the third, whose equality bounds its
+# own true-set with the surface `I − 3 = 0` that `I > 3` names. The fourth is
+# what none of them can bracket: quadratic in the clock, so there is no stop time
+# to solve for, and over no live state, so there is no residual to root on.
 SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(time() > 3, beta, 0)*I\n")
 STATE_SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(I > 3, beta, 0)*I\n")
 EQ_SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(I == 3, beta, 0)*I\n")
+UNBRACKETED = SIR.replace(
+    "    1 betaI() beta*I\n", "    1 betaI() if(time()*time() > 3, beta, 0)*I\n"
+)
 
 # Michaelis–Menten written as an SBML kinetic law: loaded as a *Functional*
 # reaction with apply_species_factor off, so the whole rate (including the
@@ -261,12 +266,20 @@ class TestTheGate:
         _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, STATE_SWITCHED))
         assert has_sens is True
 
-    def test_an_equality_conditional_rate_law_still_declines(self, tmp_path):
-        """What is left after #150: a crossing NEITHER machinery can bracket. An
-        equality on a continuous trajectory is satisfied on a measure-zero set,
-        so there is no transversal crossing to root on and no rising edge to stop
-        at."""
+    def test_an_equality_conditional_rate_law_is_admitted_by_381(self, tmp_path):
+        """Issue #381. A continuous trajectory holds ``I == 3`` for an instant
+        rather than an interval, but the surface bounding that instant is
+        ``I − 3 = 0``, which is where ``I > 3`` changes branch as well — so it
+        resolves to the same residual and reaches the same root."""
         _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, EQ_SWITCHED))
+        assert has_sens is True
+
+    def test_a_crossing_neither_machinery_brackets_still_declines(self, tmp_path):
+        """What is left after #150 and #381. ``time()*time() > 3`` is quadratic
+        in the clock, so issue #48's affine solver cannot produce the stop time
+        its jump is applied at, and it reads no live state, so issue #150 has no
+        residual to root on."""
+        _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, UNBRACKETED))
         assert has_sens is False
 
     def test_the_ab_hatch_restores_the_difference_quotient(self, tmp_path, monkeypatch):

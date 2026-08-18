@@ -751,9 +751,44 @@ const std::vector<Event> &NetworkModel::events() const { return impl_->events; }
 // and which one carries the rising edge can change as a parameter moves (the
 // same reasoning that restricts issue #49's clock-threshold recognizer to
 // conjunctions of half-lines, one step stricter because here there is no
-// `time` ordering to pick the active atom by). An equality is measure-zero on a
-// continuous trajectory. All are refused by name.
+// `time` ordering to pick the active atom by). All three are refused by name.
+//
+// `NetworkModel::state_switch` reduces a *rate-law* condition through the same
+// splitter, and the two differ on exactly one operator; `ResidualUse` below is
+// that difference.
 namespace {
+
+// What a residual is being built FOR. It decides one thing: whether an equality
+// test names a surface the caller can use.
+//
+// An event trigger (issue #144) fires on a RISING EDGE, and `x == c` has none a
+// root finder can straddle — a continuous trajectory satisfies it on a
+// measure-zero set, so there is no false→true instant to locate, let alone to
+// differentiate. Refused, as it always was.
+//
+// A rate-law switch (issue #150) asks a different question: WHERE CAN THIS
+// BRANCH CHANGE. For `x == c` the answer is the surface `x − c = 0` — the same
+// one `x < c` names, and the boundary of the equality's own true-set. Whether
+// the branch really changes across it is not this function's business: it is
+// measured at the root, by the branch-gap probe in
+// `apply_state_switch_sensitivity_jump`, which returns with no jump when the two
+// sides evaluate the same. A LONE equality is exactly that case (both sides take
+// the `otherwise` branch), so admitting it costs a root and a zero jump.
+//
+// What it buys is the crossing being bracketed at all. MODEL2003190004 spells
+// `APC <= 0.2` as `(APC == 0.2) or (APC < 0.2)`, an `<or/>` of `<eq/>` and
+// `<lt/>` over one pair of operands (issue #381). The splitter judges the two
+// atoms separately, so refusing the equality half declined the analytic
+// sensitivity RHS for the WHOLE model — and CVODES' difference quotient, which
+// then answers every column, stalled at that very crossing. Both atoms reduce to
+// `(APC)-(0.2)`, so the run-time detector deduplicates them into the one root
+// the `<` half already earned.
+enum class ResidualUse {
+    // Issue #144: the rising edge of an event trigger.
+    EventRisingEdge,
+    // Issue #150: the surface a rate-law branch can change across.
+    SwitchSurface,
+};
 
 // Logical connectives ExprTk accepts as words. `&&`/`||` are rewritten to
 // ` and `/` or ` by the evaluator's preprocessing before an expression is
@@ -804,9 +839,56 @@ std::string strip_enclosing_parens(std::string s) {
     return s;
 }
 
+// True when `s`, once any enclosing parentheses are stripped, IS itself a
+// comparison — so it evaluates to 0 or 1 and a residual built from it is a
+// difference of two BOOLEANS: a step, with no gradient to root on and none to
+// differentiate `dt*/dθ` with. `(x>0) != (y>0)`, the `<xor/>` idiom, is the
+// shape (issue #381).
+//
+// Deliberately top-level only. An operand that merely *contains* a comparison
+// deeper down is usually a perfectly good smooth function — every corpus
+// residual of the form `(... if(PO2AMB>80, 80, PO2AMB) ...) < 0` is one, and
+// those are surfaces the trajectory really does cross. What is refused here is
+// the operand whose own outermost operator is relational.
+bool is_itself_a_comparison(const std::string &operand) {
+    const std::string s = strip_enclosing_parens(operand);
+    int depth = 0;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c == '(') {
+            ++depth;
+            continue;
+        }
+        if (c == ')') {
+            --depth;
+            continue;
+        }
+        if (depth != 0) {
+            continue;
+        }
+        if (is_ident_char(c)) {
+            std::size_t j = i;
+            while (j < s.size() && is_ident_char(s[j])) {
+                ++j;
+            }
+            i = j - 1;
+            continue;
+        }
+        // A bare `!` is negation; only `!=` is a comparison.
+        if (c == '<' || c == '>' || c == '=') {
+            return true;
+        }
+        if (c == '!' && i + 1 < s.size() && s[i + 1] == '=') {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Build `(<lhs>)-(<rhs>)` from a preprocessed trigger, or return nullopt with
 // `why` describing what defeated the split.
-std::optional<std::string> trigger_residual_source(const std::string &trigger, std::string &why) {
+std::optional<std::string> trigger_residual_source(const std::string &trigger, std::string &why,
+                                                   ResidualUse use) {
     const std::string s = strip_enclosing_parens(trigger);
     if (s.empty()) {
         why = "it is empty";
@@ -853,12 +935,30 @@ std::optional<std::string> trigger_residual_source(const std::string &trigger, s
             return std::nullopt;
         }
         if (c == '=' || c == '!') {
-            // `==`, `!=` and ExprTk's single `=` equality. An equality on a
-            // continuous trajectory is satisfied on a measure-zero set, so
-            // there is no transversal crossing to differentiate.
-            why = "it is an equality test, which a continuous trajectory satisfies only on a "
-                  "measure-zero set rather than crossing transversally";
-            return std::nullopt;
+            // `==`, `!=` and ExprTk's single `=` equality.
+            if (use == ResidualUse::EventRisingEdge) {
+                why = "it is an equality test, which a continuous trajectory satisfies only on a "
+                      "measure-zero set rather than crossing transversally";
+                return std::nullopt;
+            }
+            // A bare `!` is negation, not a comparison. Unreachable from a
+            // compiled expression (this build's ExprTk rejects `!` outright, and
+            // the `not(` spelling is caught as a logical word above), but the
+            // scan must not read the `!` of a negation as half an operator.
+            if (c == '!' && (i + 1 >= s.size() || s[i + 1] != '=')) {
+                why = "it negates a condition, so its true-set boundary is the negated "
+                      "condition's and not a comparison of its own";
+                return std::nullopt;
+            }
+            if (op_pos != std::string::npos) {
+                why = "it chains more than one comparison, so its true-set boundary is "
+                      "assembled from several surfaces";
+                return std::nullopt;
+            }
+            op_pos = i;
+            op_len = (i + 1 < s.size() && s[i + 1] == '=') ? 2 : 1;
+            i += op_len - 1;
+            continue;
         }
         if (c == '<' || c == '>') {
             if (op_pos != std::string::npos) {
@@ -882,6 +982,12 @@ std::optional<std::string> trigger_residual_source(const std::string &trigger, s
     if (lhs.find_first_not_of(" \t\n\r") == std::string::npos ||
         rhs.find_first_not_of(" \t\n\r") == std::string::npos) {
         why = "one side of its comparison is empty";
+        return std::nullopt;
+    }
+    if (is_itself_a_comparison(lhs) || is_itself_a_comparison(rhs)) {
+        why = "one side of its comparison is itself a comparison, so the residual would be a "
+              "difference of two booleans — a step with no gradient, rather than a surface "
+              "with one";
         return std::nullopt;
     }
     // Orientation is not imposed: dt*/dp is a ratio of two derivatives of g, so
@@ -913,7 +1019,8 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
             reason = "it has no trigger expression";
         } else {
             const std::string &pre = impl_->evaluator->preprocessed_expr(ev.trigger_expr_idx);
-            const std::optional<std::string> src = trigger_residual_source(pre, reason);
+            const std::optional<std::string> src =
+                trigger_residual_source(pre, reason, ResidualUse::EventRisingEdge);
             if (src) {
                 try {
                     // Compiling the *preprocessed* halves keeps every identifier
@@ -981,7 +1088,8 @@ const NetworkModel::StateSwitch *NetworkModel::state_switch(const std::string &c
         }
         if (cond_idx >= 0) {
             const std::string &pre = impl_->evaluator->preprocessed_expr(cond_idx);
-            const std::optional<std::string> src = trigger_residual_source(pre, reason);
+            const std::optional<std::string> src =
+                trigger_residual_source(pre, reason, ResidualUse::SwitchSurface);
             if (src) {
                 try {
                     sw.residual_expr_idx = impl_->evaluator->compile_preprocessed(*src);

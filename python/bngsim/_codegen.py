@@ -7371,11 +7371,12 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     warning is the only thing standing between that and a number a caller would
     take at face value.
 
-    Issue #150 supplied that jump for the common case and #355 widened what
-    counts as a clock threshold, so what still reaches here is the residue
-    neither reaches: a comparison inside a call argument, an equality (measure
-    zero, nothing to bracket), a comparison outside an ``if()`` head, or a clock
-    threshold that does not reduce to a constant over the primaries.
+    Issue #150 supplied that jump for the common case, #355 widened what counts
+    as a clock threshold, and #381 read an equality as the surface it bounds
+    rather than the measure-zero set it is, so what still reaches here is the
+    residue none of them reaches: a comparison inside a call argument, a
+    comparison outside an ``if()`` head, or a clock threshold that does not
+    reduce to a constant over the primaries.
 
     Issue #232 added the second producer of that same verdict, and it is the one
     that made "correct, but slower" dangerous rather than merely imprecise: a

@@ -650,7 +650,7 @@ class TestTheWarningStopsPromisingACorrectFallback:
         nothing to remove."""
         import logging
 
-        core = _core(tmp_path, "if(I==thresh,beta,0)*I")
+        core = _core(tmp_path, "if(time()*time()>=thresh,beta,0)*I")
         with caplog.at_level(logging.WARNING, logger="bngsim"):
             _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert isinstance(reason, sw.UncompensatedCrossingReason)

@@ -57,24 +57,32 @@ def _decay_model() -> bngsim.Model:
     return bngsim.Model(b.build())
 
 
-def _clock_gate_model(clock_rate: float) -> bngsim.Model:
-    """A counter species whose slope IS a parameter, gating an equality condition.
+def _threshold_gate_model(a: float) -> bngsim.Model:
+    """A clock threshold whose value has to RESOLVE for the gate to admit it.
 
-    ``dT/dt = k_clock``, so ``T`` is a unit-rate clock exactly when
-    ``k_clock == 1``. The rate law's condition is an *equality*, which
-    ``state_switch_residual`` refuses to root on — so the equality is
-    compensated only through the clock path, and only while ``T`` is a clock.
-    Writing ``k_clock`` therefore decides whether the analytic sensitivity RHS is
-    emitted at all: a parameter VALUE moving the generated source.
+    ``if(time() >= thr, kd, 0)`` with ``thr = 1/a``. The condition reads no live
+    state, so issue #150 has no residual to root on and the issue #48 clock path
+    is the only machinery that can compensate its crossing — and it does so only
+    when :func:`clock_crossing_compensated` can put a number on the threshold. At
+    ``a = 0.5`` that is ``2.0`` and the analytic sensitivity RHS is emitted; at
+    ``a = 0`` the threshold does not resolve, the detector would silently skip
+    the crossing, and the gate declines. Writing ``a`` therefore decides whether
+    the sensitivity RHS is emitted at all: a parameter VALUE moving the generated
+    source, which is the second of the two levers
+    :func:`switch_gate_cache_digest` documents.
+
+    The first lever — ``_unit_rate_clock_species`` probing the RHS — used to be
+    what this fixture exercised, through a counter species gating ``Tobs == 5``.
+    Issue #381 took that shape out of reach: a condition over a clock SPECIES
+    reads live state, so #150 now claims it whenever the clock path does not, and
+    the verdict no longer turns on whether the species is a clock.
     """
     b = ModelBuilder()
-    b.add_parameter("k_clock", clock_rate)
+    b.add_parameter("a", a)
     b.add_parameter("kd", 0.3)
-    t = b.add_species("T", 0.0)
+    b.add_parameter("thr", 0.0, expression="1/a", is_expression=True)
     s = b.add_species("S", 10.0)
-    b.add_reaction([], [t], "elementary", "k_clock")
-    b.add_observable("Tobs", [(t, 1.0)])
-    b.add_function("gate", "if(Tobs == 5, kd, 0)")
+    b.add_function("gate", "if(time() >= thr, kd, 0)")
     b.add_reaction([s], [], "functional", "gate")
     return bngsim.Model(b.build())
 
@@ -248,20 +256,21 @@ def test_the_switch_gate_digest_is_empty_for_a_condition_free_model():
 def test_a_parameter_value_that_flips_the_switch_gate_moves_the_key():
     """A parameter value CAN change the generated source, through the issue #68 gate.
 
-    ``_unit_rate_clock_species`` probes the RHS, so whether ``T`` is a clock
-    depends on ``k_clock``'s value; and only while it is a clock is the equality
-    condition compensated, so only then is the analytic sensitivity RHS emitted.
-    One ``set_param`` moves the emitted C by several kilobytes.
+    ``clock_crossing_compensated`` evaluates the clock threshold numerically, so
+    whether the crossing is compensated depends on ``a``'s value — and this
+    condition reads no live state, so the clock path is the only machinery that
+    could compensate it. One ``set_param`` moves the emitted C by several
+    kilobytes.
 
     This is the case that makes ``switch_gate_cache_digest`` load-bearing rather
     than defensive — a key built from structure alone would serve the sensitivity
     ``.so`` to the model that must not have one.
     """
-    m = _clock_gate_model(1.0)
+    m = _threshold_gate_model(0.5)
     key, src = cg.compute_model_codegen_hash(m), _src_hash(m)
     assert switch_gate_cache_digest(m._core) != ()
 
-    m.set_param("k_clock", 2.0)
+    m.set_param("a", 0.0)
 
     assert _src_hash(m) != src, "the gate no longer admits the condition"
     assert cg.compute_model_codegen_hash(m) != key
@@ -277,7 +286,7 @@ def test_the_key_would_collide_without_the_switch_gate_digest():
     """
     import bngsim._switch_sensitivity as sw
 
-    a, b = _clock_gate_model(1.0), _clock_gate_model(2.0)
+    a, b = _threshold_gate_model(0.5), _threshold_gate_model(0.0)
     assert _src_hash(a) != _src_hash(b)
 
     saved = sw.switch_gate_cache_digest

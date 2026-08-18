@@ -19,10 +19,26 @@ of this stage:
                                     state-dependent event trigger issue #144
                                     differentiates.
 
-    if(I == thresh, beta, 0)    ->  still refused. An equality on a continuous
-                                    trajectory holds on a measure-zero set, so
-                                    there is no transversal crossing for either
-                                    machinery to bracket.
+    if(I == thresh, beta, 0)    ->  refused, until issue #381. A continuous
+                                    trajectory holds the equality for an
+                                    instant, not an interval — but the surface
+                                    bounding that instant is `I − thresh = 0`,
+                                    which is where `I >= thresh` changes branch
+                                    as well, so #150's root claims it too. What
+                                    made refusing it expensive is that atoms are
+                                    judged one at a time: MODEL2003190004 spells
+                                    `APC <= 0.2` as `(APC == 0.2) or (APC < 0.2)`
+                                    and the equality half declined the whole
+                                    model, onto a difference quotient that then
+                                    stalled at that very crossing.
+
+    if(time()*time() >= thresh, beta, 0)
+                                ->  still refused. A clock threshold #48's
+                                    affine solver cannot invert for t*, over a
+                                    condition that reads no live state for #150
+                                    to root on: neither machinery brackets the
+                                    crossing, and the Piecewise zero would be
+                                    the whole gradient.
 
 The danger is that these are *indistinguishable downstream*. ``sympy.diff`` of a
 ``Piecewise`` w.r.t. a condition-only parameter returns ``0`` with no Dirac
@@ -324,12 +340,12 @@ class TestTheRule:
     def test_a_compound_condition_is_admitted_only_if_every_atom_is(self, tmp_path):
         """``&&`` splits into atoms and each is judged on its own — one bad atom
         is enough. The Lin2021 idiom ``(t>=sigma)&&(t<tau1)`` is the good case;
-        pairing it with an atom NOBODY compensates must still refuse — and an
-        equality is that atom: a continuous trajectory satisfies ``I==thresh``
-        on a measure-zero set, so there is no transversal crossing to root on
-        either. The mixed clock/state pairing is admitted, and each half goes to
-        its own machinery: ``t>=sigma`` to the issue #48 stop time, ``I>=thresh``
-        to the issue #150 crossing root."""
+        pairing it with an atom NOBODY compensates must still refuse, and
+        ``time()*time()>=thresh`` is that atom: quadratic in the clock, so issue
+        #48 cannot solve it for ``t*``, and over no live state, so issue #150 has
+        nothing to root on. The mixed clock/state pairing is admitted, and each
+        half goes to its own machinery: ``t>=sigma`` to the issue #48 stop time,
+        ``I>=thresh`` to the issue #150 crossing root."""
         ok, reason = _decline(
             tmp_path,
             _with_params("    8 tau1 8.0  # Constant\n", "if((t>=sigma)&&(t<tau1),beta,0)*I"),
@@ -342,8 +358,31 @@ class TestTheRule:
         records, _pinned = sw.compute_switch_time_sens(core, ["sigma"], 0.0, 100.0)
         assert records and sw.state_switch_conditions(core) == ["I>=thresh"]
 
-        _terms, reason = _decline(tmp_path, _with_law("if((t>=sigma)&&(I==thresh),beta,0)*I"))
+        _terms, reason = _decline(
+            tmp_path, _with_law("if((t>=sigma)&&(time()*time()>=thresh),beta,0)*I")
+        )
         assert reason is not None and "'thresh'" in reason
+
+    def test_an_equality_or_its_own_inequality_is_one_crossing(self, tmp_path):
+        """Issue #381. MODEL2003190004 spells ``APC <= 0.2`` as an ``<or/>`` of
+        ``<eq/>`` and ``<lt/>`` over one pair of operands, which the splitter
+        hands over as two atoms. Judged apart, the equality half used to decline
+        the whole model — and that decline is what put every column on CVODES'
+        difference quotient, whose probe then stalled at the very crossing the
+        ``<`` half had already earned a root for.
+
+        Both atoms bound their true-sets with the same surface, so both resolve
+        to the same residual and the detector registers ONE root: the condition
+        is admitted, and the crossing behind the admission is the single one the
+        ``<=`` spelling would have given."""
+        core = _model(tmp_path, _with_law("if((I==thresh)||(I<thresh),beta,0)*I"))._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None and terms
+        assert sw.state_switch_conditions(core) == ["I<thresh"]
+        assert (
+            core.state_switch_residual("I==thresh")[0]
+            == core.state_switch_residual("I<=thresh")[0]
+        )
 
     @pytest.mark.parametrize(
         ("body", "fragment"),
@@ -646,7 +685,14 @@ class TestTheGateAndTheDetectorsAgree:
             ("if(I>=thresh,beta,0)*I", True, "state"),
             ("if(t>=sigma*I,beta,0)*I", True, "state"),
             ("if(t<2*t,beta,0)*I", True, "state"),
-            ("if(I==thresh,beta,0)*I", False, None),
+            # An equality selects no branch over any INTERVAL, so it is admitted
+            # with neither machinery compensating it — there is nothing to
+            # compensate. Issue #381; the same shape as issue #382's
+            # run-constant ground, arrived at from the other side.
+            ("if(I==thresh,beta,0)*I", True, "no-crossing"),
+            # Quadratic in the clock: issue #48 cannot solve it for t*, and it
+            # reads no live state for issue #150 to root on.
+            ("if(time()*time()>=thresh,beta,0)*I", False, None),
             # Negation names the same surface as the comparison under it — issue
             # #234 peels it, so the partition claims this exactly once, on the
             # state side, just like the un-negated `if(I<=1,...)` spelling.
@@ -670,6 +716,17 @@ class TestTheGateAndTheDetectorsAgree:
         states = sw.state_switch_conditions(core)
 
         assert gate_admits is admitted
+        if by == "no-crossing":
+            # The third way to be admissible, and the one that is NOT a
+            # partition of the two detectors: nothing crosses, so nothing has to
+            # compensate anything. Registering a crossing here is the error the
+            # case guards against, not the requirement (see
+            # test_equality_switch_surface.py).
+            assert not records and not states, (
+                f"{body!r} has no branch interval to compensate, so neither "
+                "machinery may claim a crossing in it"
+            )
+            return
         assert gate_admits == (bool(records) or bool(states)), (
             f"gate {'admits' if gate_admits else 'refuses'} {body!r} but "
             f"{len(records)} clock crossing(s) and {len(states)} state crossing(s) are "
@@ -694,7 +751,11 @@ class TestTheGateAndTheDetectorsAgree:
         assert scope.core is core, "the gate must be able to ask the model about a residual"
         assert sw.uncompensated_condition_reason("if(t>=sigma,beta,0)*I", scope) is None
         assert sw.uncompensated_condition_reason("if(I>=thresh,beta,0)*I", scope) is None
-        assert sw.uncompensated_condition_reason("if(I==thresh,beta,0)*I", scope) is not None
+        assert sw.uncompensated_condition_reason("if(I==thresh,beta,0)*I", scope) is None
+        assert (
+            sw.uncompensated_condition_reason("if(time()*time()>=thresh,beta,0)*I", scope)
+            is not None
+        )
 
     def test_a_model_with_no_clock_does_not_read_a_time_looking_condition_as_a_clock(
         self, tmp_path
@@ -879,12 +940,23 @@ class TestTheThresholdIsRecognisedByItsCrossingNotItsSpelling:
         assert sw.state_switch_conditions(core) == []
 
 
-# A crossing NOTHING compensates, post-#150. An equality on a continuous
-# trajectory is satisfied on a measure-zero set, so there is no transversal
-# crossing for the issue #150 root to bracket and no rising edge for issue #48
-# to stop at — which is exactly what makes it the right fixture for "the
-# difference quotient is not a correct fallback either".
-UNCOMPENSATED = "if(I==thresh,beta,0)*I"
+# A crossing NOTHING compensates, post-#150 and post-#381: the boolean-as-a-number
+# idiom, a step at I=1 with no `if()` head for any threshold to be located in.
+# Neither machinery brackets it, which is exactly what makes it the right fixture
+# for "the difference quotient is not a correct fallback either".
+#
+# `if(time()*time()>=thresh,beta,0)*I` — the other surviving shape, and the one
+# the module docstring leads with — stays on the GATE assertions above and out of
+# here, because this class also RUNS the model. Under the MIR JIT on Linux that run
+# aborts the interpreter (SIGABRT). The backend is what separates it, not the
+# platform and not the rate law: the SAME model on the SAME OS passes under the cc
+# backend (all 63 tests of this file are green on `Python suite · ubuntu-latest`),
+# and passes under MIR on macOS and Windows. Its emitted C is an ordinary ternary,
+# `((t*t>=p[6]) ? (p[2]) : (0.0))*obs[1]` — simulation time arrives as the `t`
+# parameter, so there is no `time()` call in it and nothing for the JIT prelude to
+# be missing. Unexplained, and not something this fixture should be the discovery
+# route for; a SIGABRT is not a failure a caller could act on either.
+UNCOMPENSATED = "beta*(I>1)*I"
 
 
 class TestTheDeclineDoesNotPromiseACorrectFallback:

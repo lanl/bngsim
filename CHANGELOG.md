@@ -307,6 +307,112 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **An equality in a rate-law switch condition no longer declines a model's
+  analytic sensitivity RHS (issue #381).** `MODEL2003190004`'s forward-sensitivity
+  solve stalled outright — `CVODE made no progress while integrating to the next
+  output point`, at t ≈ 2.82673 — for 33 of its 43 shared parameters. The plain
+  ODE run is fine and AMICI produces an oracle, and the 33/10 split tracked the
+  `APC` trajectory rather than any one column: none of the 10 that succeeded
+  appears in `APC`'s rateRule.
+
+  **The crossing was found; the gate was what refused it.** The model gates a
+  synthesis rate on `APC <= 0.2`, but spells it as an `<or/>` of `<eq/>` and
+  `<lt/>` over one pair of operands. `_split_logical_atoms` hands a disjunction
+  over as its two atoms and the issue #68 gate requires *every* atom's crossing to
+  be compensated. `APC<0.2` was — issue #150 roots on `APC − 0.2` and jumps the
+  saltation term there — but `APC==0.2` was not, because
+  `NetworkModel::state_switch` refused an equality on the grounds that a
+  continuous trajectory satisfies one only on a measure-zero set. Right about the
+  geometry, wrong about the consequence: it declined the analytic sensitivity RHS
+  for the **whole model**, handed every column to CVODES' difference quotient —
+  whose probe evaluates `f` at `y + σ·s`, which just past a crossing lands on the
+  other branch — and the stall was at exactly the crossing the `<` half had
+  already earned a root for.
+
+  `state_switch` now builds `(lhs)-(rhs)` for `==`, `!=` and ExprTk's single `=`
+  as well. The measure-zero argument answers a question the switch path is not
+  asking: what it needs is the surface its branch can *change across*, and for
+  `x == c` that is the `x − c = 0` that `x < c` names. That residual identity is
+  what proves the two atoms of an `<or/>` are one crossing rather than two
+  coincident ones — the pair issue #153 refuses.
+
+  **The event path still refuses it, and that is the whole of the difference.**
+  An event trigger (issue #144) fires on a rising edge, which `x == c` does not
+  have — `trigger_residual_source` now takes a `ResidualUse` saying which question
+  is being asked, so the one splitter can answer both without either caller
+  inheriting the other's premise. Pinned from both sides, on one model.
+
+  **A lone equality is admitted at the gate and must NOT earn a root of its own —
+  a root would MAKE the branch it is admitted for not having.** This is the half
+  that is easy to get backwards, and getting it backwards is a wrong trajectory
+  rather than a slow one. A CVODE root does not step *over* its surface, it stops
+  the integrator *on* it. On `I − thresh = 0` the equality is then true, the branch
+  the exact solution never takes is live, and for `if(I==thresh, 0, beta*I)` its
+  rate is zero — so `I` never leaves. The measure-zero set stops being measure-zero
+  because the solver was told to land in it.
+
+  Measured, not reasoned: with the equality registered, `ubuntu-latest` returned
+  `I(t)` climbing normally and then holding exactly 4.0 = `thresh` for the rest of
+  the run, against 7.389 unconditional, while macOS landed a few ulps off the
+  surface and did not latch. A platform-split trajectory is the worst form this
+  could take.
+
+  So the two halves are separated. `uncompensated_condition_reason` admits an
+  equality on a ground of its own — there is no branch *interval*, so there is
+  nothing to compensate, which is issue #382's ground reached from the other side
+  — and `state_switch_conditions` skips it, which is the one place a root is
+  registered. The redundant spelling still gets its root, because the `<` half
+  earns it: `MODEL2003190004` registers `APC<0.2`, exactly what it registered
+  before. Both halves are pinned by tests, the structural one (`no root is
+  registered`) because it holds on every platform and the numeric one (the
+  trajectory matches the unconditional model, and its `beta` column matches a
+  central finite difference) because it is what a caller would notice.
+
+  **An operand that is itself a comparison is refused, and that half is new
+  caution rather than new reach.** The splitter finds its operator at depth 0, so
+  `(x>0) != (y>0)` — the `<xor/>` idiom — yields the residual `(x>0) - (y>0)`, a
+  difference of two BOOLEANS. That is a step: its gradient is zero wherever it is
+  defined, so there is nothing for CVODE to bracket and nothing for `dt*/dθ`'s
+  denominator `∂g/∂y·f` to be. Admitting it would be the silent zero the #68 gate
+  exists to stop, since the gate's admission *is* the promise that #150 located
+  the crossing. The `<` spelling of the same shape was never safe either — it was
+  saved only by sympy declining to parse `Lt(Gt(…), Gt(…))` downstream, while the
+  root was registered regardless. Both are refused at the recognizer now, which
+  is the one place that answers for both callers.
+
+  The test is the operand's OWN outermost operator, never "names a comparison
+  anywhere": seven corpus residuals are arithmetic over an inner `if()` whose head
+  is a comparison — `(… if(PO2AMB>80, 80, PO2AMB) …) < 0` — and those are surfaces
+  the trajectory really does cross. All seven still register, `MODEL0911270005`
+  (issue #382's witness) among them.
+
+  Measured over the manifest: **3 of 214 condition-carrying corpus models change
+  gate verdict**, and only in the refused → admitted direction.
+
+  | model | before | after |
+  |---|---|---|
+  | `MODEL2003190004` | EXCEPTION (stall) ×2 | **PASS, `max_rel_err = 0`, Np=43** ×2 |
+  | `BIOMD0000000301` | PASS ×2, difference quotient | PASS, `max_rel_err = 0`, Np=33 ×2, analytic RHS |
+  | `BIOMD0000000446` | declined at the condition gate | declined for an unrelated reason |
+
+  Both corrector methods, manifest horizon, `rtol=1e-9 atol=1e-12`.
+  `BIOMD0000000446` is the row worth reading carefully: its condition gate now
+  passes, but `_functional_dfdp_terms` still declines the model over reaction 37,
+  whose derivative w.r.t. `CReP` is not representable in C. So it stays on the
+  difference quotient and only *registers* two roots it did not have. Run
+  column-by-column with those roots and with them dropped, it is bit-identical
+  over the full manifest horizon — one residual is bounded away from zero for the
+  whole run (`min = 0.05`), and the other is zero only at `t = 0`, where SUNDIALS
+  deactivates the root and reactivates it without reporting a crossing.
+
+  ODE parity is unchanged for all of them, as it must be: state-switch roots are
+  registered only on a run that asks for sensitivities.
+
+  No `_CODEGEN_VERSION` bump. The verdict this moves is carried into the codegen
+  key by `switch_gate_cache_digest`, whose per-atom row holds
+  `bool(state_switch_residual(...))` — so an artifact built under the old answer
+  keys differently from one built under the new.
+
 - **A Hill ratio's *state* derivative no longer evaluates to `inf/inf` either
   (issue #402).** #393 stopped `x^n/(K^n + x^n)` overflowing when it is
   differentiated w.r.t. its exponent. It did not reach the state direction of the

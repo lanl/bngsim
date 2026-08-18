@@ -307,13 +307,15 @@ class TestDeclinesLoudly:
             # sympy differentiates every one of these happily, dropping the
             # boundary jump — a token pre-scan is the only reliable rejection,
             # which is why unsupported_expr_construct is reused rather than
-            # re-spelled. GH #68 lifted the conditional class *conditionally*
-            # and issue #150 lifted more of it: `if(I > 3, ...)` is admitted now
-            # that its crossing is rooted and jumped. What still declines is a
-            # crossing NO machinery can bracket — an equality (measure-zero on a
-            # continuous trajectory) or a comparison with no `if()` head to
-            # locate a threshold in (see test_codegen_switch_condition_sens.py).
-            ("if(I == 3, beta, 0)*I", "is not a recognized clock threshold"),
+            # re-spelled. GH #68 lifted the conditional class *conditionally*,
+            # issue #150 lifted more of it (`if(I > 3, ...)` is admitted now that
+            # its crossing is rooted and jumped) and #381 lifted the equality
+            # spelling of that same surface. What still declines is a crossing NO
+            # machinery can bracket — a clock threshold quadratic in the clock,
+            # so no stop time can be solved from it, over no live state to root
+            # on; or a comparison with no `if()` head to locate a threshold in
+            # (see test_codegen_switch_condition_sens.py).
+            ("if(time()*time() > gamma, beta, 0)*I", "neither a recognized clock threshold"),
             ("beta*(I > 1)", "is not inside an if() condition"),
             ("beta*abs(I)", "abs()"),
             ("beta*max(I, 1)", "max()"),
@@ -356,12 +358,12 @@ class TestDeclinesLoudly:
         assert terms is None and "cycle" in decline
 
     def test_the_decline_is_warned_not_silent(self, tmp_path, caplog):
-        model = _model(tmp_path, _with_rate_law("if(I == 3, beta, 0)*I"))
+        model = _model(tmp_path, _with_rate_law("if(time()*time() > gamma, beta, 0)*I"))
         with caplog.at_level(logging.WARNING, logger="bngsim"):
             assert cg.generate_sens_from_model(model, functional=True) is None
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any(
-            "is not a recognized clock threshold" in m and "betaI" in m for m in warnings
+            "neither a recognized clock threshold" in m and "betaI" in m for m in warnings
         ), warnings
 
     def test_every_decline_path_warns_not_just_the_differentiation_ones(
