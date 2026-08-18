@@ -16,6 +16,25 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **A rate-law switch condition that is a single power of the clock is now
+  compensated, so its forward-sensitivity run is no longer refused (issue #418).**
+  `if(time()*time() >= thresh, ...)` — the shape issue #414 refused, since neither
+  issue #48's affine solver nor issue #150's state root brackets it — has a
+  crossing in closed form: `c·clock^n` is strictly monotonic on `clock ≥ 0`, so it
+  crosses exactly once, at `clock = (thresh/c)^(1/n)`. `_clock_monomial_threshold`
+  solves that (`time = sqrt(thresh)` for the quadratic), and because the result is
+  the clock **value** at the crossing — the same `(clock, threshold_expr)` contract
+  `_clock_affine_threshold` (issue #355) already returns — the whole issue #48
+  machinery jumps it unchanged: `∂t*/∂thresh = 1/(2·sqrt(thresh))`, the crossing
+  registered as a stop time, the in-branch `∂f/∂p` a clean Piecewise zero. The
+  detector and the issue #68 gate share the one recognizer, so a model that was
+  declined for this shape is now admitted on both. This is the first step of the
+  machinery half of issue #414; a clock threshold that is not a bare power
+  (`(time-5)^2`, two crossings; `time^2 + time`, mixed) has no single crossing to
+  name from the text alone and stays refused, and the difference-quotient
+  reproducer that #415 exercises under the MIR JIT now runs the analytic path with
+  its self-multiply in the *sensitivity* RHS as well as the state RHS.
+
 - **A codegen artifact says which codegen key built it, so a cache sweep can tell
   live from orphaned (issue #363).** Artifacts are now named
   `rhs_<key>_<hash><suffix>` — e.g. `rhs_28+317a5b34d5dc9959_9e1f…` — where `<key>`

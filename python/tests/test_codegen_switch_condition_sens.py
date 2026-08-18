@@ -33,12 +33,14 @@ of this stage:
                                     stalled at that very crossing.
 
     if(time()*time() >= thresh, beta, 0)
-                                ->  still refused. A clock threshold #48's
-                                    affine solver cannot invert for t*, over a
-                                    condition that reads no live state for #150
-                                    to root on: neither machinery brackets the
-                                    crossing, and the Piecewise zero would be
-                                    the whole gradient.
+                                ->  admitted, since issue #418. A clock threshold
+                                    #48's affine solver cannot invert for t*, but
+                                    a single power of the clock still has one
+                                    crossing in closed form — `time = sqrt(thresh)`
+                                    — so `_clock_monomial_threshold` solves it and
+                                    #48 jumps it like any affine clock threshold.
+                                    A clock threshold that is not a bare power
+                                    (`(time-5)^2`, `time^2 + time`) stays refused.
 
 The danger is that these are *indistinguishable downstream*. ``sympy.diff`` of a
 ``Piecewise`` w.r.t. a condition-only parameter returns ``0`` with no Dirac
@@ -341,11 +343,11 @@ class TestTheRule:
         """``&&`` splits into atoms and each is judged on its own — one bad atom
         is enough. The Lin2021 idiom ``(t>=sigma)&&(t<tau1)`` is the good case;
         pairing it with an atom NOBODY compensates must still refuse, and
-        ``time()*time()>=thresh`` is that atom: quadratic in the clock, so issue
-        #48 cannot solve it for ``t*``, and over no live state, so issue #150 has
-        nothing to root on. The mixed clock/state pairing is admitted, and each
-        half goes to its own machinery: ``t>=sigma`` to the issue #48 stop time,
-        ``I>=thresh`` to the issue #150 crossing root."""
+        ``(time()-5)*(time()-5)>=thresh`` is that atom: two clock terms, so it is
+        not a bare power issue #418 can solve, not affine for issue #48, and over
+        no live state for issue #150 to root on. The mixed clock/state pairing is
+        admitted, and each half goes to its own machinery: ``t>=sigma`` to the
+        issue #48 stop time, ``I>=thresh`` to the issue #150 crossing root."""
         ok, reason = _decline(
             tmp_path,
             _with_params("    8 tau1 8.0  # Constant\n", "if((t>=sigma)&&(t<tau1),beta,0)*I"),
@@ -359,7 +361,7 @@ class TestTheRule:
         assert records and sw.state_switch_conditions(core) == ["I>=thresh"]
 
         _terms, reason = _decline(
-            tmp_path, _with_law("if((t>=sigma)&&(time()*time()>=thresh),beta,0)*I")
+            tmp_path, _with_law("if((t>=sigma)&&((time()-5)*(time()-5)>=thresh),beta,0)*I")
         )
         assert reason is not None and "'thresh'" in reason
 
@@ -690,9 +692,13 @@ class TestTheGateAndTheDetectorsAgree:
             # compensate. Issue #381; the same shape as issue #382's
             # run-constant ground, arrived at from the other side.
             ("if(I==thresh,beta,0)*I", True, "no-crossing"),
-            # Quadratic in the clock: issue #48 cannot solve it for t*, and it
-            # reads no live state for issue #150 to root on.
-            ("if(time()*time()>=thresh,beta,0)*I", False, None),
+            # Quadratic in the clock: issue #48's affine solver cannot invert it,
+            # but issue #418 solves the single clock power to `time = sqrt(thresh)`
+            # and #48 jumps that crossing like any clock threshold.
+            ("if(time()*time()>=thresh,beta,0)*I", True, "clock"),
+            # Not a bare power of the clock (two clock terms), so #418 declines it
+            # and it stays refused — the crossing nothing brackets.
+            ("if((time()-5)*(time()-5)>=thresh,beta,0)*I", False, None),
             # Negation names the same surface as the comparison under it — issue
             # #234 peels it, so the partition claims this exactly once, on the
             # state side, just like the un-negated `if(I<=1,...)` spelling.
@@ -752,8 +758,13 @@ class TestTheGateAndTheDetectorsAgree:
         assert sw.uncompensated_condition_reason("if(t>=sigma,beta,0)*I", scope) is None
         assert sw.uncompensated_condition_reason("if(I>=thresh,beta,0)*I", scope) is None
         assert sw.uncompensated_condition_reason("if(I==thresh,beta,0)*I", scope) is None
+        # Issue #418: a single clock power is solved to sqrt(thresh) and admitted;
+        # a clock threshold that is not a bare power stays refused.
         assert (
-            sw.uncompensated_condition_reason("if(time()*time()>=thresh,beta,0)*I", scope)
+            sw.uncompensated_condition_reason("if(time()*time()>=thresh,beta,0)*I", scope) is None
+        )
+        assert (
+            sw.uncompensated_condition_reason("if((time()-5)*(time()-5)>=thresh,beta,0)*I", scope)
             is not None
         )
 
@@ -998,9 +1009,13 @@ class TestTheThresholdIsRecognisedByItsCrossingNotItsSpelling:
 
     def test_a_non_linear_condition_is_declined(self):
         """``−b/a`` is the crossing only when the residual is degree 1 in the
-        clock. Anything else has to keep declining rather than stop in the wrong
-        place."""
-        assert sw._clock_threshold_split("(t*t-sigma)<0", frozenset({"t"})) is None
+        clock. Issue #418 solves one shape past that — a bare power ``t*t`` — but
+        a residual that is neither degree 1 nor a bare power (``t*t + t``, two
+        clock terms) still has no crossing either solver can place, and has to
+        keep declining rather than stop in the wrong place."""
+        assert sw._clock_threshold_split("(t*t+t-sigma)<0", frozenset({"t"})) is None
+        # the bare power IS solved now — the boundary this issue moved
+        assert sw._clock_threshold_split("(t*t-sigma)<0", frozenset({"t"})) == ("t", "sqrt(sigma)")
 
     def test_a_state_threshold_is_not_captured_by_the_solve(self):
         """The solve must not annex the issue #150 path. ``I-thresh<0`` reads no
@@ -1041,22 +1056,123 @@ class TestTheThresholdIsRecognisedByItsCrossingNotItsSpelling:
         assert sw.state_switch_conditions(core) == []
 
 
-# A crossing NOTHING compensates, post-#150 and post-#381: the boolean-as-a-number
-# idiom, a step at I=1 with no `if()` head for any threshold to be located in.
-# Neither machinery brackets it, which is exactly what makes it the right fixture
-# for "the difference quotient is not a correct fallback either".
-#
-# `if(time()*time()>=thresh,beta,0)*I` — the other surviving shape, and the one
-# the module docstring leads with — stays on the GATE assertions above and out of
-# here, because this class also RUNS the model. Under the MIR JIT on Linux that run
-# aborts the interpreter (SIGABRT). The backend is what separates it, not the
-# platform and not the rate law: the SAME model on the SAME OS passes under the cc
-# backend (all 63 tests of this file are green on `Python suite · ubuntu-latest`),
-# and passes under MIR on macOS and Windows. Its emitted C is an ordinary ternary,
-# `((t*t>=p[6]) ? (p[2]) : (0.0))*obs[1]` — simulation time arrives as the `t`
-# parameter, so there is no `time()` call in it and nothing for the JIT prelude to
-# be missing. Unexplained, and not something this fixture should be the discovery
-# route for; a SIGABRT is not a failure a caller could act on either.
+class TestANonAffineClockThresholdIsSolvedAndJumped:
+    """Issue #418. ``_clock_affine_threshold`` (issue #355) solves a residual
+    degree 1 in the clock; ``_clock_monomial_threshold`` solves the next shape up,
+    a single power ``c·clock^n``. ``time()*time()>=thresh`` is the corpus case
+    (issue #414 refused it): ``c·clock^n`` is strictly monotonic on ``clock ≥ 0``,
+    so it has exactly one crossing there — ``time = (thresh/c)^(1/n)`` — and once
+    that crossing-time expression is in hand the whole issue #48 machinery jumps it
+    unchanged. A threshold that is not a bare clock power has no single crossing to
+    name from the text alone and stays refused.
+    """
+
+    def test_the_recognizer_solves_the_single_power(self, tmp_path):
+        core = _model(tmp_path, _with_law("if(time()*time()>=thresh,beta,0)*I"))._core
+        scope = sw.switch_condition_scope(core)
+        assert sw._clock_threshold_split("time()*time()>=thresh", scope.clock_symbols) == (
+            "time()",
+            "sqrt(thresh)",
+        )
+        # cube and a scaled square, for the general (thresh/c)^(1/n) shape
+        assert sw._clock_threshold_split("time()*time()*time()>=thresh", scope.clock_symbols) == (
+            "time()",
+            "thresh^(1/3)",
+        )
+
+    def test_the_gate_admits_it_and_the_state_root_stands_off(self, tmp_path):
+        core = _model(tmp_path, _with_law("if(time()*time()>=thresh,beta,0)*I"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, "the monomial clock threshold must be admitted"
+        # It reads no live state, so #150 must not also claim the crossing.
+        assert sw.state_switch_conditions(core) == []
+
+    def test_the_crossing_time_and_its_partial(self, tmp_path):
+        """t* = sqrt(thresh) and ∂t*/∂thresh = 1/(2·sqrt(thresh)). With thresh=9
+        the crossing is at 3.0 and the partial is 1/6."""
+        text = _with_law("if(time()*time()>=thresh,beta,0)*I").replace(
+            "7 thresh  40.0", "7 thresh  9.0"
+        )
+        core = _model(tmp_path, text)._core
+        records, pinned = sw.compute_switch_time_sens(
+            core, ["thresh", "beta"], 0.0, 12.0, has_analytic_sens_rhs=True
+        )
+        assert len(records) == 1
+        t_star, _ci, _thr, dtstar = records[0][0], records[0][1], records[0][2], records[0][3]
+        assert t_star == pytest.approx(3.0, abs=1e-9)
+        assert dtstar[0] == pytest.approx(1.0 / 6.0, rel=1e-9)  # ∂t*/∂thresh
+        assert dtstar[1] == 0.0  # beta does not move the crossing
+        assert pinned == [list(core.param_names).index("thresh")]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "if((time()-5)*(time()-5)>=thresh,beta,0)*I",  # two clock terms
+            "if(time()*time()+time()>=thresh,beta,0)*I",  # mixed power + linear
+        ],
+    )
+    def test_a_clock_threshold_that_is_not_a_bare_power_stays_refused(self, tmp_path, body):
+        core = _model(tmp_path, _with_law(body))._core
+        scope = sw.switch_condition_scope(core)
+        assert sw._clock_threshold_split(_only_atom(body), scope.clock_symbols) is None
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert isinstance(reason, sw.UncompensatedCrossingReason)
+
+    @requires_cc
+    def test_the_sensitivity_matches_a_finite_difference_away_from_the_node(self, tmp_path):
+        """The end-to-end oracle. ∂x/∂thresh from the analytic run must match a
+        central difference of two plain trajectories — away from the crossing node
+        at t*=3, where a central difference straddles the jump and converges to
+        half the one-sided derivative bngsim reports (the same node behaviour issue
+        #368 pins). thresh=9 puts the crossing at t=3 in a (0, 12) window."""
+
+        def net(thresh):
+            return _with_law("if(time()*time()>=thresh,beta,0)*I").replace(
+                "7 thresh  40.0", f"7 thresh  {thresh}"
+            )
+
+        ts = (0.0, 12.0)
+        n = 61
+        times = np.linspace(*ts, n)
+        analytic = bngsim.Simulator(
+            _model(tmp_path, net(9.0)), method="ode", sensitivity_params=["thresh"]
+        ).run(t_span=ts, n_points=n, rtol=1e-11, atol=1e-11)
+        col = np.asarray(analytic.sensitivities)[:, :, 0]
+
+        h = 9.0 * 1e-3
+
+        def traj(thresh, name):
+            return np.asarray(
+                bngsim.Simulator(_model(tmp_path, net(thresh), name=name), method="ode")
+                .run(t_span=ts, n_points=n, rtol=1e-12, atol=1e-14)
+                .species
+            )
+
+        fd = (traj(9.0 + h, "hi.net") - traj(9.0 - h, "lo.net")) / (2.0 * h)
+
+        # Away from the node the column is smooth in thresh, so the central
+        # difference converges at O(h^2); the crossing itself is not vacuous.
+        after = times >= 5.0
+        assert float(np.max(np.abs(col[after]))) > 1.0
+        scale = max(float(np.max(np.abs(col[after]))), 1e-300)
+        np.testing.assert_allclose(col[after], fd[after], rtol=2e-4, atol=1e-4 * scale)
+
+        # And at the node the central difference is ~half — a positive check that
+        # the jump is really there rather than the column being trivially right.
+        i_node = int(np.argmin(np.abs(times - 3.0)))
+        node_a = float(np.max(np.abs(col[i_node])))
+        node_fd = float(np.max(np.abs(fd[i_node])))
+        assert node_fd == pytest.approx(0.5 * node_a, rel=0.1)
+
+
+# A crossing NOTHING compensates, post-#150, post-#381 and post-#418: the
+# boolean-as-a-number idiom, a step at I=1 with no `if()` head for any threshold
+# to be located in. Neither machinery brackets it, which is exactly what makes it
+# the right fixture for "the difference quotient is not a correct fallback either".
+# (`if(time()*time()>=thresh,...)` used to sit here too; issue #418 compensates it,
+# so it moved to TestANonAffineClockThresholdIsSolvedAndJumped above, which also
+# RUNS it — the MIR SIGABRT that once kept it out of run tests was #413's
+# self-multiply overflow, fixed in #415.)
 UNCOMPENSATED = "beta*(I>1)*I"
 
 

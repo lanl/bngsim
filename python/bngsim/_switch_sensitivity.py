@@ -539,15 +539,113 @@ def _clock_affine_threshold(atom: str, clock_symbols: AbstractSet[str]) -> tuple
     return clock_sym, text
 
 
+def _clock_monomial_threshold(
+    atom: str, clock_symbols: AbstractSet[str]
+) -> tuple[str, str] | None:
+    """``(clock_symbol, threshold_expr)`` for a clock threshold whose residual is
+    a single power of the clock — ``c·clock^n`` versus a threshold, ``n ≥ 2`` —
+    else ``None``.
+
+    Issue #418. :func:`_clock_affine_threshold` solves a residual that is degree
+    **1** in the clock; this solves the next tractable shape up, a residual whose
+    clock-bearing part is a single monomial ``c·clock^n``. ``time()*time() >=
+    thresh`` is the corpus case (issue #414 refused it, since neither #48's affine
+    solver nor #150's state root brackets it). ``c·clock^n`` is strictly monotonic
+    on ``clock ≥ 0``, so it has exactly ONE crossing there, at
+
+        clock = (−const/c)^(1/n)     — the principal (positive real) root,
+
+    which is the clock **value** at the crossing and therefore exactly the
+    "threshold expression" the issue #48 machinery already differentiates for
+    ``∂t*/∂p`` and evaluates for ``t*`` — the same ``(clock_symbol, threshold_expr)``
+    contract the affine solve returns, so nothing downstream changes. For
+    ``time²>=thresh`` that root is ``sqrt(thresh)`` and ``∂t*/∂thresh =
+    1/(2·sqrt(thresh))``; a threshold that comes out negative at run time
+    (``thresh<0``, the condition always true) evaluates to a non-real value, which
+    :func:`compute_switch_time_sens` reads as "no crossing" exactly as it does for
+    an out-of-window one — correctly, since ``∂f/∂thresh`` is then a clean 0.
+
+    Value-free by construction: the single positive root of a clock monomial is
+    unambiguous without the run window or parameter values, which is what lets the
+    *one* recognizer keep serving both the gate (:func:`uncompensated_condition_reason`)
+    and the detector (:func:`compute_switch_time_sens`) — the #68 invariant. That
+    is also the boundary of this first step: anything with more than one clock term
+    is declined and stays refused (``(clock−5)^2``, two crossings; ``clock^2 +
+    clock``, mixed and not a bare power), because picking THE crossing there needs
+    the window this text transform does not have.
+
+    Tried only after the bare and affine tests both decline, so no atom recognized
+    today changes path, spelling, or threshold text.
+    """
+    split = _relational_split(atom)
+    if split is None:
+        return None
+    lhs, rhs = split
+
+    # Same clock-placement preamble as _clock_affine_threshold: exactly one side
+    # reads exactly one clock, and no second clock survives into the residual.
+    present = [
+        c
+        for c in sorted(clock_symbols, key=len, reverse=True)
+        if _clock_symbol_sub(atom, c, "\x00") != atom
+    ]
+    if not present:
+        return None
+    clock_sym = present[0]
+    on_left = _clock_symbol_sub(lhs, clock_sym, "\x00") != lhs
+    on_right = _clock_symbol_sub(rhs, clock_sym, "\x00") != rhs
+    if on_left == on_right:
+        return None
+    residual = _clock_symbol_sub(f"({lhs})-({rhs})", clock_sym, _CLOCK_SOLVE_SYMBOL)
+    if any(_clock_symbol_sub(residual, c, "\x00") != residual for c in clock_symbols):
+        return None  # a second clock symbol survives: two clocks, unknown offsets
+
+    try:
+        import sympy as sp
+        from sympy.parsing.sympy_parser import parse_expr
+
+        from bngsim._codegen import _preprocess_derived_expr
+
+        t = sp.Symbol(_CLOCK_SOLVE_SYMBOL)
+        expr = sp.expand(parse_expr(_preprocess_derived_expr(residual), evaluate=True))
+        if t not in expr.free_symbols:
+            return None
+        const = expr.subs(t, 0)
+        clock_part = sp.expand(expr - const)
+        # The clock-bearing part must be a single monomial c·t^n. `Poly` raises on
+        # a non-polynomial power (t^0.5, t^k); an atom that is not a clean integer
+        # power of the clock is declined rather than guessed at.
+        terms = sp.Poly(clock_part, t).terms()
+        if len(terms) != 1:
+            return None  # more than one clock term — ambiguous crossing
+        (degree,), coeff = terms[0]
+        if degree < 2 or t in coeff.free_symbols or coeff == 0:
+            return None  # degree 1 is the affine solve's; 0 cannot reach here
+        # c·t^n + const = 0  ⇒  t = (−const/c)^(1/n), the principal positive root.
+        root = sp.simplify(sp.root(sp.simplify(-const / coeff), int(degree)))
+        if t in root.free_symbols:  # pragma: no cover - implied by the single term
+            return None
+        text = str(root).replace("**", "^")
+    except Exception as exc:  # noqa: BLE001 - an unsolvable atom is just declined
+        logger.debug("clock monomial solve declined %r: %s", atom, exc)
+        return None
+
+    if any(_clock_symbol_sub(text, c, "\x00") != text for c in clock_symbols):
+        return None
+    return clock_sym, text
+
+
 def _clock_threshold_split(atom: str, clock_symbols: AbstractSet[str]) -> tuple[str, str] | None:
     """``(clock_symbol, threshold_expr)`` for a clock threshold, else ``None``.
 
-    Two recognizers, asked in order, and the order is the blast radius: the
+    Three recognizers, asked in order, and the order is the blast radius: the
     spelling test below answers first and unchanged, so every atom admitted
     before issue #355 is admitted by the same code with the same threshold text.
     Only an atom it *declines* reaches :func:`_clock_affine_threshold`, which
-    solves the residual for the clock instead of matching on where the clock sits
-    (``(time()-Tdam)<0``, ``0>=Dam0-krepair*(time()-Tdam)``).
+    solves a residual degree 1 in the clock instead of matching on where the clock
+    sits (``(time()-Tdam)<0``, ``0>=Dam0-krepair*(time()-Tdam)``). Only an atom
+    that too declines reaches :func:`_clock_monomial_threshold` (issue #418), which
+    solves the next shape up — a single power ``c·clock^n``, ``time()*time()>=thresh``.
 
     :func:`_clock_threshold_split_oriented` deliberately does NOT come through
     here — see its docstring.
@@ -555,7 +653,10 @@ def _clock_threshold_split(atom: str, clock_symbols: AbstractSet[str]) -> tuple[
     bare = _clock_threshold_split_bare(atom, clock_symbols)
     if bare is not None:
         return bare
-    return _clock_affine_threshold(atom, clock_symbols)
+    affine = _clock_affine_threshold(atom, clock_symbols)
+    if affine is not None:
+        return affine
+    return _clock_monomial_threshold(atom, clock_symbols)
 
 
 def _clock_threshold_split_bare(
@@ -842,10 +943,15 @@ class UncompensatedCrossingReason(str):
     another case out the same way, from the other end: a condition written over
     run-constants alone — ``CRRFLX>1e-07`` where ``CRRFLX`` is a frozen
     ``<parameter>`` — has no crossing in the run window to compensate, so it too
-    is admitted rather than declined (:func:`condition_cannot_cross`). What is
+    is admitted rather than declined (:func:`condition_cannot_cross`). Issue #418
+    took a further case out from the clock end: a threshold that is a single power
+    of the clock — ``time()*time()>=thresh`` — has its crossing solved in closed
+    form (``time = sqrt(thresh)``) by :func:`_clock_monomial_threshold` and is now
+    compensated by the issue #48 machinery like any affine clock threshold. What is
     left in this class is the crossing nothing compensates — a comparison inside
     a call argument, a comparison outside an ``if()`` head, or a clock threshold
-    that does not reduce to a constant. A conjunction is not one of them, and
+    that neither reduces to a constant nor to a single clock power. A conjunction
+    is not one of them, and
     neither is a negation: :func:`_split_logical_atoms` reduces both to the
     surfaces underneath, so ``not((X<hi) and (X>lo))`` is admitted on ground 2
     exactly as ``(X<hi) and (X>lo)`` is (issue #234). Nor is an *equality* over
@@ -1252,10 +1358,12 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
     :func:`bngsim._codegen._functional_rate_law_partials`): it scans every
     condition-bearing **reaction rate expression** — inlined exactly as codegen
     inlines it — and returns the reason the first one carries that no machinery
-    can bracket (an equality, a comparison outside an ``if()`` head or buried in a
-    call argument, a clock threshold that does not reduce to a constant). ``None``
-    means every crossing this model has is one issue #48 stops at or issue #150
-    roots on, so its jump is applied at run time — by
+    can bracket (a comparison outside an ``if()`` head or buried in a call
+    argument, or a clock threshold that neither reduces to a constant nor to a
+    single clock power — an equality over live state is compensated since #381,
+    and a clock monomial since #418). ``None`` means every crossing this model
+    has is one issue #48 stops at or issue #150 roots on, so its jump is applied
+    at run time — by
     :meth:`Simulator._apply_switch_time_sens` /
     :meth:`Simulator._apply_state_switch_sens` — even when the analytic
     sensitivity RHS is declined and the run is on CVODES' difference quotient, and
