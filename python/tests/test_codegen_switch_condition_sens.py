@@ -836,20 +836,38 @@ class TestEndToEnd:
         with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time moves"):
             _run_sens(model, ["beta", "gamma"], t_end=12.0)
 
-    def test_the_refusal_names_the_moving_crossing_and_the_issue(self, tmp_path):
-        """The refusal has to be actionable: it names the offending condition —
-        the same atom the codegen warning reports — and points at the policy it
-        enacts, so a caller can tell it from the other things that raise
-        ``SensitivityUnsupportedError``."""
+    def test_the_refusal_is_typed_and_names_the_policy(self, tmp_path):
+        """The refusal has to be actionable and distinguishable by type from the
+        other things forward sensitivity raises: a ``SensitivityUnsupportedError``
+        (still a ``ValueError``, for handlers that predate the typed class), which
+        names the policy it enacts and explains the moving crossing. The exact
+        condition it names is covered separately and backend-independently by
+        ``test_the_scanner_names_the_uncompensated_condition`` — asserted off the
+        detector rather than off a run, because the refusal string embeds
+        whatever the run's model reports and this is an end-to-end run."""
         model = _model(tmp_path, _with_law(UNCOMPENSATED))
         with pytest.raises(bngsim.SensitivityUnsupportedError) as ei:
             _run_sens(model, ["beta"], t_end=12.0)
         message = str(ei.value)
-        assert "I==thresh" in message
-        assert "issue #414" in message
-        # A clean, typed non-run: the parity peer of the event refusal, still a
-        # ValueError for handlers that predate the typed class.
         assert isinstance(ei.value, ValueError)
+        assert "issue #414" in message
+        assert "crossing time moves" in message
+
+    def test_the_scanner_names_the_uncompensated_condition(self, tmp_path):
+        """The detector the refusal reads names the offending atom — the same one
+        the codegen decline is an ``UncompensatedCrossingReason`` for. Asserted on
+        a fresh core (no Simulator, no JIT), so it pins the reason text
+        deterministically and independently of the codegen backend."""
+        from bngsim._switch_sensitivity import (
+            UncompensatedCrossingReason,
+            model_uncompensated_crossing_reason,
+        )
+
+        core = _model(tmp_path, _with_law(UNCOMPENSATED))._core
+        reason = model_uncompensated_crossing_reason(core)
+        assert isinstance(reason, UncompensatedCrossingReason)
+        assert UNCOMPENSATED in reason
+        assert "not inside an if() condition" in reason
 
     def test_a_compensated_state_crossing_is_not_refused(self, tmp_path):
         """The over-refusal guard on the issue #150 side. ``I>=thresh`` reads live

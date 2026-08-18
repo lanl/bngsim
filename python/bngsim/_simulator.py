@@ -1407,24 +1407,33 @@ class Simulator:
         an event whose crossing time it cannot differentiate (GH #205) and a rate
         law it cannot differentiate at all (GH #214).
 
-        The refusal keys on exactly the crossings the codegen decline is an
-        ``UncompensatedCrossingReason`` for
-        (:func:`bngsim._switch_sensitivity.uncompensated_condition_reason`, at its
-        call site in :func:`bngsim._codegen._functional_rate_law_partials`),
-        rescanned at the model level by
-        :func:`~bngsim._switch_sensitivity.model_uncompensated_crossing_reason` —
-        the same recognizer, so the gate and the build cannot disagree about which
-        crossings are compensated. It deliberately does NOT key on "the analytic
-        RHS is absent", because absence is not the same as a dropped jump: a
-        *compensated* crossing on the difference quotient (a ``t>=sigma`` clock
-        forced to the fallback, or an ``I>=thresh`` state threshold) still gets its
-        jump from :meth:`_apply_switch_time_sens` / :meth:`_apply_state_switch_sens`
-        at run time, so it is not refused; and an underivable-but-smooth rate law
-        with no crossing (``erf(I)*beta*I``) declines the analytic RHS but drops no
-        jump, so its difference quotient stays a correct, slower answer and is not
-        refused either. Only a crossing nothing brackets makes the fallback wrong,
-        and that is the one this refuses on. Cheap: the scan short-circuits for any
-        model with no conditional rate law.
+        The refusal takes two facts together, so neither alone can misfire:
+
+        1. The analytic sensitivity RHS is **absent** — the built artifact carries
+           no ``bngsim_codegen_sens_rhs`` (:meth:`_codegen_provides_sens_rhs`, the
+           ground truth the C++ resolves at run time). If it is present, issue
+           #48/#150 apply every jump this model needs, nothing is dropped, and by
+           construction there is no uncompensated crossing to find — so this
+           returns immediately and never even scans. That also keeps the run-time
+           scan off the overwhelming majority of models, which are on the analytic
+           path.
+        2. The model has a rate-law branch crossing nothing brackets
+           (:func:`~bngsim._switch_sensitivity.model_uncompensated_crossing_reason`,
+           the same ``uncompensated_condition_reason`` recognizer codegen declines
+           with at :func:`bngsim._codegen._functional_rate_law_partials`), so the
+           gate and the build cannot disagree about which crossings are
+           compensated.
+
+        Both are needed. Absence alone is not a dropped jump: a *compensated*
+        crossing on the difference quotient (a ``t>=sigma`` clock forced to the
+        fallback by ``BNGSIM_NO_FUNCTIONAL_SENS_RHS``, or an ``I>=thresh`` state
+        threshold) still gets its jump from :meth:`_apply_switch_time_sens` /
+        :meth:`_apply_state_switch_sens` at run time, and an underivable-but-smooth
+        rate law with no crossing (``erf(I)*beta*I``) declines the analytic RHS but
+        drops no jump — both keep their correct difference quotient. A crossing
+        alone is not enough either: if the artifact still carries the analytic RHS,
+        the crossing was compensated. Only their conjunction — no analytic RHS AND
+        a crossing nothing brackets — is a gradient wrong at the crossing.
 
         Issue #414's other half — compensating the saltation jump for a moving
         *state* crossing the way issue #150 did for the single-rootable-comparison
@@ -1432,6 +1441,12 @@ class Simulator:
         settles the policy question, refusing the flagged-wrong gradient rather
         than returning it.
         """
+        # Ground truth first: an artifact that carries the analytic sensitivity
+        # RHS applies every jump itself, so there is nothing to refuse and no need
+        # to scan. This is also what keeps a spurious re-derivation from ever
+        # refusing a model the build actually admitted.
+        if self._codegen_provides_sens_rhs():
+            return
         from bngsim._switch_sensitivity import model_uncompensated_crossing_reason
 
         try:
