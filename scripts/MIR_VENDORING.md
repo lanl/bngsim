@@ -246,16 +246,22 @@ would not survive — carry-adjacent facts belong in the carry entry.
   the register three times: `x = x * x` reaches the allocator as the three-operand
   `dmul r, r, r`. The third store then lands past the array; glibc's stack
   protector reports it as `*** stack smashing detected ***` and aborts, and a
-  toolchain that leaves the frame unguarded corrupts it silently. The carry
-  declines the memory operand once the table is full — the same fallback the
-  function already takes when `target_insn_ok_p` rejects the rewrite, and the
-  identical outcome here, since an all-memory three-operand `dmul` is not
-  encodable on x86-64 or aarch64. Present in the pinned commit and in upstream
+  toolchain that leaves the frame unguarded corrupts it silently. The carry raises
+  the table to 3 and replaces the vanishing assert with a real runtime check that
+  undoes the rewrites and declines. Both halves are load-bearing: 3 is what the
+  three-operand case needs so it is handled rather than given up on, and the
+  runtime check has to stay because 3 is not a *provable* bound — the call site is
+  reached for `MIR_USE` as well, and `MIR_USE` has unbounded `nops`. The carry's
+  code is byte-identical to the patch proposed upstream, so a refresh that picks
+  the fix up leaves only the marker comment to delete. Present in the pinned
+  commit and in upstream
   master as of 2026-08-18, and reported there as
   [vnmakarov/mir#410](https://github.com/vnmakarov/mir/issues/410) — open since
-  2024-07-08 with no maintainer reply, and written up as a debug-build assertion
-  failure, so it does not record that a release build deletes the check and
-  overruns silently. Watch that issue when moving the pin. `python/tests/test_codegen_jit_self_multiply.py` is the
+  2024-07-08 and written up as a debug-build assertion failure, so it does not
+  record that a release build deletes the check and overruns silently. The fix is
+  proposed as [vnmakarov/mir#468](https://github.com/vnmakarov/mir/pull/468) with
+  code byte-identical to this carry. Drop the carry once that merges and the pin
+  moves past it. `python/tests/test_codegen_jit_self_multiply.py` is the
   behavioral regression; `test_mir_vendoring.py` checks the carry is still there.
 
   The entry's `minimal_reproducer` is two lines of C — a call, then `o[0] = t*t` —

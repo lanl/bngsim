@@ -321,14 +321,16 @@ in `CMakeLists.txt`) is derived from it.
   reaches the allocator as the three-operand `dmul r, r, r`, so the loop matches
   three times and the third store lands past the array. The three passing platforms
   were never evidence of safety; they lay that frame out without a canary in the
-  way. Fixed by a bounds check carried locally in `mir-gen.c` — it declines the
-  memory operand once the table is full, the same fallback the function already
-  takes when `target_insn_ok_p` rejects the rewrite, and the identical outcome
-  here since an all-memory three-operand `dmul` is not encodable on x86-64 or
-  aarch64. The same assertion is reported upstream as `vnmakarov/mir#410`, open
-  since 2024-07-08 with no maintainer reply and written up as a debug-build
-  assertion failure, so the release-build overrun it becomes is not recorded there.
-  Two corrections to the diagnosis this shipped with: **sensitivity is
+  way. Fixed by a carry in `mir-gen.c` that raises the table to 3 and replaces the
+  vanishing assert with a real runtime check which undoes the rewrites and
+  declines. Both halves are load-bearing: 3 is what the three-operand case needs,
+  and the check has to stay because 3 is not a *provable* bound — the call site is
+  reached for `MIR_USE`, whose `nops` is unbounded. The same assertion is reported
+  upstream as `vnmakarov/mir#410`, open since 2024-07-08 and written up as a
+  debug-build assertion failure, so the release-build overrun it becomes is not
+  recorded there; the fix is proposed upstream as `vnmakarov/mir#468`, whose code
+  is byte-identical to the carry. Two corrections to the diagnosis this shipped
+  with: **sensitivity is
   not the trigger** — it is what forces codegen on, since a four-species model is
   far below the auto-codegen threshold and a plain ODE run therefore JITs nothing;
   `codegen=True` reproduces it with no sensitivities at all. And it is **not the
