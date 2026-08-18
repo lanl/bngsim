@@ -14,6 +14,8 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-18
+
 ### Added
 
 - **A rate-law switch condition that is a single power of the clock is now
@@ -392,6 +394,55 @@ in `CMakeLists.txt`) is derived from it.
   carries; `--check` and `test_mir_vendoring.py` grep for it, and `vendor_mir.py`
   exits nonzero after a refresh that loses one. The old assertion was
   `local_carries == []`.
+
+- **A forward-sensitivity run over a rate-law crossing nothing can locate is
+  refused rather than answered from the difference quotient (issue #414).** When a
+  rate law branches on a condition whose crossing time moves with the trajectory —
+  an equality, a comparison buried in a call argument, a clock threshold that
+  reduces to neither a constant nor a single clock power — codegen declines the
+  analytic sensitivity RHS. `CVodeSensInit1` takes ONE callback for every column,
+  so that decline puts the **whole model** on CVODES' internal difference quotient,
+  which integrates the variational equation smoothly *through* the crossing and
+  drops the saltation jump `(f⁻−f⁺)·dt*/dθ` the analytic path was declined for. On
+  AMICI's `nested_events` every column comes back a factor of two low after the
+  crossing (issue #146). bngsim returned that gradient with only a warning; it now
+  raises `SensitivityUnsupportedError`, the way it already refuses an event whose
+  crossing time it cannot differentiate (GH #205) and a rate law it cannot
+  differentiate at all (GH #214).
+
+  **The refusal takes two facts together**, so neither alone can misfire. The built
+  artifact must carry no `bngsim_codegen_sens_rhs` — the ground truth the C++
+  resolves at run time — *and* `model_uncompensated_crossing_reason` must find a
+  crossing nothing brackets. Absence alone is not a dropped jump: a *compensated*
+  crossing left on the difference quotient (a `t>=sigma` clock forced there by
+  `BNGSIM_NO_FUNCTIONAL_SENS_RHS`, or an `I>=thresh` state threshold) still gets
+  its jump from `_apply_switch_time_sens` / `_apply_state_switch_sens` at run time,
+  and an underivable-but-smooth rate law with no crossing (`erf(I)*beta*I`)
+  declines the analytic RHS but drops nothing — both keep their correct difference
+  quotient. A crossing alone is not enough either: if the artifact still carries
+  the analytic RHS, issue #48/#150 compensated it. Only the conjunction — no
+  analytic RHS **and** a crossing nothing brackets — is a gradient wrong at the
+  crossing. Checking the artifact first is also what keeps the scan off the
+  analytic-path majority, and what stops a spurious re-derivation from ever
+  refusing a model the build actually admitted.
+
+  The gate keys on the same `uncompensated_condition_reason` recognizer codegen
+  declines with, so the build and the run-time check cannot disagree about which
+  crossings are compensated. It scans **reaction rate expressions only**, inlined
+  exactly as codegen inlines them: `∂f/∂p` is declined only over a rate law, so a
+  condition living in an observable or expression function that no reaction uses as
+  its rate law is not a rate-law crossing and does not refuse the run — its own
+  output-sensitivity request is refused on its own terms (GH #198).
+
+  **This settles the policy half of issue #414 only.** Compensating the saltation
+  jump for a moving *state* crossing, the way issue #150 did for the
+  single-rootable-comparison case, is the elaborate-design piece and stays open;
+  the machinery half took its first step with the clock monomial of issue #418
+  above, which is why `if(time()*time() >= thresh, ...)` is now admitted rather
+  than refused. Detection is deliberately best-effort: if the scan itself fails,
+  the pre-#414 behaviour stands — the codegen warning has already fired — rather
+  than refuse a run that cannot be justified. Validate against a trajectory finite
+  difference if you need an approximate gradient for a model this refuses.
 
 - **An equality in a rate-law switch condition no longer declines a model's
   analytic sensitivity RHS (issue #381).** `MODEL2003190004`'s forward-sensitivity
@@ -844,6 +895,128 @@ in `CMakeLists.txt`) is derived from it.
   4689 → 2692. The tensors agree to 2.9e-07 across every column that carries
   signal. `BNGSIM_SENS_CLAMP_NUMERIC_ZERO=0` restores the previous behaviour.
 
+- **Three derivative emitters returned a non-finite value where the derivative is
+  an ordinary number (issue #388).** Each cost a forward-sensitivity column on the
+  corpus, and each is a distinct shape:
+
+  - **An overflowing sigmoid.** `exp(u)/(a + exp(u))^n` is `inf/inf` as soon as
+    `|u| > 709`, at points where the ratio itself is perfectly ordinary. It is now
+    divided through by `exp(u)` — issue #393's rewrite, one family over. Carried in
+    **both** emitters: the native saturable differentiator bypasses the sympy
+    chokepoint, so the sensitivity RHS's `J·yS` half would otherwise reintroduce
+    the NaN one term later.
+  - **One logarithm carrying two bases.** `ln(k*(t − T))` guards both `k^s` and
+    `(t − T)^(s−1)`, and the zero-base guard handed the expression to the first
+    power it met and left the second unguarded.
+  - **A quotient that still mentions the symbol.** `(x/(x + K))^n / x` was refused
+    because `1/(x + K)` is not free of `x`, leaving `0/0` in the emitted derivative.
+
+  These are the failures that reach the issue #384 refusal below at the **first**
+  output point — a derivative that was never defined, rather than a blow-up the
+  issue #177 tolerance floor admits partway through a run — which is why neither a
+  tighter `atol` nor `BNGSIM_SENS_ERROR_FLOOR=0` ever moved them.
+
+- **A non-finite forward-sensitivity tensor is refused instead of returned
+  (issue #384).** CVODES can return `CV_SUCCESS` with NaN in the sensitivity
+  vectors: its error test is a comparison, and every comparison against NaN is
+  false, so the machinery whose job is to reject the value cannot see it. The run
+  reported a clean solve and handed back a poisoned gradient. It now raises,
+  naming the axis (parameter column or initial-condition column), the first
+  affected output point, and every column implicated there — the time localizes the
+  blow-up for a bisection, the column names what to drop to get a usable run out of
+  the same model.
+
+  **`inf` and `nan` are counted apart (issue #394)**, because they mean different
+  things and take different advice. An `inf` is a derivative that diverges — the
+  model sitting on a branch point of its own — and there is no finite number to
+  return, so the `atol` and `BNGSIM_SENS_ERROR_FLOOR=0` knobs are offered only for
+  a `nan`; neither moves a derivative that is unbounded. The scan runs on past the
+  first affected point when that point carried no `inf`, so "a derivative diverges
+  later in this run" is not buried (28 ms over a 1001×41×75 tensor, on a run that
+  is already failing).
+
+  A `nan` is an arithmetic accident — `0*inf`, `inf/inf`, `0/0`, a domain error —
+  and has been a bngsim defect every time so far (GH #310, #317, #333, #351, #391).
+  **It is not proof of one, and the measurement is why the message says so.** Issue
+  #394's two examples — `BIOMD0000000632`'s `d(sqrt(Gy))/dGy` at `Gy = 0` and
+  `MODEL2403070001`'s `(t − Tmeal)^-0.6` at `t = Tmeal` — are both genuinely
+  unbounded and were expected to arrive as `inf`. Measured, they do not: what
+  reaches the tensor is `nan`, the `inf` annihilated on the way. So the census
+  reports which arithmetic arrived and then hands over the check that actually
+  discriminates — whether the named column's parameter sits at a singular value of
+  its own.
+
+  **A value is caught where it appears, not where CVODES notices it (issue #395).**
+  CVODES reduces the per-column sensitivity norms to their maximum by seeding the
+  accumulator with column 0 and keeping `cvals[is] > nrm`; every comparison against
+  NaN being false, that reduction propagates a NaN in column 0 and discards one in
+  any later column. The corrector's convergence test and the sensitivity error test
+  both read that number, so an identical NaN either stalled the solve or was
+  invisible to it — decided by nothing but the parameter's position in
+  `sensitivity_params`. Two routes in, so two places: the sensitivity RHS returns
+  the recoverable code on a non-finite `ySdot`, so CVODES cuts `h` and retries at
+  the point of production (a NaN the predictor caused by overshooting a domain
+  boundary for one step is rescued; one that is really the model fails, naming the
+  time), and the initial seed `∂x(0)/∂θ` is checked before `CVodeSensInit1` and
+  refused by column and row — no step can repair it, and it is not the dynamics.
+  `BNGSIM_SENS_NONFINITE_RECOVER=0` restores the previous behaviour exactly, and
+  the tensor scan remains the backstop for every column CVODES
+  difference-quotients itself, where bngsim's callback is not in the loop.
+
+  **`Result.solver_stats` gained the sensitivity solve's own counters** —
+  `n_sens_err_test_fails` and `n_sens_nonlin_conv_fails`, from
+  `CVodeGetSensNumErrTestFails` / `CVodeGetSensNumNonlinSolvConvFails`. The
+  existing `n_err_test_fails` and `n_nonlin_conv_fails` count the **state** solve,
+  so a run could reject steps on its sensitivity error test that the state solve
+  never saw and still report `n_err_test_fails == 0`. That is not a smaller number
+  than the truth, it is a different quantity, and reading it as "the solve was
+  clean" is how a poisoned column got called healthy. Both are `0` on a run with
+  no sensitivities.
+
+  **The blow-up itself is not fixed here**, and the tolerance floor is one cause
+  rather than the cause. Issue #177's floor admits it on some models, but sweeping
+  the floor moves the failure rather than removing it — `BIOMD0000000480` has 0
+  non-finite cells at `tau` 9e-4, 1517 at 1e-3, 0 at 1.05e-3, 33661 at 1.2e-3 and 0
+  at 1.5e-3 — and issue #388 above measured 14 corpus models that stay non-finite
+  with the floor off. There is no tweak to make, only a silence to end.
+
+- **An `<initialAssignment>`-mediated parameter now seeds the initial-condition
+  term it was owed (issue #379).** Issue #313 below unfroze these parameters in the
+  dynamics; the `t = 0` seed `∂x(0)/∂θ` was still withheld from them by three
+  separate filters, so a column could be right for the whole run and wrong at its
+  first point. **24 of `BIOMD0000001102`'s 27 read zero at `t = 0` where both other
+  engines report a number.**
+
+  - An SBML `constant="false"` declaration says a symbol *may* vary, not that
+    anything varies it. The IC-lowering predicate treated it as disqualifying, but
+    the only thing that makes a symbol unsafe there is being promoted to a species
+    — which this loader does for rate-rule and event-assignment targets only, both
+    already subtracted. The extra filter bought no safety and withheld the seed
+    from every `<initialAssignment>` reading such a parameter.
+  - An `<initialAssignment>` may read another **species**, meaning that species'
+    initial value, and rejecting those withheld the seed from every column of the
+    expression. A state reference now resolves to whatever expresses that state's
+    own IC — its parameter, its synthetic derived parameter, or its constant value
+    — lowered in dependency order so the chain rule composes through the existing
+    derived-parameter DAG.
+  - A species whose own IC is a declared constant therefore contributes a constant,
+    so the lift keeps the parameters the expression also reads instead of freezing
+    all of them behind the fold.
+
+  **Two substitution guards keep issue #164's compartment-size refusal honest.**
+  Section 0 binds a `hasOnlySubstanceUnits` symbol to its amount, so substituting
+  the number would bake a live compartment size into the lifted expression as a
+  literal — the fold #164 refuses a size over, one layer down and invisible to the
+  refusal. And a species declared in the unit its symbol does not mean carries an
+  `amount/V` conversion: emitting the conversion rather than the converted number
+  keeps the size symbolic, so a later `set_param` still reaches the initial
+  condition. `rateOf` is excluded at both sites — it needs the species symbol, not
+  its value. Two size refusals are **earned away rather than relaxed**
+  (`MODEL1710030000` among them): all of their initial conditions lower now, so a
+  write lands exactly where a rebuild lands, which is the property the refusal
+  protected. What still cannot lift is the `hasOnlySubstanceUnits` shape, and the
+  param-lift freeze warning is repointed at it.
+
 - **Running the test suite no longer fills the developer's own bngsim caches
   (issue #372).** A pytest session redirects both content-addressed caches —
   compiled `.so` artifacts and BNG2.pl-generated networks — from `~/.cache/bngsim`
@@ -926,6 +1099,47 @@ in `CMakeLists.txt`) is derived from it.
   difference can be read off them — because a grid that opens past `t = 0`
   silently compares two runs of a different problem. Docstring only; no
   behaviour changes.
+
+- **An `==` or `!=` in a rate law no longer drops the condition it belongs to
+  (issue #335).** `_exprtk_to_sympy` handed the preprocessed rate-law string to
+  sympy's `parse_expr`, which evaluates it with **Python** semantics. `==` and `!=`
+  are the two relationals where that is wrong: `Symbol('x') == 0` is Python's
+  structural equality, so it returns the bool `False` rather than `Eq(x, 0)`, and
+  the comparison is gone before sympy ever sees a condition. `if(x==0,1,2)` parsed
+  to a bare `2` and `if(x!=0,1,2)` to a bare `1` — **the wrong branch, taken
+  unconditionally, with nothing to mark it.**
+
+  Both are now rewritten to the `Eq` / `Ne` call form in the shared logical
+  rewriter, the exact analogue of the existing `&&`/`||` → `And`/`Or` treatment and
+  at the same tighter-than-logical precedence; the four ordering relationals
+  already built sympy relationals and are untouched. The downstream was already
+  equality-ready — `_print_Relational` (#310) spells `Eq`/`Ne` infix for both the
+  ExprTk and C emitters, and `_is_emittable` skips Piecewise conditions — so a
+  corrected condition round-trips with no other change, and since a Piecewise
+  condition is never differentiated (conditions copy through), this only makes the
+  derivative respect the right branch.
+
+  **Corpus sweep over the 52 loadable BioModels carrying `==`/`!=`** — 214 affected
+  functional rate laws — shows no new declines and no new errors (off→on: emit→emit
+  198, decline→decline 8, error→error 8), and the corrected derivatives match
+  finite differences. On the derived-parameter chain-rule and IC-seed paths the old
+  behavior was **a wrong number rather than lost coverage**: `if(sel==1, kA, kB)`
+  collapsed to `kB`, so the seed took the else branch at every value of `sel`.
+
+  Two consequences of making equality reachable ride along. sympy folds an
+  `Eq`-over-Piecewise condition inside an `and` — the BNGL boolean-coercion idiom
+  `if((if(c,1,0)==1) and rest, t, f)` — into an `ITE` node, which is a `Boolean`
+  rather than a `Function`, so `_is_emittable`'s `atoms(Function)` scan does not see
+  it (the same blind spot `Min`/`Max` have) and both printers fell through to a
+  literal `ITE(...)` the ExprTk/C engine cannot parse. The C++ reliability gate then
+  rejected the derivative and the whole model silently dropped to the
+  finite-difference Jacobian — a capability regression surfaced by
+  `MODEL1708310001`'s periodic chemo schedule. `_normalize_booleans` now rewrites
+  `ITE(c, t, f)` to the boolean identity `(c & t) | (~c & f)` at the top of both
+  `sympy_to_exprtk` and `sympy_to_c`, guarded on `has(ITE)` so every ITE-free
+  expression is returned unchanged and its emitted text is byte-for-byte identical.
+  And a non-finite (`zoo`/`oo`/`nan`) derivative is now declined rather than emitted
+  as broken code.
 
 - **A power law whose base reaches zero no longer NaNs its own derivative
   (issue #351).** SymPy differentiates `u^n` as `n·u^n·u'/u` and leaves the two
@@ -1015,6 +1229,43 @@ in `CMakeLists.txt`) is derived from it.
   the closing guidance points at the initial condition (an under-specified
   species, or a size that is not finite and positive) rather than at the laws that
   merely inherited it.
+
+- **A parameter that both sets an `if()` switch time and scales its own branch is
+  answered on the analytic path rather than refused outright (issue #358).**
+  `if(t>=sigma, sigma*k, 0)` with `sigma` requested was refused for forward
+  sensitivity everywhere. Its gradient is the interior variational term plus the
+  crossing jump, and bngsim already computes both: `bngsim_dfdp` emits the clean
+  in-branch `∂f/∂p` (the Piecewise derivative, no boundary delta) and
+  `compute_switch_time_sens` produces the saltation jump. What could not combine
+  them was CVODES' difference-quotient probe, where pinning the switch time holds
+  that in-branch term at a wrong `0`. On a model carrying an analytic sensitivity
+  RHS there is no probe: the two terms sum to the correct total and the pin is
+  inert.
+
+  So the refusal narrows to the difference-quotient path instead of standing
+  everywhere — `Simulator` reads the artifact's `bngsim_codegen_sens_rhs` symbol to
+  decide which path a run is on, the same ground truth issue #414's gate keys on,
+  and the typed refusal of issue #320 below is what a caller sees when the narrowed
+  case does apply. Validated on a closed-form fixture (exact, no drift across
+  `rtol`) and against a central finite difference on `BIOMD0000001007/1009/1010`,
+  whose ODE-species columns now match to ~1e-6.
+
+  Two switch-time detector fixes fall out of getting those three right, both in
+  `_switch_sensitivity.py`. A clock threshold can **hide behind a function** —
+  `heav_x = if(x<0, ...)` over `x = time()-ModelValue_27` — so the raw atom `x<0`
+  named no clock, its crossing was compensated by neither detector, and the jump
+  was dropped; references are now inlined before scanning, as the issue #150 state
+  detector already did, and `_condition_only_params` inlines the same way and scans
+  the reaction rate laws rather than helper functions in isolation, so a
+  parameter's branch-vs-condition role is read where it actually occurs. A census
+  over 443 condition-carrying `rr_parity` models shows the change only resolves
+  detector/gate disagreements: crossings hidden behind constants or `floor()` that
+  were spuriously attributed to helper symbols are now correctly ignored or
+  declined. And a switch time that *also* reads a condition nothing compensates — a
+  `floor()`-periodic dose schedule — is refused: pinning it holds that crossing's
+  dependence at a wrong `0` (`MODEL1708310001`'s `cycle_int` measured `0` against a
+  finite difference peaking at ~19) and un-pinning reintroduces the issue #48
+  stall, so neither is safe.
 
 - **A clock threshold is recognized by the crossing it has, not by how it was
   typed (issue #355).** `_clock_threshold_split` decided what counted as a
