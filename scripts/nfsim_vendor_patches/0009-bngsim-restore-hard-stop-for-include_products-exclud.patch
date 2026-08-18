@@ -1,7 +1,7 @@
-From c477fb13a04718f82b0dcc137c69ed2c74249622 Mon Sep 17 00:00:00 2001
+From 6f19aad5db25ab0ed16acfd9add116748f0a88ca Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:28:13 -0600
-Subject: [PATCH 11/17] bngsim: restore hard stop for
+Subject: [PATCH 09/13] bngsim: restore hard stop for
  include_products/exclude_products
 
 ---
@@ -9,7 +9,7 @@ Subject: [PATCH 11/17] bngsim: restore hard stop for
  1 file changed, 6 insertions(+), 75 deletions(-)
 
 diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
-index 6a1735c..8f5a72c 100644
+index 1153899..2399630 100644
 --- a/src/NFinput/NFinput.cpp
 +++ b/src/NFinput/NFinput.cpp
 @@ -1756,83 +1756,14 @@ bool NFinput::initReactionRulePermutation(

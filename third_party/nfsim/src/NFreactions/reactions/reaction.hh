@@ -14,7 +14,7 @@ namespace NFcore
 
 	/* Helpers for counting a pure context reactant the way BioNetGen does: one
 	 * reaction instance per matching complex rather than one per matching
-	 * molecule.  See ReactionClass::contextCountsPerComplex.  --bngsim */
+	 * molecule.  See ReactionClass::contextCountsPerComplex. */
 
 	/*! Number of distinct complexes represented among a reactant list's matches. */
 	int countDistinctComplexes(ReactantList *rl);
@@ -25,6 +25,17 @@ namespace NFcore
 	/*! Sum of one representative rate factor per distinct complex in a DOR tree.
 	    Exact: it sums the same terms BNG would count instances for. */
 	double perComplexRateFactorSum(ReactantTree *tree);
+
+	/*! Fills `out` with the mapping sets to enumerate for one reactant of a
+	    RuleMonkey-exact pair count.  Ordinarily that is every live mapping set;
+	    for a pure context reactant it is one representative per complex, so that
+	    the enumerated pairs are counted on the same footing as
+	    getCorrectedReactantCount().  `flatIndices`, when non-null, receives each
+	    kept mapping set's flat array position, which a DOR caller needs to look
+	    up the matching rate factor. */
+	void collectReactantRepresentatives(ReactantList *rl, bool perComplex,
+	                                    std::vector<MappingSet*> &out,
+	                                    std::vector<int> *flatIndices = 0);
 
 	class BasicRxnClass : public ReactionClass {
 		public:

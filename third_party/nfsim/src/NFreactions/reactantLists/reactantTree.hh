@@ -106,7 +106,7 @@ namespace NFcore
 				Returns the MappingSet at a position in the flat mappingSets array, so
 				callers can walk the live entries alongside getRateFactor(), which is
 				indexed the same way.  ReactantList offers the same accessor.
-				@author bngsim
+				
 			 */
 			virtual MappingSet * getMappingSetByIndex(unsigned int index) const { return mappingSets[index]; }
 
@@ -115,7 +115,7 @@ namespace NFcore
 			    hold two matches, so the distinct-complex count is just size() and the
 			    O(n) scan can be skipped -- which is the common case for catalytic
 			    rules over large monomer pools.  Conservative: a stale true only
-			    costs the scan.  --bngsim */
+			    costs the scan. */
 			void noteMappedComplexSize(int complexSize) {
 				if (complexSize > 1) anyMultiMoleculeComplex = true;
 			}

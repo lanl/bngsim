@@ -1,7 +1,7 @@
-From bb0317714b3ec6c7a2e74bb707b1c3b905086b86 Mon Sep 17 00:00:00 2001
+From 154f9e9dcd21c95b4cf06ccc1cc11982e158d7b6 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:31:23 -0600
-Subject: [PATCH 12/17] bngsim: prune NFtest headers from vendored facade
+Subject: [PATCH 10/13] bngsim: prune NFtest headers from vendored facade
 
 ---
  src/NFsim.hh | 61 ++++++----------------------------------------------

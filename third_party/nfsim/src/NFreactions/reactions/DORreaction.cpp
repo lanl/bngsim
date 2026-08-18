@@ -550,35 +550,48 @@ double DORRxnClass::exactRuleMonkey_a()
 		validCombinations = 1.0;
 	} else if (n_reactants == 1) {
 		if (0 == DORreactantIndex) {
-			validCombinations = reactantTree->getRateFactorSum();
+			// A DOR reactant's propensity comes from its tree's rate factor sum
+			// rather than from a count, so per-complex counting is applied there;
+			// see DORRxnClass::update_a().
+			validCombinations = contextCountsPerComplex[0]
+			                      ? perComplexRateFactorSum(reactantTree)
+			                      : reactantTree->getRateFactorSum();
 		} else {
 			validCombinations = getCorrectedReactantCount(0);
 		}
 	} else if (n_reactants == 2) {
-		int size0 = getReactantCount(0);
-		int size1 = getReactantCount(1);
+		// One representative per complex for a pure context reactant, as in
+		// BasicRxnClass::exactRuleMonkey_a(), so the enumerated pairs match the
+		// counts and rate factor sums the total is built from.
+		static thread_local std::vector<MappingSet*> reps0, reps1;
+		static thread_local std::vector<int> idx0, idx1;
+		collectReactantRepresentatives(reactantLists[0], contextCountsPerComplex[0], reps0, &idx0);
+		collectReactantRepresentatives(reactantLists[1], contextCountsPerComplex[1], reps1, &idx1);
+
 		double totalCombinations = 1.0;
 		for(unsigned int i=0; i<n_reactants; i++) {
 			if(i!=DORreactantIndex) {
-				totalCombinations*=(double)getReactantCount(i);
+				totalCombinations*=(double)getCorrectedReactantCount(i);
 			} else {
-				totalCombinations*=reactantTree->getRateFactorSum();
+				totalCombinations *= contextCountsPerComplex[i]
+				                       ? perComplexRateFactorSum(reactantTree)
+				                       : reactantTree->getRateFactorSum();
 			}
 		}
 
 		double invalidCombinations = 0;
 
-		for (int i = 0; i < size0; ++i) {
-			msPairBuffer[0] = reactantLists[0]->getMappingSet(i);
-			for (int j = 0; j < size1; ++j) {
-				msPairBuffer[1] = reactantLists[1]->getMappingSet(j);
-				
+		for (size_t i = 0; i < reps0.size(); ++i) {
+			msPairBuffer[0] = reps0[i];
+			for (size_t j = 0; j < reps1.size(); ++j) {
+				msPairBuffer[1] = reps1[j];
+
 				if (!transformationSet->checkMolecularity(msPairBuffer)) {
 					double weight = 1.0;
 					if (0 == DORreactantIndex) {
-						weight = reactantTree->getRateFactor(i);
+						weight = reactantTree->getRateFactor(idx0[i]);
 					} else if (1 == DORreactantIndex) {
-						weight = reactantTree->getRateFactor(j);
+						weight = reactantTree->getRateFactor(idx1[j]);
 					}
 					invalidCombinations += weight;
 				}
@@ -592,7 +605,9 @@ double DORRxnClass::exactRuleMonkey_a()
 			if(i!=DORreactantIndex) {
 				validCombinations*=(double)getCorrectedReactantCount(i);
 			} else {
-				validCombinations*=reactantTree->getRateFactorSum();
+				validCombinations *= contextCountsPerComplex[i]
+				                       ? perComplexRateFactorSum(reactantTree)
+				                       : reactantTree->getRateFactorSum();
 			}
 		}
 	}
@@ -1312,39 +1327,54 @@ double DOR2RxnClass::exactRuleMonkey_a()
 	if (n_reactants == 0) {
 		validCombinations = 1.0;
 	} else if (n_reactants == 1) {
+		// As in DORRxnClass, a DOR reactant's propensity comes from its tree's
+		// rate factor sum, so that is where per-complex counting is applied.
 		if (0 == DORreactantIndex1) {
-			validCombinations = reactantTree1->getRateFactorSum();
+			validCombinations = contextCountsPerComplex[0]
+			                      ? perComplexRateFactorSum(reactantTree1)
+			                      : reactantTree1->getRateFactorSum();
 		} else if (0 == DORreactantIndex2) {
-			validCombinations = reactantTree2->getRateFactorSum();
+			validCombinations = contextCountsPerComplex[0]
+			                      ? perComplexRateFactorSum(reactantTree2)
+			                      : reactantTree2->getRateFactorSum();
 		} else {
 			validCombinations = getCorrectedReactantCount(0);
 		}
 	} else if (n_reactants == 2) {
-		int size0 = getReactantCount(0);
-		int size1 = getReactantCount(1);
+		// One representative per complex for a pure context reactant, as in
+		// BasicRxnClass::exactRuleMonkey_a().
+		static thread_local std::vector<MappingSet*> reps0, reps1;
+		static thread_local std::vector<int> idx0, idx1;
+		collectReactantRepresentatives(reactantLists[0], contextCountsPerComplex[0], reps0, &idx0);
+		collectReactantRepresentatives(reactantLists[1], contextCountsPerComplex[1], reps1, &idx1);
+
 		double totalCombinations = 1.0;
 		for (unsigned int i=0; i<n_reactants; i++) {
 			if (i==(unsigned int)DORreactantIndex1) {
-				totalCombinations*=reactantTree1->getRateFactorSum();
+				totalCombinations *= contextCountsPerComplex[i]
+				                       ? perComplexRateFactorSum(reactantTree1)
+				                       : reactantTree1->getRateFactorSum();
 			} else if (i==(unsigned int)DORreactantIndex2) {
-				totalCombinations*=reactantTree2->getRateFactorSum();
+				totalCombinations *= contextCountsPerComplex[i]
+				                       ? perComplexRateFactorSum(reactantTree2)
+				                       : reactantTree2->getRateFactorSum();
 			} else {
-				totalCombinations*=(double)getReactantCount(i);
+				totalCombinations*=(double)getCorrectedReactantCount(i);
 			}
 		}
 
 		double invalidCombinations = 0;
 
-		for (int i = 0; i < size0; ++i) {
-			msPairBuffer[0] = reactantLists[0]->getMappingSet(i);
-			for (int j = 0; j < size1; ++j) {
-				msPairBuffer[1] = reactantLists[1]->getMappingSet(j);
-				
+		for (size_t i = 0; i < reps0.size(); ++i) {
+			msPairBuffer[0] = reps0[i];
+			for (size_t j = 0; j < reps1.size(); ++j) {
+				msPairBuffer[1] = reps1[j];
+
 				if (!transformationSet->checkMolecularity(msPairBuffer)) {
-					double weight0 = (0 == DORreactantIndex1) ? reactantTree1->getRateFactor(i) :
-					                 ((0 == DORreactantIndex2) ? reactantTree2->getRateFactor(i) : 1.0);
-					double weight1 = (1 == DORreactantIndex1) ? reactantTree1->getRateFactor(j) :
-					                 ((1 == DORreactantIndex2) ? reactantTree2->getRateFactor(j) : 1.0);
+					double weight0 = (0 == DORreactantIndex1) ? reactantTree1->getRateFactor(idx0[i]) :
+					                 ((0 == DORreactantIndex2) ? reactantTree2->getRateFactor(idx0[i]) : 1.0);
+					double weight1 = (1 == DORreactantIndex1) ? reactantTree1->getRateFactor(idx1[j]) :
+					                 ((1 == DORreactantIndex2) ? reactantTree2->getRateFactor(idx1[j]) : 1.0);
 					invalidCombinations += (weight0 * weight1);
 				}
 			}
@@ -1355,9 +1385,13 @@ double DOR2RxnClass::exactRuleMonkey_a()
 		validCombinations = 1.0;
 		for (unsigned int i=0; i<n_reactants; i++) {
 			if (i==(unsigned int)DORreactantIndex1) {
-				validCombinations*=reactantTree1->getRateFactorSum();
+				validCombinations *= contextCountsPerComplex[i]
+				                       ? perComplexRateFactorSum(reactantTree1)
+				                       : reactantTree1->getRateFactorSum();
 			} else if (i==(unsigned int)DORreactantIndex2) {
-				validCombinations*=reactantTree2->getRateFactorSum();
+				validCombinations *= contextCountsPerComplex[i]
+				                       ? perComplexRateFactorSum(reactantTree2)
+				                       : reactantTree2->getRateFactorSum();
 			} else {
 				validCombinations*=(double)getCorrectedReactantCount(i);
 			}
