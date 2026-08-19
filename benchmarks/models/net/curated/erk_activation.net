@@ -1,0 +1,176 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA                6.02214076e23  # Constant
+    2 V_ref             1e-12  # Constant
+    3 EGF               20  # Constant
+    4 ERKpp_SOS1_FB     1.0  # Constant
+    5 ERKpp_MEK_FB      1.0  # Constant
+    6 ERKpp_RAF1_FB     1.0  # Constant
+    7 f                 1.0  # Constant
+    8 RAS_t0_active     0  # Constant
+    9 EGFR_tot          3e5*f  # ConstantExpression
+   10 RAS_tot           6e4*f  # ConstantExpression
+   11 SOS_tot           1e5*f  # ConstantExpression
+   12 RasGAP_tot        6e3*f  # ConstantExpression
+   13 RAF_tot           5e5*f  # ConstantExpression
+   14 MEK_tot           2e5*f  # ConstantExpression
+   15 ERK_tot           3e6*f  # ConstantExpression
+   16 EKAR3_tot         1e6*f  # ConstantExpression
+   17 ERKTR_tot         1e6*f  # ConstantExpression
+   18 a1                5e-5*EGF  # ConstantExpression
+   19 d1                1e-2  # Constant
+   20 b1                1e-5/f  # ConstantExpression
+   21 u1a               1e-2  # Constant
+   22 u1b               1e2  # Constant
+   23 b2a               1e-6/f  # ConstantExpression
+   24 u2a               1  # Constant
+   25 b2b               1e-7/f  # ConstantExpression
+   26 u2b               1  # Constant
+   27 k2a               1e-4/f  # ConstantExpression
+   28 k2b               1e-5/f  # ConstantExpression
+   29 b3                1e-5/f  # ConstantExpression
+   30 u3                1e-2  # Constant
+   31 k3                1e2  # Constant
+   32 a2                1e-7/f  # ConstantExpression
+   33 d2                1e-2  # Constant
+   34 p1                1e-7/f  # ConstantExpression
+   35 q1                1e-2  # Constant
+   36 p2                3e-6/f  # ConstantExpression
+   37 q2                1e-2  # Constant
+   38 p3                (3e-9*ERKpp_SOS1_FB)/f  # ConstantExpression
+   39 q3                3e-4  # Constant
+   40 p4                (6e-10*ERKpp_MEK_FB)/f  # ConstantExpression
+   41 q4                3e-4  # Constant
+   42 q5                1e2  # Constant
+   43 p6                (6e-10*ERKpp_RAF1_FB)/f  # ConstantExpression
+   44 q6                3e-4  # Constant
+   45 a0_ekar3          3e-9/f  # ConstantExpression
+   46 d0_ekar3          1e-3  # Constant
+   47 a0_erktr          1e-9/f  # ConstantExpression
+   48 d0_erktr          2e-3  # Constant
+   49 _InitialConc1     RAS_tot*(1-RAS_t0_active)  # ConstantExpression
+   50 _InitialConc2     RAS_tot*RAS_t0_active  # ConstantExpression
+   51 _rateLaw1         p1*2  # ConstantExpression
+   52 _rateLaw2         q1*2  # ConstantExpression
+   53 _rateLaw3         p2*2  # ConstantExpression
+   54 _rateLaw4         q2*2  # ConstantExpression
+   55 _rateLaw5         p3*4  # ConstantExpression
+   56 _rateLaw6         p3*3  # ConstantExpression
+   57 _rateLaw7         p3*2  # ConstantExpression
+   58 _rateLaw8         q3*2  # ConstantExpression
+   59 _rateLaw9         q3*3  # ConstantExpression
+   60 _rateLaw10        q3*4  # ConstantExpression
+   61 _rateLaw11        q5*2  # ConstantExpression
+end parameters
+begin species
+    1 EGFR(egf~I,sos) EGFR_tot
+    2 RAS(g~GDP,sos) _InitialConc1
+    3 RAS(g~GTP,sos) _InitialConc2
+    4 SOS(S~U,egfr,rem) SOS_tot
+    5 RasGAP(ras) RasGAP_tot
+    6 RAF(S~I) RAF_tot
+    7 MEK(S~U,T292~U) MEK_tot
+    8 ERK(S~U) ERK_tot
+    9 EKAR3(act~I) EKAR3_tot
+   10 ERKTR(act~I) ERKTR_tot
+   11 EGFR(egf~A,sos) 0
+   12 RAS(g~GTP!1,sos).RasGAP(ras!1) 0
+   13 RAF(S~A) 0
+   14 EGFR(egf~A,sos!1).SOS(S~U,egfr!1,rem) 0
+   15 RAS(g~GDP!1,sos).RasGAP(ras!1) 0
+   16 MEK(S~P,T292~U) 0
+   17 EGFR(egf~I,sos!1).SOS(S~U,egfr!1,rem) 0
+   18 EGFR(egf~A,sos!1).RAS(g~GTP,sos!2).SOS(S~U,egfr!1,rem!2) 0
+   19 EGFR(egf~A,sos!1).RAS(g~GDP,sos!2).SOS(S~U,egfr!1,rem!2) 0
+   20 MEK(S~PP,T292~U) 0
+   21 EGFR(egf~I,sos!1).RAS(g~GTP,sos!2).SOS(S~U,egfr!1,rem!2) 0
+   22 EGFR(egf~I,sos!1).RAS(g~GDP,sos!2).SOS(S~U,egfr!1,rem!2) 0
+   23 ERK(S~P) 0
+   24 ERK(S~PP) 0
+   25 SOS(S~P,egfr,rem) 0
+   26 MEK(S~U,T292~P) 0
+   27 MEK(S~P,T292~P) 0
+   28 MEK(S~PP,T292~P) 0
+   29 RAF(S~P) 0
+   30 EKAR3(act~A) 0
+   31 ERKTR(act~A) 0
+   32 SOS(S~PP,egfr,rem) 0
+   33 SOS(S~PPP,egfr,rem) 0
+   34 SOS(S~PPPP,egfr,rem) 0
+end species
+begin reactions
+    1 1 11 a1 #R_EGFR_activation
+    2 3,5 12 b3 #R_RasGAP_capture
+    3 3,6 3,13 a2 #R_RAF_activation
+    4 11 1 d1 #_reverse_R_EGFR_activation
+    5 4,11 14 b1 #R_EGFR_SOS_binding
+    6 12 15 k3 #R_RasGAP_hydrolysis
+    7 13 6 d2 #R_RAF_deactivation
+    8 7,13 13,16 _rateLaw1 #R_MEK_phosphorylation_1
+    9 14 17 d1 #_reverse_R_EGFR_activation
+   10 14 4,11 u1a #_reverse_R_EGFR_SOS_binding
+   11 3,14 18 b2a #R_SOS_RAS_GTP_binding
+   12 2,14 19 b2b #R_SOS_RAS_GDP_binding
+   13 15 2,5 u3 #R_RasGAP_release
+   14 13,16 13,20 p1 #R_MEK_phosphorylation_2
+   15 16 7 q1 #R_MEK_dephosphorylation_2
+   16 17 14 a1 #R_EGFR_activation
+   17 18 21 d1 #_reverse_R_EGFR_activation
+   18 19 22 d1 #_reverse_R_EGFR_activation
+   19 17 1,4 u1b #R_inactive_EGFR_SOS_release
+   20 3,17 21 b2a #R_SOS_RAS_GTP_binding
+   21 18 3,14 u2a #_reverse_R_SOS_RAS_GTP_binding
+   22 2,17 22 b2b #R_SOS_RAS_GDP_binding
+   23 19 2,14 u2b #_reverse_R_SOS_RAS_GDP_binding
+   24 2,18 3,18 k2a #R_RAS_activation_strong
+   25 2,19 3,19 k2b #R_RAS_activation_moderate
+   26 20 16 _rateLaw2 #R_MEK_dephosphorylation_1
+   27 8,20 20,23 _rateLaw3 #R_ERK_phosphorylation_1
+   28 21 18 a1 #R_EGFR_activation
+   29 22 19 a1 #R_EGFR_activation
+   30 21 3,17 u2a #_reverse_R_SOS_RAS_GTP_binding
+   31 22 2,17 u2b #_reverse_R_SOS_RAS_GDP_binding
+   32 2,21 3,21 k2a #R_RAS_activation_strong
+   33 2,22 3,22 k2b #R_RAS_activation_moderate
+   34 20,23 20,24 p2 #R_ERK_phosphorylation_2
+   35 23 8 q2 #R_ERK_dephosphorylation_2
+   36 24 23 _rateLaw4 #R_ERK_dephosphorylation_1
+   37 4,24 24,25 _rateLaw5 #R_SOS_feedback_phosphorylation_1
+   38 7,24 24,26 p4 #R_MEK_feedback_phosphorylation
+   39 16,24 24,27 p4 #R_MEK_feedback_phosphorylation
+   40 20,24 24,28 p4 #R_MEK_feedback_phosphorylation
+   41 13,24 24,29 p6 #R_RAF_feedback_inhibition_active
+   42 6,24 24,29 p6 #R_RAF_feedback_inhibition_inactive
+   43 9,24 24,30 a0_ekar3 #R_EKAR3_activation
+   44 10,24 24,31 a0_erktr #R_ERKTR_activation
+   45 13,26 13,27 _rateLaw1 #R_MEK_phosphorylation_1
+   46 13,27 13,28 p1 #R_MEK_phosphorylation_2
+   47 28 27 _rateLaw2 #R_MEK_dephosphorylation_1
+   48 27 26 q1 #R_MEK_dephosphorylation_2
+   49 8,28 23,28 _rateLaw3 #R_ERK_phosphorylation_1
+   50 23,28 24,28 p2 #R_ERK_phosphorylation_2
+   51 24,25 24,32 _rateLaw6 #R_SOS_feedback_phosphorylation_2
+   52 25 4 q3 #R_SOS_feedback_dephosphorylation_1
+   53 26 7 q4 #R_MEK_feedback_dephosphorylation
+   54 27 16 q4 #R_MEK_feedback_dephosphorylation
+   55 28 20 q4 #R_MEK_feedback_dephosphorylation
+   56 28 27 _rateLaw11 #R_MEK_feedback_inactivation_1
+   57 27 26 q5 #R_MEK_feedback_inactivation_2
+   58 29 6 q6 #R_RAF_feedback_recovery
+   59 30 9 d0_ekar3 #R_EKAR3_deactivation
+   60 31 10 d0_erktr #R_ERKTR_deactivation
+   61 24,32 24,33 _rateLaw7 #R_SOS_feedback_phosphorylation_3
+   62 32 25 _rateLaw8 #R_SOS_feedback_dephosphorylation_2
+   63 24,33 24,34 p3 #R_SOS_feedback_phosphorylation_4
+   64 33 32 _rateLaw9 #R_SOS_feedback_dephosphorylation_3
+   65 34 33 _rateLaw10 #R_SOS_feedback_dephosphorylation_4
+end reactions
+begin groups
+    1 Obs_EGFR_Active      11,14,18,19
+    2 Obs_RAS_GTP          3,18,21
+    3 Obs_RAF_Active       13
+    4 Obs_MEK_PP           20,28
+    5 Obs_ERK_PP           24
+    6 Obs_EKAR3_Active     30
+    7 Obs_ERKTR_Active     31
+end groups

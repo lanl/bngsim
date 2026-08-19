@@ -310,6 +310,11 @@ result_psa = sim_psa.run(t_end=300, n_steps=1000, seed=42)
   registers observable groups before function evaluation begins.
 - **To regenerate a .net file**: `perl /path/to/BNG2.pl model.bngl` — this runs
   `generate_network` from the actions block and produces a fresh `.net` file.
+- **Except `models/net/curated/`**, the eight `BNGL-Models` records the manuscript
+  names: `python models/regenerate_curated_nets.py` regenerates the whole bucket
+  and `--check` verifies the committed files still match. It strips every action
+  but `generate_network` (so a record's own protocol never runs) and pins each
+  artifact's sha256 in `models/curated_nets.json`.
 
 ## Benchmarking
 

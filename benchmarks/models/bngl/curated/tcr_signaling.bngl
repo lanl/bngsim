@@ -1,0 +1,263 @@
+begin model
+
+#@title: TCR signaling bistability (Lipniacki et al., 2008)
+
+#@description: |
+#  A population-based model of early T-cell receptor signaling in which
+#  peptide-MHC binding recruits LCK, phosphorylated LCK activates inhibitory
+#  SHP1, and doubly phosphorylated TCR drives ZAP70-MEK-ERK signaling.
+#  SHP1-mediated negative feedback competes with ERK-mediated protection of
+#  LCK, creating deterministic bistability and noise-driven switching between
+#  ERK-low and ERK-high states. Thirty agonist pMHC molecules produce the
+#  sustained high-ppERK deterministic response and heterogeneous stochastic
+#  trajectories reported in Fig. 7B.
+
+#@keyword: |
+#  T-cell receptor signaling, bistable, stochastic switching, kinetic
+#  proofreading, positive feedback, negative feedback, MAPK cascade,
+#  population model, mammalian T cell
+
+#@reference: |
+#  Lipniacki T, Hat B, Faeder JR, Hlavacek WS (2008). Stochastic effects and
+#  bistability in T cell receptor signaling. Journal of Theoretical Biology
+#  254:110-122. doi:10.1016/j.jtbi.2008.05.001
+
+#@note: |
+#  Adapted from the supplied BioNetGen benchmark model, which encodes the
+#  37 species and 97 reactions in Lipniacki et al. (2008). Rule families that
+#  differ only by internal state are consolidated with wildcard states; the
+#  generated reaction network and kinetics are unchanged. Copy-number seeds
+#  are the integer-rounded endpoint of the paper's 10-hour ligand-free
+#  deterministic priming protocol. The 30 agonist pMHC molecules are then
+#  present at t=0, so output time is stimulation-relative and corresponds to
+#  paper time minus the 600-second pre-stimulation interval in Fig. 7B.
+
+begin parameters
+  # Population-conversion constants; neither changes the source propensities
+  NA             6.02214076e23  # molecules/mol
+  V_ref          1e-12          # L/cell
+  h_mem          1e-7           # m
+
+  # Ligand and protein copy numbers from Table A1 in Lipniacki et al. (2008)
+  N_agonist      30             # molecules/cell
+  N_antagonist   0              # molecules/cell
+  TCR_total      30000          # molecules/cell
+  LCK_total      100000         # molecules/cell
+  ZAP70_total    100000         # molecules/cell
+  MEK_total      100000         # molecules/cell
+  ERK_total      300000         # molecules/cell
+  SHP1_total     300000         # molecules/cell
+
+  # pMHC binding and dissociation
+  b1             0.3/TCR_total  # /molecule/s
+  b2             0.3/TCR_total  # /molecule/s
+  d1             0.05           # /s
+  d2             1.0            # /s
+
+  # LCK recruitment, phosphorylation, and ERK-mediated protection
+  lb             0.3/LCK_total  # /molecule/s
+  ly2            0.3            # /s
+  ls1            0.1            # /s
+  ls2            0.5/ERK_total  # /molecule/s
+  tp             0.05           # /s
+
+  # SHP1 activation, recruitment, deactivation, and release
+  ly1            5.0/SHP1_total # /molecule/s
+  s0             1e-5           # /s
+  s1             30/SHP1_total  # /molecule/s
+  s2             0.0006         # /s
+  s3             0.05           # /s
+
+  # ZAP70, MEK, and ERK phosphorylation cascades
+  z0             2e-6           # /s
+  z1             5.0/ZAP70_total # /molecule/s
+  z2             0.02           # /s
+  m1             5.0/MEK_total  # /molecule/s
+  m2             0.02           # /s
+  e1             5.0/ERK_total  # /molecule/s
+  e2             0.02           # /s
+end parameters
+
+begin molecule types
+  # Agonist or endogenous/antagonist peptide-MHC ligand
+  pMHC(p~ag~en)
+
+  # T-cell receptor with effective ITAM and LCK/SHP1 docking sites
+  TCR(ab,itam~u~p~pp,lck,shp)
+
+  # Src-family kinase LCK; y is activating Tyr and s is protective Ser59
+  LCK(tcr,y~u~p,s~u~p)
+
+  # Inhibitory phosphatase SHP1
+  SHP1(tcr,y~u~p)
+
+  # ZAP70 kinase
+  ZAP70(y~u~p)
+
+  # Lumped MAPK cascade tiers
+  MEK(s~u~p~pp)
+  ERK(s~u~p~pp)
+end molecule types
+
+begin seed species
+  # Fig. 7B stimulation: 30 agonists and no endogenous/antagonist ligands
+  pMHC(p~ag)  N_agonist     # molecules
+  pMHC(p~en)  N_antagonist  # molecules
+
+  # Integer-rounded ligand-free primed state after 10 hours of ODE relaxation
+  TCR(ab,itam~u,lck,shp)                   25603  # molecules
+  TCR(ab,itam~u,lck,shp!1).SHP1(tcr!1,y~p) 4397  # molecules
+  LCK(tcr,y~u,s~u)                        100000  # molecules
+  SHP1(tcr,y~u)                           295082  # molecules
+  SHP1(tcr,y~p)                              521  # molecules
+  ZAP70(y~u)                               99990  # molecules
+  ZAP70(y~p)                                  10  # molecules
+  MEK(s~u)                                 97561  # molecules
+  MEK(s~p)                                  2379  # molecules
+  MEK(s~pp)                                   60  # molecules
+  ERK(s~u)                                285833  # molecules
+  ERK(s~p)                                 13498  # molecules
+  ERK(s~pp)                                  669  # molecules
+end seed species
+
+begin observables
+  # Ligand-bound receptor complexes
+  Molecules Obs_Cplx_TCR_Agonist TCR(ab!1).pMHC(p~ag!1)
+  Molecules Obs_Cplx_TCR_Antagonist TCR(ab!1).pMHC(p~en!1)
+
+  # Feedback and downstream signaling states
+  Molecules Obs_State_LCK_Y_P LCK(y~p)
+  Molecules Obs_State_SHP1_P SHP1(y~p)
+  Molecules Obs_State_ZAP70_P ZAP70(y~p)
+  Molecules Obs_State_MEK_PP MEK(s~pp)
+  Molecules Obs_State_ERK_PP ERK(s~pp)
+end observables
+
+begin functions
+  # Normalized ERK activity plotted in several figures in Lipniacki et al. (2008)
+  Frac_ERK_PP() = Obs_State_ERK_PP/ERK_total
+end functions
+
+begin reaction rules
+  # Agonist and endogenous/antagonist pMHC binding to SHP1-free TCR
+  R_bind_agonist: TCR(ab,shp) + pMHC(p~ag) -> \
+  TCR(ab!1,shp).pMHC(p~ag!1) b1
+  R_bind_antagonist: TCR(ab,shp) + pMHC(p~en) -> \
+  TCR(ab!1,shp).pMHC(p~en!1) b2
+
+  # LCK recruitment to ligand-bound, SHP1-free receptor
+  R_recruit_LCK: TCR(ab!+,lck,shp) + LCK(tcr) -> \
+  TCR(ab!+,lck!1,shp).LCK(tcr!1) lb
+
+  # Activating LCK tyrosine phosphorylation
+  R_phos_LCK_Y: TCR(lck!1,shp).LCK(tcr!1,y~u) -> \
+  TCR(lck!1,shp).LCK(tcr!1,y~p) ly2
+
+  # ERK-mediated LCK Ser59 phosphorylation protects LCK from SHP1
+  R_phos_LCK_S: ERK(s~pp) + TCR(lck!1,shp).LCK(tcr!1,s~u) -> \
+  ERK(s~pp) + TCR(lck!1,shp).LCK(tcr!1,s~p) ls2
+  R_dephos_LCK_S: LCK(tcr!+,s~p) -> LCK(tcr!+,s~u) ls1
+
+  # Sequential phosphorylation of the effective TCR ITAM by active LCK
+  R_phos_TCR_1: TCR(itam~u,lck!1,shp).LCK(tcr!1,y~p) -> \
+  TCR(itam~p,lck!1,shp).LCK(tcr!1,y~p) tp
+  R_phos_TCR_2: TCR(itam~p,lck!1,shp).LCK(tcr!1,y~p) -> \
+  TCR(itam~pp,lck!1,shp).LCK(tcr!1,y~p) tp
+
+  # Basal and ppTCR-catalyzed ZAP70 activation
+  R_phos_ZAP70_basal: ZAP70(y~u) -> ZAP70(y~p) z0
+  R_phos_ZAP70_TCR: TCR(itam~pp) + ZAP70(y~u) -> \
+  TCR(itam~pp) + ZAP70(y~p) z1
+  R_dephos_ZAP70: ZAP70(y~p) -> ZAP70(y~u) z2
+
+  # Sequential MEK activation by phosphorylated ZAP70
+  R_phos_MEK_1: ZAP70(y~p) + MEK(s~u) -> ZAP70(y~p) + MEK(s~p) m1
+  R_phos_MEK_2: ZAP70(y~p) + MEK(s~p) -> ZAP70(y~p) + MEK(s~pp) m1
+  R_dephos_MEK_P: MEK(s~p) -> MEK(s~u) m2
+  R_dephos_MEK_PP: MEK(s~pp) -> MEK(s~u) m2
+
+  # Sequential ERK activation by doubly phosphorylated MEK
+  R_phos_ERK_1: MEK(s~pp) + ERK(s~u) -> MEK(s~pp) + ERK(s~p) e1
+  R_phos_ERK_2: MEK(s~pp) + ERK(s~p) -> MEK(s~pp) + ERK(s~pp) e1
+  R_dephos_ERK_P: ERK(s~p) -> ERK(s~u) e2
+  R_dephos_ERK_PP: ERK(s~pp) -> ERK(s~u) e2
+
+  # Basal and active-LCK-catalyzed SHP1 phosphorylation
+  R_phos_SHP1_basal: SHP1(tcr,y~u) -> SHP1(tcr,y~p) s0
+  R_phos_SHP1_LCK: LCK(y~p,s~u) + SHP1(tcr,y~u) -> \
+  LCK(y~p,s~u) + SHP1(tcr,y~p) s1
+
+  # pMHC dissociation resets TCR and, when present, releases inactive LCK
+  R_release_agonist: pMHC(p~ag!1).TCR(ab!1,itam,lck) -> \
+  pMHC(p~ag) + TCR(ab,itam~u,lck) d1
+  R_release_antagonist: pMHC(p~en!1).TCR(ab!1,itam,lck) -> \
+  pMHC(p~en) + TCR(ab,itam~u,lck) d2
+  R_release_agonist_LCK: \
+  pMHC(p~ag!1).TCR(ab!1,itam,lck!2).LCK(tcr!2,y,s) -> \
+  pMHC(p~ag) + TCR(ab,itam~u,lck) + LCK(tcr,y~u,s~u) d1
+  R_release_antagonist_LCK: \
+  pMHC(p~en!1).TCR(ab!1,itam,lck!2).LCK(tcr!2,y,s) -> \
+  pMHC(p~en) + TCR(ab,itam~u,lck) + LCK(tcr,y~u,s~u) d2
+
+  # Phosphorylated SHP1 recruitment resets TCR and unprotected LCK
+  R_recruit_SHP1_TCR: TCR(itam,lck,shp) + SHP1(tcr,y~p) -> \
+  TCR(itam~u,lck,shp!1).SHP1(tcr!1,y~p) ly1
+  R_recruit_SHP1_LCK: \
+  TCR(itam,lck!1,shp).LCK(tcr!1,y,s~u) + SHP1(tcr,y~p) -> \
+  TCR(itam~u,lck!1,shp!2).LCK(tcr!1,y~u,s~u).SHP1(tcr!2,y~p) ly1
+
+  # Bound SHP1 either dephosphorylates on release or leaves while active
+  R_release_SHP1_dephos: TCR(shp!1).SHP1(tcr!1,y~p) -> \
+  TCR(shp) + SHP1(tcr,y~u) s2
+  R_release_SHP1_active: TCR(shp!1).SHP1(tcr!1,y~p) -> \
+  TCR(shp) + SHP1(tcr,y~p) s3
+
+  # Free phosphorylated SHP1 deactivation
+  R_dephos_SHP1_free: SHP1(tcr,y~p) -> SHP1(tcr,y~u) s2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 37 species, 97 reactions
+  saveConcentrations()
+
+  # Fixed-seed stochastic response to 30 agonist pMHC molecules
+
+  #@protocol: |
+  #  Starting from the ligand-free primed state, expose the cell to 30 agonist
+  #  pMHC molecules for three hours. Output time is measured from ligand
+  #  addition; add 600 seconds to compare with the axes in Fig. 7B.
+
+  #@figure: Fig. 7B in Lipniacki et al. (2008)
+
+  resetConcentrations()
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10800,n_steps=>600,\
+    seed=>200807,print_functions=>1})
+
+  # Deterministic alternative for the black Fig. 7B trajectory
+
+  #@protocol: |
+  #  Integrate the same finite reaction network deterministically from the
+  #  primed state. This is used by the verification notebook for comparison
+  #  with the reported black curve.
+
+#  resetConcentrations()
+#  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>10800,n_steps=>600,\
+#    print_functions=>1,rtol=>1e-10,atol=>1e-10})
+
+  # Partially scaled stochastic alternative
+
+  #@protocol: |
+  #  Use partial scaling for a faster approximate stochastic trajectory at the
+  #  same full-cell copy numbers.
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",poplevel=>100,suffix=>"psa",t_start=>0,t_end=>10800,\
+#    n_steps=>600,seed=>200807,print_functions=>1})
+
+  #@note: |
+  #  NFsim is omitted because tracking roughly 700,000 molecules makes the
+  #  three-hour protocol substantially slower than the exact generated-network
+  #  SSA. The rule set has no same-complex binding ambiguity.
+end actions

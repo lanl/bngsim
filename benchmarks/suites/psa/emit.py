@@ -8,8 +8,8 @@ Reads ``results/psa_results.json`` and writes
 
 Table S3: Model | Sp | Rxns | $N_c$ | BNGsim (s) | run_net (s) | Speedup.
 The row set is the cartesian product of the runner's ``MODELS`` and
-each model's ``poplevels`` list (12 rows = 3 models x 4 Nc values).
-Missing timing renders as ``\\textit{TBD}``.
+each model's ``poplevels`` list -- 15 rows, 3 models x the 5 Nc values in
+``run.POPLEVELS``. Missing timing renders as ``\\textit{TBD}``.
 """
 
 from __future__ import annotations

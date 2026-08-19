@@ -14,6 +14,63 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Changed
+
+- **The manuscript's eight named BNGL models are generated from their curated
+  `BNGL-Models` records, once, and both suites that time them share the result
+  (issue #423).** `suites/ssa_table5` (Table 5, exact Gillespie SSA) and
+  `suites/psa` (Table 7, partial-scaling approximation) each vendored their own
+  pre-generated `.net` files. For the three models they have in common
+  — `tcr_signaling`, `erk_activation`, `prion_aggregation` — those were three
+  *different* artifacts by sha256, and both sets predated
+  `wshlavacek/bngsim-paper#6`'s re-pointing of the manuscript's named models at
+  the house-curated collection. A benchmark re-run would have faithfully
+  re-measured superseded networks and left the manuscript citing files nothing
+  had simulated.
+
+  `benchmarks/models/bngl/curated/` now holds the eight records verbatim,
+  `benchmarks/models/net/curated/` the networks generated from them, and
+  `benchmarks/models/regenerate_curated_nets.py` generates and verifies both
+  against `curated_nets.json`, which pins every upstream and artifact sha256.
+  `--check` regenerates into a temp directory and diffs, so a stale artifact
+  fails rather than being re-measured. Generation strips every action *except*
+  `generate_network`, so a record's own protocol never runs — the horizons stay
+  the manuscript's, which several records disagree with — and keeps
+  `generate_network`'s options, which is what decides the network.
+
+  Three networks moved, and the manuscript re-measures those rows:
+
+  | model | was | now | why |
+  |---|---|---|---|
+  | `prion_aggregation` | 104/2809 | **121/3843** | the record raises `max_iter=>150` over BNG's 100-iteration default, so chains reach its own `max_stoich=>{PrP=>120}` cap; the 17 added species are zero-population chain tails, so the event count holds (~605 k at `t_end=10`) and only per-event cost rises (~20 %) |
+  | `samoilov_futile_cycle` | 6/6 | **7/10** | the record is the primary file, external noise driver included |
+  | `gene_expr_3stage` | 6/6 | **4/6** | the superseded copy carried a `Src()` marker and a `$Null()` sink the record does not; dynamics unchanged |
+
+  `tcr_signaling` keeps its 37/97 network but starts from the paper's primed
+  state (~3 % more events); `erk_activation` is a pure relabelling, identical to
+  the event; `gene_expression` and `mckane_predator_prey` are unchanged.
+  `gene_bursts` loses the ODE-equilibrated `Protein=467` an earlier corpus build
+  baked into its `.net`: the record's own seeds are `0/0`, so at the
+  manuscript's one-cell-cycle `t_end=3600` the row measures the basal regime
+  (median ~84 events over 10 seeds, and a replicate can draw 0).
+
+  One coverage cell moved with them: the curated Samoilov record's driver step
+  `N + N -> E+ + N` is a repeated reactant, whose converted SBML law `k*N*N` is
+  not the exact propensity `k*N*(N-1)`, so **`samoilov_futile_cycle`/RoadRunner
+  is now N/A** (COPASI derives the combinatorial propensity itself and its cell
+  stands). `convert_all.py` now checks every conversion verdict it computes
+  against the coverage table the orchestrator obeys and exits non-zero if they
+  disagree, so that class of drift cannot go unnoticed again.
+
+- **`ssa_table5`'s `corpus.json` is the corpus SSOT.** Artifacts, horizons and
+  output-point counts were typed out in both `corpus.json` and `_ssa_config.py`;
+  the corpus is not on the timing path, so a horizon edited in one and not the
+  other would have stayed invisible until the manuscript quoted it.
+  `_ssa_config.MODELS` is derived from the corpus and keeps only runner policy
+  (warm-N, cheap→expensive order, coverage). The psa suite's `Nc` sweep is
+  likewise declared once, in `run.POPLEVELS` — its README and emitter documented
+  a 4-value sweep while the runner swept 5.
+
 ### Fixed
 
 - **A `TotalRate` rule with a symmetric reaction center no longer runs at a
@@ -73,6 +130,20 @@ in `CMakeLists.txt`) is derived from it.
   a symmetric elementary-rate rule — are byte-identical across the change
   (380.73 and 286.10 over 60 seeds), so nothing outside the `TotalRate` path
   moved.
+
+- **The `ssa_table5` suite no longer needs one particular developer's machine
+  (issue #423).** `_ssa_config.RUN_NETWORK_BIN` was
+  `/Users/wish/Simulations/.../run_network`, an absolute path into a home
+  directory no other machine has; it now resolves `$RUN_NETWORK`, then
+  `$BNGPATH/bin/run_network`, then the canonical
+  `~/Simulations/BioNetGen-2.9.3` — the same convention as every other suite.
+  `TIMING_HARNESS.md` documented an absolute `VENV=` for the same reason.
+
+- **`emit_ssa_table.py` renders a partial result set.** It walks all 14×4 cells
+  and indexed `r["model"]` on the `{}` it gets for a cell the results file has no
+  record of, so it raised `KeyError` after any `--only` / `--engines` run or
+  interrupted sweep — exactly the runs whose output you want to look at. Those
+  cells now render as `missing`.
 
 ## [0.14.0] - 2026-08-18
 

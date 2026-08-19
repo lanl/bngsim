@@ -1,0 +1,51 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA              6.02214076e23  # Constant
+    2 V_ref           1.0  # Constant
+    3 k_plus_1        40  # Constant
+    4 k_plus_2        1e4  # Constant
+    5 k_plus_3        1e4  # Constant
+    6 k_minus_1       200  # Constant
+    7 k_minus_2       100  # Constant
+    8 k_minus_3       5e3  # Constant
+    9 k_21            10  # Constant
+   10 k_minus_21      5  # Constant
+   11 k_22            10  # Constant
+   12 k_minus_22      0.2  # Constant
+   13 X_init          0  # Constant
+   14 X_star_init     2000  # Constant
+   15 E_plus_init     20  # Constant
+   16 E_minus_init    50  # Constant
+   17 N_init          10  # Constant
+end parameters
+begin species
+    1 S(e,mod~U) X_init
+    2 S(e,mod~P) X_star_init
+    3 Eplus(s) E_plus_init
+    4 Eminus(s) E_minus_init
+    5 N() N_init
+    6 Eplus(s!1).S(e!1,mod~U) 0
+    7 Eminus(s!1).S(e!1,mod~P) 0
+end species
+begin reactions
+    1 1,3 6 k_plus_1 #R_bind_plus
+    2 2,4 7 k_minus_1 #R_bind_minus
+    3 5,5 3,5 k_21 #R_driver_auto
+    4 3,5 5,5 k_minus_21 #R_driver_auto_rev
+    5 5 3 k_22 #R_driver_lin
+    6 3 5 k_minus_22 #_reverse_R_driver_lin
+    7 6 1,3 k_plus_2 #_reverse_R_bind_plus
+    8 6 2,3 k_plus_3 #R_cat_plus
+    9 7 2,4 k_minus_2 #_reverse_R_bind_minus
+   10 7 1,4 k_minus_3 #R_cat_minus
+end reactions
+begin groups
+    1 Obs_X                1
+    2 Obs_X_star           2
+    3 Obs_C_plus           6
+    4 Obs_C_minus          7
+    5 Obs_E_plus           3
+    6 Obs_E_minus          4
+    7 Obs_N                5
+    8 Obs_E_plus_tot       3,6
+end groups

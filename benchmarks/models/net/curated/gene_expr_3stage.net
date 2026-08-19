@@ -1,0 +1,36 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA                6.02214076e23  # Constant
+    2 V_ref             1e-15  # Constant
+    3 a                 4.0  # Constant
+    4 b                 10.0  # Constant
+    5 gamma             10.0  # Constant
+    6 kappa_0           0.6  # Constant
+    7 kappa_1           0.2  # Constant
+    8 d1                0.0005  # Constant
+    9 d0                gamma*d1  # ConstantExpression
+   10 k0                kappa_0*d1  # ConstantExpression
+   11 k1                kappa_1*d1  # ConstantExpression
+   12 v0                a*d1  # ConstantExpression
+   13 v1                b*d0  # ConstantExpression
+end parameters
+begin species
+    1 DNA(promoter~inactive) 1
+    2 mRNA() 0
+    3 Protein() 0
+    4 DNA(promoter~active) 0
+end species
+begin reactions
+    1 1 4 k0 #R_switch_promoter
+    2 2 2,3 v1 #R_translate
+    3 2 0 d0 #R_degrade_mRNA
+    4 3 0 d1 #R_degrade_Protein
+    5 4 1 k1 #_reverse_R_switch_promoter
+    6 4 2,4 v0 #R_transcribe
+end reactions
+begin groups
+    1 Obs_DNA_Inactive     1
+    2 Obs_DNA_Active       4
+    3 Obs_Tot_mRNA         2
+    4 Obs_Tot_Protein      3
+end groups

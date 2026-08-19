@@ -47,47 +47,67 @@ from _effort import add_effort_arg, filter_by_effort  # noqa: E402
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = SCRIPT_DIR / "results"
-NET_DIR = _BENCH_ROOT / "models" / "net" / "psa"
+MODELS_ROOT = _BENCH_ROOT / "models"
+NET_DIR = MODELS_ROOT / "net" / "curated"
+CURATED_MANIFEST = MODELS_ROOT / "curated_nets.json"
+
+# Nc population levels every model is swept over. One list, so the README, the
+# emitter's row count and the runner cannot disagree about the sweep.
+POPLEVELS = [10, 30, 100, 300, 1000]
 
 # ---------------------------------------------------------------------------
 # Model registry
 # ---------------------------------------------------------------------------
-# The 3 PSA benchmark models, vendored at models/net/psa/.  Each is swept
-# over a list of Nc population levels and carries an "effort" tier driving
-# --effort.  Exact SSA is impractical for these models (large populations or
-# many reactions) -- that is the motivation for PSA.
-MODELS = [
+# The 3 PSA benchmark models.  Their .net files are generated from the curated
+# BNGL-Models records by models/regenerate_curated_nets.py and shared with
+# suites/ssa_table5, which runs the same three networks at exact-SSA horizons --
+# the horizon is a property of the protocol, not of the network, so there is one
+# artifact per model rather than one per suite.  Species/reaction counts are read
+# from the manifest, not typed here, because they follow the record: the prion
+# record's own generate_network reaches 121/3843, where a superseded vendored
+# copy froze at 104/2809.  Each model carries an "effort" tier driving --effort.
+# Exact SSA is impractical for these models (large populations or many
+# reactions) -- that is the motivation for PSA.
+_MODELS = [
     {
         "name": "tcr_signaling",
-        "species": 37,
-        "reactions": 97,
         "t_end": 300,
         "n_steps": 1000,
-        "poplevels": [10, 30, 100, 300, 1000],
+        "poplevels": POPLEVELS,
         "effort": "low",
         "notes": "Bistable stochastic switching; PSA Nc=300 ~8x faster than SSA",
     },
     {
         "name": "erk_activation",
-        "species": 34,
-        "reactions": 65,
         "t_end": 8640,
         "n_steps": 1000,
-        "poplevels": [10, 30, 100, 300, 1000],
+        "poplevels": POPLEVELS,
         "effort": "medium",
         "notes": "Populations up to 3e6; exact SSA infeasible (billions of events)",
     },
     {
         "name": "prion_aggregation",
-        "species": 104,
-        "reactions": 2809,
         "t_end": 10,
         "n_steps": 1000,
-        "poplevels": [10, 30, 100, 300, 1000],
+        "poplevels": POPLEVELS,
         "effort": "high",
-        "notes": "Nucleated polymerization; 2809 reactions make SSA slow",
+        "notes": "Nucleated polymerization; thousands of reactions make SSA slow",
     },
 ]
+
+
+def _with_sizes(models):
+    """Attach each model's species/reaction counts from the curated manifest."""
+    sizes = {
+        m["name"]: (m["species"], m["reactions"])
+        for m in json.loads(CURATED_MANIFEST.read_text())["models"]
+    }
+    for m in models:
+        m["species"], m["reactions"] = sizes[m["name"]]
+    return models
+
+
+MODELS = _with_sizes(_MODELS)
 
 # Fixed seed + top-K channels for the anchor-free PSA diagnostics pass (GH #15).
 DIAG_SEED = 20260716

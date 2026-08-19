@@ -20,16 +20,25 @@ Faithfulness gates (mirroring parity_checks/bng_parity/net_roadrunner.py):
   * run_network needs (SBML->.net direction): convert OK and NO dropped events
     (a dropped event changes the .net's dynamics vs the source SBML).
 
-Writes results/converted/conversion_log.json.
+Writes results/converted/conversion_log.json, then checks the verdicts it just
+computed against the coverage table _ssa_config.py declares -- that table is what
+the orchestrator obeys, and it is hand-written, so a conversion that starts or
+stops being faithful (a re-pointed model, a converter fix) has to show up here
+rather than as a silently unfaithful cell in the timing matrix. Exits non-zero on
+a disagreement, naming the cell.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 import warnings
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import _ssa_config as C  # noqa: E402
+
 CORPUS = json.loads((HERE / "corpus.json").read_text())
 OUT = HERE / "results" / "converted"
 RHS_TOL = 1e-6  # net_roadrunner.RHS_FAITHFUL_TOL
@@ -166,6 +175,29 @@ def convert_sbml(m) -> dict:
     return rec
 
 
+def check_coverage(log) -> list[str]:
+    """Compare the verdicts just computed against _ssa_config.COVERAGE."""
+    problems = []
+    for direction, engines in (("bngl", ("rr", "copasi")), ("sbml", ("run_network",))):
+        for rec in log[direction]:
+            for short in engines:
+                engine = {"rr": "roadrunner"}.get(short, short)
+                computed_ok = rec.get(short) == "ok"
+                declared_ok = C.cell_status(rec["name"], engine)[0] == "ok"
+                if computed_ok != declared_ok:
+                    verb = (
+                        "is faithful but is declared"
+                        if computed_ok
+                        else "is not faithful but is declared"
+                    )
+                    problems.append(
+                        f"{rec['name']}/{engine}: conversion {verb} "
+                        f"{C.cell_status(rec['name'], engine)[0]!r} in _ssa_config.COVERAGE "
+                        f"(convert_all says: {rec.get(short)})"
+                    )
+    return problems
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     import bngsim
@@ -193,6 +225,15 @@ def main():
     (OUT / "conversion_log.json").write_text(json.dumps(log, indent=2))
     print(f"\n-> {OUT / 'conversion_log.json'}")
 
+    problems = check_coverage(log)
+    if problems:
+        print("\n== COVERAGE DISAGREEMENT (_ssa_config.COVERAGE is what the runner obeys) ==")
+        for p in problems:
+            print(f"  {p}")
+        return 1
+    print("coverage: _ssa_config.COVERAGE agrees with every conversion verdict")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

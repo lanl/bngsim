@@ -1,0 +1,188 @@
+begin model
+
+#@title: |
+#  Prion nucleated polymerization, stochastic-benchmark parameterization
+#  (Rubenstein et al., 2007)
+
+#@description: |
+#  Benchmark variant of prion_nucleated_polymerization_rubenstein2007.bngl. The
+#  mechanism is unchanged: metabolic turnover of PrPC, elongation of linear PrPSc
+#  chains one subunit at a time, cleavage at any inter-subunit bond, clearance of
+#  whole aggregates, and rapid reversion of chains shorter than n = 3. Only the
+#  scale changes. PrPC production is raised 12.5-fold to lambda = 30,000/day, so
+#  the aggregate-free PrPC level is x_0 = 7,500 rather than 600 molecules, and the
+#  chain-length cap is raised from 40 to 120 subunits. This is the parameterization
+#  used as a stochastic-simulation benchmark by Lin et al. (2019). With PrPC that
+#  abundant, per-aggregate elongation runs at beta*x_0 = 21.9/day instead of
+#  1.75/day, so the three seed trimers grow and multiply within days rather than
+#  months; a ten-day run therefore spans the whole take-off in a system whose
+#  populations range over three orders of magnitude, from a handful of long chains
+#  to thousands of PrPC molecules. The larger cap makes the network eight times
+#  bigger than the primary model's, which is the point of the benchmark.
+
+#@keyword: |
+#  prion, protein aggregation, nucleated polymerization, linear polymer,
+#  chain elongation, fragmentation, stochastic seeding, mass action,
+#  stochastic simulation benchmark, generic
+
+#@reference: |
+#  Rubenstein R, Gray PC, Cleland TJ, Piltch MS, Hlavacek WS, Roberts RM,
+#  Ambrosiano J, Kim J-I (2007). Dynamics of the nucleated polymerization model of
+#  prion replication. Biophys Chem 125:360-367. doi:10.1016/j.bpc.2006.09.011
+#  Lin YT, Feng S, Hlavacek WS (2019). Scaling methods for accelerating kinetic
+#  Monte Carlo simulations of chemical reaction networks. J Chem Phys 150:244101.
+
+begin parameters
+  # Population-conversion constants; V_ref is the nominal volume of a single
+  # neuronal cell given in Table 1 of Rubenstein et al. (2007)
+  NA     6.02214076e23  # molecules/mol
+  V_ref  1e-12          # L/cell
+
+  # Benchmark PrPC production, 12.5 times the Table 1 value, with the Table 1
+  # first-order clearance rate
+  lambda  30000  # molecules/day
+  d       4      # /day
+
+  # Aggregate-free steady-state PrPC level, 7,500 molecules or about 12.5 nM
+  x_0  lambda/d  # molecules
+
+  # Degradation or sequestration of a whole aggregate; Eq. 3 in Rubenstein et al.
+  # (2007)
+  a  0.047  # /day
+
+  # Elongation: conversion of one PrPC at the free end of an aggregate; Eq. 4
+  beta  2.92e-3  # /molecule/day
+
+  # Cleavage of one inter-subunit bond; Eq. 5
+  b  0.0314  # /day
+
+  # Rapid reversion of subcritical PrPSc chains to PrPC; Eq. 6
+  gamma  100  # /day
+
+  # Minimum stable chain length, implicit in the two reversion rules
+  n  3  # dimensionless
+
+  # Guard against division by zero when every aggregate has been cleared
+  epsilon  1e-10  # aggregates
+end parameters
+
+begin molecule types
+  # Prion protein in its normal cellular (C) or misfolded scrapie (Sc) conformation
+  PrP(conf~C~Sc,head,tail)
+  # head and tail carry the bonds of a linear PrPSc aggregate, so every chain has
+  # exactly one molecule with a free head and one with a free tail
+end molecule types
+
+begin seed species
+  # PrPC starts at its aggregate-free steady state x_0 = lambda/d
+  PrP(conf~C,head,tail)  x_0  # molecules
+
+  # Three seed aggregates at the minimum stable length n = 3
+  PrP(conf~Sc,head,tail!1).PrP(conf~Sc,head!1,tail!2).PrP(conf~Sc,head!2,tail)  3  # molecules
+end seed species
+
+begin observables
+  # Free PrPC monomer, written x in Sec. 8 of Rubenstein et al. (2007)
+  Molecules Obs_PrP_C  PrP(conf~C)
+
+  # Total PrPSc protein held in aggregates, written z in Sec. 8
+  Molecules Obs_PrP_Sc  PrP(conf~Sc)
+
+  # Number of PrPSc aggregates, written y in Sec. 8; each chain has exactly one
+  # molecule with a free head
+  Molecules Obs_Agg  PrP(conf~Sc,head)
+
+  # Subcritical PrPSc chains, which revert to PrPC at rate gamma
+  Molecules Obs_Sc_monomer  PrP(conf~Sc,head,tail)
+  Species   Obs_Sc_dimer    PrP(conf~Sc,head,tail!1).PrP(conf~Sc,head!1,tail)
+end observables
+
+begin functions
+  # Mean aggregate chain length s = z/y; epsilon keeps s finite before seeding
+  # takes hold and if every aggregate is cleared
+  s_mean() = Obs_PrP_Sc/(Obs_Agg+epsilon)
+
+  # Steady-state mean chain length implied by the aggregate balance,
+  # s = a/b + 2n - 1; see Sec. 8 in Rubenstein et al. (2007)
+  s_predicted() = a/b+2*n-1
+
+  # Dimensional conversions (uncomment for concentration output)
+# PrP_C_conc() = Obs_PrP_C/(NA*V_ref)   # M
+# PrP_Sc_conc() = Obs_PrP_Sc/(NA*V_ref)  # M
+# Agg_conc() = Obs_Agg/(NA*V_ref)      # M
+end functions
+
+begin reaction rules
+  # Metabolic production of PrPC; Eq. 1 in Rubenstein et al. (2007)
+  R_synthesize_PrP_C: 0 -> PrP(conf~C,head,tail) lambda
+
+  # First-order clearance of PrPC; Eq. 2
+  R_degrade_PrP_C: PrP(conf~C,head,tail) -> 0 d
+
+  # Degradation or sequestration of a whole aggregate; Eq. 3. Matching the single
+  # free-head molecule of a chain makes the propensity a per aggregate and removes
+  # the whole complex.
+  R_clear_aggregate: PrP(conf~Sc,head) -> 0 a
+
+  # Elongation at the free tail of an aggregate; Eq. 4
+  R_elongate: PrP(conf~Sc,tail) + PrP(conf~C,head,tail) -> \
+    PrP(conf~Sc,tail!1).PrP(conf~Sc,head!1,tail) beta
+
+  # Cleavage of one inter-subunit bond; Eq. 5
+  R_cleave: PrP(conf~Sc,tail!1).PrP(conf~Sc,head!1) -> \
+    PrP(conf~Sc,tail) + PrP(conf~Sc,head) b
+
+  # Rapid reversion of chains shorter than n = 3 back to PrPC; Eq. 6
+  R_revert_monomer: PrP(conf~Sc,head,tail) -> PrP(conf~C,head,tail) gamma
+  R_revert_dimer: PrP(conf~Sc,head,tail!1).PrP(conf~Sc,head!1,tail) -> \
+    PrP(conf~C,head,tail) + PrP(conf~C,head,tail) gamma
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1,check_iso=>1,max_iter=>150,\
+    max_stoich=>{PrP=>120}})  # 121 species, 3843 reactions
+  saveConcentrations()
+
+  #@note: |
+  #  max_iter has to be raised because chains lengthen by one subunit per
+  #  iteration, so the default 100-iteration limit stops generation at 104
+  #  species, short of the 120-subunit cap, and BioNetGen then extends the
+  #  network during the run. Generation to completion takes about 45 s, most of
+  #  it isomorphism checking on the longest chains. The cap itself is slack: the
+  #  longest chain populated during the ten-day run holds 103 subunits.
+
+  # Ten-day benchmark trajectory
+
+  #@protocol: |
+  #  Seeded direct Gillespie run over ten days, the benchmark protocol of Lin et
+  #  al. (2019). Chains elongate immediately, the mean chain length peaks near 43
+  #  subunits within the first three days, and cleavage then multiplies the
+  #  aggregates while the mean length falls back toward 20. PrPC is still far
+  #  from its quasi-steady state at ten days, so this protocol exercises the
+  #  transient rather than the saturated regime of the primary model.
+
+  resetConcentrations()
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10,n_steps=>1000,\
+    seed=>2,print_functions=>1})
+
+  # Deterministic alternative
+
+  #@protocol: |
+  #  Mean-field relaxation of the same generated network over the same window.
+
+#  resetConcentrations()
+#  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>10,n_steps=>1000,\
+#    print_functions=>1})
+
+  # Network-free alternative
+
+  #@protocol: |
+  #  The same stochastic process without generating the reaction network. NFsim
+  #  does not apply max_stoich, so chains are not capped at 120 subunits.
+
+#  resetConcentrations()
+#  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>10,n_steps=>1000,\
+#    seed=>2,print_functions=>1,complex=>1,gml=>1000000})
+end actions
