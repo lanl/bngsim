@@ -10,10 +10,26 @@ list of `Nc` population levels.
 
 ## Models
 
-The corpus is vendored in-repo at `../../models/net/psa/` — 3 models
-(`tcr_signaling`, `erk_activation`, `prion_aggregation`), each swept
-over `Nc ∈ {10, 30, 100, 300}`. Pre-generated `.net` networks, all from
-BNG 2.9.3.
+3 models (`tcr_signaling`, `erk_activation`, `prion_aggregation`), each
+swept over `Nc ∈ {10, 30, 100, 300, 1000}` — 15 `(model, Nc)` jobs. The
+sweep lives in one place, `run.POPLEVELS`; species/reaction counts come
+from `../../models/curated_nets.json`, not from a hand-typed copy.
+
+The `.net` networks are at `../../models/net/curated/`, generated with
+BNG 2.9.3 from the curated `BNGL-Models` records by
+`../../models/regenerate_curated_nets.py`, and **shared with
+`suites/ssa_table5`** — which runs the same three networks at exact-SSA
+horizons. A horizon belongs to a protocol, not to a network, so there is
+one artifact per model rather than one per suite. (Each suite used to
+vendor its own pre-generated copy; the two had drifted apart from each
+other and from the records.)
+
+Regenerating or verifying them:
+
+```sh
+python ../../models/regenerate_curated_nets.py --check   # committed .net still current?
+python ../../models/regenerate_curated_nets.py           # rebuild from the vendored .bngl
+```
 
 ## Gates
 

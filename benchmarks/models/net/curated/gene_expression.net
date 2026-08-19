@@ -1,0 +1,59 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA                 6.02214076e23  # Constant
+    2 V_ref              4e-14  # Constant
+    3 lifetime           300  # Constant
+    4 gamma_R            1/lifetime  # ConstantExpression
+    5 m_avg_const        5  # Constant
+    6 k_R_const          m_avg_const*gamma_R  # ConstantExpression
+    7 k_R_reg            100/lifetime  # ConstantExpression
+    8 k_on_I             (2/15)*gamma_R  # ConstantExpression
+    9 k_off_I            (2/5)*gamma_R  # ConstantExpression
+   10 k_on_II            (2/3)*gamma_R  # ConstantExpression
+   11 k_off_II           2*gamma_R  # ConstantExpression
+   12 k_on_III           (10/3)*gamma_R  # ConstantExpression
+   13 k_off_III          10*gamma_R  # ConstantExpression
+   14 m_avg_reg          ((k_R_reg/gamma_R)*k_on_I)/(k_on_I+k_off_I)  # ConstantExpression
+end parameters
+begin functions
+    1 transcription_I() if((Obs_on_I>0),k_R_reg,0)
+    2 transcription_II() if((Obs_on_II>0),k_R_reg,0)
+    3 transcription_III() if((Obs_on_III>0),k_R_reg,0)
+end functions
+begin species
+    1 mRNA_const() m_avg_const
+    2 mRNA_I() m_avg_reg
+    3 mRNA_II() m_avg_reg
+    4 mRNA_III() m_avg_reg
+    5 promoter_I(state~off) 1
+    6 promoter_II(state~off) 1
+    7 promoter_III(state~off) 1
+    8 promoter_I(state~on) 0
+    9 promoter_II(state~on) 0
+   10 promoter_III(state~on) 0
+end species
+begin reactions
+    1 0 1 k_R_const #R_transcribe_const
+    2 0 2 transcription_I #R_transcribe_I
+    3 0 3 transcription_II #R_transcribe_II
+    4 0 4 transcription_III #R_transcribe_III
+    5 1 0 gamma_R #R_clear_const
+    6 2 0 gamma_R #R_clear_I
+    7 3 0 gamma_R #R_clear_II
+    8 4 0 gamma_R #R_clear_III
+    9 5 8 k_on_I #R_activate_I
+   10 6 9 k_on_II #R_activate_II
+   11 7 10 k_on_III #R_activate_III
+   12 8 5 k_off_I #R_inactivate_I
+   13 9 6 k_off_II #R_inactivate_II
+   14 10 7 k_off_III #R_inactivate_III
+end reactions
+begin groups
+    1 Obs_mRNA_const       1
+    2 Obs_mRNA_I           2
+    3 Obs_mRNA_II          3
+    4 Obs_mRNA_III         4
+    5 Obs_on_I             8
+    6 Obs_on_II            9
+    7 Obs_on_III           10
+end groups

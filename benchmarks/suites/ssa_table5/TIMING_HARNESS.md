@@ -7,6 +7,9 @@ Measures per-model **exact Gillespie SSA** cost (cold + warm) across four engine
 ## Pipeline
 
 ```
+../../models/regenerate_curated_nets.py --check
+                      # are the 8 BNGL .net files still what the curated BNGL-Models
+                      #   records generate? run this BEFORE a final timing run
 convert_all.py        # bngsim converter only: .net->SBML (RR+COPASI) & SBML->.net (run_network)
                       #   -> results/converted/*.{xml,net} + conversion_log.json  (fixes coverage)
 run_ssa_timing.py     # orchestrate the 14x4 matrix; 6 isolated cell subprocesses, incremental save
@@ -15,9 +18,14 @@ emit_ssa_table.py     # -> results/ssa_timing_ballpark.md  (+ enrich the json wi
 merge_jobout.py       # re-assemble the json from results/_jobout/*.json (after re-running any cell)
 ```
 
-Supporting modules: `_ssa_config.py` (models, horizons, cheap→expensive order, warm-N,
-coverage authority, per-engine artifact resolution) and `_ssa_cell.py` (one isolated
-`(engine, model)` cell: load + cold + warm).
+`corpus.json` is the SSOT for the model set: artifacts, horizons and output-point
+counts are declared there once and read by `_ssa_config.py`, `convert_all.py`,
+`run_bngsim_activity.py` and `emit_ssa_table.py`.
+
+Supporting modules: `_ssa_config.py` (runner policy — cheap→expensive order, warm-N,
+coverage authority, per-engine artifact resolution — over the corpus it loads from
+`corpus.json`) and `_ssa_cell.py` (one isolated `(engine, model)` cell: load + cold +
+warm).
 
 ## Definitions
 
@@ -36,15 +44,22 @@ coverage authority, per-engine artifact resolution) and `_ssa_cell.py` (one isol
 
 ## Run it
 
+`$PY` is any interpreter with bngsim importable — the repo's `.venv/bin/python3`,
+or whatever `python` your environment resolves to. `run_network` is located the
+same way as in every other suite: `$RUN_NETWORK`, else `$BNGPATH/bin/run_network`,
+else `~/Simulations/BioNetGen-2.9.3/bin/run_network`.
+
 ```bash
-VENV=/Users/wish/Code/PyBNF-Private/bngsim/.venv/bin/python
+export BNGPATH=~/Simulations/BioNetGen-2.9.3        # wherever your BNG 2.9.3 lives
+PY=python3
 cd benchmarks/suites/ssa_table5
-$VENV convert_all.py                                   # once; caches converted artifacts
-$VENV run_ssa_timing.py --workers 6                    # BALLPARK (contention)
-$VENV emit_ssa_table.py
+$PY ../../models/regenerate_curated_nets.py --check     # artifacts still current?
+$PY convert_all.py                                      # once; caches converted artifacts
+$PY run_ssa_timing.py --workers 6                       # BALLPARK (contention)
+$PY emit_ssa_table.py
 
 # FINAL numbers — clean serial re-run (no contention):
-$VENV run_ssa_timing.py --workers 1 && $VENV emit_ssa_table.py
+$PY run_ssa_timing.py --workers 1 && $PY emit_ssa_table.py
 ```
 
 `--only m1,m2` restricts models; `--engines bngsim,copasi` restricts engines;
@@ -58,10 +73,14 @@ $VENV run_ssa_timing.py --workers 1 && $VENV emit_ssa_table.py
 
 - **run_network** on SBML `.net`s that lost time-triggered events in conversion
   (860/862/864/344) → N/A; on a converted `.net` with a functional rate law (478 R4) →
-  fails (`-p ssa` has no functional propensities); on prion → the legacy `edgepop`
-  observable crash.
+  fails (`-p ssa` has no functional propensities). The `edgepop` observable crash noted
+  here previously was a property of a superseded prion artifact; the curated
+  `prion_aggregation.net` runs under `-p ssa` and under PSA (smoke-checked — re-confirm
+  at the full `t_end=300` in the serial run).
 - **RoadRunner** `gillespie` won't fire time-triggered events (860/862/864 N/A) and warns
   "time not treated continuously"; the 344 state-triggered event it also won't fire (run
-  but flagged).
+  but flagged). It also fires the SBML law `k*N*N` where the exact propensity for a
+  repeated reactant is `k*N*(N-1)` (GH #9), which takes out `samoilov_futile_cycle`
+  (N/A) — the curated record includes the driver step `N + N -> E+ + N`.
 - **COPASI** needs quantity unit `#` (particle number) for molecule-count models it imports
   as `mol` (converted-BNGL + native BIOMD035), else it refuses ("particle number too big").

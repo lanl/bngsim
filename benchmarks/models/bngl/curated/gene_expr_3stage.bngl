@@ -1,0 +1,126 @@
+begin model
+
+#@title: Three-stage stochastic gene expression (Shahrezaei and Swain, 2008)
+
+#@description: |
+#  Population-based model of a gene whose promoter switches between inactive and
+#  active states, with transcription from the active state, translation, and
+#  first-order mRNA and protein degradation. Fast mRNA turnover relative to protein
+#  turnover generates translational bursts. With the Fig. 3D parameters, slow
+#  promoter switching produces a stationary protein distribution with a zero-copy
+#  peak and a broad second mode near 25 proteins without deterministic bistability.
+
+#@keyword: |
+#  gene expression, stochastic bursts, promoter switching, intrinsic noise,
+#  bimodal, master equation, generic
+
+#@reference: |
+#  Shahrezaei V, Swain PS (2008). Analytical distributions for stochastic gene
+#  expression. Proceedings of the National Academy of Sciences USA 105:17256-17261.
+#  doi:10.1073/pnas.0803850105
+#  Shahrezaei V, Swain PS (2009). Correction. Proceedings of the National Academy
+#  of Sciences USA 106:346. doi:10.1073/pnas.0811545106
+
+#@note: |
+#  The dimensionless paper parameters are a=v0/d1, b=v1/d0, gamma=d0/d1,
+#  kappa_0=k0/d1, and kappa_1=k1/d1. The supplied source BNGL implements
+#  synthesis through auxiliary Src and Null species; the direct catalytic rules
+#  below generate the same chemical master equation. V_ref is bookkeeping for
+#  population-conversion readiness and does not enter the copy-number dynamics.
+#  The 2009 correction replaces Eq. 13 by F(z)=[f(z)]^a=(1+b-bz)^(-a).
+
+begin parameters
+  # Population-conversion constants and bookkeeping single-cell volume
+  NA     6.02214076e23  # molecules/mol
+  V_ref  1e-15          # L/cell
+
+  # Fig. 3D dimensionless ratios in Shahrezaei and Swain (2008)
+  a        4.0   # dimensionless
+  b        10.0  # dimensionless
+  gamma    10.0  # dimensionless
+  kappa_0  0.6   # dimensionless
+  kappa_1  0.2   # dimensionless
+
+  # Protein degradation and rates derived from the dimensionless ratios
+  d1  0.0005     # /s
+  d0  gamma*d1   # /s
+  k0  kappa_0*d1 # /s
+  k1  kappa_1*d1 # /s
+  v0  a*d1       # /s
+  v1  b*d0       # /s
+end parameters
+
+begin molecule types
+  # Gene promoter with inactive and transcriptionally active states
+  DNA(promoter~inactive~active)
+  # Messenger RNA transcribed from the active promoter
+  mRNA()
+  # Protein translated from mRNA
+  Protein()
+end molecule types
+
+begin seed species
+  DNA(promoter~inactive) 1 # molecules
+  mRNA()                 0 # molecules
+  Protein()              0 # molecules
+end seed species
+
+begin observables
+  # Promoter-state occupancies
+  Molecules Obs_DNA_Inactive DNA(promoter~inactive)
+  Molecules Obs_DNA_Active   DNA(promoter~active)
+
+  # Transcript and protein copy numbers
+  Molecules Obs_Tot_mRNA    mRNA()
+  Molecules Obs_Tot_Protein Protein()
+end observables
+
+begin reaction rules
+  # Promoter activation and inactivation; Fig. 3A in Shahrezaei and Swain (2008)
+  R_switch_promoter: DNA(promoter~inactive) <-> DNA(promoter~active) k0,k1
+
+  # Transcription occurs only from the active promoter
+  R_transcribe: DNA(promoter~active) -> DNA(promoter~active) + mRNA() v0
+
+  # Each transcript catalyzes repeated translation
+  R_translate: mRNA() -> mRNA() + Protein() v1
+
+  # First-order transcript and protein turnover
+  R_degrade_mRNA: mRNA() -> 0 d0
+  R_degrade_Protein: Protein() -> 0 d1
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1}) # 4 species, 6 reactions
+  saveConcentrations()
+
+  # Stationary protein-copy distribution
+
+  #@protocol: |
+  #  Run one seeded direct-method trajectory for 210 million seconds, sampling
+  #  every 20,000 s. The verification discards the first 10 million seconds as
+  #  burn-in and uses the remaining 10,000 samples to estimate the stationary
+  #  distribution, matching the burn-in and sampling durations in the source BNGL.
+
+  #@figure: Fig. 3D in Shahrezaei and Swain (2008)
+
+  resetConcentrations()
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>210000000,n_steps=>10500,\
+    seed=>17259})
+
+  # Deterministic mean-field alternative
+#  resetConcentrations()
+#  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>50000,n_steps=>500})
+
+  # Partial-scaling SSA alternative
+#  resetConcentrations()
+#  simulate({method=>"ssa",poplevel=>100,suffix=>"psa",t_start=>0,t_end=>50000,\
+#    n_steps=>500,seed=>17259})
+
+  # Network-free SSA alternative
+#  resetConcentrations()
+#  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>50000,n_steps=>500,\
+#    seed=>17259,gml=>2147483647})
+end actions

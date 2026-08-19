@@ -50,9 +50,13 @@ UNFAITHFUL = {
 
 
 def normalize_reason(r: dict) -> str:
-    """One-line human reason for a cell's outcome."""
+    """One-line human reason for a cell's outcome.
+
+    ``r`` is ``{}`` for a cell the results file has no record of -- the normal
+    state after a ``--only`` / ``--engines`` run or an interrupted sweep.
+    """
     st = r.get("status")
-    key = (r["model"], r["engine"])
+    key = (r.get("model"), r.get("engine"))
     if key in UNFAITHFUL and st == "ok":
         return "N/A (ran but incorrect) — " + UNFAITHFUL[key]
     if st == "N/A":
@@ -85,9 +89,14 @@ def display_status(r: dict) -> str:
     # A cell that RAN but produced an incorrect (degenerate) trajectory is N/A —
     # same bucket as an engine that cannot simulate the model at all (RoadRunner's
     # event-blindness). It ran (raw status "ok") but the result is not usable.
-    if (r["model"], r["engine"]) in UNFAITHFUL and r.get("status") == "ok":
+    #
+    # `r` is `{}` for a cell the results file has no record of, which is the normal
+    # state after a `--only` / `--engines` run or an interrupted sweep; those cells
+    # render as "missing". Indexing r["model"] here made the emitter unusable on any
+    # partial result set.
+    if (r.get("model"), r.get("engine")) in UNFAITHFUL and r.get("status") == "ok":
         return "N/A"
-    st = r.get("status")
+    st = r.get("status") or "missing"
     return {
         "ok": "ok",
         "N/A": "N/A",
@@ -264,8 +273,11 @@ def main():
     A(
         "- **Conversions** use BNGsim's own converter only (never BNG2.pl): `.net`→SBML feeds "
         "RoadRunner+COPASI; SBML→`.net` feeds run_network. Every `ConversionReport` is logged in "
-        "`results/converted/conversion_log.json` (all faithful: `max_rhs_delta` ≲ 1e-16, no repeated "
-        "reactants)."
+        "`results/converted/conversion_log.json`, and `convert_all.py` checks each verdict against "
+        "the coverage table the orchestrator obeys. All conversions are faithful "
+        "(`max_rhs_delta` ≲ 1e-16); the one repeated reactant is `samoilov_futile_cycle`'s driver "
+        "step `N + N → E+ + N`, whose SBML law `k·N·N` is not the exact propensity `k·N·(N−1)`, so "
+        "its RoadRunner cell is **N/A** (COPASI derives the combinatorial propensity itself)."
     )
     A(
         "- **COPASI molecule-count fix:** models COPASI imports with quantity unit `mol` (all "

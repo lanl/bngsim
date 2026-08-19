@@ -20,9 +20,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CORPUS = json.loads((HERE / "corpus.json").read_text())
-# numeric horizon fallback for SBML rows whose corpus t_end is a "confirm from
-# paper" placeholder string -- use the screen (ssa_jobs) horizon.
-SBML_PLACEHOLDER_TEND = {"BIOMD0000000478": 10.0, "BIOMD0000000586": 10.0, "BIOMD0000000587": 10.0}
 
 
 def _load(kind, path):
@@ -102,10 +99,9 @@ def build_jobs(cap):
     for m in CORPUS["bngl"]:
         jobs.append((m["name"], "bngl", m["file"], float(m["t_end"]), m.get("n_steps", 100), cap))
     for m in CORPUS["sbml"]:
-        te = m["t_end"]
-        if not isinstance(te, (int, float)):
-            te = SBML_PLACEHOLDER_TEND.get(m["id"], 10.0)
-        jobs.append((m["id"], "sbml", m["file"], float(te), m.get("n_points", 100), cap))
+        # Every corpus horizon is numeric; a row still awaiting confirmation from
+        # its source paper carries the reason in "t_end_status", not in t_end.
+        jobs.append((m["id"], "sbml", m["file"], float(m["t_end"]), m.get("n_points", 100), cap))
     return jobs
 
 

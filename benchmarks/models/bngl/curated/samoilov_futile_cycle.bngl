@@ -1,0 +1,213 @@
+begin model
+
+#@title: Noise-induced bistable futile cycle (Samoilov et al., 2005)
+
+#@description: |
+#  Elementary-reaction enzymatic futile cycle (Expression 7 in Samoilov et al.,
+#  2005) driven by an external chemical noise generator acting on the forward
+#  enzyme (Expression 8). A single substrate S is interconverted between an
+#  unmodified state (X) and a modified state (X*) by two competing enzymes: the
+#  forward enzyme E+ binds X reversibly and converts it to X*, and the reverse
+#  enzyme E- binds X* reversibly and converts it back to X. All six cycle steps
+#  are mass action with explicit enzyme-substrate complexes C+ and C-, so no
+#  Michaelis-Menten approximation is made. The noise driver is a two-reaction
+#  auto(de)activation module that interconverts a driver species N with free E+,
+#  N + N <-> E+ + N and N <-> E+, which keeps E+ + C+ + N strictly conserved
+#  and injects approximately multiplicative (power p ~ 1) fluctuations into the
+#  total forward enzyme.
+#  Deterministically (Eq. S5) the whole system is monostable: it relaxes to a
+#  single stable node at X = 1766.1, X* = 168.79, C+ = 21.719, C- = 43.438,
+#  E+ = 6.149, E- = 6.562, N = 2.132 molecules and stays there. With discrete
+#  molecule counts the same reaction set switches dynamically on a
+#  sub-second-to-second timescale: X* sits mostly near a high state of 286
+#  molecules and drops to a low state near 110 molecules about a fifth of the
+#  time, so its stationary density is strongly left-skewed and its time average
+#  (257 molecules) is 52% above the deterministic steady state. That excess is
+#  the stochastic amplification of Samoilov et al. (2005), and it is produced
+#  entirely by the external noise: there is no feedback loop anywhere in the
+#  mechanism.
+
+#@keyword: |
+#  signal transduction, enzymatic futile cycle, substrate cycle, noise-induced
+#  bistability, stochastic amplification, stochastic switching, dynamic
+#  bistability, external noise, multiplicative noise, mass action, Gillespie
+#  algorithm, covalent modification cycle, generic
+
+#@reference: |
+#  Samoilov M, Plyasunov S, Arkin AP (2005). Stochastic amplification and
+#  signaling in enzymatic futile cycles through noise-induced bistability with
+#  oscillations. Proceedings of the National Academy of Sciences USA
+#  102:2310-2315. doi:10.1073/pnas.0406841102
+
+#@note: |
+#  Notation map to Samoilov et al. (2005): S(mod~U) unbound is X, S(mod~P)
+#  unbound is X*, Eplus(s!+) is C+, Eminus(s!+) is C-, Eplus(s) is E+,
+#  Eminus(s) is E-, N is the driver species N. Rate constants k_plus_i and
+#  k_minus_i are the paper's k+i and k-i; k_21, k_minus_21, k_22 and k_minus_22
+#  are the driver constants of Expression 8. All constants are given "in terms
+#  of the number of molecules" (Fig. 3 caption), so this is a population-based
+#  model; V_ref is bookkeeping for population conversion and does not enter the
+#  dynamics.
+
+#@note: |
+#  The driver step N + N -> E+ + N is an N-catalyzed conversion of a single N,
+#  not a pair conversion: it consumes two N and returns one, so BioNetGen
+#  writes the reaction as 5,5 -> 3,5 with rate constant k_21, and its
+#  propensity is k_21*N*(N-1) with ODE flux k_21*N^2. Contrast a rule that
+#  consumes both copies, such as A() + A() -> B(): there BioNetGen writes
+#  0.5*k and the propensity is 0.5*k*n*(n-1).
+#  The one-half is not something the products switch on or off. In both cases
+#  the propensity is the rate constant times the number of distinct
+#  microscopic channels; the transformation fixes what one channel is, and so
+#  how many there are. A pair conversion picks an unordered pair of molecules,
+#  giving n*(n-1)/2 channels. A catalyzed conversion picks which molecule is
+#  converted and which catalyzes it, giving n*(n-1) ordered channels. Do not
+#  assume either form: read the constant BioNetGen wrote into the .net file.
+
+#@note: |
+#  Samoilov et al. (2005) do not say whether their k_21 is per ordered channel
+#  or per unordered pair, and the two differ by a factor of two. Eq. S5 of the
+#  Supporting Text has dN/dt = ... - k_21*N^2, the per-ordered-channel reading,
+#  which is what this file implements and what reproduces every digit of the
+#  reported deterministic fixed point. The per-unordered-pair reading gives
+#  k_21*N*(N-1)/2, halving the driver noise. The source is ambiguous: this file
+#  reproduces the reported fixed point and the Fig. 3A E+ inset envelope,
+#  whereas the halved reading reproduces the Fig. 3A X* switching balance. The
+#  companion file with the _unordered_pair suffix implements it, and
+#  verify_samoilov2005.ipynb quantifies both.
+
+begin parameters
+  # Population-conversion constants and bookkeeping reactor volume
+  NA     6.02214076e23  # molecules/mol
+  V_ref  1.0            # L/reactor
+
+  # Forward branch X + E+ <-> C+ -> X* + E+; see Expression 7 and the Fig. 3
+  # caption in Samoilov et al. (2005)
+  k_plus_1   40    # /molecule/s
+  k_plus_2   1e4   # /s
+  k_plus_3   1e4   # /s
+
+  # Reverse branch X* + E- <-> C- -> X + E-
+  k_minus_1  200   # /molecule/s
+  k_minus_2  100   # /s
+  k_minus_3  5e3   # /s
+
+  # External noise driver N + N <-> E+ + N and N <-> E+; see Expression 8 and
+  # the Fig. 3 caption in Samoilov et al. (2005)
+  k_21        10   # /molecule/s
+  k_minus_21  5    # /molecule/s
+  k_22        10   # /s
+  k_minus_22  0.2  # /s
+
+  # Initial molecule counts from the Fig. 3 caption in Samoilov et al. (2005)
+  X_init       0     # molecules
+  X_star_init  2000  # molecules
+  E_plus_init  20    # molecules
+  E_minus_init 50    # molecules
+  N_init       10    # molecules
+end parameters
+
+begin molecule types
+  # Cycle substrate; site e binds either enzyme and state mod carries the
+  # covalent modification
+  S(e,mod~U~P)
+  # S(mod~U) is the paper's X and S(mod~P) is its X*
+  # Forward (modifying) enzyme E+, the noise-driven input of the cycle
+  Eplus(s)
+  # Reverse (demodifying) enzyme E-, held at a constant total level
+  Eminus(s)
+  # External driver species N of Expression 8
+  N()
+end molecule types
+
+begin seed species
+  S(e,mod~U)  X_init        # molecules
+  S(e,mod~P)  X_star_init   # molecules
+  Eplus(s)    E_plus_init   # molecules
+  Eminus(s)   E_minus_init  # molecules
+  N()         N_init        # molecules
+end seed species
+
+begin observables
+  # Free substrate in each modification state; X and X* of Samoilov et al. (2005)
+  Molecules Obs_X       S(e,mod~U)
+  Molecules Obs_X_star  S(e,mod~P)
+
+  # Enzyme-substrate complexes C+ and C-
+  Molecules Obs_C_plus   Eplus(s!+)
+  Molecules Obs_C_minus  Eminus(s!+)
+
+  # Free enzymes E+ and E-
+  Molecules Obs_E_plus   Eplus(s)
+  Molecules Obs_E_minus  Eminus(s)
+
+  # Driver species N
+  Molecules Obs_N  N()
+
+  # Total forward enzyme E+T = E+ + C+; the noisy input signal of Eq. S6
+  Molecules Obs_E_plus_tot  Eplus()
+end observables
+
+begin reaction rules
+  # Forward branch: reversible binding of the unmodified substrate by E+
+  R_bind_plus: S(e,mod~U) + Eplus(s) <-> S(e!1,mod~U).Eplus(s!1)  k_plus_1, k_plus_2
+
+  # Forward branch: catalysis, releasing modified substrate and free E+
+  R_cat_plus: S(e!1,mod~U).Eplus(s!1) -> S(e,mod~P) + Eplus(s)  k_plus_3
+
+  # Reverse branch: reversible binding of the modified substrate by E-
+  R_bind_minus: S(e,mod~P) + Eminus(s) <-> S(e!1,mod~P).Eminus(s!1)  k_minus_1, k_minus_2
+
+  # Reverse branch: catalysis, restoring unmodified substrate and free E-
+  R_cat_minus: S(e!1,mod~P).Eminus(s!1) -> S(e,mod~U) + Eminus(s)  k_minus_3
+
+  # Driver: N-catalyzed activation of a second N into free E+, and its reverse.
+  # One N is converted and one catalyzes, so the propensity counts ordered
+  # (converted, catalyst) pairs: k_21*N*(N-1), not k_21*N*(N-1)/2.
+  # This quadratic step is what makes the driver noise close to power p = 1.
+  R_driver_auto: N() + N() -> Eplus(s) + N()  k_21
+  R_driver_auto_rev: Eplus(s) + N() -> N() + N()  k_minus_21
+
+  # Driver: spontaneous (linear) interconversion of N and free E+
+  R_driver_lin: N() <-> Eplus(s)  k_22, k_minus_22
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 7 species, 10 reactions
+  saveConcentrations()
+
+  # Noise-induced dynamic bistability
+
+  #@protocol: |
+  #  Simulate one exact Gillespie trajectory of the cycle plus driver over
+  #  t = 0..10 s from the Fig. 3 caption initial condition, sampling every
+  #  0.005 s. X* leaves the deterministic steady state of 168.79 molecules and
+  #  switches between a high state near 286 and a low state near 110 molecules
+  #  while X mirrors it near 1600-1900; free E+ fluctuates mostly over
+  #  0-15 molecules. The seed makes the committed reference output
+  #  reproducible; verify_samoilov2005.ipynb compares an ensemble of seeded runs
+  #  with the digitized figure rather than relying on one realization.
+
+  #@figure: Fig. 3A in Samoilov et al. (2005)
+
+  resetConcentrations()
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10,n_steps=>2000,\
+    seed=>406841})
+
+  # Deterministic relaxation to the Supporting Text fixed point
+#  resetConcentrations()
+#  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>200,n_steps=>2000,\
+#    atol=>1e-10,rtol=>1e-10})
+
+  # Partial-scaling SSA alternative
+#  resetConcentrations()
+#  simulate({method=>"ssa",poplevel=>100,suffix=>"psa",t_start=>0,t_end=>10,\
+#    n_steps=>2000,seed=>406841})
+
+  # Network-free SSA alternative
+#  resetConcentrations()
+#  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>10,n_steps=>2000,\
+#    seed=>406841,complex=>1})
+end actions

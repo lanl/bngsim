@@ -1,0 +1,285 @@
+begin model
+
+#@title: MAPK relaxation oscillations (Kochanczyk et al., 2017)
+
+#@description: |
+#  Population-based rule model of the human EGFR-RAS-RAF-MEK-ERK cascade with
+#  allosteric RAS-SOS positive feedback and ERK-mediated negative feedback to
+#  SOS, RAF, and MEK. Sequential phosphorylation and dephosphorylation rules
+#  produce a delayed inhibitory loop and relaxation oscillations over a range
+#  of EGF doses. At 20 pg/ml EGF, the active protocol generates sustained ERK
+#  relaxation oscillations with sharp activation and slower deactivation phases.
+
+#@keyword: |
+#  MAPK signaling, ERK, EGFR, RAS, SOS, relaxation oscillations, transient,
+#  positive feedback, negative feedback, mass action, Homo sapiens
+
+#@reference: |
+#  Kochanczyk M, Kocieniewski P, Kozlowska E, Jaruszewicz-Blonska J, Sparta B,
+#  Pargett M, Albeck JG, Hlavacek WS, Lipniacki T (2017). Relaxation
+#  oscillations and hierarchy of feedbacks in MAPK signaling. Scientific
+#  Reports 7:38244. doi:10.1038/srep38244
+
+#@note: |
+#  This house-style version preserves the supplied population formulation.
+#  The source scaling parameter BIMOL is normalized to the reserved name f:
+#  molecule counts scale by f and bimolecular rate constants scale by 1/f.
+#  Exact SSA and NFsim are omitted because populations reach 3,000,000
+#  molecules and require billions of events. A commented partial-scaling SSA
+#  protocol is retained for practical stochastic simulation.
+
+begin parameters
+  # Exact Avogadro constant and an assumed reference volume for unit conversion
+  NA      6.02214076e23  # molecules/mol
+  V_ref   1e-12          # L/cell
+
+  # EGF dose and strengths of the three ERK-mediated negative feedbacks
+  EGF             20   # pg/ml
+  ERKpp_SOS1_FB   1.0  # dimensionless
+  ERKpp_MEK_FB    1.0  # dimensionless
+  ERKpp_RAF1_FB   1.0  # dimensionless
+
+  # Fraction of the full cell represented and initial active-RAS fraction
+  f               1.0  # dimensionless
+  RAS_t0_active   0    # dimensionless
+
+  # Protein abundances in the full-cell source parameterization
+  EGFR_tot    3e5*f  # molecules/cell
+  RAS_tot     6e4*f  # molecules/cell
+  SOS_tot     1e5*f  # molecules/cell
+  RasGAP_tot  6e3*f  # molecules/cell
+  RAF_tot     5e5*f  # molecules/cell
+  MEK_tot     2e5*f  # molecules/cell
+  ERK_tot     3e6*f  # molecules/cell
+  EKAR3_tot   1e6*f  # molecules/cell
+  ERKTR_tot   1e6*f  # molecules/cell
+
+  # EGF-dependent EGFR activation and spontaneous deactivation
+  a1   5e-5*EGF  # /s
+  d1   1e-2      # /s
+
+  # EGFR-SOS and allosteric SOS-RAS interactions
+  b1   1e-5/f  # /molecule/s
+  u1a  1e-2    # /s
+  u1b  1e2     # /s
+  b2a  1e-6/f  # /molecule/s
+  u2a  1       # /s
+  b2b  1e-7/f  # /molecule/s
+  u2b  1       # /s
+  k2a  1e-4/f  # /molecule/s
+  k2b  1e-5/f  # /molecule/s
+
+  # RasGAP-assisted RAS inactivation
+  b3   1e-5/f  # /molecule/s
+  u3   1e-2    # /s
+  k3   1e2     # /s
+
+  # RAF, MEK, and ERK activation and deactivation
+  a2   1e-7/f  # /molecule/s
+  d2   1e-2    # /s
+  p1   1e-7/f  # /molecule/s
+  q1   1e-2    # /s
+  p2   3e-6/f  # /molecule/s
+  q2   1e-2    # /s
+
+  # ERK-mediated feedback phosphorylation and dephosphorylation
+  p3   3e-9*ERKpp_SOS1_FB/f  # /molecule/s
+  q3   3e-4                  # /s
+  p4   6e-10*ERKpp_MEK_FB/f  # /molecule/s
+  q4   3e-4                  # /s
+  q5   1e2                   # /s
+  p6   6e-10*ERKpp_RAF1_FB/f  # /molecule/s
+  q6   3e-4                   # /s
+
+  # Activation and deactivation of the ERK activity reporters
+  a0_ekar3  3e-9/f  # /molecule/s
+  d0_ekar3  1e-3    # /s
+  a0_erktr  1e-9/f  # /molecule/s
+  d0_erktr  2e-3    # /s
+end parameters
+
+begin molecule types
+  # Epidermal growth factor receptor with ligand-activity and SOS-binding sites
+  EGFR(egf~I~A,sos)
+
+  # Son of sevenless with allosteric RAS binding, EGFR binding, and four sites
+  SOS(rem,egfr,S~U~P~PP~PPP~PPPP)
+
+  # Lumped RAS isoforms with SOS binding and guanine nucleotide state
+  RAS(sos,g~GDP~GTP)
+
+  # Lumped RAS GTPase-activating protein
+  RasGAP(ras)
+
+  # Lumped RAF kinases in inactive, active, or feedback-inhibited states
+  RAF(S~I~A~P)
+
+  # Lumped MEK kinases with Thr292 feedback and activation-loop states
+  MEK(T292~U~P,S~U~P~PP)
+
+  # Lumped ERK1/2 activation-loop states
+  ERK(S~U~P~PP)
+
+  # ERK activity reporters
+  EKAR3(act~I~A)
+  ERKTR(act~I~A)
+end molecule types
+
+begin seed species
+  EGFR(egf~I,sos)    EGFR_tot                       # molecules
+  RAS(sos,g~GDP)     RAS_tot*(1-RAS_t0_active)     # molecules
+  RAS(sos,g~GTP)     RAS_tot*RAS_t0_active         # molecules
+  SOS(rem,egfr,S~U)  SOS_tot                        # molecules
+  RasGAP(ras)        RasGAP_tot                     # molecules
+  RAF(S~I)           RAF_tot                        # molecules
+  MEK(T292~U,S~U)    MEK_tot                        # molecules
+  ERK(S~U)           ERK_tot                        # molecules
+  EKAR3(act~I)       EKAR3_tot                      # molecules
+  ERKTR(act~I)       ERKTR_tot                      # molecules
+end seed species
+
+begin observables
+  # Activated receptor and successive active signaling layers
+  Molecules  Obs_EGFR_Active   EGFR(egf~A)
+  Molecules  Obs_RAS_GTP       RAS(g~GTP)
+  Molecules  Obs_RAF_Active    RAF(S~A)
+  Molecules  Obs_MEK_PP        MEK(S~PP)
+  Molecules  Obs_ERK_PP        ERK(S~PP)
+
+  # Active reporter populations used in Supplementary Figure S3
+  Molecules  Obs_EKAR3_Active  EKAR3(act~A)
+  Molecules  Obs_ERKTR_Active  ERKTR(act~A)
+end observables
+
+begin reaction rules
+  # EGF-dependent EGFR activation and spontaneous deactivation
+  R_EGFR_activation:  EGFR(egf~I) <-> EGFR(egf~A)  a1,d1
+
+  # Active EGFR recruits unphosphorylated SOS
+  R_EGFR_SOS_binding:  EGFR(egf~A,sos) + SOS(rem,egfr,S~U) <-> \
+    EGFR(egf~A,sos!1).SOS(rem,egfr!1,S~U)  b1,u1a
+
+  # Receptor deactivation triggers fast release of SOS
+  R_inactive_EGFR_SOS_release:  EGFR(egf~I,sos!1).SOS(rem,egfr!1) -> \
+    EGFR(egf~I,sos) + SOS(rem,egfr)  u1b
+
+  # Active RAS binds the allosteric REM site of receptor-bound SOS
+  R_SOS_RAS_GTP_binding:  SOS(rem,egfr!+) + RAS(sos,g~GTP) <-> \
+    SOS(rem!1,egfr!+).RAS(sos!1,g~GTP)  b2a,u2a
+
+  # Inactive RAS binds the allosteric REM site of receptor-bound SOS
+  R_SOS_RAS_GDP_binding:  SOS(rem,egfr!+) + RAS(sos,g~GDP) <-> \
+    SOS(rem!1,egfr!+).RAS(sos!1,g~GDP)  b2b,u2b
+
+  # RAS-GTP-bound SOS strongly activates a second RAS molecule
+  R_RAS_activation_strong:  SOS(rem!1,egfr!+).RAS(sos!1,g~GTP) + \
+    RAS(sos,g~GDP) -> SOS(rem!1,egfr!+).RAS(sos!1,g~GTP) + \
+    RAS(sos,g~GTP)  k2a
+
+  # RAS-GDP-bound SOS moderately activates a second RAS molecule
+  R_RAS_activation_moderate:  SOS(rem!1,egfr!+).RAS(sos!1,g~GDP) + \
+    RAS(sos,g~GDP) -> SOS(rem!1,egfr!+).RAS(sos!1,g~GDP) + \
+    RAS(sos,g~GTP)  k2b
+
+  # RasGAP captures active RAS, catalyzes hydrolysis, and releases inactive RAS
+  R_RasGAP_capture:  RasGAP(ras) + RAS(sos,g~GTP) -> \
+    RasGAP(ras!1).RAS(sos,g~GTP!1)  b3
+  R_RasGAP_hydrolysis:  RasGAP(ras!1).RAS(sos,g~GTP!1) -> \
+    RasGAP(ras!1).RAS(sos,g~GDP!1)  k3
+  R_RasGAP_release:  RasGAP(ras!1).RAS(sos,g~GDP!1) -> \
+    RasGAP(ras) + RAS(sos,g~GDP)  u3
+
+  # Active RAS catalytically activates RAF, which spontaneously deactivates
+  R_RAF_activation:  RAS(sos,g~GTP) + RAF(S~I) -> \
+    RAS(sos,g~GTP) + RAF(S~A)  a2
+  R_RAF_deactivation:  RAF(S~A) -> RAF(S~I)  d2
+
+  # Active RAF sequentially phosphorylates two MEK activation sites
+  R_MEK_phosphorylation_1:  RAF(S~A) + MEK(S~U) -> \
+    RAF(S~A) + MEK(S~P)  p1*2
+  R_MEK_phosphorylation_2:  RAF(S~A) + MEK(S~P) -> \
+    RAF(S~A) + MEK(S~PP)  p1
+
+  # MEK activation sites dephosphorylate independently
+  R_MEK_dephosphorylation_1:  MEK(S~PP) -> MEK(S~P)  q1*2
+  R_MEK_dephosphorylation_2:  MEK(S~P) -> MEK(S~U)  q1
+
+  # Active MEK sequentially phosphorylates two ERK activation sites
+  R_ERK_phosphorylation_1:  MEK(S~PP) + ERK(S~U) -> \
+    MEK(S~PP) + ERK(S~P)  p2*2
+  R_ERK_phosphorylation_2:  MEK(S~PP) + ERK(S~P) -> \
+    MEK(S~PP) + ERK(S~PP)  p2
+
+  # ERK activation sites dephosphorylate independently
+  R_ERK_dephosphorylation_1:  ERK(S~PP) -> ERK(S~P)  q2*2
+  R_ERK_dephosphorylation_2:  ERK(S~P) -> ERK(S~U)  q2
+
+  # Active ERK sequentially phosphorylates four inhibitory SOS sites
+  R_SOS_feedback_phosphorylation_1:  ERK(S~PP) + SOS(egfr,S~U) -> \
+    ERK(S~PP) + SOS(egfr,S~P)  p3*4
+  R_SOS_feedback_phosphorylation_2:  ERK(S~PP) + SOS(egfr,S~P) -> \
+    ERK(S~PP) + SOS(egfr,S~PP)  p3*3
+  R_SOS_feedback_phosphorylation_3:  ERK(S~PP) + SOS(egfr,S~PP) -> \
+    ERK(S~PP) + SOS(egfr,S~PPP)  p3*2
+  R_SOS_feedback_phosphorylation_4:  ERK(S~PP) + SOS(egfr,S~PPP) -> \
+    ERK(S~PP) + SOS(egfr,S~PPPP)  p3
+
+  # Each inhibitory SOS phosphosite dephosphorylates independently
+  R_SOS_feedback_dephosphorylation_1:  SOS(egfr,S~P) -> SOS(egfr,S~U)  q3
+  R_SOS_feedback_dephosphorylation_2:  SOS(egfr,S~PP) -> SOS(egfr,S~P)  q3*2
+  R_SOS_feedback_dephosphorylation_3:  SOS(egfr,S~PPP) -> SOS(egfr,S~PP)  q3*3
+  R_SOS_feedback_dephosphorylation_4:  SOS(egfr,S~PPPP) -> SOS(egfr,S~PPP)  q3*4
+
+  # Active ERK phosphorylates MEK Thr292, which accelerates MEK inactivation
+  R_MEK_feedback_phosphorylation:  ERK(S~PP) + MEK(T292~U) -> \
+    ERK(S~PP) + MEK(T292~P)  p4
+  R_MEK_feedback_dephosphorylation:  MEK(T292~P) -> MEK(T292~U)  q4
+  R_MEK_feedback_inactivation_1:  MEK(T292~P,S~PP) -> \
+    MEK(T292~P,S~P)  q5*2
+  R_MEK_feedback_inactivation_2:  MEK(T292~P,S~P) -> \
+    MEK(T292~P,S~U)  q5
+
+  # Active ERK hyperphosphorylates active or inactive RAF
+  R_RAF_feedback_inhibition_active:  ERK(S~PP) + RAF(S~A) -> \
+    ERK(S~PP) + RAF(S~P)  p6
+  R_RAF_feedback_inhibition_inactive:  ERK(S~PP) + RAF(S~I) -> \
+    ERK(S~PP) + RAF(S~P)  p6
+  R_RAF_feedback_recovery:  RAF(S~P) -> RAF(S~I)  q6
+
+  # Active ERK activates the EKAR3 and ERKTR reporters
+  R_EKAR3_activation:  ERK(S~PP) + EKAR3(act~I) -> \
+    ERK(S~PP) + EKAR3(act~A)  a0_ekar3
+  R_EKAR3_deactivation:  EKAR3(act~A) -> EKAR3(act~I)  d0_ekar3
+  R_ERKTR_activation:  ERK(S~PP) + ERKTR(act~I) -> \
+    ERK(S~PP) + ERKTR(act~A)  a0_erktr
+  R_ERKTR_deactivation:  ERKTR(act~A) -> ERKTR(act~I)  d0_erktr
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 34 species, 65 reactions
+  saveConcentrations()
+
+  # EGF=20 pg/ml relaxation oscillations
+
+  #@protocol: |
+  #  Simulate 24 hours after intermediate-dose EGF stimulation and record
+  #  sustained active-ERK pulses. The verification notebook divides active
+  #  ERK by total ERK to reproduce the published vertical scale.
+
+  #@figure: Fig. 4B in Kochanczyk et al. (2017)
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>86400,n_steps=>1440})
+
+  # Partial-scaling SSA alternative for the large source populations
+
+  #@protocol: |
+  #  Use partial scaling with a population threshold of 100 molecules to
+  #  obtain a practical stochastic approximation of the first-hour response.
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",poplevel=>100,suffix=>"psa",\
+#    t_start=>0,t_end=>3600,n_steps=>60})
+end actions

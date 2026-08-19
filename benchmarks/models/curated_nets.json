@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "collection": {
+    "repo": "wshlavacek/BNGL-Models",
+    "commit": "6783b6e95fd79b9041c8ffb65aa9e49c82d42181",
+    "license": "CC-BY-4.0",
+    "root_env": "BNGL_MODELS_ROOT",
+    "default_root": "~/Code/BNGL-Models"
+  },
+  "bng_version": "2.9.3",
+  "generated_by": "benchmarks/models/regenerate_curated_nets.py",
+  "note": "Every action except generate_network is stripped before generating, so a record's own simulate protocol never runs; the suites declare the horizons. generate_network options are kept -- they decide the network.",
+  "models": [
+    {
+      "name": "gene_bursts",
+      "record": "bursty_autoregulated_gene_expression_lin2016",
+      "source": "models/bursty_autoregulated_gene_expression_lin2016/bursty_autoregulated_gene_expression_lin2016.bngl",
+      "source_sha256": "50f0ed2754c925bdfa8cae677190f433da97547083b94449ee4f870f0636e2d7",
+      "reference": "Lin YT, Doering CR (2016) Phys Rev E 93:022409.",
+      "bngl": "bngl/curated/gene_bursts.bngl",
+      "net": "net/curated/gene_bursts.net",
+      "net_sha256": "1fb3041ad63f59b62a1a81f57c243b3d4bc413ee4b28265ec38f3ce27d6515c9",
+      "species": 2,
+      "reactions": 4,
+      "used_by": [
+        "ssa_table5"
+      ]
+    },
+    {
+      "name": "mckane_predator_prey",
+      "record": "demographic_noise_predator_prey_cycles_mckane2005",
+      "source": "models/demographic_noise_predator_prey_cycles_mckane2005/demographic_noise_predator_prey_cycles_mckane2005.bngl",
+      "source_sha256": "420d61909ec5f6addf12c5bc0472e5a75edf6ed6b7b484bd6bf66e70b5d30a35",
+      "reference": "McKane AJ, Newman TJ (2005) Phys Rev Lett 94:218102.",
+      "bngl": "bngl/curated/mckane_predator_prey.bngl",
+      "net": "net/curated/mckane_predator_prey.net",
+      "net_sha256": "11e0b21284a47e0cf7e782b3c6d1144de8b04308f61861d19acea31aa49c516a",
+      "species": 3,
+      "reactions": 5,
+      "used_by": [
+        "ssa_table5"
+      ]
+    },
+    {
+      "name": "gene_expr_3stage",
+      "record": "three_stage_stochastic_gene_expression_shahrezaei2008",
+      "source": "models/three_stage_stochastic_gene_expression_shahrezaei2008/three_stage_stochastic_gene_expression_shahrezaei2008.bngl",
+      "source_sha256": "15f14b493f94c012cbf4addb16c2a3065661d4180420a4fa0b0354941a09b30b",
+      "reference": "Shahrezaei V, Swain PS (2008) PNAS 105:17256-17261.",
+      "bngl": "bngl/curated/gene_expr_3stage.bngl",
+      "net": "net/curated/gene_expr_3stage.net",
+      "net_sha256": "07a714ba3239483da79a2601bafad9f60ce8f6940fb4bcd533b7856ecaf5ccf5",
+      "species": 4,
+      "reactions": 6,
+      "used_by": [
+        "ssa_table5"
+      ]
+    },
+    {
+      "name": "samoilov_futile_cycle",
+      "record": "noise_induced_bistable_futile_cycle_samoilov2005",
+      "source": "models/noise_induced_bistable_futile_cycle_samoilov2005/noise_induced_bistable_futile_cycle_samoilov2005.bngl",
+      "source_sha256": "7fdc479f90553fdd1ee2b482630aea2e1e93f8dd84fef6bb4952d04c15754fc1",
+      "reference": "Samoilov M, Plyasunov S, Arkin AP (2005) PNAS 102:2310-2315.",
+      "bngl": "bngl/curated/samoilov_futile_cycle.bngl",
+      "net": "net/curated/samoilov_futile_cycle.net",
+      "net_sha256": "93cfc514bde57ccb347e495c6b365f0c1b7972bf3cc139faf4a17b246f1c6731",
+      "species": 7,
+      "reactions": 10,
+      "used_by": [
+        "ssa_table5"
+      ]
+    },
+    {
+      "name": "gene_expression",
+      "record": "two_state_gene_expression_noise_munsky2012",
+      "source": "models/two_state_gene_expression_noise_munsky2012/two_state_gene_expression_noise_munsky2012.bngl",
+      "source_sha256": "d1709ebb3c7adf23793ed4143e40f9c4bfc12b6a29050218300abe0e2f7332c0",
+      "reference": "Munsky B, Neuert G, van Oudenaarden A (2012) Science 336:183-187.",
+      "bngl": "bngl/curated/gene_expression.bngl",
+      "net": "net/curated/gene_expression.net",
+      "net_sha256": "02db2288a3e3aed3967b15fbcc13a311e81cb82dbc354c8313815ba27eb7f283",
+      "species": 10,
+      "reactions": 14,
+      "used_by": [
+        "ssa_table5"
+      ]
+    },
+    {
+      "name": "erk_activation",
+      "record": "mapk_relaxation_oscillations_kochanczyk2017",
+      "source": "models/mapk_relaxation_oscillations_kochanczyk2017/mapk_relaxation_oscillations_kochanczyk2017.bngl",
+      "source_sha256": "9dac883b7f245dfdc92a4df37ae54f464a33addfd9fe8a10684370f044983004",
+      "reference": "Kochanczyk M, Kocieniewski P, Kozlowska E, Jaruszewicz-Blonska J, Sparta B, Pargett M, Albeck JG, Hlavacek WS, Lipniacki T (2017) Sci Rep 7:38244. Horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
+      "bngl": "bngl/curated/erk_activation.bngl",
+      "net": "net/curated/erk_activation.net",
+      "net_sha256": "a8c75b50474a3d4dffaf7a943db5b1bfb2e2825ddb3568dbcc7fa0d725392e33",
+      "species": 34,
+      "reactions": 65,
+      "used_by": [
+        "ssa_table5",
+        "psa"
+      ]
+    },
+    {
+      "name": "tcr_signaling",
+      "record": "tcr_signaling_bistability_lipniacki2008",
+      "source": "models/tcr_signaling_bistability_lipniacki2008/tcr_signaling_bistability_lipniacki2008.bngl",
+      "source_sha256": "82c8d6184c995b38ec82ad19c0ae1e25189b12d3a1dddeeca5b8a7e178436c6d",
+      "reference": "Lipniacki T, Hat B, Faeder JR, Hlavacek WS (2008) J Theor Biol 254:110-122. Horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
+      "bngl": "bngl/curated/tcr_signaling.bngl",
+      "net": "net/curated/tcr_signaling.net",
+      "net_sha256": "7482d0e40e6618bdd58e48aa9d4797a87de7f6c154a29900dc668944b8a10eb4",
+      "species": 37,
+      "reactions": 97,
+      "used_by": [
+        "ssa_table5",
+        "psa"
+      ]
+    },
+    {
+      "name": "prion_aggregation",
+      "record": "prion_nucleated_polymerization_rubenstein2007",
+      "variant": "_benchmark -- the Lin-2019 parameterization with the 120-subunit cap, not the record's primary file (41/483 at max_stoich PrP=>40)",
+      "source": "models/prion_nucleated_polymerization_rubenstein2007/prion_nucleated_polymerization_rubenstein2007_benchmark.bngl",
+      "source_sha256": "4ed833d7d8ee801a9d818b5afcf6ea30ef9411d99e7dfe680a6a4555971ba786",
+      "reference": "Rubenstein R, Gray PC, Cleland TJ, Piltch MS, Hlavacek WS, Roberts RM, Ambrosiano J, Kim J-I (2007) Biophys Chem 125:360-367. Benchmark parameterization and horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
+      "bngl": "bngl/curated/prion_aggregation.bngl",
+      "net": "net/curated/prion_aggregation.net",
+      "net_sha256": "21c24f0ee92b2530db3761d79bd6027a8a92c14e398060b4600850e15f141993",
+      "species": 121,
+      "reactions": 3843,
+      "used_by": [
+        "ssa_table5",
+        "psa"
+      ]
+    }
+  ]
+}

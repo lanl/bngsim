@@ -1,0 +1,148 @@
+begin model
+
+#@title: Demographic-noise predator-prey cycles (McKane and Newman, 2005)
+
+#@description: |
+#  Finite-capacity individual-level predator-prey model with predators, prey,
+#  and empty sites coupled by prey birth, mortality, and two predation outcomes.
+#  Its deterministic mean-field equations relax through damped oscillations to
+#  stable coexistence, whereas finite-population Gillespie trajectories show
+#  persistent cycles because demographic noise is resonantly amplified.
+
+#@keyword: |
+#  ecology, predator-prey, stochastic cycles, demographic noise, resonant
+#  amplification, Gillespie algorithm, Volterra equations, generic
+
+#@reference: |
+#  McKane AJ, Newman TJ (2005). Predator-prey cycles from resonant amplification
+#  of demographic stochasticity. Physical Review Letters 94:218102.
+#  doi:10.1103/PhysRevLett.94.218102
+
+#@note: |
+#  McKane and Newman (2005) specify N=3200 and all kinetic parameters but never
+#  state the Fig. 1 initial populations; the supplied source BNGL assumed 800
+#  predators and 800 prey. That assumption has since been confirmed against
+#  Fig. 1 itself. The depth of the prey transient dip is fixed by the initial
+#  condition and is independent of any scaling of the time axis, and the
+#  digitized Fig. 1 lower panel puts its floor at 0.1456 in density units,
+#  against a mean-field value of 0.1461 for 800/800; 775/775 and 825/825 give
+#  0.1534 and 0.1390, so the initial population is pinned to 800 within about
+#  25 individuals. V_ref is a bookkeeping reactor volume required for
+#  population-conversion readiness and does not enter the dynamics.
+
+#@note: |
+#  Time here is the model's own time, in which the rate constants are those of
+#  Eq. 1 in McKane and Newman (2005). The published figures are drawn on a time
+#  base a uniform factor of about two slower: the Fig. 1 prey dip sits near
+#  t = 31-33 against the model's 15.7, and verify_mckane2005.ipynb independently
+#  fits 0.4937 for the Fig. 2 frequency axis. A uniform rescaling of all five
+#  rate constants is a pure rescaling of time, so it would reconcile both axes
+#  without moving the Eq. 5 fixed point or any transient amplitude. Every
+#  quantity verified in this collection is invariant under it.
+
+begin parameters
+  # Population-conversion constants and bookkeeping reactor volume
+  NA     6.02214076e23  # molecules/mol
+  V_ref  1.0            # L/reactor
+
+  # Fixed system capacity and assumed initial populations
+  N       3200  # molecules
+  n_init  800   # molecules
+  m_init  800   # molecules
+
+  # Individual-level process rates from the Fig. 1 caption
+  b   0.10  # /time
+  d1  0.10  # /time
+  d2  0.00  # /time
+  p1  0.25  # /time
+  p2  0.05  # /time
+
+  # Pair propensities scaled by finite carrying capacity
+  b_pair   b/N   # /molecule/time
+  p1_pair  p1/N  # /molecule/time
+  p2_pair  p2/N  # /molecule/time
+end parameters
+
+begin molecule types
+  # Predator individual, denoted A by McKane and Newman (2005)
+  A()
+  # Prey individual, denoted B by McKane and Newman (2005)
+  B()
+  # Empty site that enforces the finite carrying capacity
+  E()
+end molecule types
+
+begin seed species
+  A() n_init          # molecules
+  B() m_init          # molecules
+  E() N-n_init-m_init # molecules
+end seed species
+
+begin observables
+  # Predator, prey, and empty-site populations
+  Molecules Obs_Tot_Predator A()
+  Molecules Obs_Tot_Prey     B()
+  Molecules Obs_Tot_Empty    E()
+end observables
+
+begin functions
+  # Population densities used in Figs. 1 and 2
+  Predator_density() = Obs_Tot_Predator/N
+  Prey_density() = Obs_Tot_Prey/N
+  Empty_density() = Obs_Tot_Empty/N
+
+  # Coexistence fixed point from Eq. 5 in McKane and Newman (2005)
+  Predator_fixed_point() = (2*b*p1-b*d1-p1*d2)/(2*p1*(p1+p2+b))
+  Prey_fixed_point() = d1/(2*p1)
+end functions
+
+begin reaction rules
+  # Prey birth consumes an empty site
+  R_birth_prey: B() + E() -> B() + B() 2*b_pair
+
+  # Predator and prey mortality restore empty sites
+  R_death_predator: A() -> E() d1
+  R_death_prey: B() -> E() d2
+
+  # Productive predation replaces prey with a predator
+  R_predation_reproduce: A() + B() -> A() + A() 2*p1_pair
+
+  # Nonproductive predation replaces prey with an empty site
+  R_predation_consume: A() + B() -> A() + E() 2*p2_pair
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 3 species, 5 reactions
+  saveConcentrations()
+
+  # Finite-population demographic cycles
+
+  #@protocol: |
+  #  Simulate one seeded Gillespie trajectory for N=3200 over t=0..1200,
+  #  sampling every time unit. The seed makes the library reference output
+  #  reproducible; the verification notebook uses an ensemble of seeded runs
+  #  to compare fluctuation spectra without depending on one realization.
+
+  #@figure: Figs. 1 and 2 in McKane and Newman (2005)
+
+  resetConcentrations()
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>1200,n_steps=>1200,\
+    seed=>218102,print_functions=>1})
+
+  # Deterministic mean-field alternative
+#  resetConcentrations()
+#  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>1200,n_steps=>1200,\
+#    print_functions=>1})
+
+  # Partial-scaling SSA alternative
+#  resetConcentrations()
+#  simulate({method=>"ssa",poplevel=>100,suffix=>"psa",t_start=>0,t_end=>1200,\
+#    n_steps=>1200,seed=>218102,print_functions=>1})
+
+  # Network-free SSA alternative
+#  resetConcentrations()
+#  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>1200,n_steps=>1200,\
+#    seed=>218102,print_functions=>1,gml=>2147483647})
+end actions

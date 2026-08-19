@@ -1,0 +1,171 @@
+begin model
+
+#@title: Two-state gene expression noise (Munsky et al., 2012)
+
+#@description: |
+#  Population-based stochastic model of messenger-RNA production in budding yeast.
+#  One transcript is produced constitutively, while three independent promoters switch
+#  between transcriptionally inactive and active states. The regulated promoters share
+#  the same transcription and degradation rates and have the same steady-state mean of
+#  25 transcripts, but different switching time scales produce bimodal (class I),
+#  long-tailed burst-like (class II), and near-Poisson unimodal (class III) distributions.
+
+#@keyword: |
+#  gene regulation, stochastic gene expression, intrinsic noise, promoter switching,
+#  birth-death process, bimodal, transcriptional bursting, Saccharomyces cerevisiae
+
+#@reference: |
+#  Munsky B, Neuert G, van Oudenaarden A (2012). Using gene expression noise to
+#  understand gene regulation. Science 336:183-187. doi:10.1126/science.1216379
+#  Chylek LA, Harris LA, Faeder JR, Hlavacek WS (2015). Modeling for (physical)
+#  biologists: an introduction to the rule-based approach. Physical Biology 12:045007.
+#  doi:10.1088/1478-3975/12/4/045007
+
+begin parameters
+  # Population-conversion constants; volume is a representative budding-yeast cell volume
+  NA     6.02214076e23  # molecules/mol
+  V_ref  4e-14          # L/cell
+
+  # Characteristic transcript lifetime and first-order clearance rate
+  lifetime  300         # s
+  gamma_R   1/lifetime  # /s
+
+  # Constitutive mean and corresponding synthesis rate; Eq. 1 in Munsky et al. (2012)
+  m_avg_const  5                   # molecules
+  k_R_const    m_avg_const*gamma_R  # molecules/s
+
+  # Active-promoter transcription rate; Fig. 2 in Munsky et al. (2012)
+  k_R_reg  100/lifetime  # molecules/s
+
+  # Class-I switching: long inactive and active periods
+  k_on_I   (2/15)*gamma_R  # /s
+  k_off_I  (2/5)*gamma_R   # /s
+
+  # Class-II switching: short active and long inactive periods
+  k_on_II   (2/3)*gamma_R  # /s
+  k_off_II  2*gamma_R      # /s
+
+  # Class-III switching: short inactive periods and near-continuous production
+  k_on_III   (10/3)*gamma_R  # /s
+  k_off_III  10*gamma_R      # /s
+
+  # Common regulated-transcript mean implied by all three switching-rate pairs
+  m_avg_reg  (k_R_reg/gamma_R)*k_on_I/(k_on_I+k_off_I)  # molecules
+end parameters
+
+begin molecule types
+  # Constitutively expressed messenger RNA
+  mRNA_const()
+  # Regulated class-I messenger RNA
+  mRNA_I()
+  # Regulated class-II messenger RNA
+  mRNA_II()
+  # Regulated class-III messenger RNA
+  mRNA_III()
+  # Class-I two-state promoter
+  promoter_I(state~off~on)
+  # Class-II two-state promoter
+  promoter_II(state~off~on)
+  # Class-III two-state promoter
+  promoter_III(state~off~on)
+end molecule types
+
+begin seed species
+  # Transcripts start at their analytical steady-state means
+  mRNA_const()  m_avg_const  # molecules
+  mRNA_I()      m_avg_reg    # molecules
+  mRNA_II()     m_avg_reg    # molecules
+  mRNA_III()    m_avg_reg    # molecules
+
+  # One haploid gene copy per regulated transcript; initial inactive state is arbitrary
+  promoter_I(state~off)    1  # molecules
+  promoter_II(state~off)   1  # molecules
+  promoter_III(state~off)  1  # molecules
+end seed species
+
+begin observables
+  # Transcript copy numbers
+  Molecules Obs_mRNA_const mRNA_const()
+  Molecules Obs_mRNA_I     mRNA_I()
+  Molecules Obs_mRNA_II    mRNA_II()
+  Molecules Obs_mRNA_III   mRNA_III()
+
+  # Active-promoter copy numbers
+  Molecules Obs_on_I   promoter_I(state~on)
+  Molecules Obs_on_II  promoter_II(state~on)
+  Molecules Obs_on_III promoter_III(state~on)
+end observables
+
+begin functions
+  # Transcription propensities gated by each promoter state
+  transcription_I() = if(Obs_on_I>0,k_R_reg,0)
+  transcription_II() = if(Obs_on_II>0,k_R_reg,0)
+  transcription_III() = if(Obs_on_III>0,k_R_reg,0)
+end functions
+
+begin reaction rules
+  # Constitutive and active-promoter transcription
+  R_transcribe_const: 0 -> mRNA_const() k_R_const
+  R_transcribe_I: 0 -> mRNA_I() transcription_I()
+  R_transcribe_II: 0 -> mRNA_II() transcription_II()
+  R_transcribe_III: 0 -> mRNA_III() transcription_III()
+
+  # First-order transcript clearance
+  R_clear_const: mRNA_const() -> 0 gamma_R
+  R_clear_I: mRNA_I() -> 0 gamma_R
+  R_clear_II: mRNA_II() -> 0 gamma_R
+  R_clear_III: mRNA_III() -> 0 gamma_R
+
+  # Independent promoter activation
+  R_activate_I: promoter_I(state~off) -> promoter_I(state~on) k_on_I
+  R_activate_II: promoter_II(state~off) -> promoter_II(state~on) k_on_II
+  R_activate_III: promoter_III(state~off) -> promoter_III(state~on) k_on_III
+
+  # Independent promoter inactivation
+  R_inactivate_I: promoter_I(state~on) -> promoter_I(state~off) k_off_I
+  R_inactivate_II: promoter_II(state~on) -> promoter_II(state~off) k_off_II
+  R_inactivate_III: promoter_III(state~on) -> promoter_III(state~off) k_off_III
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 10 species, 14 reactions
+  saveConcentrations()
+
+  # Stationary regulated-transcript distributions
+
+  #@protocol: |
+  #  Run a fixed-seed direct Gillespie trajectory for over 300,000 transcript lifetimes.
+  #  Uniform 2,000-s samples after a 20-lifetime burn-in estimate the class-I, class-II,
+  #  and class-III stationary mRNA distributions shown in the source figure.
+
+  #@figure: Fig. 2B in Munsky et al. (2012)
+
+  resetConcentrations()
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>100000000,n_steps=>50000,\
+    seed=>1216379,print_functions=>1})
+
+  # Deterministic mean-trajectory alternative
+
+  #@protocol: |
+  #  This inactive protocol follows ensemble-mean relaxation from the same seed state.
+
+#  resetConcentrations()
+#  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>60000,n_steps=>1000,\
+#    print_functions=>1})
+
+  # Network-free stochastic alternative
+
+  #@protocol: |
+  #  This inactive protocol reproduces the direct stochastic process without generating
+  #  the finite reaction network.
+
+#  resetConcentrations()
+#  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>100000000,n_steps=>50000,\
+#    seed=>1216379,print_functions=>1,gml=>2147483647})
+
+  #@note: |
+  #  Partial scaling is omitted because the model contains zeroth-order creation rules,
+  #  which BioNetGen 2.9.3 cannot partially scale safely.
+end actions
