@@ -113,6 +113,18 @@ in `CMakeLists.txt`) is derived from it.
   horizon, and the record's `_unordered_pair` variant does not rescue it, since it
   writes the same reaction with the rate constant halved.
 
+  So that a horizon cannot outlive its model again, every BNGL row in
+  `corpus.json` now carries `record_horizon`, the `t_end` of the record's own
+  exact-SSA action. One test reads that value back out of the record and fails if
+  the corpus disagrees; another requires a row running a different horizon to name
+  the record's value in its caveats. Writing the guard turned up two divergences
+  nobody had written down: `gene_expr_3stage` runs 2e8 where its record runs 2.1e8
+  (harmless — the record discards its first 1e7 s as burn-in, so both measure the
+  same window), and `prion_aggregation` runs 300 where its record runs 10, with
+  both files crediting Lin et al. (2019) for their value. Only one of those
+  attributions can be right and settling it needs the paper, so it is filed as
+  issue #429. Both now say so in the corpus.
+
 - **`ssa_table5`'s `corpus.json` is the corpus SSOT.** Artifacts, horizons and
   output-point counts were typed out in both `corpus.json` and `_ssa_config.py`;
   the corpus is not on the timing path, so a horizon edited in one and not the
@@ -123,6 +135,14 @@ in `CMakeLists.txt`) is derived from it.
   a 4-value sweep while the runner swept 5.
 
 ### Fixed
+
+- **`test_neither_suite_vendors_a_net_of_its_own` no longer fails on a machine
+  that has run the other benchmark suites.** It searched every suite for a
+  vendored `.net`, so it tripped over the generated networks under
+  `suites/ode_fullnet/nets/` and `suites/ode_engines_s3/sbml/`, which are
+  gitignored build products. It passed only in CI, where those files do not
+  exist. It is now scoped to `ssa_table5` and `psa`, the two suites its own
+  docstring is about.
 
 - **A `TotalRate` rule with a symmetric reaction center no longer runs at a
   fraction of the rate the model asks for (issue #426).** `TotalRate` means the
