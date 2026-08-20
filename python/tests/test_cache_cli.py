@@ -345,12 +345,20 @@ class TestClassify:
     def test_key(self, name: str, is_dir: bool, key: str | None) -> None:
         assert ch.artifact_key(name, is_dir=is_dir) == key
 
-    def test_every_kind_is_either_an_artifact_or_a_partial_or_foreign(self) -> None:
-        """The three sets partition :data:`KINDS`. ``clean`` sweeps one, ``prune``
-        evicts another, and nothing at all touches the third — a kind that fell out of
-        all three would be invisible to every verb."""
-        assert ch.ARTIFACT_KINDS | ch.PARTIAL_KINDS | {ch.KIND_FOREIGN} == set(ch.KINDS)
+    def test_every_kind_is_accounted_for_by_some_verb(self) -> None:
+        """The named sets, plus the two kinds that stand alone, cover
+        :data:`KINDS`. ``clean`` sweeps the partials, ``prune`` evicts the
+        artifacts, nothing at all touches a foreign entry, and a decline note
+        (issue #438) goes exactly when the artifact it describes goes. A kind that
+        fell out of all of them would be invisible to every verb — reported forever
+        and removable by none."""
+        assert ch.ARTIFACT_KINDS | ch.PARTIAL_KINDS | {ch.KIND_NOTE, ch.KIND_FOREIGN} == set(
+            ch.KINDS
+        )
         assert not ch.ARTIFACT_KINDS & ch.PARTIAL_KINDS
+        # A note is neither: nothing loads it, so it is not an artifact, and it is
+        # not the debris of an unfinished compile either.
+        assert ch.KIND_NOTE not in ch.ARTIFACT_KINDS | ch.PARTIAL_KINDS
 
 
 # ─── info ────────────────────────────────────────────────────────────────────

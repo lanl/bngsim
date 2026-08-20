@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import itertools
+import json
 import logging
 import os
 import platform
@@ -7465,6 +7466,10 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
         UncompensatedCrossingReason,
     )
 
+    # Issue #438: before the warning, not instead of it. The logger is the channel
+    # a cache hit cannot reach, so every decline is also written down where the
+    # artifact can carry it — see the decline record below.
+    _record_sens_decline(reason)
     if isinstance(reason, UncompensatedCrossingReason):
         remedy = (
             "The analytic sensitivity RHS does apply that jump, so removing the decline "
@@ -7498,6 +7503,206 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
         "(correct, but slower).",
         reason,
     )
+
+
+# ─── The decline record (issue #438) ─────────────────────────────────────────
+#
+# The warning above is derived once, while source is being generated, and then
+# thrown away. Since issue #174 the codegen cache key is STRUCTURAL, so a warm
+# cache resolves the ``.so`` without generating any source at all — and a consumer
+# listening on the logger therefore hears the decline on the FIRST construction of
+# a model and nothing on any construction after it, for the same model on the same
+# difference-quotient fallback. The cache is on disk and outlives the process, so
+# the run that hears nothing is typically the second run: the one made after the
+# first came back empty and somebody went looking.
+#
+# Silence on the logger consequently means "declined, or served from cache". It can
+# support a statement that a model IS on the fallback and never one that it is not.
+#
+# So the reason is written down beside the artifact it describes, and replayed from
+# there on a cache hit. One recorder feeds two channels:
+#
+#   * a note file — ``rhs_<key>_<hash>.sens.json``, next to the ``.so`` — which is
+#     the durable half. It costs one small write on the cold path that is already
+#     paying for a ``cc`` invocation, and one small read on the warm path.
+#   * the thread-local below, which every ``prepare_*`` entry point hands to the
+#     constructing Simulator (:attr:`bngsim.Simulator.sens_rhs_decline_reason`).
+#     That is the half a JIT source build needs, since it compiles no ``.so`` and
+#     so has no note to write one beside.
+#
+# The verdict itself is deliberately NOT recorded here. The artifact either exports
+# ``bngsim_codegen_sens_rhs`` or it does not, which is true whatever the cache did,
+# and reading it back off the artifact is what
+# :meth:`bngsim.Simulator._codegen_provides_sens_rhs` already does. Only the reason
+# is unrecoverable, so only the reason is persisted.
+
+#: Extension of the note written beside an artifact whose analytic sensitivity RHS
+#: was declined. ``bngsim.cache`` reads the name from here rather than spelling it
+#: again, for the same reason it reads :data:`_KEY_FIELD_MARKER` from this module: a
+#: file this module writes and that one does not recognize would be reported as
+#: somebody else's and never swept.
+_SENS_DECLINE_NOTE_EXT = ".sens.json"
+
+#: Note format. Bumped only for a change a reader of the old shape would
+#: misinterpret; an unrecognized version reads as no note at all, which degrades to
+#: exactly the pre-#438 behaviour.
+_SENS_DECLINE_NOTE_VERSION = 1
+
+#: The reason's class, by name, because it is the difference between "slower" and
+#: "wrong" and a JSON string has no room for a Python type. See
+#: :func:`_warn_functional_sens_rhs_refused`, which branches on the same three.
+_SENS_DECLINE_PLAIN = "plain"
+_SENS_DECLINE_UNCOMPENSATED = "uncompensated_crossing"
+_SENS_DECLINE_AT_MOVING_CROSSING = "declined_at_moving_crossing"
+
+#: One reason is written down, not every reason: source generation stops at the
+#: first decline (each site returns immediately), so a second one would describe a
+#: build that never happened. The cap is on the TEXT, for the note reader's sake —
+#: a reason quotes model text (a rate law, a condition), and a model can carry a
+#: very long one.
+_SENS_DECLINE_MAX_CHARS = 4000
+
+_sens_declines = threading.local()
+
+
+def _reset_sens_declines() -> list[str]:
+    """Start a fresh decline record for this thread and return it.
+
+    Called at the top of every ``prepare_*`` entry point, alongside
+    :func:`_record_codegen_error` and for the same reason: what the caller reads
+    back must describe the call it just made and never a stale one. The list is
+    returned rather than fetched later so the caller holds the object it will read,
+    which is what keeps a nested build (a test that generates source directly)
+    from being able to answer for a build it did not do.
+    """
+    fresh: list[str] = []
+    _sens_declines.record = fresh
+    return fresh
+
+
+def _record_sens_decline(reason: str) -> None:
+    """Add *reason* to this thread's decline record, if one has been started."""
+    record = getattr(_sens_declines, "record", None)
+    if record is not None:
+        record.append(reason)
+
+
+def _sens_decline_note_path(so_path: str | os.PathLike[str]) -> Path:
+    """The note that belongs to the artifact at *so_path*.
+
+    Addressed by the artifact rather than by the model hash on purpose: whatever
+    resolved that path — a fresh compile, the on-disk cache, the in-process memo, a
+    second Simulator inheriting it off the model — reads the same note.
+    """
+    return Path(so_path).with_suffix(_SENS_DECLINE_NOTE_EXT)
+
+
+def _sens_decline_class(reason: str) -> str:
+    """Name the reason's class for the note, since JSON has no room for a type.
+
+    The class is what :func:`_warn_functional_sens_rhs_refused` branches on, and it
+    is the difference between a fallback that is correct and slower and one that
+    answers a different question — so a note that dropped it would persist the
+    less important half of the reason.
+    """
+    from bngsim._switch_sensitivity import (
+        DeclinedAtMovingCrossingReason,
+        UncompensatedCrossingReason,
+    )
+
+    if isinstance(reason, DeclinedAtMovingCrossingReason):
+        return _SENS_DECLINE_AT_MOVING_CROSSING
+    if isinstance(reason, UncompensatedCrossingReason):
+        return _SENS_DECLINE_UNCOMPENSATED
+    return _SENS_DECLINE_PLAIN
+
+
+def _sens_decline_typed(text: str, kind: str) -> str:
+    """Rebuild a reason of class *kind* from its persisted text.
+
+    The inverse of :func:`_sens_decline_class`. An unknown class reads as a plain
+    reason: a note written by a later bngsim naming a class this one does not have
+    still carries a true sentence, and downgrading it is better than dropping it.
+    """
+    from bngsim._switch_sensitivity import (
+        DeclinedAtMovingCrossingReason,
+        UncompensatedCrossingReason,
+    )
+
+    if kind == _SENS_DECLINE_AT_MOVING_CROSSING:
+        return DeclinedAtMovingCrossingReason(text)
+    if kind == _SENS_DECLINE_UNCOMPENSATED:
+        return UncompensatedCrossingReason(text)
+    return text
+
+
+def write_sens_decline_note(so_path: str | os.PathLike[str], reason: str) -> Path | None:
+    """Persist *reason* beside the artifact at *so_path*; return the note's path.
+
+    Best effort, and silent when it fails: a cache directory that is read-only (a
+    pre-warmed artifact directory on a cluster, GH #203) or full must not turn a
+    successful build into a failed one. What is lost is the reason on a later cache
+    hit, which is the pre-#438 behaviour.
+
+    Written to a process-unique name and ``os.replace``d into place, the way
+    :func:`compile_rhs` installs the artifact itself, so a reader never sees a
+    half-written note — concurrent workers racing to build the same model write
+    identical bytes, and either one landing whole is the right outcome.
+    """
+    note = _sens_decline_note_path(so_path)
+    token = f"{os.getpid()}_{next(_compile_counter)}"
+    tmp = note.with_name(f"{Path(so_path).stem}.{token}{_SENS_DECLINE_NOTE_EXT}")
+    payload = {
+        "version": _SENS_DECLINE_NOTE_VERSION,
+        "class": _sens_decline_class(reason),
+        "reason": str(reason)[:_SENS_DECLINE_MAX_CHARS],
+    }
+    try:
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, note)
+    except OSError as e:
+        logger.debug("Could not record the sensitivity-RHS decline at %s (%s)", note, e)
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        return None
+    return note
+
+
+def read_sens_decline_note(so_path: str | os.PathLike[str]) -> str | None:
+    """Why the analytic sensitivity RHS was declined for the artifact at *so_path*.
+
+    ``None`` when there is no note to read: the build did not decline, it predates
+    issue #438, its note could not be written, or the note is unreadable. All four
+    are the same answer to a caller — no opinion — and none of them is evidence
+    that the artifact carries the analytic RHS. That question is answered by the
+    artifact itself (:meth:`bngsim.Simulator.has_analytic_sens_rhs`), which is why
+    a missing note is allowed to be quiet.
+    """
+    try:
+        payload = json.loads(_sens_decline_note_path(so_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != _SENS_DECLINE_NOTE_VERSION:
+        return None
+    text = payload.get("reason")
+    if not isinstance(text, str) or not text:
+        return None
+    return _sens_decline_typed(text, payload.get("class", _SENS_DECLINE_PLAIN))
+
+
+def _replay_sens_decline(so_path: str | os.PathLike[str]) -> None:
+    """Re-report the decline recorded beside the artifact at *so_path* (issue #438).
+
+    Called on every cache hit, which is where the decline would otherwise be
+    silent. It routes through :func:`_warn_functional_sens_rhs_refused` rather than
+    logging its own sentence, so a cache hit and a cold build say the same thing in
+    the same words — a consumer parsing that line cannot tell them apart, which is
+    the point — and so the replayed reason lands in this build's decline record
+    exactly as a freshly derived one would.
+    """
+    reason = read_sens_decline_note(so_path)
+    if reason is not None:
+        _warn_functional_sens_rhs_refused(reason)
 
 
 class _FunctionalDfdpScope(NamedTuple):
@@ -9496,30 +9701,69 @@ def compute_model_codegen_hash(
 _codegen_timing = threading.local()
 
 
-def _record_codegen_sec(model, sec: float, cache_hit: bool | None = None) -> None:
-    """Record the most recent codegen wall time AND whether the compiled .so was
-    reused from the on-disk cache, on this thread and on ``model`` when one is
-    available (model-based prepare paths).
+def _record_codegen_sec(
+    model, sec: float, cache_hit: bool | None = None, sens_decline: str | None = None
+) -> None:
+    """Record the most recent codegen wall time, whether the compiled .so was
+    reused from the on-disk cache, and why the analytic sensitivity RHS was
+    declined — on this thread, and on ``model`` when one is available (model-based
+    prepare paths).
 
     ``cache_hit`` is ``True`` when ``get_cached_so`` (or the .net memo) resolved an
     existing .so without recompiling, ``False`` when a fresh ``cc`` compile ran,
     and ``None`` when no .so was involved at all (the MIR source-only paths, or a
     codegen failure). This is the definitive cache signal — not inferred from the
-    wall time, which a model-based cache hit still spends on source generation."""
+    wall time, which a model-based cache hit still spends on source generation.
+
+    ``sens_decline`` is the reason this build fell back to CVODES' internal
+    difference quotient, or ``None`` when it did not (issue #438). It is recorded
+    on every call, including as ``None``, so a later plain build of the same model
+    cannot leave an earlier build's decline standing."""
     _codegen_timing.last_sec = float(sec)
     _codegen_timing.last_cache_hit = cache_hit
+    _codegen_timing.last_sens_decline = sens_decline
     if model is not None:
         # Defensive: every Model carries these slots, but a caller that somehow
         # passes a slotted object without them should not break codegen.
         with contextlib.suppress(AttributeError, TypeError):  # pragma: no cover
             model._codegen_sec = float(sec)
             model._codegen_cache_hit = cache_hit
+            model._codegen_sens_decline = sens_decline
+
+
+def carry_codegen_stats(model) -> None:
+    """Copy this thread's most recent codegen stats onto *model*.
+
+    The ``.net`` entry points take a path rather than a Model, so they record only
+    to the thread-local; this is how the constructing Simulator hands the model
+    what a model-path ``prepare_*`` writes itself. One function rather than a
+    hand-copied pair at each call site, because the failure mode of the pair was
+    silent: a stat added to the recorder and forgotten at one site simply reads as
+    "no opinion" there forever.
+    """
+    with contextlib.suppress(AttributeError, TypeError):
+        model._codegen_sec = last_codegen_sec()
+        model._codegen_cache_hit = last_codegen_cache_hit()
+        model._codegen_sens_decline = last_sens_rhs_decline()
 
 
 def last_codegen_sec() -> float:
     """Wall seconds the most recent ``prepare_*`` codegen on this thread spent
     (``0.0`` if none has run). See :attr:`bngsim.Simulator.last_codegen_sec`."""
     return float(getattr(_codegen_timing, "last_sec", 0.0))
+
+
+def last_sens_rhs_decline() -> str | None:
+    """Why the most recent ``prepare_*`` on this thread declined the analytic
+    sensitivity RHS, or ``None`` when it did not decline (issue #438).
+
+    See :attr:`bngsim.Simulator.sens_rhs_decline_reason`, which is what publishes
+    it. The returned string carries the reason's class, so an uncompensated
+    crossing — where the difference quotient answers a different question rather
+    than the same one more slowly — stays distinguishable from a merely slower
+    fallback.
+    """
+    return getattr(_codegen_timing, "last_sens_decline", None)
 
 
 def last_codegen_cache_hit() -> bool | None:
@@ -9591,6 +9835,7 @@ def prepare_model_codegen(model) -> Path | None:
     t0 = time.perf_counter()
     cache_hit: bool | None = None
     _record_codegen_error(None)
+    declines = _reset_sens_declines()
     try:
         emit_output_sens = bool(getattr(model, "_want_output_sens", False))
         # Issue #209: resolved ONCE and handed to both the key and the generator,
@@ -9626,6 +9871,9 @@ def prepare_model_codegen(model) -> Path | None:
             if cached is not None:
                 logger.debug("Model codegen cache hit: %s", cached)
                 cache_hit = True
+                # Issue #438: this is the branch that generates no source, so it is
+                # also the branch where the decline would otherwise go unsaid.
+                _replay_sens_decline(cached)
                 return cached
 
         c_source, has_sens = generate_combined_from_model(
@@ -9641,6 +9889,9 @@ def prepare_model_codegen(model) -> Path | None:
             if cached is not None:
                 logger.debug("Model codegen cache hit (source-hash fallback): %s", cached)
                 cache_hit = True
+                # Nothing to replay: this branch DID generate the source, so any
+                # decline was reported on the way here. Reading the note as well
+                # would report the same one twice.
                 return cached
         if has_sens:
             logger.info(
@@ -9664,13 +9915,25 @@ def prepare_model_codegen(model) -> Path | None:
                 len(c_source),
             )
         cache_hit = False
-        return compile_rhs(c_source, model_hash)
+        so_path = compile_rhs(c_source, model_hash)
+        if declines and not has_sens:
+            # Issue #438: beside the artifact, so the next construction of this
+            # model — which will resolve that same .so from the cache without
+            # generating a line of source — can still say why it is on the
+            # difference quotient.
+            write_sens_decline_note(so_path, declines[0])
+        return so_path
     except Exception as e:
         logger.warning("Model codegen failed: %s", e)
         _record_codegen_error(e)
         return None
     finally:
-        _record_codegen_sec(model, time.perf_counter() - t0, cache_hit)
+        _record_codegen_sec(
+            model,
+            time.perf_counter() - t0,
+            cache_hit,
+            declines[0] if declines else None,
+        )
 
 
 def prepare_codegen_source(net_path: str, model=None, emit_jac: bool = True) -> str:
@@ -9689,6 +9952,7 @@ def prepare_codegen_source(net_path: str, model=None, emit_jac: bool = True) -> 
     SHA-256 + filesystem round-trip a cache would add.
     """
     t0 = time.perf_counter()
+    declines = _reset_sens_declines()
     try:
         parsed = _parse_net_file(net_path)
         _validate_net_model_for_codegen(parsed, net_path)
@@ -9710,7 +9974,9 @@ def prepare_codegen_source(net_path: str, model=None, emit_jac: bool = True) -> 
         )
         return c_source
     finally:
-        _record_codegen_sec(None, time.perf_counter() - t0)
+        _record_codegen_sec(
+            None, time.perf_counter() - t0, sens_decline=declines[0] if declines else None
+        )
 
 
 def prepare_model_codegen_source(model) -> str | None:
@@ -9723,6 +9989,7 @@ def prepare_model_codegen_source(model) -> str | None:
     """
     t0 = time.perf_counter()
     _record_codegen_error(None)
+    declines = _reset_sens_declines()
     try:
         c_source, _ = generate_combined_from_model(
             model,
@@ -9735,7 +10002,11 @@ def prepare_model_codegen_source(model) -> str | None:
         _record_codegen_error(e)
         return None
     finally:
-        _record_codegen_sec(model, time.perf_counter() - t0)
+        _record_codegen_sec(
+            model,
+            time.perf_counter() - t0,
+            sens_decline=declines[0] if declines else None,
+        )
 
 
 def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str | None:
@@ -9922,6 +10193,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
     """
     t0 = time.perf_counter()
     cache_hit: bool | None = None
+    declines = _reset_sens_declines()
     try:
         net_key = os.path.abspath(net_path)
 
@@ -9977,6 +10249,9 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             ):
                 logger.debug("Codegen memo hit: %s", memo_so)
                 cache_hit = True  # memo resolved an existing .so, no recompile
+                # Issue #438: the memo skips source generation too, so the decline
+                # is as silent here as on an on-disk cache hit.
+                _replay_sens_decline(memo_so)
                 return memo_so
 
         parsed = _parse_net_file(net_path)
@@ -10027,6 +10302,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         if cached is not None:
             logger.debug("Codegen cache hit: %s", cached)
             cache_hit = True
+            _replay_sens_decline(cached)  # issue #438
             so_path = cached
         else:
             # Generate combined RHS + sensitivity RHS (+ Jacobian / + output
@@ -10068,6 +10344,8 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
                 logger.info("Codegen: RHS only (Functional/MM model, no sens RHS)%s", extra_note)
             cache_hit = False
             so_path = compile_rhs(c_source, model_hash)
+            if declines and not has_sens:
+                write_sens_decline_note(so_path, declines[0])  # issue #438
 
         with _PREPARE_CODEGEN_MEMO_LOCK:
             _PREPARE_CODEGEN_MEMO[memo_key] = (
@@ -10077,4 +10355,9 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             )
         return so_path
     finally:
-        _record_codegen_sec(None, time.perf_counter() - t0, cache_hit)
+        _record_codegen_sec(
+            None,
+            time.perf_counter() - t0,
+            cache_hit,
+            declines[0] if declines else None,
+        )

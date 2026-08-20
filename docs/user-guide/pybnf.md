@@ -204,3 +204,44 @@ consumer package is while that package is still loading and before its logging
 exists — reading the key lets you raise it again where someone will see it, in
 time to stop a run that would otherwise report conclusions about code that is no
 longer in the tree.
+
+## Ask each model whether its gradient is analytic
+
+The keys above are properties of the install. Whether a gradient runs on bngsim's
+analytic `∂f/∂p` or on CVODES' internal difference quotient is not: it is decided
+per model, at codegen, and two models on one bngsim get different answers.
+
+`CVodeSensInit1` takes one sensitivity-RHS callback for every column, so a single
+rate law bngsim cannot differentiate declines the analytic derivative for the
+whole model. There is no per-reaction fallback to mix in. The difference quotient
+that replaces it costs an extra right-hand-side evaluation per column per step, so
+an N-parameter fit pays roughly N times the sensitivity cost. On a fit measured in
+hours that is what ends runs: on `Smith_BMCSystBiol2013` all 25 columns fell back
+and every gradient start timed out.
+
+Two reads answer it, on the Simulator rather than in `capabilities()`, because the
+fact is per run:
+
+```python
+sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr"])
+sim.has_analytic_sens_rhs     # True: the analytic ∂f/∂p. False: difference quotient.
+sim.sens_rhs_decline_reason   # why, or None
+```
+
+Ask a Simulator that was built for a sensitivity run. A plain
+`Simulator(model, method="ode")` builds an artifact with no analytic `∂f/∂p` in it
+because nobody asked for one, which reports as `False` and is not a decline.
+
+The verdict is read off the compiled artifact, which either exports the symbol the
+solver resolves or does not, so it is stable whatever the codegen cache did. The
+reason is derived once, while source is being generated, and a warm cache
+generates none — so bngsim records it beside the artifact and replays it on a
+cache hit. A `None` reason therefore means "nothing recorded" as well as "nothing
+to report", and `has_analytic_sens_rhs` is what separates the two.
+
+The reason is the half that is actionable. "uses unsupported construct: `abs()`"
+names the thing to re-encode; "no analytic RHS" only tells someone to wait. It
+also carries the one case where the difference quotient is not merely slower: a
+rate law that branches at a crossing whose time moves gets a gradient that is
+wrong at and after that crossing, and bngsim refuses such a run rather than return
+it.

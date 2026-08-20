@@ -79,6 +79,7 @@ __all__ = [
     "DEFAULT_MIN_AGE",
     "KINDS",
     "KIND_FOREIGN",
+    "KIND_NOTE",
     "KIND_PARTIAL_C",
     "KIND_PARTIAL_LIB",
     "KIND_RHS",
@@ -135,6 +136,16 @@ KIND_SHARD = "shard"
 """A ``bngsim_shard_*`` scratch directory from a parallel (sharded) compile,
 holding ``.o`` files. Removed in a ``finally``, so one on disk means SIGKILL."""
 
+KIND_NOTE = "note"
+"""A ``rhs_<key>_<hash>.sens.json`` recording why the artifact of the same name was
+built without an analytic sensitivity RHS (issue #438).
+
+A few hundred bytes, written only for a model that declined, and read back on a
+cache hit so the reason survives a warm cache — which is the whole point of it,
+since a warm cache generates no source and therefore derives no reason. Not an
+artifact: nothing loads it, and it is worth nothing without the artifact it
+describes, so ``prune`` keeps a note exactly as long as it keeps that artifact."""
+
 KIND_FOREIGN = "foreign"
 """Anything bngsim does not recognize as its own. Counted and reported, never
 removed — see the module docstring."""
@@ -143,6 +154,7 @@ KINDS: tuple[str, ...] = (
     KIND_RHS,
     KIND_SSAPROP,
     KIND_SRC,
+    KIND_NOTE,
     KIND_PARTIAL_C,
     KIND_PARTIAL_LIB,
     KIND_SHARD,
@@ -160,6 +172,7 @@ _KIND_LABELS: dict[str, str] = {
     KIND_RHS: "rhs",
     KIND_SSAPROP: "ssaprop",
     KIND_SRC: "src (fallback)",
+    KIND_NOTE: "decline note",
     KIND_PARTIAL_C: "partial (.c)",
     KIND_PARTIAL_LIB: "partial (lib)",
     KIND_SHARD: "shard dir",
@@ -200,6 +213,11 @@ _ARTIFACT_PREFIX = "rhs_"
 #: them and every other hash, so they need no special case.
 _KEY_FIELD_MARKER = _codegen._KEY_FIELD_MARKER
 
+#: What a decline note is named, likewise read from the module that writes them
+#: rather than spelled again here: a file bngsim writes and this module does not
+#: recognize would be reported as somebody else's and never swept.
+_NOTE_EXT = _codegen._SENS_DECLINE_NOTE_EXT
+
 DEFAULT_MIN_AGE = 3600.0
 """Seconds an entry must be untouched before any sweep will remove it.
 
@@ -233,6 +251,21 @@ def _split_stem(stem: str) -> tuple[str | None, str]:
     return head, rest
 
 
+def _note_family(name: str) -> str:
+    """The base name a decline note and the artifact it describes share.
+
+    ``rhs_<key>_<hash>.so`` and ``rhs_<key>_<hash>.sens.json`` both reduce to
+    ``rhs_<key>_<hash>``, which is how :func:`prune_codegen_cache` pairs them. A
+    note still under its process-unique temporary name keeps that token and so
+    matches no artifact, which is how one left behind by a killed process is
+    collected rather than kept forever.
+    """
+    if name.endswith(_NOTE_EXT):
+        return name[: -len(_NOTE_EXT)]
+    suffix = PurePath(name).suffix
+    return name[: -len(suffix)] if suffix else name
+
+
 def classify(path: str | os.PathLike[str], *, is_dir: bool | None = None) -> str:
     """Return the :data:`KINDS` entry ``path``'s *name* identifies it as.
 
@@ -252,6 +285,11 @@ def classify(path: str | os.PathLike[str], *, is_dir: bool | None = None) -> str
         return KIND_SHARD if name.startswith(_SHARD_PREFIX) else KIND_FOREIGN
     if not name.startswith(_ARTIFACT_PREFIX):
         return KIND_FOREIGN
+    if name.endswith(_NOTE_EXT):
+        # Before the temp-token branch, so the process-unique name a note is
+        # written under on its way into place is still recognized as a note. It has
+        # no artifact of its own name, which is what makes ``prune`` collect it.
+        return KIND_NOTE
     stem, suffix = PurePath(name).stem, PurePath(name).suffix.lower()
     if _TEMP_TOKEN.search(stem):
         if suffix == ".c":
@@ -905,6 +943,16 @@ def prune_codegen_cache(
             selected.append(e)
             chosen.add(e)
             projected -= e.size
+
+    # A decline note (issue #438) is worth nothing without the artifact it
+    # describes and describes nothing once that artifact is gone, so it goes
+    # exactly when its artifact goes. Last, so it sees every pass's selection; it
+    # frees no meaningful space itself, which is why it is not in the size pass.
+    kept = {_note_family(e.path.name) for e in info.entries if e.is_artifact and e not in chosen}
+    for e in info.entries:
+        if e.kind == KIND_NOTE and _note_family(e.path.name) not in kept:
+            selected.append(e)
+            chosen.add(e)
 
     return _sweep(
         selected,

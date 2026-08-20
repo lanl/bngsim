@@ -14,7 +14,48 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+
+- **A Simulator now says whether this model's gradient is analytic, and why not
+  when it is not (issue #438).** Whether forward sensitivity runs on bngsim's
+  analytic `∂f/∂p` or on CVODES' internal difference quotient is a property of the
+  (build, model) pair, not of the build, so no `capabilities()` key can answer it:
+  two models on one bngsim get different answers, and the same model can flip on a
+  derivation-budget timeout. `CVodeSensInit1` takes one sensitivity-RHS callback
+  for every column, so a single rate law that cannot be differentiated declines the
+  analytic derivative for the whole model, and the difference quotient that
+  replaces it costs an extra right-hand-side evaluation per column per step —
+  roughly N times the sensitivity cost on an N-parameter fit. bngsim knew the
+  answer and published neither half of it. `Simulator.has_analytic_sens_rhs` is the
+  verdict, read off the compiled artifact exactly as the private method it promotes
+  did, and `Simulator.sens_rhs_decline_reason` is the reason, or `None`.
+
+- **The decline reason now survives the codegen cache.** It was derived once, while
+  source was being generated, and thrown away. Since issue #174 the cache key is
+  structural, so a warm cache resolves the `.so` without generating any source —
+  and the first construction of a declining model reported the reason while every
+  construction after it said nothing, both on the same fallback. The cache is on
+  disk, so the run that heard nothing was typically the second run: the one made
+  after the first came back empty. The reason is now written into a small note
+  beside the artifact it describes and replayed from there on a cache hit, in the
+  same words a cold build uses, so a consumer listening on the `bngsim` logger sees
+  no difference between the two. Whether the difference quotient is merely slower
+  or answers a different question — a branch crossing whose time moves, where every
+  column is wrong at and after it — is carried through the note as well, since
+  "wrong" and "slow" are different statements. `bngsim-cache` knows the note as one
+  of bngsim's own files: it is counted under its own kind, `clear` removes it, and
+  `prune` removes it exactly when it removes the artifact it describes.
+
 ### Fixed
+
+- **The analytic-`∂f/∂p` verdict no longer answers for an artifact the run has
+  replaced.** `compute_all_sensitivities` and `steady_state` take
+  `sensitivity_params` as a method argument and rebuild the codegen artifact for
+  themselves, turning a plain build (which carries no sensitivity RHS at all since
+  issues #209/#217) into one that does. The verdict is memoized on first read, and
+  a read taken before that rebuild stayed False afterwards. It is now dropped
+  wherever the artifact is replaced, in both directions. Found while publishing the
+  reader, which is what made a read at that moment something a caller would do.
 
 - **A rate law or switch threshold that spells one of the seven built-in
   physical constants is differentiated instead of declined.** `_pi`, `_e`,

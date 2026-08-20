@@ -105,6 +105,14 @@ once, so every point of a batch or scan shares one tolerance. See the
 
 Properties:
 - `method`, `model`, `current_time`
+- `has_analytic_sens_rhs` (bool) and `sens_rhs_decline_reason` (`str | None`,
+  issue #438) — whether a forward-sensitivity run on this Simulator uses bngsim's
+  analytic `∂f/∂p` or CVODES' internal difference quotient, and why not when it
+  does not. A property of the (build, model) pair rather than of the build, so no
+  `capabilities()` key can answer it. Ask a Simulator built for a sensitivity run:
+  a plain one carries no analytic `∂f/∂p` because nobody asked for one, which is
+  not a decline. See the
+  [PyBNF guide](../user-guide/pybnf.md#ask-each-model-whether-its-gradient-is-analytic).
 
 ## `bngsim.NfsimSession`
 
@@ -284,6 +292,11 @@ one. See the [codegen guide](../user-guide/codegen.md#managing-the-artifact-cach
 - **`bngsim.clean_codegen_cache(cache_dir=None, *, min_age=3600.0, dry_run=False)`** → `CacheSweep` — remove leaked compile partials only (`bngsim_shard_*` directories, stray `.c`, temp libraries). No compiled artifact is touched, so no cache hit is lost.
 - **`bngsim.prune_codegen_cache(cache_dir=None, *, orphaned=False, keep_keys=(), older_than=None, max_size=None, min_age=3600.0, dry_run=False)`** → `CacheSweep` — bound the cache by orphan status (`orphaned=True` drops every artifact built under another codegen key, the targeted sweep after an emitter edit), age (`older_than="30d"`) and/or total size (`max_size="2G"`), evicting least-recently-used artifacts. At least one bound is required; the partial sweep runs first, so the size cap covers the whole directory. `keep_keys` spares other installs sharing the directory (`None` in it spares the pre-#363 names) and is only accepted with `orphaned=True`.
 - **`bngsim.clear_codegen_cache(cache_dir=None, *, min_age=0.0, dry_run=False)`** → `CacheSweep` — remove every artifact and partial bngsim owns.
+
+Beside an artifact whose analytic `∂f/∂p` was declined, bngsim writes a small
+decline note (`rhs_<key>_<hash>.sens.json`, issue #438) so the reason survives a
+warm cache. It is one of bngsim's own files: counted under its own kind, removed by
+`clear`, and removed by `prune` exactly when the artifact it describes is removed.
 
 Entries bngsim did not write are classified `foreign`, reported, and **never**
 removed — by `clear` as much as by `clean` — because `BNGSIM_CODEGEN_CACHE_DIR` is a
