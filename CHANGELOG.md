@@ -121,9 +121,12 @@ in `CMakeLists.txt`) is derived from it.
   nobody had written down: `gene_expr_3stage` runs 2e8 where its record runs 2.1e8
   (harmless — the record discards its first 1e7 s as burn-in, so both measure the
   same window), and `prion_aggregation` runs 300 where its record runs 10, with
-  both files crediting Lin et al. (2019) for their value. Only one of those
-  attributions can be right and settling it needs the paper, so it is filed as
-  issue #429. Both now say so in the corpus.
+  both files crediting Lin et al. (2019) for their value. The paper settles that
+  one (issue #429): Fig. 7 runs the prion model from 0 to 300 days, so `t_end=300`
+  is the published benchmark horizon, the model's time unit is days, and the
+  record's ten-day run is its own choice that its protocol note miscredits to Lin.
+  **B14's cost does not move**, and the correction belongs upstream in
+  `wshlavacek/BNGL-Models`. Both divergences now say so in the corpus.
 
 - **`ssa_table5`'s `corpus.json` is the corpus SSOT.** Artifacts, horizons and
   output-point counts were typed out in both `corpus.json` and `_ssa_config.py`;

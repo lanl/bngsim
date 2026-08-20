@@ -112,7 +112,7 @@ value. Where they stand:
 | `gene_expression` | 6×10⁴ | 10⁸ | the manuscript's |
 | `tcr_signaling` | 10 000 | 10 800 | Lin 2019's exact-SSA horizon |
 | `gene_expr_3stage` | 2×10⁸ | 2.1×10⁸ | the record discards its first 10⁷ s as burn-in, so both measure the same 2×10⁸ s window |
-| `prion_aggregation` | 300 | 10 | **unresolved** — both are credited to Lin 2019, and only one of those attributions can be right ([#429](https://github.com/lanl/bngsim/issues/429)) |
+| `prion_aggregation` | 300 | 10 | Lin 2019's Fig. 7 horizon, 0 to 300 days ([#429](https://github.com/lanl/bngsim/issues/429)). The record's ten-day run is its own, and its protocol note miscredits it to Lin 2019 |
 | `erk_activation` | 8 640 | — | the record declares no exact-SSA action at all; 8 640 comes from Lin 2019 |
 
 **One coverage cell moved with them.** BNGL rows reach RoadRunner and COPASI
