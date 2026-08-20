@@ -266,8 +266,8 @@ Two measurements settled it, both on the committed `.net`:
 
 - **The model has not started at 0.0018 s.** The trajectory is still in the
   burn-in from the Fig. 3 initial condition: `X*` has fallen only from 2000 to
-  about 1615 molecules, where the record's own protocol note puts the operating
-  band at 110–286. Over 30 seeds the trajectory first enters that band at a
+  about 1600 molecules (median 1606 over 30 seeds), where the record's own
+  protocol note puts the operating band at 110–286. Over 30 seeds the trajectory first enters that band at a
   median 0.0167 s — about nine times later than the row was stopping. The
   noise-induced switching the model is published for had not begun.
 - **The cell measured setup, not simulation.** Interleaved 195 times against a
