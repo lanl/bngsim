@@ -1727,6 +1727,22 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
         )
         assert [r.t_star for r in records] == pytest.approx([7.0, 24.0, 31.0, 48.0])
 
+    @staticmethod
+    def _crowded(period: float = 0.01, duty: float = 0.005) -> str:
+        """``SCHEDULED`` with a period short enough to overrun the edge budget.
+
+        Asserted against the budget rather than hard-coded against a number, so
+        raising the budget cannot quietly turn the two tests below into tests of
+        nothing."""
+        edges = 2 * 100.0 / period
+        assert edges > sw._SCHEDULE_EDGE_BUDGET, (
+            f"{edges:.0f} edges no longer overruns a budget of {sw._SCHEDULE_EDGE_BUDGET}"
+        )
+        return (
+            SCHEDULED.replace("    1 P       24.0", f"    1 P       {period}")
+            .replace("    2 d        7.0", f"    2 d        {duty}")
+        )
+
     def test_the_budget_refuses_a_window_it_cannot_enumerate(self, tmp_path):
         """A hundred days of hourly dosing is thousands of stop times, and the
         count is a property of the run rather than of the model, so it is the one
@@ -1734,9 +1750,7 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
         fit inside a budget and not the ones after it would give a gradient right
         at the start of the run and silently wrong at the end, so the run is
         refused instead — loudly, and naming what to change."""
-        text = _with_dose("if(time()-P*floor(time()/P)>=d,kin,0)").replace(
-            "    1 P       24.0", "    1 P       0.01"
-        ).replace("    2 d        7.0", "    2 d        0.005")
+        text = self._crowded()
         core = _model(tmp_path, text)._core
         with pytest.raises(bngsim.SensitivityUnsupportedError) as ei:
             sw.compute_switch_time_sens(core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True)
@@ -1749,10 +1763,7 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
         for, so none of them would emit a record however many there are, and
         refusing the run over a budget for records nobody wanted would be a
         refusal with nothing behind it."""
-        text = _with_dose("if(time()-P*floor(time()/P)>=d,kin,0)").replace(
-            "    1 P       24.0", "    1 P       0.01"
-        ).replace("    2 d        7.0", "    2 d        0.005")
-        core = _model(tmp_path, text)._core
+        core = _model(tmp_path, self._crowded())._core
         records, pinned = sw.compute_switch_time_sens(
             core, ["kin", "kout"], 0.0, 100.0, has_analytic_sens_rhs=True
         )
@@ -1794,10 +1805,39 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
     def test_a_floor_in_a_branch_still_declines_the_model(self, tmp_path):
         """The same boundary, asserted through the real derivation path rather
         than through the pre-scan alone."""
-        core = _model(tmp_path, _with_dose("if(time()-P*floor(time()/P)>=d,kin*floor(time()),0)"))._core
+        core = _model(
+            tmp_path, _with_dose("if(time()-P*floor(time()/P)>=d,kin*floor(time()),0)")
+        )._core
         _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert reason is not None
         assert "floor()" in reason
+
+    @pytest.mark.parametrize(
+        "threshold", ["floor(P)", "ceil(P)", "sign(P)", "floor(P)+1", "sign(P)*P"]
+    )
+    def test_a_step_function_in_a_threshold_declines_instead_of_crashing(
+        self, tmp_path, threshold
+    ):
+        """A crossing time that steps as a parameter moves, rather than moving
+        with it. There is no chain rule to the primaries for one, and asking sympy
+        for it does not fail cleanly: ``d/dP floor(P)`` comes back as an
+        unevaluated ``Derivative``, and evaluating that recurses until Python
+        raises ``RecursionError`` — which is not an exception any caller here
+        handles, so the whole codegen pass died with a stack overflow instead of
+        declining the model.
+
+        The ``sign`` spellings reach this on bngsim today, with no schedule and no
+        ``floor`` anywhere: ``sign`` is not one of the constructs the pre-scan
+        rejects, so ``if(time() >= sign(P), …)`` crashed. The ``floor`` and
+        ``ceil`` spellings became reachable with this issue, which waives a
+        ``floor()`` inside an ``if()`` condition. Both now decline."""
+        core = _model(tmp_path, _with_dose(f"if(time()>={threshold},kin,0)"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is not None
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
+        )
+        assert records == []
 
 
 @requires_cc

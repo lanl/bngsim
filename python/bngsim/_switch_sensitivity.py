@@ -1786,6 +1786,28 @@ class CrossingTerms(NamedTuple):
     value: float | None
 
 
+# A step function in a *threshold* expression. Sympy cannot differentiate one:
+# it answers with an unevaluated ``Derivative(floor(P), P)``, and evaluating that
+# recurses until Python gives up — ``_derived_expr_partials_numeric('floor(P)')``
+# raises ``RecursionError`` rather than declining (the same is true of ``ceil``
+# and ``sign``; ``abs``, ``min`` and ``max`` all answer normally, and ``Abs`` is
+# a spelling the affine solver itself emits, so none of those is listed here).
+#
+# Asked before the partials rather than caught after them, because a crash is not
+# a decline: the caller wants "nothing compensates this crossing", which is also
+# the honest answer — a crossing time that steps as a parameter moves has no
+# chain rule to the primaries even where its derivative is a.e. zero.
+#
+# ``sign`` reaches this on bngsim today: it is not one of the constructs the
+# emitter pre-scan rejects, so ``if(time() >= sign(P), …)`` took the whole codegen
+# pass down with a stack overflow. ``floor`` and ``ceil`` became reachable with
+# issue #436, which waives a ``floor()`` inside an ``if()`` condition — before
+# that the pre-scan declined the rate law before any threshold from it was read.
+_STEP_THRESHOLD_CALL = re.compile(
+    r"(?<![A-Za-z0-9_])(?:floor|ceil|ceiling|sign|round|rint|nint)\s*\("
+)
+
+
 def _threshold_crossing_terms(
     threshold_expr: str, scope: SwitchConditionScope
 ) -> CrossingTerms | None:
@@ -1811,6 +1833,8 @@ def _threshold_crossing_terms(
       that as "unreadable threshold" refuses a model whose gradient is a correct
       clean zero.
     """
+    if _STEP_THRESHOLD_CALL.search(threshold_expr):
+        return None  # a crossing time that steps rather than moves; see above
     # ``warn_on_failure=False`` for the same reason the detector passes it: an
     # empty result is the supported "not a switch time" answer, which the caller
     # reports (or hands to the state path) rather than warns about.
@@ -2013,17 +2037,21 @@ def _schedule_compensated(atom: str, scope: SwitchConditionScope) -> bool:
 # restarts. That is cheap but not free, and unlike every other crossing in this
 # module the count is not a property of the model — it is the run window divided
 # by the period, so a long enough run at a short enough period asks for an
-# unbounded number of them. A hundred days of hourly dosing is 4800 edges.
+# unbounded number of them.
 #
-# The number is set from measurement rather than taste: on the reproducer in
-# issue #436 a stop costs about 0.2 ms of wall clock, so 2048 edges is a fifth of
-# a second of stopping added to a run, and 2048 also covers every schedule any
-# corpus model asks for over its own reported time course by a wide margin (the
-# largest is 200). Beyond it bngsim refuses the run rather than dropping the
-# extra edges, because a schedule compensated up to its budget and not after it
-# is a gradient that is right at the start of the run and wrong at the end, which
-# is the silent-zero failure this whole module exists to avoid.
-_SCHEDULE_EDGE_BUDGET = 2048
+# A guard against unbounded work rather than a tight performance limit, and the
+# number comes from measurement. On a dosing model with a 0.25 period a stop costs
+# 20-40 us of wall clock, so the cap is about a quarter of a second of stopping
+# added to one run, plus 45 ms to detect them. It admits the schedules people
+# actually write with room to spare: a hundred days of hourly dosing is 4800
+# edges, and the largest any model in this repository's corpus asks for over its
+# own reported time course is 200 (MODEL0406553884).
+#
+# Beyond it bngsim refuses the run rather than dropping the extra edges, because a
+# schedule compensated up to its budget and not after it is a gradient that is
+# right at the start of the run and wrong at the end, which is the silent-zero
+# failure this whole module exists to avoid.
+_SCHEDULE_EDGE_BUDGET = 8192
 
 
 def _schedule_index_window(
@@ -2066,6 +2094,11 @@ def _schedule_edges(
     Enumerated rather than searched for, which is what the closed form buys: the
     edges are known from three numbers and a whole ``k``, so nothing here roots
     on anything or steps through the window.
+
+    ``limit`` is counted against the candidate indices, which is the number of
+    edges returned plus at most the two each family is widened by — near enough
+    at any budget worth setting, and it is what lets the count be decided by
+    arithmetic instead of by enumerating first and counting after.
     """
     if not terms.crosses:
         return []
@@ -2553,14 +2586,39 @@ def _is_same_crossing(a: _Crossing, b: _Crossing) -> bool:
     )
 
 
-def _absorb_crossing(found: list[_Crossing], cand: _Crossing) -> None:
+def _crossing_bucket(cross: _Crossing) -> tuple[int, str]:
+    """The two fields :func:`_is_same_crossing` requires before it compares
+    anything else: same clock, same threshold value to 12 significant digits.
+
+    Used to bucket the crossings found so far, so absorbing one does not have to
+    walk all of them. Not a second definition of sameness — a bucket collision is
+    still decided by :func:`_is_same_crossing` — just a way of skipping the
+    comparisons that answer no on their first line.
+    """
+    return cross.clock_idx0, _q(cross.threshold)
+
+
+def _absorb_crossing(
+    found: list[_Crossing],
+    cand: _Crossing,
+    index: dict[tuple[int, str], list[int]] | None = None,
+) -> None:
     """Add ``cand``, or fold it into the crossing it duplicates.
 
     Folding keeps the larger-magnitude partial per column rather than summing,
     which is the pre-#375 rule and the right one *within* a crossing: one
     threshold gating six rate laws must be jumped across once, not six times.
+
+    ``index`` buckets ``found`` by :func:`_crossing_bucket`, which turns the scan
+    from every crossing found so far into the handful sharing this one's instant.
+    Optional because it changes no answer, and load-bearing since issue #436: a
+    repeating schedule can contribute a thousand crossings to one run, and at that
+    size the linear scan is the whole cost of detection (1600 crossings measured
+    440 ms of comparisons, against 10 ms for everything else the detector does).
     """
-    for i, seen in enumerate(found):
+    bucket = None if index is None else index.setdefault(_crossing_bucket(cand), [])
+    for i in range(len(found)) if bucket is None else bucket:
+        seen = found[i]
         if _is_same_crossing(seen, cand):
             merged = list(seen.dtstar)
             for c, v in enumerate(cand.dtstar):
@@ -2568,6 +2626,8 @@ def _absorb_crossing(found: list[_Crossing], cand: _Crossing) -> None:
                     merged[c] = v
             found[i] = seen._replace(dtstar=merged)
             return
+    if bucket is not None:
+        bucket.append(len(found))
     found.append(cand)
 
 
@@ -2701,6 +2761,7 @@ def _emit_switch_records(
 
 def _absorb_schedule_crossings(
     found: list[_Crossing],
+    found_index: dict[tuple[int, str], list[int]],
     atom: str,
     scope: SwitchConditionScope,
     core,
@@ -2798,6 +2859,7 @@ def _absorb_schedule_crossings(
                 dtstar=dtstar,
                 partials=dict(partials),
             ),
+            found_index,
         )
 
 
@@ -2922,6 +2984,9 @@ def compute_switch_time_sens(
     # what turns isolation on below. Dropping them early is why #375 reproduced
     # even when a single parameter was requested.
     found: list[_Crossing] = []
+    # ``found`` bucketed by clock and threshold value, so absorbing a crossing
+    # does not walk every crossing found so far (see :func:`_absorb_crossing`).
+    found_index: dict[tuple[int, str], list[int]] = {}
 
     for body in function_bodies:
         for cond in _iter_if_conditions(body):
@@ -2942,6 +3007,7 @@ def compute_switch_time_sens(
                 if split is None:
                     _absorb_schedule_crossings(
                         found,
+                        found_index,
                         atom,
                         scope,
                         core,
@@ -3012,6 +3078,7 @@ def compute_switch_time_sens(
                             dtstar=dtstar,
                             partials=dict(partials),
                         ),
+                        found_index,
                     )
 
     records = _emit_switch_records(found, param_idx)
