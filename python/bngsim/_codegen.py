@@ -7660,7 +7660,11 @@ def write_sens_decline_note(so_path: str | os.PathLike[str], reason: str) -> Pat
     try:
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(tmp, note)
-    except OSError as e:
+    except Exception as e:
+        # Broad on purpose. The usual failure is an OSError from a read-only or
+        # full cache directory, but this whole function is a diagnostic, and no way
+        # of failing to record one is worth turning a build that succeeded into a
+        # build that reports failure.
         logger.debug("Could not record the sensitivity-RHS decline at %s (%s)", note, e)
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -7680,7 +7684,11 @@ def read_sens_decline_note(so_path: str | os.PathLike[str]) -> str | None:
     """
     try:
         payload = json.loads(_sens_decline_note_path(so_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except Exception:
+        # Broad for the same reason the writer is: a missing note raises OSError and
+        # a damaged one raises ValueError, but this is read from a published
+        # property, and no way of failing to read a diagnostic may break a caller's
+        # run. Every failure means the same thing here — no opinion.
         return None
     if not isinstance(payload, dict) or payload.get("version") != _SENS_DECLINE_NOTE_VERSION:
         return None

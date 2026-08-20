@@ -244,6 +244,25 @@ class TestTheReasonSurvivesTheCache:
         second = _sim(tmp_path, UNDERIVABLE)
         assert second.sens_rhs_decline_reason == first.sens_rhs_decline_reason
 
+    def test_a_budget_decline_survives_it_too(self, tmp_path, isolated_cache, monkeypatch):
+        """The other producer of a decline, and the one the issue singles out.
+
+        A build-time derivation budget (GH #90) means the answer is not even a pure
+        function of (build, model source) — the same model can flip on how long the
+        derivation took — which is the sharpest reason the question cannot be
+        settled by anything but a per-run read. It reaches the recorder from a
+        different site than an underivable rate law does, so it is worth its own
+        assertion rather than an appeal to the shared chokepoint.
+        """
+        monkeypatch.setenv("BNGSIM_SENS_DERIV_BUDGET_S", "1e-9")
+        cold = _sim(tmp_path, "beta*I/(1 + I/thresh)")
+        assert cold.has_analytic_sens_rhs is False
+        assert "budget" in cold.sens_rhs_decline_reason
+
+        warm = _sim(tmp_path, "beta*I/(1 + I/thresh)", name="again.net")
+        assert warm.codegen_cache_hit is True
+        assert warm.sens_rhs_decline_reason == cold.sens_rhs_decline_reason
+
     def test_a_model_that_did_not_decline_writes_no_note(self, tmp_path, isolated_cache):
         """The cold path pays one small write, and only for a model that declined.
         Nothing is written for the overwhelming majority of models, which are on the
