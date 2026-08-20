@@ -1,0 +1,74 @@
+From a613bb7cc0ff9287f4f7d23fee32a64c618e766d Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Thu, 20 Aug 2026 00:21:00 -0600
+Subject: [PATCH 14/14] bngsim: do not apply the symmetry factor under
+ TotalRate
+
+`FunctionalRxnClass::update_a()` scales the propensity by `baseRate`, which for
+that class is the reaction center symmetry factor and nothing else. It applied
+it whether or not the rule uses TotalRate, so a TotalRate rule with a symmetric
+reaction center ran at a fraction of the rate the model asks for -- one half on
+a homodimer.
+
+TotalRate means the rate law gives the whole propensity of the rule. The
+symmetry factor corrects a counting problem: a pattern with a non-trivial
+automorphism matches the same reaction more than once. Under TotalRate there is
+no counting to correct, because the rate is stated outright, so the factor must
+not be applied.
+
+Every BNG-generated TotalRate rule reaches this class and no other. BNG2.pl
+forces a TotalRate rate law into a Function even when it is a bare constant
+(`RateLaw.pm`: `my $force_fcn = $totalRate ? 1 : 0;`), which routes it past the
+`Ele`/`setBaseRate()` path, and it rejects TotalRate on Sat/MM/Hill, on
+Arrhenius, and on local functions. So `FunctionalRxnClass` is the whole
+reachable surface, and the fix is one guard.
+
+The guard has to sit at propensity-evaluation time rather than where the factor
+is folded into `baseRate`. `NFinput` calls `setTotalRateFlag()` after both the
+`ReactionClass` constructor and `setBaseRate()`, so `totalRateFlag` is still
+false at both of those points and a guard placed there would never fire.
+
+`BasicRxnClass` is deliberately left alone. It reads the folded `baseRate` in
+its own TotalRate branch, but BNG cannot emit `Ele` with `totalrate="1"`, and
+for hand-written XML that did, matching the released NFsim v1.14.3 behavior is
+worth more than the unreachable correction.
+
+Measured on a homodimer stating a total rate of k=0.02 over t=1000 from 400
+free monomers, so 20 firings consuming two monomers each leave 360:
+
+    NFsim v1.14.3 (released)      360.3
+    before this commit            383.4
+    after this commit             360.3
+
+Verified against BioNetGen 2.9.3, which writes the rule with
+symmetry_factor="0.5" and totalrate="1".
+---
+ src/NFreactions/reactions/reaction.cpp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/NFreactions/reactions/reaction.cpp b/src/NFreactions/reactions/reaction.cpp
+index e1d384f..5aefa23 100644
+--- a/src/NFreactions/reactions/reaction.cpp
++++ b/src/NFreactions/reactions/reaction.cpp
+@@ -85,7 +85,17 @@ double FunctionalRxnClass::update_a() {
+ 	// through setBaseRate(), so this factor is the reaction center symmetry
+ 	// correction and nothing else.  Without it a symmetric rule with a
+ 	// functional rate fires at 1/symmetryFactor times its intended rate.
+-	a *= this->baseRate;
++	//
++	// Not under TotalRate, though.  The symmetry factor corrects a counting
++	// problem -- a reactant pattern with a non-trivial automorphism matches the
++	// same reaction more than once -- and TotalRate states the whole propensity
++	// of the rule outright, so there is no count to correct and the factor must
++	// not be applied.  It has to be skipped here rather than at construction:
++	// NFinput calls setTotalRateFlag() well after both this class' constructor
++	// and setBaseRate(), so totalRateFlag is still false while baseRate is being
++	// folded, and a guard placed there would never fire.
++	if (!this->totalRateFlag)
++	{	a *= this->baseRate;   }
+ 
+ 	if(a<0) {
+ 		cout<<"Warning!!  The function you provided for functional rxn: '"<<name<<"' evaluates\n";
+-- 
+2.50.1 (Apple Git-155)
+
