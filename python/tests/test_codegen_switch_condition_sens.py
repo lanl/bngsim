@@ -1866,10 +1866,19 @@ class TestAPeriodicScheduleAgainstAFiniteDifference:
         for key, value in overrides.items():
             model.set_param(key, value)
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=sens)
-        run = sim.run(
-            sample_times=list(np.arange(0.0, 240.001, 4.0) + 0.37), rtol=1e-11, atol=1e-13
+        # ``max_step`` is not a tolerance knob, it is what makes the reference
+        # trustworthy. The right-hand side is constant inside each branch, so the
+        # local error estimate is near zero and the solver will grow a step until
+        # it spans a whole pulse unless something bounds it. The sensitivity run
+        # does not have that problem, because its crossing records are stop times,
+        # so an unbounded plain run would be compared against a trajectory the
+        # solver got wrong rather than against this column.
+        return sim.run(
+            sample_times=list(np.arange(0.0, 240.001, 4.0) + 0.37),
+            rtol=1e-11,
+            atol=1e-13,
+            max_step=0.5,
         )
-        return run
 
     @pytest.mark.parametrize(
         ("name", "nominal", "step"),
