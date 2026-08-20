@@ -124,9 +124,12 @@ in `CMakeLists.txt`) is derived from it.
   both files crediting Lin et al. (2019) for their value. The paper settles that
   one (issue #429): Fig. 7 runs the prion model from 0 to 300 days, so `t_end=300`
   is the published benchmark horizon, the model's time unit is days, and the
-  record's ten-day run is its own choice that its protocol note miscredits to Lin.
-  **B14's cost does not move**, and the correction belongs upstream in
-  `wshlavacek/BNGL-Models`. Both divergences now say so in the corpus.
+  record's ten-day run is its own choice, which its protocol note used to credit to
+  Lin. `wshlavacek/BNGL-Models#45` corrected that note and the vendored copy here
+  is the corrected file, so the collection pin moves to `a158912`. **B14's cost
+  does not move**, and neither does the generated network: the upstream fix was
+  comments only, so every `net_sha256` is unchanged and only `source_sha256`
+  moved. Both divergences now say so in the corpus.
 
 - **`ssa_table5`'s `corpus.json` is the corpus SSOT.** Artifacts, horizons and
   output-point counts were typed out in both `corpus.json` and `_ssa_config.py`;
