@@ -517,22 +517,83 @@ class TestUncompensatedCrossingGuard:
 
     Pinning a switch-time parameter (issue #48) holds it nominal against CVODES'
     difference-quotient probe, which is safe only when *every* crossing it moves
-    is compensated. ``period`` here sets a clock switch (``time() < period*4``)
-    AND drives a ``floor()``-periodic pulse (``time() - floor(time()/period)*
-    period >= 0.5``) whose crossing neither issue #48 nor issue #150 can locate.
-    Pinning would hold that crossing's dependence on ``period`` at a wrong 0 —
+    is compensated. If the parameter ALSO reads a condition nobody brackets,
+    pinning holds that crossing's dependence on it at a wrong 0 —
     MODEL1708310001's ``cycle_int`` measured ∂/∂cycle_int = 0 against a finite
-    difference of ~19 — so it is refused rather than answered with a silent zero.
-    The refusal stands whether or not an analytic RHS is claimed: an
+    difference of ~19 — so the run is refused rather than answered with a silent
+    zero. The refusal stands whether or not an analytic RHS is claimed: an
     uncompensated crossing is exactly what puts the model on the difference
     quotient (issue #68), so there is no analytic path here to sum anything on.
+
+    The witness used to be a plain ``floor()``-periodic pulse, and issue #436
+    retired that one by compensating it: ``period`` sets the clock switch
+    ``time() < period*4`` AND drives ``rem(time(), period) >= 0.5``, and both of
+    those are now crossings the detector places. So the witness moved one level
+    deeper, to a remainder OF a remainder — the shape MODEL1708310001 itself
+    writes for "one dose a day inside a twenty-one day cycle" — which nothing
+    enumerates. ``TestAFloorPulseIsCompensatedNotRefused`` below holds the
+    retired case, because a guard that has stopped firing for the right reason
+    still has to be shown to have stopped.
     """
 
-    @staticmethod
-    def _model():
+    #: The inner remainder, written once so the nesting below stays readable.
+    _REM = "(time()-(floor((time()/period))*period))"
+
+    @classmethod
+    def _model(cls, condition: str):
         b = ModelBuilder()
         b.add_parameter("period", 3.0)
         b.add_parameter("amp", 1.0)
+        b.add_parameter("rate_counter", 1.0)
+        t_idx = b.add_species("T()", 0.0)
+        x_idx = b.add_species("X()", 0.0)
+        b.add_observable("t", [(t_idx, 1.0)])
+        b.add_function("rate_X", f"if((time()<(period*4)),if(({condition}),amp,0),0)")
+        b.add_reaction([], [t_idx], "elementary", "rate_counter")
+        b.add_reaction([], [x_idx], "functional", "rate_X")
+        return bngsim.Model(_core=b.build())
+
+    @classmethod
+    def _nested(cls):
+        """A daily dose inside the cycle: ``rem(rem(time(), period), 1) >= 0.5``."""
+        return cls._model(f"({cls._REM}-(floor(({cls._REM}/1.0))*1.0))>=0.5")
+
+    @pytest.mark.parametrize("has_analytic", [False, True])
+    def test_a_switch_time_that_also_gates_an_unbracketed_crossing_is_refused(self, has_analytic):
+        with pytest.raises(SensitivityUnsupportedError, match="nothing compensates"):
+            compute_switch_time_sens(
+                self._nested()._core,
+                ["period", "amp"],
+                0.0,
+                20.0,
+                has_analytic_sens_rhs=has_analytic,
+            )
+
+    def test_a_parameter_that_only_gates_the_pulse_is_not_a_switch_time(self):
+        """``amp`` moves no crossing — it scales the pulse — so it is neither a
+        switch time nor caught by the guard, and requesting it alone is a no-op
+        (the switch-time detector leaves it to the ordinary sensitivity path)."""
+        records, pinned = compute_switch_time_sens(self._nested()._core, ["amp"], 0.0, 20.0)
+        assert records == [] and pinned == []
+
+
+class TestAFloorPulseIsCompensatedNotRefused:
+    """Issue #436, on the model the guard above was written around.
+
+    ``period`` does two things at once here: it sets the clock switch that ends
+    the treatment at ``time() = period*4``, and it is the period of the pulse
+    ``rem(time(), period) >= 0.5`` that runs until then. That combination is what
+    used to make the model unanswerable, and it is now the reason it is a good
+    test: the pulse's fourth off-edge falls at ``4*period`` and so lands on the
+    clock switch exactly, both move with ``period`` by the same 4, and the two
+    have to be read as one crossing rather than two coinciding ones (issue #375).
+    """
+
+    @staticmethod
+    def _model(period: float = 3.0, amp: float = 1.0):
+        b = ModelBuilder()
+        b.add_parameter("period", period)
+        b.add_parameter("amp", amp)
         b.add_parameter("rate_counter", 1.0)
         t_idx = b.add_species("T()", 0.0)
         x_idx = b.add_species("X()", 0.0)
@@ -545,23 +606,66 @@ class TestUncompensatedCrossingGuard:
         b.add_reaction([], [x_idx], "functional", "rate_X")
         return bngsim.Model(_core=b.build())
 
-    @pytest.mark.parametrize("has_analytic", [False, True])
-    def test_a_switch_time_that_also_gates_a_floor_pulse_is_refused(self, has_analytic):
-        with pytest.raises(SensitivityUnsupportedError, match="nothing compensates"):
-            compute_switch_time_sens(
-                self._model()._core,
-                ["period", "amp"],
-                0.0,
-                20.0,
-                has_analytic_sens_rhs=has_analytic,
+    def test_the_run_is_no_longer_refused_and_the_edges_are_placed(self):
+        records, pinned = compute_switch_time_sens(
+            self._model()._core, ["period", "amp"], 0.0, 20.0, has_analytic_sens_rhs=True
+        )
+        # On at 0.5, 3.5, 6.5, … and off at 3, 6, 9, …; the on-edge of the first
+        # period sits at a fixed 0.5 and moves for nobody, so it emits nothing.
+        assert [r.t_star for r in records] == pytest.approx(
+            [3.0, 3.5, 6.0, 6.5, 9.0, 9.5, 12.0, 12.5, 15.0, 15.5, 18.0, 18.5]
+        )
+        # ∂t*/∂period is k for the off-edge at k*period and for the on-edge just
+        # after it; ``amp`` moves none of them.
+        assert [r.dtstar[0] for r in records] == [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6]
+        assert [r.dtstar[1] for r in records] == [0.0] * 12
+        assert pinned == [0]
+
+    def test_the_pulse_edge_and_the_clock_switch_at_12_are_one_record(self):
+        """``period*4`` is 12 and the pulse's fourth boundary is 12 too, and both
+        move with ``period`` by 4. Two records there would charge ``period``
+        twice for one branch flip; the detector folds them into one because the
+        crossings agree on ∂t*/∂primary as well as on the instant (issue #375)."""
+        records, _pinned = compute_switch_time_sens(
+            self._model()._core, ["period"], 0.0, 20.0, has_analytic_sens_rhs=True
+        )
+        at_twelve = [r for r in records if r.t_star == pytest.approx(12.0)]
+        assert len(at_twelve) == 1
+        assert at_twelve[0].dtstar == [4.0]
+        assert at_twelve[0].isolate_param_idx0 == []
+
+    def test_both_columns_match_a_central_difference(self):
+        """``X`` accumulates ``amp`` for the ``period − 0.5`` of every period the
+        treatment lasts, so ``X(20) = 4*amp*(period − 0.5)`` and the two columns
+        are 4*amp = 4 and 4*(period − 0.5) = 10 exactly.
+
+        ``max_step`` is not a tolerance knob here, it is what makes the reference
+        trustworthy: a plain run of this model steps clean over the half-unit gaps
+        between pulses and reports ``X(20) = 11.5``, the answer for a pulse that
+        never turns off. The sensitivity run does not have that problem — the
+        crossing records are stop times — so a finite difference of two plain runs
+        would be comparing against a trajectory the solver got wrong."""
+        sample_times = list(np.arange(0.0, 20.001, 0.5) + 0.13)
+
+        def run(sens=None, **overrides):
+            sim = bngsim.Simulator(
+                self._model(**overrides), method="ode", sensitivity_params=sens
+            )
+            return sim.run(
+                sample_times=sample_times, rtol=1e-11, atol=1e-13, max_step=0.01
             )
 
-    def test_a_parameter_that_only_gates_the_floor_pulse_is_not_a_switch_time(self):
-        """``amp`` moves no crossing — it scales the pulse — so it is neither a
-        switch time nor caught by the guard, and requesting it alone is a no-op
-        (the switch-time detector leaves it to the ordinary sensitivity path)."""
-        records, pinned = compute_switch_time_sens(self._model()._core, ["amp"], 0.0, 20.0)
-        assert records == [] and pinned == []
+        analytic = np.asarray(run(sens=["period", "amp"]).sensitivities)
+        assert analytic[-1, 1, 0] == pytest.approx(4.0, rel=1e-6)
+        assert analytic[-1, 1, 1] == pytest.approx(10.0, rel=1e-6)
+        for col, (name, nominal, step) in enumerate([("period", 3.0, 3e-4), ("amp", 1.0, 1e-4)]):
+            up = np.asarray(run(**{name: nominal + step}).species)
+            down = np.asarray(run(**{name: nominal - step}).species)
+            fd = (up - down) / (2.0 * step)
+            scale = float(np.max(np.abs(fd)))
+            np.testing.assert_allclose(
+                analytic[:, :, col], fd, rtol=1e-4, atol=1e-5 * scale
+            )
 
 
 # ─── SBML shape ──────────────────────────────────────────────────────────────
