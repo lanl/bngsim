@@ -1,0 +1,72 @@
+# The reaction center symmetry factor must NOT be applied under TotalRate (GH #426).
+#
+# TotalRate states the whole propensity of a rule outright. The symmetry factor
+# corrects a counting problem -- a reactant pattern with a non-trivial
+# automorphism matches the same reaction more than once -- so where nothing is
+# being counted there is nothing to correct, and the factor must not be applied.
+#
+# BNG2.pl forces every TotalRate rate law into a Function, even a bare constant
+# (RateLaw.pm: `my $force_fcn = $totalRate ? 1 : 0;`), and rejects TotalRate on
+# Sat/MM/Hill, Arrhenius, and local functions. FunctionalRxnClass is therefore
+# the only reaction class a BNG-generated TotalRate rule can reach, and it is
+# also the class GH #195 taught to scale by baseRate -- which for that class
+# carries the symmetry factor and nothing else. That is how the two features
+# collided.
+#
+#   Tsym    symmetric   TotalRate, rate kt      -> symmetry_factor="0.5"
+#   Tasym   asymmetric  TotalRate, rate 2*kt    -> symmetry_factor="1"  (control)
+#
+# Under TotalRate the propensity is constant while both reactant lists are
+# non-empty, so consumption is exactly linear in time and the expected survivor
+# count is closed-form rather than exponential:
+#
+#   Tsym   fires kt*T times, consuming two A per firing   -> X0 - 2*kt*T
+#   Tasym  fires 2*kt*T times, consuming one B per firing -> X0 - 2*kt*T
+#
+# With X0=4000, kt=1.0 and T=1000 both land on 2000 survivors. A wrongly applied
+# 0.5 halves Tsym's propensity to 500 firings and leaves 3000 -- and leaves the
+# asymmetric control untouched, because its symmetry factor is 1. Both pools end
+# at 2000 free molecules, so neither reactant list ever empties and the constant
+# propensity holds for the whole run.
+#
+# This fixture deliberately covers only the TotalRate row. The non-TotalRate row
+# -- the symmetry factor that must still be applied on every rate law -- is
+# symmetry_factor_rate_laws.bngl, which is left untouched so that a fix which
+# simply stopped applying the factor everywhere fails there rather than passing
+# here.
+
+begin model
+begin parameters
+  kt   1.0
+  kt2  2.0        # == 2*kt: one B consumed per firing instead of two A
+  X0   4000
+end parameters
+
+begin molecule types
+  A(b)
+  B(b)
+  C(b)
+end molecule types
+
+begin seed species
+  A(b)  X0
+  B(b)  X0
+  C(b)  X0
+end seed species
+
+begin observables
+  Molecules  Tsym_free   A(b)
+  Molecules  Tasym_free  B(b)
+end observables
+
+begin reaction rules
+  # Symmetric reaction center: BNG emits symmetry_factor="0.5" here.
+  Tsym:   A(b) + A(b) -> A(b!1).A(b!1)  kt   TotalRate
+  # Asymmetric control: symmetry_factor="1", so no fix can change it.
+  Tasym:  B(b) + C(b) -> B(b!1).C(b!1)  kt2  TotalRate
+end reaction rules
+end model
+
+begin actions
+writeXML()
+end actions

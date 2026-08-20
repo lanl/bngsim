@@ -14,6 +14,66 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `TotalRate` rule with a symmetric reaction center no longer runs at a
+  fraction of the rate the model asks for (issue #426).** `TotalRate` means the
+  rate law gives the whole propensity of a rule. The reaction center symmetry
+  factor exists to correct a counting problem — a reactant pattern with a
+  non-trivial automorphism matches the same reaction more than once — so where
+  the rate is stated outright there is no count to correct and the factor must
+  not be applied. NFsim applied it anyway, halving the propensity on a homodimer.
+  On the issue's reproducer (a homodimer stating `k=0.02` over `t=1000` from 400
+  free monomers, so 20 firings consuming two monomers each leave 360), bngsim
+  ended at 383.4 where released NFsim v1.14.3 ends at 360.3; it now ends at
+  361.6. bngsim's own RuleMonkey backend was already correct at 359.8, so the
+  two network-free engines had been disagreeing by 2x on this shape.
+
+  The trigger is the intersection of two features, which is why it survived.
+  BNG2.pl forces every `TotalRate` rate law into a `Function` even when it is a
+  bare constant (`RateLaw.pm`: `my $force_fcn = $totalRate ? 1 : 0;`) and rejects
+  `TotalRate` on Sat/MM/Hill, Arrhenius, and local functions — so a
+  BNG-generated `TotalRate` rule always lands in `FunctionalRxnClass` and never
+  in the `Ele`/`setBaseRate()` path. That is also the class issue #195 taught to
+  scale by `baseRate`, which for it carries the symmetry factor and nothing
+  else. Nothing in the corpus sits in that cell: of the 18 `parity_checks` models
+  using `TotalRate`, 172 rules carry `symmetry_factor="1"` and 4 carry `"0.5"`,
+  and not one of the four is a `TotalRate` rule. The issue #195 fixture is
+  entirely `totalrate="0"`. And BNG2.pl does not implement `TotalRate` for network
+  simulations (`RxnRule.pm:27`: "TODO: implement TotalRate feature for Network
+  simulations") — it is the generator the parity harness runs, so no ODE or SSA
+  reference trajectory exists for a parity check to compare against. (The newer
+  C++ BioNetGen does honor the rule-level modifier, in `PsaSimulator`, so this is
+  a limitation of the Perl reference rather than of BioNetGen as a whole.)
+
+  The guard sits at propensity-evaluation time rather than where the factor is
+  folded into `baseRate`: `NFinput` calls `setTotalRateFlag()` after both the
+  `ReactionClass` constructor and `setBaseRate()`, so `totalRateFlag` is still
+  false at both of those points and a guard placed there would never fire.
+  `BasicRxnClass` is deliberately left alone — it reads the folded `baseRate` in
+  its own `TotalRate` branch, but BNG cannot emit `Ele` with `totalrate="1"`, and
+  for hand-written XML that did, matching released NFsim v1.14.3 is worth more
+  than the unreachable correction. `MMRxnClass` and `DORRxnClass` ignore
+  `totalRateFlag` entirely on their non-RuleMonkey paths, which is a separate
+  upstream gap that BNG's own rejection of those combinations keeps unreachable.
+
+  Carried as `bngsim/carry-total-rate-skips-symmetry-factor` (queue 13 → 14).
+  This one is upstream-bound rather than a permanent local divergence: the
+  defect reached upstream `master` through RuleWorld/nfsim #89, which absorbed
+  the issue #195 carry, so upstream NFsim has it too.
+
+  `tests/data/nfsim/symmetry_factor_total_rate.{bngl,xml}` and
+  `TestTotalRateIgnoresTheSymmetryFactor` guard the `TotalRate` row of the 2x2;
+  `symmetry_factor_rate_laws.xml` is left untouched so that a "fix" which simply
+  stopped applying the factor everywhere fails there rather than passing here.
+  The new fixture puts a symmetric and an asymmetric `TotalRate` pool on the
+  same expected survivor count (2000 of 4000): before the fix the symmetric pool
+  ended at 2999.0 and the asymmetric control at 2004.5, after it 1995.3 and
+  1999.6. Both of the pre-existing controls — an asymmetric `TotalRate` rule and
+  a symmetric elementary-rate rule — are byte-identical across the change
+  (380.73 and 286.10 over 60 seeds), so nothing outside the `TotalRate` path
+  moved.
+
 ## [0.14.0] - 2026-08-18
 
 ### Added

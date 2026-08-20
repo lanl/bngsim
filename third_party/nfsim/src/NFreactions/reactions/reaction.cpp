@@ -85,7 +85,17 @@ double FunctionalRxnClass::update_a() {
 	// through setBaseRate(), so this factor is the reaction center symmetry
 	// correction and nothing else.  Without it a symmetric rule with a
 	// functional rate fires at 1/symmetryFactor times its intended rate.
-	a *= this->baseRate;
+	//
+	// Not under TotalRate, though.  The symmetry factor corrects a counting
+	// problem -- a reactant pattern with a non-trivial automorphism matches the
+	// same reaction more than once -- and TotalRate states the whole propensity
+	// of the rule outright, so there is no count to correct and the factor must
+	// not be applied.  It has to be skipped here rather than at construction:
+	// NFinput calls setTotalRateFlag() well after both this class' constructor
+	// and setBaseRate(), so totalRateFlag is still false while baseRate is being
+	// folded, and a guard placed there would never fire.
+	if (!this->totalRateFlag)
+	{	a *= this->baseRate;   }
 
 	if(a<0) {
 		cout<<"Warning!!  The function you provided for functional rxn: '"<<name<<"' evaluates\n";

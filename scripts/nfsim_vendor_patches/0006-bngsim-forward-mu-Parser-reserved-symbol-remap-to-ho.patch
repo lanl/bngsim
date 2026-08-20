@@ -1,7 +1,7 @@
-From 575790268280a0050d5a954358ceb7c9dbe82c7c Mon Sep 17 00:00:00 2001
+From 39eb9eaac10ff2b4ef30f8332b3b45c3883115b6 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Wed, 10 Jun 2026 07:07:03 -0600
-Subject: [PATCH 06/13] bngsim: forward mu::Parser reserved-symbol remap to
+Subject: [PATCH 06/14] bngsim: forward mu::Parser reserved-symbol remap to
  host expr_compat
 
 The mu::Parser ExprTk shim used to carry a hand-ported copy of the BNG

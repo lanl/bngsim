@@ -287,6 +287,34 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-total-rate-skips-symmetry-factor",
+        "kind": "local",
+        "status": (
+            "Skip the reaction center symmetry factor when a rule uses "
+            "TotalRate. FunctionalRxnClass::update_a() scales the propensity by "
+            "baseRate, which for that class is the symmetry factor and nothing "
+            "else, and it did so whether or not the rule states a total rate -- "
+            "so a TotalRate rule with a symmetric reaction center ran at a "
+            "fraction of the requested rate (one half on a homodimer). "
+            "TotalRate states the whole propensity outright, so there is no "
+            "match count to correct and the factor must not be applied. This is "
+            "the whole reachable surface: BNG2.pl forces every TotalRate rate "
+            "law into a Function even when it is a bare constant, and rejects "
+            "TotalRate on Sat/MM/Hill, Arrhenius, and local functions. The "
+            "guard sits at propensity-evaluation time because NFinput calls "
+            "setTotalRateFlag() after both the constructor and setBaseRate(). "
+            "Regression introduced upstream by RuleWorld/nfsim #89, which took "
+            "the GH #195 symmetry carry; report upstream and drop this carry "
+            "once it lands there. See bngsim GH #426."
+        ),
+        "commits": [
+            {
+                "commit": "a613bb7cc0ff9287f4f7d23fee32a64c618e766d",
+                "summary": "bngsim: do not apply the symmetry factor under TotalRate",
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

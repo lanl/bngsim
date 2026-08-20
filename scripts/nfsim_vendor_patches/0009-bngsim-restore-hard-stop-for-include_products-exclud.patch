@@ -1,7 +1,7 @@
-From 6f19aad5db25ab0ed16acfd9add116748f0a88ca Mon Sep 17 00:00:00 2001
+From a4cd5d45a6ca4797b9e6a4c4f327e8df0045e38e Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:28:13 -0600
-Subject: [PATCH 09/13] bngsim: restore hard stop for
+Subject: [PATCH 09/14] bngsim: restore hard stop for
  include_products/exclude_products
 
 ---

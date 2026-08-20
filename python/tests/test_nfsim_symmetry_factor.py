@@ -198,3 +198,94 @@ class TestMichaelisMentenAboveTheLinearRegime:
             "regime value -- this fixture no longer probes the nonlinear range and "
             "cannot distinguish the two placements of the symmetry factor"
         )
+
+
+# ── TotalRate: the other half of the 2x2 (GH #426) ────────────────────────────
+#
+# Everything above is the non-TotalRate row: a rule that states a per-instance
+# rate needs the symmetry factor, and #195 made every rate law honor it. This is
+# the TotalRate row, where the same factor must NOT be applied -- it corrects a
+# match count, and TotalRate states the whole propensity outright, so there is
+# no count to correct.
+#
+# Must match tests/data/nfsim/symmetry_factor_total_rate.bngl.
+TR_X0 = 4000.0
+TR_KT = 1.0
+TR_T_END = 1000.0
+
+#: Survivors when the symmetry factor is correctly left off: kt*T firings
+#: consuming two molecules each (and 2*kt*T firings consuming one, for the
+#: asymmetric control) -- both pools land here.
+TR_EXACT = TR_X0 - 2.0 * TR_KT * TR_T_END  # 2000.0
+#: Survivors when a 0.5 is wrongly applied: half the firings, half the loss.
+TR_HALVED = TR_X0 - TR_KT * TR_T_END  # 3000.0
+
+# Firing counts are Poisson, so the symmetric pool's per-seed scatter is
+# 2*sqrt(1000) ~= 63 counts and a 3-seed mean has sigma ~= 37. A +/-200 band is
+# ~5.5 sigma wide and still leaves TR_HALVED 22 sigma outside it.
+TR_TOLERANCE = 200.0
+
+
+@pytest.fixture(scope="module")
+def total_rate_observables() -> dict[str, float]:
+    """Final observables averaged over ``SEEDS`` for the TotalRate fixture."""
+    return _mean_observables(
+        _data_dir() / "nfsim" / "symmetry_factor_total_rate.xml",
+        t_end=TR_T_END,
+    )
+
+
+class TestTotalRateIgnoresTheSymmetryFactor:
+    """A TotalRate rule fires at the stated rate, symmetric or not (#426).
+
+    BNG2.pl forces every TotalRate rate law into a Function even when it is a
+    bare constant (``RateLaw.pm``: ``my $force_fcn = $totalRate ? 1 : 0;``) and
+    rejects TotalRate on Sat/MM/Hill, Arrhenius, and local functions. So
+    ``FunctionalRxnClass`` is the entire reachable surface -- and it is also the
+    class #195 taught to scale by ``baseRate``, which for that class carries the
+    symmetry factor and nothing else. That is how the two features collided:
+    every BNG-generated TotalRate rule with a symmetric reaction center ran at
+    half the rate its model asked for.
+
+    Measured against released NFsim v1.14.3 on the issue's reproducer (a
+    homodimer stating k=0.02 over t=1000 from 400 monomers, so 360 survivors):
+    stock 360.3, bngsim before the fix 383.4, after 360.3.
+    """
+
+    def test_symmetric_rule_fires_at_the_stated_total_rate(
+        self, total_rate_observables: dict[str, float]
+    ) -> None:
+        got = total_rate_observables["Tsym_free"]
+        assert got == pytest.approx(TR_EXACT, abs=TR_TOLERANCE), (
+            f"Tsym_free ended at {got:.1f}; expected ~{TR_EXACT:.1f}. "
+            f"{TR_HALVED:.1f} means the reaction center symmetry factor was applied "
+            "to a rule that states its own total rate, halving the propensity "
+            "(#426)."
+        )
+
+    def test_asymmetric_control_is_unchanged(
+        self, total_rate_observables: dict[str, float]
+    ) -> None:
+        # symmetry_factor="1" here, so no placement of the factor can move this
+        # pool. It fails only if TotalRate handling broke in some other way --
+        # which is what separates "the fix worked" from "TotalRate went to zero".
+        got = total_rate_observables["Tasym_free"]
+        assert got == pytest.approx(TR_EXACT, abs=TR_TOLERANCE), (
+            f"Tasym_free ended at {got:.1f}; expected ~{TR_EXACT:.1f}. This rule "
+            "has no reaction center symmetry, so a shift here is a change in "
+            "TotalRate handling itself, not in the symmetry factor (#426)."
+        )
+
+    def test_symmetric_and_asymmetric_agree(
+        self, total_rate_observables: dict[str, float]
+    ) -> None:
+        # The sharpest form of the claim, and the one that needs no expected
+        # value: under TotalRate a rule's propensity is whatever it says it is,
+        # so it must not depend on whether its reactant pattern is symmetric.
+        obs = total_rate_observables
+        sym, asym = obs["Tsym_free"], obs["Tasym_free"]
+        assert sym == pytest.approx(asym, abs=2 * TR_TOLERANCE), (
+            f"symmetric ({sym:.1f}) and asymmetric ({asym:.1f}) TotalRate rules "
+            "disagree; both state a total rate that consumes the observed species "
+            "at the same rate, so they must land together (#426)"
+        )
