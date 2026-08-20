@@ -278,11 +278,13 @@ Two measurements settled it, both on the committed `.net`:
   simulation is a bad row on its own terms.
 
 Cost was not the reason for the short horizon and is not a reason to keep it. At
-`t_end=10` a replicate fires a median 1.36×10⁷ events (1.348×10⁶ events/s of
-simulated time) for 0.46 s of bngsim wall and 1.70 s of `run_network` wall, both
-far inside the harness's 120 s per-run cap and in the range of the other rows.
-COPASI is not measured here but its throughput on the other converted-BNGL rows
-(4×10⁶–2.3×10⁷ events/s) puts it in the same seconds range.
+`t_end=10` a replicate fires a median 1.36×10⁷ events over 30 seeds, for 0.46 s of
+bngsim wall and 1.70 s of `run_network` wall, both far inside the harness's 120 s
+per-run cap and in the range of the other rows. The activity figure in the README
+table is the harness's own convention, one replicate at seed 1: 1,348,230 events
+per second of simulated time. COPASI is not measured here, but its throughput on
+the other converted-BNGL rows (4×10⁶–2.3×10⁷ events/s) puts it in the same range
+of a few seconds.
 
 **B10's cost moves by about four orders of magnitude**, so unlike B07 this one
 does move a published number and the manuscript reports the new one. The
