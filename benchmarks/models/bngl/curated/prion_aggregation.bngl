@@ -153,15 +153,19 @@ begin actions
   #  it isomorphism checking on the longest chains. The cap itself is slack: the
   #  longest chain populated during the ten-day run holds 103 subunits.
 
-  # Ten-day benchmark trajectory
+  # Ten-day trajectory
 
   #@protocol: |
-  #  Seeded direct Gillespie run over ten days, the benchmark protocol of Lin et
-  #  al. (2019). Chains elongate immediately, the mean chain length peaks near 43
-  #  subunits within the first three days, and cleavage then multiplies the
-  #  aggregates while the mean length falls back toward 20. PrPC is still far
+  #  Seeded direct Gillespie run over ten days. What comes from Lin et al. (2019)
+  #  is the parameterization, not this horizon: Fig. 7 of that paper runs the
+  #  model from 0 to 300 days. Ten days is this record's own choice, and the
+  #  reason is in the description above, that the take-off happens within days at
+  #  this PrPC level. Chains elongate immediately, the mean chain length peaks
+  #  near 43 subunits within the first three days, and cleavage then multiplies
+  #  the aggregates while the mean length falls back toward 20. PrPC is still far
   #  from its quasi-steady state at ten days, so this protocol exercises the
-  #  transient rather than the saturated regime of the primary model.
+  #  transient rather than the saturated regime of the primary model. A run
+  #  reproducing Fig. 7 of Lin et al. (2019) needs t_end=>300.
 
   resetConcentrations()
   simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10,n_steps=>1000,\

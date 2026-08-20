@@ -2,7 +2,7 @@
   "schema": 1,
   "collection": {
     "repo": "wshlavacek/BNGL-Models",
-    "commit": "6783b6e95fd79b9041c8ffb65aa9e49c82d42181",
+    "commit": "a158912765f66a994efeac49ef2b2c85ea8da003",
     "license": "CC-BY-4.0",
     "root_env": "BNGL_MODELS_ROOT",
     "default_root": "~/Code/BNGL-Models"
@@ -129,7 +129,7 @@
       "record": "prion_nucleated_polymerization_rubenstein2007",
       "variant": "_benchmark -- the Lin-2019 parameterization with the 120-subunit cap, not the record's primary file (41/483 at max_stoich PrP=>40)",
       "source": "models/prion_nucleated_polymerization_rubenstein2007/prion_nucleated_polymerization_rubenstein2007_benchmark.bngl",
-      "source_sha256": "4ed833d7d8ee801a9d818b5afcf6ea30ef9411d99e7dfe680a6a4555971ba786",
+      "source_sha256": "88acf773d57518e377932ea0ac9967166a0bab305eb149639e363caa3ba94c2e",
       "reference": "Rubenstein R, Gray PC, Cleland TJ, Piltch MS, Hlavacek WS, Roberts RM, Ambrosiano J, Kim J-I (2007) Biophys Chem 125:360-367. Benchmark parameterization and horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
       "bngl": "bngl/curated/prion_aggregation.bngl",
       "net": "net/curated/prion_aggregation.net",

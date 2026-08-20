@@ -232,10 +232,12 @@ record of what the old artifacts were:
 
 `prion_aggregation` keeps `t_end=300`, and #429 settles where that came from:
 Fig. 7 of Lin et al. (2019) runs the prion model from 0 to 300 days, so 300 is the
-published benchmark horizon and the model's time unit is days. The record's own
-ten-day run is its own choice, and its protocol note miscredits it to Lin (2019).
-That note is what needs correcting, upstream in `wshlavacek/BNGL-Models`. B14's
-cost does not move.
+published benchmark horizon and the model's time unit is days. The record runs a
+shorter ten-day trajectory, which is its own choice, and its protocol note used to
+credit that horizon to Lin (2019). `wshlavacek/BNGL-Models#45` corrected the note,
+and the vendored copy here is the corrected file. B14's cost does not move, and
+neither does the generated network: the fix was comments only, so `net_sha256` is
+unchanged and only `source_sha256` and the collection pin moved.
 
 `prion_aggregation`'s event count barely moves (~605 k at `t_end=10`, old and new
 alike) because the 17 added species are chains of length 104–120 with zero initial
