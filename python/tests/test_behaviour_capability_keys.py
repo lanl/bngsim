@@ -33,7 +33,8 @@ import bngsim
 import numpy as np
 import pytest
 
-pytest.importorskip("libsbml")
+# libsbml is a base dependency rather than an extra, so the SBML fixtures below
+# are not gated on it — the same call the rest of the suite makes.
 
 
 def _features() -> dict[str, bool]:

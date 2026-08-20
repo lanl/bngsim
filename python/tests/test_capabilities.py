@@ -305,9 +305,9 @@ class TestCapabilitiesMissingExplanations:
         # machine without BNG2.pl this build-independent logic test would
         # otherwise fail on an environment fact it is not about.
         monkeypatch.setattr(bngsim, "_bngl_available", lambda: True)
-        # ...and the four behaviour keys (#431), for the same reason again: one
-        # of them reads an environment switch and two read the compiled core, so
-        # on a hatched environment or an out-of-date extension this
+        # ...and the four behaviour keys (#431), for the same reason again:
+        # three of them read the compiled core and one reads an environment
+        # switch, so on a hatched environment or an out-of-date extension this
         # build-independent logic test would otherwise fail on a fact about the
         # machine rather than about capabilities().
         for probe in BEHAVIOUR_FEATURE_PROBES.values():
@@ -440,6 +440,33 @@ class TestBuildIdentity:
         so the preflight in conftest already refuses to run here. That makes
         this assertion free, and it pins the reporting to the same answer."""
         assert bngsim.capabilities()["build"]["stale"] is False
+
+    def test_a_lagging_extension_is_reported_stale(self, monkeypatch):
+        """The direction that matters, and the one a green checkout cannot show.
+
+        An extension older than the C++ beside it is the install every other
+        check in this report passes, because nothing in the Python layer moved.
+        Built here rather than waited for: a synthetic snapshot whose binary
+        predates its newest source by an hour.
+        """
+        from pathlib import Path
+
+        from bngsim import _build_provenance as prov
+
+        lagging = prov.Provenance(
+            core_path=Path("/somewhere/_bngsim_core.so"),
+            core_mtime=1_000.0,
+            build_commit="0123456789ab",
+            source_root=Path("/somewhere"),
+            newest_source=Path("/somewhere/src/model.cpp"),
+            newest_source_mtime=1_000.0 + 3_600,
+            head_commit=None,
+        )
+        assert lagging.is_stale is True, "fixture is not what it claims"
+        monkeypatch.setattr(prov, "gather", lambda **_kw: lagging)
+
+        build = bngsim.capabilities()["build"]
+        assert build == {"commit": "0123456789ab", "stale": True}
 
     def test_the_build_check_opt_out_is_honoured(self, monkeypatch):
         monkeypatch.setenv("BNGSIM_NO_BUILD_CHECK", "1")
