@@ -113,16 +113,28 @@ in `CMakeLists.txt`) is derived from it.
   answer — a crossing time that steps as a parameter moves has no chain rule to
   the model's primary parameters.
 
-- **Detecting a switch-time crossing no longer costs more the more crossings a
-  model has.** Each newly found crossing was compared against every crossing found
-  so far, to decide whether it is one already recorded written a second way (issue
-  #375). That is quadratic, and until a repeating schedule could contribute a
-  thousand crossings to one run nothing in the corpus made it visible: 1600
-  crossings spent 440 ms on those comparisons and 10 ms on everything else the
-  detector does. The comparison is now made only against crossings that share a
-  clock and a threshold value, which is what the sameness test asks for on its
-  first line anyway, so no answer changes — 1600 crossings now take 10 ms.
-  Detection runs once per `run()`, so a fit paid this on every evaluation.
+- **Switch-time crossing detection is no longer quadratic, and no longer
+  re-derives one condition once per rate law that spells it.** Both cost the same
+  thing — sympy work repeated for an answer already held — and both are paid on
+  every `run()`, so a fit paid them on every evaluation.
+
+  Each newly found crossing was compared against every crossing found so far, to
+  decide whether it is one already recorded and written a second way (issue #375).
+  Nothing in the corpus made that visible until a repeating schedule could
+  contribute a thousand crossings to one run: at 1600 crossings the comparisons
+  took 440 ms against 10 ms for everything else the detector does. The comparison
+  now runs only against crossings sharing a clock and a threshold value, which is
+  what the sameness test asks for on its first line anyway. 1600 crossings now take
+  10 ms.
+
+  Separately, the scan ran the threshold recognisers once per (rate law, atom)
+  pair rather than once per distinct atom. A meal-timing model writes six
+  conditions across twenty rate laws, so 120 recogniser passes produced 6 answers.
+  Everything the scan does reads the atom text and the model scope and nothing
+  else, so the extra passes could only re-derive what was already found.
+  BIOMD0000000450 spent 87 ms per detection pass before and spends 18 ms now,
+  BIOMD0000000268 78 ms and 16 ms — and those are the measurements for a build
+  that also does the issue #436 schedule work the old one did not.
 
 - **The analytic-`∂f/∂p` verdict no longer answers for an artifact the run has
   replaced.** `compute_all_sensitivities` and `steady_state` take
