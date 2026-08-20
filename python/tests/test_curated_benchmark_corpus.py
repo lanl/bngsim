@@ -341,3 +341,134 @@ def test_emitter_still_flags_a_cell_that_ran_but_is_unfaithful():
     cell = {"model": model, "engine": engine, "status": "ok"}
     assert emit.display_status(cell) == "N/A"
     assert why in emit.normalize_reason(cell)
+
+
+# ── 8. a declared relaxation is converged, integral, and actually applied ─────
+
+
+def _relaxed_models() -> list[dict]:
+    return [m for m in _manifest()["models"] if m.get("relax")]
+
+
+def test_a_relaxation_is_declared_with_its_evidence():
+    # `relax` is the one thing generation adds beyond generate_network, so it is
+    # also the one place hand-tuning could hide. A declaration has to say why,
+    # and the why has to carry the convergence evidence.
+    for m in _relaxed_models():
+        relax = m["relax"]
+        assert relax["method"] == "ode", f"{m['name']}: a relaxation must be deterministic"
+        assert relax["t_end"] > 0 and relax["n_steps"] > 0
+        assert len(relax.get("why", "")) > 200, (
+            f"{m['name']}: a relaxation must record why, including its convergence evidence"
+        )
+
+
+def test_relaxed_seeds_are_whole_molecules():
+    # An ODE endpoint is a real number, and the engines do not agree on what a
+    # fractional molecule count means -- bngsim and run_network round, RoadRunner's
+    # gillespie takes it literally and walks the species negative. Integrality is
+    # settled in the artifact so every engine reads the same number.
+    for m in _relaxed_models():
+        text = (BENCH / "models" / m["net"]).read_text()
+        inside = False
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line.startswith("begin species"):
+                inside = True
+            elif line.startswith("end species"):
+                break
+            elif inside and line and not line.startswith("#"):
+                seed = line.split()[-1]
+                assert float(seed) == int(float(seed)) and "." not in seed, (
+                    f"{m['name']}: seed {seed!r} is not a whole molecule count"
+                )
+
+
+def test_gene_bursts_carries_the_relaxed_state():
+    # Regression on the row this whole mechanism exists for: seeded at 0/0 it
+    # measures the basal regime and 12.5% of replicates fire nothing.
+    m = next(m for m in _manifest()["models"] if m["name"] == "gene_bursts")
+    assert m["relax"]["t_end"] == 360000
+    text = (BENCH / "models" / m["net"]).read_text()
+    assert "mRNA() 0" in text and "Protein() 467" in text, (
+        "gene_bursts lost its relaxed seed; at Table 5's t_end=3600 it would measure "
+        "the basal regime instead of the post-relaxation one"
+    )
+
+
+def test_round_species_seeds_leaves_symbolic_seeds_alone():
+    regen = _regen()
+    net = (
+        "begin species\n"
+        "    1 A() 4.669798571188e+02\n"
+        "    2 B() X_init\n"
+        "    3 C() 0.4\n"
+        "end species\n"
+    )
+    out = regen.round_species_seeds(net)
+    assert "A() 467" in out
+    assert "B() X_init" in out  # a parameter is not ours to round
+    assert "C() 0" in out
+
+
+def test_strip_actions_appends_a_declared_relaxation():
+    regen = _regen()
+    body = regen.strip_actions(
+        _MULTILINE_MODEL, {"method": "ode", "t_end": 360000, "n_steps": 100}
+    )
+    assert (
+        'simulate({method=>"ode",suffix=>"relax",t_start=>0,t_end=>360000,n_steps=>100})' in body
+    )
+    assert body.rstrip().endswith("writeNetwork({overwrite=>1})")
+    # ... and still only for models that declare one
+    assert "relax" not in regen.strip_actions(_MULTILINE_MODEL)
+
+
+# ── 9. suites/ssa reads the shared curated artifacts too ─────────────────────
+
+
+def _ssa_run():
+    return _load_module("ssa_run_under_test", BENCH / "suites" / "ssa" / "run.py")
+
+
+def test_ssa_suite_shares_the_curated_artifacts():
+    # This suite carried byte-identical duplicates of five curated models, which
+    # is how three separate tcr_signaling networks came to drift apart.
+    curated = {m["name"]: m for m in _manifest()["models"]}
+    shared = {
+        "gene_expression",
+        "gene_expr_3stage",
+        "tcr_signaling",
+        "erk_activation",
+        "prion_aggregation",
+    }
+    ssa, psa, cfg = _ssa_run(), _psa_run(), _ssa_config()
+    for m in ssa.MODELS:
+        rec = curated.get(m["name"])
+        assert m["curated"] is bool(rec), m["name"]
+        if not rec:
+            continue
+        assert m["name"] in shared
+        path = (m["net_dir"] / f"{m['name']}.net").resolve()
+        assert path == (BENCH / "models" / rec["net"]).resolve()
+        assert (m["species"], m["reactions"]) == (rec["species"], rec["reactions"])
+        # every suite that runs this model runs the same bytes
+        assert path == (cfg.HERE / cfg.MODELS[m["name"]]["file"]).resolve()
+    for m in psa.MODELS:
+        assert (psa.NET_DIR / f"{m['name']}.net").resolve() == (
+            BENCH / "models" / curated[m["name"]]["net"]
+        ).resolve()
+    assert {m["name"] for m in ssa.MODELS if m["curated"]} == shared
+
+
+def test_no_curated_model_keeps_a_copy_in_another_bucket():
+    names = {m["name"] for m in _manifest()["models"]}
+    strays = [
+        p.relative_to(BENCH)
+        for p in BENCH.glob("models/net/*/*.net")
+        if p.stem in names and p.parent.name != "curated"
+    ]
+    # models/net/ode/ is a different corpus with a different role (ODE, not SSA);
+    # what must not come back is a second copy in an SSA/PSA bucket.
+    strays = [p for p in strays if p.parent.name != "ode"]
+    assert not strays, f"a curated model has a second SSA/PSA copy again: {strays}"

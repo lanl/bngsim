@@ -47,6 +47,7 @@ canonical ``~/Simulations/BioNetGen-2.9.3`` install (same convention as
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -109,16 +110,37 @@ def logical_lines(text: str) -> list[str]:
     return out
 
 
-def strip_actions(text: str) -> str:
-    """The curated model body plus its own ``generate_network``, nothing else."""
+def strip_actions(text: str, relax: dict | None = None) -> str:
+    """The curated model body plus its own ``generate_network``, nothing else.
+
+    ``relax``, when a model declares one, appends a *deterministic relaxation*:
+    an ODE run from the record's seed species, then ``writeNetwork``, so the
+    emitted ``.net`` carries the relaxed state as its seed. It is the one thing
+    generation adds beyond ``generate_network``, and it exists because a couple
+    of these models are seeded at a state their own protocol never simulates
+    from -- the record relaxes deterministically first and carries that state
+    into the stochastic run. Dropping the relaxation while keeping the
+    manuscript's SSA horizon measures a regime nothing declares.
+
+    It stays honest only if the relaxation is *converged*: a horizon past
+    convergence is a steady state, which is a property of the model, where a
+    horizon short of it is an arbitrary point on a transient. Each declaration
+    records the evidence in its ``why``.
+    """
     kept = [ln for ln in logical_lines(text) if not _ACTION.match(ln.strip())]
     body = "\n".join(kept).rstrip()
     if not re.search(r"^\s*generate_network\b", body, flags=re.M):
         body += "\n\ngenerate_network({overwrite=>1})"
+    if relax:
+        body += (
+            f'\n\nsimulate({{method=>"{relax.get("method", "ode")}",suffix=>"relax",'
+            f"t_start=>0,t_end=>{relax['t_end']},n_steps=>{relax['n_steps']}}})"
+            "\nwriteNetwork({overwrite=>1})"
+        )
     return body + "\n"
 
 
-def generate(bngl: Path, out: Path, timeout: int = 1800) -> Path:
+def generate(bngl: Path, out: Path, relax: dict | None = None, timeout: int = 1800) -> Path:
     """Run BNG2.pl on the action-stripped model and place its ``.net`` at *out*."""
     if not BNG2_PL.exists():
         raise FileNotFoundError(
@@ -127,7 +149,7 @@ def generate(bngl: Path, out: Path, timeout: int = 1800) -> Path:
         )
     with tempfile.TemporaryDirectory(prefix="curated_net_") as tmp:
         work = Path(tmp)
-        (work / bngl.name).write_text(strip_actions(bngl.read_text()))
+        (work / bngl.name).write_text(strip_actions(bngl.read_text(), relax))
         for extra in bngl.parent.glob("*.tfun"):
             shutil.copy(extra, work / extra.name)
         proc = subprocess.run(
@@ -145,8 +167,43 @@ def generate(bngl: Path, out: Path, timeout: int = 1800) -> Path:
                 f"{proc.stdout[-600:]}\n{proc.stderr[-400:]}"
             )
         out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(net, out)
+        text = net.read_text()
+        if relax:
+            text = round_species_seeds(text)
+        out.write_text(text)
     return out
+
+
+def round_species_seeds(net_text: str) -> str:
+    """Round a relaxed ``.net``'s seed species to whole molecules.
+
+    An ODE endpoint is a real number, and a ``.net`` that seeds an exact-SSA run
+    with 0.389 molecules is ill-posed -- every engine has to invent a rule, and
+    they do not agree. bngsim rounds (and says so); ``run_network`` rounds; but
+    RoadRunner's gillespie takes the value literally and integrates a discrete
+    process from a fractional count, which walks the species straight through
+    zero into negative populations. That is the same failure the corpus already
+    dropped Smith2013/474 for. So integrality is settled here, in the artifact,
+    where every engine reads the same number -- it is a well-definedness
+    requirement of a discrete state, not a modelling choice.
+
+    Only the numeric seeds a relaxation produced are touched; a seed written as a
+    parameter or an expression is left exactly as it is.
+    """
+    out, inside = [], False
+    for raw in net_text.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("begin species"):
+            inside = True
+        elif stripped.startswith("end species"):
+            inside = False
+        elif inside and stripped and not stripped.startswith("#"):
+            head, _, tail = raw.rpartition(" ")
+            # a symbolic seed (a parameter or an expression) is not ours to touch
+            with contextlib.suppress(ValueError):
+                raw = f"{head} {round(float(tail))}"
+        out.append(raw)
+    return "\n".join(out) + "\n"
 
 
 def count_block(net_text: str, name: str) -> int:
@@ -268,7 +325,7 @@ def main() -> int:
                 print(f"  pinned  {m['name']:24} sha256 ok (BNG2.pl absent; not regenerated)")
                 continue
             with tempfile.TemporaryDirectory(prefix="curated_check_") as tmp:
-                fresh = generate(bngl, Path(tmp) / f"{m['name']}.net")
+                fresh = generate(bngl, Path(tmp) / f"{m['name']}.net", m.get("relax"))
                 if sha256(fresh) != got:
                     problems.append(
                         f"{m['name']}: {m['net']} does not match a fresh generation "
@@ -279,7 +336,7 @@ def main() -> int:
             print(f"  ok      {m['name']:24} {m['species']:4d} sp / {m['reactions']:5d} rx")
             continue
 
-        generate(bngl, net)
+        generate(bngl, net, m.get("relax"))
         record(m, net)
         print(
             f"  wrote   {m['name']:24} {m['species']:4d} sp / {m['reactions']:5d} rx  {m['net']}"

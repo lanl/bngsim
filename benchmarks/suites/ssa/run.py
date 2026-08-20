@@ -32,16 +32,24 @@ from _effort import add_effort_arg, filter_by_effort  # noqa: E402
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = SCRIPT_DIR / "results"
-NET_DIR = _BENCH_ROOT / "models" / "net" / "ssa"
+MODELS_ROOT = _BENCH_ROOT / "models"
+NET_DIR = MODELS_ROOT / "net" / "ssa"
+CURATED_DIR = MODELS_ROOT / "net" / "curated"
+CURATED_MANIFEST = MODELS_ROOT / "curated_nets.json"
 
 # ---------------------------------------------------------------------------
 # Model registry
 # ---------------------------------------------------------------------------
-# The 12 SSA/PSA stochastic models, vendored at models/net/ssa/.  Each carries
-# an "effort" tier (low/medium/high) driving --effort; the cost driver is the
-# SSA event count -- network size combined with simulated horizon.  "ssa_skip"
-# marks erk_activation: populations up to 3e6 make exact SSA O(billions of
-# events) per replicate, so it is exercised by the psa suite instead.
+# The 12 SSA/PSA stochastic models.  Each carries an "effort" tier
+# (low/medium/high) driving --effort; the cost driver is the SSA event count --
+# network size combined with simulated horizon.  "ssa_skip" marks
+# erk_activation: populations up to 3e6 make exact SSA O(billions of events) per
+# replicate, so it is exercised by the psa suite instead.
+#
+# Artifacts resolve per model in _resolve_artifacts below: five of these are
+# models the manuscript names and read the shared models/net/curated/ networks
+# (with their sizes taken from the manifest, not typed here); the other seven
+# read models/net/ssa/ and declare their own sizes.
 MODELS = [
     {
         "name": "gene_expression_hill",
@@ -155,6 +163,34 @@ MODELS = [
 ]
 
 
+def _resolve_artifacts(models):
+    """Point a model at the curated ``.net`` when one exists, and take its size from there.
+
+    Five of these twelve are also models the manuscript names, so they are
+    generated from their curated BNGL-Models records by
+    ``models/regenerate_curated_nets.py`` and shared with ``suites/ssa_table5``
+    and ``suites/psa``. This suite reads the same file rather than a copy of its
+    own -- it used to carry ``net/ssa/`` duplicates that were byte-identical to
+    ``net/psa/`` and to ssa_table5's, which is how three copies of
+    ``tcr_signaling`` came to drift apart in the first place. Species and
+    reaction counts follow the record: the prion record's own generate_network
+    reaches 121/3843 where the old copy froze at 104/2809.
+
+    A model with no curated record keeps ``net/ssa/`` and its declared counts.
+    """
+    curated = {m["name"]: m for m in json.loads(CURATED_MANIFEST.read_text())["models"]}
+    for m in models:
+        rec = curated.get(m["name"])
+        m["net_dir"] = CURATED_DIR if rec else NET_DIR
+        m["curated"] = bool(rec)
+        if rec:
+            m["species"], m["reactions"] = rec["species"], rec["reactions"]
+    return models
+
+
+MODELS = _resolve_artifacts(MODELS)
+
+
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
@@ -266,7 +302,7 @@ def main():
     results = []
     for cfg in models:
         name = cfg["name"]
-        net_path = NET_DIR / f"{name}.net"
+        net_path = cfg["net_dir"] / f"{name}.net"
         print(f"\n--- {name} ({cfg['species']} sp, {cfg['reactions']} rxn) ---")
 
         row = {
