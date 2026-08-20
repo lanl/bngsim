@@ -14,6 +14,30 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A rate law or switch threshold that spells one of the seven built-in
+  physical constants is differentiated instead of declined.** `_pi`, `_e`,
+  `_kB`, `_NA`, `_R`, `_h` and `_F` are bound by the expression evaluator on
+  every model, and the engine reserves the names so nothing else can hold them.
+  The Python differentiation layer knew them piecemeal: two of the seven were
+  special-cased in one rate-law emitter, none of the seven were known to the
+  derived-expression preparation that resolves a switch threshold, and the
+  species-derivative emitter knew none either. The costs were real and silent
+  about their cause. A single `_pi` in one rate law declined the analytic
+  sensitivity RHS for a whole model, with a message about a derivative that could
+  not be emitted as C. `if(time() < A*_pi, ...)` on BIOMD0000000616 was refused
+  for forward sensitivity outright, reported as a threshold that does not reduce
+  to a constant, when it is an ordinary clock crossing at A times pi.
+
+  Both sympy entry points now bind the constants to their values, so every site
+  downstream sees a number rather than a free symbol and needs no entry of its
+  own. `_pi` and `_e` bind to sympy's own constants, so a rate law carrying one
+  still prints `M_PI` or `M_E` in the generated C; the other five have no sympy
+  counterpart and print as full-precision literals. The names and the values are
+  both pinned against the engine itself in `test_builtin_constants.py`, so this
+  second copy of the table cannot drift from the C++ one.
+
 ### Added
 
 - **A rate-law switch condition quadratic in the clock is now compensated at

@@ -2155,7 +2155,11 @@ def _prepare_derived_expr(
     # constants or functions of the same name (e.g., ``E``, ``S``). Also bind
     # ``Piecewise`` so the if-translation in pass 1 resolves to sympy's class.
     sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
-    local_dict: dict = dict(sym_map)
+    # Built-in constants first, so a parameter would win the name if one could
+    # ever hold it. None can — the engine reserves all seven — but the ordering
+    # says which way the tie goes without anyone having to go and check.
+    local_dict: dict = builtin_constant_bindings(sp)
+    local_dict.update(sym_map)
     local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not, Eq=sp.Eq, Ne=sp.Ne)
 
     try:
@@ -5100,6 +5104,48 @@ def _floatify_int_literals(expr: str) -> str:
 # are C *functions* (fabs/log/round/fmax/fmin) or operators (&&/||/!), where
 # `name()` is not valid ExprTk in the first place and the parens must survive
 # for the arguments that follow.
+# The seven physical constants the ExprTk evaluator binds on every expression
+# (``add_remapped_constant`` in src/expression.cpp). A model cannot define a
+# parameter with one of these names, so a rate law or a threshold that spells one
+# means the constant and nothing else.
+#
+# The VALUES here have to equal the C++ ones bit for bit, and the NAMES have to be
+# exactly ``reserved_names()["constants"]``. Neither is checked at import, because
+# the compiled core may be absent while this module is only being read; both are
+# checked by test_builtin_constants.py, which is what stops this copy drifting
+# from the engine's.
+_BUILTIN_CONSTANT_VALUES: dict[str, float] = {
+    "_pi": 3.14159265358979323846,
+    "_e": 2.71828182845904523536,
+    "_NA": 6.02214076e23,
+    "_kB": 1.380649e-23,
+    "_R": 8.314462618153241,
+    "_h": 6.62607015e-34,
+    "_F": 96485.33212331002,
+}
+
+
+def builtin_constant_bindings(sp) -> dict:
+    """``{name: sympy object}`` for the built-in constants, for a ``parse_expr``
+    ``local_dict``.
+
+    Binding them as *values* rather than leaving them as free symbols is the
+    whole fix: every differentiation site downstream then sees a number, so
+    ``d/dA (A*_pi)`` is a constant instead of an unrecognized symbol, and no
+    emitter needs its own entry for them.
+
+    ``_pi`` and ``_e`` bind to sympy's own exact constants rather than to floats,
+    so a rate law that already round-tripped through ``_print_Pi`` or printed as
+    ``M_PI`` keeps printing that way. The other five have no sympy counterpart
+    and bind to exact floats.
+    """
+    out: dict = {"_pi": sp.pi, "_e": sp.E}
+    for name, value in _BUILTIN_CONSTANT_VALUES.items():
+        if name not in out:
+            out[name] = sp.Float(value)
+    return out
+
+
 _BUILTIN_IDENT_MAP: dict[str, tuple[str, bool]] = {
     "time": ("t", True),
     "t": ("t", True),
