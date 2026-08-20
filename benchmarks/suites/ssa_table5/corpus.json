@@ -69,8 +69,7 @@
         "Relabelling, not a re-measurement: the curated record and the superseded copy generate the same 34/65 network with identical seed species and identical effective rate constants (the old copy carried a symbolic system-size parameter lambda=1 and derived _rateLaw* expressions). Measured activity agrees to the event at t_end=86.4.",
         "The record has NO active exact-SSA action -- its only active action is an ODE run at t_end=86400 reproducing Fig. 4B, and its sole stochastic line is a commented-out partial-scaling block. The 8640 horizon comes from Lin et al. (2019).",
         "EXACT SSA IS THE SLOW ANCHOR: populations up to 3e6 -> ~6e8 events/replicate. Feasible; budget for it.",
-        "Citation is now the curated record's (with DOI); what is still open is whether the SOURCE STUDY used exact SSA -- hence provenance_status=verify.",
-        "record_horizon is null because the record declares no active exact-SSA action at all (see the caveat above); 8640 comes from Lin et al. (2019)."
+        "Citation is now the curated record's (with DOI); what is still open is whether the SOURCE STUDY used exact SSA -- hence provenance_status=verify."
       ]
     },
     {
