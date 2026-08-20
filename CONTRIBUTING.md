@@ -232,6 +232,35 @@ cache your edit just orphaned and `bngsim-cache prune --orphaned` can sweep exac
 that. Build every artifact path through that helper: a call site that spells the name
 itself is a silent cache miss, not an error.
 
+## Fixes that need a capability key
+
+Most fixes need no announcement beyond the changelog. A few do, and the test is
+narrow (issue #431): **does a build without this fix return a wrong number
+instead of refusing?** If so, add a key to `capabilities()["features"]`.
+
+The reason is that nothing else can carry the answer. The version string
+identifies a release *cycle* rather than a build — bngsim bumps `__version__` at
+the start of one, so a from-source install made before your fix declares the
+number of the release that carries it — and a `hasattr` probe cannot see a
+change in what a build computes rather than in what it exposes. So a consumer
+deciding whether to trust the result has nothing to read, and its two ways of
+guessing wrong are not equally bad: guessing "absent" costs a slower path,
+guessing "present" costs a plausible wrong answer nobody looks at twice.
+
+When you add one:
+
+- Give it a real probe where the fix can actually be missing — a binding the fix
+  added, for a fix that is partly C++, since a source checkout builds the
+  extension separately and it can lag the Python layer.
+- Publish it on every build, `True` or `False`. An absent key means "too old to
+  have been asked", which a consumer must handle as a third case.
+- Give `missing[name]` a sentence that says what goes wrong and what to do.
+- Measure what the key claims in `python/tests/test_behaviour_capability_keys.py`
+  and assert the key against the measurement, so the key cannot outlive the
+  behaviour.
+- Names are permanent: `capabilities()` promises that existing keys are never
+  renamed or removed.
+
 ## Before opening a PR
 
 - Keep new code consistent with the surrounding style (`.clang-format` for C++,
