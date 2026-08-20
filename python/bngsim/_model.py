@@ -84,6 +84,7 @@ class Model:
         "_codegen_c_source",
         "_codegen_sec",
         "_codegen_cache_hit",
+        "_codegen_sens_decline",
         "_libsbml_parse_sec",
         "_interpret_sec",
         "_jac_derive_sec",
@@ -134,6 +135,11 @@ class Model:
         # the _codegen.prepare_* entry points; read by Simulator.codegen_cache_hit.
         # The definitive cache signal, not inferred from wall time.
         self._codegen_cache_hit: bool | None = None
+        # Why the model's last codegen prepare declined the analytic sensitivity
+        # RHS, or None when it did not (issue #438). Set by the _codegen.prepare_*
+        # entry points; read by Simulator.sens_rhs_decline_reason for a build that
+        # has no .so to carry the decline note beside (the MIR JIT paths).
+        self._codegen_sens_decline: str | None = None
         # Per-model setup wall seconds, each timed at its own boundary in the
         # SBML loader (read by Simulator.last_libsbml_parse_sec /
         # last_interpret_sec / last_jacobian_sec; surfaced by the rr_parity
@@ -842,6 +848,7 @@ class Model:
         m._codegen_c_source = self._codegen_c_source
         m._codegen_sec = self._codegen_sec
         m._codegen_cache_hit = self._codegen_cache_hit
+        m._codegen_sens_decline = self._codegen_sens_decline
         # Carry the populated Jacobian + its derive time to clones (the existing
         # warm-clone path re-compiles the derivative ExprTk strings with NO sympy),
         # so a warmed parent yields cheap clones — the key invariant a future lazy

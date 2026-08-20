@@ -42,9 +42,9 @@ from bngsim._atol import (
 )
 from bngsim._codegen import (
     _codegen_jit_backend,
-    last_codegen_cache_hit,
+    carry_codegen_stats,
     last_codegen_error,
-    last_codegen_sec,
+    read_sens_decline_note,
 )
 from bngsim._exceptions import (
     DenseSolverFallbackWarning,
@@ -931,9 +931,8 @@ class Simulator:
                     )
                     self._net_path = codegen_path
                     # .net-path prepares record only to the thread-local (no
-                    # Model arg); surface codegen time + cache-hit on the model.
-                    model._codegen_sec = last_codegen_sec()
-                    model._codegen_cache_hit = last_codegen_cache_hit()
+                    # Model arg); surface what they recorded on the model.
+                    carry_codegen_stats(model)
                 else:
                     from bngsim._codegen import prepare_model_codegen_source
 
@@ -962,8 +961,7 @@ class Simulator:
                     # mypy gap).
                     so_path: Path | None = prepare_codegen(codegen_path, model, emit_jac=emit_jac)
                     self._net_path = codegen_path
-                    model._codegen_sec = last_codegen_sec()  # T0.3 (see above)
-                    model._codegen_cache_hit = last_codegen_cache_hit()
+                    carry_codegen_stats(model)  # T0.3 (see above)
                 else:
                     from bngsim._codegen import prepare_model_codegen
 
@@ -1699,8 +1697,27 @@ class Simulator:
                 available = hasattr(ctypes.CDLL(self._codegen_so_path), "bngsim_codegen_sens_rhs")
             except OSError:  # pragma: no cover - a missing/damaged .so surfaces elsewhere
                 available = False
-        self._codegen_sens_rhs_available = available
+        self._codegen_sens_rhs_available: bool | None = available
         return available
+
+    def _codegen_artifact_changed(self) -> None:
+        """Forget what was memoized about the attached codegen artifact.
+
+        :meth:`_codegen_provides_sens_rhs` reads the artifact once and remembers the
+        answer, which is right for a Simulator whose artifact is settled at
+        construction and wrong for the two methods that swap it afterwards.
+        ``compute_all_sensitivities`` and ``steady_state`` take
+        ``sensitivity_params`` as a method argument, and
+        :meth:`_prepare_output_sens_codegen` rebuilds the artifact for them —
+        turning a plain build, which since issues #209/#217 carries no
+        ``bngsim_codegen_sens_rhs`` at all, into a sensitivity one that does. A memo
+        taken before that swap answers for an artifact this run no longer installs.
+
+        Called wherever the artifact is replaced, in both directions: the drop that
+        forces the rebuild and the restore that puts the old one back when the
+        rebuild produces nothing.
+        """
+        self._codegen_sens_rhs_available = None
 
     def _apply_state_switch_sens(self, opts, core) -> None:
         """Register the state-dependent rate-law switches to jump at (issue #150).
@@ -1832,8 +1849,7 @@ class Simulator:
 
                     auto_src = prepare_codegen_source(model_net_path, model, emit_jac=emit_jac)
                     self._net_path = model_net_path
-                    model._codegen_sec = last_codegen_sec()  # T0.3 (.net path)
-                    model._codegen_cache_hit = last_codegen_cache_hit()
+                    carry_codegen_stats(model)  # T0.3 (.net path)
                 else:
                     from bngsim._codegen import prepare_model_codegen_source
 
@@ -1844,8 +1860,7 @@ class Simulator:
 
                     auto_so = prepare_codegen(model_net_path, model, emit_jac=emit_jac)
                     self._net_path = model_net_path
-                    model._codegen_sec = last_codegen_sec()  # T0.3 (.net path)
-                    model._codegen_cache_hit = last_codegen_cache_hit()
+                    carry_codegen_stats(model)  # T0.3 (.net path)
                 else:
                     from bngsim._codegen import prepare_model_codegen
 
@@ -1904,6 +1919,7 @@ class Simulator:
             if auto_src is None:
                 raise _refusal() from cause
             self._codegen_c_source = auto_src
+            self._codegen_artifact_changed()
             if hasattr(model, "_codegen_c_source"):
                 model._codegen_c_source = self._codegen_c_source
             logger.info(
@@ -1915,6 +1931,7 @@ class Simulator:
             if auto_so is None:
                 raise _refusal() from cause
             self._codegen_so_path = str(auto_so)
+            self._codegen_artifact_changed()
             if hasattr(model, "_codegen_so_path"):
                 model._codegen_so_path = self._codegen_so_path
             logger.info(
@@ -1970,6 +1987,7 @@ class Simulator:
             prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
             self._codegen_so_path = ""
             self._codegen_c_source = ""
+            self._codegen_artifact_changed()
             try:
                 self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
             except Exception:
@@ -1982,6 +2000,7 @@ class Simulator:
                 if not prev_so and not prev_src:
                     raise
                 self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+                self._codegen_artifact_changed()
                 logger.info(
                     "Output-sensitivity codegen regeneration failed; keeping the "
                     "previously attached artifact (d(output)/dp falls back to "
@@ -1989,6 +2008,7 @@ class Simulator:
                 )
             if not self._codegen_so_path and not self._codegen_c_source:
                 self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+                self._codegen_artifact_changed()
         else:
             self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
 
@@ -6690,6 +6710,91 @@ class Simulator:
         Only meaningful for ``method="ode"`` with the ``"cc"`` backend.
         """
         return getattr(self._model, "_codegen_cache_hit", None)
+
+    @property
+    def has_analytic_sens_rhs(self) -> bool:
+        """Whether a forward-sensitivity run on this Simulator uses bngsim's
+        analytic ``∂f/∂p`` rather than CVODES' internal difference quotient
+        (issue #438).
+
+        This is a property of the **(build, model)** pair, not of the build.
+        ``CVodeSensInit1`` takes ONE sensitivity-RHS callback for every column, so a
+        single rate law bngsim cannot differentiate declines the analytic ``∂f/∂p``
+        for the whole model — there is no per-reaction fallback to mix in — and the
+        difference quotient that replaces it costs one extra RHS evaluation per
+        column per step. An N-parameter fit therefore pays roughly N times the
+        sensitivity cost, which on a fit measured in hours is what ends runs: on
+        ``Smith_BMCSystBiol2013`` all 25 columns fell back and every gradient start
+        timed out. Two models on one bngsim get different answers here, and the same
+        model can flip on a derivation-budget timeout (GH #90), so no
+        :func:`bngsim.capabilities` key can answer it — the question is per run.
+
+        Read off the artifact this run installs: it either exports
+        ``bngsim_codegen_sens_rhs``, the exact symbol the C++ resolves with
+        ``try_symbol`` to choose the analytic RHS, or it does not. That is the
+        ground truth whatever the codegen cache did, and it is the same answer
+        :meth:`_apply_switch_time_sens` and
+        :meth:`_raise_if_uncompensated_crossing_sensitivities` already act on.
+
+        ``False`` on a Simulator built for a plain solve is not a decline. Since
+        issues #209/#217 the sensitivity RHS is emitted only when a sensitivity is
+        actually requested, so an artifact built for ``Simulator(model)`` carries no
+        analytic ``∂f/∂p`` simply because nobody asked for one; ask a Simulator
+        built with ``sensitivity_params=`` (or after
+        :meth:`compute_all_sensitivities`, which rebuilds), and read
+        :attr:`sens_rhs_decline_reason` for the half that says why.
+
+        A run with no codegen artifact at all — ``codegen=False``, an interpreted
+        ExprTk RHS — reports ``False`` too, and correctly: the analytic ``∂f/∂p``
+        is a compiled symbol, so a run that compiles nothing has none and CVODES'
+        difference quotient carries every column there as well.
+        """
+        return self._codegen_provides_sens_rhs()
+
+    @property
+    def sens_rhs_decline_reason(self) -> str | None:
+        """Why this model is on CVODES' difference quotient, or ``None`` (issue #438).
+
+        ``None`` means one of two things, and :attr:`has_analytic_sens_rhs` is what
+        separates them: with the analytic ``∂f/∂p`` in use there is nothing to
+        report, and without it there is nothing recorded — a build older than issue
+        #438, a cache directory the note could not be written into, or a plain run
+        that never asked for a sensitivity RHS at all. Absence is never evidence
+        that a model is on the analytic path.
+
+        The reason is what makes the verdict actionable. *"uses unsupported
+        construct: abs()"* tells a modeller precisely what to re-encode, while *"no
+        analytic RHS, expect roughly 25x the sensitivity cost"* tells them only to
+        wait or give up.
+
+        It also carries the one distinction that is about correctness rather than
+        cost. Where the decline is an
+        :class:`~bngsim._switch_sensitivity.UncompensatedCrossingReason` the
+        difference quotient does not answer the same question more slowly: it
+        integrates the variational equation smoothly through a branch crossing whose
+        time moves, dropping the saltation jump ``(f⁻−f⁺)·dt*/dθ``, so every column
+        is wrong at and after that crossing (GH #146). The returned string is an
+        instance of that class exactly when it applies, so an ``isinstance`` check
+        tells "wrong" from "slow". bngsim itself refuses such a run since GH #414
+        (:meth:`_raise_if_uncompensated_crossing_sensitivities`), so on this build
+        the distinction is mostly of interest to a consumer reporting on artifacts
+        built elsewhere.
+
+        Resolved from the artifact first and the model second. A decline is derived
+        once, while source is being generated, and since issue #174 the codegen
+        cache key is structural — so a warm cache resolves the ``.so`` with no
+        source generated and no decline derived. The reason is written into a small
+        note beside the artifact for that reason, and a run that hits the cache
+        reads it back; a MIR JIT build, which compiles no ``.so``, has the reason
+        its own codegen recorded on the model instead.
+        """
+        if self.has_analytic_sens_rhs:
+            return None
+        if self._codegen_so_path:
+            note = read_sens_decline_note(self._codegen_so_path)
+            if note is not None:
+                return note
+        return getattr(self._model, "_codegen_sens_decline", None)
 
     @property
     def current_time(self) -> float:

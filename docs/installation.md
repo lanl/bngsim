@@ -291,6 +291,16 @@ difference quotients), `per_species_atol` (`run(atol=...)` takes a vector) and
 published on every build, so a `False` is an answer you can act on — an absent
 key would mean only "too old to have been asked".
 
+**What no key here can answer** — whether a *particular model* gets the analytic
+∂f/∂p. `cross_compartment_sensitivities` is the near miss: it says whether this
+build still declines over a cross-compartment reaction, one specific past cause,
+while a model on a build where that key is `True` can still decline for an
+underivable construct, a comparison the switch scope cannot solve, or a build-time
+derivation budget that expired. That last one means the answer is not even a pure
+function of (build, model source). So it is read per run, off the Simulator:
+`sim.has_analytic_sens_rhs` and `sim.sens_rhs_decline_reason` (issue #438). See
+[the PyBNF guide](user-guide/pybnf.md#ask-each-model-whether-its-gradient-is-analytic).
+
 **Which build is this?** — `caps["build"]["commit"]` is the commit the compiled
 extension was built from (`None` if it was built outside a git checkout), and it
 is the only thing in the public API that separates two installs reporting the
