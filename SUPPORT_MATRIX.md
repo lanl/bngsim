@@ -48,6 +48,12 @@ reports what this build *computes* rather than what it was compiled with —
 build is answering, in `capabilities()["build"]`. See
 [installation.md](docs/installation.md#capability-introspection) for both.
 
+One question is deliberately not there. Whether a model's forward sensitivity uses
+the analytic `∂f/∂p` or CVODES' difference quotient is decided per model rather than
+per build, so it is read off the Simulator — `has_analytic_sens_rhs` and
+`sens_rhs_decline_reason` (issue #438), see
+[the PyBNF guide](docs/user-guide/pybnf.md#ask-each-model-whether-its-gradient-is-analytic).
+
 ### KLU is never optional in a published wheel
 
 Every wheel is smoke-tested for the sparse solver before it can be published:
