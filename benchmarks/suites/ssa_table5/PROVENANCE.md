@@ -181,14 +181,37 @@ not BNGL-Models records.
 Three earlier notes on this page are now superseded and are kept only as the
 record of what the old artifacts were:
 
-- **The `gene_bursts` IC bake is gone.** The 18e fix baked an ODE-equilibrated
-  steady state (mRNA=0, Protein=467) into the `.net`, from a superseded source
-  whose own protocol relaxed for 360 000 s. Nothing is baked in now — the seed
-  species are the record's (0/0), which is what the manuscript's "curated model
-  body at the table's horizon" means. At `t_end=3600` the row therefore measures
-  the basal regime: median ~84 events over 10 seeds, and a replicate can draw 0
-  (seed 1 does). The record's own protocol relaxes for 36 000 s and then runs SSA
-  for 3.6×10⁶ s; the manuscript keeps 3600 and documents the divergence.
+- **The `gene_bursts` IC bake becomes a declared relaxation.** The 18e fix baked
+  an ODE-equilibrated steady state (mRNA=0, Protein=467) by hand into the `.net`.
+  The same state is now *derived*: `curated_nets.json` declares a `relax` step
+  for this model, `regenerate_curated_nets.py` runs it against the curated record
+  before writing the artifact, and the result is rounded to whole molecules.
+  **The measurement does not move** — this `.net` and the 18e one both give
+  median 923 / mean 930 events at `t_end=3600` over 200 seeds, none of them zero.
+
+  This row is the one place the "curated model body at the table's horizon" rule
+  needs a qualifier, and it is worth stating plainly. B07's horizon and its
+  initial state were a *matched pair* in the superseded actions block —
+  `simulate ode t_end=360000` immediately followed by `simulate ssa t_end=3600` —
+  and the manuscript kept the horizon. Keeping half the pair is what makes the
+  row arbitrary: from the bare `0/0` seeds at `t_end=3600` the model sits in its
+  basal regime and measures median 95 events with **25 of 200 replicates firing
+  nothing**, which times process overhead rather than the model. Every source for
+  this model relaxes first; the record does too, just to a shorter 3.6×10⁴ s.
+
+  The relaxation horizon is not a free parameter, which is what keeps this from
+  being hand-tuning by another name: 3.6×10⁵, 3.6×10⁶ and 3.6×10⁷ s all give
+  mRNA=0.389150 / Protein=466.979857 to every digit BNG prints, so the seed is
+  the ODE **steady state**. The record's own 3.6×10⁴ s is *not* converged
+  (Protein=111.7, still climbing toward 467) — which is why the relaxation
+  follows the superseded block's 3.6×10⁵ rather than the record's own value.
+
+  The seeds are rounded because a fractional molecule count is ill-posed for a
+  discrete solver and the engines disagree about it: bngsim rounds (and warns),
+  `run_network` rounds, but RoadRunner's gillespie takes 0.389 literally and
+  walks mRNA to −0.61 over the horizon — the same signature that got
+  Smith2013/474 dropped above. Rounded in the artifact, all three start from
+  (0, 467).
 - **`erk_activation` is a relabelling, not a re-measurement.** The record and the
   superseded copy generate the same 34/65 network with identical seed species and
   identical effective rate constants — the old copy carried a symbolic system-size

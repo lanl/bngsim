@@ -9,7 +9,7 @@
   },
   "bng_version": "2.9.3",
   "generated_by": "benchmarks/models/regenerate_curated_nets.py",
-  "note": "Every action except generate_network is stripped before generating, so a record's own simulate protocol never runs; the suites declare the horizons. generate_network options are kept -- they decide the network.",
+  "note": "Every action except generate_network is stripped before generating, so a record's own simulate protocol never runs; the suites declare the horizons. generate_network options are kept -- they decide the network. A model may additionally declare a deterministic 'relax' step, which is run before the .net is written so the artifact carries the relaxed state as its seed; a relax horizon must be past convergence, and its 'why' records the evidence.",
   "models": [
     {
       "name": "gene_bursts",
@@ -19,9 +19,15 @@
       "reference": "Lin YT, Doering CR (2016) Phys Rev E 93:022409.",
       "bngl": "bngl/curated/gene_bursts.bngl",
       "net": "net/curated/gene_bursts.net",
-      "net_sha256": "1fb3041ad63f59b62a1a81f57c243b3d4bc413ee4b28265ec38f3ce27d6515c9",
+      "net_sha256": "71ccdd6621ce87d4cb2be550cdaf4bf50aaf8285446bd3b46ab77b6598f97933",
       "species": 2,
       "reactions": 4,
+      "relax": {
+        "method": "ode",
+        "t_end": 360000,
+        "n_steps": 100,
+        "why": "The model's own protocol -- in the record and in the superseded source alike -- relaxes deterministically and carries that state into the SSA run; it is never simulated stochastically from the bare 0/0 seeds. Manuscript Table 5 runs a single cell cycle (t_end=3600), so without the relaxation the row measures the basal regime: median 95 events over 200 seeds, with 25 of 200 replicates measuring exactly 0. The horizon is converged and therefore not a free parameter: 3.6e5, 3.6e6 and 3.6e7 s all give mRNA=0.389150, Protein=466.979857 to every digit BNG prints, while the record's own 3.6e4 s stops at 111.741368, still climbing. 3.6e5 is the value the superseded actions block used, and it reproduces the Protein=467 the previous .net had baked in, so the manuscript's B07 measurement does not move."
+      },
       "used_by": [
         "ssa_table5"
       ]

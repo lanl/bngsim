@@ -17,12 +17,11 @@ in `CMakeLists.txt`) is derived from it.
 ### Changed
 
 - **The manuscript's eight named BNGL models are generated from their curated
-  `BNGL-Models` records, once, and both suites that time them share the result
-  (issue #423).** `suites/ssa_table5` (Table 5, exact Gillespie SSA) and
-  `suites/psa` (Table 7, partial-scaling approximation) each vendored their own
-  pre-generated `.net` files. For the three models they have in common
-  — `tcr_signaling`, `erk_activation`, `prion_aggregation` — those were three
-  *different* artifacts by sha256, and both sets predated
+  `BNGL-Models` records, once, and every suite that runs them reads the same
+  artifact (issue #423).** `suites/ssa_table5` (Table 5, exact Gillespie SSA),
+  `suites/psa` (Table 7, partial-scaling approximation) and `suites/ssa`
+  (cross-engine correctness) each vendored their own pre-generated `.net` files.
+  `tcr_signaling` existed as **three** copies, and the three sets predated
   `wshlavacek/bngsim-paper#6`'s re-pointing of the manuscript's named models at
   the house-curated collection. A benchmark re-run would have faithfully
   re-measured superseded networks and left the manuscript citing files nothing
@@ -36,7 +35,11 @@ in `CMakeLists.txt`) is derived from it.
   fails rather than being re-measured. Generation strips every action *except*
   `generate_network`, so a record's own protocol never runs — the horizons stay
   the manuscript's, which several records disagree with — and keeps
-  `generate_network`'s options, which is what decides the network.
+  `generate_network`'s options, which is what decides the network. All eight
+  are read by `suites/ssa_table5`, five of them by `suites/ssa`, three by
+  `suites/psa`; the byte-identical `models/{bngl,net}/{psa,ssa}` duplicates are
+  removed, and `models/bngl/ssa/` is down to the seven models with no curated
+  record.
 
   Three networks moved, and the manuscript re-measures those rows:
 
@@ -49,10 +52,29 @@ in `CMakeLists.txt`) is derived from it.
   `tcr_signaling` keeps its 37/97 network but starts from the paper's primed
   state (~3 % more events); `erk_activation` is a pure relabelling, identical to
   the event; `gene_expression` and `mckane_predator_prey` are unchanged.
-  `gene_bursts` loses the ODE-equilibrated `Protein=467` an earlier corpus build
-  baked into its `.net`: the record's own seeds are `0/0`, so at the
-  manuscript's one-cell-cycle `t_end=3600` the row measures the basal regime
-  (median ~84 events over 10 seeds, and a replicate can draw 0).
+
+  `gene_bursts` keeps its `Protein=467` seed, but *derived* rather than
+  hand-baked: a model may declare a `relax` step, which generation runs against
+  the record before writing the artifact. It is the one thing generation adds
+  beyond `generate_network`, and two rules keep it from becoming a place to hide
+  hand-tuning. The horizon must be **converged**, so the seed is a steady state
+  — a property of the model — not a point on a transient; `gene_bursts` gives
+  the identical state at 3.6e5, 3.6e6 and 3.6e7 s, where the record's own
+  3.6e4 s stops at `Protein=111.7`, still climbing. And the seeds are **rounded
+  to whole molecules**, because a fractional molecule count is ill-posed for a
+  discrete solver and the engines disagree about it: bngsim and `run_network`
+  round, but RoadRunner's gillespie takes 0.389 literally and walks the species
+  negative — the signature that got Smith2013/474 dropped from the corpus.
+
+  The row measures identically either way (median 923 / mean 930 events at
+  `t_end=3600` over 200 seeds, for this `.net` and the superseded one alike), so
+  the manuscript's B07 number does not move. Without the relaxation it would
+  have: `t_end=3600` is one cell cycle, and from the bare `0/0` seeds the model
+  sits in its basal regime — median 95 events, with **25 of 200 replicates
+  firing nothing**. B07's horizon and its initial state were a matched pair in
+  the superseded actions block (`simulate ode t_end=360000` immediately followed
+  by `simulate ssa t_end=3600`), and the manuscript kept the horizon; keeping
+  half the pair is what would have made the row arbitrary.
 
   One coverage cell moved with them: the curated Samoilov record's driver step
   `N + N -> E+ + N` is a repeated reactant, whose converted SBML law `k*N*N` is

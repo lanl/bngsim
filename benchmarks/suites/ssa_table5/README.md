@@ -29,18 +29,22 @@ same artifacts `suites/psa` runs.
 | `mckane_predator_prey` | 3 | 5 | 1 200 | 216 | McKane & Newman 2005, PRL (demographic) | ✅ |
 | `gene_expression` | 10 | 14 | 60 000 | 0.48 | Munsky 2012, Science (Fig 2B) | ✅ |
 | `gene_expr_3stage` | 4 | 6 | 2×10⁸ | 0.033 | Shahrezaei & Swain 2008, PNAS | ✅ |
-| `gene_bursts` | 2 | 4 | 3 600 | ~0.023† | Lin & Doering 2016, Phys Rev E | ✅ |
+| `gene_bursts` | 2 | 4 | 3 600 | 0.26† | Lin & Doering 2016, Phys Rev E | ✅ |
 
 \* 596M events, ~156 s/replicate at the full horizon — it exceeds
 `run_bngsim_activity.py`'s 60 s cap, which records it as `partial` on a reduced
 horizon; the number here is a full-horizon measurement.
-† `gene_bursts` seed species are the record's own (mRNA=0, Protein=0), so at the
-manuscript's `t_end=3600` — one cell cycle — the model sits in its basal regime:
-median ~84 events over 10 seeds, and a replicate can draw 0 (seed 1 does). The
-record's own protocol relaxes deterministically for 36 000 s and then runs SSA
-for 3.6×10⁶ s; the manuscript keeps 3600. A superseded vendored copy had an
-ODE-equilibrated `Protein=467` baked into its `.net` and measured ~0.25/time;
-nothing is baked in now.
+† `gene_bursts` seeds from the ODE steady state (mRNA=0, Protein=467), produced
+by the `relax` step its manifest entry declares and rounded to whole molecules.
+Its protocol — in the record and in the superseded source alike — relaxes
+deterministically and carries that state into the SSA run; it is never simulated
+from the bare `0/0` seeds. The relaxation horizon is converged, so the seed is a
+property of the model rather than a free parameter: 3.6×10⁵, 3.6×10⁶ and
+3.6×10⁷ s all give the same state, while the record's own 3.6×10⁴ s stops at
+`Protein=111.7`, still climbing. **This row's measurement does not move** —
+this `.net` and the superseded baked copy both give median 923 / mean 930 events
+at `t_end=3600` over 200 seeds, none of them zero. Without the relaxation it
+would be median 95, with 25 of 200 replicates firing nothing.
 
 ### What moved when the rows were re-pointed at the curated records
 
@@ -51,7 +55,13 @@ nothing is baked in now.
 | `prion_aggregation` | 104 / 2809 | **121 / 3843** | the record's `generate_network` raises `max_iter=>150`, so chains reach its own `max_stoich=>{PrP=>120}` cap; the 17 added species are zero-population chain tails, so the event count is unchanged and only per-event cost rises (~20 % at `t_end=10`) |
 | `tcr_signaling` | 37 / 97 | 37 / 97 | same network, but the record starts from the paper's primed state rather than a clean one → ~3 % more events |
 | `erk_activation` | 34 / 65 | 34 / 65 | pure relabelling — same seeds, same effective rate constants, activity identical to the event |
+| `gene_bursts` | 2 / 4 | 2 / 4 | same network; its `Protein=467` seed is now *derived* — a declared, converged ODE relaxation of the record — instead of hand-baked into the `.net`, and measures identically (median 923 over 200 seeds, both artifacts) |
 | `gene_expression`, `mckane_predator_prey` | — | unchanged | identical network *and* identical measured activity |
+
+`samoilov_futile_cycle`'s horizon is under review in
+[#425](https://github.com/lanl/bngsim/issues/425): `t_end=0.0018` was chosen for
+the superseded 6/6 artifact, and the 7/10 record that replaced it declares
+`t_end=10` for the bistable switching it is published for.
 
 **Horizons did not move.** Several records declare a different `t_end` for their
 own protocol (`gene_bursts` 3.6×10⁶, `gene_expression` 10⁸,

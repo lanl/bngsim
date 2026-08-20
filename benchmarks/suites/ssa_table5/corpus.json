@@ -165,8 +165,16 @@
       "provenance_status": "confirmed",
       "caveats": [
         "Coarse-grained bursty gene expression (mRNA + protein). Thematically near gene_expr_3stage / gene_expression but a distinct model.",
-        "SEED SPECIES ARE THE RECORD'S: mRNA=0, Protein=0. The superseded copy had an ODE-equilibrated steady state (Protein=467) baked into its .net by the corpus build; nothing is baked in here. At the manuscript's t_end=3600 (one cell cycle) the model is therefore in its basal regime -- median ~84 Gillespie events over 10 seeds, against ~1020 for the baked copy, and a replicate can draw 0. The record's own protocol relaxes deterministically for 36000 s and then runs SSA for 3.6e6 s; the manuscript keeps 3600."
-      ]
+        "SEED SPECIES ARE THE ODE STEADY STATE (mRNA=0, Protein=467), produced by the 'relax' step declared for this model in ../../models/curated_nets.json and rounded to whole molecules. The model's protocol -- in the record and in the superseded source alike -- relaxes deterministically and carries that state into the SSA run; it is never simulated stochastically from the bare 0/0 seeds. The relaxation horizon is converged, so the seed is a property of the model, not a free parameter: 3.6e5, 3.6e6 and 3.6e7 s all give the same state, while the record's own 3.6e4 s stops at Protein=111.7, still climbing.",
+        "The B07 measurement does NOT move: this .net and the superseded baked copy both give median 923 / mean 930 Gillespie events at t_end=3600 over 200 seeds, with no zero-event replicate. Dropping the relaxation would have made it median 95 with 25 of 200 replicates firing nothing.",
+        "Horizon t_end=3600 is one cell cycle, the manuscript's; the record's own protocol runs SSA to 3.6e6 s."
+      ],
+      "engine_coverage": {
+        "bngsim": "yes",
+        "run_network": "yes (native .net)",
+        "roadrunner": "yes",
+        "copasi": "yes"
+      }
     },
     {
       "name": "samoilov_futile_cycle",
@@ -185,8 +193,8 @@
       "caveats": [
         "Enzymatic futile cycle with noise-induced bistability (Arkin group). Very short horizon (t_end=0.0018).",
         "7/10, not the 6/6 of the superseded copy: the curated record is the primary file, with the external noise driver of Expressions 7 and 8 included (the record's _no_driver file is the paper's control, not this study's model). Measured activity is close (~1317 vs ~1376 events at t_end=0.0018).",
-        "Horizon t_end=0.0018 is the manuscript's; the record's own protocol runs to 10.",
-        "ROADRUNNER CELL IS N/A: the driver step N + N -> E+ + N is second order in the same species, so the converted SBML law k*N*N is not the exact propensity k*N*(N-1) and RR-gillespie fires the SBML law (GH #9). COPASI is unaffected. The superseded copy had no driver, hence no such reaction and no N/A."
+        "ROADRUNNER CELL IS N/A: the driver step N + N -> E+ + N is second order in the same species, so the converted SBML law k*N*N is not the exact propensity k*N*(N-1) and RR-gillespie fires the SBML law (GH #9). COPASI is unaffected. The superseded copy had no driver, hence no such reaction and no N/A.",
+        "HORIZON IS UNDER REVIEW -- see lanl/bngsim#425. t_end=0.0018 came from the superseded 6/6 from_antimony artifact, which has the shape of the record's _no_driver variant; the record's own protocol runs to t_end=10 (Fig. 3A), where the noise-induced bistable switching this model is published for actually occurs. 0.0018 s is 0.018% of that window and fires ~1.3e3 events (0.006 s wall, at the timer noise floor), against ~1.3e7 events (0.97 s) at t_end=10 -- so the short horizon is not a cost concession."
       ],
       "engine_coverage": {
         "bngsim": "yes",

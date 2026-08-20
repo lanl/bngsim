@@ -18,7 +18,7 @@ begin functions
 end functions
 begin species
     1 mRNA() 0
-    2 Protein() 0
+    2 Protein() 467
 end species
 begin reactions
     1 0 1 transcription_rate #R_transcribe
