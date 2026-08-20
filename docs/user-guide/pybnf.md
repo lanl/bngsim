@@ -154,3 +154,53 @@ result.save("eval_0001.h5")                        # full arrays (HDF5)
 
 `spec.with_params(theta_row)` stamps a θ row onto a base spec, so a sweep
 serializes one spec plus a matrix rather than thousands of near-duplicates.
+
+## Gate on what the build computes, not on its version
+
+A frontend that is about to spend hours on a gradient fit has to decide first
+whether this install computes the derivatives it is about to trust. Some of that
+is a compiled backend or an optional package, and `capabilities()["features"]`
+has always answered it. Some of it is a **fix**, and until issue #431 there was
+nothing to read.
+
+A version string cannot stand in. bngsim bumps `__version__` at the *start* of a
+release cycle, so the string identifies a cycle rather than a build: every
+from-source install made between that bump and a given fix declares the same
+number as the release that finally carries it. A `hasattr` probe cannot stand in
+either, because these fixes change what a build *computes*, not what it
+*exposes* — nothing in the namespace appears or disappears at one.
+
+The **behaviour keys** are published for exactly this. Each is `True` or `False`
+on every build, so a `False` is an answer you can act on, where an absent key
+would mean only "too old to have been asked":
+
+```python
+caps = bngsim.capabilities()
+caps["features"]["event_sensitivities"]              # across a discrete event
+caps["features"]["cross_compartment_sensitivities"]  # analytic ∂f/∂p, not DQs
+caps["features"]["per_species_atol"]                 # run(atol=[...])
+caps["features"]["tracking_atol"]                    # run(atol=TrackingAtol())
+```
+
+Getting one of these wrong is asymmetric, which is why they are worth a key. A
+build without the fix does not *refuse* the case — it returns a finite tensor
+with a term missing. Guessing "absent" costs a gradient fit; guessing "present"
+costs a fit that converges on the wrong number and reports it with nothing wrong
+on its face.
+
+`caps["build"]` says which build answered:
+
+```python
+caps["build"]["commit"]   # what the compiled extension was built from
+caps["build"]["stale"]    # True: that extension is behind the C++ beside it
+```
+
+Log the commit at job start. It is the only thing here that separates two
+installs reporting the same `version`. Check `stale` there too: in a source
+checkout the compiled extension is built separately and does not rebuild on
+import, so it can lag the Python layer by days while every version-, metadata-
+and feature-based check passes. bngsim warns about that at import, which for a
+consumer package is while that package is still loading and before its logging
+exists — reading the key lets you raise it again where someone will see it, in
+time to stop a run that would otherwise report conclusions about code that is no
+longer in the tree.

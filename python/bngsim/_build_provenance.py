@@ -355,6 +355,39 @@ def is_stale() -> bool:
     return gather(include_head=False).is_stale
 
 
+def summary() -> dict[str, object]:
+    """The two build facts ``capabilities()["build"]`` publishes (GH #431).
+
+    ``{"commit": <str | None>, "stale": <bool>}`` — which build this is, and
+    whether its compiled half has fallen behind the C++ next to it.
+
+    Both were already computed here and readable only from this private module.
+    Two installs can report the same ``__version__`` and be different builds
+    (bngsim bumps the version at the *start* of a release cycle, so every
+    from-source build made during that cycle declares the number of the release
+    that ends it), and ``commit`` is the only thing in the public API that tells
+    them apart. ``stale`` is the same signal :func:`warn_if_stale` emits at
+    import — repeated here because a consumer package's import happens before
+    its own logging is configured, so that warning routinely lands where nobody
+    reads it.
+
+    ``commit`` is the string CMake bakes into the extension, or ``None`` when
+    no extension is loaded or it was built outside a git checkout (an sdist
+    build has no commit to name). ``stale`` is only ever True in a source
+    checkout — an installed wheel ships no ``src/`` to compare against — and
+    ``BNGSIM_NO_BUILD_CHECK`` turns the comparison off, in which case this
+    reports False like every other reader here. Never raises.
+    """
+    try:
+        if _checks_disabled():
+            return {"commit": _build_commit(), "stale": False}
+        prov = gather(include_head=False)
+        return {"commit": prov.build_commit, "stale": prov.is_stale}
+    except Exception:
+        # A provenance read must never be the reason capabilities() fails.
+        return {"commit": None, "stale": False}
+
+
 def print_identity(stream=None) -> Provenance:
     """Print the binary identity banner (default: stderr). Returns the snapshot.
 
