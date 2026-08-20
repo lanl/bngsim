@@ -233,16 +233,38 @@ class TestTheReasonSurvivesTheCache:
         assert warm.has_analytic_sens_rhs is False
         assert warm.sens_rhs_decline_reason is None
 
-    def test_the_in_process_memo_replays_it_as_well(self, tmp_path, isolated_cache):
+    def test_the_in_process_memo_replays_it_as_well(
+        self, tmp_path, isolated_cache, monkeypatch, caplog
+    ):
         """The .net path has a second short-circuit past source generation — the
-        process-local memo keyed on the file's mtime — and it skips the same step
-        for the same reason. Two constructions from the SAME .net file take it,
-        where the two above (different file names, same content) take the on-disk
-        cache."""
-        first = _sim(tmp_path, UNDERIVABLE)
+        process-local memo, keyed on the file and its mtime — and it skips the same
+        step for the same reason. The two tests above take the on-disk cache
+        instead: same content, different file names.
+
+        The memo returns before the .net is even re-read, so breaking that read is
+        what proves this construction took it rather than one of the other two
+        paths to the same answer.
+        """
+        net = tmp_path / "m.net"
+        net.write_text(_NET.format(law=UNDERIVABLE))
+        first = bngsim.Simulator(
+            bngsim.Model.from_net(net), method="ode", sensitivity_params=["beta"]
+        )
         assert cg._PREPARE_CODEGEN_MEMO, "the memo is what this test is about"
-        second = _sim(tmp_path, UNDERIVABLE)
+
+        def unreachable(*a, **k):
+            raise AssertionError("the memo should have answered before this")
+
+        monkeypatch.setattr(cg, "_parse_net_file", unreachable)
+        caplog.clear()  # the cold build's own decline is already in here
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            second = bngsim.Simulator(
+                bngsim.Model.from_net(net), method="ode", sensitivity_params=["beta"]
+            )
         assert second.sens_rhs_decline_reason == first.sens_rhs_decline_reason
+        # Both channels, because they come from different places: the reason is read
+        # off the note by the property, and the log line is the replay.
+        assert len(_declines(caplog)) == 1
 
     def test_a_budget_decline_survives_it_too(self, tmp_path, isolated_cache, monkeypatch):
         """The other producer of a decline, and the one the issue singles out.
@@ -283,6 +305,43 @@ class TestTheReasonSurvivesTheCache:
         # the next build's ability to.
         assert "abs()" in sim.sens_rhs_decline_reason
         assert _notes(isolated_cache) == []
+
+
+# ─── the model path, which is the issue's own reproduction ─────────────────
+
+
+@needs_cc
+class TestTheModelPathAsWell:
+    """An SBML or Antimony model takes ``prepare_model_codegen``, not the ``.net``
+    path the tests above take: its own structural cache key, its own cache-hit
+    branch, and its own place to write the note. The issue was filed on a model of
+    exactly this kind — a rate law ``k*S*|S-Km|``, reported on the first
+    construction and silent on every one after it.
+    """
+
+    LAW = "model absmod; S=10; P=0; k=0.3; Km=2.5; J0: S -> P; k*S*abs(S-Km); end"
+
+    def _sim(self):
+        pytest.importorskip("antimony")
+        return bngsim.Simulator(
+            bngsim.Model.from_antimony_string(self.LAW),
+            method="ode",
+            codegen=True,
+            sensitivity_params=["k"],
+        )
+
+    def test_the_warm_construction_still_says_why(self, isolated_cache, caplog):
+        cold = self._sim()
+        assert cold.codegen_cache_hit is False
+        assert cold.has_analytic_sens_rhs is False
+        assert "abs()" in cold.sens_rhs_decline_reason
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            warm = self._sim()
+        assert warm.codegen_cache_hit is True, "the second build must hit the cache"
+        assert warm.sens_rhs_decline_reason == cold.sens_rhs_decline_reason
+        assert len(_declines(caplog)) == 1
 
 
 # ─── "wrong" and "slow" are different statements ───────────────────────────
