@@ -96,9 +96,23 @@ the record's `_unordered_pair` variant does not rescue it: it writes the same
 `5,5 -> 3,5` reaction with the rate constant halved, so the converted SBML law is
 still `k·N·N`.
 
-**Every other horizon is unchanged.** Two records declare a different `t_end` for
-their own protocol (`gene_bursts` 3.6×10⁶, `gene_expression` 10⁸); Tables 5 and 7
-keep the horizons above and the manuscript documents the divergence.
+**Every other horizon is unchanged**, and every one of them is now stated against
+its record. Each BNGL row in `corpus.json` carries `record_horizon`, the `t_end`
+of the record's own active exact-SSA action, and
+`python/tests/test_curated_benchmark_corpus.py` checks it against the record and
+fails if a row runs something different without a caveat naming the record's
+value. Where they stand:
+
+| model | Table 5 | record's own | |
+|---|--:|--:|---|
+| `mckane_predator_prey` | 1 200 | 1 200 | same |
+| `samoilov_futile_cycle` | 10 | 10 | same, as of #425 |
+| `gene_bursts` | 3 600 | 3.6×10⁶ | one cell cycle, the manuscript's |
+| `gene_expression` | 6×10⁴ | 10⁸ | the manuscript's |
+| `tcr_signaling` | 10 000 | 10 800 | Lin 2019's exact-SSA horizon |
+| `gene_expr_3stage` | 2×10⁸ | 2.1×10⁸ | the record discards its first 10⁷ s as burn-in, so both measure the same 2×10⁸ s window |
+| `prion_aggregation` | 300 | 10 | **unresolved** — both are credited to Lin 2019, and only one of those attributions can be right ([#429](https://github.com/lanl/bngsim/issues/429)) |
+| `erk_activation` | 8 640 | — | the record declares no exact-SSA action at all; 8 640 comes from Lin 2019 |
 
 **One coverage cell moved with them.** BNGL rows reach RoadRunner and COPASI
 through `convert_all.py`'s `.net`→SBML conversion, and the curated Samoilov
