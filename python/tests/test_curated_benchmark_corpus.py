@@ -533,18 +533,29 @@ def test_record_horizon_is_what_the_record_declares():
             )
 
 
-def test_a_horizon_that_differs_from_the_records_says_why():
+def _renderings(value: float) -> set[str]:
+    """How a horizon is plausibly written in prose: 3600000 or 3.6e6."""
+    forms = set()
+    if float(value).is_integer():
+        forms.add(str(int(value)))
+    mantissa, _, exponent = f"{float(value):e}".partition("e")
+    forms.add(f"{float(mantissa):g}e{int(exponent)}")
+    return forms
+
+
+def test_a_horizon_that_differs_from_the_records_says_so_with_its_number():
     # Running a horizon the record does not declare is allowed -- the manuscript
-    # chose several of them -- but it has to be written down, because that is the
-    # difference between a decision and an inheritance.
+    # chose several of them -- but the divergence has to be written down, with
+    # the record's own value, because that is the difference between a decision
+    # and an inheritance. GH #425 is what an inheritance looks like.
     for e in _corpus()["bngl"]:
         declared = e["record_horizon"]
-        if declared is not None and float(declared) == float(e["t_end"]):
+        if declared is None or float(declared) == float(e["t_end"]):
             continue
         caveats = " ".join(e.get("caveats", []))
-        assert "horizon" in caveats.lower(), (
+        assert any(form in caveats for form in _renderings(declared)), (
             f"{e['name']}: runs t_end={e['t_end']} where the record declares "
-            f"{declared}, and no caveat explains it"
+            f"{declared}, and no caveat names that value"
         )
 
 
