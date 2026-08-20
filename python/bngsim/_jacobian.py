@@ -47,10 +47,12 @@ from collections.abc import Callable
 # and this symbolic core share one implementation, with the import going one
 # way only.
 from bngsim._codegen import (
+    _BUILTIN_CONSTANT_VALUES,
     _PY_KEYWORD_PARAM_NAMES,
     _alias_keyword_param,
     _rewrite_logicals,
     _translate_bngl_if_to_piecewise,
+    builtin_constant_bindings,
 )
 
 logger = logging.getLogger("bngsim")
@@ -178,7 +180,14 @@ def _build_local_dict(preprocessed: str, sp):
     called = {m.group(1) for m in _IDENT_CALL_RE.finditer(preprocessed)}
     all_idents = set(_IDENT_RE.findall(preprocessed))
 
+    # The engine's built-in physical constants, bound to their values. Without
+    # this every one of them arrives as a plain Symbol, and the rate-law
+    # differentiators then reject the law for "unrecognized symbol(s)" — which
+    # cost a model its whole analytic sensitivity RHS over a `_pi` in one rate
+    # law. Bound before the loop below, which would otherwise overwrite them with
+    # plain Symbols.
     local: dict = {
+        **builtin_constant_bindings(sp),
         "Piecewise": sp.Piecewise,
         "Not": sp.Not,
         "And": sp.And,
@@ -195,6 +204,8 @@ def _build_local_dict(preprocessed: str, sp):
         if ident in ("Piecewise", "Not", "And", "Or", "Eq", "Ne") or ident in _LITERAL_KEYWORDS:
             # Bound/handled by sympy as literals; never a parameter symbol.
             continue
+        if ident in _BUILTIN_CONSTANT_VALUES:
+            continue  # already bound to its value above, and no model may rebind it
         if ident in called and ident in _EXPRTK_TO_SYMPY_FUNC:
             mapped = _EXPRTK_TO_SYMPY_FUNC[ident]
             if mapped is None:
