@@ -230,6 +230,13 @@ record of what the old artifacts were:
   `5,5 -> 3,5` reaction with the rate constant halved, so the converted law is
   still `k*N*N`.
 
+`prion_aggregation` keeps `t_end=300`, and #429 settles where that came from:
+Fig. 7 of Lin et al. (2019) runs the prion model from 0 to 300 days, so 300 is the
+published benchmark horizon and the model's time unit is days. The record's own
+ten-day run is its own choice, and its protocol note miscredits it to Lin (2019).
+That note is what needs correcting, upstream in `wshlavacek/BNGL-Models`. B14's
+cost does not move.
+
 `prion_aggregation`'s event count barely moves (~605 k at `t_end=10`, old and new
 alike) because the 17 added species are chains of length 104–120 with zero initial
 condition — the cost moves through *per-event* work instead, ~20 % at `t_end=10`,

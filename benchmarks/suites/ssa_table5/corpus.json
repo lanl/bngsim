@@ -91,7 +91,7 @@
         "The _benchmark variant of the record (Lin-2019 parameterization, 120-subunit cap). Its generate_network raises max_iter=>150 over BNG's 100-iteration default, so the network reaches the model's own max_stoich=>{PrP=>120} cap: 121 species / 3843 reactions, where the superseded copy froze at 104/2809. The 17 added species are chains of length 104-120, all with zero initial condition, so the event count is unchanged (~605k at t_end=10) but per-event cost rises with the reaction count.",
         "Generation takes ~45 s, most of it isomorphism checking on the longest chains.",
         "Citation is now the curated record's (with DOI); what is still open is whether the SOURCE STUDY used exact SSA -- hence provenance_status=verify.",
-        "Horizon t_end=300 is the manuscript's, not the record's own 10. The two attributions conflict and are not resolved here: this corpus credits t_end=300 to Lin et al. (2019), while the record credits its t_end=10 to the same paper, calling it 'the benchmark protocol of Lin et al. (2019)' over ten days. See lanl/bngsim#429."
+        "Horizon t_end=300 is Lin et al. (2019)'s, not the record's own 10. Figure 7 of that paper runs the prion model from 0 to 300 days, so t_end=300 is the published benchmark horizon and the model's time unit is days. The record runs a shorter ten-day trajectory and its protocol note calls that 'the benchmark protocol of Lin et al. (2019)', which is the misattribution: ten days is the record's own choice. Settled in lanl/bngsim#429; the record's note is the thing that needs correcting, upstream in wshlavacek/BNGL-Models."
       ]
     },
     {
