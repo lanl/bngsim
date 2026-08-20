@@ -650,10 +650,12 @@ class TestTheWarningStopsPromisingACorrectFallback:
         nothing to remove."""
         import logging
 
-        # Two clock terms, so issue #418's single-power solve declines it and it
-        # stays the crossing nothing brackets (a bare `time()*time()>=thresh` is
-        # compensated now — see test_codegen_switch_condition_sens.py).
-        core = _core(tmp_path, "if((time()-5)*(time()-5)>=thresh,beta,0)*I")
+        # Cubic in the clock, so it is past what issue #421's quadratic formula
+        # can write the crossings of, and it stays the crossing nothing brackets
+        # (a bare `time()*time()>=thresh` is compensated since #418, and
+        # `(time()-5)*(time()-5)>=thresh` since #421 — see
+        # test_codegen_switch_condition_sens.py).
+        core = _core(tmp_path, "if(time()*time()*time()+time()>=thresh,beta,0)*I")
         with caplog.at_level(logging.WARNING, logger="bngsim"):
             _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert isinstance(reason, sw.UncompensatedCrossingReason)

@@ -2428,7 +2428,8 @@ def _derived_expr_value_numeric(
     derived_names,
     param_idx: dict,
     param_values,
-) -> float | None:
+    allow_complex: bool = False,
+) -> float | complex | None:
     """The *value* of a derived-parameter expression at the current parameter
     point, through the same preparation as its partials.
 
@@ -2453,6 +2454,15 @@ def _derived_expr_value_numeric(
     model's parameters" — when sympy is unavailable, when the preparation
     declines the expression, or when what it parsed does not reduce to a float
     at this parameter point.
+
+    ``allow_complex`` returns a :class:`complex` instead of ``None`` for the one
+    failure that is not really a failure: an expression that resolves perfectly
+    well, but to a number off the real line. ``sqrt(thresh)`` at ``thresh = -4``
+    is the crossing time of ``time()^2 >= thresh``, and its being non-real is the
+    statement that the condition never crosses — which the switch-time gate has
+    to be able to tell apart from a threshold it could not read at all (see
+    :func:`bngsim._switch_sensitivity._threshold_is_non_real`). Off by default,
+    so the ``float | None`` contract the other callers read is unchanged.
     """
     try:
         import sympy  # noqa: F401
@@ -2473,7 +2483,19 @@ def _derived_expr_value_numeric(
         # `sympify` of a sympy expression is the identity; it is here so the
         # `.subs` below type-checks against `_PreparedDerivedExpr.sym_expr`,
         # which the other two callers only ever hand to `sp.diff`.
-        return float(sympy.sympify(prep.sym_expr).subs(subs).evalf())
+        value = sympy.sympify(prep.sym_expr).subs(subs).evalf()
+        try:
+            return float(value)
+        except TypeError:
+            if not allow_complex:
+                raise
+            # Only a finite complex NUMBER qualifies. `zoo` and `nan` reach here
+            # as well, and they are not "resolved but off the real line" — they
+            # are a degenerate expression, which stays the caller's `None`.
+            out = complex(value)
+            if any(c != c or abs(c) == float("inf") for c in (out.real, out.imag)):
+                raise
+            return out
     except Exception:
         # A symbol with no value, a value sympy will not reduce to a float (a
         # leftover species name, an unevaluated Piecewise), or anything else

@@ -39,8 +39,14 @@ of this stage:
                                     crossing in closed form — `time = sqrt(thresh)`
                                     — so `_clock_monomial_threshold` solves it and
                                     #48 jumps it like any affine clock threshold.
-                                    A clock threshold that is not a bare power
-                                    (`(time-5)^2`, `time^2 + time`) stays refused.
+
+    if((time()-5)*(time()-5) >= thresh, beta, 0)
+                                ->  admitted, since issue #421. A quadratic in
+                                    the clock has TWO crossings, both still in
+                                    closed form (the quadratic formula), so the
+                                    recogniser answers with a list and #48 jumps
+                                    each of them. A clock threshold cubic or
+                                    higher stays refused.
 
 The danger is that these are *indistinguishable downstream*. ``sympy.diff`` of a
 ``Piecewise`` w.r.t. a condition-only parameter returns ``0`` with no Dirac
@@ -361,7 +367,8 @@ class TestTheRule:
         assert records and sw.state_switch_conditions(core) == ["I>=thresh"]
 
         _terms, reason = _decline(
-            tmp_path, _with_law("if((t>=sigma)&&((time()-5)*(time()-5)>=thresh),beta,0)*I")
+            tmp_path,
+            _with_law("if((t>=sigma)&&(time()*time()*time()+time()>=thresh),beta,0)*I"),
         )
         assert reason is not None and "'thresh'" in reason
 
@@ -696,9 +703,19 @@ class TestTheGateAndTheDetectorsAgree:
             # but issue #418 solves the single clock power to `time = sqrt(thresh)`
             # and #48 jumps that crossing like any clock threshold.
             ("if(time()*time()>=thresh,beta,0)*I", True, "clock"),
-            # Not a bare power of the clock (two clock terms), so #418 declines it
-            # and it stays refused — the crossing nothing brackets.
-            ("if((time()-5)*(time()-5)>=thresh,beta,0)*I", False, None),
+            # Quadratic with two clock terms: #418 declines it, but issue #421
+            # writes both crossings down with the quadratic formula, so #48 jumps
+            # each of them and the clock path claims it.
+            ("if((time()-5)*(time()-5)>=thresh,beta,0)*I", True, "clock"),
+            # Cubic in the clock: past what a closed form can be trusted for, so
+            # it stays refused — the crossing nothing brackets.
+            ("if(time()*time()*time()+time()>=thresh,beta,0)*I", False, None),
+            # A clock compared against a SPECIES. It names no parameter, which
+            # used to be the whole of the "nothing moves this crossing" test, so
+            # the clock path claimed it and then registered nothing. Its
+            # threshold does not evaluate to a number, so the crossing moves with
+            # the trajectory and belongs to issue #150.
+            ("if(time()<R,beta,0)*I", True, "state"),
             # Negation names the same surface as the comparison under it — issue
             # #234 peels it, so the partition claims this exactly once, on the
             # state side, just like the un-negated `if(I<=1,...)` spelling.
@@ -758,15 +775,45 @@ class TestTheGateAndTheDetectorsAgree:
         assert sw.uncompensated_condition_reason("if(t>=sigma,beta,0)*I", scope) is None
         assert sw.uncompensated_condition_reason("if(I>=thresh,beta,0)*I", scope) is None
         assert sw.uncompensated_condition_reason("if(I==thresh,beta,0)*I", scope) is None
-        # Issue #418: a single clock power is solved to sqrt(thresh) and admitted;
-        # a clock threshold that is not a bare power stays refused.
+        # Issue #418: a single clock power is solved to sqrt(thresh) and admitted.
         assert (
             sw.uncompensated_condition_reason("if(time()*time()>=thresh,beta,0)*I", scope) is None
         )
+        # Issue #421: a quadratic is solved at both of its crossings and admitted;
+        # a cubic clock threshold stays refused.
         assert (
             sw.uncompensated_condition_reason("if((time()-5)*(time()-5)>=thresh,beta,0)*I", scope)
+            is None
+        )
+        assert (
+            sw.uncompensated_condition_reason(
+                "if(time()*time()*time()+time()>=thresh,beta,0)*I", scope
+            )
             is not None
         )
+
+    def test_a_clock_threshold_over_a_species_is_not_a_fixed_crossing(self, tmp_path):
+        """A crossing is fixed when its threshold evaluates to a number and no
+        parameter moves it. Testing only the second half admits a threshold that
+        is a *species*: ``time() < R`` names no parameter, so it was called fixed,
+        the clock path claimed it on that ground, and the issue #48 detector then
+        registered nothing because ``R`` is not a constant. The state root stands
+        off whatever the clock path claims, so the crossing was compensated by
+        neither and nothing warned.
+
+        BIOMD0000000675 is the corpus case: three conditions
+        (``time() >= START_S``, ``time() < END_M``, ``time() < END_M + 12``) over
+        names that are not parameters, on a model the gate admitted."""
+        core = _model(tmp_path, _with_law("if(time()<R,beta,0)*I"))._core
+        scope = sw.switch_condition_scope(core)
+        assert sw._clock_threshold_splits("time()<R", scope.clock_symbols) == ("time()", ["R"])
+        assert not sw.fixed_clock_threshold("time()<R", scope)
+        assert not sw.clock_crossing_compensated("time()<R", scope)
+        # so issue #150 claims it, and the warning path calls it moving as well
+        assert sw.state_switch_conditions(core) == ["time()<R"]
+        assert sw.model_moving_crossings(core) == ("time()<R",)
+        # a real literal threshold is still fixed, and still claimed by nobody
+        assert sw.fixed_clock_threshold("time()<14", scope)
 
     def test_a_model_with_no_clock_does_not_read_a_time_looking_condition_as_a_clock(
         self, tmp_path
@@ -969,23 +1016,24 @@ class TestTheThresholdIsRecognisedByItsCrossingNotItsSpelling:
         from, so an equal-but-differently-spelled one would still be right while
         a different one would be silently wrong."""
         clocks = frozenset({"t"})
-        assert sw._clock_threshold_split("t>=sigma", clocks) == ("t", "sigma")
+        assert sw._clock_threshold_splits("t>=sigma", clocks) == ("t", ["sigma"])
         assert sw._clock_threshold_split_bare("(t-sigma)>=0", clocks) is None
-        clock, threshold = sw._clock_threshold_split("(t-sigma)>=0", clocks)
+        clock, thresholds = sw._clock_threshold_splits("(t-sigma)>=0", clocks)
         assert clock == "t"
-        assert threshold.replace(" ", "") == "sigma"
+        assert [t.replace(" ", "") for t in thresholds] == ["sigma"]
 
     def test_an_affine_slope_resolves_to_the_crossing_in_closed_form(self):
         """The shape that blocks issue #326's stalling family. ``0 >= D0 −
         krep*(t − sigma)`` crosses at ``t = sigma + D0/krep``, which is a
         differentiable expression in three parameters — exactly what issue #48's
         jump needs and precisely what a lexical test cannot see."""
-        clock, threshold = sw._clock_threshold_split(
+        clock, thresholds = sw._clock_threshold_splits(
             "0.0>=(D0-(krep*(t-sigma)))", frozenset({"t"})
         )
         assert clock == "t"
         import sympy as sp
 
+        (threshold,) = thresholds
         got = sp.sympify(threshold.replace("^", "**"))
         want = sp.sympify("sigma + D0/krep")
         assert sp.simplify(got - want) == 0
@@ -998,29 +1046,32 @@ class TestTheThresholdIsRecognisedByItsCrossingNotItsSpelling:
         for atom in ("t>=sigma", "t<14", "sigma<=t", "t>2*sigma"):
             bare = sw._clock_threshold_split_bare(atom, clocks)
             assert bare is not None
-            assert sw._clock_threshold_split(atom, clocks) == bare
+            assert sw._clock_threshold_splits(atom, clocks) == (bare[0], [bare[1]])
 
     def test_the_clock_on_both_sides_is_still_not_a_clock_threshold(self):
         """``t<2*t`` is affine and does solve — to ``t*=0`` — but the bare test
         rejects it deliberately and the state path claims it. Relaxing *which
         side* the clock may sit in must not relax *how many* sides it may sit
         on, or a crossing moves between two machineries for no gain."""
-        assert sw._clock_threshold_split("t<2*t", frozenset({"t"})) is None
+        assert sw._clock_threshold_splits("t<2*t", frozenset({"t"})) is None
 
     def test_a_non_linear_condition_is_declined(self):
         """``−b/a`` is the crossing only when the residual is degree 1 in the
-        clock. Issue #418 solves one shape past that — a bare power ``t*t`` — but
-        a residual that is neither degree 1 nor a bare power (``t*t + t``, two
-        clock terms) still has no crossing either solver can place, and has to
-        keep declining rather than stop in the wrong place."""
-        assert sw._clock_threshold_split("(t*t+t-sigma)<0", frozenset({"t"})) is None
-        # the bare power IS solved now — the boundary this issue moved
-        assert sw._clock_threshold_split("(t*t-sigma)<0", frozenset({"t"})) == ("t", "sqrt(sigma)")
+        clock. Issue #418 solved one shape past that — a bare power ``t*t`` — and
+        issue #421 the quadratic. A residual past both (``t*t*t + t``, cubic) still
+        has no crossing any solver here can place, and has to keep declining
+        rather than stop in the wrong place."""
+        assert sw._clock_threshold_splits("(t*t*t+t-sigma)<0", frozenset({"t"})) is None
+        # the bare power IS solved now — the boundary #418 moved
+        assert sw._clock_threshold_splits("(t*t-sigma)<0", frozenset({"t"})) == (
+            "t",
+            ["sqrt(sigma)"],
+        )
 
     def test_a_state_threshold_is_not_captured_by_the_solve(self):
         """The solve must not annex the issue #150 path. ``I-thresh<0`` reads no
         clock at all, so it is not a clock atom in either recogniser."""
-        assert sw._clock_threshold_split("(I-thresh)<0", frozenset({"t"})) is None
+        assert sw._clock_threshold_splits("(I-thresh)<0", frozenset({"t"})) is None
 
     def test_the_two_spellings_integrate_to_the_same_sensitivities(self, tmp_path):
         """The end-to-end statement, and the one that would catch a threshold
@@ -1070,14 +1121,14 @@ class TestANonAffineClockThresholdIsSolvedAndJumped:
     def test_the_recognizer_solves_the_single_power(self, tmp_path):
         core = _model(tmp_path, _with_law("if(time()*time()>=thresh,beta,0)*I"))._core
         scope = sw.switch_condition_scope(core)
-        assert sw._clock_threshold_split("time()*time()>=thresh", scope.clock_symbols) == (
+        assert sw._clock_threshold_splits("time()*time()>=thresh", scope.clock_symbols) == (
             "time()",
-            "sqrt(thresh)",
+            ["sqrt(thresh)"],
         )
         # cube and a scaled square, for the general (thresh/c)^(1/n) shape
-        assert sw._clock_threshold_split("time()*time()*time()>=thresh", scope.clock_symbols) == (
+        assert sw._clock_threshold_splits("time()*time()*time()>=thresh", scope.clock_symbols) == (
             "time()",
-            "thresh^(1/3)",
+            ["thresh^(1/3)"],
         )
 
     def test_the_gate_admits_it_and_the_state_root_stands_off(self, tmp_path):
@@ -1107,14 +1158,20 @@ class TestANonAffineClockThresholdIsSolvedAndJumped:
     @pytest.mark.parametrize(
         "body",
         [
-            "if((time()-5)*(time()-5)>=thresh,beta,0)*I",  # two clock terms
-            "if(time()*time()+time()>=thresh,beta,0)*I",  # mixed power + linear
+            "if(time()*time()*time()+time()>=thresh,beta,0)*I",  # cubic
+            "if(time()*time()*time()*time()>=thresh*time(),beta,0)*I",  # quartic
         ],
     )
-    def test_a_clock_threshold_that_is_not_a_bare_power_stays_refused(self, tmp_path, body):
+    def test_a_clock_threshold_past_the_quadratic_stays_refused(self, tmp_path, body):
+        """The boundary after issue #421 moved it. ``(time()-5)^2`` and
+        ``time()^2+time()`` used to live here and are solved now; degree 3 and up
+        are not, and the reason is not that sympy declines to write their roots.
+        A cubic with three real roots has none expressible in real radicals, so
+        the closed forms route through complex intermediates that this would read
+        as crossings that never happen — silently dropping real jumps."""
         core = _model(tmp_path, _with_law(body))._core
         scope = sw.switch_condition_scope(core)
-        assert sw._clock_threshold_split(_only_atom(body), scope.clock_symbols) is None
+        assert sw._clock_threshold_splits(_only_atom(body), scope.clock_symbols) is None
         _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert isinstance(reason, sw.UncompensatedCrossingReason)
 
@@ -1165,7 +1222,270 @@ class TestANonAffineClockThresholdIsSolvedAndJumped:
         assert node_fd == pytest.approx(0.5 * node_a, rel=0.1)
 
 
-# A crossing NOTHING compensates, post-#150, post-#381 and post-#418: the
+class TestAQuadraticClockThresholdIsSolvedAtBothCrossings:
+    """Issue #421. Every recogniser before this one names at most ONE crossing:
+    a residual of degree 1 has a single root, and ``c·clock^n`` is monotonic where
+    the clock lives so it crosses once there. A quadratic is the first shape with
+    genuinely two, and it is how the corpus writes a *window* —
+    ``(time()-5)*(time()-5) >= thresh`` is true early, false through the middle
+    and true again late.
+
+    Both crossings are still closed form (the quadratic formula), so each one is
+    an ordinary issue #48 record: evaluate the expression for ``t*``, differentiate
+    it for ``∂t*/∂p``. Differentiating the root expression IS the implicit function
+    theorem for this residual, so nothing here needs a numeric root find. What is
+    new is that one atom now yields two thresholds, which is why the recogniser
+    answers with a list.
+    """
+
+    def test_the_recognizer_answers_with_both_crossings(self, tmp_path):
+        core = _model(tmp_path, _with_law("if((time()-5)*(time()-5)>=thresh,beta,0)*I"))._core
+        scope = sw.switch_condition_scope(core)
+        clock, thresholds = sw._clock_threshold_splits(
+            "(time()-5)*(time()-5)>=thresh", scope.clock_symbols
+        )
+        assert clock == "time()"
+        import sympy as sp
+
+        got = [sp.sympify(t.replace("^", "**")) for t in thresholds]
+        assert len(got) == 2
+        for want in (sp.sympify("5 - sqrt(thresh)"), sp.sympify("5 + sqrt(thresh)")):
+            assert any(sp.simplify(g - want) == 0 for g in got), f"{want} missing from {got}"
+
+    def test_a_linear_term_no_longer_stops_the_solve(self, tmp_path):
+        """``time^2 + time`` was the mixed-power shape issue #418 had to decline
+        for want of a single crossing to name. The quadratic formula names both."""
+        core = _model(tmp_path, _with_law("if(time()*time()+time()>=thresh,beta,0)*I"))._core
+        scope = sw.switch_condition_scope(core)
+        clock, thresholds = sw._clock_threshold_splits(
+            "time()*time()+time()>=thresh", scope.clock_symbols
+        )
+        assert clock == "time()"
+        assert len(thresholds) == 2
+
+    def test_a_tangency_yields_one_repeated_root_not_two(self):
+        """``(t-5)^2 >= 0`` touches its threshold instead of crossing it. The
+        discriminant is a literal zero, so the solve answers with the single
+        repeated root rather than two records for one instant."""
+        assert sw._clock_threshold_splits("(t-5)*(t-5)>=0", frozenset({"t"})) == ("t", ["5"])
+
+    def test_the_gate_admits_it_and_the_state_root_stands_off(self, tmp_path):
+        core = _model(tmp_path, _with_law("if((time()-5)*(time()-5)>=thresh,beta,0)*I"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, "the quadratic clock threshold must be admitted"
+        # It reads no live state, so #150 must not also claim the crossings.
+        assert sw.state_switch_conditions(core) == []
+
+    def test_both_crossing_times_and_their_partials(self, tmp_path):
+        """``(time()-5)^2 >= thresh`` at thresh=9 crosses at t=2 and t=8, and
+        ``∂t*/∂thresh`` is ∓1/(2·sqrt(thresh)) = ∓1/6. Opposite signs: the branch
+        turns off at the first crossing and back on at the second, and raising
+        thresh widens the window from both ends."""
+        text = _with_law("if((time()-5)*(time()-5)>=thresh,beta,0)*I").replace(
+            "7 thresh  40.0", "7 thresh  9.0"
+        )
+        core = _model(tmp_path, text)._core
+        records, pinned = sw.compute_switch_time_sens(
+            core, ["thresh", "beta"], 0.0, 12.0, has_analytic_sens_rhs=True
+        )
+        assert [r.t_star for r in records] == pytest.approx([2.0, 8.0], abs=1e-9)
+        assert [r.dtstar[0] for r in records] == pytest.approx([-1.0 / 6.0, 1.0 / 6.0], rel=1e-9)
+        assert [r.dtstar[1] for r in records] == [0.0, 0.0]  # beta moves neither
+        assert pinned == [list(core.param_names).index("thresh")]
+
+    def test_a_crossing_outside_the_window_is_dropped_and_the_other_kept(self, tmp_path):
+        """The two roots are independent records, so the window filter applies to
+        each on its own. At the fixture's thresh=40 the roots are 5∓sqrt(40), and
+        only the later one is inside (0, 12]."""
+        core = _model(tmp_path, _with_law("if((time()-5)*(time()-5)>=thresh,beta,0)*I"))._core
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["thresh"], 0.0, 12.0, has_analytic_sens_rhs=True
+        )
+        assert len(records) == 1
+        assert records[0].t_star == pytest.approx(5.0 + 40.0**0.5, abs=1e-9)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "if((time()-5)*(time()-5)>=thresh,beta,0)*I",
+            "if(time()*time()>=thresh,beta,0)*I",
+        ],
+    )
+    def test_a_threshold_with_no_real_root_is_admitted_rather_than_refused(self, tmp_path, body):
+        """A crossing time that comes out non-real is not an unreadable threshold,
+        it is the statement that the condition never crosses: at thresh=-4 both
+        ``(time()-5)^2 >= thresh`` and ``time()^2 >= thresh`` are true for the whole
+        run, the branch never flips, and ``∂f/∂thresh`` is a correct clean zero.
+        Reading that as "does not reduce to a constant" refuses a model bngsim can
+        answer, and the quadratic formula puts a whole region of parameter space
+        there, since the discriminant goes negative as soon as thresh does.
+
+        The single-power case is the same defect one recogniser earlier, and was
+        refused before this issue."""
+        text = _with_law(body).replace("7 thresh  40.0", "7 thresh  -4.0")
+        core = _model(tmp_path, text)._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        assert sw.compute_switch_time_sens(
+            core, ["thresh"], 0.0, 12.0, has_analytic_sens_rhs=True
+        ) == ([], [])
+
+    def test_a_leading_coefficient_that_is_zero_at_run_time_is_refused(self, tmp_path):
+        """``a*time()^2 + time() >= thresh`` is a quadratic whose roots divide by
+        ``a``, and a fit can set ``a`` to 0, where the condition is really the
+        affine ``time() >= thresh``. Both roots then evaluate to a degenerate
+        1/0 rather than to a number, and bngsim refuses instead of stopping in the
+        wrong place. That is the safe direction: a refusal, not a gradient missing
+        a jump."""
+        core = _model(
+            tmp_path,
+            _with_params(
+                "    8 a  0.0  # Constant\n", "if(a*time()*time()+time()>=thresh,beta,0)*I"
+            ),
+        )._core
+        scope = sw.switch_condition_scope(core)
+        atom = "a*time()*time()+time()>=thresh"
+        assert len(sw._clock_threshold_splits(atom, scope.clock_symbols)[1]) == 2
+        assert not sw.clock_crossing_compensated(atom, scope)
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert isinstance(reason, sw.UncompensatedCrossingReason)
+        assert sw.compute_switch_time_sens(
+            core, ["thresh", "a"], 0.0, 12.0, has_analytic_sens_rhs=True
+        ) == ([], [])
+
+    def test_an_atom_compensates_all_its_crossings_or_none(self, tmp_path):
+        """``(time()-5)*(time()-thresh) >= 0`` has a fixed edge at t=5 and a fitted
+        one at t=thresh, but the quadratic formula writes the fixed edge with
+        ``thresh`` still inside it, and its partial cancels to exactly 0 — which
+        the chain rule cannot tell apart from a chain rule it lost (issue #56). So
+        one crossing resolves and the other does not, and the atom is refused
+        rather than half compensated. Jumping the edge bngsim can place while the
+        other flips the branch unjumped is a silent-zero half answer, and it would
+        also split the gate from the detector, which is what issue #68 exists to
+        prevent. Both must say no."""
+        core = _model(tmp_path, _with_law("if((time()-5)*(time()-thresh)>=0,beta,0)*I"))._core
+        scope = sw.switch_condition_scope(core)
+        _clock, thresholds = sw._clock_threshold_splits(
+            "(time()-5)*(time()-thresh)>=0", scope.clock_symbols
+        )
+        assert len(thresholds) == 2
+        assert [sw._threshold_compensated(t, scope) for t in thresholds] == [False, True]
+        assert not sw.clock_crossing_compensated("(time()-5)*(time()-thresh)>=0", scope)
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert isinstance(reason, sw.UncompensatedCrossingReason)
+        assert sw.compute_switch_time_sens(
+            core, ["thresh"], 0.0, 100.0, has_analytic_sens_rhs=True
+        ) == ([], [])
+
+    def test_an_imaginary_unit_is_not_mistaken_for_an_absent_crossing(self, tmp_path):
+        """The trap the guard above has to survive. sympy reads a bare ``I`` as the
+        imaginary unit, and an SIR model spells its infected observable exactly
+        that — so ``t >= sigma*I`` evaluates to a non-real number without being a
+        crossing that fails to happen. It is a threshold over live state, it
+        belongs to issue #150, and it has to keep reaching it."""
+        core = _model(tmp_path, _with_law("if(t>=sigma*I,beta,0)*I"))._core
+        scope = sw.switch_condition_scope(core)
+        assert not sw._threshold_is_non_real(
+            "sigma*I", scope.param_idx, scope.values, scope.derived_exprs
+        )
+        assert not sw.clock_crossing_compensated("t>=sigma*I", scope)
+        assert sw.state_switch_conditions(core) == ["t>=sigma*I"]
+
+    @requires_cc
+    def test_the_counter_clock_spelling_reaches_the_same_answer(self, tmp_path):
+        """A BNGL counter clock is a *species*, so ``(t-5)*(t-5)>=thresh`` reads
+        live state and issue #150 rooted on it before this change; now the clock
+        path recognises it and claims it first, as it already did for the affine
+        spellings. Two different machineries, so this is worth stating as a
+        number: the counter spelling and the ``time()`` spelling must produce the
+        same tensor, and exactly one of the two detectors may claim each."""
+        params = ["thresh"]
+        counter = _model(
+            tmp_path,
+            _with_law("if((t-5)*(t-5)>=thresh,beta,0)*I").replace(
+                "7 thresh  40.0", "7 thresh  9.0"
+            ),
+            name="counter.net",
+        )
+        literal = _model(
+            tmp_path,
+            _with_law("if((time()-5)*(time()-5)>=thresh,beta,0)*I").replace(
+                "7 thresh  40.0", "7 thresh  9.0"
+            ),
+            name="literal.net",
+        )
+        for model in (counter, literal):
+            records, _pinned = sw.compute_switch_time_sens(
+                model._core, params, 0.0, 12.0, has_analytic_sens_rhs=True
+            )
+            assert len(records) == 2
+            assert sw.state_switch_conditions(model._core) == []
+
+        a = np.asarray(_run_sens(counter, params, t_end=12.0).sensitivities)
+        b = np.asarray(_run_sens(literal, params, t_end=12.0).sensitivities)
+        scale = max(float(np.max(np.abs(a))), 1e-300)
+        assert scale > 1.0  # not a comparison of two zero tensors
+        np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-9 * scale)
+
+    @requires_cc
+    def test_the_sensitivity_matches_a_finite_difference_at_both_crossings(self, tmp_path):
+        """The end-to-end oracle, and the one assertion that would catch a run
+        compensating only the *second* crossing. ``∂x/∂thresh`` is exactly 0 before
+        t=2, so the whole plateau between the two crossings is the first jump and
+        nothing else — a run that missed it would read 0 there and still look fine
+        after t=8.
+
+        Away from the two nodes a central difference of two plain trajectories
+        converges to the analytic column; at a node it straddles the jump and
+        converges to half of it, which is the switch-node behaviour issue #368
+        pins."""
+
+        def net(thresh):
+            return _with_law("if((time()-5)*(time()-5)>=thresh,beta,0)*I").replace(
+                "7 thresh  40.0", f"7 thresh  {thresh}"
+            )
+
+        ts = (0.0, 12.0)
+        n = 121
+        times = np.linspace(*ts, n)
+        analytic = bngsim.Simulator(
+            _model(tmp_path, net(9.0)), method="ode", sensitivity_params=["thresh"]
+        ).run(t_span=ts, n_points=n, rtol=1e-11, atol=1e-11)
+        col = np.asarray(analytic.sensitivities)[:, :, 0]
+
+        h = 9.0 * 1e-3
+
+        def traj(thresh, name):
+            return np.asarray(
+                bngsim.Simulator(_model(tmp_path, net(thresh), name=name), method="ode")
+                .run(t_span=ts, n_points=n, rtol=1e-12, atol=1e-14)
+                .species
+            )
+
+        fd = (traj(9.0 + h, "hi.net") - traj(9.0 - h, "lo.net")) / (2.0 * h)
+
+        # The first crossing on its own: nothing before it, a plateau after it
+        # that persists until the second crossing at t=8.
+        before = times < 1.9
+        plateau = (times > 2.1) & (times < 7.9)
+        assert float(np.max(np.abs(col[before]))) == 0.0
+        assert float(np.min(np.max(np.abs(col[plateau]), axis=1))) > 1.0
+
+        # Away from both nodes the column is smooth in thresh, so the central
+        # difference converges at O(h^2).
+        away = (np.abs(times - 2.0) > 0.05) & (np.abs(times - 8.0) > 0.05)
+        scale = max(float(np.max(np.abs(col[away]))), 1e-300)
+        np.testing.assert_allclose(col[away], fd[away], rtol=2e-4, atol=1e-4 * scale)
+
+        # And at the first node the central difference is half the analytic value
+        # — a positive check that the jump is really applied there.
+        i_node = int(np.argmin(np.abs(times - 2.0)))
+        assert float(np.max(np.abs(fd[i_node]))) == pytest.approx(
+            0.5 * float(np.max(np.abs(col[i_node]))), rel=0.1
+        )
+
+
+# A crossing NOTHING compensates, post-#150, post-#381, post-#418 and post-#421: the
 # boolean-as-a-number idiom, a step at I=1 with no `if()` head for any threshold
 # to be located in. Neither machinery brackets it, which is exactly what makes it
 # the right fixture for "the difference quotient is not a correct fallback either".
