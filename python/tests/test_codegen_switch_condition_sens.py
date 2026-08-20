@@ -1645,9 +1645,7 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
         )
         assert [r.dtstar[0] for r in records] == [0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0]
         assert [r.dtstar[1] for r in records] == [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
-        assert pinned == sorted(
-            list(core.param_names).index(n) for n in ("P", "d")
-        )
+        assert pinned == sorted(list(core.param_names).index(n) for n in ("P", "d"))
 
     def test_a_counter_clock_schedule_is_offset_by_the_counter(self, tmp_path):
         """The BNGL spelling. ``t`` is a species integrated at rate 1, so the
@@ -1742,9 +1740,8 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
         assert edges > sw._SCHEDULE_EDGE_BUDGET, (
             f"{edges:.0f} edges no longer overruns a budget of {sw._SCHEDULE_EDGE_BUDGET}"
         )
-        return (
-            SCHEDULED.replace("    1 P       24.0", f"    1 P       {period}")
-            .replace("    2 d        7.0", f"    2 d        {duty}")
+        return SCHEDULED.replace("    1 P       24.0", f"    1 P       {period}").replace(
+            "    2 d        7.0", f"    2 d        {duty}"
         )
 
     def test_the_budget_refuses_a_window_it_cannot_enumerate(self, tmp_path):
@@ -1804,7 +1801,9 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
             )
             == "floor()"
         )
-        assert unsupported_expr_construct("kin*floor(time()/P)", allow_conditions=True) == "floor()"
+        assert (
+            unsupported_expr_construct("kin*floor(time()/P)", allow_conditions=True) == "floor()"
+        )
 
     def test_a_floor_in_a_branch_still_declines_the_model(self, tmp_path):
         """The same boundary, asserted through the real derivation path rather
@@ -1878,9 +1877,9 @@ class TestAPeriodicScheduleAgainstAFiniteDifference:
     )
     def test_every_column_matches_a_central_difference(self, tmp_path, name, nominal, step):
         params = ["P", "d", "kin", "kout"]
-        analytic = np.asarray(
-            self._run(tmp_path, "an.net", {}, sens=params).sensitivities
-        )[:, :, params.index(name)]
+        analytic = np.asarray(self._run(tmp_path, "an.net", {}, sens=params).sensitivities)[
+            :, :, params.index(name)
+        ]
         up = np.asarray(self._run(tmp_path, "up.net", {name: nominal + step}).species)
         down = np.asarray(self._run(tmp_path, "dn.net", {name: nominal - step}).species)
         fd = (up - down) / (2.0 * step)

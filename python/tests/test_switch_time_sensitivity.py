@@ -648,12 +648,8 @@ class TestAFloorPulseIsCompensatedNotRefused:
         sample_times = list(np.arange(0.0, 20.001, 0.5) + 0.13)
 
         def run(sens=None, **overrides):
-            sim = bngsim.Simulator(
-                self._model(**overrides), method="ode", sensitivity_params=sens
-            )
-            return sim.run(
-                sample_times=sample_times, rtol=1e-11, atol=1e-13, max_step=0.01
-            )
+            sim = bngsim.Simulator(self._model(**overrides), method="ode", sensitivity_params=sens)
+            return sim.run(sample_times=sample_times, rtol=1e-11, atol=1e-13, max_step=0.01)
 
         analytic = np.asarray(run(sens=["period", "amp"]).sensitivities)
         assert analytic[-1, 1, 0] == pytest.approx(4.0, rel=1e-6)
@@ -663,9 +659,7 @@ class TestAFloorPulseIsCompensatedNotRefused:
             down = np.asarray(run(**{name: nominal - step}).species)
             fd = (up - down) / (2.0 * step)
             scale = float(np.max(np.abs(fd)))
-            np.testing.assert_allclose(
-                analytic[:, :, col], fd, rtol=1e-4, atol=1e-5 * scale
-            )
+            np.testing.assert_allclose(analytic[:, :, col], fd, rtol=1e-4, atol=1e-5 * scale)
 
 
 # ─── SBML shape ──────────────────────────────────────────────────────────────

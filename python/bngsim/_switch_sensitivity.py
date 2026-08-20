@@ -1552,8 +1552,7 @@ def fixed_clock_threshold(atom: str, scope: SwitchConditionScope) -> bool:
         if sched is None:
             return False
         return all(
-            _fixed_threshold_expr(text, scope)
-            for text in (sched.period, sched.offset, sched.duty)
+            _fixed_threshold_expr(text, scope) for text in (sched.period, sched.offset, sched.duty)
         )
     # EVERY crossing the atom has must be fixed: a threshold with two of them
     # (issue #421) is only free of a jump if no parameter moves either one.
@@ -1997,8 +1996,7 @@ def _periodic_schedule_terms(
     residual does not actually follow — see :func:`_schedule_matches_residual`.
     """
     parts = [
-        _threshold_crossing_terms(text, scope)
-        for text in (sched.period, sched.offset, sched.duty)
+        _threshold_crossing_terms(text, scope) for text in (sched.period, sched.offset, sched.duty)
     ]
     if any(part is None or part.value is None for part in parts):
         return None
@@ -2811,9 +2809,7 @@ def _absorb_schedule_crossings(
         # run; the window in clock values is the window in time, shifted.
         clock_now = core.get_concentration(core.species_names[clock_idx0])
 
-    edges = _schedule_edges(
-        terms, clock_now, clock_now + (t_end - t_start), _SCHEDULE_EDGE_BUDGET
-    )
+    edges = _schedule_edges(terms, clock_now, clock_now + (t_end - t_start), _SCHEDULE_EDGE_BUDGET)
     moved_names = set(terms.d_period) | set(terms.d_offset) | set(terms.d_duty)
     if edges is None:
         if moved_names & set(col_of):
