@@ -24,7 +24,7 @@
   "notes": [
     "BNGL rows are exact SSA on the pre-generated .net (both engines run the SAME network).",
     "EVERY BNGL row is generated from its curated BNGL-Models record with that record's own generate_network options and every other action stripped; nothing is baked into the seed species afterwards. See ../../models/curated_nets.json for the record, the upstream sha256, and the generated .net sha256.",
-    "Horizons are the manuscript's, NOT the records'. Two records declare a different t_end for their own protocol (gene_bursts 3.6e6, gene_expression 1e8); Tables 5 and 7 keep the horizons below and the manuscript documents the divergence. samoilov_futile_cycle used to be a third: its horizon is now the record's own t_end=10, because the value it had been carrying was chosen for the superseded model (lanl/bngsim#425).",
+    "Horizons are the manuscript's, NOT the records'. Every BNGL row carries record_horizon, the t_end of the record's own active exact-SSA action (null when it declares none), so a row whose horizon was chosen elsewhere says so in the corpus rather than only in prose: mckane_predator_prey and samoilov_futile_cycle run the record's own horizon, gene_bursts (3.6e6), gene_expression (1e8), tcr_signaling (10800), prion_aggregation (10) and gene_expr_3stage (2.1e8) diverge and each says why in its caveats, and erk_activation has no record horizon to compare against. samoilov_futile_cycle used to diverge too, on a value chosen for the superseded model; lanl/bngsim#425 replaced it with the record's.",
     "This file is the corpus SSOT: _ssa_config.py derives every model's file, horizon and n_points from it and adds only runner policy (warm-N, cheap->expensive order, coverage).",
     "Timings are NOT recorded here -- this file defines the CORPUS (models + horizons + provenance). A timing run is a separate step.",
     "SBML inclusion rule: molecule-count encodings ONLY (initialAmount / hasOnlySubstanceUnits=true). Concentration-unit SBML (hasOnlySubstanceUnits=false) is an ODE encoding -- exact SSA on it is ill-posed. Dropped for this reason: Smith2013/474 (ROS went negative) and Karapetyan/586+587."
@@ -40,6 +40,7 @@
       "reactions": 97,
       "t_end": 10000,
       "n_steps": 1000,
+      "record_horizon": 10800,
       "tier": "medium",
       "reference": "Lipniacki T, Hat B, Faeder JR, Hlavacek WS (2008) J Theor Biol 254:110-122. Horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
       "originally_ssa": "confirmed",
@@ -59,6 +60,7 @@
       "reactions": 65,
       "t_end": 8640,
       "n_steps": 1000,
+      "record_horizon": null,
       "tier": "slow",
       "reference": "Kochanczyk M, Kocieniewski P, Kozlowska E, Jaruszewicz-Blonska J, Sparta B, Pargett M, Albeck JG, Hlavacek WS, Lipniacki T (2017) Sci Rep 7:38244. Horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
       "originally_ssa": "verify",
@@ -67,7 +69,8 @@
         "Relabelling, not a re-measurement: the curated record and the superseded copy generate the same 34/65 network with identical seed species and identical effective rate constants (the old copy carried a symbolic system-size parameter lambda=1 and derived _rateLaw* expressions). Measured activity agrees to the event at t_end=86.4.",
         "The record has NO active exact-SSA action -- its only active action is an ODE run at t_end=86400 reproducing Fig. 4B, and its sole stochastic line is a commented-out partial-scaling block. The 8640 horizon comes from Lin et al. (2019).",
         "EXACT SSA IS THE SLOW ANCHOR: populations up to 3e6 -> ~6e8 events/replicate. Feasible; budget for it.",
-        "Citation is now the curated record's (with DOI); what is still open is whether the SOURCE STUDY used exact SSA -- hence provenance_status=verify."
+        "Citation is now the curated record's (with DOI); what is still open is whether the SOURCE STUDY used exact SSA -- hence provenance_status=verify.",
+        "record_horizon is null because the record declares no active exact-SSA action at all (see the caveat above); 8640 comes from Lin et al. (2019)."
       ]
     },
     {
@@ -80,6 +83,7 @@
       "reactions": 3843,
       "t_end": 300,
       "n_steps": 30000,
+      "record_horizon": 10,
       "tier": "medium-slow",
       "reference": "Rubenstein R, Gray PC, Cleland TJ, Piltch MS, Hlavacek WS, Roberts RM, Ambrosiano J, Kim J-I (2007) Biophys Chem 125:360-367. Benchmark parameterization and horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
       "originally_ssa": "verify",
@@ -87,7 +91,8 @@
       "caveats": [
         "The _benchmark variant of the record (Lin-2019 parameterization, 120-subunit cap). Its generate_network raises max_iter=>150 over BNG's 100-iteration default, so the network reaches the model's own max_stoich=>{PrP=>120} cap: 121 species / 3843 reactions, where the superseded copy froze at 104/2809. The 17 added species are chains of length 104-120, all with zero initial condition, so the event count is unchanged (~605k at t_end=10) but per-event cost rises with the reaction count.",
         "Generation takes ~45 s, most of it isomorphism checking on the longest chains.",
-        "Citation is now the curated record's (with DOI); what is still open is whether the SOURCE STUDY used exact SSA -- hence provenance_status=verify."
+        "Citation is now the curated record's (with DOI); what is still open is whether the SOURCE STUDY used exact SSA -- hence provenance_status=verify.",
+        "Horizon t_end=300 is the manuscript's, not the record's own 10. The two attributions conflict and are not resolved here: this corpus credits t_end=300 to Lin et al. (2019), while the record credits its t_end=10 to the same paper, calling it 'the benchmark protocol of Lin et al. (2019)' over ten days. See lanl/bngsim#429."
       ]
     },
     {
@@ -100,6 +105,7 @@
       "reactions": 6,
       "t_end": 200000000,
       "n_steps": 10000,
+      "record_horizon": 210000000,
       "tier": "high (long horizon)",
       "reference": "Shahrezaei V, Swain PS (2008) PNAS 105:17256-17261.",
       "originally_ssa": "confirmed",
@@ -107,7 +113,8 @@
       "caveats": [
         "Three-stage single-gene model: DNA(promoter on/off) -> mRNA -> Protein. Small network, very long horizon (t_end=2e8) drives the event count.",
         "4/6, not the 6/6 of the superseded copy: that copy carried a Src() marker and a $Null() sink the curated record does not. Dynamics are unchanged (~6.6e6 events at t_end=2e8, same to within run-to-run noise).",
-        "DISTINCT from gene_expression (Munsky) -- single-gene protein cascade vs multi-gene mRNA telegraph."
+        "DISTINCT from gene_expression (Munsky) -- single-gene protein cascade vs multi-gene mRNA telegraph.",
+        "Horizon t_end=2e8 is the manuscript's; the record's own protocol runs to 2.1e8 and discards the first 1e7 s as burn-in, so the two measure the same 2e8 s window."
       ]
     },
     {
@@ -120,6 +127,7 @@
       "reactions": 14,
       "t_end": 60000,
       "n_steps": 1000,
+      "record_horizon": 100000000,
       "tier": "medium",
       "reference": "Munsky B, Neuert G, van Oudenaarden A (2012) Science 336:183-187.",
       "originally_ssa": "confirmed",
@@ -140,6 +148,7 @@
       "reactions": 5,
       "t_end": 1200,
       "n_steps": 1200,
+      "record_horizon": 1200,
       "tier": "fast",
       "reference": "McKane AJ, Newman TJ (2005) Phys Rev Lett 94:218102.",
       "originally_ssa": "confirmed",
@@ -159,6 +168,7 @@
       "reactions": 4,
       "t_end": 3600,
       "n_steps": 360,
+      "record_horizon": 3600000,
       "tier": "fast-medium",
       "reference": "Lin YT, Doering CR (2016) Phys Rev E 93:022409.",
       "originally_ssa": "confirmed",
@@ -186,6 +196,7 @@
       "reactions": 10,
       "t_end": 10,
       "n_steps": 2000,
+      "record_horizon": 10,
       "tier": "medium",
       "reference": "Samoilov M, Plyasunov S, Arkin AP (2005) PNAS 102:2310-2315.",
       "originally_ssa": "confirmed",
