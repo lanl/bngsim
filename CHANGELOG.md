@@ -97,7 +97,7 @@ in `CMakeLists.txt`) is derived from it.
 
   Two measurements decided it. The model has not started at 0.0018 s: the
   trajectory is still in the burn-in from the paper's initial condition, with `X*`
-  down only from 2000 to about 1615 molecules against the record's own operating
+  down only from 2000 to about 1600 molecules against the record's own operating
   band of 110–286, which it first enters at a median 0.0167 s over 30 seeds. And
   the cell was timing setup rather than simulation: interleaved against a run of
   the same model that fires zero events, 91 % of the bngsim wall and 89 % of the

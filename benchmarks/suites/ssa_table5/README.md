@@ -74,7 +74,8 @@ Two measurements on the curated record decided the replacement:
 
 - **The model had not started.** At `t_end=0.0018` the trajectory is still in the
   burn-in from the Fig. 3 initial condition — `X*` has fallen only from 2000 to
-  about 1615 molecules, where the published operating band is 110–286. Over 30
+  about 1600 molecules (median 1606 over 30 seeds), where the published operating
+  band is 110–286. Over 30
   seeds it first reaches that band at a median 0.0167 s, roughly nine times later
   than the row was stopping.
 - **The cell measured almost no simulation.** Interleaved against a run of the
