@@ -1659,6 +1659,10 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
         )
         assert [r.t_star for r in records] == pytest.approx([7.0, 24.0, 31.0, 48.0])
         assert records[0].clock_idx0 == list(core.species_names).index("counter()")
+        # A counter clock IS a species, so the issue #150 state root would happily
+        # claim this condition as well. Exactly one machinery may have it, or the
+        # jump is applied twice.
+        assert sw.state_switch_conditions(core) == []
 
     def test_a_fixed_schedule_is_admitted_and_needs_no_records(self, tmp_path):
         """Six of the nineteen corpus models write their light and dark cycle with

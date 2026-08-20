@@ -16,6 +16,60 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **A rate law that switches on a repeating schedule now has a forward-sensitivity
+  gradient (issue #436).** `if(time() - 24*floor(time()/24) >= 7, on, off)` is "on
+  for the last 17 hours of every 24 hour day", and with a start time and a fitted
+  period it is how a model writes repeated dosing, a light and dark cycle, or a
+  train of stimulus pulses. bngsim refused every one of them. A census of the
+  crossing gate over this repository's corpus — 585 `.net` and 1317 SBML models —
+  found 22 models with a rate-law crossing nothing compensated, and 19 of the 22
+  were this one shape.
+
+  Every crossing recogniser before this one names a fixed number of crossing
+  times, because its residual is a polynomial in the clock. A schedule has one in
+  every period for as long as the run lasts, so the recogniser answers with the
+  *pattern* — a period, an offset and a duty — and the run-time detector, which is
+  the only part of this that knows how long the run is, enumerates the edges from
+  it: `offset + k*period + duty` where the condition turns over inside a period,
+  and `offset + (k+1)*period` where the `floor` steps and the remainder drops back
+  to nothing. Each is then an ordinary issue #48 record, and `∂t*/∂p` follows from
+  differentiating that expression, so the period moves the k-th edge k times as far
+  as the first one. Nothing roots on anything and nothing searches: the edges are
+  arithmetic.
+
+  The recogniser reads the schedule rather than the spelling (issue #355), which
+  matters because the corpus writes the same 24-hour cycle at least five ways —
+  the threshold on either side, a start time folded in, a remainder taken in
+  seconds and divided back to hours, a period hidden behind a derived parameter,
+  and `ceil` in place of `floor`. What it will not read is a remainder *of* a
+  remainder, or a residual that does not repeat period to period; both stay
+  refused.
+
+  `floor()` had a second, separate reason to refuse these rate laws: it is not
+  differentiable, so the emitter rejected it wherever it appeared. Inside an
+  `if()` condition it is never differentiated — sympy copies a Piecewise's
+  conditions through untouched — so it is waived there and nowhere else, and the
+  crossing gate decides what happens next.
+
+  Corpus census, two arms over the same 1908 models: **11 SBML models gained the
+  analytic sensitivity RHS, none lost it, and no model gained an error.** Six more
+  moved only in the wording of their refusal. Three of the newly-admitted models
+  were checked against a finite difference of two trajectories with the parameter
+  edited in the SBML document rather than written through the loader:
+  BIOMD0000000693 agrees to 4e-7 on its stimulus period, BIOMD0000000678 to 3e-6
+  on a period reached through a derived parameter, and BIOMD0000000450 — whose
+  schedule is written with literals, so what it gains is the in-branch derivative
+  rather than a jump — to 3e-9.
+
+  How many edges a window holds is the one thing about a schedule that is not a
+  property of the model, so a long enough run at a short enough period can ask for
+  an unbounded number of stop times. There is a budget, and past it bngsim refuses
+  the run and says so: compensating the edges that fit and not the ones after them
+  would give a gradient right at the start of a run and silently wrong at the end.
+  The budget is set well above what the schedules people write need — a hundred
+  days of hourly dosing fits, and the largest any corpus model asks for over its
+  own reported time course is 200 edges.
+
 - **A Simulator now says whether this model's gradient is analytic, and why not
   when it is not (issue #438).** Whether forward sensitivity runs on bngsim's
   analytic `∂f/∂p` or on CVODES' internal difference quotient is a property of the
@@ -47,6 +101,28 @@ in `CMakeLists.txt`) is derived from it.
   `prune` removes it exactly when it removes the artifact it describes.
 
 ### Fixed
+
+- **A crossing time that steps rather than moves is declined instead of crashing
+  the codegen pass (issue #436).** `if(time() >= sign(P), ...)` took bngsim down
+  with a `RecursionError`: sympy answers `d/dP sign(P)` with an unevaluated
+  `Derivative`, and evaluating that recurses until Python gives up, which is not an
+  exception anything on the codegen path handles. `sign` is not one of the
+  constructs the emitter pre-scan rejects, so this was reachable before this
+  release; `floor` and `ceil` join it now that a `floor()` inside a condition is
+  waived. All three now decline the model with a reason, which is also the honest
+  answer — a crossing time that steps as a parameter moves has no chain rule to
+  the model's primary parameters.
+
+- **Detecting a switch-time crossing no longer costs more the more crossings a
+  model has.** Each newly found crossing was compared against every crossing found
+  so far, to decide whether it is one already recorded written a second way (issue
+  #375). That is quadratic, and until a repeating schedule could contribute a
+  thousand crossings to one run nothing in the corpus made it visible: 1600
+  crossings spent 440 ms on those comparisons and 10 ms on everything else the
+  detector does. The comparison is now made only against crossings that share a
+  clock and a threshold value, which is what the sameness test asks for on its
+  first line anyway, so no answer changes — 1600 crossings now take 10 ms.
+  Detection runs once per `run()`, so a fit paid this on every evaluation.
 
 - **The analytic-`∂f/∂p` verdict no longer answers for an artifact the run has
   replaced.** `compute_all_sensitivities` and `steady_state` take
