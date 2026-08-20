@@ -14,6 +14,79 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+
+- **`capabilities()` answers behavioural questions, and says which build it is
+  (issue #431).** The report described compiled backends and build options,
+  which is the right answer to "was NFsim linked in?" and the wrong answer to
+  the question a fitting frontend has to settle before it commits to hours of
+  gradient work: does this build compute the thing correctly? Four new keys in
+  `features` answer that one, and a new top-level `build` block says which build
+  is answering.
+
+  A version string could not stand in. bngsim bumps `__version__` at the
+  **start** of a release cycle, so the string identifies a cycle rather than a
+  build, and every from-source build made between the bump and a given fix
+  declares the same number as the release that finally carries it. Nor could a
+  `hasattr` probe: these fixes change what a build *computes*, not what it
+  *exposes*, so nothing in the namespace appears or disappears at any of them.
+  Downstream, PyBNF was reading `features["effective_ic_sensitivity"]` as a
+  **witness** for the event fixes — a key about initial conditions, usable only
+  because issue #155 landed a few commits after them (lanl/PyBNF#605). That is a
+  fact about commit ordering, not about semantics, and it stops being evidence
+  the moment the two are decoupled, silently.
+
+  What makes this expensive rather than untidy is that the two wrong answers are
+  not symmetric. A build without one of these fixes does not *refuse* the case
+  it cannot handle — it returns a finite tensor with a term missing. A consumer
+  that guesses "absent" loses a gradient fit; one that guesses "present" runs to
+  completion, converges, and reports a number with nothing wrong on its face. On
+  0.12.1 a state-reading event assignment reported `-10.96` where the model's own
+  central difference says `-311.20`.
+
+  The keys, all four published on every build so that a `False` is an answer
+  rather than a silence (an absent key means only "too old to have been asked"):
+
+  | key | claims | issue |
+  |---|---|---|
+  | `event_sensitivities` | forward sensitivities survive a discrete event, carrying a state-reading assignment's `∂h/∂x·s⁻` and the sensitivity history across a root that fires nothing | #144, #146 |
+  | `cross_compartment_sensitivities` | a reaction whose species live in compartments of different size keeps the analytic `∂f/∂p` instead of putting every column of the model on difference quotients | #160 |
+  | `per_species_atol` | `Simulator.run(atol=...)` takes a vector | #196 |
+  | `tracking_atol` | `Simulator.run(atol=TrackingAtol(...))` is honoured | #213 |
+
+  Each probe reads the half of the install that can actually be wrong. Three ask
+  the loaded extension for a binding the fix added, because two of these fixes
+  are half C++ and in a source checkout the extension is built separately and
+  does not rebuild on import (issue #23); the fourth reads
+  `BNGSIM_NO_FUNCTIONAL_SENS_RHS`, the A/B hatch that is the only way to turn its
+  behaviour off. `python/tests/test_behaviour_capability_keys.py` measures what
+  each key claims — a closed form across the event, the emitted source for the
+  cross-compartment model, the analytical solution for both tolerances — and
+  asserts the key against the measurement, so a key cannot go on being published
+  after the behaviour it names has gone.
+
+  `capabilities()["build"]` is `{"commit": ..., "stale": ...}`: the commit CMake
+  baked into the extension (`None` when it was built outside a git checkout), and
+  whether that extension is older than the C++ next to it. Two installs
+  declaring one `version` are distinguishable by the commit and by nothing else
+  in the public API. The staleness bit is here because an install reporting
+  `0.12.2` was found whose compiled core predated its own `.cpp` by three days:
+  every version-, metadata- and feature-based check passes there, because nothing
+  in the Python layer moved. bngsim already warns about it at import, which for a
+  consumer package is while that package is still loading, before its logging is
+  configured — so the same signal is now readable at a moment of the consumer's
+  choosing, without importing a private module. Both come from
+  `bngsim._build_provenance.summary()`, which is new and public within that
+  module, and both honour `BNGSIM_NO_BUILD_CHECK` like every other reader there.
+
+  Also fixed while making the contract true in both directions: **`missing`
+  never explained `mir`**. It is `False` on every default build (an off-by-default
+  prototype), so a caller doing the documented thing — read `features[name]`, and
+  on `False` print `missing[name]` — got a `KeyError` instead of a sentence. It
+  now names `-DBNGSIM_ENABLE_MIR=ON` and says that nothing needs it, and a test
+  asserts the two directions symmetrically: every unavailable feature is
+  explained, and every explanation belongs to an unavailable feature.
+
 ### Changed
 
 - **The manuscript's eight named BNGL models are generated from their curated

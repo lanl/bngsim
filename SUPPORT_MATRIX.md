@@ -42,7 +42,11 @@ PyPy. These fall out of the `build` / `skip` selectors in
 | pandas integration   | Optional extra: `pip install bngsim[pandas]`  | requires `pandas`                  |
 | JAX gradient bridge  | Optional extra: `pip install bngsim[jax]`     | requires `jax`, `jaxlib`, `diffrax`|
 
-Use `bngsim.capabilities()` at runtime to introspect what is available.
+Use `bngsim.capabilities()` at runtime to introspect what is available. It also
+reports what this build *computes* rather than what it was compiled with —
+`features["event_sensitivities"]` and its three neighbours (GH #431) — and which
+build is answering, in `capabilities()["build"]`. See
+[installation.md](docs/installation.md#capability-introspection) for both.
 
 ### KLU is never optional in a published wheel
 

@@ -1,4 +1,4 @@
-"""Tests for the capability introspection surface (#13).
+"""Tests for the capability introspection surface (#13, #431).
 
 Covers:
 
@@ -8,6 +8,11 @@ Covers:
   consistency with module-level flags, and ``missing`` explanations
   that distinguish compiled-backend gaps from missing optional Python
   dependencies.
+- The **behaviour keys** and the **build identity** added by #431: the four
+  keys that report what this build computes rather than what it was compiled
+  with, and the ``build`` block that says which build it is. What those keys
+  claim is measured in ``test_behaviour_capability_keys.py``; what is asserted
+  here is the reporting contract around them.
 """
 
 from __future__ import annotations
@@ -33,8 +38,24 @@ EXPECTED_FEATURE_KEYS = frozenset(
         "codegen",
         "output_sensitivities",
         "effective_ic_sensitivity",
+        # Behaviour keys (#431).
+        "event_sensitivities",
+        "cross_compartment_sensitivities",
+        "per_species_atol",
+        "tracking_atol",
     }
 )
+
+# The subset of the above that #431 added, with the probe each one reads. A
+# consumer gates a gradient path on these, so every one of them must be
+# published on every build — a key that is absent means "too old to have been
+# asked", which is a different answer from False and must not be reachable here.
+BEHAVIOUR_FEATURE_PROBES = {
+    "event_sensitivities": "_event_sensitivities_available",
+    "cross_compartment_sensitivities": "_cross_compartment_sensitivities_available",
+    "per_species_atol": "_per_species_atol_available",
+    "tracking_atol": "_tracking_atol_available",
+}
 
 
 class TestModuleFlags:
@@ -71,7 +92,7 @@ class TestModuleFlags:
 class TestCapabilitiesSchema:
     def test_top_level_keys(self):
         caps = bngsim.capabilities()
-        assert set(caps) == {"version", "features", "missing"}
+        assert set(caps) == {"version", "features", "missing", "build"}
 
     def test_version_matches_module(self):
         assert bngsim.capabilities()["version"] == bngsim.__version__
@@ -142,6 +163,28 @@ class TestCapabilitiesConsistency:
         assert "output_sensitivities" not in caps["missing"]
         # Every key in `missing` corresponds to an unavailable feature.
         assert set(caps["missing"]).issubset(unavailable)
+
+    def test_every_unavailable_feature_is_explained(self):
+        """The other direction, which nothing asserted: an unavailable feature
+        must SAY why.
+
+        ``mir`` was False on every default build and had no entry at all, so a
+        caller doing the documented thing — read ``features[name]``, and on
+        False print ``missing[name]`` — got a KeyError instead of an
+        explanation. The rule is symmetric, so test it symmetrically.
+        """
+        caps = bngsim.capabilities()
+        unavailable = {n for n, v in caps["features"].items() if not v}
+        assert set(caps["missing"]) == unavailable
+
+    def test_mir_off_is_explained_as_a_default_not_a_breakage(self, monkeypatch):
+        monkeypatch.setattr(bngsim, "HAS_MIR", False)
+        msg = bngsim.capabilities()["missing"]["mir"]
+        # Names the CMake flag that turns it on, says it is off by default, and
+        # says nothing is broken by its absence.
+        assert "-DBNGSIM_ENABLE_MIR=ON" in msg
+        assert "OFF by default" in msg
+        assert "Nothing needs it" in msg
 
     def test_no_missing_entries_when_everything_available(self):
         caps = bngsim.capabilities()
@@ -262,9 +305,167 @@ class TestCapabilitiesMissingExplanations:
         # machine without BNG2.pl this build-independent logic test would
         # otherwise fail on an environment fact it is not about.
         monkeypatch.setattr(bngsim, "_bngl_available", lambda: True)
+        # ...and the four behaviour keys (#431), for the same reason again: one
+        # of them reads an environment switch and two read the compiled core, so
+        # on a hatched environment or an out-of-date extension this
+        # build-independent logic test would otherwise fail on a fact about the
+        # machine rather than about capabilities().
+        for probe in BEHAVIOUR_FEATURE_PROBES.values():
+            monkeypatch.setattr(bngsim, probe, lambda: True)
         caps = bngsim.capabilities()
         assert caps["missing"] == {}
         assert all(caps["features"].values())
+
+
+class TestBehaviourFeatureKeys:
+    """#431: keys that report what this build COMPUTES.
+
+    The measurements that say whether each key is telling the truth live in
+    ``test_behaviour_capability_keys.py``. These tests are about the reporting
+    contract: the keys are always published, they are real booleans, and a
+    ``False`` comes with an explanation a consumer can print.
+    """
+
+    @pytest.mark.parametrize("name", sorted(BEHAVIOUR_FEATURE_PROBES))
+    def test_published_on_every_build(self, name):
+        """Published, not merely truthy. An absent key means "too old to have
+        been asked" — a third state a consumer has to handle differently — so
+        the value of a behaviour key is that it is always there."""
+        caps = bngsim.capabilities()
+        assert name in caps["features"]
+        assert isinstance(caps["features"][name], bool)
+
+    @pytest.mark.parametrize("name", sorted(BEHAVIOUR_FEATURE_PROBES))
+    def test_true_on_this_build(self, name):
+        """Every one of these is True on a current build with no A/B hatch set.
+
+        This is the test that fails if a probe is silently rewired — for
+        instance to a core binding that a later refactor renames. The behaviour
+        would still be there and the key would start saying it is not, which is
+        the safe direction to be wrong in but is still wrong.
+        """
+        assert bngsim.capabilities()["features"][name] is True
+
+    @pytest.mark.parametrize("name, probe", sorted(BEHAVIOUR_FEATURE_PROBES.items()))
+    def test_false_is_an_answer_with_a_reason(self, monkeypatch, name, probe):
+        monkeypatch.setattr(bngsim, probe, lambda: False)
+        caps = bngsim.capabilities()
+        assert caps["features"][name] is False
+        msg = caps["missing"][name]
+        assert isinstance(msg, str) and len(msg) > 40
+        # Every one of these names the issue it came from, so a reader can find
+        # out what changed rather than only that something did.
+        assert "GH #" in msg
+
+    def test_event_sensitivities_reason_names_the_silent_failure(self, monkeypatch):
+        monkeypatch.setattr(bngsim, "_event_sensitivities_available", lambda: False)
+        msg = bngsim.capabilities()["missing"]["event_sensitivities"]
+        # The point of the key is that the pre-fix behaviour is a wrong number
+        # and not a refusal, so the message has to say that outright.
+        assert "GH #144" in msg and "#146" in msg
+        assert "wrong" in msg
+        assert "rebuild_editable" in msg
+
+    def test_cross_compartment_reason_names_the_environment_switch(self, monkeypatch):
+        monkeypatch.setattr(bngsim, "_cross_compartment_sensitivities_available", lambda: False)
+        msg = bngsim.capabilities()["missing"]["cross_compartment_sensitivities"]
+        # The only way this one can be False, so the message says which variable
+        # to unset rather than sending the reader to a rebuild.
+        assert "BNGSIM_NO_FUNCTIONAL_SENS_RHS=1" in msg
+        assert "rebuild_editable" not in msg
+        # ...and it must not claim a wrong answer: the fallback is correct and
+        # slow, which is a different thing to tell a user.
+        assert "correct" in msg
+
+    @pytest.mark.parametrize(
+        "probe, member",
+        [
+            ("_event_sensitivities_available", "events_with_runtime_event_time_sens"),
+            ("_per_species_atol_available", "atol_vec"),
+            ("_tracking_atol_available", "atol_track_decades"),
+        ],
+    )
+    def test_the_core_probes_read_the_compiled_extension(self, monkeypatch, probe, member):
+        """Three of the four ask the loaded ``_bngsim_core`` for a binding its
+        fix added, rather than trusting this Python file.
+
+        That is the whole point: in a source checkout the extension is built
+        separately and does not rebuild on import (GH #23), so the Python half
+        can be current while the compiled half is not. Simulated here by hiding
+        the binding — the probe must go False, not stay True because the Python
+        layer looks new.
+        """
+        from bngsim import _bngsim_core as core
+
+        owner = core.NetworkModel if member.startswith("events") else core.SolverOptions
+        assert hasattr(owner, member), "probe target moved; update the probe and this test"
+        monkeypatch.delattr(owner, member, raising=True)
+        assert getattr(bngsim, probe)() is False
+
+
+class TestBuildIdentity:
+    """#431: ``caps["build"]`` — which build this is.
+
+    Two installs can report the same ``version`` and be different builds,
+    because bngsim bumps ``__version__`` at the start of a release cycle. The
+    commit the extension was built from is the only thing in the public API
+    that separates them, and it was readable only from a private module.
+    """
+
+    def test_shape(self):
+        build = bngsim.capabilities()["build"]
+        assert set(build) == {"commit", "stale"}
+        assert build["commit"] is None or isinstance(build["commit"], str)
+        assert isinstance(build["stale"], bool)
+
+    def test_commit_matches_the_extension_stamp(self):
+        from bngsim import _bngsim_core as core
+
+        stamped = getattr(core, "__build_commit__", None)
+        commit = bngsim.capabilities()["build"]["commit"]
+        if stamped and stamped != "unknown":
+            assert commit == stamped
+        else:
+            # An sdist build has no commit to name, and saying so is the honest
+            # answer — not an empty string a consumer would log as a build id.
+            assert commit is None
+
+    def test_stale_agrees_with_the_import_time_guard(self):
+        from bngsim import _build_provenance as prov
+
+        assert bngsim.capabilities()["build"]["stale"] == prov.is_stale()
+
+    def test_this_checkout_is_not_stale(self):
+        """A green suite against a stale extension is a verdict about old code,
+        so the preflight in conftest already refuses to run here. That makes
+        this assertion free, and it pins the reporting to the same answer."""
+        assert bngsim.capabilities()["build"]["stale"] is False
+
+    def test_the_build_check_opt_out_is_honoured(self, monkeypatch):
+        monkeypatch.setenv("BNGSIM_NO_BUILD_CHECK", "1")
+        build = bngsim.capabilities()["build"]
+        assert build["stale"] is False
+        # The commit still resolves: the opt-out disables the mtime comparison,
+        # not the identity of the build.
+        from bngsim import _bngsim_core as core
+
+        stamped = getattr(core, "__build_commit__", None)
+        if stamped and stamped != "unknown":
+            assert build["commit"] == stamped
+
+    def test_a_provenance_failure_does_not_take_capabilities_down(self, monkeypatch):
+        """``capabilities()`` is called at setup by consumers that have not
+        started their real work yet. A provenance read that raises must cost
+        them the build block, not the call."""
+        from bngsim import _build_provenance as prov
+
+        def boom(*_a, **_k):
+            raise OSError("no such thing")
+
+        monkeypatch.setattr(prov, "gather", boom)
+        caps = bngsim.capabilities()
+        assert caps["build"] == {"commit": None, "stale": False}
+        assert caps["features"]  # the rest of the report is unaffected
 
 
 class TestPublicSurface:
