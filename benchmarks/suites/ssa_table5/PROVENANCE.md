@@ -225,10 +225,71 @@ record of what the old artifacts were:
   `N + N -> E+ + N` step is second order in the same species. The converted SBML
   law `k*N*N` is not the exact propensity `k*N*(N-1)`, and RR-gillespie fires the
   SBML law (GH #9), so that cell is **N/A**; COPASI derives the combinatorial
-  propensity itself and its cell stands. The superseded copy had no driver.
+  propensity itself and its cell stands. The superseded copy had no driver. The
+  record's `_unordered_pair` variant does not rescue the cell: it writes the same
+  `5,5 -> 3,5` reaction with the rate constant halved, so the converted law is
+  still `k*N*N`.
 
 `prion_aggregation`'s event count barely moves (~605 k at `t_end=10`, old and new
 alike) because the 17 added species are chains of length 104–120 with zero initial
 condition — the cost moves through *per-event* work instead, ~20 % at `t_end=10`,
 and the full-horizon `t_end=300` run now exceeds `run_bngsim_activity.py`'s 60 s
 cap (72 s) where the 104/2809 copy fit inside it.
+
+## B10's horizon comes from the record too (2026-08-20, lanl/bngsim#425)
+
+The re-pointing above changed B10's model and left its horizon alone, so the row
+ran a 7/10 model at `t_end=0.0018` — a value chosen for the 6/6 artifact that had
+just been replaced. The record's own protocol runs to `t_end=10` sampled every
+0.005 s, reproducing Fig. 3A. The row now runs that horizon, so the model and the
+horizon come from the same file.
+
+**Where 0.0018 came from.** It is not from Samoilov et al. (2005). The superseded
+artifact was converted from `../../models/antimony/ssys/Samoilov2005.ant`, one of
+the 117 hand-written Antimony models that make up a different corpus in this
+repository, and `t_end=0.0018` with `n_steps=180` is that file's own `@SIM`
+annotation. That file describes itself as "the underlying mass-action ODE system
+(no external noise)" and exists there as a **stiffness pathology case** for
+S-system recasting — its header records that trajectory integration of the recast
+fails. The horizon was picked to exercise a numerical experiment on a
+deterministic model, and the superseded `.net` even inherited that file's
+`EPS_INIT` perturbation, seeding `X`, `C1` and `C2` at 1 molecule where the paper
+has 0. So B10 was never running a horizon anyone had chosen for a stochastic
+simulation of this system.
+
+This is the one B-row where adopting the record's horizon was the right call
+rather than keeping the manuscript's, and it is worth saying why. `gene_bursts`
+and `gene_expression` carry horizons the manuscript chose *for the model it is
+running*; B10's was inherited from a model that is no longer in the corpus.
+
+Two measurements settled it, both on the committed `.net`:
+
+- **The model has not started at 0.0018 s.** The trajectory is still in the
+  burn-in from the Fig. 3 initial condition: `X*` has fallen only from 2000 to
+  about 1615 molecules, where the record's own protocol note puts the operating
+  band at 110–286. Over 30 seeds the trajectory first enters that band at a
+  median 0.0167 s — about nine times later than the row was stopping. The
+  noise-induced switching the model is published for had not begun.
+- **The cell measured setup, not simulation.** Interleaved 195 times against a
+  run of the same model with the horizon set so it fires zero events, the
+  `t_end=0.0018` cell costs 425 µs against a 386 µs zero-event floor, so **91 %
+  of what it timed was per-run fixed overhead**; for `run_network` it is 15.8 ms
+  against 14.1 ms, **89 %**. Table 5 is a cost table, so a cell that is 9–11 %
+  simulation is a bad row on its own terms.
+
+Cost was not the reason for the short horizon and is not a reason to keep it. At
+`t_end=10` a replicate fires a median 1.36×10⁷ events (1.348×10⁶ events/s of
+simulated time) for 0.46 s of bngsim wall and 1.70 s of `run_network` wall, both
+far inside the harness's 120 s per-run cap and in the range of the other rows.
+COPASI is not measured here but its throughput on the other converted-BNGL rows
+(4×10⁶–2.3×10⁷ events/s) puts it in the same seconds range.
+
+**B10's cost moves by about four orders of magnitude**, so unlike B07 this one
+does move a published number and the manuscript reports the new one. The
+alternative — re-pointing B10 at the record's `_no_driver` variant, which is the
+6/6 model `0.0018` was chosen for — was not taken: that file is the paper's
+control rather than this study's model, and `wshlavacek/bngsim-paper#6` chose the
+primary file deliberately.
+
+The coverage does not change with the horizon: the RoadRunner cell is N/A because
+of the repeated reactant, at any `t_end`.

@@ -41,24 +41,27 @@ ENGINES = ["bngsim", "run_network", "roadrunner", "copasi"]
 #
 #   warm  : number of warm reps (see WARM_BUDGET_SEC; 3 for the expensive models)
 #   order : the cheap->expensive index (estimated total Gillespie events =
-#           events/time * t_end), which is the order the orchestrator runs cells in
+#           events/time * t_end), which is the order the orchestrator runs cells in.
+#           samoilov_futile_cycle sits at 11 rather than the 2 it held while it ran
+#           t_end=0.0018: on the curated record's own horizon (issue #425) it fires
+#           ~1.4e7 events per replicate instead of ~1.3e3.
 _POLICY: dict[str, dict] = {
     # BNGL (native .net for bngsim + run_network)
     "gene_bursts": dict(warm=10, order=1),
-    "samoilov_futile_cycle": dict(warm=10, order=2),
-    "gene_expression": dict(warm=10, order=5),
-    "mckane_predator_prey": dict(warm=10, order=8),
-    "gene_expr_3stage": dict(warm=10, order=11),
+    "gene_expression": dict(warm=10, order=4),
+    "mckane_predator_prey": dict(warm=10, order=7),
+    "gene_expr_3stage": dict(warm=10, order=10),
+    "samoilov_futile_cycle": dict(warm=10, order=11),
     "prion_aggregation": dict(warm=3, order=12),
     "tcr_signaling": dict(warm=3, order=13),
     "erk_activation": dict(warm=3, order=14),
     # SBML (native .xml for bngsim + roadrunner + copasi)
-    "BIOMD0000000862": dict(warm=10, order=3),
-    "BIOMD0000000344": dict(warm=10, order=4),
-    "BIOMD0000000860": dict(warm=10, order=6),
-    "BIOMD0000000478": dict(warm=10, order=7),
-    "BIOMD0000000035": dict(warm=10, order=9),
-    "BIOMD0000000864": dict(warm=10, order=10),
+    "BIOMD0000000862": dict(warm=10, order=2),
+    "BIOMD0000000344": dict(warm=10, order=3),
+    "BIOMD0000000860": dict(warm=10, order=5),
+    "BIOMD0000000478": dict(warm=10, order=6),
+    "BIOMD0000000035": dict(warm=10, order=8),
+    "BIOMD0000000864": dict(warm=10, order=9),
 }
 
 

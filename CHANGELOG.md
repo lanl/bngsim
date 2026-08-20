@@ -84,6 +84,35 @@ in `CMakeLists.txt`) is derived from it.
   against the coverage table the orchestrator obeys and exits non-zero if they
   disagree, so that class of drift cannot go unnoticed again.
 
+- **Table 5's `samoilov_futile_cycle` row runs the curated record's own horizon,
+  `t_end=10` (issue #425).** Re-pointing the row above changed its model and left
+  its horizon alone, so it ran a 7/10 model at `t_end=0.0018` — a value chosen for
+  the 6/6 artifact that had just been replaced. That value does not come from
+  Samoilov et al. (2005) at all: it is the `@SIM` annotation of
+  `benchmarks/models/antimony/ssys/Samoilov2005.ant`, the file the superseded
+  artifact was converted from, which is a deterministic ODE encoding kept in a
+  different corpus as a stiffness pathology case. The record's own protocol runs
+  to `t_end=10` sampled every 0.005 s, reproducing Fig. 3A, so the model and the
+  horizon now come from the same file.
+
+  Two measurements decided it. The model has not started at 0.0018 s: the
+  trajectory is still in the burn-in from the paper's initial condition, with `X*`
+  down only from 2000 to about 1615 molecules against the record's own operating
+  band of 110–286, which it first enters at a median 0.0167 s over 30 seeds. And
+  the cell was timing setup rather than simulation: interleaved against a run of
+  the same model that fires zero events, 91 % of the bngsim wall and 89 % of the
+  `run_network` wall was per-run fixed overhead, which makes it a poor row in a
+  cost table however the modelling question is settled.
+
+  The short horizon was never a cost concession. At `t_end=10` a replicate fires a
+  median 1.36e7 events for 0.46 s of bngsim wall and 1.70 s of `run_network` wall,
+  both far inside the harness's 120 s per-run cap and in the range of the other
+  rows. **This one does move a published number** — B10's cost rises by about four
+  orders of magnitude — where the `gene_bursts` fix above moved none. Coverage is
+  unaffected: the RoadRunner cell is N/A because of the repeated reactant at any
+  horizon, and the record's `_unordered_pair` variant does not rescue it, since it
+  writes the same reaction with the rate constant halved.
+
 - **`ssa_table5`'s `corpus.json` is the corpus SSOT.** Artifacts, horizons and
   output-point counts were typed out in both `corpus.json` and `_ssa_config.py`;
   the corpus is not on the timing path, so a horizon edited in one and not the

@@ -22,7 +22,7 @@ same artifacts `suites/psa` runs.
 
 | model | sp | rx | t_end | events/time | reference | prov |
 |---|--:|--:|--:|--:|---|:--:|
-| `samoilov_futile_cycle` | 7 | 10 | 0.0018 | 762,778 | Samoilov, Plyasunov & Arkin 2005, PNAS | ✅ |
+| `samoilov_futile_cycle` | 7 | 10 | 10 | 1,348,230 | Samoilov, Plyasunov & Arkin 2005, PNAS | ✅ |
 | `prion_aggregation` | 121 | 3843 | 300 | 105,156 | Rubenstein 2007 / Lin 2019 | ⚠️ |
 | `erk_activation` | 34 | 65 | 8 640 | 68,993\* | Kochańczyk 2017 / Lin 2019 — **slow anchor** | ⚠️ |
 | `tcr_signaling` | 37 | 97 | 10 000 | 12,545 | Lipniacki 2008 / Lin 2019 | ✅ |
@@ -50,7 +50,7 @@ would be median 95, with 25 of 200 replicates firing nothing.
 
 | model | was | now | why |
 |---|---|---|---|
-| `samoilov_futile_cycle` | 6 sp / 6 rx | **7 / 10** | the record is the primary file, external noise driver (Expressions 7–8) included; the `_no_driver` variant is the paper's control, not this study's model |
+| `samoilov_futile_cycle` | 6 sp / 6 rx | **7 / 10** | the record is the primary file, external noise driver (Expressions 7–8) included; the `_no_driver` variant is the paper's control, not this study's model. Its horizon moved too — see below |
 | `gene_expr_3stage` | 6 / 6 | **4 / 6** | the superseded copy carried a `Src()` marker and a `$Null()` sink the record does not; dynamics unchanged |
 | `prion_aggregation` | 104 / 2809 | **121 / 3843** | the record's `generate_network` raises `max_iter=>150`, so chains reach its own `max_stoich=>{PrP=>120}` cap; the 17 added species are zero-population chain tails, so the event count is unchanged and only per-event cost rises (~20 % at `t_end=10`) |
 | `tcr_signaling` | 37 / 97 | 37 / 97 | same network, but the record starts from the paper's primed state rather than a clean one → ~3 % more events |
@@ -58,15 +58,47 @@ would be median 95, with 25 of 200 replicates firing nothing.
 | `gene_bursts` | 2 / 4 | 2 / 4 | same network; its `Protein=467` seed is now *derived* — a declared, converged ODE relaxation of the record — instead of hand-baked into the `.net`, and measures identically (median 923 over 200 seeds, both artifacts) |
 | `gene_expression`, `mckane_predator_prey` | — | unchanged | identical network *and* identical measured activity |
 
-`samoilov_futile_cycle`'s horizon is under review in
-[#425](https://github.com/lanl/bngsim/issues/425): `t_end=0.0018` was chosen for
-the superseded 6/6 artifact, and the 7/10 record that replaced it declares
-`t_end=10` for the bistable switching it is published for.
+### `samoilov_futile_cycle`'s horizon is now the record's own
 
-**Horizons did not move.** Several records declare a different `t_end` for their
-own protocol (`gene_bursts` 3.6×10⁶, `gene_expression` 10⁸,
-`samoilov_futile_cycle` 10); Tables 5 and 7 keep the horizons above and the
-manuscript documents the divergence.
+Settled in [#425](https://github.com/lanl/bngsim/issues/425). `t_end=0.0018` was
+chosen for the superseded 6/6 artifact, and once the 7/10 record replaced it that
+value had no source. The row now runs the record's own `t_end=10` with
+`n_steps=2000`, the Fig. 3A protocol, so the horizon and the model come from the
+same place.
+
+`0.0018` is not a number from Samoilov et al. (2005). It is the `@SIM` annotation
+of `../../models/antimony/ssys/Samoilov2005.ant`, the file the superseded artifact
+was converted from — a **deterministic** ODE encoding ("no external noise") that
+lives in a different corpus as a stiffness pathology case for S-system recasting.
+Two measurements on the curated record decided the replacement:
+
+- **The model had not started.** At `t_end=0.0018` the trajectory is still in the
+  burn-in from the Fig. 3 initial condition — `X*` has fallen only from 2000 to
+  about 1615 molecules, where the published operating band is 110–286. Over 30
+  seeds it first reaches that band at a median 0.0167 s, roughly nine times later
+  than the row was stopping.
+- **The cell measured almost no simulation.** Interleaved against a run of the
+  same model that fires zero events, **91 % of the bngsim wall and 89 % of the
+  `run_network` wall was per-run fixed overhead** — 425 µs against a 386 µs floor,
+  and 15.8 ms against 14.1 ms. That is a poor timing cell whatever one thinks
+  about the modelling.
+
+Cost is not a reason to keep the short horizon. At `t_end=10` a replicate fires a
+median 1.36×10⁷ events for **0.46 s** of bngsim wall and **1.70 s** of
+`run_network` wall, both far inside the harness's 120 s per-run cap and in the
+range of the other rows. **B10's cost moves by about four orders of magnitude and
+the manuscript reports the new number.**
+
+The `_no_driver` variant is the model `0.0018` was chosen for, but it is the
+paper's control rather than this study's model, and `wshlavacek/bngsim-paper#6`
+chose the primary file deliberately. The RoadRunner cell stays N/A either way, and
+the record's `_unordered_pair` variant does not rescue it: it writes the same
+`5,5 -> 3,5` reaction with the rate constant halved, so the converted SBML law is
+still `k·N·N`.
+
+**Every other horizon is unchanged.** Two records declare a different `t_end` for
+their own protocol (`gene_bursts` 3.6×10⁶, `gene_expression` 10⁸); Tables 5 and 7
+keep the horizons above and the manuscript documents the divergence.
 
 **One coverage cell moved with them.** BNGL rows reach RoadRunner and COPASI
 through `convert_all.py`'s `.net`→SBML conversion, and the curated Samoilov
