@@ -1866,8 +1866,95 @@ class ScheduleTerms(NamedTuple):
     crosses: bool
 
 
+# How far the model's own residual may sit from zero at the crossing time a
+# recognized schedule predicts, and how far two periods of it may differ, both
+# relative to the residual's size half a duty either side of the crossing. A
+# schedule that is really there puts an exact zero at its own edge and repeats to
+# the last bit; the tolerance is for the roundoff of taking a remainder at a large
+# clock value.
+_SCHEDULE_RESIDUAL_TOL = 1e-9
+
+
+def _schedule_matches_residual(
+    atom: str,
+    sched: PeriodicSchedule,
+    period: float,
+    duty: float,
+    offset: float,
+    crosses: bool,
+    scope: SwitchConditionScope,
+) -> bool:
+    """Check a recognized schedule against the condition the model evaluates.
+
+    :func:`_clock_periodic_schedule` reads the residual through ``sympy``'s
+    parser, which binds a handful of one-letter names to its own objects: a model
+    parameter called ``I`` arrives as the imaginary unit, ``S`` as the singleton
+    registry, ``E`` as Euler's number. Most of the time that is harmless, because
+    those objects obey the same arithmetic a symbol would and the recognizer's
+    answer comes back spelled with the same name. It is not harmless always —
+    ``I*I`` folds to ``-1`` — and the failure it produces is the quiet one: a
+    schedule that reads as never crossing, which the gate then admits with
+    nothing behind it.
+
+    So the schedule is checked against the residual evaluated the *model's* way,
+    through :func:`_evaluate_threshold`, which binds parameter names before it
+    parses (GH #108). Four evaluations, at clock values one period apart and
+    either side of the predicted edge, ask the three things the schedule claims:
+    that the residual changes sign where the schedule says it does (or holds one
+    sign for the whole period when the schedule says it never crosses), that it
+    is zero at the edge itself, and that it repeats a period later.
+
+    Cheap for what it covers. A recognizer that got the period, the phase or the
+    duty wrong fails here rather than placing stop times where nothing happens,
+    and a residual reading anything :func:`_evaluate_threshold` cannot resolve —
+    live state, most obviously — fails here too.
+    """
+    head = _clock_solve_residual(atom, scope.clock_symbols)
+    if head is None:  # pragma: no cover - the recognizer already required one
+        return False
+    # `ceil` is ExprTk's spelling of `ceiling` and sympy's parser does not know
+    # it, so a residual written with one would evaluate to nothing here and every
+    # schedule spelled that way would be declined for the wrong reason. The
+    # rewrite is the same exact identity the recognizer applies.
+    residual = _CEIL_CALL.sub("ceiling(", head[1])
+
+    def at(clock_value: float) -> float | None:
+        text = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(_CLOCK_SOLVE_SYMBOL)}(?![A-Za-z0-9_])",
+            f"({clock_value!r})",
+            residual,
+        )
+        return _evaluate_threshold(text, scope.param_idx, scope.values, scope.derived_exprs)
+
+    # Sample points as a fraction of the period past the offset. When the
+    # schedule crosses they straddle the edge; when it does not they spread over
+    # the period, which is where a constant sign has to hold.
+    phi = duty / period
+    fractions = (phi / 2.0, (1.0 + phi) / 2.0) if crosses else (0.25, 0.75)
+    probes = [at(offset + period * f) for f in fractions]
+    probes.append(at(offset + period * (fractions[0] + 1.0)))  # one period later
+    if crosses:
+        probes.append(at(offset + duty))  # the edge itself
+    if any(v is None or not (abs(v) < float("inf")) for v in probes):
+        return False
+    first, second, repeat = probes[0], probes[1], probes[2]
+    scale = max(abs(first), abs(second))
+    if scale == 0.0:
+        return False
+    if abs(repeat - first) > _SCHEDULE_RESIDUAL_TOL * scale:
+        return False  # the residual does not repeat a period later
+    if crosses:
+        if first * second >= 0.0:
+            return False  # no sign change across the edge the schedule names
+        if abs(probes[3]) > _SCHEDULE_RESIDUAL_TOL * scale:
+            return False  # the residual is not zero at the edge
+    elif first * second <= 0.0:
+        return False  # a sign change inside a schedule that claims none
+    return True
+
+
 def _periodic_schedule_terms(
-    sched: PeriodicSchedule, scope: SwitchConditionScope
+    atom: str, sched: PeriodicSchedule, scope: SwitchConditionScope
 ) -> ScheduleTerms | None:
     """:class:`ScheduleTerms` for a recognized schedule, or ``None`` when nothing
     compensates its crossings (issue #436).
@@ -1882,7 +1969,8 @@ def _periodic_schedule_terms(
     stops them answering differently about a schedule.
 
     A period of zero is refused: there is then no schedule, only a division by
-    zero waiting to happen in the enumeration.
+    zero waiting to happen in the enumeration. So is a schedule the model's own
+    residual does not actually follow — see :func:`_schedule_matches_residual`.
     """
     parts = [
         _threshold_crossing_terms(text, scope)
@@ -1899,6 +1987,8 @@ def _periodic_schedule_terms(
     # 0, and whose recognized period is therefore negative — is judged the same
     # way as one written with `floor()`.
     crosses = 0.0 < duty / period < 1.0
+    if not _schedule_matches_residual(atom, sched, period, duty, offset, crosses, scope):
+        return None
     return ScheduleTerms(
         period=period,
         offset=offset,
@@ -1913,7 +2003,7 @@ def _periodic_schedule_terms(
 def _schedule_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     """Whether *atom* is a repeating schedule whose crossings are compensated."""
     sched = _clock_periodic_schedule(atom, scope.clock_symbols)
-    return sched is not None and _periodic_schedule_terms(sched, scope) is not None
+    return sched is not None and _periodic_schedule_terms(atom, sched, scope) is not None
 
 
 # How many crossings one repeating schedule may contribute to a single run.
@@ -2281,17 +2371,25 @@ def uncompensated_condition_reason(
                     )
                     if not _threshold_compensated(text, scope)
                 ]
-                return UncompensatedCrossingReason(
-                    f"the condition {atom!r} switches on a repeating schedule whose "
-                    + (
-                        " and ".join(unreadable_parts)
-                        if unreadable_parts
-                        else f"period {sched.period!r}"
+                if unreadable_parts:
+                    return UncompensatedCrossingReason(
+                        f"the condition {atom!r} switches on a repeating schedule whose "
+                        + " and ".join(unreadable_parts)
+                        + " does not reduce to a constant expression over the model's primary "
+                        "parameters, so bngsim cannot say when the schedule's edges fall and "
+                        "neither the issue #48 switch-time jump nor the issue #150 crossing "
+                        "root can compensate them"
                     )
-                    + " does not reduce to a constant expression over the model's primary "
-                    "parameters, so bngsim cannot say when the schedule's edges fall and "
-                    "neither the issue #48 switch-time jump nor the issue #150 crossing "
-                    "root can compensate them"
+                # Each piece reads back on its own, so what failed is the check
+                # that the pieces really describe this condition: the residual
+                # does not repeat a period later, or does not change sign where
+                # the schedule says it does (:func:`_schedule_matches_residual`).
+                return UncompensatedCrossingReason(
+                    f"the condition {atom!r} looks like a repeating schedule of period "
+                    f"{sched.period!r} and duty {sched.duty!r}, but the condition the model "
+                    "actually evaluates does not follow that schedule, so bngsim will not "
+                    "place stop times from it and neither the issue #48 switch-time jump nor "
+                    "the issue #150 crossing root can compensate its crossings"
                 )
             # A clock threshold that neither reduces to a constant over the
             # primaries (so the issue #48 detector would silently skip its
@@ -2359,13 +2457,18 @@ def _switch_params_in_uncompensated_conditions(
     drag the switch into the approach and stall the integrator. That is safe only
     when every crossing the parameter moves is compensated — stopped at (issue
     #48) or rooted on (issue #150). If the parameter ALSO reads a condition whose
-    crossing nothing brackets — a ``floor()``-periodic dose schedule,
-    ``if((time - floor(time/period)*period) >= offset, ...)`` — the probe was the
-    only thing that would have captured that crossing's dependence on it, and
-    pinning drops it: the column comes back a silent zero (MODEL1708310001's
-    ``cycle_int`` measured ∂/∂cycle_int = 0 against a finite difference peaking at
-    ~19). Such a parameter cannot be pinned, and un-pinning reintroduces the issue
-    #48 stall, so the caller refuses it.
+    crossing nothing brackets, the probe was the only thing that would have
+    captured that crossing's dependence on it, and pinning drops it: the column
+    comes back a silent zero (MODEL1708310001's ``cycle_int`` measured
+    ∂/∂cycle_int = 0 against a finite difference peaking at ~19). Such a parameter
+    cannot be pinned, and un-pinning reintroduces the issue #48 stall, so the
+    caller refuses it.
+
+    A plain dose schedule, ``if(time - floor(time/period)*period >= offset, …)``,
+    used to be the example of such a condition and is one no longer: issue #436
+    enumerates its edges and compensates each of them. MODEL1708310001 is still
+    the witness because it writes a remainder *of a remainder*, one level deeper
+    than that recognizer goes.
 
     The atom test is :func:`uncompensated_condition_reason`'s — compensated by
     issue #48, then issue #150, then :func:`condition_cannot_cross` — so the two
@@ -2630,7 +2733,7 @@ def _absorb_schedule_crossings(
     sched = _clock_periodic_schedule(atom, scope.clock_symbols)
     if sched is None:
         return
-    terms = _periodic_schedule_terms(sched, scope)
+    terms = _periodic_schedule_terms(atom, sched, scope)
     if terms is None or not terms.crosses:
         # Unreadable (the gate declines the model over it, so no analytic RHS is
         # emitted and there is nothing to compensate here), or a schedule that
@@ -2926,10 +3029,11 @@ def compute_switch_time_sens(
         if dtstar[c] != 0.0
     }
     # A switch-time parameter is safe to pin only if EVERY crossing it moves is
-    # compensated. One that also reads a condition nothing brackets — a
-    # `floor()`-periodic dose schedule — cannot be: pinning holds the probe that
-    # was the uncompensated crossing's only handler, so the column comes back a
-    # silent zero (MODEL1708310001's `cycle_int`). Refused before the in-branch
+    # compensated. One that also reads a condition nothing brackets — a dose
+    # schedule written as a remainder of a remainder, one level past what issue
+    # #436 reads — cannot be: pinning holds the probe that was the uncompensated
+    # crossing's only handler, so the column comes back a silent zero
+    # (MODEL1708310001's `cycle_int`). Refused before the in-branch
     # test below, and regardless of the sensitivity RHS, because an uncompensated
     # crossing is what put this model on the difference quotient to begin with
     # (issue #68) — there is no analytic path here to combine anything on.
@@ -2939,8 +3043,7 @@ def compute_switch_time_sens(
             "Forward sensitivity w.r.t. "
             + ", ".join(f"'{p}'" for p in sorted(unsafe))
             + " is not supported on this model: each moves a detected switch time AND "
-            "also reads a condition whose crossing nothing compensates (a "
-            "floor()-periodic schedule, say). Pinning it against "
+            "also reads a condition whose crossing nothing compensates. Pinning it against "
             "CVODES' difference-quotient probe (issue #48) would hold that crossing's "
             "dependence on it at a wrong 0, and un-pinning would drag the switch into "
             "the approach and stall (issue #358). bngsim refuses rather than return a "
