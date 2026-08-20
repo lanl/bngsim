@@ -165,8 +165,14 @@ def test_neither_suite_vendors_a_net_of_its_own():
     # its three under models/net/psa/. Both are gone: models live in
     # benchmarks/models/, per that tree's own rule, and the curated bucket is the
     # one copy these two suites read.
+    # Scoped to the two suites this test is about. Globbing every suite failed on
+    # any machine that had run ode_fullnet or ode_engines_s3, whose generated
+    # .net files are gitignored build products, so it only ever passed in CI.
     strays = [
-        p.relative_to(BENCH) for p in BENCH.glob("suites/*/**/*.net") if "results" not in p.parts
+        p.relative_to(BENCH)
+        for suite in ("ssa_table5", "psa")
+        for p in (BENCH / "suites" / suite).rglob("*.net")
+        if "results" not in p.parts
     ]
     assert not strays, f"a suite is vendoring its own .net again: {strays}"
     for gone in ("models/net/psa", "models/bngl/psa"):
@@ -472,3 +478,81 @@ def test_no_curated_model_keeps_a_copy_in_another_bucket():
     # what must not come back is a second copy in an SSA/PSA bucket.
     strays = [p for p in strays if p.parent.name != "ode"]
     assert not strays, f"a curated model has a second SSA/PSA copy again: {strays}"
+
+
+# ── 9. a horizon and the model it runs come from the same place ───────────────
+
+
+def _record_ssa_horizon(name: str) -> float | None:
+    """t_end of the record's own active exact-SSA action, or None if it has none.
+
+    Read from the vendored copy of the record, whose sha256 the manifest pins to
+    the collection, so this is the record's own declaration rather than a number
+    re-typed here.
+    """
+    text = (BENCH / "models" / "bngl" / "curated" / f"{name}.bngl").read_text()
+    _, _, actions = text.partition("begin actions")
+    joined, buf = [], ""
+    for raw in actions.splitlines():
+        if raw.rstrip().endswith("\\"):
+            buf += raw.rstrip()[:-1]
+            continue
+        joined.append(buf + raw)
+        buf = ""
+    horizons = []
+    for line in joined:
+        stripped = line.strip()
+        if stripped.startswith("#") or "simulate(" not in stripped:
+            continue
+        packed = stripped.replace(" ", "")
+        if 'method=>"ssa"' not in packed or "poplevel" in packed:
+            continue  # ODE and partial-scaling actions are not this row's protocol
+        found = re.search(r"t_end\s*=>\s*([0-9.eE+-]+)", stripped)
+        if found:
+            horizons.append(float(found.group(1)))
+    assert len(horizons) <= 1, f"{name}: more than one active exact-SSA action"
+    return horizons[0] if horizons else None
+
+
+def test_record_horizon_is_what_the_record_declares():
+    # GH #425: B10 spent a revision running a 7/10 model at a horizon chosen for
+    # the 6/6 artifact it had replaced, and nothing in the corpus compared the
+    # two. Every BNGL row now states the record's own horizon, checked here
+    # against the record itself, so the pairing cannot go unexamined again.
+    for e in _corpus()["bngl"]:
+        assert "record_horizon" in e, f"{e['name']}: no record_horizon declared"
+        declared = e["record_horizon"]
+        actual = _record_ssa_horizon(e["name"])
+        if actual is None:
+            assert declared is None, (
+                f"{e['name']}: record declares no exact-SSA action, so record_horizon is null"
+            )
+        else:
+            assert declared is not None and float(declared) == actual, (
+                f"{e['name']}: record_horizon={declared} but the record declares {actual}"
+            )
+
+
+def test_a_horizon_that_differs_from_the_records_says_why():
+    # Running a horizon the record does not declare is allowed -- the manuscript
+    # chose several of them -- but it has to be written down, because that is the
+    # difference between a decision and an inheritance.
+    for e in _corpus()["bngl"]:
+        declared = e["record_horizon"]
+        if declared is not None and float(declared) == float(e["t_end"]):
+            continue
+        caveats = " ".join(e.get("caveats", []))
+        assert "horizon" in caveats.lower(), (
+            f"{e['name']}: runs t_end={e['t_end']} where the record declares "
+            f"{declared}, and no caveat explains it"
+        )
+
+
+def test_samoilov_runs_the_records_own_horizon():
+    # The #425 decision itself. 0.0018 was the @SIM annotation of the Antimony
+    # file the superseded 6/6 artifact was converted from -- a deterministic ODE
+    # encoding kept as a stiffness case -- and at that horizon the model has not
+    # left the burn-in from its published initial condition.
+    e = next(x for x in _corpus()["bngl"] if x["name"] == "samoilov_futile_cycle")
+    assert (e["t_end"], e["n_steps"]) == (10, 2000)
+    assert e["record_horizon"] == 10
