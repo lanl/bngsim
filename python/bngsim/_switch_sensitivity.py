@@ -2521,8 +2521,15 @@ def _switch_params_in_uncompensated_conditions(
     if not candidates:
         return set()
     unsafe: set[str] = set()
+    seen: set[str] = set()
     for body in function_bodies:
         for atom in _iter_condition_atoms(body):
+            # Same reason the detector's own loop does this: the verdict depends
+            # on the atom text and the scope, so one look answers for every rate
+            # law that spells it.
+            if atom in seen:
+                continue
+            seen.add(atom)
             if clock_crossing_compensated(atom, scope):
                 continue
             if state_switch_residual(scope.core, atom):
@@ -2993,10 +3000,20 @@ def compute_switch_time_sens(
     # ``found`` bucketed by clock and threshold value, so absorbing a crossing
     # does not walk every crossing found so far (see :func:`_absorb_crossing`).
     found_index: dict[tuple[int, str], list[int]] = {}
+    # One pass per DISTINCT atom text. Everything below reads the atom and the
+    # model-level scope and nothing else, so a second look at the same text
+    # re-derives the same crossing and `_absorb_crossing` folds it back into
+    # itself: the same answer for the same sympy work. A meal-timing model spells
+    # its six conditions in twenty rate laws, so that is 120 recognizer passes for
+    # 6 answers, and the recognizers are where a detection pass spends its time.
+    seen_atoms: set[str] = set()
 
     for body in function_bodies:
         for cond in _iter_if_conditions(body):
             for atom in _split_logical_atoms(cond):
+                if atom in seen_atoms:
+                    continue
+                seen_atoms.add(atom)
                 # The recognizer #68's codegen gate shares (see
                 # _clock_threshold_splits): the gate may only admit a condition
                 # this loop turns into a compensating jump.
