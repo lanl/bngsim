@@ -1949,17 +1949,24 @@ def _schedule_matches_residual(
         )
         return _evaluate_threshold(text, scope.param_idx, scope.values, scope.derived_exprs)
 
-    # Sample points as a fraction of the period past the offset. When the
-    # schedule crosses they straddle the edge; when it does not they spread over
-    # the period, which is where a constant sign has to hold.
+    # Clock values to read the residual at, as a fraction of the period past the
+    # offset. When the schedule crosses the first two straddle the edge; when it
+    # does not they spread over the period, which is where a constant sign has to
+    # hold. The third is the first one a period later, and the fourth is the edge
+    # itself.
     phi = duty / period
     fractions = (phi / 2.0, (1.0 + phi) / 2.0) if crosses else (0.25, 0.75)
-    probes = [at(offset + period * f) for f in fractions]
-    probes.append(at(offset + period * (fractions[0] + 1.0)))  # one period later
+    points = [offset + period * f for f in fractions]
+    points.append(offset + period * (fractions[0] + 1.0))
     if crosses:
-        probes.append(at(offset + duty))  # the edge itself
-    if any(v is None or not (abs(v) < float("inf")) for v in probes):
-        return False
+        points.append(offset + duty)
+
+    probes: list[float] = []
+    for point in points:
+        value = at(point)
+        if value is None or not (abs(value) < float("inf")):
+            return False
+        probes.append(value)
     first, second, repeat = probes[0], probes[1], probes[2]
     scale = max(abs(first), abs(second))
     if scale == 0.0:
@@ -1995,12 +2002,15 @@ def _periodic_schedule_terms(
     zero waiting to happen in the enumeration. So is a schedule the model's own
     residual does not actually follow — see :func:`_schedule_matches_residual`.
     """
-    parts = [
-        _threshold_crossing_terms(text, scope) for text in (sched.period, sched.offset, sched.duty)
-    ]
-    if any(part is None or part.value is None for part in parts):
-        return None
-    period, offset, duty = (float(part.value) for part in parts)  # type: ignore[union-attr]
+    values: list[float] = []
+    partials: list[dict[str, float]] = []
+    for text in (sched.period, sched.offset, sched.duty):
+        part = _threshold_crossing_terms(text, scope)
+        if part is None or part.value is None:
+            return None
+        values.append(float(part.value))
+        partials.append(part.partials)
+    period, offset, duty = values
     if period == 0.0 or not (abs(period) < float("inf")):
         return None
     # The condition turns over once per period exactly when the duty lands
@@ -2015,9 +2025,9 @@ def _periodic_schedule_terms(
         period=period,
         offset=offset,
         duty=duty,
-        d_period=parts[0].partials,  # type: ignore[union-attr]
-        d_offset=parts[1].partials,  # type: ignore[union-attr]
-        d_duty=parts[2].partials,  # type: ignore[union-attr]
+        d_period=partials[0],
+        d_offset=partials[1],
+        d_duty=partials[2],
         crosses=crosses,
     )
 
