@@ -190,7 +190,7 @@ def _split_logical_atoms(cond: str) -> list[str]:
 
     Keeping such a part whole is the conservative reading and the one the callers
     already handle: an atom nobody can split is an atom neither
-    :func:`_clock_threshold_split` nor :func:`state_switch_residual` claims, so
+    :func:`_clock_threshold_splits` nor :func:`state_switch_residual` claims, so
     :func:`uncompensated_condition_reason` declines it as a crossing nothing
     compensates.
     """
@@ -439,6 +439,57 @@ def _clock_symbol_sub(expr: str, sym: str, repl: str) -> str:
 _CLOCK_SOLVE_SYMBOL = "_bng_clock_t"
 
 
+def _clock_free(text: str, clock_symbols: AbstractSet[str]) -> bool:
+    """True when *text* reads none of the model's clock symbols back."""
+    return not any(_clock_symbol_sub(text, c, "\x00") != text for c in clock_symbols)
+
+
+def _clock_solve_residual(atom: str, clock_symbols: AbstractSet[str]) -> tuple[str, str] | None:
+    """``(clock_symbol, residual)`` for a relational atom that compares exactly
+    one clock against something reading no clock back — else ``None``.
+
+    The shared preamble of the three *solving* recognizers below
+    (:func:`_clock_affine_threshold`, :func:`_clock_monomial_threshold`,
+    :func:`_clock_quadratic_thresholds`), which differ only in what they do with
+    the residual once they hold it. It lives in one place because the rules it
+    encodes are exactly the ones a fourth solver would be most likely to get
+    subtly different, and a hand-copied preamble is how paired sites drift:
+
+    * exactly one clock symbol appears in the atom, matched longest-first so
+      ``time()`` is consumed before ``time`` can match its head;
+    * exactly one *side* reads it. ``t < 2*t`` is affine and does solve, to
+      ``t* = 0``, but :func:`_clock_threshold_split_bare` rejects it deliberately
+      and the issue #150 state path claims it; admitting it here would move a
+      crossing between two machineries for no gain;
+    * no *second* clock symbol survives into the residual, since two unit-rate
+      clocks carry different offsets and nothing here knows them.
+
+    The residual is ``(lhs)-(rhs)`` with the clock rewritten to
+    :data:`_CLOCK_SOLVE_SYMBOL`, ready to hand to sympy.
+    """
+    split = _relational_split(atom)
+    if split is None:
+        return None
+    lhs, rhs = split
+    # Longest first so `time()` is consumed before `time` can match its head.
+    present = [
+        c
+        for c in sorted(clock_symbols, key=len, reverse=True)
+        if _clock_symbol_sub(atom, c, "\x00") != atom
+    ]
+    if not present:
+        return None  # not a clock atom at all — the overwhelmingly common case
+    clock_sym = present[0]
+    on_left = not _clock_free(lhs, {clock_sym})
+    on_right = not _clock_free(rhs, {clock_sym})
+    if on_left == on_right:
+        return None
+    residual = _clock_symbol_sub(f"({lhs})-({rhs})", clock_sym, _CLOCK_SOLVE_SYMBOL)
+    if not _clock_free(residual, clock_symbols):
+        return None  # a second clock symbol survives: two clocks, unknown offsets
+    return clock_sym, residual
+
+
 def _clock_affine_threshold(atom: str, clock_symbols: AbstractSet[str]) -> tuple[str, str] | None:
     """``(clock_symbol, threshold_expr)`` for an atom that is *affine in a clock*
     but does not put that clock bare on one side — or ``None``.
@@ -489,29 +540,10 @@ def _clock_affine_threshold(atom: str, clock_symbols: AbstractSet[str]) -> tuple
     get nothing back for a free symbol that is not one, which is the same door
     every other unresolvable threshold leaves by.
     """
-    split = _relational_split(atom)
-    if split is None:
+    head = _clock_solve_residual(atom, clock_symbols)
+    if head is None:
         return None
-    lhs, rhs = split
-
-    # Longest first so `time()` is consumed before `time` can match its head.
-    present = [
-        c
-        for c in sorted(clock_symbols, key=len, reverse=True)
-        if _clock_symbol_sub(atom, c, "\x00") != atom
-    ]
-    if not present:
-        return None  # not a clock atom at all — the overwhelmingly common case
-    clock_sym = present[0]
-    # Exactly one side may read the clock, which is the half of the bare test's
-    # rule this issue does NOT relax: `t < 2*t` stays the state path's.
-    on_left = _clock_symbol_sub(lhs, clock_sym, "\x00") != lhs
-    on_right = _clock_symbol_sub(rhs, clock_sym, "\x00") != rhs
-    if on_left == on_right:
-        return None
-    residual = _clock_symbol_sub(f"({lhs})-({rhs})", clock_sym, _CLOCK_SOLVE_SYMBOL)
-    if any(_clock_symbol_sub(residual, c, "\x00") != residual for c in clock_symbols):
-        return None  # a second clock symbol survives: two clocks, unknown offsets
+    clock_sym, residual = head
 
     try:
         import sympy as sp
@@ -534,7 +566,7 @@ def _clock_affine_threshold(atom: str, clock_symbols: AbstractSet[str]) -> tuple
         logger.debug("clock affine solve declined %r: %s", atom, exc)
         return None
 
-    if any(_clock_symbol_sub(text, c, "\x00") != text for c in clock_symbols):
+    if not _clock_free(text, clock_symbols):
         return None
     return clock_sym, text
 
@@ -577,28 +609,10 @@ def _clock_monomial_threshold(
     Tried only after the bare and affine tests both decline, so no atom recognized
     today changes path, spelling, or threshold text.
     """
-    split = _relational_split(atom)
-    if split is None:
+    head = _clock_solve_residual(atom, clock_symbols)
+    if head is None:
         return None
-    lhs, rhs = split
-
-    # Same clock-placement preamble as _clock_affine_threshold: exactly one side
-    # reads exactly one clock, and no second clock survives into the residual.
-    present = [
-        c
-        for c in sorted(clock_symbols, key=len, reverse=True)
-        if _clock_symbol_sub(atom, c, "\x00") != atom
-    ]
-    if not present:
-        return None
-    clock_sym = present[0]
-    on_left = _clock_symbol_sub(lhs, clock_sym, "\x00") != lhs
-    on_right = _clock_symbol_sub(rhs, clock_sym, "\x00") != rhs
-    if on_left == on_right:
-        return None
-    residual = _clock_symbol_sub(f"({lhs})-({rhs})", clock_sym, _CLOCK_SOLVE_SYMBOL)
-    if any(_clock_symbol_sub(residual, c, "\x00") != residual for c in clock_symbols):
-        return None  # a second clock symbol survives: two clocks, unknown offsets
+    clock_sym, residual = head
 
     try:
         import sympy as sp
@@ -630,15 +644,112 @@ def _clock_monomial_threshold(
         logger.debug("clock monomial solve declined %r: %s", atom, exc)
         return None
 
-    if any(_clock_symbol_sub(text, c, "\x00") != text for c in clock_symbols):
+    if not _clock_free(text, clock_symbols):
         return None
     return clock_sym, text
 
 
-def _clock_threshold_split(atom: str, clock_symbols: AbstractSet[str]) -> tuple[str, str] | None:
-    """``(clock_symbol, threshold_expr)`` for a clock threshold, else ``None``.
+def _clock_quadratic_thresholds(
+    atom: str, clock_symbols: AbstractSet[str]
+) -> tuple[str, list[str]] | None:
+    """``(clock_symbol, [threshold_expr, threshold_expr])`` for a clock threshold
+    whose residual is a **quadratic** in the clock — else ``None``.
 
-    Three recognizers, asked in order, and the order is the blast radius: the
+    Issue #421. The three recognizers before this one each name at most ONE
+    crossing: :func:`_clock_threshold_split_bare` and
+    :func:`_clock_affine_threshold` because a residual of degree 1 has one root,
+    :func:`_clock_monomial_threshold` because ``c·clock^n`` is monotonic where the
+    clock lives and so crosses once there. A quadratic is the first shape with
+    genuinely more than one crossing, and it is the shape the corpus writes as a
+    window: ``(time()-5)*(time()-5) >= thresh`` is true early, false through the
+    middle, true again late, and ``time()*time()+time() >= thresh`` is the same
+    residual with a linear term. Issue #414 refused both.
+
+    Both crossings are still closed form — the quadratic formula — so each one is
+    an expression the issue #48 machinery already knows what to do with: evaluate
+    it for ``t*``, differentiate it for ``∂t*/∂p``. Differentiating the root
+    expression IS the implicit function theorem for this residual, so no numeric
+    root-find is needed and no new kind of record is either. What is new is only
+    that ONE atom now yields TWO thresholds, which is why every caller takes a
+    list (:func:`_clock_threshold_splits`).
+
+    The two roots of ``a·clock² + b·clock + c`` are returned in the formula's own
+    order, ``(−b ∓ sqrt(b²−4ac))/(2a)``; the detector sorts its records by time,
+    so nothing downstream depends on which comes first. A residual whose
+    discriminant is a **literal zero** is a tangency rather than a crossing and
+    yields the single repeated root, so two identical records are never emitted
+    for it.
+
+    Value-free, as the recognizers above it are: which of the two roots is real,
+    or in the run window, is a question about the parameter point and is answered
+    by the callers that hold one — :func:`compute_switch_time_sens` filters by the
+    window, and both it and :func:`clock_crossing_compensated` read a non-real
+    root as the crossing that does not happen (:func:`_threshold_is_non_real`).
+    Keeping it out of the recognizer is what lets the one recognizer keep serving
+    both the gate and the detector, which is the issue #68 invariant.
+
+    Degree 3 and up stay declined, deliberately, and not because sympy cannot
+    write their roots down. A cubic with three real roots has none expressible in
+    real radicals (the *casus irreducibilis*), so the closed forms sympy returns
+    route through complex intermediates and would be read here as crossings that
+    do not happen — silently dropping real jumps, which is the one failure mode
+    worse than refusing. From degree 5 there is no radical form at all and sympy
+    answers with ``CRootOf`` objects, which are not expressions any of this can
+    evaluate. Both want a numeric root-find over the run window rather than a text
+    transform, which is a different piece of machinery.
+
+    Tried only after the bare, affine and monomial tests all decline, so no atom
+    recognized today changes path, spelling, or threshold text.
+    """
+    head = _clock_solve_residual(atom, clock_symbols)
+    if head is None:
+        return None
+    clock_sym, residual = head
+
+    try:
+        import sympy as sp
+        from sympy.parsing.sympy_parser import parse_expr
+
+        from bngsim._codegen import _preprocess_derived_expr
+
+        t = sp.Symbol(_CLOCK_SOLVE_SYMBOL)
+        expr = sp.expand(parse_expr(_preprocess_derived_expr(residual), evaluate=True))
+        if t not in expr.free_symbols:
+            return None
+        # `Poly` raises on a non-polynomial power (t^0.5, t^k) and on anything
+        # the clock sits inside a call in, so those are declined rather than
+        # guessed at.
+        poly = sp.Poly(expr, t)
+        if poly.degree() != 2:
+            return None
+        a, b, c = poly.all_coeffs()
+        # A coefficient reading the clock back cannot happen for a Poly in t;
+        # a leading coefficient that is a literal zero would not be degree 2.
+        disc = sp.simplify(b * b - 4 * a * c)
+        if disc == 0:
+            roots = [sp.simplify(-b / (2 * a))]
+        else:
+            r = sp.sqrt(disc)
+            roots = [sp.simplify((-b - r) / (2 * a)), sp.simplify((-b + r) / (2 * a))]
+        if any(t in root.free_symbols for root in roots):  # pragma: no cover
+            return None
+        texts = [str(root).replace("**", "^") for root in roots]
+    except Exception as exc:  # noqa: BLE001 - an unsolvable atom is just declined
+        logger.debug("clock quadratic solve declined %r: %s", atom, exc)
+        return None
+
+    if not all(_clock_free(text, clock_symbols) for text in texts):
+        return None
+    return clock_sym, texts
+
+
+def _clock_threshold_splits(
+    atom: str, clock_symbols: AbstractSet[str]
+) -> tuple[str, list[str]] | None:
+    """``(clock_symbol, [threshold_expr, ...])`` for a clock threshold, one entry
+    per crossing it has, else ``None``.
+
+    Four recognizers, asked in order, and the order is the blast radius: the
     spelling test below answers first and unchanged, so every atom admitted
     before issue #355 is admitted by the same code with the same threshold text.
     Only an atom it *declines* reaches :func:`_clock_affine_threshold`, which
@@ -646,17 +757,26 @@ def _clock_threshold_split(atom: str, clock_symbols: AbstractSet[str]) -> tuple[
     sits (``(time()-Tdam)<0``, ``0>=Dam0-krepair*(time()-Tdam)``). Only an atom
     that too declines reaches :func:`_clock_monomial_threshold` (issue #418), which
     solves the next shape up — a single power ``c·clock^n``, ``time()*time()>=thresh``.
+    Only an atom all three decline reaches :func:`_clock_quadratic_thresholds`
+    (issue #421), the first recognizer that can answer with more than one crossing
+    (``(time()-5)*(time()-5)>=thresh``, a window with an edge at each end).
+
+    The list is why this is plural. The first three recognizers each answer with
+    exactly one threshold and are wrapped into a one-element list here, so a caller
+    reading the list back gets the same single crossing it always did.
 
     :func:`_clock_threshold_split_oriented` deliberately does NOT come through
     here — see its docstring.
     """
-    bare = _clock_threshold_split_bare(atom, clock_symbols)
-    if bare is not None:
-        return bare
-    affine = _clock_affine_threshold(atom, clock_symbols)
-    if affine is not None:
-        return affine
-    return _clock_monomial_threshold(atom, clock_symbols)
+    for recognizer in (
+        _clock_threshold_split_bare,
+        _clock_affine_threshold,
+        _clock_monomial_threshold,
+    ):
+        single = recognizer(atom, clock_symbols)
+        if single is not None:
+            return single[0], [single[1]]
+    return _clock_quadratic_thresholds(atom, clock_symbols)
 
 
 def _clock_threshold_split_bare(
@@ -717,7 +837,7 @@ _UPPER_OPS = frozenset({"<", "<="})
 def _clock_threshold_split_oriented(
     atom: str, clock_symbols: AbstractSet[str]
 ) -> tuple[str, str, str] | None:
-    """:func:`_clock_threshold_split` plus which side of the threshold is true.
+    """:func:`_clock_threshold_splits` plus which side of the threshold is true.
 
     Returns ``(clock_symbol, threshold_expr, "lower" | "upper")``, or ``None``
     when the atom is not a clock-versus-threshold comparison *or* its operator
@@ -727,13 +847,13 @@ def _clock_threshold_split_oriented(
     well-defined rising edge to differentiate.
 
     Used only by the issue #49 event-time detector. The issue #48 rate-law path
-    keeps calling :func:`_clock_threshold_split`, which is deliberately
+    keeps calling :func:`_clock_threshold_splits`, which is deliberately
     orientation-blind: an ``if()`` branch flips at the threshold whichever way
     the comparison points, and the core reads f⁻/f⁺ by evaluating the RHS on
     each side.
 
     Bound to :func:`_clock_threshold_split_bare`, NOT to the widened
-    :func:`_clock_threshold_split` (issue #355). Orientation here is read off
+    :func:`_clock_threshold_splits` (issue #355). Orientation here is read off
     *which side the clock sits on*, and that is only meaningful when the clock is
     bare: for ``0 >= Dam0 - krepair*(time()-Tdam)`` the clock is on the right, so
     this would answer "upper" where the solved threshold
@@ -747,7 +867,7 @@ def _clock_threshold_split_oriented(
     if split is None:
         return None
     op_split = _relational_split_op(atom)
-    if op_split is None:  # pragma: no cover - _clock_threshold_split implies one
+    if op_split is None:  # pragma: no cover - _clock_threshold_splits implies one
         return None
     _lhs, op, _rhs = op_split
     clock_sym, threshold_expr = split
@@ -1140,7 +1260,7 @@ def _crossing_time_of_condition(
     (``time < S1``) has no such answer and is declined, as is one whose residual
     is not linear in time.
 
-    Deliberately *not* routed through :func:`_clock_threshold_split`, which
+    Deliberately *not* routed through :func:`_clock_threshold_splits`, which
     requires a **bare** clock symbol on one side and would decline the shape
     this issue is about (``(time - PdBu_time) < 0``, the PEtab spelling of
     ``time < PdBu_time``). That function answers a different question — whether
@@ -1270,13 +1390,49 @@ def fixed_clock_threshold(atom: str, scope: SwitchConditionScope) -> bool:
     admits it because there is nothing to compensate, and
     :func:`model_moving_crossings` excludes it because there is nothing for the
     difference-quotient fallback to miss either. One definition, two readers, so
-    they cannot answer the same question differently (issue #232).
+    they cannot answer the same question differently (issue #232) — the first of
+    them now through :func:`_threshold_crossing_terms`, which asks it of one
+    crossing at a time because an atom can have two (issue #421) and they need
+    not be alike: ``(time()-5)*(time()-thresh) >= 0`` has one edge nothing moves
+    and one every fitted run does.
     """
-    split = _clock_threshold_split(atom, scope.clock_symbols)
+    split = _clock_threshold_splits(atom, scope.clock_symbols)
     if split is None:
         return False
-    thr_flat = _inline_derived_param_refs(split[1], scope.derived_exprs) or split[1]
+    # EVERY crossing the atom has must be fixed: a threshold with two of them
+    # (issue #421) is only free of a jump if no parameter moves either one.
+    return all(_fixed_threshold_expr(thr, scope) for thr in split[1])
+
+
+def _threshold_has_no_parameter(threshold_expr: str, scope: SwitchConditionScope) -> bool:
+    """True when no model parameter appears in *threshold_expr* once derived
+    references are inlined."""
+    thr_flat = _inline_derived_param_refs(threshold_expr, scope.derived_exprs) or threshold_expr
     return not any(scope.param_pats[n].search(thr_flat) for n in scope.param_names)
+
+
+def _fixed_threshold_expr(threshold_expr: str, scope: SwitchConditionScope) -> bool:
+    """True when this one crossing sits at the same time whatever is fitted: no
+    model parameter appears in the threshold, **and** the threshold evaluates to
+    a number.
+
+    The second half is not redundant with the first. ``time() < END_M`` where
+    ``END_M`` is a *species* names no parameter, so the text scan alone called it
+    fixed — and BIOMD0000000675 is what that costs: the gate admitted the model
+    on the ground that its three clock crossings do not move, the issue #48
+    detector then emitted no record for them because the threshold does not
+    evaluate to a constant, and the issue #150 state root stood off because the
+    clock path had claimed them. Three crossings that move with the trajectory,
+    compensated by nobody, with no warning. Requiring the threshold to evaluate
+    is what tells a literal (``t < 14``, genuinely fixed) from a name this cannot
+    read (which is live state, and issue #150's).
+    """
+    if not _threshold_has_no_parameter(threshold_expr, scope):
+        return False
+    return (
+        _evaluate_threshold(threshold_expr, scope.param_idx, scope.values, scope.derived_exprs)
+        is not None
+    )
 
 
 def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
@@ -1417,16 +1573,16 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
 
 
 def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
-    """Will :func:`compute_switch_time_sens` account for *atom*'s crossing?
+    """Will :func:`compute_switch_time_sens` account for every one of *atom*'s
+    crossings?
 
-    True on two grounds, both of which mean the issue #48 machinery leaves
-    nothing for anyone else to do:
-
-    * the atom is a clock threshold whose value and partials both resolve, so
-      the detector emits a record, the solver stops at ``t*`` and applies
-      ``(f⁻−f⁺)·∂t*/∂p`` there;
-    * the atom is a clock threshold against a *literal* (``t<14``), so ``∂t*/∂p``
-      is exactly 0 for every parameter and there is no jump to make.
+    True when the atom is a clock threshold and each crossing it has leaves the
+    issue #48 machinery nothing for anyone else to do — the three grounds
+    :func:`_threshold_crossing_terms` names, which are that the crossing resolves
+    (the detector emits a record, the solver stops at ``t*`` and applies
+    ``(f⁻−f⁺)·∂t*/∂p`` there), that nothing moves it (``t<14``, so ``∂t*/∂p`` is
+    exactly 0 and there is no jump to make), or that it does not happen at all
+    (a root off the real line).
 
     False for a clock threshold whose threshold does not reduce to a constant
     over the primaries — the detector would silently skip that crossing — and
@@ -1439,12 +1595,57 @@ def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     first, in both the gate and the run-time detector, so the two cannot split
     the difference.
     """
-    split = _clock_threshold_split(atom, scope.clock_symbols)
+    split = _clock_threshold_splits(atom, scope.clock_symbols)
     if split is None:
         return False
-    threshold_expr = split[1]
-    if fixed_clock_threshold(atom, scope):
-        return True  # a literal threshold: fixed, so nothing moves the crossing
+    # EVERY crossing the atom has has to be accounted for. A quadratic threshold
+    # (issue #421) has two, and compensating one of them while the other flips
+    # the branch unjumped is the same silent zero as compensating neither.
+    # Judged one crossing at a time rather than through
+    # :func:`fixed_clock_threshold`, because the two roots need not be alike:
+    # ``(time()-5)*(time()-thresh) >= 0`` has one crossing nothing moves and one
+    # every fitted run does, and the atom is compensated on both counts.
+    return all(_threshold_compensated(thr, scope) for thr in split[1])
+
+
+class CrossingTerms(NamedTuple):
+    """What one crossing time of a clock threshold contributes.
+
+    ``value`` is the clock value at the crossing, or ``None`` for a root that
+    does not occur at this parameter point (a non-real one). ``partials`` is
+    ``∂threshold/∂primary`` over the primaries with a non-zero partial, empty for
+    a crossing nothing moves.
+    """
+
+    partials: dict[str, float]
+    value: float | None
+
+
+def _threshold_crossing_terms(
+    threshold_expr: str, scope: SwitchConditionScope
+) -> CrossingTerms | None:
+    """``CrossingTerms`` for one crossing time, or ``None`` when nothing
+    compensates it.
+
+    The one rule both the gate (:func:`clock_crossing_compensated`) and the
+    detector (:func:`compute_switch_time_sens`) read, so they cannot answer
+    differently about a crossing — the issue #68 invariant, now that an atom can
+    have more than one (issue #421). Three ways to be compensated:
+
+    * nothing moves this crossing, so ``∂t*/∂p`` is exactly 0 and there is no jump
+      to make — :func:`fixed_clock_threshold` asked of one root instead of the
+      whole atom, because two roots of one atom need not be alike;
+    * the threshold reduces to the primaries and evaluates, so the detector emits
+      a record and the solver stops there;
+    * the threshold resolves to a number **off the real line**, which is a root
+      the run never reaches: there is no branch flip and nothing to compensate.
+      ``time()^2 >= thresh`` at ``thresh = -4`` crosses nowhere — the condition is
+      simply true throughout — and the quadratic formula puts a whole region of
+      parameter space in that case, since the discriminant of
+      ``(time()-5)^2 >= thresh`` goes negative as soon as ``thresh`` does. Reading
+      that as "unreadable threshold" refuses a model whose gradient is a correct
+      clean zero.
+    """
     # ``warn_on_failure=False`` for the same reason the detector passes it: an
     # empty result is the supported "not a switch time" answer, which the caller
     # reports (or hands to the state path) rather than warns about.
@@ -1457,7 +1658,22 @@ def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
         warn_on_failure=False,
     )
     value = _evaluate_threshold(threshold_expr, scope.param_idx, scope.values, scope.derived_exprs)
-    return bool(partials) and value is not None
+    if value is None:
+        if _threshold_is_non_real(
+            threshold_expr, scope.param_idx, scope.values, scope.derived_exprs
+        ):
+            return CrossingTerms({}, None)  # a root that does not occur
+        return None
+    # ``value`` is already known to be a number here, so the text scan is the
+    # whole of :func:`_fixed_threshold_expr` that is left to check.
+    if partials or _threshold_has_no_parameter(threshold_expr, scope):
+        return CrossingTerms({n: float(v) for n, v in partials.items() if v != 0.0}, value)
+    return None
+
+
+def _threshold_compensated(threshold_expr: str, scope: SwitchConditionScope) -> bool:
+    """Whether this one crossing time needs no compensation or gets it."""
+    return _threshold_crossing_terms(threshold_expr, scope) is not None
 
 
 def state_switch_conditions(core, ctx=None) -> list[str]:
@@ -1620,10 +1836,12 @@ def uncompensated_condition_reason(
 
     So an atom is admissible on exactly three grounds:
 
-    1. :func:`_clock_threshold_split` recognizes it *and* the threshold reduces
-       to primaries and evaluates to a constant — the two conditions under which
-       the detector actually emits the compensating record. A threshold it would
-       silently skip is no better than an uncompensated state threshold here.
+    1. :func:`_clock_threshold_splits` recognizes it *and* every crossing it
+       names is one :func:`_threshold_crossing_terms` accounts for — the exact
+       conditions under which the detector emits the compensating record, or has
+       nothing to compensate. A crossing it would silently skip is no better than
+       an uncompensated state threshold here, and since issue #421 an atom can
+       have two, so a *partly* compensated one is refused with the rest.
     2. :func:`state_switch_residual` splits it into a residual over live state,
        which is what :func:`state_switch_conditions` hands the solver to root on
        and jump at. Since issue #381 an *equality* splits too: ``X == 1`` is
@@ -1703,16 +1921,21 @@ def uncompensated_condition_reason(
             # for the whole run, so there is no crossing at all to compensate.
             if condition_cannot_cross(atom_flat, scope):
                 continue
-            split = _clock_threshold_split(atom, scope.clock_symbols)
+            split = _clock_threshold_splits(atom, scope.clock_symbols)
             if split is None:
                 return _not_a_clock_threshold(atom, atom_flat, scope)
             # A clock threshold that neither reduces to a constant over the
             # primaries (so the issue #48 detector would silently skip its
             # crossing) nor reads live state (so issue #150 cannot root on it).
             # Its ∂t*/∂p reaches nobody, and the Piecewise derivative's zero
-            # would be the whole gradient.
+            # would be the whole gradient. Named one crossing time at a time,
+            # since an atom may have two (issue #421) and only one of them be
+            # the unreadable one.
+            unreadable = [t for t in split[1] if not _threshold_compensated(t, scope)]
             return UncompensatedCrossingReason(
-                f"the clock threshold {split[1]!r} in the condition {atom!r} does not reduce "
+                "the clock crossing "
+                + " and ".join(repr(t) for t in unreadable)
+                + f" in the condition {atom!r} does not reduce "
                 "to a constant expression over the model's primary parameters and does not "
                 "read model state either, so neither the issue #48 detector nor the issue "
                 "#150 crossing root can compensate it and the Piecewise derivative's zero "
@@ -2103,8 +2326,6 @@ def compute_switch_time_sens(
     clocks = scope.clocks
     clock_symbols = set(scope.clock_symbols)
     param_idx = scope.param_idx
-    values = list(scope.values)
-    primary_names = set(scope.primary_names)
     derived_exprs = scope.derived_exprs
     # A requested parameter that is itself derived has no independent axis: its
     # partials are attributed to the primaries it is built from, exactly as the
@@ -2132,79 +2353,82 @@ def compute_switch_time_sens(
         for cond in _iter_if_conditions(body):
             for atom in _split_logical_atoms(cond):
                 # The recognizer #68's codegen gate shares (see
-                # _clock_threshold_split): the gate may only admit a condition
+                # _clock_threshold_splits): the gate may only admit a condition
                 # this loop turns into a compensating jump.
                 #
                 # :func:`clock_crossing_compensated` is this loop's acceptance
                 # test stated as a predicate, for the gate and for the issue
                 # #150 detector — which must skip exactly what this loop claims,
                 # or a counter-clock threshold (a *species*, hence live state)
-                # would be jumped twice. The two are held together
-                # behaviourally, by TestTheGateAndTheDetectorsAgree, rather than
-                # structurally; a change here needs a change there.
-                split = _clock_threshold_split(atom, clock_symbols)
+                # would be jumped twice. Since issue #421 the two share the
+                # per-crossing rule below (:func:`_threshold_crossing_terms`) as
+                # well as the recognizer, and TestTheGateAndTheDetectorsAgree
+                # still checks the behaviour rather than the sharing.
+                split = _clock_threshold_splits(atom, clock_symbols)
                 if split is None:
                     continue
-                clock_sym, threshold_expr = split
+                clock_sym, threshold_exprs = split
 
-                # ``warn_on_failure=False``: this is a *scan* over candidate
-                # thresholds, so an expression that does not reduce to primaries
-                # is the supported "not a switch time" answer (see the comment
-                # above), not a chain rule this feature lost. The warning that
-                # issue #56 added is for callers where empty means a dropped
-                # gradient; here it would fire on every state-dependent
-                # condition in the model.
-                partials = _derived_expr_partials_numeric(
-                    threshold_expr,
-                    primary_names,
-                    param_idx,
-                    values,
-                    derived_exprs,
-                    warn_on_failure=False,
-                )
-                dtstar = [0.0] * len(names)
-                for prim_name, coeff in partials.items():
-                    col = col_of.get(prim_name)
-                    if col is not None and coeff != 0.0:
-                        dtstar[col] += float(coeff)
+                # One atom, one crossing — until issue #421, where a quadratic
+                # clock threshold answers with the two edges of a window.
+                #
+                # Resolved through the same rule the gate reads, so the two cannot
+                # disagree about a crossing (issue #68). A `None` here is a
+                # crossing nothing compensates, and it takes the WHOLE atom's
+                # jumps with it: compensating one edge of a window and leaving the
+                # other to flip the branch unjumped is the silent-zero half of the
+                # answer, which is worse than none of it. The crossings still go
+                # into `found` — a condition flipping at an instant contaminates
+                # the f⁻−f⁺ read there whether or not anyone can jump it (issue
+                # #375) — they just carry no ∂t*/∂p.
+                terms = [_threshold_crossing_terms(e, scope) for e in threshold_exprs]
+                compensated = all(t is not None for t in terms)
 
-                threshold_value = _evaluate_threshold(
-                    threshold_expr, param_idx, values, derived_exprs
-                )
-                if threshold_value is None:
-                    logger.debug(
-                        "switch-time: threshold %r is not a constant expression; skipping",
-                        threshold_expr,
+                for threshold_expr, term in zip(threshold_exprs, terms, strict=True):
+                    if term is None or term.value is None:
+                        # Unreadable, or a root off the real line — a crossing
+                        # that does not happen at this parameter point. Neither
+                        # records anything.
+                        logger.debug(
+                            "switch-time: threshold %r has no real constant value; skipping",
+                            threshold_expr,
+                        )
+                        continue
+                    partials = term.partials if compensated else {}
+                    threshold_value = term.value
+                    dtstar = [0.0] * len(names)
+                    for prim_name, coeff in partials.items():
+                        col = col_of.get(prim_name)
+                        if col is not None and coeff != 0.0:
+                            dtstar[col] += float(coeff)
+
+                    if clock_sym in _TIME_SYMBOLS:
+                        clock_idx0 = -1
+                        t_star = threshold_value
+                    else:
+                        clock_idx0 = clocks[clock_sym]
+                        # dc/dt = 1, so c(t) = c(t_start) + (t − t_start) and the
+                        # crossing is offset by the clock's current value. Lin2021
+                        # seeds counter() at 1, shifting every threshold by a day.
+                        clock_now = core.get_concentration(core.species_names[clock_idx0])
+                        t_star = t_start + (threshold_value - clock_now)
+
+                    # Half-open window, matching the core's own filter: a crossing
+                    # on t_end still jumps into the final recorded column; one on
+                    # t_start would precede the run's initial recording.
+                    if not (t_start < t_star <= t_end):
+                        continue
+
+                    _absorb_crossing(
+                        found,
+                        _Crossing(
+                            t_star=t_star,
+                            clock_idx0=clock_idx0,
+                            threshold=threshold_value,
+                            dtstar=dtstar,
+                            partials=dict(partials),
+                        ),
                     )
-                    continue
-
-                if clock_sym in _TIME_SYMBOLS:
-                    clock_idx0 = -1
-                    t_star = threshold_value
-                else:
-                    clock_idx0 = clocks[clock_sym]
-                    # dc/dt = 1, so c(t) = c(t_start) + (t − t_start) and the
-                    # crossing is offset by the clock's current value. Lin2021
-                    # seeds counter() at 1, which shifts every threshold by a day.
-                    clock_now = core.get_concentration(core.species_names[clock_idx0])
-                    t_star = t_start + (threshold_value - clock_now)
-
-                # Half-open window, matching the core's own filter: a crossing on
-                # t_end still jumps into the final recorded column; one on
-                # t_start would precede the run's initial recording.
-                if not (t_start < t_star <= t_end):
-                    continue
-
-                _absorb_crossing(
-                    found,
-                    _Crossing(
-                        t_star=t_star,
-                        clock_idx0=clock_idx0,
-                        threshold=threshold_value,
-                        dtstar=dtstar,
-                        partials={n: float(v) for n, v in partials.items() if v != 0.0},
-                    ),
-                )
 
     records = _emit_switch_records(found, param_idx)
     if not records:
@@ -2407,7 +2631,7 @@ def compute_event_time_sens(
     (GH #212); this function supplies the missing ``∂t*/∂p``.
 
     A trigger qualifies when it is a conjunction of **clock thresholds** — the
-    same recognizer :func:`_clock_threshold_split` applies to ``if()``
+    same recognizer :func:`_clock_threshold_splits` applies to ``if()``
     conditions, so the event path and the rate-law path cannot drift about what
     a locatable crossing is. The rising edge of a conjunction of half-lines is
     the largest of its lower bounds, and it is that atom's threshold whose
@@ -2621,6 +2845,73 @@ def _analyze_event_trigger(
     return t_star, winners[0]
 
 
+# The only function names the clock solvers above put into a threshold
+# expression. Anything else in one means it was not written by them.
+_SOLVED_THRESHOLD_FUNCS = frozenset({"sqrt", "Abs"})
+
+
+def _threshold_is_non_real(
+    expr: str,
+    param_idx: dict,
+    values: Sequence[float],
+    derived_exprs: dict[str, str],
+) -> bool:
+    """True when *expr* resolves at this parameter point but to a number that is
+    not on the real line.
+
+    :func:`_evaluate_threshold` answers ``None`` to two very different questions
+    — "I could not read this threshold" and "I read it, and this crossing does
+    not happen" — and the switch-time gate has to separate them (issue #421). A
+    clock crossing solved in closed form goes non-real exactly where the crossing
+    stops existing: ``time()^2 >= thresh`` at ``thresh = -4`` is true for the
+    whole run, and the quadratic formula does the same thing over a whole region
+    of parameter space, since the discriminant of ``(time()-5)^2 >= thresh`` turns
+    negative as soon as ``thresh`` does. There the branch never flips, ``∂f/∂p``
+    is a correct clean zero, and refusing the model would be refusing a gradient
+    bngsim can compute.
+
+    Deliberately narrow. A threshold reading a species, one whose parameters do
+    not resolve, and a degenerate ``1/0`` all stay ``False`` here and so stay
+    refused, because none of them is the statement that a crossing is absent.
+    Shares one preparation and one parse with :func:`_evaluate_threshold`, which
+    is the whole point of routing it through the same
+    :func:`bngsim._codegen._derived_expr_value_numeric`: two paths that disagree
+    about which expressions they can read is issue #105.
+    """
+    from bngsim._codegen import _derived_expr_value_numeric
+
+    s = expr.strip()
+    if s in param_idx:
+        return False
+    try:
+        float(s)
+        return False
+    except ValueError:
+        pass
+    # Every name has to be a model parameter or one of the handful of functions
+    # the clock solvers themselves emit. ``I`` is why this guard exists: sympy
+    # reads a bare ``I`` as the imaginary unit, and an SIR model spells its
+    # infected observable exactly that, so ``t >= sigma*I`` would otherwise
+    # "resolve" to a non-real number and be read here as a crossing that does not
+    # happen. It is a threshold over live state, it belongs to issue #150, and it
+    # has to keep reaching it. Anything else unrecognised answers ``False`` too,
+    # which is the conservative direction: the crossing stays refused.
+    if any(
+        m.group(0) not in param_idx and m.group(0) not in _SOLVED_THRESHOLD_FUNCS
+        for m in _IDENTIFIER.finditer(s)
+    ):
+        return False
+    value = _derived_expr_value_numeric(
+        s,
+        set(param_idx) - set(derived_exprs),
+        derived_exprs.keys(),
+        param_idx,
+        values,
+        allow_complex=True,
+    )
+    return isinstance(value, complex) and value.imag != 0.0
+
+
 def _evaluate_threshold(
     expr: str,
     param_idx: dict,
@@ -2665,10 +2956,13 @@ def _evaluate_threshold(
     # Anything in `param_idx` that is not one of the expression-valued names is
     # a primary here, exactly as the partials twin is called (`thresholds.exprs`
     # also carries the rule-bound parameters, which are not constants either).
-    return _derived_expr_value_numeric(
+    value = _derived_expr_value_numeric(
         s,
         set(param_idx) - set(derived_exprs),
         derived_exprs.keys(),
         param_idx,
         values,
     )
+    # `allow_complex` is off, so a complex is unreachable; the narrowing is for
+    # the type checker, since the twin above turns that flag on.
+    return None if isinstance(value, complex) else value

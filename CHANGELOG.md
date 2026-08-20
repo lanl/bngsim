@@ -16,6 +16,43 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **A rate-law switch condition quadratic in the clock is now compensated at
+  both of its crossings, so its forward-sensitivity run is no longer refused
+  (issue #421).** `if((time()-5)*(time()-5) >= thresh, ...)` is how a model
+  writes a *window*: true early, false through the middle, true again late. Every
+  recogniser before this one could name at most one crossing, so issue #414
+  refused the shape outright. The quadratic formula writes both crossings in
+  closed form, and differentiating a root expression is the implicit function
+  theorem for that residual, so each crossing is an ordinary issue #48 record —
+  evaluate it for `t*`, differentiate it for `∂t*/∂p`. `(time()-5)^2 >= thresh`
+  at `thresh = 9` now stops at t=2 and t=8 with `∂t*/∂thresh` of ∓1/6, and the
+  sensitivity column matches a central finite difference of two trajectories to
+  5e-6 away from the two nodes.
+
+  The recogniser therefore answers with a *list* of thresholds, and an atom is
+  compensated only when every crossing in that list is. Compensating one edge of
+  a window while the other flips the branch unjumped would be a silently wrong
+  gradient, so the gate and the detector read one shared per-crossing rule and
+  refuse the whole atom together.
+
+  A clock threshold cubic or higher stays refused, and not because sympy declines
+  to write its roots down: a cubic with three real roots has none expressible in
+  real radicals, so the closed forms route through complex intermediates that
+  would be read as crossings that never happen — dropping real jumps silently.
+  Those want a numeric root find over the run window, which is different
+  machinery.
+
+- **A clock crossing whose time comes out non-real is read as a crossing that
+  does not happen, instead of an unreadable threshold (issue #421).**
+  `time()*time() >= thresh` at a negative `thresh` is true for the entire run:
+  the branch never flips and `∂f/∂thresh` is a correct clean zero. bngsim refused
+  the run, because the solved crossing time `sqrt(thresh)` did not evaluate to a
+  real number and that was indistinguishable from a threshold it could not read
+  at all. It now tells the two apart and runs. This mattered little while only
+  single powers were solved; with the quadratic formula the discriminant of
+  `(time()-5)^2 >= thresh` goes negative as soon as `thresh` does, so a whole
+  region of parameter space is in this case and a fit could walk into it.
+
 - **`capabilities()` answers behavioural questions, and says which build it is
   (issue #431).** The report described compiled backends and build options,
   which is the right answer to "was NFsim linked in?" and the wrong answer to
