@@ -768,6 +768,11 @@ _PERIOD_INDEX_SYMBOL = "_bng_period_k"
 # rather than going through `_exprtk_to_sympy`.
 _CEIL_CALL = re.compile(r"(?<![A-Za-z0-9_])ceil\s*\(")
 
+# How many nested `Piecewise` collapses one condition may need (issue #465).
+# libSBML's `rem()` expansion is one. The bound is a runaway guard on a `subs`
+# loop, not a modelling limit.
+_MAX_PIECEWISE_COLLAPSES = 8
+
 
 class PeriodicSchedule(NamedTuple):
     """A clock condition that switches on a repeating schedule (issue #436).
@@ -792,8 +797,176 @@ class PeriodicSchedule(NamedTuple):
     duty: str
 
 
+def _collapse_clock_piecewise(expr, t, scope: SwitchConditionScope | None):
+    """*expr* with every ``Piecewise`` over the clock replaced by the one branch
+    the run actually takes, or ``None`` when that branch is not decidable.
+
+    Issue #465. libSBML does not emit ``rem(a, b)``; it expands it into a sign
+    test over two remainders::
+
+        if(sign(a) != sign(b), a - b*ceil(a/b), a - b*floor(a/b))
+
+    so a model that writes ``rem(time(), P) >= d`` — the same repeating schedule
+    issue #436 compensated — arrives with the schedule behind an ``if()`` inside
+    the condition itself, and :func:`_clock_periodic_schedule` declines it for
+    having two step functions rather than one.
+
+    The two branches are genuinely different functions: for a positive ``P`` the
+    ``floor`` remainder runs over ``[0, P)`` and the ``ceil`` one over
+    ``(-P, 0]``, so they differ by ``P`` everywhere except at the multiples of it.
+    Which one the run takes is therefore not a question about the text, and it
+    cannot be left to :func:`_schedule_matches_residual` to settle afterwards:
+    the ``ceil`` branch of a positive-period schedule reads as a *negative*
+    period, whose probe points land at negative clock values, where the guard
+    really does select that branch and the residual really does hold one sign for
+    the whole period. It would be accepted as a schedule that never turns over —
+    the quiet failure that function exists to prevent — and the model would be
+    admitted with every one of its real crossings uncompensated.
+
+    So the guard is resolved here instead, against the run's own clock domain and
+    the model's parameter point:
+
+    * ``sign(clock)`` is 1, because a simulation clock is positive. The one point
+      where it is not is ``t = 0``, and there both remainders are 0, so nothing
+      downstream can see which branch was taken;
+    * what is left must be clock-free. A guard that still reads the clock changes
+      which branch is live *partway through the run*, so no single period, offset
+      and duty describes the window — MODEL1006230027's shape, and out of scope
+      for issue #465;
+    * and it must evaluate at the parameter point, through
+      :func:`_evaluate_threshold`, which binds parameter names the way the model
+      does (GH #108) rather than the way sympy's parser would.
+
+    Fail-closed at every step. Without a *scope* there is no parameter point to
+    resolve a guard against, so a clock-bearing ``Piecewise`` is declined rather
+    than guessed at, which keeps a caller that has no scope from disagreeing with
+    one that has.
+    """
+    import sympy as sp
+
+    for _ in range(_MAX_PIECEWISE_COLLAPSES):
+        pieces = [p for p in expr.atoms(sp.Piecewise) if t in p.free_symbols]
+        if not pieces:
+            return expr
+        # Innermost first, so a guard that is itself a Piecewise is resolved
+        # before the branch it selects is read.
+        piece = min(pieces, key=lambda p: len(p.atoms(sp.Piecewise)))
+        chosen = None
+        for value, cond in piece.args:
+            if cond is sp.true:
+                chosen = value
+                break
+            decided = _guard_holds(cond, t, scope)
+            if decided is None:
+                return None
+            if decided:
+                chosen = value
+                break
+        if chosen is None:
+            return None  # every branch guard is false; the model has no value here
+        expr = expr.subs(piece, chosen)
+    return None  # pragma: no cover - more nesting than any corpus model writes
+
+
+def _guard_holds(cond, t, scope: SwitchConditionScope | None) -> bool | None:
+    """Whether *cond* holds for the whole of the run's clock domain, or ``None``
+    when it is not decidable there. See :func:`_collapse_clock_piecewise`."""
+    import sympy as sp
+
+    # A simulation clock is positive, so `sign(clock)` is 1. Applied before the
+    # clock-free test below, which is what lets the sign test resolve at all.
+    cond = cond.replace(sp.sign(t), sp.Integer(1))
+    if t in cond.free_symbols:
+        return None  # the live branch changes partway through the run
+    if cond is sp.true:
+        return True
+    if cond is sp.false:
+        return False
+    if scope is None:
+        return None  # no parameter point to resolve it against
+    bindings = {}
+    for sym in cond.free_symbols:
+        value = _evaluate_threshold(str(sym), scope.param_idx, scope.values, scope.derived_exprs)
+        if value is None or not (abs(value) < float("inf")):
+            return None
+        bindings[sym] = sp.Float(value)
+    resolved = cond.subs(bindings)
+    if resolved is sp.true:
+        return True
+    if resolved is sp.false:
+        return False
+    return None  # a guard that did not reduce to a truth value
+
+
+def _clock_guard_cannot_cross(atom: str, scope: SwitchConditionScope) -> bool:
+    """True when *atom* reads the clock only through ``sign()``, and so holds one
+    truth value for the whole run (issue #465).
+
+    The companion to :func:`_collapse_clock_piecewise`. libSBML's expansion of
+    ``rem(a, b)`` puts an ``if()`` inside the condition, and
+    :func:`_iter_condition_atoms` descends into an ``if()``'s condition as
+    readily as into its branches — rightly, since a nested ``if()`` in a *branch*
+    is a real discontinuity someone has to compensate. So the guard
+    ``sign(time()) != sign(P)`` arrives as an atom in its own right, is neither a
+    clock threshold nor a comparison over state, and refuses the model even
+    though the schedule wrapped around it is fully compensated.
+
+    It is not a crossing. ``sign(clock)`` is 1 for the whole of a run, so the
+    guard picks its branch before the first step and holds it to the last, which
+    is what :func:`condition_cannot_cross` says about a comparison over
+    run-constants — the same ground, reached by reading a value rather than a
+    name. It cannot go in that function: that one is documented as structural,
+    never numeric, and :func:`switch_gate_cache_digest` relies on it, so this is
+    asked from :func:`clock_crossing_compensated` instead, which is
+    value-dependent already and is what the digest carries.
+
+    Deliberately narrow. Only an atom that *reads the clock* and stops reading it
+    once ``sign(clock)`` is resolved is claimed here, so ``time() >= sigma`` —
+    whose clock survives the substitution — is left to the recognizers exactly as
+    before, and an atom with no clock in it at all is left to
+    :func:`condition_cannot_cross`. Widening it to those would admit a derived
+    parameter that function deliberately refuses, which is a different question
+    from this one.
+
+    The one instant the substitution is wrong about is ``t = 0``, where
+    ``sign(0)`` is 0. For the expansion this exists to read, both branches are
+    equal there — a remainder is 0 at 0 either way — so nothing downstream can
+    see it. A guard whose branches genuinely differ at exactly the run's first
+    instant would be read as not crossing when it does; no corpus model writes
+    one, and the schedule the guard sits inside is checked against the model's
+    own residual afterwards regardless
+    (:func:`_schedule_matches_residual`).
+    """
+    if _clock_free(atom, scope.clock_symbols):
+        return False  # not a clock atom; condition_cannot_cross judges it
+    present = [
+        c
+        for c in sorted(scope.clock_symbols, key=len, reverse=True)
+        if _clock_symbol_sub(atom, c, "\x00") != atom
+    ]
+    if not present:
+        return False
+    try:
+        import sympy as sp
+        from sympy.parsing.sympy_parser import parse_expr
+
+        from bngsim._codegen import _preprocess_derived_expr
+
+        t = sp.Symbol(_CLOCK_SOLVE_SYMBOL)
+        text = _clock_symbol_sub(atom, present[0], _CLOCK_SOLVE_SYMBOL)
+        cond = parse_expr(_preprocess_derived_expr(_CEIL_CALL.sub("ceiling(", text)))
+        if not isinstance(cond, sp.logic.boolalg.Boolean) or t not in cond.free_symbols:
+            return False
+        return _guard_holds(cond, t, scope) is not None
+    except Exception as exc:  # noqa: BLE001 - an unreadable atom is simply not claimed
+        logger.debug("clock guard cross test declined %r: %s", atom, exc)
+        return False
+
+
 def _clock_periodic_schedule(
-    atom: str, clock_symbols: AbstractSet[str]
+    atom: str,
+    clock_symbols: AbstractSet[str],
+    scope: SwitchConditionScope | None = None,
 ) -> PeriodicSchedule | None:
     """The repeating schedule *atom* switches on, or ``None`` when it is not one.
 
@@ -815,6 +988,10 @@ def _clock_periodic_schedule(
     schedule, and one corpus model writes the whole remainder in seconds and
     divides back to hours afterwards. So:
 
+    0. any ``if()`` *inside* the condition is collapsed to the branch the run
+       takes (:func:`_collapse_clock_piecewise`), which is how libSBML's
+       expansion of ``rem(time(), P)`` is read as the schedule it is (issue
+       #465);
     1. one ``floor`` (or ``ceil``, rewritten to a floor by the exact identity
        ``ceil(x) = -floor(-x)``) reads the clock, and nothing else non-linear
        does;
@@ -844,6 +1021,12 @@ def _clock_periodic_schedule(
 
     Tried only after all four polynomial recognizers decline, so no atom
     recognized today changes path, spelling or threshold text.
+
+    *scope* is read only to resolve a guard in step 0, and only a condition
+    carrying an ``if()`` needs it — every atom recognized without one is
+    recognized identically with it. Passing it is what keeps the issue #68 gate
+    and the run-time detector answering the same way about such a condition, so
+    all five callers do.
     """
     head = _clock_solve_residual(atom, clock_symbols)
     if head is None:
@@ -858,6 +1041,14 @@ def _clock_periodic_schedule(
 
         t = sp.Symbol(_CLOCK_SOLVE_SYMBOL)
         expr = parse_expr(_preprocess_derived_expr(_CEIL_CALL.sub("ceiling(", residual)))
+        # An `if()` inside the condition — libSBML's expansion of `rem()` is the
+        # one the corpus writes — reaches here as a `Piecewise`. Collapsing it to
+        # the branch the run takes is what lets the rest of this read the
+        # schedule behind it, and it has to happen before the step functions are
+        # counted, since the two branches contribute one each (issue #465).
+        expr = _collapse_clock_piecewise(expr, t, scope)
+        if expr is None:
+            return None
         # `ceil(x) = -floor(-x)` holds for every real x, integers included, so
         # this is a rewrite and not an approximation. Doing it here means the
         # rest of the recognizer has one step function to reason about.
@@ -1741,7 +1932,7 @@ def _resolve_schedule_stop_times(
     atom: str, scope: SwitchConditionScope, t_start: float, t_end: float
 ) -> list[float] | None:
     """:func:`_schedule_stop_times` without the memo, on an already-unwrapped atom."""
-    sched = _clock_periodic_schedule(atom, scope.clock_symbols)
+    sched = _clock_periodic_schedule(atom, scope.clock_symbols, scope)
     if sched is None or sched.clock not in _TIME_SYMBOLS:
         return None
     values: list[float] = []
@@ -1977,7 +2168,7 @@ def fixed_clock_threshold(atom: str, scope: SwitchConditionScope) -> bool:
         # literal has an edge at a fixed time in every period, so no parameter
         # moves any of them either. ``rem(time(), 24) >= 7`` — the light and dark
         # cycle six corpus models write — is the case.
-        sched = _clock_periodic_schedule(atom, scope.clock_symbols)
+        sched = _clock_periodic_schedule(atom, scope.clock_symbols, scope)
         if sched is None:
             return False
         return all(
@@ -2186,6 +2377,12 @@ def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     first, in both the gate and the run-time detector, so the two cannot split
     the difference.
     """
+    if _clock_guard_cannot_cross(atom, scope):
+        # Not a crossing at all: the atom reads the clock only through `sign()`,
+        # so it holds one truth value for the whole run (issue #465). Asked
+        # before the recognizers because none of them would claim it and the
+        # gate would refuse the model over it.
+        return True
     split = _clock_threshold_splits(atom, scope.clock_symbols)
     if split is None:
         # Asked last, so an atom any polynomial recognizer claims keeps the path
@@ -2449,7 +2646,7 @@ def _periodic_schedule_terms(
 
 def _schedule_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     """Whether *atom* is a repeating schedule whose crossings are compensated."""
-    sched = _clock_periodic_schedule(atom, scope.clock_symbols)
+    sched = _clock_periodic_schedule(atom, scope.clock_symbols, scope)
     return sched is not None and _periodic_schedule_terms(atom, sched, scope) is not None
 
 
@@ -2808,7 +3005,7 @@ def uncompensated_condition_reason(
                 continue
             split = _clock_threshold_splits(atom, scope.clock_symbols)
             if split is None:
-                sched = _clock_periodic_schedule(atom, scope.clock_symbols)
+                sched = _clock_periodic_schedule(atom, scope.clock_symbols, scope)
                 if sched is None:
                     return _not_a_clock_threshold(atom, atom_flat, scope)
                 # A repeating schedule bngsim reads as a schedule, but whose
@@ -3221,7 +3418,7 @@ def _absorb_schedule_crossings(
         parameter moves emits nothing either way, so an over-budget one is simply
         not enumerated.
     """
-    sched = _clock_periodic_schedule(atom, scope.clock_symbols)
+    sched = _clock_periodic_schedule(atom, scope.clock_symbols, scope)
     if sched is None:
         return
     terms = _periodic_schedule_terms(atom, sched, scope)
