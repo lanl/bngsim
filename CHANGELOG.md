@@ -135,6 +135,14 @@ in `CMakeLists.txt`) is derived from it.
   model has the stops without the roots, so the exclusion is now made on the stops
   themselves.
 
+  A BNGL model more often measures time with a counter species than with
+  `time()`, and a rate law that thresholds the counter has the same defect. That
+  is filed as issue #443 rather than fixed here: admitting it moves the stepping
+  of 37 corpus models, and the measurement it needs includes a BioNetGen parity
+  re-run, which matters more there because BioNetGen's own integrator has the
+  same blindness and a reference trajectory may itself have stepped over the
+  switch.
+
   Corpus census, two arms over the same 1908 models (585 `.net` and 1323 SBML):
   **no model's trajectory moved, no model gained or lost an error, and no model
   gained a stop.** This repository's `.net` corpus contains no model that switches
