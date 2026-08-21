@@ -16,6 +16,54 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **`mratio()` answers for 40% more of the arguments it used to refuse (issue
+  #456).** Issue #453 made `mratio(a, b, z)` refuse the arguments its continued
+  fraction cannot be trusted with, which removed a class of silently wrong
+  answers. The cost was that it also refused arguments the fraction would have
+  got right, since in the uncertain region there is no way to tell which ones
+  those are. This narrows that region with a second method that can vouch for
+  its own answer.
+
+  For a large `|z|` the ratio has an asymptotic expansion in which the Gamma
+  factors cancel between numerator and denominator. That cancellation is the
+  point: the individual Kummer functions overflow a double long before their
+  ratio does, which is the whole reason `mratio` exists.
+
+      z to -infinity:  R(a,b,z) = (b/(-z)) * 2F0(a+1, a-b+1; ; -1/z)
+                                           / 2F0(a,   a-b+1; ; -1/z)
+      z to +infinity:  R(a,b,z) = (b/a)    * 2F0(b-a, -a;    ;  1/z)
+                                           / 2F0(b-a, 1-a;   ;  1/z)
+
+  `2F0` is a divergent asymptotic series, so each is summed to its smallest
+  term, which is where such a series comes closest to the function it stands
+  for, and that term estimates how close it got. Certifying its own accuracy is
+  what makes the route safe to add at all: it is consulted only for arguments
+  that were going to be refused, and only its own estimate lets it answer, so it
+  cannot change a value `mratio` already returns and cannot turn a refusal into
+  a wrong number. Where the estimate is not small enough the refusal stands.
+
+  Two things it gets wrong if they are not guarded, both found by breaking it.
+  An expansion whose leading coefficient is `1/Gamma(b-a)` has no leading term
+  at all when `b - a` is a non-positive integer, so what is left is the
+  exponentially small piece the expansion drops; unguarded it returned 5e-06 for
+  `M(a,a,z)` over itself, which is exactly 1. And a series that stopped early
+  because a term hit exactly zero has demonstrated no decay, so its smallest
+  term says nothing; unguarded it returned 14.33 where the ratio is 0.9998.
+  Neither needs a test of its own in the end. `lgamma` is `+inf` at exactly the
+  first set of arguments, so estimating the dropped branch in logs refuses them
+  by arithmetic, and taking the estimate to be the last term actually added
+  rather than the zero that ended the series covers the second.
+
+  Measured over 5955 argument triples against a 40 to 60 digit reference, the
+  refused fraction of the grid falls from 46.4% to 28.5% and the worst error
+  among the newly returned values is 2.7e-11. The estimate itself is honest to
+  about a factor of ten, so the 1e-10 it is held to is worth roughly 1e-9 in the
+  worst case.
+
+  As with the fraction, `src/expression.cpp` is the single source of truth and
+  the generated C carries a copy held to it. The two agree bit for bit at every
+  one of the 5955 triples.
+
 - **A rate law that switches on a repeating schedule now has a forward-sensitivity
   gradient (issue #436).** `if(time() - 24*floor(time()/24) >= 7, on, off)` is "on
   for the last 17 hours of every 24 hour day", and with a start time and a fitted
@@ -101,6 +149,38 @@ in `CMakeLists.txt`) is derived from it.
   `prune` removes it exactly when it removes the artifact it describes.
 
 ### Fixed
+
+- **`mratio()` had 60 more silently wrong answers than issue #453 measured
+  (issue #456).** The rule that issue #453 shipped admits arguments when
+  `b*b >= 64*|z*a|`, which bounds the *odd* partial numerators of the continued
+  fraction, the ones carrying `z*(a+k)`. The even ones carry `z*(a-b-k)`, so for
+  a large `b` they are about `z/b` however small `z*a` is, and nothing looked at
+  them. The grid behind issue #453 had no arguments in that corner, so it
+  reported no leaks there.
+
+  On a denser grid it has 60, out of 3191 answers, every one with a positive `z`
+  and a large `b`. `mratio(1, 901, 3000)` returned -0.4287 where the ratio is
+  630.7. `mratio(0.5, 101, 300)` returned 1.0987 where it is 134.16. These are
+  the same class of defect issue #453 set out to remove, in a corner it did not
+  sample.
+
+  Where the fraction turns is sharp and it is at `z = b`: over 597 triples it is
+  clean through `z/b = 1.02` and 12 of 47 are wrong at 1.05. So the clause now
+  also asks for `2*z <= b` when `z` is positive, a factor of two below a
+  threshold whose position is understood rather than merely observed. A negative
+  `z` neither needs the companion bound nor gets one, measured clean out to
+  `|z|/b = 300`, because there the partial numerators alternate in sign and the
+  fraction stays a contraction.
+
+  Tightening a boundary gives up answers that happened to be right, since what
+  makes the corner unsafe is that the right ones and the wrong ones cannot be
+  told apart without a reference. Of the 3131 triples the old rule answered
+  correctly, 3080 come back bit for bit identical, 51 are now refused, and none
+  changed value. Sixty wrong answers for 51 unverifiable right ones is the trade,
+  and the asymptotic route above more than covers it.
+
+  Taken together, `mratio` now answers 4259 of those 5955 triples against 3191
+  before, and none of them wrongly.
 
 - **`mratio()` no longer returns a badly wrong value without saying so (issue
   #453).** `mratio(a, b, z)` is the ratio of contiguous Kummer functions,

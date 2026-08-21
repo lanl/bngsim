@@ -24,12 +24,23 @@ The region it is trusted in, measured against a 40 digit reference:
 * ``a <= 0`` with ``z <= 0``. This is where BNG models live, since a model builds
   ``a = -min(AT, BT)`` and ``z = -1/Keq``, and it stays true when a fit moves the
   counts off the integers.
-* ``b*b >= 64*|z*a|``, which says the partial numerators start small.
+* ``b*b >= 64*|z*a|``, which says the odd partial numerators start small,
+  and for a positive ``z`` also ``2*z <= b``, which is the same statement
+  about the even ones. That second half is issue #456: without it this
+  clause admitted a corner where the fraction was wrong 60 times, since
+  the even numerators carry ``z*(a-b-k)`` and so are about ``z/b`` for a
+  large ``b`` however small ``z*a`` is.
 
-Everything else is refused. That gives up answers the fraction would have got
-right, because in the uncertain region it is right most of the time and there is
-no way to tell which. A refusal that says so is worth more than a number that is
-usually right.
+Everything else is refused by the fraction. That gives up answers it would have
+got right, because in the uncertain region it is right most of the time and
+there is no way to tell which. A refusal that says so is worth more than a
+number that is usually right.
+
+Issue #456 later narrowed what that gives up, by sending those arguments to an
+asymptotic expansion that can vouch for its own accuracy before refusing them.
+That is in test_mratio_asymptotic.py. It changed no answer the fraction was
+already giving, which is what test_the_regime_models_use_still_answers below
+holds it to.
 """
 
 from __future__ import annotations
@@ -83,20 +94,30 @@ WAS_WRONG = [
 
 
 @pytest.mark.parametrize("a, b, z, old, true_value", WAS_WRONG)
-def test_the_wrong_answers_are_refused(tmp_path, a, b, z, old, true_value):
+def test_the_wrong_answers_are_never_returned_again(tmp_path, a, b, z, old, true_value):
     """Each of these returned ``old`` where the ratio is ``true_value``.
 
     The third row is the one that makes the case on its own: it returned a
     negative number where the answer is positive.
+
+    What this asks for is that the wrong value never comes back. It does not ask
+    for a refusal, because the refusal was the remedy and not the goal: issue
+    #456 added an asymptotic expansion that gets three of these four right, and
+    only the last is still refused. Which of the two happens is pinned argument
+    by argument in test_mratio_asymptotic.py. The contract here is the one that
+    has to hold whatever else changes.
     """
     assert abs(old - true_value) / true_value > 1.0  # the error really was huge
-    with pytest.raises(Exception) as excinfo:
-        _value(tmp_path, a, b, z)
-    message = str(excinfo.value)
-    assert "not reliable" in message
-    # The message has to leave the reader somewhere to go.
-    assert "#453" in message
-    assert "non-positive integer" in message
+    try:
+        got = _value(tmp_path, a, b, z)
+    except Exception as excinfo:
+        message = str(excinfo)
+        assert "not reliable" in message
+        # The message has to leave the reader somewhere to go.
+        assert "#453" in message
+        assert "non-positive integer" in message
+        return
+    assert got == pytest.approx(true_value, rel=1e-9)
 
 
 # ── The region models actually use, which must still answer ──────────────────

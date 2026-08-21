@@ -103,16 +103,33 @@ namespace bngsim {
 //     with |z| up to 50, chosen with small b and a on both sides of zero. The
 //     first wrong answer anywhere appears at |z| = 60 and is marginal (2e-08);
 //     the first serious one at |z| = 75. Twenty leaves a factor of three.
-//   * b^2 >= 64*|z*a|: the partial numerators are z*(a+k)/((b+k-2)(b+k-1)), so
-//     this is the statement that they start small and the fraction is a
-//     contraction from the first step. The factor 64 is where leaks reached
-//     zero on the grid, with a margin: 32 was the last value that leaked
-//     nothing and 16 still let two through.
+//   * b^2 >= 64*|z*a|, and for a positive z also 2*z <= b: the odd partial
+//     numerators are z*(a+k)/((b+k-2)(b+k-1)), so the first half of this is the
+//     statement that they start small and the fraction is a contraction from
+//     the first step. The factor 64 is where leaks reached zero on the grid,
+//     with a margin: 32 was the last value that leaked nothing and 16 still let
+//     two through. The second half bounds the even partial numerators, which
+//     the first half does not reach at all; see the note on issue #456 below.
 //
-// Everything else is refused. That gives up answers the fraction would have got
-// right, since it is right about 85% of the time in the uncertain region, but
-// there is no way to tell which 85%. A loud refusal is worth more than a number
-// that is usually right, and the region given up is one no BNG model reaches.
+// Everything else is refused, unless the asymptotic route below can vouch for
+// an answer of its own. That still gives up cases the fraction would have got
+// right, since it is right most of the time in the uncertain region, but there
+// is no way to tell which ones, and a loud refusal is worth more than a number
+// that is usually right.
+//
+// The `2*z <= b` companion on the last clause is issue #456. Without it the
+// clause admitted a corner the grid behind issue #453 never sampled: positive
+// z with a large b, where the fraction was wrong 60 times out of 3191 answers.
+// `mratio(1, 901, 3000)` returned -0.4287 where the ratio is 630.7. The reason
+// the clause missed it is that b*b >= 64*|z*a| bounds only the odd partial
+// numerators, which carry z*(a+k); the even ones carry z*(a-b-k), so for a
+// large b they are about z/b however small z*a is. Where that turns is sharp
+// and it is at z = b: over 597 triples the fraction is clean through z/b =
+// 1.02 and 12 of 47 are wrong at 1.05. Negative z does not need the companion
+// and does not get it, measured clean out to |z|/b = 300, because there the
+// partial numerators alternate in sign and the fraction stays a contraction.
+// Half of b leaves a factor of two under a threshold whose position is
+// understood rather than merely observed.
 static bool mratio_cf_is_trustworthy(double a, double b, double z) {
     if (a <= 0.0 && a == std::floor(a)) {
         return true;
@@ -123,20 +140,190 @@ static bool mratio_cf_is_trustworthy(double a, double b, double z) {
     if (std::abs(z) <= 20.0) {
         return true;
     }
-    return b * b >= 64.0 * std::abs(z * a);
+    if (b * b < 64.0 * std::abs(z * a)) {
+        return false;
+    }
+    return z <= 0.0 || 2.0 * z <= b;
+}
+
+// ─── The asymptotic route, for arguments the fraction is refused (issue #456) ─
+//
+// Refusing everything outside the region above costs answers that are perfectly
+// obtainable, just not by that fraction. For a large |z| the ratio has an
+// asymptotic expansion in which the Gamma factors cancel between numerator and
+// denominator, and that cancellation is the whole point: the individual Kummer
+// functions overflow a double long before their ratio does.
+//
+//   z -> -inf:  R(a,b,z) = (b/(-z)) * 2F0(a+1, a-b+1; ; -1/z)
+//                                   / 2F0(a,   a-b+1; ; -1/z)
+//   z -> +inf:  R(a,b,z) = (b/a)    * 2F0(b-a, -a;    ;  1/z)
+//                                   / 2F0(b-a, 1-a;   ;  1/z)
+//
+// Both series are divergent, so each is summed to its smallest term, which is
+// where a Poincare expansion comes closest to the function it represents. That
+// term is then an estimate of how close, and it is what makes this route safe
+// to add at all: it certifies its own accuracy, so it is used only where the
+// estimate is small and the refusal is kept everywhere else. The estimate was
+// measured against a 40 to 60 digit reference and is honest to within about a
+// factor of ten, so the 1e-10 below is worth roughly 1e-9 in the worst case.
+//
+// Over 5955 argument triples this turns 1179 refusals into answers, every one
+// of them correct, and the worst error among them is 2.7e-11. Refusals fall
+// from 46.4% of the grid to 28.5%.
+//
+// The fraction keeps priority wherever it is trusted. This route only ever
+// looks at arguments that were going to be refused, so it cannot change an
+// answer that is being given today, only replace a refusal with a value.
+
+// isfinite() is a <math.h> macro, and the MIR JIT strips the system headers
+// before handing the generated C to c2mir, so the copy of this routine in the
+// generated source has no isfinite to call. Both copies spell the test out the
+// same way instead, which is what keeps them numerically identical. NaN fails
+// it because every comparison against a NaN is false, and so does an infinity.
+// A magnitude past 1e308 is refused rather than classified, which is safe --
+// refusing is always allowed -- and no argument a model produces is near it.
+static bool mratio_is_finite(double v) { return v <= 1.0e308 && v >= -1.0e308; }
+
+// Sum 2F0(alpha, beta; ; x) to its smallest term. Returns the sum; *last_term
+// receives the magnitude of the final term added, the accuracy estimate.
+//
+// A term of exactly zero ends the series early, which happens whenever alpha or
+// beta passes through a non-positive integer. The estimate is still the last
+// term that was added rather than the zero that stopped it. Reporting zero
+// there would be a claim the series never made: one that stops after a single
+// term has demonstrated no decay at all, and calling that exact collapses the
+// answer to b/(-z): at a=300, b=301, z=-21 it returned 14.33 where the ratio is
+// 0.9998. Carrying the last real term forward refuses those and keeps the cases
+// where the series did decay before it terminated.
+static double mratio_2f0(double alpha, double beta, double x, double *last_term) {
+    // A backstop rather than a tuning knob: raising it to 4000 or lowering it to
+    // 200 changes nothing about which arguments get an answer, because the ones
+    // that reach it are refused on the dropped branch instead. The median series
+    // here is one term long and the 90th percentile is 200.
+    constexpr int max_terms = 500;
+    double t = 1.0;
+    double s = 1.0;
+    for (int k = 0; k < max_terms; ++k) {
+        const double next = t * (alpha + k) * (beta + k) * x / (k + 1.0);
+        if (next == 0.0 || std::abs(next) >= std::abs(t)) {
+            break;
+        }
+        s += next;
+        t = next;
+    }
+    *last_term = std::abs(t);
+    return s;
+}
+
+// The size of the branch the expansion drops, relative to the one it keeps, as
+// a logarithm. For a large |z| the Kummer function is a sum of an algebraic
+// branch carrying 1/Gamma(b-a) and an exponential one carrying exp(z)/Gamma(a);
+// each formula above keeps whichever dominates and drops the other, so the
+// dropped branch is the error the smallest term does not account for.
+//
+// Working in logs is what keeps this finite: the two branches differ by
+// hundreds of orders of magnitude in the cases that matter.
+//
+// This is also what handles the two arguments where the expansion has no
+// algebraic term to keep. When b-a is a non-positive integer, 1/Gamma(b-a) is
+// zero, so for z < 0 the branch being kept is absent and what is left is the
+// branch being dropped. lgamma is +inf at exactly those points, which sends the
+// ratio to +inf and refuses, with no separate test needed. The mirror case for
+// z > 0 is a non-positive integer a, and lgamma handles that one the same way.
+// Without this, M(a,a,z) over itself came back as 5e-06 where it is exactly 1.
+static double mratio_dropped_branch_log(double a, double b, double z) {
+    const double log_z = std::log(std::abs(z));
+    double den;
+    double num;
+    if (z < 0.0) {
+        den = std::lgamma(b - a) - std::lgamma(a) + z + (2.0 * a - b) * log_z;
+        num = std::lgamma(b - a) - std::lgamma(a + 1.0) + z + (2.0 * a - b + 1.0) * log_z;
+    } else {
+        den = std::lgamma(a) - std::lgamma(b - a) - z + (b - 2.0 * a) * log_z;
+        num = std::lgamma(a + 1.0) - std::lgamma(b - a) - z + (b - 2.0 * a - 1.0) * log_z;
+    }
+    // Written so that a NaN refuses. A NaN loses every comparison, so taking the
+    // larger of the two would quietly drop it and hand back the other one, and
+    // `!(x <= 0.0)` is true for a NaN as well as for anything positive. A
+    // positive value is a refusal in any case, since it says the branch being
+    // dropped is the larger of the two -- that is the +inf a Gamma pole gives.
+    // A -inf is the opposite and is welcome: the dropped branch is nothing.
+    if (!(den <= 0.0) || !(num <= 0.0)) {
+        return 1.0;
+    }
+    return den > num ? den : num;
+}
+
+// Returns true and writes the ratio to *out when the expansion can vouch for
+// it, false when it cannot. Every comparison is written so that a NaN fails it
+// and refuses, rather than passing by accident.
+static bool mratio_asymptotic(double a, double b, double z, double *out) {
+    constexpr double tol = 1.0e-10;
+    if (z == 0.0 || !mratio_is_finite(a) || !mratio_is_finite(b) || !mratio_is_finite(z)) {
+        return false;
+    }
+
+    double sum_num = 0.0;
+    double sum_den = 0.0;
+    double err_num = 0.0;
+    double err_den = 0.0;
+    double coeff = 0.0;
+    if (z < 0.0) {
+        const double x = -1.0 / z;
+        sum_num = mratio_2f0(a + 1.0, a - b + 1.0, x, &err_num);
+        sum_den = mratio_2f0(a, a - b + 1.0, x, &err_den);
+        coeff = b / (-z);
+    } else {
+        const double x = 1.0 / z;
+        sum_num = mratio_2f0(b - a, -a, x, &err_num);
+        sum_den = mratio_2f0(b - a, 1.0 - a, x, &err_den);
+        // a == 0 would divide by zero here, but it is a non-positive integer, so
+        // the fraction is trusted there and this is never reached with it. The
+        // dropped-branch test below refuses it in any case, since lgamma(0) is
+        // +inf.
+        coeff = b / a;
+    }
+    if (sum_num == 0.0 || sum_den == 0.0 || !mratio_is_finite(sum_num) ||
+        !mratio_is_finite(sum_den)) {
+        return false;
+    }
+
+    // Anything above zero means the dropped branch is at least as large as the
+    // kept one, which is past useless and also keeps the exp() below in range.
+    const double dropped = mratio_dropped_branch_log(a, b, z);
+    if (!(dropped <= 0.0)) {
+        return false;
+    }
+    const double relative =
+        err_num / std::abs(sum_num) + err_den / std::abs(sum_den) + std::exp(dropped);
+    if (!(relative <= tol)) {
+        return false;
+    }
+
+    const double value = coeff * sum_num / sum_den;
+    if (!mratio_is_finite(value)) {
+        return false;
+    }
+    *out = value;
+    return true;
 }
 
 double expr_compat::mratio(double a, double b, double z) {
     if (!mratio_cf_is_trustworthy(a, b, z)) {
+        double asymptotic = 0.0;
+        if (mratio_asymptotic(a, b, z, &asymptotic)) {
+            return asymptotic;
+        }
         throw std::runtime_error(
             "mratio(a, b, z): the continued fraction this uses is not reliable for these "
-            "arguments and would return a wrong value without saying so (a=" +
+            "arguments and would return a wrong value without saying so, and the asymptotic "
+            "expansion that covers part of the rest cannot vouch for an answer here either (a=" +
             std::to_string(a) + ", b=" + std::to_string(b) + ", z=" + std::to_string(z) +
-            "). It is reliable when a is a non-positive integer, when a <= 0 and z <= 0, or "
-            "when b*b >= 64*|z*a|. BNG builds a = -min(AT,BT) and z = -1/Keq, which is inside "
-            "that region, and so is any |z| <= 20, so a model reaching this is using "
-            "mratio in its own way. See "
-            "lanl/bngsim issue #453.");
+            "). The fraction is reliable when a is a non-positive integer, when a <= 0 and "
+            "z <= 0, when |z| <= 20, or when b*b >= 64*|z*a| and z is either negative or no "
+            "more than half of b. BNG builds a = -min(AT,BT) and z = -1/Keq, which is inside "
+            "that region, so a model reaching this is using mratio in its own way. See "
+            "lanl/bngsim issues #453 and #456.");
     }
     constexpr double eps = 1.0e-16;
     constexpr double tiny = 1.0e-32;

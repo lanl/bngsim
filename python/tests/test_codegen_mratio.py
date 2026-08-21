@@ -11,9 +11,10 @@ src/expression.cpp stays the single source of truth. The tests below hold the
 port to that: the two are asked for the same numbers over a swept argument and
 have to agree exactly, not approximately.
 
-The routine is not accurate everywhere, and the port copies that faithfully
-rather than diverging on one side. See issue #453, which is about the algorithm
-in both places, and ``test_the_port_copies_the_inaccuracy_too`` below.
+The routine does not answer everywhere, and the port copies which arguments it
+will and will not answer for rather than diverging on one side. See issue #453,
+which decided that, and issue #456, which narrowed it by adding a second method
+for arguments the fraction is refused.
 """
 
 from __future__ import annotations
@@ -101,6 +102,12 @@ CASES = [
     ("positive a", 2.0, 101.0, "k*mratio(a,b,-A)", 30.0),
     ("non-integer a and b", 0.5, 101.0, "k*mratio(a,b,A/20)", 15.0),
     ("the large-argument case", -1000.0, 9001.0, "k*mratio(a,b,-A*100)", 100.0),
+    # Outside the region the fraction is trusted in, so every point of this one
+    # goes through the asymptotic expansion added by issue #456 rather than the
+    # loop. Without it the compiled copy of that expansion is never run, and
+    # c2mir has already been caught miscompiling this routine once (see the note
+    # on `odd = 1 - odd` in _codegen.py).
+    ("the asymptotic route", 10.0, 2.5, "k*mratio(a,b,-A*100)", 50.0),
     ("a rides the species", -3.0, 9.0, "k*mratio(-A,b,-20)", 12.0),
     ("b rides the species", -4.0, 0.0, "k*mratio(a,A+2,-8)", 10.0),
 ]
@@ -163,17 +170,19 @@ def test_both_copies_refuse_and_both_say_why(tmp_path):
     """The region from issue #453, where the answer is a refusal in both copies.
 
     For a positive first argument with a large negative third one the fraction
-    settles on something that is not the ratio, so neither copy answers there.
-    The interpreter raises and names the region. The generated C cannot raise, so
-    its helper returns NaN and the run fails on the right-hand side — and the
-    failure carries the same explanation, because describing a non-finite
-    witness re-evaluates the model at that state and passes the refusal on.
+    settles on something that is not the ratio, and here the asymptotic
+    expansion added by issue #456 cannot vouch for a value either, so neither
+    copy answers. The interpreter raises and names the region. The generated C
+    cannot raise, so its helper returns NaN and the run fails on the right-hand
+    side — and the failure carries the same explanation, because describing a
+    non-finite witness re-evaluates the model at that state and passes the
+    refusal on.
 
     Without that the compiled path reported a bare ``CV_FIRST_RHSFUNC_ERR`` and
     nothing about mratio, which is a worse answer than the wrong number it
     replaced was to diagnose.
     """
-    body = "k*mratio(10,2.5,-10000)"
+    body = "k*mratio(50,2.5,-1000)"
     messages = {}
     for codegen in (False, True):
         with pytest.raises(Exception) as excinfo:
@@ -181,7 +190,7 @@ def test_both_copies_refuse_and_both_say_why(tmp_path):
         messages[codegen] = str(excinfo.value)
     for codegen, message in messages.items():
         assert "not reliable" in message, f"codegen={codegen} said nothing about the refusal"
-        assert "#453" in message
+        assert "#453" in message and "#456" in message
         assert "mratio" in message
     # The compiled one reaches it the long way round, through the witness.
     assert "non-finite" in messages[True]
