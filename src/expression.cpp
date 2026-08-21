@@ -84,9 +84,15 @@ double expr_compat::mratio(double a, double b, double z) {
     double err = 1.0 + eps;
 
     // Parity bookkeeping: even-indexed and odd-indexed CF terms use
-    // different formulas for p_j. The flags alternate after every step.
+    // different formulas for p_j. `odd` alternates after every step.
+    //
+    // This used to swap `odd` with a second flag that nothing ever read, which
+    // is the same thing written at more length. It is a toggle here because the
+    // generated C carries a copy of this routine (issue #451) and c2mir, the
+    // frontend of the MIR JIT backend, miscompiles the swap: the JIT returned a
+    // wrong number for every argument. Keeping the two spellings identical is
+    // what makes this function the single source of truth for both.
     int odd = 1;
-    int even = 0;
     int iodd = 0;
     int ieven = 0;
     double f = 0.0;
@@ -138,7 +144,7 @@ double expr_compat::mratio(double a, double b, double z) {
         fsave = f;
         Csave = C;
         Dsave = D;
-        std::swap(odd, even);
+        odd = 1 - odd;
     }
     return f;
 }
