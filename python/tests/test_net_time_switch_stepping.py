@@ -1,4 +1,7 @@
-"""A BNGL rate law that switches on time must not be integrated over (issue #440).
+"""A BNGL rate law that switches on a clock must not be integrated over.
+
+Issues #440 and #443 — one defect in two spellings, and the second is the one
+BNGL models actually write.
 
 Inside each branch of ``if(time() >= 100, k, 0)`` the right-hand side is a
 constant, so CVODE's local error estimate over a step that spans the whole
@@ -39,7 +42,16 @@ What this locks:
      crossing a fitted parameter moves keeps the sensitivity jump it already
      had;
   8. a schedule asking for more stops than the budget allows places none and
-     says so, rather than stopping at a prefix of them in silence.
+     says so, rather than stopping at a prefix of them in silence;
+  9. the same window written against a *counter species* rather than against
+     ``time()`` reaches the same answer (issue #443). That is the BNGL idiom: a
+     species fed by a zeroth-order reaction at rate 1, read back through a
+     group, conventionally called ``t``. Of the 585 ``.net`` models in this
+     repository's corpus, 37 threshold such a counter and none thresholds
+     ``time()``. A counter is *integrated*, so it needs two things a literal
+     clock does not: its offset from time, and being put exactly on its
+     threshold at the stop, without which the run restarts on the branch that
+     just ended.
 """
 
 import logging
@@ -477,3 +489,238 @@ def test_the_crossing_is_resolved_against_live_parameter_values(tmp_path):
     assert float(
         bngsim.Simulator(model).run(t_span=(0.0, _T_END), n_points=3).species[-1][0]
     ) == pytest.approx(4.0, rel=1e-6)
+
+
+# ── 7. The counter-clock spelling (issue #443) ──────────────────────────────
+# Everything above is written against literal simulation time, which is the
+# spelling SBML uses. BNGL models mostly do not have it: they make time
+# available to a rate law by feeding a species from a zeroth-order reaction at
+# rate 1 and reading it back through a group, conventionally called `t`. Of the
+# 585 .net models in this repository's corpus, 37 threshold such a counter and
+# none thresholds `time()`, so this is the spelling the defect actually reaches.
+#
+# A counter obeys dc/dt = 1, so c(t) = t + (c(t_start) - t_start) for the whole
+# run and a threshold on it is a threshold on time, placed at
+# t_start + threshold - c(t_start). The models below are the same accumulator as
+# above with the clock written that way, so the exact answers are unchanged.
+_COUNTER_NET = """\
+begin parameters
+    1 rate    {rate}  # Constant
+    2 k       0.1  # Constant
+end parameters
+begin functions
+    1 dose() {body}
+end functions
+begin species
+    1 counter() {c0}
+    2 A() 0
+end species
+begin reactions
+    1 0 1 rate #_R1
+    2 0 2 dose #_R2
+end reactions
+begin groups
+    1 t                    1
+    2 A                    2
+end groups
+"""
+
+
+def _counter_net(tmp_path, body, *, c0=0, rate=1, name="counter.net"):
+    """An accumulator whose rate law *body* thresholds a counter species.
+
+    ``c0`` seeds the counter, so the crossing moves without the window changing
+    width. ``rate`` is what the counter fills at; anything but 1 is not a clock.
+    """
+    path = tmp_path / name
+    path.write_text(_COUNTER_NET.format(body=body, c0=c0, rate=rate))
+    return path
+
+
+def _counter_final_A(path, **kw):
+    """A(240) from a fresh model. Column 1 is the accumulator; column 0 is the
+    clock."""
+    model = bngsim.Model.from_net(str(path))
+    kw.setdefault("t_span", (0.0, _T_END))
+    kw.setdefault("n_points", 3)
+    return float(bngsim.Simulator(model).run(**kw).species[-1][1])
+
+
+# The same three windows as `_WINDOWS`, written on the counter instead of on
+# `time()`. Same exact answers, same stop counts.
+_COUNTER_WINDOWS = [
+    ("if(t>=100,if(t<=140,k,0),0)", 4.0, 2),
+    ("if(t-24*floor(t/24)>=7,k,0)", 17.0, 20),
+    ("if(t-3*floor(t/3)>=2.5,k,0)", 4.0, 160),
+]
+
+
+@pytest.mark.parametrize(("body", "exact", "n_stops"), _COUNTER_WINDOWS)
+def test_a_counter_switched_rate_law_is_integrated_over_its_window(tmp_path, body, exact, n_stops):
+    """The issue's own report: this prints 0.0 where the answer is 4.0."""
+    path = _counter_net(tmp_path, body)
+    conds, stops = _conditions_and_stops(path)
+    assert conds, "the condition was not recovered from the function body"
+    assert len(stops) == n_stops
+    assert _counter_final_A(path) == pytest.approx(exact, rel=1e-6)
+
+
+@pytest.mark.parametrize(("body", "exact", "_n"), _COUNTER_WINDOWS)
+def test_the_counter_answer_agrees_with_a_bounded_step_run(tmp_path, body, exact, _n):
+    """The independent oracle, as for the ``time()`` spelling above."""
+    path = _counter_net(tmp_path, body)
+    bounded = _counter_final_A(path, max_step=0.05, max_steps=1_000_000)
+    assert bounded == pytest.approx(exact, rel=1e-6)
+    assert _counter_final_A(path) == pytest.approx(bounded, rel=1e-6)
+
+
+def test_the_two_spellings_of_one_model_agree(tmp_path):
+    """A counter thresholded at 100 and ``time()`` thresholded at 100 are the
+    same model, and the comparison is what makes the counter answer readable at
+    all."""
+    counter = _counter_final_A(_counter_net(tmp_path, _COUNTER_WINDOWS[0][0]))
+    literal = _final_A(_net(tmp_path, _WINDOWS[0][0]))
+    assert counter == pytest.approx(literal, rel=1e-6)
+
+
+def test_the_stop_record_names_the_counter_and_what_it_reaches(tmp_path):
+    """A counter stop carries more than a time.
+
+    The core has to put the counter exactly on its threshold before restarting,
+    so the record names which species to move and what to move it to. A crossing
+    on literal simulation time needs neither and says so with a clock index of
+    -1.
+    """
+    from bngsim._switch_sensitivity import fixed_crossing_stops
+
+    model = bngsim.Model.from_net(str(_counter_net(tmp_path, _COUNTER_WINDOWS[0][0])))
+    stops = fixed_crossing_stops(model._core, 0.0, _T_END, model.time_discontinuity_conditions())
+    assert [(s.time, s.clock_species_idx, s.threshold) for s in stops] == [
+        (100.0, 0, 100.0),
+        (140.0, 0, 140.0),
+    ]
+
+    literal = bngsim.Model.from_net(str(_net(tmp_path, _WINDOWS[0][0])))
+    stops = fixed_crossing_stops(
+        literal._core, 0.0, _T_END, literal.time_discontinuity_conditions()
+    )
+    assert [(s.time, s.clock_species_idx) for s in stops] == [(100.0, -1), (140.0, -1)]
+
+
+def test_a_counter_that_starts_ahead_crosses_earlier(tmp_path):
+    """The conversion is ``t_start + threshold - c(t_start)``, not ``threshold``.
+
+    A counter seeded at 30 reads 100 at t = 70, so the window opens 30 time units
+    early and closes 30 early. Its width is unchanged, so the accumulated answer
+    is the same 4.0 and only the stops move — which is what makes this a test of
+    the offset rather than of the window.
+    """
+    from bngsim._switch_sensitivity import fixed_crossing_stops
+
+    path = _counter_net(tmp_path, _COUNTER_WINDOWS[0][0], c0=30)
+    model = bngsim.Model.from_net(str(path))
+    stops = fixed_crossing_stops(model._core, 0.0, _T_END, model.time_discontinuity_conditions())
+    assert [(s.time, s.threshold) for s in stops] == [(70.0, 100.0), (110.0, 140.0)]
+    assert _counter_final_A(path) == pytest.approx(4.0, rel=1e-6)
+
+
+def test_the_counter_is_landed_on_its_threshold_at_the_stop(tmp_path):
+    """Issue #82, and the reason a counter stop is not a plain time.
+
+    The stop puts t exactly on the crossing, but the condition is read off the
+    counter, and the counter is integrated: it comes back a couple of parts in
+    1e14 BELOW the threshold it is defined as reaching there. Left alone the run
+    restarts on the branch that just ended and meets the jump inside the first
+    step after a restart with no history, which is where issue #82's step-size
+    collapse comes from. Sampling exactly at the crossing shows where the counter
+    was put: without the repair this reads 99.99999999999993.
+    """
+    model = bngsim.Model.from_net(str(_counter_net(tmp_path, "if(t>=100,k,0)")))
+    result = bngsim.Simulator(model).run(t_span=(0.0, 200.0), n_points=201)
+    at_crossing = [
+        row for t, row in zip(result.time, result.species, strict=False) if float(t) == 100.0
+    ]
+    assert len(at_crossing) == 1
+    assert float(at_crossing[0][0]) >= 100.0
+    assert float(result.species[-1][1]) == pytest.approx(10.0, rel=1e-6)
+
+
+def test_a_species_that_is_not_a_unit_rate_clock_is_not_read_as_one(tmp_path):
+    """A counter filling at rate 2 is not a clock, so nothing is placed.
+
+    Its crossing time is knowable too, but the conversion this uses is written
+    for dc/dt = 1 and reading any other slope off it would put the stop in the
+    wrong place. Declining is the safe answer, and the stepping such a model
+    gets is the stepping it had.
+    """
+    conds, stops = _conditions_and_stops(_counter_net(tmp_path, _COUNTER_WINDOWS[0][0], rate=2))
+    assert conds == ()
+    assert stops == []
+    # And with the rate put back, the same model is admitted — so this is about
+    # the slope rather than about anything else in the file.
+    conds, stops = _conditions_and_stops(_counter_net(tmp_path, _COUNTER_WINDOWS[0][0], rate=1))
+    assert len(stops) == 2
+
+
+# A rate rule `dk1/dt = 1` makes k1 a counter in an SBML model too, and this one
+# triggers an event on it. bngsim registers `k1 > 4.5` as a discontinuity
+# condition, so the crossing stop lands there — and the event root has to still
+# fire at it.
+_SBML_COUNTER_EVENT = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="counter_event">
+    <listOfCompartments><compartment id="C" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k1" value="0" constant="false"/>
+      <parameter id="fired" value="0" constant="false"/>
+    </listOfParameters>
+    <listOfRules>
+      <rateRule variable="k1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><cn type="integer">1</cn></math>
+      </rateRule>
+    </listOfRules>
+    <listOfEvents>
+      <event id="E0" useValuesFromTriggerTime="true">
+        <trigger initialValue="true" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><gt/><ci>k1</ci><cn> 4.5 </cn></apply>
+          </math>
+        </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="fired">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><cn type="integer">1</cn></math>
+          </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>
+"""
+
+
+def test_a_registered_root_on_a_counter_is_not_stepped_over(tmp_path):
+    """The stop must not pre-empt a root that is already there.
+
+    CVODE finds a root by a sign change across a step it accepts. Landing the
+    counter on its threshold moves the state during the restart instead, which
+    presents no such step, and the root then never fires at all — an event lost
+    outright, silently. So the repair above runs only on a run with no roots,
+    which is the whole of what this issue is about: a ``.net`` model has stops
+    precisely because it could register no root. The stop itself is still placed,
+    and is still what makes the root reachable.
+    """
+    from bngsim._switch_sensitivity import fixed_crossing_stops
+
+    xml = tmp_path / "counter_event.xml"
+    xml.write_text(_SBML_COUNTER_EVENT)
+    model = bngsim.Model.from_sbml(str(xml))
+    conds = model.time_discontinuity_conditions()
+    stops = fixed_crossing_stops(model._core, 0.0, 10.0, conds)
+    assert [(s.time, s.clock_species_idx >= 0) for s in stops] == [(4.5, True)]
+
+    result = bngsim.Simulator(model).run(t_span=(0.0, 10.0), n_points=11)
+    assert float(result.observables["fired"][-1]) == pytest.approx(1.0)

@@ -444,8 +444,14 @@ def test_a_solver_failure_under_tracking_names_tracking(data_dir: Path):
     collapses the step size on macOS and integrates cleanly on Linux. This
     model stalls at its discontinuity on every platform, which is what
     ``test_discontinuity_stall_bound.py`` already relies on.
+
+    Its crossing stop is stood down for the same reason that module stands it
+    down, written out there: since issue #443 the model as written is stopped
+    exactly at its switch and completes, so the stall has to be reached the way
+    a model whose crossing bngsim cannot resolve reaches it.
     """
     model = bngsim.Model.from_net(str(data_dir / "switch_discontinuity_stall.net"))
+    model._derived_time_disc_conditions = ()
     sim = bngsim.Simulator(model, method="ode")
     with pytest.raises(bngsim.SimulationError, match=r"tracking absolute tolerance 12 decades"):
         sim.run(t_span=(0.0, 648.0), n_points=649, atol="tracking")
@@ -454,10 +460,12 @@ def test_a_solver_failure_under_tracking_names_tracking(data_dir: Path):
 def test_a_solver_failure_without_tracking_says_nothing_about_it(data_dir: Path):
     """The other half: the hint is not glued onto every failure.
 
-    Same model, same stall, no tracking — so this pins the *gate*, not just the
-    text. Without it the first half would pass on a hint appended to everything.
+    Same model, same stall, same stood-down crossing stop, no tracking — so this
+    pins the *gate*, not just the text. Without it the first half would pass on a
+    hint appended to everything.
     """
     model = bngsim.Model.from_net(str(data_dir / "switch_discontinuity_stall.net"))
+    model._derived_time_disc_conditions = ()
     sim = bngsim.Simulator(model, method="ode")
     with pytest.raises(bngsim.SimulationError) as excinfo:
         sim.run(t_span=(0.0, 648.0), n_points=649)

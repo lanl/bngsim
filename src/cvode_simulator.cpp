@@ -6666,8 +6666,22 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // 1e14 short of the threshold and still reads the branch
                     // that just ended (issues #82, #443). Put it exactly where
                     // the crossing time says it is before restarting.
+                    //
+                    // Only on a run with NO roots, which is the whole of what
+                    // #443 is about: a .net model has stops precisely because it
+                    // could register no root. Where a root IS registered, moving
+                    // the clock past the threshold steps OVER it — CVODE finds a
+                    // root by a sign change across an accepted step, and a state
+                    // that jumps during the restart presents no step to find it
+                    // in. An SBML rate rule `dk/dt = 1` makes k a counter, and a
+                    // model whose event triggers on `k > 4.5` loses that event
+                    // outright: its two priority-ordered assignments never run
+                    // and the trajectory keeps the pre-event stoichiometry to the
+                    // end of the run. The stop itself is still placed there, and
+                    // is still what makes the root reachable (issue #305); it is
+                    // only the ulp of state that has to stand down.
                     const CrossingStop &reached = crossing_stops[next_crossing];
-                    if (reached.clock_species_idx0 >= 0) {
+                    if (n_roots == 0 && reached.clock_species_idx0 >= 0) {
                         landed_clock |= land_clock_on_threshold(
                             y_data, ns, reached.clock_species_idx0, reached.threshold);
                     }
