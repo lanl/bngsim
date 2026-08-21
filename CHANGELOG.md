@@ -156,6 +156,11 @@ in `CMakeLists.txt`) is derived from it.
   model that switches on simulation time at all — 80 of the 585 carry a
   conditional rate law and none of those mentions time — so the BioNetGen parity
   suite and the `.net` timing benchmarks measure models the change cannot touch.
+  Confirmed rather than assumed: all 592 ODE jobs were re-run against BioNetGen
+  2.9.3 in both arms and **not one number moved**, with the same 590 passing, the
+  same 2 differing (a Lorenz attractor and a proliferation model, both already
+  differing before this), and every error against the reference identical to the
+  last digit.
 
   Of the nine, seven move by 2e-5 or less. `BIOMD0000000808` sits at its
   reference's own convergence in both arms (1.70e-7 against 1.68e-7 from a run
