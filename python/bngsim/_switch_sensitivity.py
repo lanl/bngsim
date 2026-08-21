@@ -1574,12 +1574,23 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     if core.n_functions == 0:
         return ()
     if ctx is None:
-        # The raw bodies first, which is the cheap half: a genome-scale model
-        # with tens of thousands of functions and no `if()` short-circuits here
-        # rather than paying for `functional_jacobian_context()`, whose
-        # function_map is built from all of them. Inlining cannot introduce a
-        # conditional that no body already spells.
-        if not any(has_condition_construct(body) for body in core.function_expressions):
+        # The raw texts first, which is the cheap half: a model with no
+        # conditional rate law, or none that so much as mentions time,
+        # short-circuits here rather than paying for
+        # ``functional_jacobian_context()``, whose function_map is built from
+        # every function the model has and runs to tens of thousands of entries
+        # on a genome-scale one. Neither inlining a function nor inlining a
+        # derived parameter can introduce a conditional or a ``time`` that none
+        # of these texts already spells, which is why both halves are sound
+        # read here — the same argument the issue #333 guard makes for reading
+        # ``function_expressions`` instead of the context. Measured on this
+        # repository's ``.net`` corpus: 80 of 585 models carry a conditional
+        # rate law and 3 of those mention time, so the time half is what keeps
+        # a 43 ms scan off the other 77.
+        texts_raw = (*core.function_expressions, *core.param_expressions)
+        if not any(has_condition_construct(t) for t in texts_raw):
+            return ()
+        if not any(_TIME_REF.search(t) for t in texts_raw):
             return ()
         ctx = core.functional_jacobian_context()
     func_map = dict(ctx["function_map"])
