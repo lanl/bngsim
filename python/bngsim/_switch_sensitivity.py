@@ -42,6 +42,7 @@ from collections.abc import Set as AbstractSet
 from typing import NamedTuple
 
 from bngsim._codegen import (
+    _BUILTIN_CONSTANT_VALUES,
     _derived_expr_partials_numeric,
     _find_close_paren_strict,
     _inline_derived_param_refs,
@@ -1508,9 +1509,24 @@ def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
     flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
     if not _TIME_REF.search(flat):
         return False
-    return all(
-        m.group(0) in scope.run_constants for m in _IDENTIFIER.finditer(_TIME_REF.sub(" 0 ", flat))
-    )
+    blanked = _TIME_REF.sub(" 0 ", flat)
+    for m in _IDENTIFIER.finditer(blanked):
+        name = m.group(0)
+        if name in scope.function_names:
+            # A call to a model function that inlining left standing. Its body
+            # can read anything, so the atom is only as knowable as the body is,
+            # and this declines rather than guess.
+            return False
+        if blanked[m.end() :].lstrip().startswith("("):
+            # An engine built-in — `floor(`, `min(`, `exp(`. ExprTk compiles a
+            # call only to one of those or to a model function, and the model
+            # functions were just excluded, so what is left is arithmetic over
+            # arguments this same loop goes on to read.
+            continue
+        if name in scope.run_constants or name in _BUILTIN_CONSTANT_VALUES:
+            continue
+        return False
+    return True
 
 
 def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
