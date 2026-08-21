@@ -263,11 +263,18 @@ def test_stub_normalization_covers_every_per_build_stamp() -> None:
     is how 0.13.0 shipped a stub reading ``'0.12.2'``. What must match
     ``pyproject.toml`` is the runtime attribute of the compiled module, and
     ``test_version_consistency.py`` is where that is asserted.
+
+    The ``HAS_*`` capability flags are normalized too, and used to be this test's
+    control for "an actual API declaration is left alone". They are not one: they
+    record which features a particular configure compiled in, which is the same
+    per-build fact as the stamps above — see
+    ``test_rebuild_editable_feature_options.py`` and GH #459. The control here is
+    now ``__all__``, which is API and stays put.
     """
     mod = _load_rebuild_editable()
     generated = "\n".join(
         [
-            "HAS_KLU: bool = True",
+            "__all__: list[str] = ['reserved_names']",
             "__build_commit__: str = 'e61f83d57358+dirty'",
             "__pybind11_version__: str = '3.0.4'",
             "__version__: str = '0.12.2'",
@@ -280,12 +287,12 @@ def test_stub_normalization_covers_every_per_build_stamp() -> None:
     assert "__pybind11_version__: str = 'unknown'" in normalized
     assert "__version__: str = 'unknown'" in normalized
     # Only the stamps: an actual API declaration is left alone.
-    assert "HAS_KLU: bool = True" in normalized
+    assert "__all__: list[str] = ['reserved_names']" in normalized
 
 
 def test_stub_normalization_is_a_noop_when_a_stamp_is_absent() -> None:
     mod = _load_rebuild_editable()
-    generated = "HAS_KLU: bool = True\n"
+    generated = "__all__: list[str] = ['reserved_names']\n"
 
     assert mod._normalize_stub_build_stamps(generated) == generated
 

@@ -40,6 +40,23 @@ documents), and both used to make this script unusable there:
   from the environment this script is running in. ``_pybind11_cmake_dir`` asks
   the running interpreter and pins ``pybind11_DIR`` when it can answer; see
   that function for what happens when it cannot (GH #229).
+
+One more thing about that shared tree. Every build for one interpreter and
+platform uses the same CMake build directory (``build-dir = "build/{wheel_tag}"``
+in ``pyproject.toml``), and the wheel tag records the Python version and the
+platform — not the virtual environment being installed into, and not the options
+passed. A second install with different options therefore rewrites the cache
+this script builds from, and any option this script leaves unspecified comes
+back from whatever that other build left behind. That is how a working editable
+install silently starts producing a binary with different features compiled in:
+the staleness guard compares timestamps, and the binary really is fresh — it is
+just configured differently (GH #459). So this script names **every** feature
+option on the configure line rather than inheriting any of them
+(:data:`_FEATURE_OPTION_DEFAULTS`), and refuses to build on a tree whose cache
+disagrees with what it is about to ask for (:func:`_configuration_conflicts`).
+Setting a same-named environment variable to a CMake boolean overrides one
+option for one rebuild — ``BNGSIM_ENABLE_MIR=1`` is the long-standing spelling of
+that, and it is now how every option in the table is asked for.
 """
 
 from __future__ import annotations
@@ -60,8 +77,9 @@ import sys
 import sysconfig
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
+from typing import NamedTuple
 
 # Default upper bound on how long to wait for the editable_rebuild.lock.
 # 10 minutes is comfortably longer than a clean rebuild on a slow box and
@@ -261,10 +279,287 @@ Or rebuild through uv's own isolated build env, which needs no local pybind11
 """
 
 
+#: The CMake options that decide which features get compiled into
+#: ``_bngsim_core``, each mapped to its ``option()`` default in CMakeLists.txt.
+#:
+#: None of these may be inherited from the build tree. The cache in
+#: ``build/{wheel_tag}`` is only ever a record of whichever build ran last, and
+#: that build may have been an install into an entirely different virtual
+#: environment with different ``--config-settings`` (GH #459). Naming each option
+#: on the configure line is what makes a rebuild produce the configuration it was
+#: asked for instead of the one the tree happens to be carrying.
+#:
+#: ``test_rebuild_editable_feature_options.py`` holds these defaults to
+#: CMakeLists.txt, and fails if an option is added there without being
+#: classified here or in :data:`_PINNED_OPTION_VALUES`.
+_FEATURE_OPTION_DEFAULTS: dict[str, str] = {
+    "BNGSIM_ENABLE_KLU": "ON",
+    "BNGSIM_REQUIRE_KLU": "OFF",
+    "BNGSIM_KLU_AUTOBUILD": "ON",
+    "BNGSIM_USE_SYSTEM_SUNDIALS": "OFF",
+    "BNGSIM_BUILD_NFSIM": "ON",
+    "BNGSIM_BUILD_RULEMONKEY": "ON",
+    "BNGSIM_ENABLE_MIR": "OFF",
+    "BNGSIM_ENABLE_LAPACK_DENSE": "ON",
+}
+
+#: Options whose value follows from what this script *is* — an incremental
+#: rebuild of the Python bindings and nothing else — rather than from how anyone
+#: configured the project. Not overridable, and not part of the cache comparison:
+#: a tree that also carries the C++ unit tests is not misconfigured, it just
+#: builds more than we ask it to.
+_PINNED_OPTION_VALUES: dict[str, str] = {
+    "BNGSIM_BUILD_PYTHON": "ON",
+    "BNGSIM_BUILD_TESTS": "OFF",
+}
+
+#: scikit-build-core's own default, for a pyproject.toml that names no build
+#: type. Inheriting the build type has the same failure mode as inheriting a
+#: feature option, and a quieter one: a tree another install configured ``Debug``
+#: rebuilds as ``Debug`` here, with nothing but the compile lines to say so.
+_DEFAULT_BUILD_TYPE = "Release"
+
+_ORIGIN_DEFAULT = "default"
+_ORIGIN_PYPROJECT = "pyproject.toml"
+_ORIGIN_ENVIRONMENT = "environment"
+
+
+class _Setting(NamedTuple):
+    """One resolved CMake setting, and what asked for it."""
+
+    value: str
+    origin: str
+
+
+def _as_cmake_bool(raw: str) -> str | None:
+    """``ON``/``OFF`` for a boolean spelling CMake accepts, else ``None``.
+
+    Deliberately a subset of CMake's own truthiness rules (which also take
+    ``IGNORE``, ``NOTFOUND`` and any non-zero number): these values are read from
+    a human-typed environment variable and from the two files in this repo that
+    set them, so a spelling outside the subset is far more likely to be a typo
+    than an intention. ``None`` lets the caller say so by name.
+    """
+    value = raw.strip().lower()
+    if value in ("1", "on", "true", "yes", "y"):
+        return "ON"
+    if value in ("0", "off", "false", "no", "n"):
+        return "OFF"
+    return None
+
+
+def _toml_table_body(text: str, header: str) -> str | None:
+    """The lines under ``[header]``, up to the next table header or EOF."""
+    match = re.search(
+        rf"^\[{re.escape(header)}\]\s*$(?P<body>.*?)(?=^\[|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    return None if match is None else match.group("body")
+
+
+def _pyproject_cmake_settings(source_dir: Path) -> dict[str, str]:
+    """The CMake settings ``pyproject.toml`` hands to every scikit-build-core build.
+
+    That is ``cmake.build-type``, the ``-D`` entries in ``cmake.args``, and the
+    ``[tool.scikit-build.cmake.define]`` table — the configuration a plain
+    ``pip install .`` produces, and therefore the configuration an editable
+    rebuild should reproduce when nothing asks for anything else.
+
+    Read out of the file rather than copied into a constant for the reason
+    :func:`_build_dep_modules` gives: a second copy is how a paired site starts
+    drifting. Regex rather than ``tomllib`` because this script supports Python
+    3.10, where there is no ``tomllib``.
+    """
+    pyproject = source_dir / "pyproject.toml"
+    if not pyproject.is_file():
+        return {}
+    text = pyproject.read_text()
+    settings: dict[str, str] = {}
+
+    skbuild = _toml_table_body(text, "tool.scikit-build")
+    if skbuild is not None:
+        build_type = re.search(r'^cmake\.build-type\s*=\s*"([^"]*)"', skbuild, re.MULTILINE)
+        if build_type is not None:
+            settings["CMAKE_BUILD_TYPE"] = build_type.group(1)
+        args = re.search(
+            r"^cmake\.args\s*=\s*\[(?P<items>[^\]]*)\]",
+            skbuild,
+            re.MULTILINE | re.DOTALL,
+        )
+        if args is not None:
+            # Comments inside the array are prose, same as in [build-system].
+            items = re.sub(r"#[^\n]*", "", args.group("items"))
+            for entry in re.findall(r"""['"]([^'"]+)['"]""", items):
+                define = re.fullmatch(
+                    r"-D([A-Za-z_][A-Za-z0-9_]*)(?::[A-Za-z]+)?=(.*)", entry.strip()
+                )
+                if define is not None:
+                    settings[define.group(1)] = define.group(2)
+
+    # Last, so it wins over cmake.args: scikit-build-core applies cmake.define
+    # after the raw args, and a project that sets one option in both places means
+    # the table entry.
+    define_table = _toml_table_body(text, "tool.scikit-build.cmake.define")
+    if define_table is not None:
+        for name, value in re.findall(
+            r"""^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['"]([^'"]*)['"]""",
+            define_table,
+            re.MULTILINE,
+        ):
+            settings[name] = value
+    return settings
+
+
+def _resolve_cmake_settings(
+    source_dir: Path, environ: Mapping[str, str] | None = None
+) -> dict[str, _Setting]:
+    """Every configuration-carrying setting this rebuild will pass, and its source.
+
+    Resolution order, weakest first: the CMakeLists.txt ``option()`` default, the
+    value ``pyproject.toml`` declares, then a same-named environment variable.
+    The build tree is not in that list — that is the whole point (GH #459).
+    """
+    environ = os.environ if environ is None else environ
+    declared = _pyproject_cmake_settings(source_dir)
+    resolved: dict[str, _Setting] = {}
+
+    build_type = declared.get("CMAKE_BUILD_TYPE")
+    if build_type is None:
+        resolved["CMAKE_BUILD_TYPE"] = _Setting(_DEFAULT_BUILD_TYPE, _ORIGIN_DEFAULT)
+    else:
+        resolved["CMAKE_BUILD_TYPE"] = _Setting(build_type, _ORIGIN_PYPROJECT)
+    requested_build_type = environ.get("CMAKE_BUILD_TYPE", "").strip()
+    if requested_build_type:
+        resolved["CMAKE_BUILD_TYPE"] = _Setting(requested_build_type, _ORIGIN_ENVIRONMENT)
+
+    for name, default in _FEATURE_OPTION_DEFAULTS.items():
+        setting = _Setting(default, _ORIGIN_DEFAULT)
+        if name in declared:
+            value = _as_cmake_bool(declared[name])
+            if value is None:
+                raise SystemExit(
+                    f"pyproject.toml sets {name} = {declared[name]!r}, which is not a "
+                    f"CMake boolean. Use ON or OFF."
+                )
+            setting = _Setting(value, _ORIGIN_PYPROJECT)
+        requested = environ.get(name, "").strip()
+        if requested:
+            value = _as_cmake_bool(requested)
+            if value is None:
+                raise SystemExit(
+                    f"{name}={requested!r} in the environment is not a CMake boolean. "
+                    f"Use ON/OFF, 1/0, true/false, or yes/no."
+                )
+            setting = _Setting(value, _ORIGIN_ENVIRONMENT)
+        resolved[name] = setting
+
+    return resolved
+
+
+def _cmake_cache_values(build_dir: Path, names: Iterable[str]) -> dict[str, str]:
+    """The cached value of each of ``names``, for the entries the cache has.
+
+    Booleans come back normalized to ``ON``/``OFF`` so a cache written ``TRUE``
+    compares equal to a configure line asking for ``ON``. A missing cache (a tree
+    that has never been configured) is an empty result, not an error, and so is an
+    entry with no value: CMake writes a bare ``CMAKE_BUILD_TYPE:STRING=`` into any
+    tree configured by hand without one, and a setting the tree never decided is
+    not a setting it disagrees about — the configure line pins it either way.
+    """
+    cache_path = build_dir / "CMakeCache.txt"
+    if not cache_path.is_file():
+        return {}
+    wanted = set(names)
+    values: dict[str, str] = {}
+    # Anchored on both ends so the parallel `NAME-ADVANCED:INTERNAL=1` entries,
+    # whose names carry a dash, cannot match.
+    entry = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):([A-Za-z]+)=(.*)$")
+    for line in cache_path.read_text(errors="replace").splitlines():
+        match = entry.match(line.strip())
+        if match is None:
+            continue
+        name, kind, value = match.group(1), match.group(2).upper(), match.group(3).strip()
+        if name not in wanted:
+            continue
+        if not value:
+            continue
+        if kind == "BOOL":
+            value = _as_cmake_bool(value) or value
+        values[name] = value
+    return values
+
+
+def _configuration_conflicts(
+    cached: Mapping[str, str], settings: Mapping[str, _Setting]
+) -> list[tuple[str, str, str]]:
+    """``(option, cached, wanted)`` for every setting the tree disagrees with.
+
+    Settings this invocation asked for by environment variable are excluded: a
+    disagreement there is the requested change, not drift, and reconfiguring for
+    it is exactly what ``BNGSIM_ENABLE_MIR=1 python scripts/rebuild_editable.py``
+    has always meant. What is left is a tree that says something nobody in this
+    run asked for, which is the GH #459 signature.
+    """
+    conflicts: list[tuple[str, str, str]] = []
+    for name, setting in settings.items():
+        if setting.origin == _ORIGIN_ENVIRONMENT:
+            continue
+        cached_value = cached.get(name)
+        if cached_value is None or cached_value == setting.value:
+            continue
+        conflicts.append((name, cached_value, setting.value))
+    return conflicts
+
+
+def _configuration_conflict_message(build_dir: Path, conflicts: list[tuple[str, str, str]]) -> str:
+    """What to say to someone whose build tree was reconfigured behind their back."""
+    rows = "\n".join(
+        f"    {name}: cache has {cached}, this rebuild asks for {wanted}"
+        for name, cached, wanted in conflicts
+    )
+    keep = " ".join(f"{name}={cached}" for name, cached, _ in conflicts)
+    return f"""\
+The CMake cache in
+
+    {build_dir}
+
+was configured with a different feature set than this rebuild asks for:
+
+{rows}
+
+Every build for this interpreter and platform shares that one directory
+(build-dir = "build/{{wheel_tag}}" in pyproject.toml). Its name records the wheel
+tag and nothing about the configuration, so a second install — into another
+virtual environment, or with different --config-settings — rewrites the cache
+this rebuild would otherwise build from. Building on it produces an extension
+with features you did not ask for, and nothing else says so: the staleness guard
+compares timestamps, and the binary really would be fresh (GH #459).
+
+Reconfiguring in place is not enough, because a tree that has already been built
+carries link settings from the configuration it was built with. Delete it and
+reinstall:
+
+    rm -rf {build_dir}
+    uv pip install -e . --no-deps --force-reinstall
+
+If the cached configuration is the one you want, ask for it and this rebuild
+will keep it:
+
+    {keep} python scripts/rebuild_editable.py
+
+Giving a differently configured install its own tree is what stops this
+happening again:
+
+    uv pip install ... --config-settings=build-dir=/tmp/otherbuild/{{wheel_tag}} .\
+"""
+
+
 def _configure_cmd(
     source_dir: Path,
     build_dir: Path,
     *,
+    settings: Mapping[str, _Setting],
     pybind11_cmake_dir: str | None,
     sdkroot: str | None,
     macos_architectures: str | None,
@@ -276,8 +571,6 @@ def _configure_cmd(
         str(source_dir),
         "-B",
         str(build_dir),
-        "-DBNGSIM_BUILD_PYTHON=ON",
-        "-DBNGSIM_BUILD_TESTS=OFF",
         # Pin the interpreter we are building *for*. Without this, FindPython
         # reuses the cache, and a tree produced under build isolation cached a
         # Python_EXECUTABLE inside a build venv that no longer exists (uv wipes
@@ -299,11 +592,12 @@ def _configure_cmd(
         cmd.append(f"-DCMAKE_OSX_SYSROOT={sdkroot}")
     if macos_architectures:
         cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={macos_architectures}")
-    # Carry the GH #78 MIR micro-JIT opt-in through to the configure so a
-    # reconfigure doesn't silently turn the prototype backend off. Default
-    # OFF (matches the CMake option); set BNGSIM_ENABLE_MIR=1 to build it.
-    if os.environ.get("BNGSIM_ENABLE_MIR", "").strip().lower() in ("1", "on", "true", "yes"):
-        cmd.append("-DBNGSIM_ENABLE_MIR=ON")
+    # Every option that decides what ends up in the binary, named outright. What
+    # is *not* here is inherited from CMakeCache.txt, and the cache belongs to
+    # whichever build ran last in this tree rather than to this environment
+    # (GH #459) — so nothing configuration-carrying may be left out.
+    cmd += [f"-D{name}={value}" for name, value in _PINNED_OPTION_VALUES.items()]
+    cmd += [f"-D{name}={setting.value}" for name, setting in settings.items()]
     return cmd
 
 
@@ -340,16 +634,12 @@ def _build_dep_modules(source_dir: Path) -> tuple[str, ...] | None:
     pyproject = source_dir / "pyproject.toml"
     if not pyproject.is_file():
         return None
-    table = re.search(
-        r"^\[build-system\]\s*$(?P<body>.*?)(?=^\[|\Z)",
-        pyproject.read_text(),
-        re.MULTILINE | re.DOTALL,
-    )
+    table = _toml_table_body(pyproject.read_text(), "build-system")
     if table is None:
         return None
     requires = re.search(
         r"^requires\s*=\s*\[(?P<items>[^\]]*)\]",
-        table.group("body"),
+        table,
         re.MULTILINE | re.DOTALL,
     )
     if requires is None:
@@ -592,18 +882,30 @@ _STUB_STAMP_RE = re.compile(
     rf"^((?:{'|'.join(_STUB_PER_BUILD_STAMPS)}): str = )'[^']*'", re.MULTILINE
 )
 
+#: The module's ``HAS_*`` capability flags are per-build facts by the same
+#: argument, and the ones GH #459 watched flip: they record which features that
+#: particular configure compiled in, so a developer who builds with
+#: ``-DBNGSIM_ENABLE_MIR=ON`` regenerates the stub with ``HAS_MIR: bool = True``
+#: and is left holding a tracked file no other build agrees with. Keep the
+#: declaration — mypy checks the *type*, and nothing reads a stub's value — and
+#: drop the value, which is the ``= ...`` every hand-written stub uses. Matched
+#: by prefix rather than listed, so a flag added to the bindings is covered the
+#: day it appears.
+_STUB_CAPABILITY_RE = re.compile(r"^(HAS_[A-Z0-9_]*: bool = )(?:True|False)$", re.MULTILINE)
+
 
 def _normalize_stub_build_stamps(stub_text: str) -> str:
-    """Replace the generated build-describing stamps with a stable placeholder.
+    """Replace the generated build-describing values with stable placeholders.
 
     Keeps the committed stub reproducible across machines, commits, dirty working
-    trees, build environments, and releases. A no-op for any stamp the module did
-    not report at all.
+    trees, build environments, releases — and build configurations. A no-op for
+    any stamp or flag the module did not report at all.
     """
-    return _STUB_STAMP_RE.sub(
+    normalized = _STUB_STAMP_RE.sub(
         rf"\1'{_STUB_STAMP_PLACEHOLDER}'",
         stub_text,
     )
+    return _STUB_CAPABILITY_RE.sub(r"\1...", normalized)
 
 
 def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
@@ -620,9 +922,9 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
     pybind11-stubgen ships in the ``dev`` extra, but a plain rebuild without it
     warns and skips rather than failing (the binary is already built by now).
 
-    The generated stamps that describe the build rather than the API
-    (``__build_commit__``, ``__pybind11_version__``, ``__version__``) are
-    normalized away before the stub lands — see
+    The generated values that describe the build rather than the API — the
+    ``__build_commit__``/``__pybind11_version__``/``__version__`` stamps and the
+    ``HAS_*`` capability flags — are normalized away before the stub lands; see
     :func:`_normalize_stub_build_stamps`.
     """
     if os.environ.get("BNGSIM_SKIP_STUBGEN", "") not in ("", "0"):
@@ -705,11 +1007,30 @@ def main() -> int:
     else:
         print(f"pybind11: {pybind11_cmake_dir}", flush=True)
 
+    # Said before the configure for the same reason the pybind11 line is: this
+    # is the configuration the binary is about to get, and a rebuild that changes
+    # what is compiled in should never be something you find out from a diff.
+    settings = _resolve_cmake_settings(source_dir)
+    print(
+        "cmake configuration: "
+        + " ".join(f"{name}={setting.value}" for name, setting in settings.items()),
+        flush=True,
+    )
+    for name, setting in settings.items():
+        if setting.origin == _ORIGIN_ENVIRONMENT:
+            print(f"  {name}={setting.value} (requested via the environment)", flush=True)
+
     timeout = float(os.environ.get("BNGSIM_REBUILD_LOCK_TIMEOUT", _LOCK_TIMEOUT_SECONDS))
     with _editable_rebuild_lock(build_dir, timeout=timeout):
+        # Under the lock, so what we read is what we are about to build from.
+        conflicts = _configuration_conflicts(_cmake_cache_values(build_dir, settings), settings)
+        if conflicts:
+            raise SystemExit(_configuration_conflict_message(build_dir, conflicts))
+
         configure_cmd = _configure_cmd(
             source_dir,
             build_dir,
+            settings=settings,
             pybind11_cmake_dir=pybind11_cmake_dir,
             sdkroot=cmake_sdkroot,
             macos_architectures=macos_architectures,

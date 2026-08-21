@@ -195,6 +195,50 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A second build with different options silently changed what
+  `scripts/rebuild_editable.py` produced (issue #459).** Every build for one
+  interpreter and platform uses the same CMake build directory —
+  `build-dir = "build/{wheel_tag}"`, and the wheel tag records the Python version
+  and the platform, not the virtual environment being installed into and not the
+  options passed. So an install into a *separate* venv rewrites the cache the
+  first one's rebuilds read.
+
+  That script re-specified some options on its configure line and inherited the
+  rest. `BNGSIM_ENABLE_KLU` and `BNGSIM_REQUIRE_KLU` were never passed, so they
+  came entirely from whatever the last build left behind; `BNGSIM_ENABLE_MIR` was
+  passed only when its environment variable was set, so a cached `ON` stayed
+  `ON`. One MIR-configured install into a second venv was enough to turn
+  `print(HAS_KLU, HAS_MIR)` from `True False` into `False True` at the next
+  rebuild of the original environment. Nothing said so: the staleness guard
+  compares source timestamps against the binary, and the binary really was
+  fresh — it was just configured differently.
+
+  The configure line now names every option that decides what gets compiled in,
+  resolved from the CMakeLists.txt `option()` defaults, then `pyproject.toml`,
+  then a same-named environment variable — never from the tree. `CMAKE_BUILD_TYPE`
+  is pinned the same way, which was the same bug one step quieter: a tree another
+  install configured `Debug` rebuilt as `Debug`, with only the compile lines to
+  say so. A test holds the table to CMakeLists.txt and fails if an option is
+  added there without being classified, because an unclassified option is one the
+  configure line does not pass, which is one the cache decides.
+
+  A cache that disagrees with what the rebuild asks for now stops it, naming each
+  option, both values, and the recovery: `rm -rf` on the tree plus a reinstall,
+  because reconfiguring an already-built tree leaves link settings from the
+  configuration it was built with — in the reported case an extension that would
+  not load at all (`Library not loaded: @rpath/libklu.2.dylib`). A difference
+  this invocation asked for by environment variable is not a disagreement, so
+  `BNGSIM_ENABLE_MIR=1 python scripts/rebuild_editable.py` still means what
+  `scripts/MIR_VENDORING.md` says it means, and the same spelling now works for
+  every option in the table.
+
+  The committed `_bngsim_core.pyi` stub is where the drift was noticed — a
+  modified tracked file flipping `HAS_KLU` and `HAS_MIR`, easy to commit by
+  accident. Those flags describe one build, exactly like the `__build_commit__`
+  and `__version__` stamps already normalized out of that file, so they normalize
+  to `...` too. That also covers the deliberate case, where someone building with
+  `-DBNGSIM_ENABLE_MIR=ON` is left holding a diff no other build agrees with.
+
 - **`mratio()` had 60 more silently wrong answers than issue #453 measured
   (issue #456).** The rule that issue #453 shipped admits arguments when
   `b*b >= 64*|z*a|`, which bounds the *odd* partial numerators of the continued
