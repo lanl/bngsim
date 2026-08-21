@@ -27,13 +27,17 @@ Two guards keep the table honest, because a table nobody adds to stops meaning
 anything:
 
 * ``test_every_emittable_function_has_a_case`` reads the emitters' own name
-  tables. A new function mapped there with no row here fails.
+  tables. A new function mapped there with no row here fails. This is the guard
+  that would have caught #460, together with the row it forces: ``Max`` was in
+  the ExprTk emitter's table from the start, so it would have had a row, and the
+  row hands ``Max(x0, x1)`` to the engine, which answers "ERR239 - Undefined
+  symbol: 'Max'". Removing the two printer methods #460 added makes exactly the
+  four min/max rows below fail, with that message.
 * ``test_every_printer_method_is_exercised`` runs the whole table through
   instrumented copies of both printers and collects which ``_print_*`` methods
-  ran. A new printer method with no row that reaches it fails. This is the guard
-  that would have caught #460: ``Max`` had a table entry and no method, so the
-  row for it would have gone through sympy's fallback and the engine would have
-  refused the text.
+  ran. A new printer method with no row that reaches it fails. This is the same
+  hole from the other side: a method is a spelling nothing has asked the target
+  about.
 
 The last section is about the family #460 left behind. ``Xor``, ``Implies`` and
 ``Equivalent`` are boolean nodes the emitters have no spelling for, and ``Xor``
@@ -455,11 +459,15 @@ def _instrumented(make_printer):
 def test_every_printer_method_is_exercised(monkeypatch):
     """No printer method may go untested, in either emitter.
 
-    This is the guard for the shape of #460 rather than for its instance. ``Max``
-    was in the name table and had no printer method, so sympy's own fallback
-    printed the class name and the engine refused the text. A method with no case
-    is the same hole one step along: it is code nothing has ever asked the target
-    about.
+    The name tables are one half of what the emitters support and the printer
+    methods are the other, so both halves need a guard. A method with no case is
+    a spelling nothing has ever asked the target about, which is the state
+    ``Max`` was in for the opposite reason: it had a table entry and no method.
+
+    Written by instrumenting the printers rather than by listing the methods,
+    because a list is one more thing to keep in step. A case that stops reaching
+    a method — sympy folding it away, say — fails here rather than quietly
+    covering less.
     """
     exprtk_class, exprtk_ran = _instrumented(jac._make_printer)
     c_class, c_ran = _instrumented(jac._make_c_printer)
