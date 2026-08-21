@@ -13,6 +13,16 @@ only the wall-clock ``timeout`` ever ended it. In a PyBNF fit with
 The retry now stops the moment a batch fails to advance the internal time, which
 is that stall and no other case — a model that legitimately needs many steps
 advances every batch, however slowly.
+
+Since issue #443 this fixture no longer wedges when it is run as written. Its
+switch thresholds a counter species, bngsim now works out that the counter
+reaches ``sigma`` at t = sigma and stops the step exactly there, and the run
+completes — which is the better fix and is asserted at the bottom of this file.
+So the three tests that need the stall stand the crossing stop down first, by
+emptying the conditions the model derived. That is not an artificial state: it
+is what every model whose crossing time bngsim cannot resolve still looks like —
+a threshold on live state, a residual that is not linear in time — and those are
+the models the bounded retry is there for.
 """
 
 from __future__ import annotations
@@ -39,8 +49,21 @@ _FAST = 30.0
 
 @pytest.fixture
 def stall_model():
+    """The fixture with its crossing stop stood down, so it still wedges.
+
+    See the module docstring: the model as written is repaired by issue #443,
+    and what is under test here is the retry bound rather than the crossing.
+    Emptying the derived conditions is how a model whose crossing time cannot be
+    resolved reaches the integrator, which is the population this guard covers.
+    """
     assert STALL_NET.exists(), f"test data not found: {STALL_NET}"
-    return bngsim.Model.from_net(str(STALL_NET))
+    model = bngsim.Model.from_net(str(STALL_NET))
+    assert model.time_discontinuity_conditions(), (
+        "the fixture no longer derives a crossing at all, so standing it down "
+        "proves nothing; check what changed in the scan"
+    )
+    model._derived_time_disc_conditions = ()
+    return model
 
 
 def test_stall_raises_quickly_instead_of_hanging(stall_model):
@@ -100,6 +123,36 @@ def test_loose_tolerances_still_integrate_normally(stall_model):
     # The run really did cross the switch rather than stopping short of it.
     assert float(np.asarray(r.time)[-1]) == pytest.approx(648.0)
     assert float(np.asarray(r.time)[-1]) > SIGMA
+
+
+def test_the_switch_is_stopped_at_rather_than_wedged_on():
+    """Issue #443: the model this fixture came from now integrates.
+
+    The stall it was written for is a step size collapsing at a rate jump the
+    integrator tried to step over. The counter species the jump thresholds
+    advances at exactly rate 1, so the crossing is at t = sigma and bngsim stops
+    the step there, takes the whole approach on the branch that is ending, and
+    restarts on the other one. Nothing is left for the error test to fail on.
+
+    The same run with the crossing stood down is the `stall_model` fixture
+    above, and it still raises — so this asserts the repair rather than a
+    quietly loosened tolerance.
+    """
+    model = bngsim.Model.from_net(str(STALL_NET))
+    assert model.time_discontinuity_conditions() == ("t>=sigma",)
+
+    r = bngsim.Simulator(model, method="ode").run(t_span=(0.0, 648.0), n_points=649)
+
+    species = np.asarray(r.species)
+    assert species.shape[0] == 649
+    assert np.all(np.isfinite(species))
+    assert float(np.asarray(r.time)[-1]) == pytest.approx(648.0)
+    # The switch turns transfer on at sigma, so S_P has to leave zero after it
+    # and stay at zero before it. Column order is the species block: S_M, S_P,
+    # E, counter.
+    times = np.asarray(r.time)
+    assert species[times < SIGMA, 1].max() == 0.0
+    assert species[-1, 1] > 0.0
 
 
 def test_a_slow_but_advancing_model_is_not_refused():

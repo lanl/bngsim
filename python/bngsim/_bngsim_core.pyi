@@ -711,9 +711,9 @@ class SolverOptions:
     steady_state: bool
     def __init__(self) -> None:
         ...
-    def set_crossing_stop_times(self, times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+    def set_crossing_stops(self, stops: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
         """
-        Set the model times a fixed time-dependent `piecewise`/`if()` branch flips at, so the integrator lands ON each crossing instead of trying to step over it (issue #305). A GH #72 discontinuity root cannot do this by itself: CVODE tests for a root only on a step it ACCEPTS, and where the jump is large enough that the error test rejects every step containing the crossing, t creeps to the last double below it and wedges at t + h == t without the root ever firing. Resolved by bngsim._switch_sensitivity.fixed_time_crossings; empty (the default) leaves the integration loop untouched.
+        Set the model times a fixed time-dependent `piecewise`/`if()` branch flips at, so the integrator lands ON each crossing instead of trying to step over it (issue #305). A GH #72 discontinuity root cannot do this by itself: CVODE tests for a root only on a step it ACCEPTS, and where the jump is large enough that the error test rejects every step containing the crossing, t creeps to the last double below it and wedges at t + h == t without the root ever firing. Each entry is (time, clock_species_index, threshold); the clock index is -1 for a condition on literal simulation time, and otherwise names the counter species the condition thresholds, which run() lands on `threshold` at the stop so the restart reads the after-branch (issue #443). Resolved by bngsim._switch_sensitivity.fixed_crossing_stops; empty (the default) leaves the integration loop untouched.
         """
     def set_event_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
         """

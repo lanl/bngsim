@@ -61,6 +61,52 @@
 
 namespace bngsim {
 
+// ─── Land a counter clock ON its threshold, not a few ulp short (issue #82) ──
+//
+// A stop time puts t exactly on t*, but the condition that flips there is read
+// off the CLOCK SPECIES, and that clock is integrated: counter(t*) comes back
+// 1–2e-14 BELOW the threshold it is supposed to have reached. So the restart
+// after the stop re-enters on the *before* branch and the discontinuity lands
+// inside the first step after the restart — the one place the stop time exists
+// to prevent it. CVODES then sizes h from the pre-switch right-hand side
+// (identically 0 on the model issue #82 was filed from: no transmission, no
+// distancing), every corrector answers with the post-switch one, and the error
+// test fails at every h down to ~1e-10 — 7 failures, no step completed,
+// CV_ERR_FAILURE at the crossing. Which side of the threshold the last bits
+// fall on is deterministic but effectively arbitrary, which is why issue #82
+// looks like isolated spikes in parameter space and moves non-monotonically
+// with rtol: a fit lost 25% of otherwise-integrable candidates to it.
+//
+// t* is DEFINED as the time the clock reaches `threshold` (a unit-rate counter,
+// so t* = threshold − offset exactly), so setting the clock there is a
+// correction of accumulated integration error, not a perturbation. nextafter
+// puts it on the after-branch of a strict `>` as well as a `>=`, at a cost of
+// one ulp. Discrepancies too large to be roundoff are left alone: those would
+// mean the crossing was detected in the wrong place, and silently moving state
+// would only hide it.
+//
+// Both kinds of stop read this one rule so they cannot drift apart: the issue
+// #48 sensitivity jump, which has always needed it, and the plain issue
+// #305/#443 crossing stop, which needs it the moment a .net model's condition
+// thresholds a counter rather than literal time. Returns whether it moved the
+// state, which is what tells the crossing-stop handler that a restart is now
+// required even where a root already reinitialised.
+bool land_clock_on_threshold(double *y_data, int ns, int clock_species_idx0, double threshold) {
+    if (clock_species_idx0 < 0 || clock_species_idx0 >= ns) {
+        throw std::runtime_error("crossing stop names clock species index " +
+                                 std::to_string(clock_species_idx0) +
+                                 ", which this model does not have (issue #82)");
+    }
+    const size_t clk = static_cast<size_t>(clock_species_idx0);
+    const double drift = y_data[clk] - threshold;
+    const double drift_max = 1e-9 * std::max(std::fabs(threshold), 1.0);
+    if (drift < 0.0 && -drift <= drift_max) {
+        y_data[clk] = std::nextafter(threshold, std::numeric_limits<double>::infinity());
+        return true;
+    }
+    return false;
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 // SPARSE_THRESHOLD / SPARSE_DENSITY_MAX and the dense-vs-sparse decision they
@@ -4419,35 +4465,12 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     }
     const std::vector<double> &sw_f_jump = *jump_from;
 
-    // ── Land the clock ON its threshold, not a few ulp short (issue #82) ──
-    // The stop time puts t exactly on t*, but the condition is read off the
-    // CLOCK SPECIES, and that clock is integrated: counter(t*) comes back
-    // 1–2e-14 BELOW the threshold it is supposed to have reached. So the
-    // restart below re-enters on the *before* branch and the discontinuity
-    // lands inside the first step after the restart — the one place the stop
-    // time exists to prevent it. CVODES then sizes h from the pre-switch RHS
-    // (identically 0 on this model: no transmission, no distancing), every
-    // corrector answers with the post-switch RHS, and the error test fails at
-    // every h down to ~1e-10 — 7 failures, no step completed, CV_ERR_FAILURE
-    // at the crossing. Which side of the threshold the last bits fall on is
-    // deterministic but effectively arbitrary, which is why issue #82 looks
-    // like isolated spikes in parameter space and moves non-monotonically
-    // with rtol: a fit lost 25% of otherwise-integrable candidates to it.
-    //
-    // t* is DEFINED as the time the clock reaches `threshold` (a unit-rate
-    // counter, so t* = threshold − offset exactly), so setting the clock
-    // there is a correction of accumulated integration error, not a
-    // perturbation. nextafter puts it on the after-branch of a strict `>` as
-    // well as a `>=`, at a cost of one ulp. Discrepancies too large to be
-    // roundoff are left alone: those would mean the crossing was detected in
-    // the wrong place, and silently moving state would only hide it.
+    // Land the clock ON its threshold rather than a few ulp short, so the
+    // resumed integration reads the after-branch (issue #82). The rule itself
+    // is `land_clock_on_threshold` at the top of this file, shared with the
+    // plain crossing stop so the two cannot drift apart.
     if (!time_clock) {
-        const size_t clk = static_cast<size_t>(sw.clock_species_idx0);
-        const double drift = y_data[clk] - sw.threshold;
-        const double drift_max = 1e-9 * std::max(std::fabs(sw.threshold), 1.0);
-        if (drift < 0.0 && -drift <= drift_max) {
-            y_data[clk] = std::nextafter(sw.threshold, std::numeric_limits<double>::infinity());
-        }
+        land_clock_on_threshold(y_data, ns, sw.clock_species_idx0, sw.threshold);
     }
 
     // Restore the evaluator to the true crossing state so the resumed
@@ -5162,9 +5185,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // every model that had stop times had registered the roots that produced
     // them; a .net model has the stops without the roots, so the check has to
     // be made on its own.
-    const bool warm_eligible = !has_roots && opts.crossing_stop_times.empty() &&
-                               !wants_sensitivity && (opts.jacobian != "jax") &&
-                               !std::getenv("BNGSIM_NO_WARM_CVODE");
+    const bool warm_eligible = !has_roots && opts.crossing_stops.empty() && !wants_sensitivity &&
+                               (opts.jacobian != "jax") && !std::getenv("BNGSIM_NO_WARM_CVODE");
     if (warm_eligible) {
         return impl_->run_warm(times, opts, use_sparse);
     }
@@ -5844,20 +5866,20 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // list already stops at — a #48 crossing carries a sensitivity jump this
     // one must not pre-empt, and stopping twice at one instant would leave the
     // jump keyed on a t_ret the stop already consumed.
-    std::vector<double> crossing_stops;
-    for (double t_cross : opts.crossing_stop_times) {
-        if (!(t_cross > t_out.front() && t_cross <= t_out.back())) {
+    std::vector<CrossingStop> crossing_stops;
+    for (const CrossingStop &stop : opts.crossing_stops) {
+        if (!(stop.t_star > t_out.front() && stop.t_star <= t_out.back())) {
             continue;
         }
         bool claimed_by_switch = false;
         for (const auto *sw : switch_list) {
-            if (std::fabs(sw->t_star - t_cross) <= switch_t_eps) {
+            if (std::fabs(sw->t_star - stop.t_star) <= switch_t_eps) {
                 claimed_by_switch = true;
                 break;
             }
         }
         if (!claimed_by_switch) {
-            crossing_stops.push_back(t_cross);
+            crossing_stops.push_back(stop);
         }
     }
     size_t next_crossing = 0; // index into crossing_stops of the next one ahead
@@ -6228,7 +6250,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 ++next_switch; // defensive: a crossing we are already past
             }
             while (next_crossing < crossing_stops.size() &&
-                   crossing_stops[next_crossing] <= static_cast<double>(t_now) + switch_t_eps) {
+                   crossing_stops[next_crossing].t_star <=
+                       static_cast<double>(t_now) + switch_t_eps) {
                 ++next_crossing;
             }
             // Whichever comes first. Ties cannot happen: a crossing at a #48
@@ -6236,7 +6259,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const bool have_switch = next_switch < switch_list.size();
             const bool have_crossing = next_crossing < crossing_stops.size();
             if (have_switch && (!have_crossing || switch_list[next_switch]->t_star <=
-                                                      crossing_stops[next_crossing])) {
+                                                      crossing_stops[next_crossing].t_star)) {
                 t_switch = switch_list[next_switch]->t_star;
                 int sf = CVodeSetStopTime(cvode_mem, static_cast<sunrealtype>(t_switch));
                 if (sf != CV_SUCCESS) {
@@ -6246,7 +6269,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
                 stop_at_switch = true;
             } else if (have_crossing) {
-                t_crossing = crossing_stops[next_crossing];
+                t_crossing = crossing_stops[next_crossing].t_star;
                 int sf = CVodeSetStopTime(cvode_mem, static_cast<sunrealtype>(t_crossing));
                 if (sf != CV_SUCCESS) {
                     throw std::runtime_error("CVodeSetStopTime for discontinuity crossing t=" +
@@ -6630,12 +6653,27 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // issue #146), so this runs only when none fired: an unconditional
             // second reinit would be harmless but wasteful, while skipping the
             // s⁻ capture/resume on the path where no root fires would not be.
+            // The exception is a counter clock that had to be landed on its
+            // threshold just below: that moved the state after the root's own
+            // reinit read it, so the restart has to happen again to pick it up.
             if (stop_at_crossing && static_cast<double>(t_ret) >= t_crossing - switch_t_eps) {
+                bool landed_clock = false;
                 while (next_crossing < crossing_stops.size() &&
-                       crossing_stops[next_crossing] <= static_cast<double>(t_ret) + switch_t_eps) {
+                       crossing_stops[next_crossing].t_star <=
+                           static_cast<double>(t_ret) + switch_t_eps) {
+                    // A condition on a counter species reads a clock that is
+                    // integrated, so at the stop it sits a couple of parts in
+                    // 1e14 short of the threshold and still reads the branch
+                    // that just ended (issues #82, #443). Put it exactly where
+                    // the crossing time says it is before restarting.
+                    const CrossingStop &reached = crossing_stops[next_crossing];
+                    if (reached.clock_species_idx0 >= 0) {
+                        landed_clock |= land_clock_on_threshold(
+                            y_data, ns, reached.clock_species_idx0, reached.threshold);
+                    }
                     ++next_crossing;
                 }
-                if (flag != CV_ROOT_RETURN) {
+                if (flag != CV_ROOT_RETURN || landed_clock) {
                     std::vector<std::vector<double>> cross_s_minus;
                     if (sens.n_total > 0) {
                         cross_s_minus = impl_->capture_event_sens(cvode_mem, ns,

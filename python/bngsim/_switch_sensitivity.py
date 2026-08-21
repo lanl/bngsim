@@ -373,6 +373,40 @@ def _condition_only_params(
     return pure
 
 
+def _unit_rate_clock_indices(core) -> frozenset[int]:
+    """Every species index obeying ``dc/dt = 1``, from two RHS probes.
+
+    Split out of :func:`_unit_rate_clock_species` because it is the half that
+    needs no ``functional_jacobian_context()``: two evaluations of the right-hand
+    side and nothing else. :func:`time_discontinuity_conditions` asks the
+    question in that cheap form, so that a model with a conditional rate law but
+    no counter can be dismissed without building a context that runs to tens of
+    thousands of entries on a large model.
+    """
+    n_species = core.n_species
+    if n_species == 0:
+        return frozenset()
+    conc = [core.get_concentration(name) for name in core.species_names]
+    try:
+        deriv = core._eval_rhs(0.0, conc)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("switch-time: RHS probe for clock detection failed: %s", exc)
+        return frozenset()
+    clock_idx = {i for i in range(n_species) if deriv[i] == _CLOCK_SLOPE}
+    if not clock_idx:
+        return frozenset()
+    # Confirm the slope is state-independent: a species whose RHS merely happens
+    # to equal 1 at the initial state is not a clock. Probing at a perturbed
+    # state is enough to reject every state-dependent rate law.
+    probe = [c + 1.0 for c in conc]
+    try:
+        deriv2 = core._eval_rhs(1.0, probe)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("switch-time: second RHS probe failed: %s", exc)
+        return frozenset()
+    return frozenset(i for i in clock_idx if deriv2[i] == _CLOCK_SLOPE)
+
+
 def _unit_rate_clock_species(core, ctx=None) -> dict[str, int]:
     """Map every symbol that reads a unit-rate clock to its species index.
 
@@ -386,28 +420,7 @@ def _unit_rate_clock_species(core, ctx=None) -> dict[str, int]:
     condition may be written against either. Returns ``{}`` for the overwhelming
     majority of models, which have no such species.
     """
-    n_species = core.n_species
-    if n_species == 0:
-        return {}
-    conc = [core.get_concentration(name) for name in core.species_names]
-    try:
-        deriv = core._eval_rhs(0.0, conc)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("switch-time: RHS probe for clock detection failed: %s", exc)
-        return {}
-    clock_idx = {i for i in range(n_species) if deriv[i] == _CLOCK_SLOPE}
-    if not clock_idx:
-        return {}
-    # Confirm the slope is state-independent: a species whose RHS merely happens
-    # to equal 1 at the initial state is not a clock. Probing at a perturbed
-    # state is enough to reject every state-dependent rate law.
-    probe = [c + 1.0 for c in conc]
-    try:
-        deriv2 = core._eval_rhs(1.0, probe)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("switch-time: second RHS probe failed: %s", exc)
-        return {}
-    clock_idx = {i for i in clock_idx if deriv2[i] == _CLOCK_SLOPE}
+    clock_idx = _unit_rate_clock_indices(core)
     if not clock_idx:
         return {}
 
@@ -1490,8 +1503,17 @@ def _crossing_time_of_condition(
     return answer
 
 
-def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
-    """True when *atom* compares simulation time against things that never move.
+def _blank_clock_refs(text: str, scope: SwitchConditionScope) -> str:
+    """*text* with every clock reference replaced by a literal, so what is left
+    is the things the clock is being compared against."""
+    blanked = _TIME_REF.sub(" 0 ", text)
+    for sym in scope.clocks:
+        blanked = _clock_symbol_sub(blanked, sym, " 0 ")
+    return blanked
+
+
+def _switches_on_clock_alone(atom: str, scope: SwitchConditionScope) -> bool:
+    """True when *atom* compares a clock against things that never move.
 
     The admission rule for :func:`time_discontinuity_conditions` (issue #440),
     and it is deliberately narrow. ``time() >= 100`` and ``time() - 24*floor(
@@ -1499,12 +1521,15 @@ def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
     crosses at a time no one knows in advance; and ``time() < S1`` does not
     either, for the same reason written the other way round.
 
-    A *counter-species* clock — the BNGL idiom of a species fed at rate 1 and
-    read through a group — is excluded too, even though its crossing time is
-    just as knowable (``t_start + threshold − c(t_start)``, the conversion issue
-    #48 already makes). It is the spelling BNGL models actually use, so
-    admitting it moves far more than this does, and it is tracked separately as
-    issue #443.
+    A *clock* is literal simulation time or a counter species: one fed by a
+    zeroth-order reaction at rate 1 and read back through a group, which is how
+    a BNGL model makes time available to a rate law (issue #443). The two are
+    interchangeable here because a counter's value is time plus a constant
+    offset, so the time at which it reaches a threshold is just as knowable:
+    ``t_start + threshold − c(t_start)``, the conversion issue #48 already
+    makes. Which one an atom is written against is recorded, because a stop
+    placed on a counter needs the counter landed exactly on its threshold and a
+    stop placed on literal time does not — see :func:`fixed_crossing_stops`.
 
     "Never move" is :attr:`SwitchConditionScope.run_constants` — primary
     parameters, less the slots a model *function* owns, whose value is rewritten
@@ -1525,9 +1550,9 @@ def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
         # orderings for the same reason.
         return False
     flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-    if not _TIME_REF.search(flat):
+    if _clock_free(flat, scope.clock_symbols):
         return False
-    blanked = _TIME_REF.sub(" 0 ", flat)
+    blanked = _blank_clock_refs(flat, scope)
     for m in _IDENTIFIER.finditer(blanked):
         name = m.group(0)
         if name in scope.function_names:
@@ -1548,14 +1573,14 @@ def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
 
 
 def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
-    """Every rate-law branch condition this model switches on *time* alone with.
+    """Every rate-law branch condition this model switches on a *clock* alone with.
 
     The ``.net``/BNGL answer to the question the SBML loader answers at load
     time by walking the libSBML tree and calling ``add_discontinuity_trigger``
     (issue #440). A BNGL model is built entirely in C++, so there is no
     build-time seam to register a root at; what there is instead is the run-time
-    stop time (:func:`fixed_time_crossings`,
-    ``SolverOptions.set_crossing_stop_times``), which lands the step exactly on
+    stop time (:func:`fixed_crossing_stops`,
+    ``SolverOptions.set_crossing_stops``), which lands the step exactly on
     the crossing and restarts there. That is the half of issue #305 that does
     the work here.
 
@@ -1569,11 +1594,11 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     The scan mirrors :func:`model_moving_crossings` — same texts, same inlining,
     same atom split — so a threshold written inside a called function definition
     is found under its call site. It differs only in which atoms it keeps:
-    :func:`_switches_on_time_alone`, which is the set whose crossing times are
+    :func:`_switches_on_clock_alone`, which is the set whose crossing times are
     knowable before the run rather than the set whose crossing times move.
 
     Empty for a model with no functions, and for the far more common model whose
-    conditions read state rather than time, so nothing about its stepping
+    conditions read state rather than a clock, so nothing about its stepping
     changes.
     """
     from bngsim._jacobian import _inline_functions, has_condition_construct
@@ -1582,22 +1607,29 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
         return ()
     if ctx is None:
         # The raw texts first, which is the cheap half: a model with no
-        # conditional rate law, or none that so much as mentions time,
-        # short-circuits here rather than paying for
-        # ``functional_jacobian_context()``, whose function_map is built from
-        # every function the model has and runs to tens of thousands of entries
-        # on a genome-scale one. Neither inlining a function nor inlining a
-        # derived parameter can introduce a conditional or a ``time`` that none
-        # of these texts already spells, which is why both halves are sound
-        # read here — the same argument the issue #333 guard makes for reading
-        # ``function_expressions`` instead of the context. Measured on this
-        # repository's ``.net`` corpus: 80 of 585 models carry a conditional
-        # rate law and 3 of those mention time, so the time half is what keeps
-        # a 43 ms scan off the other 77.
+        # conditional rate law, and no clock for one to threshold, short-circuits
+        # here rather than paying for ``functional_jacobian_context()``, whose
+        # function_map is built from every function the model has and runs to
+        # tens of thousands of entries on a genome-scale one. Neither inlining a
+        # function nor inlining a derived parameter can introduce a conditional
+        # or a ``time`` that none of these texts already spells, which is why
+        # both halves are sound read here — the same argument the issue #333
+        # guard makes for reading ``function_expressions`` instead of the
+        # context. Measured on this repository's ``.net`` corpus: 80 of 585
+        # models carry a conditional rate law, so the second half is what keeps
+        # a 43 ms scan off most of them.
+        #
+        # A counter clock cannot be recognized from the texts, because what
+        # names it is the shape of the model's right-hand side rather than
+        # anything the condition spells: the group is called ``t`` in one model
+        # and ``Time_`` in the next (issue #443). Two evaluations of the RHS
+        # answer it instead, which is far cheaper than the context this is
+        # guarding, and the answer is reused by ``switch_condition_scope``
+        # below.
         texts_raw = (*core.function_expressions, *core.param_expressions)
         if not any(has_condition_construct(t) for t in texts_raw):
             return ()
-        if not any(_TIME_REF.search(t) for t in texts_raw):
+        if not any(_TIME_REF.search(t) for t in texts_raw) and not _unit_rate_clock_indices(core):
             return ()
         ctx = core.functional_jacobian_context()
     func_map = dict(ctx["function_map"])
@@ -1620,7 +1652,7 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     for text in conditional:
         flat = _inline_functions(text, func_map) or text
         for atom in _iter_condition_atoms(flat):
-            if atom not in found and _switches_on_time_alone(atom, scope):
+            if atom not in found and _switches_on_clock_alone(atom, scope):
                 found.append(atom)
     return tuple(found)
 
@@ -1655,10 +1687,10 @@ def _schedule_stop_times(
     enumeration read for the far simpler purpose of stopping the step at each
     one.
 
-    Only a schedule over literal simulation time, matching what
-    :func:`_switches_on_time_alone` admits. A counter-species clock is read from
-    live state, which is a different claim about the model, and it is tracked as
-    issue #443.
+    Only a schedule over literal simulation time. A counter clock reaches this
+    already rewritten into one by :func:`_rewrite_counter_clock`, so the two
+    spellings arrive here as the same text and there is nothing here that has to
+    know which one the model wrote (issue #443).
 
     Read for a condition the SBML loader registered as well as for one derived
     from a BNGL function body. The registered CVODE root does not cover a
@@ -1758,9 +1790,68 @@ def _resolve_schedule_stop_times(
     return [value for value, _partials in edges]
 
 
-def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> list[float]:
-    """Times in ``(t_start, t_end]`` at which a registered time discontinuity
-    flips, for ``SolverOptions.set_crossing_stop_times`` (issue #305).
+class CrossingStop(NamedTuple):
+    """One model time the integrator has to land exactly on (issues #305, #443).
+
+    ``clock_species_idx`` is the 0-based index of the counter species whose
+    threshold this crossing is, or ``-1`` when the condition reads literal
+    simulation time. ``threshold`` is the value that counter holds at ``time``,
+    and is meaningless (0.0) for a literal-time crossing.
+
+    The counter fields are what separate this from a bare list of times, and
+    they exist because a counter is *integrated*. Stopping the step at ``time``
+    puts the clock at ``threshold`` to within the integrator's own error, which
+    is a couple of parts in 1e14 short of it — and on the short side the
+    condition is still false, so the run restarts on the branch that just ended
+    and meets the discontinuity inside the first step after a restart that has
+    no history to fall back on. That is issue #82, and the core repairs it by
+    setting the counter to its exact value at the crossing before it restarts.
+    Literal simulation time needs none of this, because the stop is computed
+    from the same clock the condition reads.
+    """
+
+    time: float
+    clock_species_idx: int
+    threshold: float
+
+
+def _rewrite_counter_clock(
+    core, cond: str, scope: SwitchConditionScope, t_start: float
+) -> tuple[str, int, float] | None:
+    """*cond* with its counter clock rewritten as an expression in simulation
+    time, plus the counter's species index and its offset from time.
+
+    A counter obeys ``dc/dt = 1``, so ``c(t) = t + (c(t_start) − t_start)`` for
+    the whole of the run: one substitution turns a condition on the counter into
+    the condition on time that it already is, and every resolver below can then
+    read it without knowing a counter was ever involved. That is the whole of
+    what issue #443 needs on this side — ``t >= 100`` on a counter starting from
+    0 becomes ``time() + 0.0 >= 100``, and the linear solve places the stop at
+    100 exactly as it would for the literal spelling.
+
+    ``(cond, -1, 0.0)`` for a condition that reads literal time and no counter,
+    which leaves it untouched. ``None`` for one reading two different counters:
+    both would have to be landed on their own threshold at the stop and the
+    record carries one, and no model in this repository's corpus writes it.
+    """
+    syms = [sym for sym in scope.clocks if not _clock_free(cond, {sym})]
+    if not syms:
+        return cond, -1, 0.0
+    indices = {scope.clocks[sym] for sym in syms}
+    if len(indices) != 1:
+        logger.debug("crossing stop: %r reads more than one counter clock; skipping", cond)
+        return None
+    idx = next(iter(indices))
+    offset = float(core.get_concentration(core.species_names[idx])) - t_start
+    rewritten = cond
+    for sym in syms:
+        rewritten = _clock_symbol_sub(rewritten, sym, f"(time()+({offset!r}))")
+    return rewritten, idx, offset
+
+
+def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> list[CrossingStop]:
+    """Crossings in ``(t_start, t_end]`` at which a registered time discontinuity
+    flips, for ``SolverOptions.set_crossing_stops`` (issue #305).
 
     The core stops the integration step exactly on each of these. That is not a
     refinement of the GH #72 root — it is what makes the root reachable at all.
@@ -1785,6 +1876,14 @@ def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> l
     schedule (:func:`_schedule_stop_times`) has one per period, enumerated from
     the pattern issue #436 recognizes.
 
+    Either may be written against a counter species rather than against literal
+    simulation time, which is the spelling BNGL models actually use and issue
+    #443 is about: 37 of the 585 ``.net`` models in this repository's corpus
+    threshold a counter, against none that threshold ``time()``.
+    :func:`_rewrite_counter_clock` turns such a condition into the condition on
+    time it already is before either resolver sees it, so neither of them, and
+    nothing below them, needs a second code path.
+
     A schedule is placed whether the condition was registered by the SBML loader
     or derived from a BNGL function body, because the registered root does not
     cover it. The root is evaluated on the *boolean*, and the boolean of a
@@ -1806,21 +1905,47 @@ def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> l
     ctx = core.functional_jacobian_context()
     scope = switch_condition_scope(core, ctx)
     aliases = _time_alias_bodies(ctx)
-    out: list[float] = []
+    out: list[CrossingStop] = []
     for cond in conditions:
-        t_star = _crossing_time_of_condition(cond, scope, t_start, t_end, aliases)
+        rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
+        if rewrite is None:
+            continue
+        text, clock_idx, offset = rewrite
+        t_star = _crossing_time_of_condition(text, scope, t_start, t_end, aliases)
         times: list[float] | None = None
         if t_star is not None:
             times = [t_star]
         else:
-            times = _schedule_stop_times(cond, scope, t_start, t_end)
+            times = _schedule_stop_times(text, scope, t_start, t_end)
         for t_cross in times or ():
             if not (t_start < t_cross <= t_end):
                 continue
-            if not any(abs(t_cross - seen) <= 1e-12 * max(abs(t_cross), 1.0) for seen in out):
-                out.append(t_cross)
+            # The counter's exact value at the crossing. Reading it back off the
+            # rewrite rather than off the recognized threshold text is what keeps
+            # the two in step whichever resolver placed the stop, and for a
+            # schedule there is no single threshold text to read.
+            stop = CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
+            near = [
+                i
+                for i, seen in enumerate(out)
+                if abs(t_cross - seen.time) <= 1e-12 * max(abs(t_cross), 1.0)
+            ]
+            if not near:
+                out.append(stop)
+            elif clock_idx >= 0 and out[near[0]].clock_species_idx < 0:
+                # Two conditions crossing at one instant, one on a counter and
+                # one on literal time. Keep the counter record: it does
+                # everything the plain one does and also lands the counter on
+                # its threshold, which the plain one would leave a couple of ulp
+                # short and the counter's own condition reading false.
+                out[near[0]] = stop
     out.sort()
     return out
+
+
+def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> list[float]:
+    """Just the times from :func:`fixed_crossing_stops`, in order."""
+    return [stop.time for stop in fixed_crossing_stops(core, t_start, t_end, conditions)]
 
 
 def fixed_clock_threshold(atom: str, scope: SwitchConditionScope) -> bool:
