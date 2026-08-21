@@ -1590,8 +1590,7 @@ class Simulator:
         wrong time for exactly the rows a scan exists to explore.
         """
         model = model if model is not None else self._model
-        get = getattr(model, "time_discontinuity_conditions", None)
-        conditions = get() if callable(get) else getattr(model, "_time_disc_conditions", ())
+        conditions = model.time_discontinuity_conditions()
         if not conditions:
             return
         from bngsim._switch_sensitivity import fixed_time_crossings
