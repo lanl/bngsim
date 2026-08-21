@@ -16,6 +16,51 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **A model that calls `mratio()` in a rate law now gets an analytic forward
+  sensitivity instead of CVODES' difference quotient (issue #457).** The
+  differentiation layer had never heard of `mratio`, so any derivative through
+  it came back unevaluated and the whole model fell back to the difference
+  quotient. That answer is correct but slower, and the derivative it was falling
+  back from is available in closed form.
+
+  `mratio(a,b,z)` is `M(a+1,b+1,z)` over `M(a,b,z)`, and Kummer's identity is
+  `dM/dz = (a/b)*M(a+1,b+1,z)`. Through the quotient rule, writing `R` for
+  `mratio`,
+
+      dR/dz = R(a,b,z) * [ (a+1)/(b+1)*R(a+1,b+1,z) - (a/b)*R(a,b,z) ]
+
+  so the derivative in the third argument is two more `mratio` calls. No new
+  special function and no new numerics. This is the derivative worth having:
+  BNG builds `a` and `b` from molecule counts and puts the rate constant in `z`,
+  as `z = -1/Keq`, so fitting a rate constant goes through exactly this. The
+  first two arguments have no comparable closed form and get none; a model
+  differentiating through one of them declines and keeps the difference
+  quotient, as it did before.
+
+  The second call is the awkward part. Issue #453 gave `mratio` a region it
+  trusts and made it refuse outside it, and `(a+1, b+1, z)` is not automatically
+  inside: 97.6% of the arguments `mratio` answers for have the shifted call
+  answered too, and the whole of the rest has `a` above -1, where `a+1` turns
+  positive. Every model BNG generates has `a` at or below -1. Refusing the rest
+  would turn a model that runs today into one that fails, since the compiled
+  path has no retry, so the emitted helper falls back to a second exact
+  expression for the same derivative. Kummer's equation
+  `z*M'' + (b-z)*M' - a*M = 0` gives the contiguous relation
+
+      (a+1)/(b+1)*R(a+1,b+1,z)*R(a,b,z) = ( b - (b-z)*R(a,b,z) ) / z
+
+  so the whole derivative follows from the one call the value already makes.
+  That subtraction cancels, which is why it is the second choice and not the
+  first: against a 60 digit reference over 1293 arguments the shifted-call form
+  is right to 9e-16 at the median and this one only to 5e-13, and for a small
+  `|z|` it loses everything. A small `|z|` is where `mratio` trusts the shifted
+  call unconditionally, so the fallback only ever runs at a large `|z|`, where
+  its worst measured error is 1.7e-8.
+
+  The interpreted engine has `mratio` but nothing for its derivative, so the
+  interpreted Jacobian declines it and uses finite differences, which is what it
+  did before. Only the generated C has the helper.
+
 - **`mratio()` answers for 40% more of the arguments it used to refuse (issue
   #456).** Issue #453 made `mratio(a, b, z)` refuse the arguments its continued
   fraction cannot be trusted with, which removed a class of silently wrong

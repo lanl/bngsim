@@ -100,6 +100,131 @@ _EXPRTK_TO_SYMPY_FUNC = {
     "ceil": "ceiling",
 }
 
+# ─── The engine's own functions, as sympy (issue #457) ──────────────────────
+#
+# ``mratio(a, b, z)`` is the ratio of contiguous Kummer functions,
+# M(a+1,b+1,z) / M(a,b,z), computed by ``expr_compat::mratio`` in
+# src/expression.cpp. sympy has nothing of the kind, so before this a rate law
+# calling it parsed as an applied undefined function, every derivative through it
+# came back unevaluated, and the model lost its whole analytic sensitivity
+# right-hand side to CVODES' difference quotient.
+#
+# It does not have to. Kummer's identity is dM(a,b,z)/dz = (a/b)·M(a+1,b+1,z),
+# and putting that through the quotient rule gives, writing R for mratio,
+#
+#     dR/dz (a,b,z) = R(a,b,z)·[ (a+1)/(b+1)·R(a+1,b+1,z) - (a/b)·R(a,b,z) ]
+#
+# which is two ordinary mratio calls and nothing else. No new special function
+# and no new numerics.
+#
+# The first two arguments get no derivative, because there is no comparable
+# closed form for them. Asking for one raises ``ArgumentIndexError``, sympy's
+# way of saying it does not know, and sympy then returns an unevaluated
+# ``Derivative`` that :func:`_is_emittable` refuses — so a model differentiating
+# through ``a`` or ``b`` declines exactly as it did before. That is not much of a
+# loss in practice: BNG builds ``a`` and ``b`` from molecule counts and puts the
+# rate constant in ``z``, so fitting a rate constant moves ``z`` and nothing else.
+#
+# The derivative is emitted as one call to a helper, ``mratio_dz`` below, rather
+# than as the three mratio calls the formula reads as. That is where the one
+# awkward part of this lives, and it is worth stating in full.
+#
+# The second call, R(a+1,b+1,z), has to be one mratio can compute. Issue #453
+# gave mratio a region it trusts and made it refuse outside it, and the shifted
+# arguments are not automatically inside. Over a grid of arguments mratio does
+# answer, 97.6% have the shifted call answered as well, and the whole of the
+# rest has ``a`` above -1, where ``a+1`` turns positive and leaves the two
+# clauses that ask for ``a`` at or below zero. Every model BNG generates has
+# ``a`` at or below -1, so both calls are answered there.
+#
+# Refusing outright in the remaining corner would turn a model that runs today
+# into one that fails: the compiled path has no retry, so a NaN out of the
+# derivative ends the run, where before this change the same model simply used
+# CVODES' difference quotient. So the helper keeps a second exact expression for
+# the same derivative and uses it when the shifted call is refused. Kummer's
+# equation ``z·M'' + (b-z)·M' - a·M = 0`` turns into the contiguous relation
+#
+#     (a+1)/(b+1)·R(a+1,b+1,z)·R(a,b,z) = ( b - (b-z)·R(a,b,z) ) / z
+#
+# so the whole derivative is available from the one mratio the value already
+# needs. It is not the first choice because that subtraction cancels: measured
+# against a 60-digit reference over 1293 arguments, the shifted-call form is
+# right to 9e-16 at the median and the contiguous-relation form only to 5e-13,
+# and for a small |z| the latter loses everything. But small |z| is exactly
+# where mratio trusts the shifted call unconditionally (its ``|z| <= 20``
+# clause), so the fallback only ever runs at a large |z| where it is accurate:
+# over the arguments where it actually fires, its worst error is 1.7e-8 and its
+# median is 1e-13.
+_ENGINE_SYMPY_FUNCS = frozenset({"mratio"})
+
+_engine_sympy_cache: dict = {}
+
+
+def engine_sympy_bindings(sp) -> dict:
+    """``{name: sympy class}`` for the engine functions sympy has no counterpart
+    for, ready for a ``parse_expr`` ``local_dict``.
+
+    Built once and reused. Two separately built sympy ``Function`` subclasses of
+    the same name are different classes, so expressions carrying one would not
+    compare equal to expressions carrying the other, and a derivative would stop
+    cancelling against the term it came from.
+    """
+    bindings = _engine_sympy_cache.get("bindings")
+    if bindings is None:
+        bindings = _make_engine_classes(sp)
+        _engine_sympy_cache["bindings"] = bindings
+    return bindings
+
+
+def _make_engine_classes(sp) -> dict:
+    """Build the sympy classes for the engine's functions (lazily, so sympy
+    stays an optional import for the rest of this module).
+
+    Returns both ``mratio`` and the ``mratio_dz`` its derivative is written in.
+    Only ``mratio`` belongs in a ``parse_expr`` ``local_dict``; ``mratio_dz`` is
+    not a name a model may write, it is what differentiation produces.
+    """
+    from sympy.core.function import ArgumentIndexError
+
+    def _ccode_as(c_name):
+        # ``sympy.ccode`` prints a function it does not know under its own name,
+        # and neither of these is a C function. The derived-parameter chain rule
+        # emits through ``sympy.ccode`` (``_codegen._direct_derived_partials``),
+        # so without this the generated C would call something that does not
+        # exist. The rate-law emitter goes through :func:`sympy_to_c` and
+        # :data:`_SYMPY_FUNC_TO_C` instead; both spell it the same way, which is
+        # the name the C prelude defines.
+        def _ccode(self, printer):
+            return c_name + "(" + ", ".join(printer._print(arg) for arg in self.args) + ")"
+
+        return _ccode
+
+    class mratio_dz(sp.Function):
+        """``d/dz mratio(a, b, z)``, as one node.
+
+        One node rather than the expression it stands for, because the C helper
+        it prints as is where the fallback described above lives, and because
+        the expression would evaluate mratio three times where the helper
+        evaluates it twice. It has no ``fdiff``, so a second derivative comes
+        back unevaluated and the model declines — which is the honest answer,
+        since nothing here knows d2R/dz2.
+        """
+
+        nargs = 3
+        _ccode = _ccode_as("bngsim_mratio_dz")
+
+    class mratio(sp.Function):
+        nargs = 3
+        _ccode = _ccode_as("bngsim_mratio")
+
+        def fdiff(self, argindex=1):
+            if argindex != 3:
+                raise ArgumentIndexError(self, argindex)
+            return mratio_dz(*self.args)
+
+    return {"mratio": mratio, "mratio_dz": mratio_dz}
+
+
 # sympy function names that the ExprTk emitter can represent. A derivative
 # containing any other function (Heaviside, DiracDelta, erf, gamma, …) is not
 # representable and triggers the FD fallback.
@@ -122,6 +247,11 @@ _SYMPY_FUNC_TO_EXPRTK = {
     "Max": "max",
     "floor": "floor",
     "ceiling": "ceil",
+    # The engine's own (issue #457), spelled the same on both sides. This is for
+    # a derivative that still carries the value — ``d/dk (k*mratio(...))`` is
+    # ``mratio(...)``. The derivative *of* mratio is ``mratio_dz``, which is
+    # deliberately absent: the engine has no such function.
+    "mratio": "mratio",
 }
 
 _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
@@ -188,6 +318,11 @@ def _build_local_dict(preprocessed: str, sp):
     # plain Symbols.
     local: dict = {
         **builtin_constant_bindings(sp),
+        # The engine's own functions, which sympy has no counterpart for
+        # (issue #457). Bound unconditionally, like the constants above: no
+        # model may name a parameter after one, so there is nothing to lose a
+        # tie with.
+        **engine_sympy_bindings(sp),
         "Piecewise": sp.Piecewise,
         "Not": sp.Not,
         "And": sp.And,
@@ -204,8 +339,8 @@ def _build_local_dict(preprocessed: str, sp):
         if ident in ("Piecewise", "Not", "And", "Or", "Eq", "Ne") or ident in _LITERAL_KEYWORDS:
             # Bound/handled by sympy as literals; never a parameter symbol.
             continue
-        if ident in _BUILTIN_CONSTANT_VALUES:
-            continue  # already bound to its value above, and no model may rebind it
+        if ident in _BUILTIN_CONSTANT_VALUES or ident in _ENGINE_SYMPY_FUNCS:
+            continue  # already bound above, and no model may rebind either one
         if ident in called and ident in _EXPRTK_TO_SYMPY_FUNC:
             mapped = _EXPRTK_TO_SYMPY_FUNC[ident]
             if mapped is None:
@@ -323,6 +458,14 @@ def _inline_functions(
 #
 # Matched on the type name during one traversal, because Min/Max are Application
 # but *not* Function subclasses, so ``atoms(sp.Function)`` misses them.
+#
+# A name qualifies only when *every* argument position is underivable, and only
+# when *neither* emitter could print the result. The scan below refuses the call
+# as soon as a differentiation variable appears anywhere inside it, so a function
+# that is differentiable in one argument, or printable by one emitter, would be
+# pre-declined for cases that work. ``mratio`` is the first function on either
+# count — closed form in its third argument only, and only in C (issue #457) — so
+# it is deliberately absent. test_jacobian_symbolic.py re-derives the whole set.
 _NONDIFFERENTIABLE_EMITTER_FUNCS = frozenset({"Abs", "Max", "Min", "ceiling", "floor", "sign"})
 
 
@@ -510,7 +653,14 @@ def _is_emittable(expr) -> bool:
         # nested if(); relational conditions inside are handled by StrPrinter.
         if name == "Piecewise":
             continue
-        if name not in _SYMPY_FUNC_TO_EXPRTK:
+        # Either emitter having a spelling is enough to get past here; the one
+        # that has none refuses on its own, and its caller falls back. Until
+        # issue #457 the two tables held the same names and this asked only the
+        # ExprTk one, which then read as the general question. ``mratio_dz`` is
+        # the first name only C can render — ExprTk has no such function, and
+        # writing the identity out instead would hand the interpreted engine a
+        # derivative that throws where the compiled helper falls back.
+        if name not in _SYMPY_FUNC_TO_EXPRTK and name not in _SYMPY_FUNC_TO_C:
             return False
     return True
 
@@ -1348,6 +1498,11 @@ def guard_function_expressions(core) -> list[tuple[str, str, str]]:
 # ─── sympy → ExprTk emitter ────────────────────────────────────────────────
 
 
+class _ExprTkEmitError(Exception):
+    """Internal: a construct the ExprTk printer has no spelling for. Caught by
+    ``sympy_to_exprtk`` and converted to a ``None`` return (FD fallback)."""
+
+
 def _make_printer():
     """Build an ExprTk StrPrinter subclass (lazily, so sympy import stays
     optional)."""
@@ -1400,7 +1555,14 @@ def _make_printer():
 
         def _print_Function(self, expr):
             name = type(expr).__name__
-            mapped = _SYMPY_FUNC_TO_EXPRTK.get(name, name)
+            mapped = _SYMPY_FUNC_TO_EXPRTK.get(name)
+            if mapped is None:
+                # No ExprTk spelling. Printing the sympy name would emit a call
+                # the engine cannot compile, and the failure would land at
+                # evaluation time rather than here. ``sympy_to_exprtk`` turns
+                # this into its ``None``, and the caller uses the
+                # finite-difference Jacobian (issue #457).
+                raise _ExprTkEmitError(f"function {name}")
             return f"{mapped}({self.stringify(expr.args, ',')})"
 
         def _print_Abs(self, expr):
@@ -1505,6 +1667,10 @@ _SYMPY_FUNC_TO_C = {
     "sinh": "sinh",
     "cosh": "cosh",
     "tanh": "tanh",
+    # The engine's own, and the derivative of it (issue #457). Both are helpers
+    # the generated source carries — see ``_codegen._SPECIAL_FUNCTION_C_LINES``.
+    "mratio": "bngsim_mratio",
+    "mratio_dz": "bngsim_mratio_dz",
     # Abs, sign, Min, Max, floor, ceiling have dedicated _print_* methods below.
 }
 

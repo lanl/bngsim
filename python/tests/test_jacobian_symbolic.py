@@ -564,30 +564,46 @@ def test_nondifferentiable_set_matches_a_live_rederivation():
     rate laws for no reason. Neither is caught by the cases above, which only test
     the six names already in the constant.
 
-    Re-derived here through ``sympy_to_exprtk`` rather than ``_is_emittable``,
-    because the printer is the gate that actually matters and it is what the #250
-    fix had to change: ``_is_emittable`` passed ``Derivative(sign(x), x)`` while the
-    printer happily emitted it.
+    Re-derived here through the printers rather than ``_is_emittable``, because a
+    printer is the gate that actually matters and it is what the #250 fix had to
+    change: ``_is_emittable`` passed ``Derivative(sign(x), x)`` while the printer
+    happily emitted it. Both printers are asked, because
+    ``differentiate_rate_law`` is shared: a name refused only by ExprTk still has a
+    compiled Jacobian to serve, and pre-declining it would take that away.
+
+    A name belongs in the constant only when *every* argument position is
+    underivable, because ``_nondifferentiable_over`` refuses a rate law as soon as
+    a differentiation variable appears anywhere inside the call. ``mratio`` (issue
+    #457) is the first function where both distinctions bite: it has a closed-form
+    derivative in its third argument and none in the first two, and only the C
+    emitter can print that derivative. Listing it would decline the very rate laws
+    the derivative was added for.
     """
-    a, b = sp.Symbol("A"), sp.Symbol("B")
+    a, b, c = sp.Symbol("A"), sp.Symbol("B"), sp.Symbol("C")
     derived = set()
     for name in J._SYMPY_FUNC_TO_EXPRTK:
-        fn = getattr(sp, name, None)
+        fn = getattr(sp, name, None) or J.engine_sympy_bindings(sp).get(name)
         assert fn is not None, f"{name} maps to no sympy object — emitter map is stale"
-        # Both arities, unioned, rather than the first that builds: `Min(A)`
-        # degenerates to `A` (a clean derivative) and only `Min(A, B)` shows the
-        # Heaviside, while `sqrt(A, B)` does not exist at all. A function belongs
-        # in the set if *any* arity it accepts has an underivable form.
+        # Every arity, rather than the first that builds: `Min(A)` degenerates to
+        # `A` (a clean derivative) and only `Min(A, B)` shows the Heaviside, while
+        # `sqrt(A, B)` does not exist at all and `mratio` takes three arguments
+        # and nothing else. A function belongs in the set if *some* arity it
+        # accepts is underivable in *all* of its argument positions.
         built = False
-        for args in ((a,), (a, b)):
+        for args in ((a,), (a, b), (a, b, c)):
             try:
-                deriv = sp.diff(fn(*args), a)
+                call = fn(*args)
             except (TypeError, ValueError):
                 continue
             built = True
-            if J.sympy_to_exprtk(deriv) is None:
+            derivs = [sp.diff(call, arg) for arg in args]
+            refused = [
+                J.sympy_to_exprtk(d) is None and J.sympy_to_c(d, lambda n: n) is None
+                for d in derivs
+            ]
+            if all(refused):
                 derived.add(name)
-        assert built, f"could not build {name} at arity 1 or 2"
+        assert built, f"could not build {name} at arity 1, 2 or 3"
 
     assert derived == set(J._NONDIFFERENTIABLE_EMITTER_FUNCS), (
         "the non-differentiable set no longer matches the emitter map: "
