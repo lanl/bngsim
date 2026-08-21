@@ -3041,6 +3041,9 @@ def _translate_expr(expr: str, lookup: dict[str, tuple[str, bool]]) -> str:
     ``_translate_expr_to_c`` for the Issue-#25 motivation.
     """
     c_expr = _replace_if_calls(expr)
+    # Then the engine functions C has no name for (issue #448) — same pass and
+    # same place as the model-based twin, so the two agree.
+    c_expr = _replace_engine_calls(c_expr)
     # Float-ify integer literals before subscripts appear (see
     # _translate_expr_to_c) so ExprTk's ``1/2`` == 0.5 survives into C.
     c_expr = _floatify_int_literals(c_expr)
@@ -5273,6 +5276,10 @@ def _translate_expr_to_c(expr: str, lookup: dict[str, tuple[str, bool]]) -> str:
     # if() must be expanded first so nested ternary structure is correct
     # before identifier rewriting touches anything.
     result = _replace_if_calls(expr)
+    # sign/sgn/clamp/avg/sum become ordinary C expressions here, before the
+    # identifier pass would otherwise leave the bare name in the source and the
+    # compile would fail on it (issue #448).
+    result = _replace_engine_calls(result)
     # Promote integer literals to floats BEFORE identifier substitution
     # introduces array subscripts (``p[0]``/``y[5]``), so ``1/2`` becomes
     # ``1.0/2.0`` (= 0.5 in C) instead of integer-dividing to 0.
@@ -5364,6 +5371,96 @@ def _split_if_args(expr: str, paren_pos: int) -> list[str] | None:
             current.append(ch)
         i += 1
     return None  # unmatched
+
+
+# ── Engine functions C has no name for (issue #448) ──────────────────────────
+#
+# These are in the engine's reserved function list (``reserved_names()`` in
+# src/expression.cpp), so a model is allowed to call them and the interpreter
+# evaluates them, but <math.h> has none of them. Before this the name went into
+# the generated source unchanged and the compile failed with "call to undeclared
+# function", which took down an explicit ``codegen=True`` run and any forward
+# sensitivity run of the same model.
+#
+# The name cannot belong to the model instead: all five are reserved, so a model
+# symbol that collides is renamed at load. A .net function call is written with
+# empty parens (``sum()``), which is the zero-argument case this leaves alone.
+_ENGINE_CALL_NAMES = ("sign", "sgn", "clamp", "avg", "sum")
+_ENGINE_CALL_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(_ENGINE_CALL_NAMES) + r")\s*\(")
+
+
+def _c_engine_call(name: str, args: list[str]) -> str | None:
+    """The C expression for one engine call, or ``None`` to leave it alone.
+
+    Each form below transcribes the engine's own implementation rather than the
+    textbook definition of the function, because for ``clamp`` the two differ.
+    The engine (ExprTk ``e_clamp``) returns ``lo`` when ``x < lo`` and ``hi``
+    when ``x > hi``, tested in that order, so with the bounds crossed
+    (``lo > hi``) a low ``x`` gives ``lo`` and a high one gives ``hi``. No
+    ``fmin``/``fmax`` pair reproduces that: ``fmax(lo, fmin(x, hi))`` gets the
+    low ``x`` right and the high one wrong, and ``fmin(hi, fmax(x, lo))`` gets
+    it the other way round. Crossed bounds are a nonsense model, but ``lo`` and
+    ``hi`` can be fitted parameters, and the compiled path is supposed to give
+    what the interpreter gives.
+
+    An argument count these do not know cannot come from a model the engine
+    accepted, since the engine checks arity when it compiles the expression.
+    Returning ``None`` there leaves the call for the C compiler to complain
+    about rather than guessing at a meaning.
+    """
+    n = len(args)
+    if name in ("sign", "sgn"):
+        # SignFunction in src/expression.cpp and ExprTk's sgn_impl, same form.
+        if n != 1:
+            return None
+        x = args[0]
+        return f"((({x}) > 0.0) ? 1.0 : ((({x}) < 0.0) ? -1.0 : 0.0))"
+    if name == "clamp":
+        if n != 3:
+            return None
+        lo, x, hi = args
+        return f"((({x}) < ({lo})) ? ({lo}) : ((({x}) > ({hi})) ? ({hi}) : ({x})))"
+    if name in ("avg", "sum"):
+        # ExprTk sums left to right and divides once at the end, so a plain
+        # C sum in the same order is the same arithmetic down to the last bit.
+        if n == 0:
+            return None
+        total = " + ".join(f"({a})" for a in args)
+        return f"({total})" if name == "sum" else f"(({total}) / {n}.0)"
+    return None
+
+
+def _replace_engine_calls(expr: str) -> str:
+    """Rewrite every ``sign``/``sgn``/``clamp``/``avg``/``sum`` call to C.
+
+    Runs after ``_replace_if_calls`` and before identifier substitution, in both
+    translation pipelines, so the arguments are still the model's own text and
+    every emitter that goes through them gets the same spelling.
+    """
+    out: list[str] = []
+    cursor = 0
+    while True:
+        m = _ENGINE_CALL_RE.search(expr, cursor)
+        if m is None:
+            out.append(expr[cursor:])
+            break
+        out.append(expr[cursor : m.start()])
+        open_paren = m.end() - 1
+        close_paren = _find_close_paren_strict(expr, open_paren)
+        if close_paren < 0:
+            # Unbalanced. Leave the rest as it stands, the way _replace_if_calls
+            # does with a malformed if().
+            out.append(expr[m.start() :])
+            break
+        inner = expr[open_paren + 1 : close_paren]
+        raw = _split_top_level_commas(inner)
+        args = [_replace_engine_calls(a.strip()) for a in raw]
+        if len(args) == 1 and not args[0]:
+            args = []  # `name()`, which is how a .net calls a model function
+        c_form = _c_engine_call(m.group(1), args)
+        out.append(expr[m.start() : close_paren + 1] if c_form is None else c_form)
+        cursor = close_paren + 1
+    return "".join(out)
 
 
 def _find_matching_paren(expr: str, open_pos: int) -> int:

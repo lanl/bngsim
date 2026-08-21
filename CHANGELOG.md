@@ -102,6 +102,45 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A rate law using `sign()`, `sgn()`, `clamp()`, `avg()` or `sum()` now compiles
+  (issue #448).** All five are in the engine's reserved function list, so a model
+  is allowed to call them and the interpreter evaluates them, but C has none of
+  them under those names. The name went into the generated source unchanged and
+  the compile failed with "call to undeclared function", which took down an
+  explicit `codegen=True` run and every forward sensitivity run of the same
+  model. A plain interpreted run was fine throughout, so the failure only
+  appeared once a user asked for speed or for gradients.
+
+  Each of the five now becomes an ordinary C expression before the generated
+  source is written. The forms transcribe the engine's own implementation rather
+  than the textbook definition, because for `clamp` the two differ: the engine
+  returns the low bound when the value is below it and the high bound when the
+  value is above it, tested in that order, so with the bounds crossed neither
+  `fmax(lo, fmin(x, hi))` nor `fmin(hi, fmax(x, lo))` gives what the interpreter
+  gives. Crossed bounds are a nonsense model, but the bounds can be fitted
+  parameters, and a fit that walks them past each other should not change which
+  answer a user gets.
+
+  The compiled and interpreted paths were compared over whole trajectories for
+  every one of the five, plus nested and conditional combinations of them, and
+  agree to the last bit. The derivative is a separate question and is unchanged:
+  none of these functions has a derivative the emitter can write, so a
+  sensitivity run still declines the analytic right-hand side and uses CVODES'
+  difference quotient, which is what it was always meant to do. Those
+  sensitivities were checked against a finite difference taken by editing the
+  model text and reloading.
+
+  Corpus census: no model in this repository uses any of the five, in either
+  format, so this changes no existing result. Measured rather than assumed: the
+  new rewriting pass runs over every expression of every model, and across 66707
+  expressions from 1821 `.net` files and 390 SBML models it left every one of
+  them exactly as it was.
+
+  One function in the same list is still affected. `mratio` is bngsim's own
+  confluent hypergeometric ratio, computed by a continued fraction rather than by
+  a one-line expression, so giving it a C spelling is a separate piece of work
+  and is tracked in issue #451.
+
 - **An ordinary ODE run no longer prints SUNDIALS error lines about forward
   sensitivity (issue #447).** A plain `Simulator(model, method="ode").run(...)`
   put lines like
