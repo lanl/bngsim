@@ -168,11 +168,16 @@ in `CMakeLists.txt`) is derived from it.
   `MODEL0406793751` is the ninth, which RoadRunner declines to load.
 
   Cost, measured serially: the per-run crossing resolution over all 339 SBML
-  models that carry a registered condition is 1079 ms against main's 1085 ms, and
-  the one-time recovery over all 80 conditional `.net` models is 2 ms. That last
-  number is 43 ms on the largest of them alone without the pre-check on the raw
-  rate-law text, which is why the pre-check asks about `time` and not only about
-  `if()`.
+  models that carry a registered condition is 1098 ms against main's 1085 ms, and
+  the one-time recovery over all 80 conditional `.net` models is 2 ms. Both
+  numbers took a memo to reach. Recognizing a schedule and then checking it
+  against the model's own residual is seven sympy round trips, paid on every
+  `run()` and so on every evaluation of a fit, which put the first of those
+  numbers at 1183 ms; it is now keyed on the condition text, the window and the
+  parameters the condition reads, exactly as the issue #305 crossing memo already
+  was. The second number is 43 ms on the largest `.net` model alone without the
+  pre-check on the raw rate-law text, which is why that pre-check asks about
+  `time` and not only about `if()`.
 
 - **A crossing time that steps rather than moves is declined instead of crashing
   the codegen pass (issue #436).** `if(time() >= sign(P), ...)` took bngsim down
