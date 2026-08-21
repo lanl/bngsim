@@ -240,10 +240,11 @@ in `CMakeLists.txt`) is derived from it.
   `rtol = 1e-12` every one of them is at 1.1e-8 or below. A stop in the wrong
   place would leave an error no tolerance could remove, and there is none.
 
-  Two of the 37 have no converged reference to be read against. `m15` cannot be
-  integrated at `rtol = 1e-12` at all, and `ItalyModel_v7` does not finish
-  bounded that tightly. Both are small either way: against BioNetGen `m15` moves
-  from 7.3e-7 to 2.4e-5 and `ItalyModel_v7` from 1.1e-8 to 1.6e-5.
+  Two of the 37 have no converged reference to be read against, because neither
+  can be integrated at `rtol = atol = 1e-12` in the first place: `m15` fails at
+  t = 35, and `ItalyModel_v7` runs for tens of minutes before failing as well.
+  Both are small either way: against BioNetGen `m15` moves from 7.3e-7 to 2.4e-5
+  and `ItalyModel_v7` from 1.1e-8 to 1.6e-5.
 
   All 592 BioNetGen ODE parity jobs were re-run against BioNetGen 2.9.3 in both
   arms: **the same 590 passing and the same 2 differing, with no model changing
