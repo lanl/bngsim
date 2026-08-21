@@ -1957,6 +1957,175 @@ class TestAPeriodicScheduleAgainstAFiniteDifference:
         assert abs(period_col) > 2.0 * abs(duty_col)
 
 
+# ─── libSBML's rem() expansion (issue #465) ────────────────────────────────
+#
+# libSBML does not emit `rem(a, b)`. It expands it into a sign test over two
+# remainders, so a model that writes `rem(time(), P) >= d` — the same schedule
+# issue #436 compensated — arrives with the schedule behind an `if()` inside the
+# condition itself.
+
+_REM_RESIDUAL = "if(sign(time())!=sign(P),time()-P*ceil(time()/P),time()-P*floor(time()/P))"
+_REM_LAW = f"if({_REM_RESIDUAL}>=d,kin,0)"
+_BARE_LAW = "if(time()-P*floor(time()/P)>=d,kin,0)"
+
+
+def _scope_over(**values):
+    """A :class:`SwitchConditionScope` carrying nothing but a clock and *values*."""
+    clocks = frozenset({"time", "time()"})
+    return sw.SwitchConditionScope(
+        core=None,
+        clocks={},
+        clock_symbols=clocks,
+        param_names=tuple(values),
+        param_pats={},
+        primary_names=frozenset(values),
+        param_idx={k: i for i, k in enumerate(values)},
+        values=tuple(values.values()),
+        derived_exprs={},
+        run_constants=frozenset(values),
+        function_names=frozenset(),
+    )
+
+
+class TestTheRemExpansionIsReadAsTheScheduleItIs:
+    """Issue #465. The schedule is the same one issue #436 reads; what is new is
+    that it sits behind an `if()` *inside* the condition, which is how libSBML
+    spells `rem()`. Five corpus models write it.
+
+    The branch is chosen by resolving the guard over the run's clock domain, not
+    by proposing both and letting the residual check settle it — see
+    ``test_the_ceil_branch_would_be_accepted_as_never_crossing`` for why that
+    second route is unsafe.
+    """
+
+    def test_it_reads_as_the_same_schedule_the_bare_spelling_does(self):
+        """The whole claim, at the recogniser. `rem(time(), P) >= d` and
+        `time() - P*floor(time()/P) >= d` are the same schedule, so they have to
+        come back as the same period, offset and duty — a gradient that depended
+        on whether the model went through libSBML is not one anyone can use."""
+        clocks = frozenset({"time", "time()"})
+        scope = _scope_over(P=24.0, d=7.0)
+        bare = sw._clock_periodic_schedule("time()-P*floor(time()/P)>=d", clocks, scope)
+        wrapped = sw._clock_periodic_schedule(f"{_REM_RESIDUAL}>=d", clocks, scope)
+        assert bare is not None and wrapped == bare
+
+    def test_a_negative_period_takes_the_other_branch(self):
+        """The guard is resolved against the parameter point rather than assumed
+        away, and this is what shows it: at `P = -24` the sign test is true, the
+        `ceil` branch is live, and the recognised period is `-P`. Both spellings
+        describe a 24-hour cycle; which branch carries it depends on a value."""
+        clocks = frozenset({"time", "time()"})
+        sched = sw._clock_periodic_schedule(
+            f"{_REM_RESIDUAL}>=d", clocks, _scope_over(P=-24.0, d=7.0)
+        )
+        assert sched is not None and sched.period == "-P"
+
+    def test_a_guard_that_reads_the_clock_is_declined(self):
+        """MODEL1006230027 changes its period partway through the run, so which
+        branch is live depends on *when* — and no single period, offset and duty
+        describes the window. The collapse resolves a guard that is constant over
+        the run and declines one that is not, rather than reading the first
+        branch and calling it the schedule."""
+        clocks = frozenset({"time", "time()"})
+        atom = "if(time()<50,time()-P*floor(time()/P),time()-Q*floor(time()/Q))>=d"
+        scope = _scope_over(P=24.0, Q=12.0, d=7.0)
+        assert sw._clock_periodic_schedule(atom, clocks, scope) is None
+
+    def test_without_a_scope_it_declines_rather_than_guesses(self):
+        """Fail-closed. There is no parameter point to resolve the guard against,
+        so the schedule is not read — which is what keeps a caller that has no
+        scope from disagreeing with one that has. All five callers pass one."""
+        clocks = frozenset({"time", "time()"})
+        assert sw._clock_periodic_schedule(f"{_REM_RESIDUAL}>=d", clocks) is None
+
+    def test_the_ceil_branch_would_be_accepted_as_never_crossing(self):
+        """Why the branch cannot be settled by :func:`_schedule_matches_residual`,
+        pinned as a test because it is the trap this fix had to avoid.
+
+        Proposing both branches and keeping whichever the residual check accepts
+        looks safe — that check exists to catch a schedule the model does not
+        follow — and it is not. The `ceil` branch of a positive-period schedule
+        reads as a *negative* period, so its probe points land at negative clock
+        values, outside any run window. There the guard really does select that
+        branch and the residual really does hold one sign for the whole period,
+        so the check accepts it as a schedule that never turns over. The model
+        would be admitted with every one of its real crossings uncompensated,
+        which is the silent failure the check was built to prevent."""
+        scope = _scope_over(P=24.0, d=7.0)
+        atom = f"{_REM_RESIDUAL}>=d"
+        wrong = sw.PeriodicSchedule("time()", "-P", "0", "d")
+        # crosses=False, because -7/24 does not land inside (0, 1).
+        assert sw._schedule_matches_residual(atom, wrong, -24.0, 7.0, 0.0, False, scope) is True
+        # ... while the schedule the run actually follows crosses every period.
+        right = sw.PeriodicSchedule("time()", "P", "0", "d")
+        assert sw._schedule_matches_residual(atom, right, 24.0, 7.0, 0.0, True, scope) is True
+
+    def test_the_inner_guard_is_not_judged_as_a_crossing_of_its_own(self, tmp_path):
+        """`_iter_condition_atoms` descends into an `if()`'s condition as readily
+        as into its branches, so the guard arrives as an atom in its own right.
+        It is neither a clock threshold nor a comparison over state, and before
+        this it refused the model. `sign(clock)` is 1 for the whole of a run, so
+        it is not a crossing at all."""
+        core = _model(tmp_path, _with_dose(_REM_LAW))._core
+        scope = sw.switch_condition_scope(core)
+        assert sw.clock_crossing_compensated("sign(time())!=sign(P)", scope)
+
+    def test_a_real_clock_threshold_is_still_not_claimed_by_that_ground(self, tmp_path):
+        """The companion that keeps the ground above from being a blanket admit.
+        `time() >= sigma` reads the clock outside a `sign()`, so the clock
+        survives the substitution and the atom is left to the recognisers, which
+        is where its crossing gets compensated."""
+        core = _model(tmp_path, _with_dose(_REM_LAW))._core
+        scope = sw.switch_condition_scope(core)
+        assert not sw._clock_guard_cannot_cross("time()>=d", scope)
+
+    def test_the_gate_admits_it(self, tmp_path):
+        core = _model(tmp_path, _with_dose(_REM_LAW))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, f"the rem() expansion must be admitted, got: {reason}"
+
+    def test_it_places_exactly_the_edges_the_bare_spelling_does(self, tmp_path):
+        """End to end, and the assertion that matters most: the same model
+        written the two ways has to produce the same stop times and the same
+        ``∂t*/∂p``, down to the last edge in the window."""
+        got = {}
+        for label, law in (("bare", _BARE_LAW), ("rem", _REM_LAW)):
+            core = _model(tmp_path, _with_dose(law), name=f"{label}.net")._core
+            records, pinned = sw.compute_switch_time_sens(
+                core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
+            )
+            got[label] = (
+                [r.t_star for r in records],
+                [r.dtstar[0] for r in records],
+                [r.dtstar[1] for r in records],
+                pinned,
+            )
+        assert got["rem"][0] == pytest.approx([7.0, 24.0, 31.0, 48.0, 55.0, 72.0, 79.0, 96.0])
+        assert got["rem"] == got["bare"]
+
+
+class TestTheRemExpansionAgainstAFiniteDifference(TestAPeriodicScheduleAgainstAFiniteDifference):
+    """The oracle, on the spelling issue #465 adds. Inherits every step of the
+    reference from the issue #436 class above — the same accumulating fixture,
+    the same bounded plain run, the same h-ladder — and swaps only the rate law,
+    so what it measures is the spelling and nothing else."""
+
+    @staticmethod
+    def _run(tmp_path, name, overrides, sens=None):
+        import numpy as np
+
+        model = _model(tmp_path, _with_dose(_REM_LAW), name=name)
+        for key, value in overrides.items():
+            model.set_param(key, value)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=sens)
+        return sim.run(
+            sample_times=list(np.arange(0.0, 240.001, 4.0) + 0.37),
+            rtol=1e-11,
+            atol=1e-13,
+            max_step=0.5,
+        )
+
+
 UNCOMPENSATED = "beta*(I>1)*I"
 
 

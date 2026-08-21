@@ -150,6 +150,68 @@ in `CMakeLists.txt`) is derived from it.
   the generated C carries a copy held to it. The two agree bit for bit at every
   one of the 5955 triples.
 
+- **A dosing schedule that went through libSBML now gets the same gradient as one
+  written by hand (issue #465).** libSBML does not emit `rem(a, b)`. It expands it
+  into a sign test over two remainders,
+
+      if(sign(a) != sign(b), a - b*ceil(a/b), a - b*floor(a/b))
+
+  so a model writing `rem(time(), P) >= d` — the same repeating schedule issue #436
+  compensated — arrived with the schedule hidden behind an `if()` *inside* the
+  condition, and was refused for having two step functions where the recogniser
+  wanted one. Five corpus models write it. The gradient a model got therefore
+  depended on which tool had written its SBML, which is not a distinction anyone
+  fitting it can act on.
+
+  The schedule is unchanged; what is new is getting to it. An `if()` inside a
+  condition arrives as a `Piecewise`, and it is collapsed to the branch the run
+  takes before the step functions are counted. Which branch that is cannot be read
+  off the text: for a positive `P` the `floor` remainder runs over `[0, P)` and the
+  `ceil` one over `(-P, 0]`, so the two differ by `P` everywhere except at the
+  multiples of it. So the guard is resolved against the run's own clock domain and
+  the model's parameter point — `sign(clock)` is 1 for the whole of a run, what is
+  left must be clock-free, and it must evaluate at the parameter point. A negative
+  period selects the other branch and is read just as well.
+
+  **The route not taken is the interesting part.** The obvious fix is to propose
+  both branches and keep whichever `_schedule_matches_residual` accepts, since that
+  check exists to catch a schedule the model does not follow. It is unsafe, and the
+  failure is silent. The `ceil` branch of a positive-period schedule reads as a
+  *negative* period, so the check's probe points land at negative clock values —
+  outside any run window — and there the guard really does select that branch and
+  the residual really does hold one sign for the whole period. It is accepted as a
+  schedule that never turns over, and the model is admitted with every one of its
+  real crossings uncompensated: exactly the quiet failure that check was built to
+  prevent. That is pinned as a test rather than left as a comment.
+
+  A guard that still reads the clock after the substitution is declined, because it
+  changes which branch is live partway through the run and no single period, offset
+  and duty describes the window — MODEL1006230027's shape, which stays refused
+  along with MODEL1708310001's remainder of a remainder and Sturrock2015's
+  sinusoid.
+
+  One thing had to move besides the recogniser. `_iter_condition_atoms` descends
+  into an `if()`'s condition as readily as into its branches — rightly, since a
+  nested `if()` in a *branch* is a real discontinuity — so the guard
+  `sign(time()) != sign(P)` also arrived as an atom in its own right, was neither a
+  clock threshold nor a comparison over state, and refused the model even with the
+  schedule around it fully compensated. It is not a crossing: `sign(clock)` is 1
+  for the whole of a run, so it picks its branch before the first step and holds
+  it. That is the same ground `condition_cannot_cross` already applies to a
+  comparison over run-constants, reached by reading a value rather than a name —
+  which is why it could not go in that function, documented as structural and
+  never numeric, and is asked from `clock_crossing_compensated` instead, which is
+  value-dependent already and is what `switch_gate_cache_digest` carries. It is
+  narrow on purpose: only an atom that reads the clock and stops reading it once
+  `sign(clock)` is resolved is claimed, so `time() >= sigma` is left to the
+  recognisers exactly as before.
+
+  The gradient is checked against a central difference of two trajectories on every
+  column, through the same h-ladder oracle issue #436 uses, and the same model
+  written the two ways places identical edges with identical `∂t*/∂p`. Forcing the
+  collapse to the wrong branch fails seven of the new tests, the `P` and `d`
+  columns by an order-one fraction.
+
 - **A rate law that switches on a repeating schedule now has a forward-sensitivity
   gradient (issue #436).** `if(time() - 24*floor(time()/24) >= 7, on, off)` is "on
   for the last 17 hours of every 24 hour day", and with a start time and a fitted
