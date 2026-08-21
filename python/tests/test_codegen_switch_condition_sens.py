@@ -710,6 +710,19 @@ class TestTheGateAndTheDetectorsAgree:
             # Cubic in the clock: past what a closed form can be trusted for, so
             # it stays refused — the crossing nothing brackets.
             ("if(time()*time()*time()+time()>=thresh,beta,0)*I", False, None),
+            # A repeating schedule: a crossing in every period rather than a
+            # fixed number of them, enumerated from the period, the offset and
+            # the duty since issue #436. `thresh` is the period (40) and `sigma`
+            # the duty (3), so it turns over twice in every 40 time units.
+            ("if(time()-thresh*floor(time()/thresh)>=sigma,beta,0)*I", True, "clock"),
+            # A remainder OF a remainder — one level past what the schedule
+            # recognizer reads, and the shape MODEL1708310001 writes. Refused.
+            (
+                "if(time()-thresh*floor(time()/thresh)"
+                "-sigma*floor((time()-thresh*floor(time()/thresh))/sigma)>=1,beta,0)*I",
+                False,
+                None,
+            ),
             # A clock compared against a SPECIES. It names no parameter, which
             # used to be the whole of the "nothing moves this crossing" test, so
             # the clock path claimed it and then registered nothing. Its
@@ -1493,6 +1506,434 @@ class TestAQuadraticClockThresholdIsSolvedAtBothCrossings:
 # so it moved to TestANonAffineClockThresholdIsSolvedAndJumped above, which also
 # RUNS it — the MIR SIGABRT that once kept it out of run tests was #413's
 # self-multiply overflow, fixed in #415.)
+# ─── a repeating schedule (issue #436) ─────────────────────────────────────
+#
+# A separate fixture from ``SWITCHED`` because what a dose schedule does is
+# accumulate: ``A`` fills while the schedule is on and drains all the time, so
+# every edge in the window leaves a mark on the trajectory and a finite
+# difference of it has something to compare against. The SIR fixture cannot serve
+# — its epidemic burns out inside the first period, which makes ∂x/∂P five orders
+# of magnitude smaller than ∂x/∂d and puts it under the difference's noise.
+
+SCHEDULED = """\
+begin parameters
+    1 P       24.0  # Constant
+    2 d        7.0  # Constant
+    3 kin      0.1  # Constant
+    4 kout     0.05  # Constant
+    5 kclock   1  # Constant
+end parameters
+begin functions
+    1 dose() if(time()-P*floor(time()/P)>=d,kin,0)
+end functions
+begin species
+    1 A() 0
+    2 counter() 0
+end species
+begin reactions
+    1 0 1 dose #_R1
+    2 1 0 kout #_R2
+    3 0 2 kclock #_R3
+end reactions
+begin groups
+    1 A                    1
+    2 t                    2
+end groups
+"""
+
+_SCHEDULED_LAW = "    1 dose() if(time()-P*floor(time()/P)>=d,kin,0)\n"
+
+
+def _with_dose(law: str) -> str:
+    """``SCHEDULED`` with its rate law swapped for *law*."""
+    return SCHEDULED.replace(_SCHEDULED_LAW, f"    1 dose() {law}\n")
+
+
+class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
+    """Issue #436. Every recogniser before this one names a *fixed* number of
+    crossings, because its residual is a polynomial in the clock and a polynomial
+    has finitely many roots. A schedule has one in every period for as long as the
+    run lasts::
+
+        if(time() - 24*floor(time()/24) >= 7, on, off)
+
+    which is "on for the last 17 hours of every 24 hour day" — repeated dosing, a
+    light and dark cycle, a train of stimulus pulses. Nineteen of the twenty-two
+    corpus models with a rate-law crossing nothing compensated write this one
+    shape, several of them spelled differently.
+
+    The edges are still closed form, so nothing here roots on anything: for a
+    period ``P``, an offset ``s`` and a duty ``d`` they fall at ``s + k*P + d``
+    and ``s + (k+1)*P`` for every whole ``k`` in the window, and each is an
+    ordinary issue #48 record — a value to stop at and an expression to
+    differentiate for ``∂t*/∂p``. What is new is that the *number* of records
+    depends on the run window, which is why the recogniser answers with the
+    schedule rather than with a list of crossing times, and why there is a budget.
+    """
+
+    def test_the_recognizer_reads_the_schedule_not_the_spelling(self):
+        """Issue #355's lesson, applied to a schedule. These five atoms are the
+        same 24-hour cycle written the five ways the corpus writes it: the
+        threshold on either side, a start time folded in, a remainder taken in
+        seconds and divided back to hours (BIOMD0000000238), and ``ceil`` instead
+        of ``floor``. The recogniser has to answer with the same schedule for all
+        of them, because a fitted gradient that depends on which way the modeller
+        typed the condition is not a gradient anyone can use."""
+        import sympy as sp
+
+        clocks = frozenset({"time", "time()"})
+        for atom, period, offset, duty in [
+            ("time()-24*floor(time()/24)>=7", "24", "0", "7"),
+            ("7<=time()-24*floor(time()/24)", "24", "0", "7"),
+            ("(time()-start)-24*floor((time()-start)/24)>=7", "24", "start", "7"),
+            (
+                "((time()*3600)-(floor((time()*3600)/day_length))*day_length)/3600>=7",
+                "day_length/3600",
+                "0",
+                "7",
+            ),
+            ("time()-24*ceil(time()/24)>=-17", "-24", "0", "-17"),
+        ]:
+            sched = sw._clock_periodic_schedule(atom, clocks)
+            assert sched is not None, f"{atom!r} was not read as a schedule"
+            for got, want in zip(sched[1:], (period, offset, duty), strict=True):
+                assert sp.simplify(sp.sympify(got) - sp.sympify(want)) == 0, (
+                    f"{atom!r}: got {sched}, wanted {(period, offset, duty)}"
+                )
+
+    def test_a_remainder_of_a_remainder_is_declined(self):
+        """One step function, not two. A schedule of schedules — the shape
+        MODEL1708310001 writes for "one dose a day for the first fourteen days of
+        every twenty-one day cycle" — is enumerable in principle and is not
+        enumerated here, so it stays refused rather than being read as the outer
+        schedule alone."""
+        clocks = frozenset({"time", "time()"})
+        inner = "time()-24*floor(time()/24)"
+        assert sw._clock_periodic_schedule(f"{inner}-6*floor(({inner})/6)>=2", clocks) is None
+
+    def test_a_residual_that_does_not_repeat_is_declined(self):
+        """What makes the three-number description true is that the residual reads
+        the same in every period. ``rem(t, P) >= t/2`` has enumerable crossings
+        too, but they are not one period apart and no (period, offset, duty)
+        describes them, so the recogniser declines rather than answer with a
+        schedule the condition does not follow."""
+        clocks = frozenset({"time", "time()"})
+        assert sw._clock_periodic_schedule("time()-24*floor(time()/24)>=time()/2", clocks) is None
+
+    def test_the_gate_admits_it_and_neither_other_machinery_claims_it(self, tmp_path):
+        core = _model(tmp_path, SCHEDULED)._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, f"the schedule must be admitted, got: {reason}"
+        assert terms
+        # It reads no live state, so issue #150 must not also root on it — a
+        # crossing claimed twice is jumped twice.
+        assert sw.state_switch_conditions(core) == []
+
+    def test_the_detector_places_both_edges_of_every_period(self, tmp_path):
+        """The whole answer, in one assertion. Over ``(0, 100]`` a 24-hour cycle
+        with a 7-hour duty turns on at 7, 31, 55 and 79 and off at 24, 48, 72 and
+        96, and the partials say which parameter moves which edge: the duty moves
+        only the on-edges and by one, while the period moves the k-th edge of
+        either family by k — which is the whole reason a fitted period is worth
+        compensating rather than approximating."""
+        core = _model(tmp_path, SCHEDULED)._core
+        records, pinned = sw.compute_switch_time_sens(
+            core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
+        )
+        assert [r.t_star for r in records] == pytest.approx(
+            [7.0, 24.0, 31.0, 48.0, 55.0, 72.0, 79.0, 96.0]
+        )
+        assert [r.dtstar[0] for r in records] == [0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0]
+        assert [r.dtstar[1] for r in records] == [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        assert pinned == sorted(list(core.param_names).index(n) for n in ("P", "d"))
+
+    def test_a_counter_clock_schedule_is_offset_by_the_counter(self, tmp_path):
+        """The BNGL spelling. ``t`` is a species integrated at rate 1, so the
+        schedule is written over a clock whose value is not the simulation time
+        and whose edges have to be shifted back onto it."""
+        core = _model(tmp_path, _with_dose("if(t-P*floor(t/P)>=d,kin,0)"))._core
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["P", "d"], 0.0, 50.0, has_analytic_sens_rhs=True
+        )
+        assert [r.t_star for r in records] == pytest.approx([7.0, 24.0, 31.0, 48.0])
+        assert records[0].clock_idx0 == list(core.species_names).index("counter()")
+        # A counter clock IS a species, so the issue #150 state root would happily
+        # claim this condition as well. Exactly one machinery may have it, or the
+        # jump is applied twice.
+        assert sw.state_switch_conditions(core) == []
+
+    def test_a_fixed_schedule_is_admitted_and_needs_no_records(self, tmp_path):
+        """Six of the nineteen corpus models write their light and dark cycle with
+        literals. Nothing moves any of those edges, so ``∂t*/∂p`` is exactly 0 and
+        there is no jump to make — but the in-branch derivative is still the whole
+        gradient, and refusing the condition took the analytic sensitivity RHS away
+        from the whole model. The gate has to admit it with no record behind it,
+        which is exactly what ``t<14`` has always done for a single crossing."""
+        core = _model(tmp_path, _with_dose("if(time()-24*floor(time()/24)>=7,kin,0)"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        records, pinned = sw.compute_switch_time_sens(
+            core, ["kin", "kout"], 0.0, 100.0, has_analytic_sens_rhs=True
+        )
+        assert records == [] and pinned == []
+        # ... and it is not reported as a crossing the difference quotient would
+        # miss either, because there is nothing there to miss (issue #232).
+        assert sw.model_moving_crossings(core) == ()
+
+    def test_a_schedule_that_never_crosses_registers_nothing(self, tmp_path):
+        """``rem(time(), P) >= 0`` is true at every instant of the run: a
+        remainder is never negative. MODEL0406793751 really does write this, and
+        reading it as a schedule with an edge at the top of every period would put
+        a stop time where the branch does not change. The duty has to fall
+        strictly inside the period for there to be a crossing at all."""
+        core = _model(tmp_path, _with_dose("if(time()-P*floor(time()/P)>=0,kin,0)"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
+        )
+        assert records == []
+
+    def test_the_schedule_is_checked_against_the_condition_the_model_evaluates(self, tmp_path):
+        """The recogniser reads the residual through sympy's parser, which binds
+        ``I`` to the imaginary unit — so a model parameter spelled ``I`` is not the
+        symbol the recogniser thinks it is. Most of the time that costs nothing,
+        because the imaginary unit multiplies and divides like any other symbol and
+        the answer comes back spelled with the same name. ``I*I`` is where it stops
+        being harmless: sympy folds it to ``-1``, the schedule reads as one whose
+        duty falls outside its period, and a condition that crosses eight times in
+        the window would be admitted with no record behind it. Four evaluations of
+        the model's own residual are what stop that."""
+        text = _with_dose("if(time()-I*I*floor(time()/(I*I))>=d,kin,0)").replace(
+            "    1 P       24.0", "    1 I       24.0"
+        )
+        core = _model(tmp_path, text)._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is not None
+        assert "does not follow that schedule" in reason
+
+    def test_a_parameter_named_I_is_not_refused_on_suspicion(self, tmp_path):
+        """The companion that keeps the check above from being a blanket refusal.
+        ``I`` alone survives the imaginary unit's arithmetic — ``1/I`` is ``-I``,
+        and the period comes back spelled ``I`` again — so this schedule is read
+        correctly and is compensated, which the residual check confirms rather than
+        assumes."""
+        text = _with_dose("if(time()-I*floor(time()/I)>=d,kin,0)").replace(
+            "    1 P       24.0", "    1 I       24.0"
+        )
+        core = _model(tmp_path, text)._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["I", "d"], 0.0, 50.0, has_analytic_sens_rhs=True
+        )
+        assert [r.t_star for r in records] == pytest.approx([7.0, 24.0, 31.0, 48.0])
+
+    @staticmethod
+    def _crowded(period: float = 0.01, duty: float = 0.005) -> str:
+        """``SCHEDULED`` with a period short enough to overrun the edge budget.
+
+        Asserted against the budget rather than hard-coded against a number, so
+        raising the budget cannot quietly turn the two tests below into tests of
+        nothing."""
+        edges = 2 * 100.0 / period
+        assert edges > sw._SCHEDULE_EDGE_BUDGET, (
+            f"{edges:.0f} edges no longer overruns a budget of {sw._SCHEDULE_EDGE_BUDGET}"
+        )
+        return SCHEDULED.replace("    1 P       24.0", f"    1 P       {period}").replace(
+            "    2 d        7.0", f"    2 d        {duty}"
+        )
+
+    def test_the_budget_refuses_a_window_it_cannot_enumerate(self, tmp_path):
+        """A hundred days of hourly dosing is thousands of stop times, and the
+        count is a property of the run rather than of the model, so it is the one
+        thing here the value-free gate cannot decide. Compensating the edges that
+        fit inside a budget and not the ones after it would give a gradient right
+        at the start of the run and silently wrong at the end, so the run is
+        refused instead — loudly, and naming what to change."""
+        text = self._crowded()
+        core = _model(tmp_path, text)._core
+        with pytest.raises(bngsim.SensitivityUnsupportedError) as ei:
+            sw.compute_switch_time_sens(core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True)
+        assert "repeating schedule" in str(ei.value)
+        assert "'P'" in str(ei.value)
+
+    def test_the_budget_is_not_charged_for_a_schedule_nobody_asked_about(self, tmp_path):
+        """The same model, with the schedule's own parameters left out of the
+        request. Every edge then carries ``∂t*/∂p = 0`` for every column asked
+        for, so none of them would emit a record however many there are, and
+        refusing the run over a budget for records nobody wanted would be a
+        refusal with nothing behind it."""
+        core = _model(tmp_path, self._crowded())._core
+        records, pinned = sw.compute_switch_time_sens(
+            core, ["kin", "kout"], 0.0, 100.0, has_analytic_sens_rhs=True
+        )
+        assert records == [] and pinned == []
+
+    def test_only_the_edges_inside_the_window_are_recorded(self, tmp_path):
+        """The window is half-open at the start and closed at the end, the same
+        filter every other crossing in this module is judged by: an edge at
+        ``t_start`` would precede the run's first recorded column, and one at
+        ``t_end`` still jumps into its last."""
+        core = _model(tmp_path, SCHEDULED)._core
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["P", "d"], 7.0, 31.0, has_analytic_sens_rhs=True
+        )
+        assert [r.t_star for r in records] == pytest.approx([24.0, 31.0])
+
+    def test_a_floor_inside_a_condition_no_longer_declines_the_rate_law(self, tmp_path):
+        """The second half of the refusal this issue lifts, and the one that has
+        nothing to do with crossings. ``floor()`` is rejected wherever it is
+        differentiated, and the pre-scan that rejects it did not care where in the
+        rate law it sat. Inside an ``if()`` condition it is never differentiated —
+        sympy copies a Piecewise's conditions through untouched — so what used to
+        stop the model before the crossing gate ever ran is waived there, and
+        nowhere else."""
+        from bngsim._jacobian import unsupported_expr_construct
+
+        law = "if(time()-P*floor(time()/P)>=d,kin,0)"
+        assert unsupported_expr_construct(law) == "if() conditional"
+        assert unsupported_expr_construct(law, allow_conditions=True) is None
+        # In a branch, or outside an if() altogether, it really is differentiated.
+        assert (
+            unsupported_expr_construct(
+                "if(time()-P*floor(time()/P)>=d,kin*floor(time()/P),0)", allow_conditions=True
+            )
+            == "floor()"
+        )
+        assert (
+            unsupported_expr_construct("kin*floor(time()/P)", allow_conditions=True) == "floor()"
+        )
+
+    def test_a_floor_in_a_branch_still_declines_the_model(self, tmp_path):
+        """The same boundary, asserted through the real derivation path rather
+        than through the pre-scan alone."""
+        core = _model(
+            tmp_path, _with_dose("if(time()-P*floor(time()/P)>=d,kin*floor(time()),0)")
+        )._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is not None
+        assert "floor()" in reason
+
+    @pytest.mark.parametrize(
+        "threshold", ["floor(P)", "ceil(P)", "sign(P)", "floor(P)+1", "sign(P)*P"]
+    )
+    def test_a_step_function_in_a_threshold_declines_instead_of_crashing(
+        self, tmp_path, threshold
+    ):
+        """A crossing time that steps as a parameter moves, rather than moving
+        with it. There is no chain rule to the primaries for one, and asking sympy
+        for it does not fail cleanly: ``d/dP floor(P)`` comes back as an
+        unevaluated ``Derivative``, and evaluating that recurses until Python
+        raises ``RecursionError`` — which is not an exception any caller here
+        handles, so the whole codegen pass died with a stack overflow instead of
+        declining the model.
+
+        The ``sign`` spellings reach this on bngsim today, with no schedule and no
+        ``floor`` anywhere: ``sign`` is not one of the constructs the pre-scan
+        rejects, so ``if(time() >= sign(P), …)`` crashed. The ``floor`` and
+        ``ceil`` spellings became reachable with this issue, which waives a
+        ``floor()`` inside an ``if()`` condition. Both now decline."""
+        core = _model(tmp_path, _with_dose(f"if(time()>={threshold},kin,0)"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is not None
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
+        )
+        assert records == []
+
+
+@requires_cc
+class TestAPeriodicScheduleAgainstAFiniteDifference:
+    """The oracle for issue #436, and the only one that separates a schedule
+    compensated from a schedule merely admitted.
+
+    ``A`` fills at ``kin`` while the schedule is on and drains at ``kout`` all the
+    time, so its value at any instant carries every edge that has passed. Two
+    trajectories at ``p ± h`` therefore differ by the accumulated effect of every
+    jump, which is what the analytic column has to reproduce.
+
+    Sample times are deliberately off the edges. A central difference taken at an
+    instant that IS a crossing returns exactly half the analytic value — the two
+    one-sided derivatives averaged — which is a property of the reference, not a
+    defect in the column (issue #368)."""
+
+    @staticmethod
+    def _run(tmp_path, name, overrides, sens=None):
+        import numpy as np
+
+        model = _model(tmp_path, SCHEDULED, name=name)
+        for key, value in overrides.items():
+            model.set_param(key, value)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=sens)
+        # ``max_step`` is not a tolerance knob, it is what makes the reference
+        # trustworthy. The right-hand side is constant inside each branch, so the
+        # local error estimate is near zero and the solver will grow a step until
+        # it spans a whole pulse unless something bounds it. The sensitivity run
+        # does not have that problem, because its crossing records are stop times,
+        # so an unbounded plain run would be compared against a trajectory the
+        # solver got wrong rather than against this column.
+        return sim.run(
+            sample_times=list(np.arange(0.0, 240.001, 4.0) + 0.37),
+            rtol=1e-11,
+            atol=1e-13,
+            max_step=0.5,
+        )
+
+    #: Central-difference steps to try, as a fraction of the parameter.
+    #:
+    #: The oracle is the BEST of them, not any one of them, because a single step
+    #: is not a property of the answer: a central difference carries a truncation
+    #: error that falls as the step shrinks and a cancellation error that grows,
+    #: so every parameter has its own best step and it moves with the machine.
+    #: Pinning one step per parameter is what made the first version of this test
+    #: pass on arm64 and fail on x86 at a 6e-4 relative difference, which was the
+    #: reference's noise rather than anything about the column. Four steps three
+    #: decades apart bracket the minimum on either.
+    #:
+    #: A column that is actually wrong is wrong at every step, so taking the best
+    #: costs nothing: dropping the k factor from the period's partial (the failure
+    #: this is here to catch) fails all four.
+    _FD_STEPS = (1e-2, 1e-3, 1e-4, 1e-5)
+
+    @pytest.mark.parametrize(
+        ("name", "nominal"), [("P", 24.0), ("d", 7.0), ("kin", 0.1), ("kout", 0.05)]
+    )
+    def test_every_column_matches_a_central_difference(self, tmp_path, name, nominal):
+        params = ["P", "d", "kin", "kout"]
+        analytic = np.asarray(self._run(tmp_path, "an.net", {}, sens=params).sensitivities)[
+            :, :, params.index(name)
+        ]
+        errors = {}
+        for fraction in self._FD_STEPS:
+            step = abs(nominal) * fraction
+            up = np.asarray(self._run(tmp_path, "up.net", {name: nominal + step}).species)
+            down = np.asarray(self._run(tmp_path, "dn.net", {name: nominal - step}).species)
+            fd = (up - down) / (2.0 * step)
+            scale = float(np.max(np.abs(fd)))
+            assert scale > 1e-3, f"the {name} column is too small for the difference to test"
+            errors[fraction] = float(np.max(np.abs(analytic - fd))) / scale
+        # Far below the signal this is here to see (a column that has lost a term
+        # is wrong by an order-one fraction) and far above the reference's own
+        # floor at its best step, which is 1e-8 to 1e-6 depending on the column.
+        assert min(errors.values()) < 1e-4, (
+            f"the {name} column matches no central difference: "
+            + ", ".join(f"h={f * abs(nominal):.3g} -> {e:.3e}" for f, e in errors.items())
+        )
+
+    def test_the_period_column_is_not_the_duty_column_in_disguise(self, tmp_path):
+        """Ten periods fit in this window, so the last edge moves ten times as far
+        with the period as the first does. A column that had dropped the ``k``
+        factor — treating every edge as if it were the first — would still look
+        plausible and would still be wrong, so the two shapes are separated here
+        rather than left to the tolerance above."""
+        params = ["P", "d"]
+        analytic = np.asarray(self._run(tmp_path, "an2.net", {}, sens=params).sensitivities)
+        period_col = analytic[-1, 0, 0]
+        duty_col = analytic[-1, 0, 1]
+        assert abs(period_col) > 2.0 * abs(duty_col)
+
+
 UNCOMPENSATED = "beta*(I>1)*I"
 
 

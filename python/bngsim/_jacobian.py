@@ -1727,19 +1727,56 @@ _UNSUPPORTED_EXPR_CONSTRUCTS: list[tuple[re.Pattern, str, bool]] = [
 ]
 
 
+# Constructs that are rejected wherever they are *differentiated*, but harmless
+# in one position: inside an ``if()`` condition (issue #436).
+#
+# ``d/dx Piecewise((f, c), …)`` is ``Piecewise((df/dx, c), …)`` — sympy copies
+# every condition through untouched — so a ``floor()`` in a condition is never
+# differentiated at all. It is printed straight back out, and ``floor`` is a
+# builtin of both emitters, so nothing downstream is left holding a derivative it
+# cannot render. What the ``floor`` does do is add crossings, at each of its own
+# steps, and those are the switch-time detector's business rather than the
+# emitter's: the caller that sets ``allow_conditions`` re-gates the whole
+# condition through ``uncompensated_condition_reason`` immediately afterwards, and
+# a schedule whose edges nobody can place is declined there.
+#
+# ``abs``/``min``/``max``/``round`` are deliberately NOT in here even though the
+# same "copied through, never differentiated" argument applies to them. The
+# argument only makes them harmless; what makes ``floor``/``ceil`` *usable* is
+# that something now enumerates the crossings they introduce, and nothing does
+# for the others.
+_CONDITION_SAFE_CONSTRUCTS = frozenset({"floor()", "ceil()"})
+
+
 def unsupported_expr_construct(body: str, *, allow_conditions: bool = False) -> str | None:
     """Return the reason a function body is unsupported for #198 output
     sensitivities, or ``None`` if no rejected construct is present.
 
     ``allow_conditions`` skips the conditional class (``if()``, comparisons,
-    logicals). Only a caller that has separately established the crossings are
-    compensated may set it — see the table above.
+    logicals), and additionally waives a ``floor()`` / ``ceil()`` that appears
+    *only* inside ``if()`` conditions (issue #436 — see
+    :data:`_CONDITION_SAFE_CONSTRUCTS`). One written anywhere else in the body is
+    rejected as before, because there it really is differentiated. Only a caller
+    that has separately established the crossings are compensated may set it —
+    see the table above.
     """
+    spans: list[tuple[int, int]] | None = None
     for pat, name, conditional in _UNSUPPORTED_EXPR_CONSTRUCTS:
         if conditional and allow_conditions:
             continue
-        if pat.search(body):
-            return name
+        if not pat.search(body):
+            continue
+        if allow_conditions and name in _CONDITION_SAFE_CONSTRUCTS:
+            if spans is None:
+                from bngsim._switch_sensitivity import _condition_spans
+
+                spans = _condition_spans(body)
+            if all(
+                any(lo <= m.start() and m.end() <= hi for lo, hi in spans)
+                for m in pat.finditer(body)
+            ):
+                continue
+        return name
     return None
 
 
