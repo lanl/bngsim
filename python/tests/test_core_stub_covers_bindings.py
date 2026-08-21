@@ -7,13 +7,13 @@ is regenerated as a side effect of ``scripts/rebuild_editable.py``, and until
 this test nothing checked that it matched the bindings.
 
 It drifted the first time someone forgot: PR #306 added
-``SolverOptions.set_crossing_stop_times`` without regenerating, so main
+``SolverOptions.set_crossing_stops`` without regenerating, so main
 described an API missing a method it had. Two costs, neither loud:
 
   * every rebuild dirties the working tree with the regenerated hunk, which
     reads as noise from the build script rather than as a real omission;
   * mypy believes the stub. It reports ``"SolverOptions" has no attribute
-    "set_crossing_stop_times"`` — *correct code, flagged* — for any caller that
+    "set_crossing_stops"`` — *correct code, flagged* — for any caller that
     reaches the method through a typed reference.
 
 mypy did not catch that drift itself only because the one caller passes ``opts``
@@ -105,5 +105,5 @@ def test_the_scan_actually_finds_the_bindings():
     names = _bound_names()
     assert len(names) > 150, f"only {len(names)} bindings found; the scan has gone blind"
     # Spot-check one binding of each kind that must be found by name.
-    for expected in ("run", "set_crossing_stop_times", "rtol", "n_discontinuity_triggers"):
+    for expected in ("run", "set_crossing_stops", "rtol", "n_discontinuity_triggers"):
         assert expected in names, f"{expected!r} not seen by the binding scan"

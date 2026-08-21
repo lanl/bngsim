@@ -1230,6 +1230,29 @@ struct SteadyStateResult {
     std::vector<std::string> unconverged_pure_sinks;
 };
 
+// One fixed time-discontinuity crossing the integrator must land exactly on
+// (issue #305), and the clock the condition that flips there reads.
+//
+// A condition can threshold literal simulation time, or a *counter* species —
+// one fed by a zeroth-order reaction at rate 1, which is how a BNGL model makes
+// time available to a rate law (issue #443). The two need different treatment
+// at the stop and that is the whole reason this is a record rather than a bare
+// time. A counter is integrated, so at the stop it reads a couple of parts in
+// 1e14 BELOW the threshold it is defined as reaching there: the condition is
+// still false, the run restarts on the branch that just ended, and the jump
+// lands inside the first step after a restart with no history — the one place
+// the stop time exists to prevent it. Landing the counter on its threshold
+// first is issue #82's fix, and run() applies it here through the same
+// `land_clock_on_threshold` the issue #48 sensitivity jump uses.
+struct CrossingStop {
+    double t_star = 0.0;
+    // 0-based species index of the counter clock, or -1 for literal simulation
+    // `time` — the same encoding SwitchTimeSens::clock_species_idx0 uses.
+    int clock_species_idx0 = -1;
+    // What the counter reads at t_star. Unused when clock_species_idx0 < 0.
+    double threshold = 0.0;
+};
+
 // ─── Solver options ──────────────────────────────────────────────────────────
 struct SolverOptions {
     double rtol = 1e-8;         // relative tolerance
@@ -1240,7 +1263,7 @@ struct SolverOptions {
     // ─── Fixed time-discontinuity crossings to land on (issue #305) ──────────
     // Model times at which a time-dependent `piecewise`/`if()` branch flips,
     // for crossings whose time is a constant of the run. Sorted ascending by
-    // the Python layer (bngsim._switch_sensitivity.fixed_time_crossings), and
+    // the Python layer (bngsim._switch_sensitivity.fixed_crossing_stops), and
     // empty for every model that registers no GH #72 discontinuity trigger —
     // which leaves that model's stepping untouched.
     //
@@ -1262,7 +1285,7 @@ struct SolverOptions {
     // steps rejected. Registration is necessary; reachability is the other
     // half, and CVodeSetStopTime is what supplies it — the same mechanism
     // issue #48 uses for a crossing that a fitted parameter moves.
-    std::vector<double> crossing_stop_times;
+    std::vector<CrossingStop> crossing_stops;
 
     // ─── Per-species absolute tolerance (issue #196) ─────────────────────────
     // Empty (the default) leaves the scalar `atol` above on CVodeSStolerances,

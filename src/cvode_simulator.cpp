@@ -1284,6 +1284,101 @@ struct SensitivityState {
     double floor_max_relax = 1.0; // largest floor/base ratio applied, for diagnostics
 };
 
+// What `land_clock_on_threshold` needs in order to ask whether moving the clock
+// would step over a registered root. `n_roots == 0` — every .net model, which is
+// the whole of what issue #443 is about — skips the question and leaves the
+// other fields unused.
+struct RootSignWatch {
+    int n_roots = 0;
+    void *user_data = nullptr;
+    std::vector<sunrealtype> *before = nullptr; // scratch, n_roots entries
+    std::vector<sunrealtype> *after = nullptr;  // scratch, n_roots entries
+};
+
+// ─── Land a counter clock ON its threshold, not a few ulp short (issue #82) ──
+//
+// A stop time puts t exactly on t*, but the condition that flips there is read
+// off the CLOCK SPECIES, and that clock is integrated: counter(t*) comes back
+// 1–2e-14 BELOW the threshold it is supposed to have reached. So the restart
+// after the stop re-enters on the *before* branch and the discontinuity lands
+// inside the first step after the restart — the one place the stop time exists
+// to prevent it. CVODES then sizes h from the pre-switch right-hand side
+// (identically 0 on the model issue #82 was filed from: no transmission, no
+// distancing), every corrector answers with the post-switch one, and the error
+// test fails at every h down to ~1e-10 — 7 failures, no step completed,
+// CV_ERR_FAILURE at the crossing. Which side of the threshold the last bits
+// fall on is deterministic but effectively arbitrary, which is why issue #82
+// looks like isolated spikes in parameter space and moves non-monotonically
+// with rtol: a fit lost 25% of otherwise-integrable candidates to it.
+//
+// t* is DEFINED as the time the clock reaches `threshold` (a unit-rate counter,
+// so t* = threshold − offset exactly), so setting the clock there is a
+// correction of accumulated integration error, not a perturbation. nextafter
+// puts it on the after-branch of a strict `>` as well as a `>=`, at a cost of
+// one ulp. Discrepancies too large to be roundoff are left alone: those would
+// mean the crossing was detected in the wrong place, and silently moving state
+// would only hide it.
+//
+// ── Why the roots are consulted ──
+// One ulp of state is still state, and CVODE finds a root by a sign change
+// across a step it ACCEPTS. A state that jumps during a restart presents no
+// such step, so a root the jump crosses never fires AT ALL. An SBML rate rule
+// `dk/dt = 1` makes k a counter, and on a model whose events trigger on
+// `k > 4.5` — the same value the rate law switches at, which is the normal way
+// to write "and do this when it happens" — both priority-ordered events were
+// lost outright and the pre-event stoichiometry was carried to the end of the
+// run. So the move is made, the root function is asked again, and the move is
+// taken back if any root changed sign. Where a root sits on this crossing it
+// reinitialises there itself, which is the whole of what this repair exists to
+// do, and nothing is given up by leaving it to do it.
+//
+// Asking rather than assuming is what makes this safe both ways. "Stand down
+// whenever the run has any root" would be simple and wrong: 21 of the 37
+// counter-clock models in this repository's corpus root on a state threshold
+// (`V > 0` and the like) that has nothing to do with the clock, and on a fitted
+// run those models would silently lose the issue #82 repair they need.
+//
+// Both kinds of stop read this one rule so they cannot drift apart: the issue
+// #48 sensitivity jump, which has always needed it, and the plain issue
+// #305/#443 crossing stop, which needs it the moment a .net model's condition
+// thresholds a counter rather than literal time.
+static void land_clock_on_threshold(double *y_data, int ns, int clock_species_idx0,
+                                    double threshold, double t_now, N_Vector y,
+                                    const RootSignWatch &watch) {
+    if (clock_species_idx0 < 0 || clock_species_idx0 >= ns) {
+        throw std::runtime_error("a crossing names clock species index " +
+                                 std::to_string(clock_species_idx0) +
+                                 ", which this model does not have (issue #82)");
+    }
+    const size_t clk = static_cast<size_t>(clock_species_idx0);
+    const double drift = y_data[clk] - threshold;
+    const double drift_max = 1e-9 * std::max(std::fabs(threshold), 1.0);
+    if (!(drift < 0.0 && -drift <= drift_max)) {
+        return;
+    }
+    const double landed = std::nextafter(threshold, std::numeric_limits<double>::infinity());
+    if (watch.n_roots <= 0) {
+        y_data[clk] = landed;
+        return;
+    }
+    const double before_val = y_data[clk];
+    cvode_event_root_fn(static_cast<sunrealtype>(t_now), y, watch.before->data(), watch.user_data);
+    y_data[clk] = landed;
+    cvode_event_root_fn(static_cast<sunrealtype>(t_now), y, watch.after->data(), watch.user_data);
+    for (int i = 0; i < watch.n_roots; ++i) {
+        const double g0 = static_cast<double>((*watch.before)[i]);
+        const double g1 = static_cast<double>((*watch.after)[i]);
+        if ((g0 < 0.0) != (g1 < 0.0)) {
+            y_data[clk] = before_val;
+            // Put the evaluator back where the state is. The probe above left it
+            // reading the moved clock, and the move has just been taken back.
+            cvode_event_root_fn(static_cast<sunrealtype>(t_now), y, watch.after->data(),
+                                watch.user_data);
+            return;
+        }
+    }
+}
+
 // Scratch for the issue #48 switch-time sensitivity jump: the RHS on either
 // branch at the crossing state, and the state copy whose clock gets nudged
 // across the threshold to select the branch. Owned by run() and sized once,
@@ -1648,7 +1743,7 @@ struct CvodeSimulator::Impl {
     // the kink.
     void apply_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
                                        const SwitchTimeSens &sw, SwitchJumpScratch &scratch,
-                                       SensitivityState &sens);
+                                       SensitivityState &sens, const RootSignWatch &roots);
 
     // Add the saltation jump of a state-dependent rate-law switch to `s` in
     // place (issue #150). `batch` is every switch whose residual root fired at
@@ -4320,7 +4415,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
 void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns,
                                                          double t_evt, const SwitchTimeSens &sw,
                                                          SwitchJumpScratch &scratch,
-                                                         SensitivityState &sens) {
+                                                         SensitivityState &sens,
+                                                         const RootSignWatch &roots) {
     auto &sp_vec_outer = const_cast<std::vector<Species> &>(model.species());
     double *y_data = N_VGetArrayPointer(y);
     const int n_sens_p = sens.n_p;
@@ -4419,35 +4515,19 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     }
     const std::vector<double> &sw_f_jump = *jump_from;
 
-    // ── Land the clock ON its threshold, not a few ulp short (issue #82) ──
-    // The stop time puts t exactly on t*, but the condition is read off the
-    // CLOCK SPECIES, and that clock is integrated: counter(t*) comes back
-    // 1–2e-14 BELOW the threshold it is supposed to have reached. So the
-    // restart below re-enters on the *before* branch and the discontinuity
-    // lands inside the first step after the restart — the one place the stop
-    // time exists to prevent it. CVODES then sizes h from the pre-switch RHS
-    // (identically 0 on this model: no transmission, no distancing), every
-    // corrector answers with the post-switch RHS, and the error test fails at
-    // every h down to ~1e-10 — 7 failures, no step completed, CV_ERR_FAILURE
-    // at the crossing. Which side of the threshold the last bits fall on is
-    // deterministic but effectively arbitrary, which is why issue #82 looks
-    // like isolated spikes in parameter space and moves non-monotonically
-    // with rtol: a fit lost 25% of otherwise-integrable candidates to it.
+    // Land the clock ON its threshold rather than a few ulp short, so the
+    // resumed integration reads the after-branch (issue #82). The rule itself
+    // is `land_clock_on_threshold`, shared with the plain crossing stop so the
+    // two cannot drift apart, and it is what declines to move the clock when
+    // that would step over a root.
     //
-    // t* is DEFINED as the time the clock reaches `threshold` (a unit-rate
-    // counter, so t* = threshold − offset exactly), so setting the clock
-    // there is a correction of accumulated integration error, not a
-    // perturbation. nextafter puts it on the after-branch of a strict `>` as
-    // well as a `>=`, at a cost of one ulp. Discrepancies too large to be
-    // roundoff are left alone: those would mean the crossing was detected in
-    // the wrong place, and silently moving state would only hide it.
+    // A model that thresholds a counter at a FITTED parameter is the one shape
+    // that reaches this function with a counter clock, and it is exactly the
+    // model whose events are likely to trigger on the same value — so the root
+    // check inside is not hypothetical here. Before it, such a model fired its
+    // event on a plain run and did not fire it on a sensitivity run.
     if (!time_clock) {
-        const size_t clk = static_cast<size_t>(sw.clock_species_idx0);
-        const double drift = y_data[clk] - sw.threshold;
-        const double drift_max = 1e-9 * std::max(std::fabs(sw.threshold), 1.0);
-        if (drift < 0.0 && -drift <= drift_max) {
-            y_data[clk] = std::nextafter(sw.threshold, std::numeric_limits<double>::infinity());
-        }
+        land_clock_on_threshold(y_data, ns, sw.clock_species_idx0, sw.threshold, t_evt, y, roots);
     }
 
     // Restore the evaluator to the true crossing state so the resumed
@@ -5162,9 +5242,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // every model that had stop times had registered the roots that produced
     // them; a .net model has the stops without the roots, so the check has to
     // be made on its own.
-    const bool warm_eligible = !has_roots && opts.crossing_stop_times.empty() &&
-                               !wants_sensitivity && (opts.jacobian != "jax") &&
-                               !std::getenv("BNGSIM_NO_WARM_CVODE");
+    const bool warm_eligible = !has_roots && opts.crossing_stops.empty() && !wants_sensitivity &&
+                               (opts.jacobian != "jax") && !std::getenv("BNGSIM_NO_WARM_CVODE");
     if (warm_eligible) {
         return impl_->run_warm(times, opts, use_sparse);
     }
@@ -5844,23 +5923,31 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // list already stops at — a #48 crossing carries a sensitivity jump this
     // one must not pre-empt, and stopping twice at one instant would leave the
     // jump keyed on a t_ret the stop already consumed.
-    std::vector<double> crossing_stops;
-    for (double t_cross : opts.crossing_stop_times) {
-        if (!(t_cross > t_out.front() && t_cross <= t_out.back())) {
+    std::vector<CrossingStop> crossing_stops;
+    for (const CrossingStop &stop : opts.crossing_stops) {
+        if (!(stop.t_star > t_out.front() && stop.t_star <= t_out.back())) {
             continue;
         }
         bool claimed_by_switch = false;
         for (const auto *sw : switch_list) {
-            if (std::fabs(sw->t_star - t_cross) <= switch_t_eps) {
+            if (std::fabs(sw->t_star - stop.t_star) <= switch_t_eps) {
                 claimed_by_switch = true;
                 break;
             }
         }
         if (!claimed_by_switch) {
-            crossing_stops.push_back(t_cross);
+            crossing_stops.push_back(stop);
         }
     }
     size_t next_crossing = 0; // index into crossing_stops of the next one ahead
+
+    // Scratch for the root-sign check inside `land_clock_on_threshold`: the
+    // registered roots evaluated on either side of the ulp it moves the counter
+    // by, so a move that would step over one can be taken back. Empty and never
+    // touched on a model with no roots, which is every .net model.
+    std::vector<sunrealtype> land_g_before(static_cast<size_t>(std::max(n_roots, 0)));
+    std::vector<sunrealtype> land_g_after(land_g_before.size());
+    const RootSignWatch root_watch{n_roots, &user_data, &land_g_before, &land_g_after};
 
     if (n_roots > 0) {
         // Register the event + discontinuity roots (Impl::register_roots).
@@ -6228,7 +6315,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 ++next_switch; // defensive: a crossing we are already past
             }
             while (next_crossing < crossing_stops.size() &&
-                   crossing_stops[next_crossing] <= static_cast<double>(t_now) + switch_t_eps) {
+                   crossing_stops[next_crossing].t_star <=
+                       static_cast<double>(t_now) + switch_t_eps) {
                 ++next_crossing;
             }
             // Whichever comes first. Ties cannot happen: a crossing at a #48
@@ -6236,7 +6324,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const bool have_switch = next_switch < switch_list.size();
             const bool have_crossing = next_crossing < crossing_stops.size();
             if (have_switch && (!have_crossing || switch_list[next_switch]->t_star <=
-                                                      crossing_stops[next_crossing])) {
+                                                      crossing_stops[next_crossing].t_star)) {
                 t_switch = switch_list[next_switch]->t_star;
                 int sf = CVodeSetStopTime(cvode_mem, static_cast<sunrealtype>(t_switch));
                 if (sf != CV_SUCCESS) {
@@ -6246,7 +6334,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
                 stop_at_switch = true;
             } else if (have_crossing) {
-                t_crossing = crossing_stops[next_crossing];
+                t_crossing = crossing_stops[next_crossing].t_star;
                 int sf = CVodeSetStopTime(cvode_mem, static_cast<sunrealtype>(t_crossing));
                 if (sf != CV_SUCCESS) {
                     throw std::runtime_error("CVodeSetStopTime for discontinuity crossing t=" +
@@ -6611,7 +6699,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                            static_cast<double>(t_ret) + switch_t_eps) {
                     impl_->apply_switch_sensitivity_jump(
                         cvode_mem, y, ns, static_cast<double>(t_ret), *switch_list[next_switch],
-                        sw_scratch, sens);
+                        sw_scratch, sens, root_watch);
                     ++next_switch;
                 }
             }
@@ -6632,7 +6720,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // s⁻ capture/resume on the path where no root fires would not be.
             if (stop_at_crossing && static_cast<double>(t_ret) >= t_crossing - switch_t_eps) {
                 while (next_crossing < crossing_stops.size() &&
-                       crossing_stops[next_crossing] <= static_cast<double>(t_ret) + switch_t_eps) {
+                       crossing_stops[next_crossing].t_star <=
+                           static_cast<double>(t_ret) + switch_t_eps) {
+                    // A condition on a counter species reads a clock that is
+                    // integrated, so at the stop it sits a couple of parts in
+                    // 1e14 short of the threshold and still reads the branch
+                    // that just ended (issues #82, #443). Put it exactly where
+                    // the crossing time says it is before restarting — unless
+                    // that ulp of state would step over a registered root, which
+                    // `land_clock_on_threshold` checks for and takes back.
+                    const CrossingStop &reached = crossing_stops[next_crossing];
+                    if (reached.clock_species_idx0 >= 0) {
+                        land_clock_on_threshold(y_data, ns, reached.clock_species_idx0,
+                                                reached.threshold, static_cast<double>(t_ret), y,
+                                                root_watch);
+                    }
                     ++next_crossing;
                 }
                 if (flag != CV_ROOT_RETURN) {

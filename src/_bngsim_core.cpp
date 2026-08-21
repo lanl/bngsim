@@ -313,12 +313,25 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("carry_sensitivities", &bngsim::SolverOptions::carry_sensitivities)
         .def_readwrite("event_seed", &bngsim::SolverOptions::event_seed)
         .def(
-            "set_crossing_stop_times",
-            [](bngsim::SolverOptions &self, std::vector<double> times) {
-                std::sort(times.begin(), times.end());
-                self.crossing_stop_times = std::move(times);
+            "set_crossing_stops",
+            [](bngsim::SolverOptions &self,
+               const std::vector<std::tuple<double, int, double>> &stops) {
+                std::vector<bngsim::CrossingStop> out;
+                out.reserve(stops.size());
+                for (const auto &s : stops) {
+                    bngsim::CrossingStop c;
+                    c.t_star = std::get<0>(s);
+                    c.clock_species_idx0 = std::get<1>(s);
+                    c.threshold = std::get<2>(s);
+                    out.push_back(c);
+                }
+                std::sort(out.begin(), out.end(),
+                          [](const bngsim::CrossingStop &a, const bngsim::CrossingStop &b) {
+                              return a.t_star < b.t_star;
+                          });
+                self.crossing_stops = std::move(out);
             },
-            py::arg("times"),
+            py::arg("stops"),
             "Set the model times a fixed time-dependent `piecewise`/`if()` "
             "branch flips at, so the integrator lands ON each crossing instead "
             "of trying to step over it (issue #305). A GH #72 discontinuity "
@@ -326,9 +339,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "step it ACCEPTS, and where the jump is large enough that the error "
             "test rejects every step containing the crossing, t creeps to the "
             "last double below it and wedges at t + h == t without the root "
-            "ever firing. Resolved by bngsim._switch_sensitivity."
-            "fixed_time_crossings; empty (the default) leaves the integration "
-            "loop untouched.")
+            "ever firing. Each entry is (time, clock_species_index, threshold); "
+            "the clock index is -1 for a condition on literal simulation time, "
+            "and otherwise names the counter species the condition thresholds, "
+            "which run() lands on `threshold` at the stop so the restart reads "
+            "the after-branch (issue #443). Resolved by bngsim."
+            "_switch_sensitivity.fixed_crossing_stops; empty (the default) "
+            "leaves the integration loop untouched.")
         // Forward sensitivity options
         .def(
             "set_sensitivity_params",

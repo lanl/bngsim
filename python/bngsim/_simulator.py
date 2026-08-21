@@ -1583,6 +1583,10 @@ class Simulator:
         with no build-time seam for a loader to add a root at — so its
         conditions are recovered from the built model's function bodies, and
         this stop is the whole of what keeps the step off them (issue #440).
+        A condition may threshold a counter species rather than literal
+        simulation time, which is what BNGL models mostly write; such a stop
+        carries the counter's index and the value it reaches there, so the core
+        can land it exactly on the threshold before restarting (issue #443).
 
         ``model`` is the model this run integrates — the batch and chunked
         sensitivity paths run on a *clone* carrying that row's parameter point,
@@ -1593,10 +1597,10 @@ class Simulator:
         conditions = model.time_discontinuity_conditions()
         if not conditions:
             return
-        from bngsim._switch_sensitivity import fixed_time_crossings
+        from bngsim._switch_sensitivity import fixed_crossing_stops
 
         try:
-            times = fixed_time_crossings(model._core, float(t_start), float(t_end), conditions)
+            stops = fixed_crossing_stops(model._core, float(t_start), float(t_end), conditions)
         except Exception as e:  # pragma: no cover - defensive
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than
@@ -1607,12 +1611,14 @@ class Simulator:
                 e,
             )
             return
-        if times:
+        if stops:
             logger.debug(
                 "Discontinuity crossing stops at t=%s (issue #305)",
-                ", ".join(f"{t:.6g}" for t in times),
+                ", ".join(f"{stop.time:.6g}" for stop in stops),
             )
-            opts.set_crossing_stop_times(times)
+            opts.set_crossing_stops(
+                [(stop.time, stop.clock_species_idx, stop.threshold) for stop in stops]
+            )
 
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
