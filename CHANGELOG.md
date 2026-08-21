@@ -102,6 +102,28 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **An ordinary ODE run no longer prints SUNDIALS error lines about forward
+  sensitivity (issue #447).** A plain `Simulator(model, method="ode").run(...)`
+  put lines like
+
+      [ERROR][rank 0][.../cvodes_io.c:2322][CVodeGetSensNumNonlinSolvConvFails]
+      Forward sensitivity analysis not activated.
+
+  on standard error even though the run was healthy. bngsim reads CVODE's
+  counters once per solver segment, and two of the counters it asked for belong
+  to the forward sensitivity solve. CVODES answers a request for either of those
+  on a run that has no sensitivities by printing one of those lines and then
+  returning a flag that says so. Leaving the two counters at zero is the right
+  answer for such a run, so the flag was ignored, but the printed line went to
+  the user regardless: two lines for a plain run, and two more for each event
+  fire, because every fire re-initializes CVODE and closes a segment. A 240 unit
+  run of a model dosed every 12 units printed 42 of them.
+
+  bngsim now skips the two requests on a run that has no forward sensitivities,
+  rather than switching off the SUNDIALS error handler, so a real solver error
+  still reaches the user. Nothing about the reported counters changes: a run that
+  does compute sensitivities still asks for both and still reports them.
+
 - **A derived expression that is a single `floor()`, `ceil()` or `sign()` call no
   longer crashes a sensitivity run (issue #441).** A model whose initial condition
   is built from a step function, `A0 = floor(P)`, died with
