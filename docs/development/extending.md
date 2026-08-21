@@ -58,3 +58,13 @@ Supported arities: 0 (use `allow_zero_parameters() = true`), 1, 2, or 3 argument
 For 0-argument functions that read external state (like `time()`), store a pointer
 in the adapter class. See `TimeFunction` and `MratioFunction` in `expression.cpp`
 as examples.
+
+**Step 7: Give it a C spelling, and a derivative if it has one.** The steps above
+make a model able to call the function. Two more things decide what a compiled
+run and a forward-sensitivity run can do with it, and both live in
+`python/bngsim/_codegen.py`: the comment above `_SPECIAL_FUNCTION_C_LINES` is the
+maintained list for the C, and the comment above `_ENGINE_SYMPY_FUNCS` in
+`python/bngsim/_jacobian.py` is the one for the derivative. `mratio` is the
+worked example of both. A function with no derivative there still runs; a model
+that calls it in a rate law simply keeps CVODES' difference quotient for its
+sensitivities.

@@ -502,12 +502,16 @@ _CODEGEN_MACRO_LINES = (
 # flag that has to be threaded to every emitter and would fail silently the
 # first time somebody forgot to set it.
 #
-# The derivative is a separate question. A model that calls one of these in a
-# rate law still declines the analytic sensitivity right-hand side and uses
-# CVODES' difference quotient, exactly as before, because nothing here tells the
-# differentiation layer what the function means. For mratio that is a shame
-# rather than a necessity: d/dz of M(a+1,b+1,z)/M(a,b,z) is closed form in mratio
-# itself, see the note in the changelog entry for issue #451.
+# The derivative is a separate question, and for a new function the answer is
+# still that a model calling it declines the analytic sensitivity right-hand
+# side and uses CVODES' difference quotient, because nothing here tells the
+# differentiation layer what the function means. mratio is no longer in that
+# position: issue #457 gave it a derivative in the third argument, closed form
+# in mratio itself, so a fit over a rate constant gets an analytic gradient. The
+# fourth thing to add, for a function that has one, is a sympy class with an
+# ``fdiff`` — see ``engine_sympy_bindings`` in bngsim/_jacobian.py — plus the C
+# for whatever that ``fdiff`` produces, which for mratio is
+# ``bngsim_mratio_dz`` below.
 _SPECIAL_FUNCTION_C_LINES = (
     "#ifndef BNGSIM_MRATIO_DEFINED",
     "#define BNGSIM_MRATIO_DEFINED",
@@ -743,6 +747,36 @@ _SPECIAL_FUNCTION_C_LINES = (
     "        odd = 1 - odd;",
     "    }",
     "    return f;",
+    "}",
+    "",
+    "/* d/dz mratio(a,b,z), issue #457. Writing R for mratio, Kummer's identity",
+    "   dM(a,b,z)/dz = (a/b)*M(a+1,b+1,z) and the quotient rule give",
+    "",
+    "     dR/dz = R(a,b,z) * [ (a+1)/(b+1)*R(a+1,b+1,z) - (a/b)*R(a,b,z) ]",
+    "",
+    "   which is two mratio calls and no new numerics. The shifted call is not",
+    "   always one mratio will make: it is refused for a above -1, where a+1",
+    "   turns positive. Rather than fail a run that used to work, fall back to a",
+    "   second exact expression for the same derivative. Kummer's equation",
+    "   z*M'' + (b-z)*M' - a*M = 0 gives the contiguous relation",
+    "",
+    "     (a+1)/(b+1)*R(a+1,b+1,z)*R(a,b,z) = ( b - (b-z)*R(a,b,z) ) / z",
+    "",
+    "   so the whole derivative follows from the one call the value makes. That",
+    "   subtraction cancels, which is why it is second choice: against a",
+    "   60-digit reference the shifted-call form is right to 9e-16 at the median",
+    "   and this one only to 5e-13, and for a small |z| it loses everything. A",
+    "   small |z| is where mratio trusts the shifted call unconditionally, so",
+    "   this branch only runs at a large |z|; over the arguments where it does",
+    "   fire, its worst error is 1.7e-8. The note in bngsim/_jacobian.py carries",
+    "   the same account for the differentiation layer. */",
+    "static double bngsim_mratio_dz(double a, double b, double z) {",
+    "    const double r = bngsim_mratio(a, b, z);",
+    "    const double shifted = bngsim_mratio(a + 1.0, b + 1.0, z);",
+    "    if (bngsim_mratio_is_finite(shifted)) {",
+    "        return r * ((a + 1.0) / (b + 1.0) * shifted - (a / b) * r);",
+    "    }",
+    "    return (b - (b - z) * r) / z - (a / b) * r * r;",
     "}",
     "#endif",
 )
@@ -1807,7 +1841,9 @@ def _rewrite_logicals_in_groups(s: str, budget: int) -> str:
 # A primary parameter sharing one of these names would be shadowed by the class
 # and silently differentiate to zero, so the chain rule refuses the expression
 # instead (see ``_preprocess_derived_expr``'s callers).
-_DERIVED_RESERVED_NAMES = frozenset({"Piecewise", "And", "Or", "Not", "Eq", "Ne", "True", "False"})
+_DERIVED_RESERVED_NAMES = frozenset(
+    {"Piecewise", "And", "Or", "Not", "Eq", "Ne", "True", "False", "mratio"}
+)
 
 
 def _preprocess_derived_expr(expr: str) -> str:
@@ -2400,6 +2436,8 @@ def _prepare_derived_expr(
     import sympy as sp
     from sympy.parsing.sympy_parser import parse_expr
 
+    from bngsim._jacobian import engine_sympy_bindings
+
     # Pass 1: ExprTk → sympy surface syntax (if→Piecewise, ^→**, logicals →
     # And/Or call form). Applied to the raw string so whole-word matching of
     # ``if`` sees the source as written.
@@ -2444,6 +2482,11 @@ def _prepare_derived_expr(
     local_dict: dict = builtin_constant_bindings(sp)
     local_dict.update(sym_map)
     local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not, Eq=sp.Eq, Ne=sp.Ne)
+    # The engine's own functions, which sympy has no counterpart for (issue
+    # #457). A derived parameter may call one — the model behind issue #453
+    # builds three of its parameters out of ``mratio`` — so this path needs the
+    # same binding the rate-law path gets.
+    local_dict.update(engine_sympy_bindings(sp))
 
     try:
         sym_expr = parse_expr(s_aliased, local_dict=local_dict, evaluate=True)
@@ -2481,8 +2524,10 @@ def _prepare_derived_expr(
 # to list is covered too, and asked before the value is taken rather than caught
 # after it, since a crash is not a decline.
 _STEP_DERIVATIVE_REASON = (
-    "sympy left the derivative unevaluated, which is its answer for a value that "
-    "steps rather than moves, such as floor(), ceil() or sign()"
+    "sympy left the derivative unevaluated, which is its answer whenever it has "
+    "no derivative to give: a value that steps rather than moves, such as "
+    "floor(), ceil() or sign(), or mratio() differentiated in its first or "
+    "second argument, which has no closed form (issue #457)"
 )
 
 
@@ -7759,9 +7804,9 @@ def generate_jacobian_from_model(model) -> str | None:
 # the message can say which call blocked the model. Read from the symbolic core
 # rather than re-listed, so the two cannot drift (the #56 lesson).
 def _exprtk_call_heads() -> frozenset[str]:
-    from bngsim._jacobian import _EXPRTK_TO_SYMPY_FUNC
+    from bngsim._jacobian import _ENGINE_SYMPY_FUNCS, _EXPRTK_TO_SYMPY_FUNC
 
-    return frozenset(_EXPRTK_TO_SYMPY_FUNC)
+    return frozenset(_EXPRTK_TO_SYMPY_FUNC) | _ENGINE_SYMPY_FUNCS
 
 
 # The heads that ``_preprocess_exprtk`` rewrites into a sympy *construct* before
