@@ -1460,8 +1460,14 @@ struct CvodeSimulator::Impl {
     };
     SegmentCounters closed_segments;
 
+    // Whether CVODES forward sensitivity analysis is switched on for the CVODE
+    // memory these counters are read from (issue #447). Set when CVodeSensInit1
+    // succeeds, and cleared at the top of a run alongside `closed_segments`,
+    // for the same reason: it describes this run alone.
+    bool sens_active = false;
+
     // The counters CVODE has accumulated since its last (re-)initialization.
-    static SegmentCounters read_segment_counters(void *cvode_mem);
+    SegmentCounters read_segment_counters(void *cvode_mem) const;
 
     // The one way to re-initialize CVODE mid-run: banks the closing segment's
     // counters before CVodeReInit zeroes them (issue #182), then re-inits.
@@ -2242,6 +2248,10 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // (Nothing re-inits mid-run here — the warm path takes no events — so this
     // stays 0 through to record_solver_stats.)
     closed_segments = SegmentCounters{};
+    // This path never runs forward sensitivities (it is excluded from the warm
+    // fast path in run()), so the counters read below must leave the two
+    // sensitivity fields alone — issue #447.
+    sens_active = false;
 
     // And the same restart on the GH #336 witness, which the warm path's reused
     // user_data would otherwise carry across run()s: a step an earlier run
@@ -2531,6 +2541,10 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     // Fresh CVODE memory, so its own counters start at 0; the carried half of
     // the run's totals is an Impl member and has to be cleared (issue #182).
     closed_segments = SegmentCounters{};
+    // Fresh CVODE memory has no forward sensitivities on it either, whatever a
+    // previous run left behind (issue #447). setup_forward_sensitivities sets
+    // this again if this run asks for them.
+    sens_active = false;
 
     // Tracking (issue #213) is decided here rather than in run(), so the two
     // statements that have to agree — the spec the callback reads and the
@@ -3017,6 +3031,10 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     if (flag != CV_SUCCESS) {
         throw std::runtime_error("CVodeSensInit1 failed: " + std::to_string(flag));
     }
+    // From here the two sensitivity solver counters are readable, so
+    // read_segment_counters may ask for them (issue #447). CVodeReInit does not
+    // switch sensitivities back off, so this stays true for the rest of the run.
+    sens_active = true;
 
     // ── Scale-aware sensitivity error control (GH #214) ──────────────────
     // bngsim integrates concentrations (= amount / V_compartment). For the
@@ -3579,7 +3597,8 @@ void CvodeSimulator::Impl::allocate_run_result(Result &result, const SolverOptio
 }
 
 // ─── Solver statistics ───────────────────────────────────────────────────────
-CvodeSimulator::Impl::SegmentCounters CvodeSimulator::Impl::read_segment_counters(void *cvode_mem) {
+CvodeSimulator::Impl::SegmentCounters
+CvodeSimulator::Impl::read_segment_counters(void *cvode_mem) const {
     SegmentCounters c;
     CVodeGetNumSteps(cvode_mem, &c.steps);
     CVodeGetNumRhsEvals(cvode_mem, &c.rhs_evals);
@@ -3587,11 +3606,20 @@ CvodeSimulator::Impl::SegmentCounters CvodeSimulator::Impl::read_segment_counter
     CVodeGetNumNonlinSolvIters(cvode_mem, &c.nonlin_iters);
     CVodeGetNumNonlinSolvConvFails(cvode_mem, &c.nonlin_conv_fails);
     CVodeGetNumErrTestFails(cvode_mem, &c.err_test_fails);
-    // Both return CV_NO_SENS on a run without forward sensitivities, leaving
-    // the fields at 0 — which is the honest answer there, so the flag is
-    // deliberately not checked.
-    CVodeGetSensNumNonlinSolvConvFails(cvode_mem, &c.sens_conv_fails);
-    CVodeGetSensNumErrTestFails(cvode_mem, &c.sens_err_test_fails);
+    // Only ask for the sensitivity counters when this run actually switched
+    // forward sensitivities on (issue #447). Both getters return CV_NO_SENS
+    // otherwise, which would leave the two fields at 0 — the honest answer for
+    // a run that computed no sensitivities — but each of them also prints a
+    // SUNDIALS "[ERROR] ... Forward sensitivity analysis not activated" line to
+    // standard error before returning it. Every ordinary run therefore emitted
+    // two of those lines per solver segment, and a reader had no way to tell
+    // them from a real solver failure. Skipping the calls is what leaves the
+    // fields at 0 now, and it keeps the SUNDIALS error handler in place so that
+    // a real error still reaches the user.
+    if (sens_active) {
+        CVodeGetSensNumNonlinSolvConvFails(cvode_mem, &c.sens_conv_fails);
+        CVodeGetSensNumErrTestFails(cvode_mem, &c.sens_err_test_fails);
+    }
     return c;
 }
 
