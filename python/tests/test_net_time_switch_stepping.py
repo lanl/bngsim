@@ -33,7 +33,10 @@ What this locks:
   5. a threshold written behind a derived parameter or a function call is still
      found, and one that reads live state is not;
   6. a model with no time condition gets no stops at all, so its stepping is
-     untouched.
+     untouched;
+  7. a batch row stops where its own parameter point puts the crossing, and a
+     crossing a fitted parameter moves keeps the sensitivity jump it already
+     had.
 """
 
 import os
