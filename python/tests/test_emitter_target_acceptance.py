@@ -55,10 +55,8 @@ from __future__ import annotations
 import contextlib
 import io
 import math
-import os
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 
 import bngsim
@@ -78,6 +76,13 @@ from bngsim._jacobian import (  # noqa: E402
 
 _CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler (cc/clang/gcc) on PATH")
+
+#: ``-Werror=implicit-function-declaration`` is as much the point of the compile
+#: as the compile is. A call to a name C does not have is only a warning on an
+#: older compiler, and an emitter writing one is exactly the failure this file is
+#: about. Without the flag it would build, and then fail at link time or run on
+#: whatever the linker happened to find.
+_CC_FLAGS = [_CC, "-O2", "-Werror=implicit-function-declaration"]
 
 
 # ─── the alphabet every case is written in ───────────────────────────────────
@@ -122,37 +127,41 @@ class Case:
     #: this row. Set on the two rows sympy cannot value: it has no numeric
     #: mratio. Everything else is held to sympy.
     reference: str = ""
-    points: tuple = POINTS
+    #: Why this row is here, printed when it fails.
     notes: str = ""
     #: Which entries of the emitters' name tables this row is the case for.
     #: Read by `test_every_emittable_function_has_a_case`.
     covers: frozenset = field(default_factory=frozenset)
 
+    def why(self) -> str:
+        return f"\n({self.notes})" if self.notes else ""
 
-def _f(*names: str) -> frozenset:
-    return frozenset(names)
+
+def names(*entries: str) -> frozenset:
+    """The name-table entries a row is the case for."""
+    return frozenset(entries)
 
 
 CASES: tuple[Case, ...] = (
     # ── the name tables ──────────────────────────────────────────────────
-    Case("exp", sp.exp(x1), covers=_f("exp")),
-    Case("log", sp.log(x0), covers=_f("log")),
-    Case("sqrt", sp.sqrt(x0), covers=_f("sqrt")),
-    Case("abs", sp.Abs(x2), covers=_f("Abs")),
-    Case("sign", sp.sign(x2), covers=_f("sign")),
-    Case("sin", sp.sin(x2), covers=_f("sin")),
-    Case("cos", sp.cos(x2), covers=_f("cos")),
-    Case("tan", sp.tan(x1), covers=_f("tan")),
-    Case("asin", sp.asin(x1 / 10), covers=_f("asin")),
-    Case("acos", sp.acos(x1 / 10), covers=_f("acos")),
-    Case("atan", sp.atan(x2), covers=_f("atan")),
-    Case("sinh", sp.sinh(x1), covers=_f("sinh")),
-    Case("cosh", sp.cosh(x1), covers=_f("cosh")),
-    Case("tanh", sp.tanh(x2), covers=_f("tanh")),
-    Case("floor", sp.floor(x2), covers=_f("floor")),
-    Case("ceiling", sp.ceiling(x2), covers=_f("ceiling")),
-    Case("min", sp.Min(x0, x1), covers=_f("Min")),
-    Case("max", sp.Max(x0, x1), covers=_f("Max")),
+    Case("exp", sp.exp(x1), covers=names("exp")),
+    Case("log", sp.log(x0), covers=names("log")),
+    Case("sqrt", sp.sqrt(x0), covers=names("sqrt")),
+    Case("abs", sp.Abs(x2), covers=names("Abs")),
+    Case("sign", sp.sign(x2), covers=names("sign")),
+    Case("sin", sp.sin(x2), covers=names("sin")),
+    Case("cos", sp.cos(x2), covers=names("cos")),
+    Case("tan", sp.tan(x1), covers=names("tan")),
+    Case("asin", sp.asin(x1 / 10), covers=names("asin")),
+    Case("acos", sp.acos(x1 / 10), covers=names("acos")),
+    Case("atan", sp.atan(x2), covers=names("atan")),
+    Case("sinh", sp.sinh(x1), covers=names("sinh")),
+    Case("cosh", sp.cosh(x1), covers=names("cosh")),
+    Case("tanh", sp.tanh(x2), covers=names("tanh")),
+    Case("floor", sp.floor(x2), covers=names("floor")),
+    Case("ceiling", sp.ceiling(x2), covers=names("ceiling")),
+    Case("min", sp.Min(x0, x1), covers=names("Min")),
+    Case("max", sp.Max(x0, x1), covers=names("Max")),
     Case(
         "min of three",
         sp.Min(x0, x1, x2),
@@ -222,7 +231,7 @@ CASES: tuple[Case, ...] = (
         "source carries its own copy of mratio, and this holds it to the "
         "engine's. test_codegen_mratio.py is where that copy is held to the "
         "C++ it was ported from.",
-        covers=_f("mratio"),
+        covers=names("mratio"),
     ),
     Case(
         "the derivative of mratio",
@@ -239,7 +248,7 @@ CASES: tuple[Case, ...] = (
         "source carries, and the engine has no such function. So the reference "
         "is the identity the helper is supposed to compute, written out in the "
         "engine's own mratio calls.",
-        covers=_f("mratio_dz"),
+        covers=names("mratio_dz"),
     ),
 )
 
@@ -251,6 +260,7 @@ CASES: tuple[Case, ...] = (
 #: what asks the engine to compile it.
 NET = """begin parameters
     1 lambda 1.5  # Constant
+    2 k1 0.7  # Constant
 end parameters
 begin observables
     1 Molecules x0 A
@@ -276,7 +286,7 @@ end groups
 """
 
 
-def engine_values(tmp_path, text: str, points, tag: str) -> list[float]:
+def engine_values(tmp_path, text: str, tag: str) -> list[float]:
     """Compile ``text`` with the engine's own expression parser and evaluate it.
 
     Loading the model is the compile: a rate law the parser will not take makes
@@ -287,7 +297,7 @@ def engine_values(tmp_path, text: str, points, tag: str) -> list[float]:
     with contextlib.redirect_stderr(io.StringIO()):
         model = bngsim.Model.from_net(str(net))
     core = model._core if hasattr(model, "_core") else model
-    return [core._eval_functions(t, list(conc))["law"] for t, conc in points]
+    return [core._eval_functions(t, list(conc))["law"] for t, conc in POINTS]
 
 
 #: What ``sympy_to_c`` resolves each free symbol to. The C emitter has no symbol
@@ -302,7 +312,7 @@ C_SYMBOLS = {
 }
 
 
-def compiler_values(text: str, points) -> list[float]:
+def compiler_values(tmp_path, text: str) -> list[float]:
     """Compile ``text`` with the system C compiler and run it at each point.
 
     The generated source's own prelude is included, because that is where the
@@ -319,20 +329,18 @@ def compiler_values(text: str, points) -> list[float]:
         f'  printf("%.17g\\n", (double)({text}));\n'
         "  return 0;\n}\n"
     )
-    work = tempfile.mkdtemp()
-    c_file, program = os.path.join(work, "case.c"), os.path.join(work, "case")
-    with open(c_file, "w") as handle:
-        handle.write(source)
+    c_file, program = tmp_path / "case.c", tmp_path / "case"
+    c_file.write_text(source)
     built = subprocess.run(
-        [_CC, "-O2", "-o", program, c_file, "-lm"], capture_output=True, text=True
+        [*_CC_FLAGS, "-o", str(program), str(c_file), "-lm"], capture_output=True, text=True
     )
     assert built.returncode == 0, (
         f"the C compiler rejected what sympy_to_c wrote:\n{text}\n\n{built.stderr}"
     )
     out = []
-    for t, conc in points:
+    for t, conc in POINTS:
         run = subprocess.run(
-            [program, repr(t), *[repr(v) for v in conc]],
+            [str(program), repr(t), *[repr(v) for v in conc]],
             capture_output=True,
             text=True,
             check=True,
@@ -345,9 +353,9 @@ def reference_values(tmp_path, case: Case) -> list[float]:
     """What the expression is worth, asked of neither emitter. Both targets are
     held to this."""
     if case.reference:
-        return engine_values(tmp_path, case.reference, case.points, tag=f"ref_{_tag(case)}")
+        return engine_values(tmp_path, case.reference, tag=f"ref_{_tag(case)}")
     values = []
-    for t, conc in case.points:
+    for t, conc in POINTS:
         bound = case.expr.subs(
             {x0: conc[0], x1: conc[1], x2: conc[2], TIME: t, KEYWORD_PARAM: 1.5}
         )
@@ -371,6 +379,12 @@ def _emit_c(case: Case) -> str | None:
 
 
 _IDS = [case.name for case in CASES]
+assert len(set(_IDS)) == len(_IDS), "two cases share a name"
+
+# Tight on purpose. The two targets and sympy all compute in doubles, so a real
+# disagreement is a wrong spelling rather than a rounding difference, and an
+# `abs` floor here would have made the two rows with tiny values vacuous.
+TOLERANCE = dict(rel=1e-12, abs=0.0)
 
 
 # ─── the table ───────────────────────────────────────────────────────────────
@@ -386,11 +400,13 @@ def test_the_engine_takes_what_the_exprtk_emitter_wrote(tmp_path, case):
             f"worse than a refusal, because the model runs and the number is wrong."
         )
         return
-    assert text is not None, f"{case.name}: the ExprTk emitter declined a construct it claims"
-    got = engine_values(tmp_path, text, case.points, tag=_tag(case))
+    assert text is not None, (
+        f"{case.name}: the ExprTk emitter declined a construct it claims{case.why()}"
+    )
+    got = engine_values(tmp_path, text, tag=_tag(case))
     assert all(math.isfinite(v) for v in got), f"{case.name}: the engine answered {got}"
-    assert got == pytest.approx(reference_values(tmp_path, case), rel=1e-12, abs=1e-300), (
-        f"{case.name}: the engine compiled {text!r} and computed something else"
+    assert got == pytest.approx(reference_values(tmp_path, case), **TOLERANCE), (
+        f"{case.name}: the engine compiled {text!r} and computed something else{case.why()}"
     )
 
 
@@ -401,11 +417,13 @@ def test_the_c_compiler_takes_what_the_c_emitter_wrote(tmp_path, case):
     if "c" not in case.targets:
         assert text is None, f"{case.name}: the C emitter is not supposed to spell this"
         return
-    assert text is not None, f"{case.name}: the C emitter declined a construct it claims"
-    got = compiler_values(text, case.points)
+    assert text is not None, (
+        f"{case.name}: the C emitter declined a construct it claims{case.why()}"
+    )
+    got = compiler_values(tmp_path, text)
     assert all(math.isfinite(v) for v in got), f"{case.name}: the compiled C answered {got}"
-    assert got == pytest.approx(reference_values(tmp_path, case), rel=1e-12, abs=1e-300), (
-        f"{case.name}: the compiled C for {text!r} computed something else"
+    assert got == pytest.approx(reference_values(tmp_path, case), **TOLERANCE), (
+        f"{case.name}: the compiled C for {text!r} computed something else{case.why()}"
     )
 
 
@@ -534,6 +552,19 @@ CONDITIONS_THE_PARSE_DECLINES = frozenset(
         "if(x0>1 nor x1>1,k1,0)",
     }
 )
+
+
+@pytest.mark.parametrize("index", range(len(CONDITION_TEXTS)))
+def test_the_engine_takes_every_condition_in_the_sweep(tmp_path, index):
+    """The sweep below is only worth something if these are rate laws a model
+    may really be written with, so ask the engine.
+
+    ``!(x0>1)`` is the kind of thing this keeps out. It reads like a condition,
+    the C-style logical not is in the module's own list of constructs to watch
+    for, and the engine's parser does not have it — only ``not(x0>1)``. A sweep
+    entry the engine refuses is one nobody could write, so it proves nothing.
+    """
+    engine_values(tmp_path, CONDITION_TEXTS[index], tag=f"condition_{index}")
 
 
 def test_no_rate_law_produces_a_boolean_node_with_no_spelling():
