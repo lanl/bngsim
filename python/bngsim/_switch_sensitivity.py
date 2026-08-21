@@ -1830,9 +1830,10 @@ def _rewrite_counter_clock(
     100 exactly as it would for the literal spelling.
 
     ``(cond, -1, 0.0)`` for a condition that reads literal time and no counter,
-    which leaves it untouched. ``None`` for one reading two different counters:
-    both would have to be landed on their own threshold at the stop and the
-    record carries one, and no model in this repository's corpus writes it.
+    which leaves it untouched. ``None`` where no stop can be placed at all: a
+    condition reading two different counters, since both would have to be landed
+    on their own threshold at the stop and the record carries one (no model in
+    this repository's corpus writes it), or a counter whose value is not finite.
     """
     syms = [sym for sym in scope.clocks if not _clock_free(cond, {sym})]
     if not syms:

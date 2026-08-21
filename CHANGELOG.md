@@ -229,23 +229,30 @@ in `CMakeLists.txt`) is derived from it.
   Corpus census over the 37, each run over its own reported horizon against a
   reference bounded at a thirty-two-thousandth of that horizon and integrated at
   `rtol = atol = 1e-12`, with the reference's own reproducibility measured
-  alongside it: **every model's mean error is 1.1e-4 or below in both arms, and
-  33 of the 37 are at 1.1e-7 or below.** `model_step2_v1` is the clear mover: a
-  reference-independent 7.8e-4 before, 1.2e-4 after. Four models sit slightly
-  further from the reference afterwards, at most 1.1e-4 in the mean, and a
-  tolerance sweep says why: both arms converge to the same trajectory at the same
-  rate as `rtol` tightens, and by `rtol = 1e-10` the stopped arm is equal or
-  better on all four. A stop in the wrong place would leave a floor no tolerance
-  could remove, and there is none.
+  alongside it (a second reference whose step bound differs by one part in
+  32000; the worst of the 35 agrees with its twin to 1.2e-9 in the mean).
+  **The largest mean error in either arm is 1.1e-4, and 29 of the 35 are at
+  1.1e-7 or below in both arms.** `model_step2_v1` is the clear mover: a
+  reference-independent 7.8e-4 before, 1.2e-4 after, on the pointwise metric.
+  Nine models sit further from the reference afterwards at their own tolerance,
+  at most 1.1e-4 in the mean, and a tolerance sweep over all nine says why: both
+  arms shrink together as `rtol` tightens, with no floor in either, and at
+  `rtol = 1e-12` every one of them is at 1.1e-8 or below. A stop in the wrong
+  place would leave an error no tolerance could remove, and there is none.
+
+  Two of the 37 have no converged reference to be read against. `m15` cannot be
+  integrated at `rtol = 1e-12` at all, and `ItalyModel_v7` does not finish
+  bounded that tightly. Both are small either way: against BioNetGen `m15` moves
+  from 7.3e-7 to 2.4e-5 and `ItalyModel_v7` from 1.1e-8 to 1.6e-5.
 
   All 592 BioNetGen ODE parity jobs were re-run against BioNetGen 2.9.3 in both
   arms: **the same 590 passing and the same 2 differing, with no model changing
   its verdict.** Comparing the 37 against `run_network`'s own trajectories is the
   one place a number gets worse, and the reason is the one the issue predicted:
-  22 of the 37 move away from BioNetGen, most of them from `1e-13` to about
+  22 of the 37 move away from BioNetGen, five of them from about `1e-13` to about
   `1e-7`, because BioNetGen's integrator has exactly the same blindness and
   bngsim used to reproduce its error step for step. Against a converged reference
-  those same models do not move at all.
+  those same five move by `2e-8` or less.
 
   On the SBML side **exactly one model of 1323 is reached**, MODEL1508170000,
   whose rate rules make two parameters counters and whose rate laws threshold
