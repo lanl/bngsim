@@ -96,7 +96,12 @@ def test_the_engine_accepts_what_the_emitter_writes(tmp_path):
     """The property that actually matters, asked of the engine rather than of a
     string comparison. ``Max(k1,k2)`` is in here as the negative half: it is
     what the emitter used to write, and the engine rejects it, which is the
-    whole reason this is a bug and not a cosmetic difference."""
+    whole reason this is a bug and not a cosmetic difference.
+
+    test_emitter_target_acceptance.py (issue #464) is this same question asked
+    of every construct either emitter claims to support, rather than of one. The
+    negative half stays here, because that file only asks the question of things
+    that are supposed to work."""
     from bngsim._jacobian import sympy_to_exprtk
 
     emitted = sympy_to_exprtk(sp.Max(sp.Symbol("k1"), sp.Symbol("k2")))

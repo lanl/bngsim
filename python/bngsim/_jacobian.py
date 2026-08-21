@@ -686,6 +686,16 @@ def _is_emittable(expr) -> bool:
     # ``Ne``. The guard is here because the blind spot that let ``Max`` print
     # its class name for so long (issue #460) is this same blind spot, and the
     # cost of being wrong differs by a lot between the two.
+    #
+    # That last paragraph is a claim about reachability, so it is checked rather
+    # than asserted: ``test_no_rate_law_produces_a_boolean_node_with_no_spelling``
+    # in python/tests/test_emitter_target_acceptance.py puts every condition a
+    # rate law may be written in through the parse above and looks at what comes
+    # back (issue #464). The engine has ``xor``, ``nand``, ``nor`` and ``xnor``
+    # as operators, so a model may be written with one; nothing rewrites them on
+    # the way into sympy, so the parse declines and the model keeps the
+    # finite-difference Jacobian. Teaching the parse one of them is what would
+    # make an ``Xor`` reachable, and it needs a spelling here first.
     for node in expr.atoms(BooleanFunction):
         if type(node).__name__ not in _EMITTABLE_BOOLEAN_FUNCS:
             return False
