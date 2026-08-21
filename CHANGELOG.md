@@ -102,6 +102,50 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A BNGL rate law that switches on simulation time is no longer integrated
+  straight over the switch (issue #440).** A pure accumulator that fills at 0.1
+  for 40 of its 240 time units reported `0.0` where the answer is `4.0`, and
+  nothing warned. Inside each branch of `if(time() >= 100, k, 0)` the right-hand
+  side is a constant, so CVODE's local error estimate over a step spanning the
+  whole branch is near zero and nothing stops the step from growing until it
+  swallows the window. Tightening `rtol` does not help, because there is no error
+  to see. A repeating schedule is worse, because there are many windows to miss:
+  `if(time() - 24*floor(time()/24) >= 7, k, 0)` reported 23.3 against an answer of
+  17, and a three-unit period with a half-unit window reported `0.0` against 4.
+
+  The same model written in SBML was already right. Its loader walks the document
+  at load time and registers every `time` comparison as a CVODE root, and issue
+  #305 resolves each root to a crossing time and ends the step exactly on it. A
+  `.net`/BNGL model is built entirely in C++, so its loader has no build-time seam
+  to register anything at, and it registered nothing at all.
+
+  The conditions are now recovered from the built model's own function bodies —
+  the same scan the forward-sensitivity path already ran over the same text — and
+  handed to the same stop-time machinery, which lands the step on the crossing and
+  reinitialises there. A repeating schedule gets one stop per edge, enumerated
+  from the pattern recogniser issue #436 added. Admission is narrow: a comparison
+  against simulation time, against values that hold still for the whole run.
+  A threshold over live state crosses at a time nobody knows in advance and is
+  left to issue #150, and an equality is left alone as well, matching what the
+  SBML scan admits.
+
+  One C++ line goes with it. The warm CVODE fast path has no stop-time handling of
+  its own, and until this issue nothing could reach it carrying stops, because
+  every model that had them had registered the roots that produced them. A `.net`
+  model has the stops without the roots, so the exclusion is now made on the stops
+  themselves.
+
+  Corpus census, two arms over the same 1908 models (585 `.net` and 1323 SBML):
+  **no model's trajectory moved, no model gained or lost an error, and no model
+  gained a stop.** This repository's `.net` corpus contains no model that switches
+  on simulation time — 80 of the 585 carry a conditional rate law and none of
+  those mentions time — so the parity checks against BioNetGen and RoadRunner and
+  the timing benchmarks are all measuring models the change cannot touch. The
+  recovery costs 43 ms once per model on the largest conditional `.net` model in
+  the corpus and is cached on the model and carried to its clones; a pre-check on
+  the raw rate-law text keeps it off every model whose rate laws never mention
+  time, which is all 80 of them.
+
 - **A crossing time that steps rather than moves is declined instead of crashing
   the codegen pass (issue #436).** `if(time() >= sign(P), ...)` took bngsim down
   with a `RecursionError`: sympy answers `d/dP sign(P)` with an unevaluated
