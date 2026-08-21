@@ -1652,7 +1652,14 @@ def _schedule_stop_times(
     ``I*I`` to ``-1``), and placing stops where the model has no edge would be a
     pure perturbation of its stepping.
     """
-    sched = _clock_periodic_schedule(cond, scope.clock_symbols)
+    # A registered SBML condition arrives wrapped — `((time()-P*floor(time()/P))
+    # >=D)` — and the recognizer, like the relational splitter under it, only
+    # reads its operator at paren depth 0. Stripping first is the same thing
+    # :func:`_crossing_time_of_condition` does with the same text, and without it
+    # every schedule an SBML model registers declines for a reason that is not
+    # about the schedule.
+    atom = _strip_redundant_parens(cond.strip())
+    sched = _clock_periodic_schedule(atom, scope.clock_symbols)
     if sched is None or sched.clock not in _TIME_SYMBOLS:
         return None
     values: list[float] = []
@@ -1671,7 +1678,7 @@ def _schedule_stop_times(
     # judged the same way.
     if not 0.0 < duty / period < 1.0:
         return None
-    if not _schedule_matches_residual(cond, sched, period, duty, offset, True, scope):
+    if not _schedule_matches_residual(atom, sched, period, duty, offset, True, scope):
         return None
     terms = ScheduleTerms(
         period=period,
