@@ -2214,28 +2214,6 @@ class CrossingTerms(NamedTuple):
     value: float | None
 
 
-# A step function in a *threshold* expression. Sympy cannot differentiate one:
-# it answers with an unevaluated ``Derivative(floor(P), P)``, and evaluating that
-# recurses until Python gives up — ``_derived_expr_partials_numeric('floor(P)')``
-# raises ``RecursionError`` rather than declining (the same is true of ``ceil``
-# and ``sign``; ``abs``, ``min`` and ``max`` all answer normally, and ``Abs`` is
-# a spelling the affine solver itself emits, so none of those is listed here).
-#
-# Asked before the partials rather than caught after them, because a crash is not
-# a decline: the caller wants "nothing compensates this crossing", which is also
-# the honest answer — a crossing time that steps as a parameter moves has no
-# chain rule to the primaries even where its derivative is a.e. zero.
-#
-# ``sign`` reaches this on bngsim today: it is not one of the constructs the
-# emitter pre-scan rejects, so ``if(time() >= sign(P), …)`` took the whole codegen
-# pass down with a stack overflow. ``floor`` and ``ceil`` became reachable with
-# issue #436, which waives a ``floor()`` inside an ``if()`` condition — before
-# that the pre-scan declined the rate law before any threshold from it was read.
-_STEP_THRESHOLD_CALL = re.compile(
-    r"(?<![A-Za-z0-9_])(?:floor|ceil|ceiling|sign|round|rint|nint)\s*\("
-)
-
-
 def _threshold_crossing_terms(
     threshold_expr: str, scope: SwitchConditionScope
 ) -> CrossingTerms | None:
@@ -2260,9 +2238,17 @@ def _threshold_crossing_terms(
       ``(time()-5)^2 >= thresh`` goes negative as soon as ``thresh`` does. Reading
       that as "unreadable threshold" refuses a model whose gradient is a correct
       clean zero.
+
+    A threshold that *steps* as a parameter moves — ``floor(P)``, ``ceil(P)``,
+    ``sign(P)`` — is none of the three, and falls through to the refusal at the
+    end. Its partials come back empty because sympy has no derivative for a step
+    function (issue #441 makes that an ordinary decline rather than the stack
+    overflow it used to be), and it does name a parameter, so nothing here claims
+    to compensate it. That is the honest answer: a crossing time that jumps as a
+    parameter moves has no chain rule to the primaries even where its derivative
+    is a.e. zero. A step over *constants* is a different thing — ``floor(5)`` is
+    5, a crossing nothing moves — and is compensated on the first ground above.
     """
-    if _STEP_THRESHOLD_CALL.search(threshold_expr):
-        return None  # a crossing time that steps rather than moves; see above
     # ``warn_on_failure=False`` for the same reason the detector passes it: an
     # empty result is the supported "not a switch time" answer, which the caller
     # reports (or hands to the state path) rather than warns about.

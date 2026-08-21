@@ -2180,6 +2180,38 @@ def _prepare_derived_expr(
     return _PreparedDerivedExpr(referenced, sym_name_of, sym_map, sym_expr), None
 
 
+# What sympy answers with when it has no derivative for a function: an
+# unevaluated ``Derivative`` object rather than an expression or an exception.
+# ``d/dP floor(P)`` is ``Derivative(floor(P), P)``, and ``ceil``, ``sign`` and
+# any function sympy does not know all behave the same way.
+#
+# That answer is honest — a value that steps as a parameter moves has no useful
+# derivative with respect to it — but taking it at face value is not safe:
+# ``float(Derivative(floor(P), P).evalf())`` recurses until Python raises
+# ``RecursionError``, which is not one of the exceptions the callers here expect,
+# so the whole codegen pass died with a stack overflow instead of declining the
+# expression (issue #441). Whether it crashed depended on the shape of the
+# expression: ``floor(P)`` crashed while ``floor(P)*7`` came back as a clean
+# refusal, because a bare ``Derivative`` recurses where a product containing one
+# raises ``TypeError`` first.
+#
+# Asked structurally rather than by function name, so a spelling nobody thought
+# to list is covered too, and asked before the value is taken rather than caught
+# after it, since a crash is not a decline.
+_STEP_DERIVATIVE_REASON = (
+    "sympy left the derivative unevaluated, which is its answer for a value that "
+    "steps rather than moves, such as floor(), ceil() or sign()"
+)
+
+
+def _derivative_is_unevaluated(deriv) -> bool:
+    """Whether sympy left any part of ``deriv`` as an unevaluated ``Derivative``
+    (see :data:`_STEP_DERIVATIVE_REASON`)."""
+    import sympy as sp
+
+    return bool(deriv.has(sp.Derivative))
+
+
 def _direct_derived_partials(
     expr: str,
     primary_names: set[str],
@@ -2223,6 +2255,11 @@ def _direct_derived_partials(
         deriv = sp.diff(prep.sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
         if deriv == 0:
             continue
+        if _derivative_is_unevaluated(deriv):
+            # ``sp.ccode`` refuses this object too, so the model declined either
+            # way. Asking first is what makes the reason readable, since it is
+            # published with the run's df/dp verdict (issue #438).
+            return None, _STEP_DERIVATIVE_REASON
         try:
             c_str = sp.ccode(deriv)
         except Exception as exc:
@@ -2415,6 +2452,10 @@ def _direct_derived_partials_numeric(
     for p_name in prep.referenced:
         deriv = sp.diff(prep.sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
         if deriv == 0:
+            continue
+        if _derivative_is_unevaluated(deriv):
+            if warn_on_failure:
+                _warn_chain_rule_dropped(expr, [p_name], _STEP_DERIVATIVE_REASON)
             continue
         try:
             val = float(deriv.subs(subs).evalf())
