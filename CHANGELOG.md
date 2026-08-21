@@ -102,6 +102,52 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A derived expression that is a single `floor()`, `ceil()` or `sign()` call no
+  longer crashes a sensitivity run (issue #441).** A model whose initial condition
+  is built from a step function, `A0 = floor(P)`, died with
+  `SimulationError: Simulation failed: maximum recursion depth exceeded` as soon as
+  a forward sensitivity was asked for. Sympy answers `d/dP floor(P)` with an
+  unevaluated `Derivative` object rather than with a number, and evaluating that
+  object recurses until Python gives up. `RecursionError` is not one of the
+  exceptions this path expects, so it escaped the codegen build and came out of
+  `Simulator.run`.
+
+  Whether it crashed depended on the shape of the expression, which is why it was
+  easy to miss: `floor(P)` crashed, while `floor(P)*7` came back as a clean
+  refusal, because a product containing an unevaluated `Derivative` raises
+  `TypeError` before the recursion starts.
+
+  The answer for all of them is to decline. A value that steps as a parameter
+  moves has no useful derivative with respect to that parameter, so the caller now
+  gets the same empty result it already gets for any expression that cannot be
+  differentiated, and the warning that follows names the expression and the
+  parameter whose chain rule was dropped. The test is structural — is any part of
+  what sympy returned still an unevaluated `Derivative` — so a function nobody
+  thought to list, including one sympy has never heard of, is covered by the same
+  line.
+
+  Issue #436 closed one route to this crash by refusing any crossing threshold
+  whose text contains `floor(`, `ceil(`, `sign(` or four other names, which left
+  every other caller exposed: the initial-condition seeds above, and the derived
+  parameter chain rule. That name list is gone now that the partials answer for
+  themselves, and one case it was wrong about goes with it: `floor(5)` is 5, a
+  crossing nothing moves, so a rate law that switches at one keeps its analytic
+  sensitivity right-hand side instead of losing it to a text match. Its columns
+  were checked against the closed-form solution of that model (agreement to 2e-11)
+  and against a finite difference taken by editing the model text and reloading
+  (agreement to 9e-7, which is that reference's own noise floor).
+
+  Corpus census, two arms over the same 1908 models: **no model changed any
+  answer** — not the crossing gate, not the analytic right-hand side, not a
+  switch-time record, not an initial-condition sensitivity seed, and no model
+  gained or lost an error. Five `.net` models seed an initial condition from
+  `rint()` of a fitted parameter; all five declined that chain rule before and
+  decline it now, in the same place, with only the wording of the warning
+  different. Because the census found nothing, it was run against two controls to
+  show it would have seen something: the model from the issue report, which moves
+  from `RecursionError` to a clean decline, and a rate law switching at `floor(5)`,
+  which moves from refused to compensated.
+
 - **A BNGL rate law that switches on simulation time is no longer integrated
   straight over the switch (issue #440).** A pure accumulator that fills at 0.1
   for 40 of its 240 time units reported `0.0` where the answer is `4.0`, and

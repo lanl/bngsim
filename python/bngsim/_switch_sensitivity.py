@@ -2238,6 +2238,16 @@ def _threshold_crossing_terms(
       ``(time()-5)^2 >= thresh`` goes negative as soon as ``thresh`` does. Reading
       that as "unreadable threshold" refuses a model whose gradient is a correct
       clean zero.
+
+    A threshold that *steps* as a parameter moves — ``floor(P)``, ``ceil(P)``,
+    ``sign(P)`` — is none of the three, and falls through to the refusal at the
+    end. Its partials come back empty because sympy has no derivative for a step
+    function (issue #441 makes that an ordinary decline rather than the stack
+    overflow it used to be), and it does name a parameter, so nothing here claims
+    to compensate it. That is the honest answer: a crossing time that jumps as a
+    parameter moves has no chain rule to the primaries even where its derivative
+    is a.e. zero. A step over *constants* is a different thing — ``floor(5)`` is
+    5, a crossing nothing moves — and is compensated on the first ground above.
     """
     # ``warn_on_failure=False`` for the same reason the detector passes it: an
     # empty result is the supported "not a switch time" answer, which the caller

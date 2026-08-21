@@ -1833,10 +1833,33 @@ class TestAPeriodicClockScheduleIsEnumeratedAndJumped:
         ``floor`` anywhere: ``sign`` is not one of the constructs the pre-scan
         rejects, so ``if(time() >= sign(P), …)`` crashed. The ``floor`` and
         ``ceil`` spellings became reachable with this issue, which waives a
-        ``floor()`` inside an ``if()`` condition. Both now decline."""
+        ``floor()`` inside an ``if()`` condition. Both now decline.
+
+        Issue #441 moved the refusal to the place that has the answer: the
+        partials themselves come back empty for a stepped threshold rather than
+        crashing, so this gate needs no list of function names of its own and the
+        one below stops being wrong."""
         core = _model(tmp_path, _with_dose(f"if(time()>={threshold},kin,0)"))._core
         _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert reason is not None
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
+        )
+        assert records == []
+
+    @pytest.mark.parametrize("threshold", ["floor(5)", "5"])
+    def test_a_step_function_over_constants_is_not_declined(self, tmp_path, threshold):
+        """``floor(5)`` is 5. Nothing moves that crossing, so there is no jump to
+        compensate and the model keeps its analytic sensitivity right-hand side,
+        exactly as the plain ``5`` written beside it does.
+
+        This is what a name-matching refusal cannot do. Issue #436 guarded this
+        gate by looking for the text ``floor(`` in the threshold, which refused
+        this model along with the ones that really are unreadable; asking the
+        partials instead separates the two (issue #441)."""
+        core = _model(tmp_path, _with_dose(f"if(time()>={threshold},kin,0)"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
         records, _pinned = sw.compute_switch_time_sens(
             core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
         )
