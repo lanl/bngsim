@@ -102,6 +102,68 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`mratio()` no longer returns a badly wrong value without saying so (issue
+  #453).** `mratio(a, b, z)` is the ratio of contiguous Kummer functions,
+  `M(a+1,b+1,z) / M(a,b,z)`, computed from Gauss's continued fraction by the
+  modified Lentz method. Outside a certain range of arguments that fraction
+  converges to something that is not the ratio. The error reached a factor of a
+  thousand, and in places the sign was wrong. Nothing failed and nothing hung:
+  the value was simply returned, and no caller could tell it from a good one.
+
+  Three things had to be established before the fix, and each rules out a
+  cheaper one. The approach to the false limit is indistinguishable from the
+  approach to the true one, since the iteration error decays smoothly and
+  geometrically into both, so no stopping test can separate them. Iterating
+  longer does not help either: at 120 digits the same recurrence does reach the
+  true value, but only after about 1600 steps where double precision settles at
+  about 84, by which point rounding has frozen the iterates. So the decision has
+  to be taken from the arguments, before the fraction runs.
+
+  `mratio` now computes an answer where it can be trusted to and refuses
+  elsewhere. It is trusted when `a` is a non-positive integer, when `a` is at or
+  below zero and `z` is too, when `|z|` is at most 20, or when `b*b >= 64*|z*a|`.
+  The first of those is a fact about the algorithm rather than a measurement: the
+  odd partial numerator carries `z*(a+k)` and reaches exactly zero at `k = -a`,
+  so the fraction terminates and computes a finite exact sum. The rest were
+  measured against a 40 to 60 digit reference. The `|z|` clause is the widest:
+  over 3400 triples chosen to be hostile, with small `b` and `a` on both sides of
+  zero, the fraction was right at every one with `|z|` up to 50, and the first
+  wrong answer anywhere is at 60 and is marginal.
+
+  No model BNG generates is affected. A model builds `a = -min(AT, BT)` and
+  `z = -1/Keq`, which is inside the second clause, and stays inside it when a fit
+  moves the counts off the integers. That last point is why the rule is written
+  the way it is: a rule stated only as a bound on `|z*a|` against `b*b` passes
+  every grid check and still refuses the fit path of the very model `mratio`
+  exists for.
+
+  Over 1409 argument triples checked against a 40 digit reference, the number
+  returned wrongly goes from 70 to zero, with a quarter of that grid refused.
+  Most of those refusals are arguments the fraction would have got right, because
+  in the uncertain region it is right most of the time and there is no way to
+  tell which times. A refusal that names the region is worth more than a number
+  that is usually right.
+
+  Both paths say why. The interpreter raises and names the region and the issue.
+  The generated C cannot raise, so its copy returns a NaN, which the caller
+  already turns into a failed step — and that failure now carries the same
+  sentence, because describing a non-finite witness re-evaluates the model at the
+  offending state and the refusal comes back out of it.
+
+  That last part needed a fix of its own, in `describe_nonfinite_witness`. It
+  wrapped the whole description in a `catch (...)` that returned an empty string,
+  which was harmless while every rate law answered with a number. A law that
+  refuses throws instead, and the description vanished along with it, leaving a
+  bare `CV_FIRST_RHSFUNC_ERR` and nothing about `mratio` — a worse thing to
+  diagnose than the wrong number it replaced. A refusal is now passed on rather
+  than swallowed, for any function that refuses, not only this one.
+
+  What is refused could be narrowed later. The ratio has an asymptotic expansion
+  for large `|z|` in either direction whose truncation term certifies its own
+  accuracy, and routing to it recovers about a quarter of the refusals. It is
+  left out here because it computes a new value rather than gating an existing
+  one, so a mistake in it would put back the class of defect this removes.
+
 - **A rate law using `mratio()` now compiles (issue #451).** `mratio` is the last
   of the engine's reserved functions that C has no name for. Issue #448 dealt
   with the other five by rewriting each to a C expression. This one is a loop, so

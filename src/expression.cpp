@@ -68,7 +68,76 @@ namespace bngsim {
 // This is the single source of truth for mratio across BNGsim: the host
 // MratioFunction adapter below and the vendored NFsim mu::Parser ExprTk shim
 // both call it (the shim via <bngsim/expr_compat.hpp>). See issue #49.
+// ─── Where the continued fraction below can be trusted (issue #453) ─────────
+//
+// Outside a certain region the fraction converges to something that is not the
+// ratio. It does not fail or hang: `|Delta - 1|` decays smoothly and
+// geometrically into a false limit, exactly as it does into the true one, and
+// then the answer is returned. Errors reach a factor of a thousand and in
+// places the sign is wrong.
+//
+// Three things follow from that, all of them measured rather than assumed:
+//
+//   * No stopping test can fix it. Requiring more consecutive hits, watching
+//     the error history for a plateau, demanding a minimum iteration count —
+//     none of them separate a false stop from a real one, because on the way in
+//     the two look the same.
+//   * Iterating longer cannot fix it either. At 120 digits the same recurrence
+//     does reach the true value, but only after about 1600 steps where double
+//     precision settles at about 84. By then rounding has frozen the iterates.
+//   * So the only honest answer is to decide beforehand whether the arguments
+//     are ones the fraction handles, and to refuse when they are not.
+//
+// The region, from 1599 argument triples checked against a 40 to 60 digit
+// reference:
+//
+//   * `a` a non-positive integer: safe by construction, not by measurement. The
+//     odd partial numerator carries z*(a+k) and reaches exactly zero at k = -a,
+//     so the fraction TERMINATES. What it computes there is a finite exact sum.
+//   * `a <= 0` with `z <= 0`: 487 triples, none wrong. This is also where BNG
+//     models live, since a model builds a = -min(AT,BT) and z = -1/Keq. It
+//     stays true when a fit moves the counts off the integers, which is why the
+//     rule is written this way rather than as a bound on |z*a|/b^2 alone: such
+//     a bound refuses test_Mratio_1's own fit path.
+//   * |z| <= 20: the fraction was right at every one of 3400 hostile triples
+//     with |z| up to 50, chosen with small b and a on both sides of zero. The
+//     first wrong answer anywhere appears at |z| = 60 and is marginal (2e-08);
+//     the first serious one at |z| = 75. Twenty leaves a factor of three.
+//   * b^2 >= 64*|z*a|: the partial numerators are z*(a+k)/((b+k-2)(b+k-1)), so
+//     this is the statement that they start small and the fraction is a
+//     contraction from the first step. The factor 64 is where leaks reached
+//     zero on the grid, with a margin: 32 was the last value that leaked
+//     nothing and 16 still let two through.
+//
+// Everything else is refused. That gives up answers the fraction would have got
+// right, since it is right about 85% of the time in the uncertain region, but
+// there is no way to tell which 85%. A loud refusal is worth more than a number
+// that is usually right, and the region given up is one no BNG model reaches.
+static bool mratio_cf_is_trustworthy(double a, double b, double z) {
+    if (a <= 0.0 && a == std::floor(a)) {
+        return true;
+    }
+    if (a <= 0.0 && z <= 0.0) {
+        return true;
+    }
+    if (std::abs(z) <= 20.0) {
+        return true;
+    }
+    return b * b >= 64.0 * std::abs(z * a);
+}
+
 double expr_compat::mratio(double a, double b, double z) {
+    if (!mratio_cf_is_trustworthy(a, b, z)) {
+        throw std::runtime_error(
+            "mratio(a, b, z): the continued fraction this uses is not reliable for these "
+            "arguments and would return a wrong value without saying so (a=" +
+            std::to_string(a) + ", b=" + std::to_string(b) + ", z=" + std::to_string(z) +
+            "). It is reliable when a is a non-positive integer, when a <= 0 and z <= 0, or "
+            "when b*b >= 64*|z*a|. BNG builds a = -min(AT,BT) and z = -1/Keq, which is inside "
+            "that region, and so is any |z| <= 20, so a model reaching this is using "
+            "mratio in its own way. See "
+            "lanl/bngsim issue #453.");
+    }
     constexpr double eps = 1.0e-16;
     constexpr double tiny = 1.0e-32;
     // Safety cap so a pathological non-converging case fails loud rather

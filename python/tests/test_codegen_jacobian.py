@@ -441,18 +441,24 @@ def test_varvol_codegen_trajectory_matches_interpreted(name):
 _RETURN_STMT = re.compile(r"\breturn\s+([^;]*);")
 _C_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 
-# What is checked is the functions that return `int`, because `int` is the status
-# channel this is about. The emitted source also carries value-returning helpers
-# for the engine functions C has no name for (issue #451 emits a `static double`
-# for `mratio`), and `return f;` in one of those is a number, not a status code
-# nobody forwards. Scanning the whole file would report those and say nothing.
+# What is checked is the EXPORTED functions, because the status channel this is
+# about is the one the C++ calls across: `BNGSIM_EXPORT int bngsim_codegen_*`.
 #
-# This is a narrowing, so be clear about what it gives up: an error path added to
-# a `void` or value-returning helper is not seen here. Neither was it before —
-# such a function has no status to drop — and the callers the comment above lists
-# all reach the compiled code through the `int` entry points.
+# It was written as "every return statement in the file", which meant the same
+# thing while every function in the emitted source was an exported int. That
+# stopped being true twice. Issue #451 added a `static double` helper for
+# `mratio`, whose `return f;` is a number rather than a status; then issue #453
+# added a `static int` predicate beside it, whose `return 1;` is a boolean. The
+# second one is why this is scoped to the export marker rather than to the
+# return type: an internal helper may legitimately return int, and the next one
+# should not have to come back here.
+#
+# What that gives up: an error path added to a static helper is not seen. Nor
+# was it before — such a function has no status any caller could drop — and
+# every route from the C++ into the generated code goes through an export.
 _C_FUNC_HEADER = re.compile(
-    r"^[^\S\n]*(?:BNGSIM_EXPORT\s+|BNGSIM_NOINLINE\s+|static\s+|inline\s+)*"
+    r"^[^\S\n]*(?P<export>BNGSIM_EXPORT\s+)?"
+    r"(?:BNGSIM_NOINLINE\s+|static\s+|inline\s+)*"
     r"(?P<ret>[A-Za-z_][A-Za-z0-9_]*)\s+"
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;{]*\)\s*\{",
     re.M,
@@ -460,10 +466,10 @@ _C_FUNC_HEADER = re.compile(
 
 
 def _int_function_bodies(code: str) -> dict[str, str]:
-    """Body text of every ``int``-returning function in the emitted C, by name."""
+    """Body text of every exported ``int``-returning function, by name."""
     bodies: dict[str, str] = {}
     for match in _C_FUNC_HEADER.finditer(code):
-        if match.group("ret") != "int":
+        if match.group("ret") != "int" or not match.group("export"):
             continue
         depth, i = 0, match.end() - 1
         while i < len(code):
@@ -509,9 +515,9 @@ def _assert_only_returns_zero(path: str, label: str) -> str:
     bodies = _int_function_bodies(code)
     # Guard the premise a third time: a body-finder that matched nothing, or that
     # missed the entry points, would pass this test on any source at all.
-    assert bodies, f"{label}: no int-returning function found in the emitted C"
+    assert bodies, f"{label}: no exported int-returning function in the emitted C"
     assert any(n.startswith("bngsim_codegen_") for n in bodies), (
-        f"{label}: int-returning functions {sorted(bodies)} include no entry point"
+        f"{label}: exported int functions {sorted(bodies)} include no entry point"
     )
     returned = sorted(
         {mo.group(1).strip() for body in bodies.values() for mo in _RETURN_STMT.finditer(body)}
@@ -535,9 +541,9 @@ def test_emitted_c_has_no_nonzero_return(data_dir, net):
     reports a failed fill to CVODE/KINSOL as a good matrix. See the return-value
     section of include/bngsim/codegen_abi.hpp.
 
-    Only the ``int``-returning functions are read, since ``int`` is the status
-    channel in question. The source also carries value-returning helpers for the
-    engine functions C has no name for, and their returns are numbers.
+    Only the exported ``int``-returning functions are read, since those are the
+    ones the C++ calls across. The source also carries static helpers for the
+    engine functions C has no name for, and their returns are values, not status.
     """
     src = _assert_only_returns_zero(str(data_dir / net), net)
     assert "bngsim_codegen_jac_sparse(" not in src, (
