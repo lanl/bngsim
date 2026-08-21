@@ -25,7 +25,8 @@ What this locks:
   1. a single window is not stepped over, and neither is a repeating schedule,
      which is worse because there are many windows to miss;
   2. the answer agrees with a fine ``max_step`` run of the same model (the only
-     handle a user had before) and with the same model written in SBML;
+     handle a user had before) and with the same model written in SBML, whose
+     registered root does not by itself cover a repeating schedule;
   3. the warm CVODE fast path cannot swallow a stop — it has no stop-time
      handling of its own, and a model that carries stops has to leave it;
   4. a condition over model state resolves to nothing (its crossing moves with
@@ -33,8 +34,7 @@ What this locks:
   5. a threshold written behind a derived parameter or a function call is still
      found, and one that reads live state is not;
   6. a model with no time condition gets no stops at all, so its stepping is
-     untouched, and neither does a condition an SBML loader registered, whose
-     schedule stops are issue #444;
+     untouched;
   7. a batch row stops where its own parameter point puts the crossing, and a
      crossing a fitted parameter moves keeps the sensitivity jump it already
      had.
@@ -101,12 +101,7 @@ def _final_A(path, **kw):
 def _conditions_and_stops(path):
     model = bngsim.Model.from_net(str(path))
     conds = model.time_discontinuity_conditions()
-    # ``schedules`` exactly as Simulator._apply_crossing_stops resolves it: on
-    # for conditions bngsim derived itself, off for a set an SBML loader
-    # registered. A .net model is always the first of those.
-    return conds, fixed_time_crossings(
-        model._core, 0.0, _T_END, conds, schedules=not model._time_disc_conditions
-    )
+    return conds, fixed_time_crossings(model._core, 0.0, _T_END, conds)
 
 
 # ── 1. The windows the issue reports ────────────────────────────────────────
@@ -191,6 +186,76 @@ _SBML_TWIN = """<?xml version="1.0" encoding="UTF-8"?>
 )
 
 
+_SBML_SCHEDULE = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="schedule">
+    <listOfCompartments>
+      <compartment id="C" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.1" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="R1" reversible="false">
+        <listOfProducts>
+          <speciesReference species="A" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <piecewise>
+              <piece>
+                <ci> k </ci>
+                <apply><geq/>
+                  <apply><minus/>{time}
+                    <apply><times/><cn> 24 </cn>
+                      <apply><floor/>
+                        <apply><divide/>{time}<cn> 24 </cn></apply>
+                      </apply>
+                    </apply>
+                  </apply>
+                  <cn> 7 </cn>
+                </apply>
+              </piece>
+              <otherwise><cn type="integer"> 0 </cn></otherwise>
+            </piecewise>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+""".format(
+    time=(
+        '<csymbol encoding="text" '
+        'definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>'
+    )
+)
+
+
+def test_a_registered_schedule_is_stopped_at_too(tmp_path):
+    """A registered CVODE root does not cover a repeating schedule.
+
+    The root is evaluated on the *boolean*, and the boolean of a schedule reads
+    the same on both sides of a step that spans a whole period, so there is no
+    sign change for the root finder to see. It is the same reason a BNGL model
+    needs stops rather than roots, so the SBML side of the accumulator is wrong
+    in the same way and by the same amount: it reported 10.6 where the answer is
+    17, having registered its one root and stopped at none of the edges.
+    """
+    xml = tmp_path / "schedule.xml"
+    xml.write_text(_SBML_SCHEDULE)
+    model = bngsim.Model.from_sbml(str(xml))
+    assert model._core.n_discontinuity_triggers == 1
+    conds = model.time_discontinuity_conditions()
+    assert len(fixed_time_crossings(model._core, 0.0, _T_END, conds)) == 20
+    value = float(bngsim.Simulator(model).run(t_span=(0.0, _T_END), n_points=3).species[-1][0])
+    assert value == pytest.approx(17.0, rel=1e-6)
+
+
 def test_the_bngl_model_agrees_with_its_sbml_twin(tmp_path):
     """Two spellings of one model, which is the comparison that made the defect
     visible in the first place."""
@@ -270,22 +335,6 @@ def test_a_model_with_no_condition_gets_no_stops(tmp_path):
     conds, stops = _conditions_and_stops(_net(tmp_path, "k*2"))
     assert conds == ()
     assert stops == []
-
-
-def test_a_registered_condition_is_not_given_schedule_stops(tmp_path):
-    """The schedule enumeration is for conditions bngsim derived itself.
-
-    A condition the SBML loader registered already carries a CVODE root, and GH
-    #88 decides separately whether that model also needs a step bound. Placing
-    schedule stops there as well moves nine corpus models and is issue #444.
-    The restriction has to be a decision rather than an accident, so this asks
-    for the same condition both ways and gets two different answers.
-    """
-    model = bngsim.Model.from_net(str(_net(tmp_path, _WINDOWS[1][0])))
-    conds = model.time_discontinuity_conditions()
-    assert conds
-    assert len(fixed_time_crossings(model._core, 0.0, _T_END, conds, schedules=True)) == 20
-    assert fixed_time_crossings(model._core, 0.0, _T_END, conds) == []
 
 
 def test_a_schedule_that_never_turns_over_places_no_stop(tmp_path):

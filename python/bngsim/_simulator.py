@@ -1596,17 +1596,7 @@ class Simulator:
         from bngsim._switch_sensitivity import fixed_time_crossings
 
         try:
-            times = fixed_time_crossings(
-                model._core,
-                float(t_start),
-                float(t_end),
-                conditions,
-                # A repeating schedule is enumerated only for conditions bngsim
-                # derived itself. One the SBML loader registered already carries
-                # a CVODE root, and GH #88 decides separately whether that model
-                # also needs a step bound; adding stops there too is issue #444.
-                schedules=not model._time_disc_conditions,
-            )
+            times = fixed_time_crossings(model._core, float(t_start), float(t_end), conditions)
         except Exception as e:  # pragma: no cover - defensive
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than

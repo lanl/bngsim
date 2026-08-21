@@ -1645,6 +1645,11 @@ def _schedule_stop_times(
     live state, which is a different claim about the model, and it is tracked as
     issue #443.
 
+    Read for a condition the SBML loader registered as well as for one derived
+    from a BNGL function body. The registered CVODE root does not cover a
+    repeating schedule: it is evaluated on the boolean, which reads the same on
+    both sides of a step spanning a whole period.
+
     The chain rule ``_periodic_schedule_terms`` computes is not needed here — a
     stop carries no ``∂t*/∂p`` — so the numbers are read straight through
     :func:`_evaluate_threshold`. The residual round-trip is kept: it is what
@@ -1656,10 +1661,9 @@ def _schedule_stop_times(
     # the SBML loader registers one — and the recognizer, like the relational
     # splitter under it, only reads its operator at paren depth 0. Stripping
     # first is the same thing :func:`_crossing_time_of_condition` does with the
-    # same text. Which conditions get here at all is the caller's ``schedules``
-    # decision, and it needs to stay the caller's: without this strip the
-    # registered spelling would decline for a reason that is about a paren
-    # rather than about the schedule, which is a restriction nobody chose.
+    # same text, and it is what lets an SBML model be read at all: without it
+    # every registered schedule declines for a reason that is about a paren
+    # rather than about the schedule.
     atom = _strip_redundant_parens(cond.strip())
     sched = _clock_periodic_schedule(atom, scope.clock_symbols)
     if sched is None or sched.clock not in _TIME_SYMBOLS:
@@ -1710,9 +1714,7 @@ def _schedule_stop_times(
     return [value for value, _partials in edges]
 
 
-def fixed_time_crossings(
-    core, t_start: float, t_end: float, conditions=(), *, schedules: bool = False
-) -> list[float]:
+def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> list[float]:
     """Times in ``(t_start, t_end]`` at which a registered time discontinuity
     flips, for ``SolverOptions.set_crossing_stop_times`` (issue #305).
 
@@ -1734,18 +1736,19 @@ def fixed_time_crossings(
     :func:`time_discontinuity_conditions` derives the same thing for a model
     whose loader could not.
 
-    A residual linear in time (:func:`_crossing_time_of_condition`) has one
-    crossing, solved exactly. ``schedules`` additionally admits a repeating
-    schedule (:func:`_schedule_stop_times`), which has one per period,
-    enumerated from the pattern issue #436 recognizes.
+    Two kinds of crossing are placed. A residual linear in time
+    (:func:`_crossing_time_of_condition`) has one, solved exactly. A repeating
+    schedule (:func:`_schedule_stop_times`) has one per period, enumerated from
+    the pattern issue #436 recognizes.
 
-    ``schedules`` is off by default, and the caller turns it on only for
-    conditions bngsim derived itself. A condition the SBML loader registered
-    already carries a CVODE root, and GH #88 decides separately whether that
-    model also needs a step bound. Placing schedule stops there as well moves
-    nine corpus models, two of them by more than any oracle at hand can
-    adjudicate, so it wants a measurement of its own and is issue #444 rather
-    than part of issue #440.
+    A schedule is placed whether the condition was registered by the SBML loader
+    or derived from a BNGL function body, because the registered root does not
+    cover it. The root is evaluated on the *boolean*, and the boolean of a
+    repeating schedule reads the same on both sides of a step that spans a whole
+    period, so there is no sign change for the root finder to see — which is the
+    same reason issue #440 needed stops rather than roots in the first place. A
+    ``piecewise`` on ``time - 24*floor(time/24) >= 7`` in SBML reports 10.6 on
+    the accumulator issue #440 uses, where the answer is 17.
 
     Empty (so: no change to any model's stepping) unless some condition's
     crossing time is a constant of the run. Resolution reads the *current*
@@ -1765,7 +1768,7 @@ def fixed_time_crossings(
         times: list[float] | None = None
         if t_star is not None:
             times = [t_star]
-        elif schedules:
+        else:
             times = _schedule_stop_times(cond, scope, t_start, t_end)
         for t_cross in times or ():
             if not (t_start < t_cross <= t_end):
