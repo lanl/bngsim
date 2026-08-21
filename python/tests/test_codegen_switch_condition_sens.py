@@ -1880,21 +1880,46 @@ class TestAPeriodicScheduleAgainstAFiniteDifference:
             max_step=0.5,
         )
 
+    #: Central-difference steps to try, as a fraction of the parameter.
+    #:
+    #: The oracle is the BEST of them, not any one of them, because a single step
+    #: is not a property of the answer: a central difference carries a truncation
+    #: error that falls as the step shrinks and a cancellation error that grows,
+    #: so every parameter has its own best step and it moves with the machine.
+    #: Pinning one step per parameter is what made the first version of this test
+    #: pass on arm64 and fail on x86 at a 6e-4 relative difference, which was the
+    #: reference's noise rather than anything about the column. Four steps three
+    #: decades apart bracket the minimum on either.
+    #:
+    #: A column that is actually wrong is wrong at every step, so taking the best
+    #: costs nothing: dropping the k factor from the period's partial (the failure
+    #: this is here to catch) fails all four.
+    _FD_STEPS = (1e-2, 1e-3, 1e-4, 1e-5)
+
     @pytest.mark.parametrize(
-        ("name", "nominal", "step"),
-        [("P", 24.0, 2.4e-4), ("d", 7.0, 7e-5), ("kin", 0.1, 1e-6), ("kout", 0.05, 5e-7)],
+        ("name", "nominal"), [("P", 24.0), ("d", 7.0), ("kin", 0.1), ("kout", 0.05)]
     )
-    def test_every_column_matches_a_central_difference(self, tmp_path, name, nominal, step):
+    def test_every_column_matches_a_central_difference(self, tmp_path, name, nominal):
         params = ["P", "d", "kin", "kout"]
         analytic = np.asarray(self._run(tmp_path, "an.net", {}, sens=params).sensitivities)[
             :, :, params.index(name)
         ]
-        up = np.asarray(self._run(tmp_path, "up.net", {name: nominal + step}).species)
-        down = np.asarray(self._run(tmp_path, "dn.net", {name: nominal - step}).species)
-        fd = (up - down) / (2.0 * step)
-        scale = float(np.max(np.abs(fd)))
-        assert scale > 1e-3, f"the {name} column is too small for the difference to test"
-        np.testing.assert_allclose(analytic, fd, rtol=1e-4, atol=1e-5 * scale)
+        errors = {}
+        for fraction in self._FD_STEPS:
+            step = abs(nominal) * fraction
+            up = np.asarray(self._run(tmp_path, "up.net", {name: nominal + step}).species)
+            down = np.asarray(self._run(tmp_path, "dn.net", {name: nominal - step}).species)
+            fd = (up - down) / (2.0 * step)
+            scale = float(np.max(np.abs(fd)))
+            assert scale > 1e-3, f"the {name} column is too small for the difference to test"
+            errors[fraction] = float(np.max(np.abs(analytic - fd))) / scale
+        # Far below the signal this is here to see (a column that has lost a term
+        # is wrong by an order-one fraction) and far above the reference's own
+        # floor at its best step, which is 1e-8 to 1e-6 depending on the column.
+        assert min(errors.values()) < 1e-4, (
+            f"the {name} column matches no central difference: "
+            + ", ".join(f"h={f * abs(nominal):.3g} -> {e:.3e}" for f, e in errors.items())
+        )
 
     def test_the_period_column_is_not_the_duty_column_in_disguise(self, tmp_path):
         """Ten periods fit in this window, so the last edge moves ten times as far
