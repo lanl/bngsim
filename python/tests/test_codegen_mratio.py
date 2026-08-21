@@ -107,9 +107,14 @@ CASES = [
 def test_the_compiled_path_matches_the_interpreter(tmp_path, tag, a, b, body, a0):
     interpreted = np.asarray(_run(tmp_path, body, a, b, a0, codegen=False).species)[:, 0]
     compiled = np.asarray(_run(tmp_path, body, a, b, a0, codegen=True).species)[:, 0]
-    # The same arithmetic in the same order, so this is exact equality.
-    assert np.array_equal(compiled, interpreted)
-    # …and the trajectory moved, so the equality is not two flat lines.
+    # Not exact equality, because there is more than one compiled backend. Under
+    # cc the two are bit-identical, measured. The MIR JIT may contract or reorder
+    # a floating-point operation, and over a summing loop inside an integration
+    # that reaches a few parts in 1e14. The bound below is three orders above the
+    # worst seen and still nowhere near a real disagreement: the wrong algorithm
+    # in issue #453 is off by a factor of a thousand, not by 1e-14.
+    assert compiled == pytest.approx(interpreted, rel=1e-11, abs=0.0)
+    # …and the trajectory moved, so the agreement is not two flat lines.
     assert abs(interpreted[-1] - interpreted[0]) > 1e-6
 
 
@@ -172,5 +177,5 @@ def test_the_two_copies_agree_where_the_algorithm_is_wrong(tmp_path):
     plain = np.asarray(_run(tmp_path, body, 1.0, 1.0, 10.0, codegen=False, t_end=1.0).species)[
         :, 0
     ]
-    assert np.array_equal(compiled, plain)
+    assert compiled == pytest.approx(plain, rel=1e-11, abs=0.0)
     assert abs(plain[-1] - plain[0]) > 1e-9  # the rate law is live, not zero

@@ -124,6 +124,15 @@ in `CMakeLists.txt`) is derived from it.
   written down next to the code that does it: register it on the interpreter, add
   its C to one tuple, and add one line to the name table.
 
+  One line of the C++ changed with it. The parity bookkeeping used to swap `odd`
+  with a second flag that nothing ever reads, and is now the toggle that says,
+  which is the same thing written shorter. It had to change because c2mir, the
+  frontend of the MIR JIT backend, miscompiles that swap: it accepted the code
+  and then returned a wrong number for every argument, on all four MIR platforms.
+  The two spellings are kept identical so that this function stays the single
+  source of truth for both. The change was held to bit-for-bit equality over 300
+  argument triples, and none of them moved.
+
   The derivative is unchanged: a model calling `mratio` in a rate law still
   declines the analytic sensitivity right-hand side and uses CVODES' difference
   quotient, because nothing here tells the differentiation layer what the
