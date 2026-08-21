@@ -1489,6 +1489,174 @@ def _crossing_time_of_condition(
     return answer
 
 
+def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
+    """True when *atom* compares simulation time against things that never move.
+
+    The admission rule for :func:`time_discontinuity_conditions` (issue #440),
+    and it is deliberately narrow. ``time() >= 100`` and ``time() - 24*floor(
+    time()/24) >= 7`` qualify; ``S1 > 0.5`` does not, because a state threshold
+    crosses at a time no one knows in advance; and ``time() < S1`` does not
+    either, for the same reason written the other way round.
+
+    "Never move" is :attr:`SwitchConditionScope.run_constants` — primary
+    parameters, less the slots a model *function* owns, whose value is rewritten
+    from the function body before every derivative evaluation and so tracks the
+    trajectory. Derived parameters are inlined first, so ``time() >= onset``
+    with ``onset = t0 + delay`` is read as the comparison against ``t0 + delay``
+    that it is.
+    """
+    flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+    if not _TIME_REF.search(flat):
+        return False
+    return all(
+        m.group(0) in scope.run_constants for m in _IDENTIFIER.finditer(_TIME_REF.sub(" 0 ", flat))
+    )
+
+
+def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
+    """Every rate-law branch condition this model switches on *time* alone with.
+
+    The ``.net``/BNGL answer to the question the SBML loader answers at load
+    time by walking the libSBML tree and calling ``add_discontinuity_trigger``
+    (issue #440). A BNGL model is built entirely in C++, so there is no
+    build-time seam to register a root at; what there is instead is the run-time
+    stop time (:func:`fixed_time_crossings`,
+    ``SolverOptions.set_crossing_stop_times``), which lands the step exactly on
+    the crossing and restarts there. That is the half of issue #305 that does
+    the work here.
+
+    Why any of it is needed: inside each branch of ``if(time() >= 100, k, 0)``
+    the right-hand side is a constant, so CVODE's local error estimate over a
+    step that spans the whole branch is near zero and nothing stops the step
+    from growing until it swallows the window. The reported trajectory is then
+    the one where the branch never turned on. Tightening ``rtol`` does not help,
+    because there is no error to see.
+
+    The scan mirrors :func:`model_moving_crossings` — same texts, same inlining,
+    same atom split — so a threshold written inside a called function definition
+    is found under its call site. It differs only in which atoms it keeps:
+    :func:`_switches_on_time_alone`, which is the set whose crossing times are
+    knowable before the run rather than the set whose crossing times move.
+
+    Empty for a model with no functions, and for the far more common model whose
+    conditions read state rather than time, so nothing about its stepping
+    changes.
+    """
+    from bngsim._jacobian import _inline_functions, has_condition_construct
+
+    if core.n_functions == 0:
+        return ()
+    if ctx is None:
+        # The raw bodies first, which is the cheap half: a genome-scale model
+        # with tens of thousands of functions and no `if()` short-circuits here
+        # rather than paying for `functional_jacobian_context()`, whose
+        # function_map is built from all of them. Inlining cannot introduce a
+        # conditional that no body already spells.
+        if not any(has_condition_construct(body) for body in core.function_expressions):
+            return ()
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    texts = [
+        *func_map.values(),
+        *(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]),
+    ]
+    conditional = [t for t in texts if has_condition_construct(t)]
+    if not conditional:
+        return ()
+    try:
+        scope = switch_condition_scope(core, ctx)
+    except Exception as exc:  # pragma: no cover - defensive
+        # Same fallback as the other model-level scans: with no scope nothing
+        # can be classified, and the pre-#440 stepping is what a model gets.
+        logger.debug("time-discontinuity scan: scope unavailable (%s)", exc)
+        return ()
+
+    found: list[str] = []
+    for text in conditional:
+        flat = _inline_functions(text, func_map) or text
+        for atom in _iter_condition_atoms(flat):
+            if atom not in found and _switches_on_time_alone(atom, scope):
+                found.append(atom)
+    return tuple(found)
+
+
+def _schedule_stop_times(
+    cond: str, scope: SwitchConditionScope, t_start: float, t_end: float
+) -> list[float] | None:
+    """Every edge of a repeating schedule in ``(t_start, t_end]``, or ``None``
+    when *cond* is not one this can place edges for (issue #440).
+
+    :func:`_crossing_time_of_condition` solves a residual that is linear in
+    time, which is one crossing. A schedule — ``time() - 24*floor(time()/24) >=
+    7``, the light-and-dark cycle and the repeated-dose idiom — has one in every
+    period, and its residual is a sawtooth that no two probes can solve. Issue
+    #436 already recognizes the pattern for forward sensitivity and enumerates
+    its edges from the period, the offset and the duty; this is the same
+    enumeration read for the far simpler purpose of stopping the step at each
+    one.
+
+    Only a schedule over literal simulation time. A counter-species clock is
+    read from live state, and while its crossing time is just as knowable
+    (``t_start + threshold − c(t_start)``, the conversion issue #48 makes), a
+    stop placed from a state value is a different claim about the model than a
+    stop placed from the clock, and this stays with the one the issue is about.
+
+    The chain rule ``_periodic_schedule_terms`` computes is not needed here — a
+    stop carries no ``∂t*/∂p`` — so the numbers are read straight through
+    :func:`_evaluate_threshold`. The residual round-trip is kept: it is what
+    catches a schedule sympy's parser mis-read (a parameter named ``I`` folding
+    ``I*I`` to ``-1``), and placing stops where the model has no edge would be a
+    pure perturbation of its stepping.
+    """
+    sched = _clock_periodic_schedule(cond, scope.clock_symbols)
+    if sched is None or sched.clock not in _TIME_SYMBOLS:
+        return None
+    values: list[float] = []
+    for text in (sched.period, sched.offset, sched.duty):
+        value = _evaluate_threshold(text, scope.param_idx, scope.values, scope.derived_exprs)
+        if value is None or not (abs(value) < float("inf")):
+            return None
+        values.append(float(value))
+    period, offset, duty = values
+    if period == 0.0:
+        return None
+    # A duty that does not land strictly inside the period is a condition that
+    # holds one truth value forever — `rem(time(), P) >= 0` is a corpus model —
+    # so there is no edge to stop at. `duty/period` rather than `0 < duty <
+    # period` so a `ceil()` spelling, whose recognized period is negative, is
+    # judged the same way.
+    if not 0.0 < duty / period < 1.0:
+        return None
+    if not _schedule_matches_residual(cond, sched, period, duty, offset, True, scope):
+        return None
+    terms = ScheduleTerms(
+        period=period,
+        offset=offset,
+        duty=duty,
+        d_period={},
+        d_offset={},
+        d_duty={},
+        crosses=True,
+    )
+    edges = _schedule_edges(terms, t_start, t_end, _SCHEDULE_EDGE_BUDGET)
+    if edges is None:
+        # Over budget. A plain run has no gradient to be quietly wrong, but it
+        # does have a trajectory, and this is the one case where bngsim knows
+        # the schedule is there and cannot stop at it — so say so rather than
+        # leave the stepping to be discovered wrong later.
+        logger.warning(
+            "Periodic schedule %r has more than %d edges between t=%r and t=%r; the "
+            "integrator will step over them unclamped and may miss whole windows "
+            "(issue #440). Pass max_step to bound the step instead.",
+            cond,
+            _SCHEDULE_EDGE_BUDGET,
+            t_start,
+            t_end,
+        )
+        return None
+    return [value for value, _partials in edges]
+
+
 def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> list[float]:
     """Times in ``(t_start, t_end]`` at which a registered time discontinuity
     flips, for ``SolverOptions.set_crossing_stop_times`` (issue #305).
@@ -1502,15 +1670,28 @@ def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> l
     with ``g`` never once evaluated past the crossing. On Weber_BMC2015 that
     kills 6% of a fitting box outright, with zero root returns in the whole run.
 
-    Empty (so: no change to any model's stepping) unless the model registered a
-    discontinuity trigger AND its crossing time is a constant of the run.
-    Resolution reads the *current* parameter values, so a condition is answered
-    for the phase it is asked in — the same experimental-condition parameter can
-    put the crossing inside the window in one phase and outside it in another,
-    and stopping at a time that phase has no crossing at is a pure perturbation
-    of its stepping.
+    Since issue #440 a stop is also what a ``.net``/BNGL model gets *instead* of
+    a root: those models are built entirely in C++, with no build-time seam for
+    the loader to register one at, and stopping the step on the crossing and
+    reinitialising there is the whole of what the root would have bought. So
+    ``conditions`` is the gate rather than the registered-root count — the SBML
+    loader hands over the set it registered, and
+    :func:`time_discontinuity_conditions` derives the same thing for a model
+    whose loader could not.
+
+    Two kinds of crossing are placed. A residual linear in time
+    (:func:`_crossing_time_of_condition`) has one, solved exactly. A repeating
+    schedule (:func:`_schedule_stop_times`) has one per period, enumerated from
+    the pattern issue #436 recognizes.
+
+    Empty (so: no change to any model's stepping) unless some condition's
+    crossing time is a constant of the run. Resolution reads the *current*
+    parameter values, so a condition is answered for the phase it is asked in —
+    the same experimental-condition parameter can put the crossing inside the
+    window in one phase and outside it in another, and stopping at a time that
+    phase has no crossing at is a pure perturbation of its stepping.
     """
-    if not conditions or core.n_discontinuity_triggers == 0:
+    if not conditions:
         return []
     ctx = core.functional_jacobian_context()
     scope = switch_condition_scope(core, ctx)
@@ -1518,10 +1699,14 @@ def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> l
     out: list[float] = []
     for cond in conditions:
         t_star = _crossing_time_of_condition(cond, scope, t_start, t_end, aliases)
-        if t_star is None or not (t_start < t_star <= t_end):
-            continue
-        if not any(abs(t_star - seen) <= 1e-12 * max(abs(t_star), 1.0) for seen in out):
-            out.append(t_star)
+        times = (
+            [t_star] if t_star is not None else _schedule_stop_times(cond, scope, t_start, t_end)
+        )
+        for t_cross in times or ():
+            if not (t_start < t_cross <= t_end):
+                continue
+            if not any(abs(t_cross - seen) <= 1e-12 * max(abs(t_cross), 1.0) for seen in out):
+                out.append(t_cross)
     out.sort()
     return out
 

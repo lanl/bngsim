@@ -5155,7 +5155,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // triggers (GH #72 time-dependent piecewise rate laws), both of which need
     // the cold path's rootfinding + CVodeReInit-at-crossing machinery.
     const bool has_roots = model.n_events() > 0 || model.n_discontinuity_triggers() > 0;
-    const bool warm_eligible = !has_roots && !wants_sensitivity && (opts.jacobian != "jax") &&
+    // …and any run carrying issue #305 crossing stop times, for the same
+    // reason: the stop and the CVodeReInit that follows it live in the cold
+    // loop below, and this path would ignore both and integrate straight over
+    // the crossing. Until issue #440 no such run could reach here, because
+    // every model that had stop times had registered the roots that produced
+    // them; a .net model has the stops without the roots, so the check has to
+    // be made on its own.
+    const bool warm_eligible = !has_roots && opts.crossing_stop_times.empty() &&
+                               !wants_sensitivity && (opts.jacobian != "jax") &&
                                !std::getenv("BNGSIM_NO_WARM_CVODE");
     if (warm_eligible) {
         return impl_->run_warm(times, opts, use_sparse);
