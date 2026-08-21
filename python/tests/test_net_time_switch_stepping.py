@@ -802,6 +802,73 @@ _SBML_COUNTER_FITTED_SWITCH = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+# The counter accumulator again, plus a second reaction whose rate law
+# thresholds a SPECIES. That second condition is what the issue #150 machinery
+# roots on when the run is fitted, and it has nothing to do with the clock.
+_UNRELATED_ROOT_NET = """\
+begin parameters
+    1 rate    1  # Constant
+    2 k       0.1  # Constant
+end parameters
+begin functions
+    1 dose() if(t>=100,k,0)
+    2 relay() if(A>1,k,0)
+end functions
+begin species
+    1 counter() 0
+    2 A() 0
+    3 B() 0
+end species
+begin reactions
+    1 0 1 rate #_R1
+    2 0 2 dose #_R2
+    3 0 3 relay #_R3
+end reactions
+begin groups
+    1 t                    1
+    2 A                    2
+    3 B                    3
+end groups
+"""
+
+
+def test_a_root_that_does_not_read_the_clock_leaves_the_landing_alone(tmp_path):
+    """Standing down on *any* root would be simple and wrong.
+
+    21 of the 37 counter-clock models in this repository's corpus root on a
+    state threshold — ``V > 0`` and the like — that has nothing to do with the
+    clock, and those roots are registered on a fitted run. A rule that stood the
+    landing down whenever a root existed would silently take the issue #82
+    repair away from exactly the runs that need it, so the rule asks the root
+    function instead: move the clock, ask again, and take the move back only if
+    some root changed sign.
+
+    This model has both. ``t >= 100`` is the crossing, ``A > 1`` is a state
+    threshold that becomes a root on the fitted run, and the counter has to end
+    up on its threshold either way.
+    """
+    from bngsim._switch_sensitivity import state_switch_conditions
+
+    path = tmp_path / "unrelated_root.net"
+    path.write_text(_UNRELATED_ROOT_NET)
+    model = bngsim.Model.from_net(str(path))
+    assert model.time_discontinuity_conditions() == ("t>=100",)
+    assert state_switch_conditions(model._core) == ["A>1"], (
+        "the fixture no longer registers a root that ignores the clock, so it "
+        "cannot show that such a root leaves the landing alone"
+    )
+
+    for kwargs in ({}, {"sensitivity_params": ["k"]}):
+        result = bngsim.Simulator(bngsim.Model.from_net(str(path)), **kwargs).run(
+            t_span=(0.0, 200.0), n_points=201
+        )
+        at_crossing = [
+            row for t, row in zip(result.time, result.species, strict=False) if float(t) == 100.0
+        ]
+        assert len(at_crossing) == 1
+        assert float(at_crossing[0][0]) >= 100.0, kwargs
+
+
 def test_the_sensitivity_jump_does_not_step_over_a_root_either(tmp_path):
     """The same rule on the forward-sensitivity path, which had the same hole.
 
