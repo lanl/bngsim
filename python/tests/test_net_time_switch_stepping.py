@@ -24,8 +24,8 @@ What this locks:
 
   1. a single window is not stepped over, and neither is a repeating schedule,
      which is worse because there are many windows to miss;
-  2. the answer agrees with a fine ``max_step`` run of the same model, which is
-     the only handle a user had before;
+  2. the answer agrees with a fine ``max_step`` run of the same model (the only
+     handle a user had before) and with the same model written in SBML;
   3. the warm CVODE fast path cannot swallow a stop — it has no stop-time
      handling of its own, and a model that carries stops has to leave it;
   4. a condition over model state resolves to nothing (its crossing moves with
@@ -134,7 +134,69 @@ def test_the_answer_agrees_with_a_bounded_step_run(tmp_path, body, exact, _n):
     assert _final_A(path) == pytest.approx(bounded, rel=1e-6)
 
 
-# ── 2. The warm fast path ───────────────────────────────────────────────────
+# ── 2. The same model in the other format ───────────────────────────────────
+# The issue's own framing: an SBML model with this rate law is fine, because its
+# loader registers each condition as a root at load time and issue #305 stops the
+# step on it. The BNGL model has to reach the same number.
+_SBML_TWIN = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="window">
+    <listOfCompartments>
+      <compartment id="C" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.1" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="R1" reversible="false">
+        <listOfProducts>
+          <speciesReference species="A" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <piecewise>
+              <piece>
+                <ci> k </ci>
+                <apply><and/>
+                  <apply><geq/>{time}<cn> 100 </cn></apply>
+                  <apply><leq/>{time}<cn> 140 </cn></apply>
+                </apply>
+              </piece>
+              <otherwise><cn type="integer"> 0 </cn></otherwise>
+            </piecewise>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+""".format(
+    time=(
+        '<csymbol encoding="text" '
+        'definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>'
+    )
+)
+
+
+def test_the_bngl_model_agrees_with_its_sbml_twin(tmp_path):
+    """Two spellings of one model, which is the comparison that made the defect
+    visible in the first place."""
+    xml = tmp_path / "window.xml"
+    xml.write_text(_SBML_TWIN)
+    sbml_model = bngsim.Model.from_sbml(str(xml))
+    assert sbml_model._core.n_discontinuity_triggers == 2
+    sbml_A = float(
+        bngsim.Simulator(sbml_model).run(t_span=(0.0, _T_END), n_points=3).species[-1][0]
+    )
+    assert sbml_A == pytest.approx(4.0, rel=1e-6)
+    assert _final_A(_net(tmp_path, _WINDOWS[0][0])) == pytest.approx(sbml_A, rel=1e-6)
+
+
+# ── 3. The warm fast path ───────────────────────────────────────────────────
 def test_the_warm_fast_path_cannot_swallow_a_stop(tmp_path):
     """The warm CVODE path reuses persistent solver memory across calls and has
     no stop-time handling of its own, so a run carrying stops must not take it.
@@ -161,7 +223,7 @@ def test_the_warm_fast_path_cannot_swallow_a_stop(tmp_path):
     assert _final_A(path) == pytest.approx(4.0, rel=1e-6)
 
 
-# ── 3. What is and is not a fixed time crossing ─────────────────────────────
+# ── 4. What is and is not a fixed time crossing ─────────────────────────────
 def test_a_state_threshold_is_not_a_time_crossing(tmp_path):
     """``A >= 5`` crosses at a time nobody knows before the run, so there is no
     stop to place. That crossing is issue #150's business."""
@@ -210,7 +272,7 @@ def test_a_schedule_that_never_turns_over_places_no_stop(tmp_path):
     assert stops == []
 
 
-# ── 4. Where the threshold is written ───────────────────────────────────────
+# ── 5. Where the threshold is written ───────────────────────────────────────
 def test_a_derived_threshold_is_inlined(tmp_path):
     """``onset = t0 + delay`` is a parameter expression, so the condition names
     one symbol and the crossing is at the sum of two."""
