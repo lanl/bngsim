@@ -643,6 +643,17 @@ static std::string describe_nonfinite_witness(NetworkModel &model, const NonFini
                   " there.";
         }
         return os.str();
+    } catch (const std::exception &e) {
+        // Describing a witness means evaluating the model at that state, and a
+        // rate law is allowed to REFUSE rather than answer: mratio does, for
+        // arguments where its continued fraction is not reliable (issue #453).
+        // Swallowing that left the caller holding a bare CVODE flag while the
+        // one sentence that explains it — the refusal's own message — was
+        // thrown away. The compiled path has no other way to say it, since the
+        // generated C cannot throw and reports the refusal as a NaN.
+        return std::string(" ") + w.source +
+               " returned a non-finite value at t=" + diag_number(w.t) +
+               ", and evaluating the model there reports: " + e.what();
     } catch (...) {
         return "";
     }

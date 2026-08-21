@@ -91,12 +91,15 @@ def test_the_engine_name_maps_to_the_helper():
 
 # Each case sweeps one argument through the species, so a single trajectory
 # covers a range rather than a point. The last two move a and b, which the
-# real models hold fixed, precisely because nothing else here would.
+# real models hold fixed, precisely because nothing else here would. The two
+# with a positive first argument carry a large b, which is what keeps them
+# inside the region the fraction is trusted in (issue #453); a positive a with a
+# small b and a large z is refused now, and has its own test below.
 CASES = [
     ("z rides the species", -3.0, 5.0, "k*mratio(a,b,-A)", 50.0),
     ("small z", -10.0, 21.0, "k*mratio(a,b,-A/10)", 20.0),
-    ("positive a", 2.0, 3.0, "k*mratio(a,b,-A)", 30.0),
-    ("non-integer a and b", 0.5, 2.5, "k*mratio(a,b,A/20)", 15.0),
+    ("positive a", 2.0, 101.0, "k*mratio(a,b,-A)", 30.0),
+    ("non-integer a and b", 0.5, 101.0, "k*mratio(a,b,A/20)", 15.0),
     ("the large-argument case", -1000.0, 9001.0, "k*mratio(a,b,-A*100)", 100.0),
     ("a rides the species", -3.0, 9.0, "k*mratio(-A,b,-20)", 12.0),
     ("b rides the species", -4.0, 0.0, "k*mratio(a,A+2,-8)", 10.0),
@@ -139,7 +142,7 @@ def test_a_sensitivity_run_builds_and_falls_back(tmp_path):
 
 # ── Known values, so a rewrite that drifts is caught by more than agreement ──
 
-# mpmath.hyp1f1(a+1, b+1, z) / mpmath.hyp1f1(a, b, z) at 60 digits. Held here as
+# mpmath.hyp1f1(a+1, b+1, z) / mpmath.hyp1f1(a, b, z) at 40+ digits. Held here as
 # literals so this does not need mpmath, and so that a change to the algorithm
 # has to face the reference rather than only the other copy of itself.
 REFERENCE = [
@@ -147,7 +150,7 @@ REFERENCE = [
     (-10.0, 21.0, -50.0, 0.27332389077),
     (-100.0, 901.0, -1000.0, 0.46164590186),
     (-1000.0, 9001.0, -10000.0, 0.46128328365),
-    (0.5, 2.5, 1.0, 1.2601068440),
+    (0.5, 101.0, 1.0, 1.00985005864),
 ]
 
 
@@ -156,26 +159,29 @@ def test_known_values_in_the_regime_models_use(tmp_path, a, b, z, expect):
     assert _value(tmp_path, a, b, z) == pytest.approx(expect, rel=1e-9)
 
 
-def test_the_two_copies_agree_where_the_algorithm_is_wrong(tmp_path):
-    """The region from issue #453, where agreement is the only thing to hold.
+def test_both_copies_refuse_and_both_say_why(tmp_path):
+    """The region from issue #453, where the answer is a refusal in both copies.
 
-    For a positive first argument and a large negative third one the continued
-    fraction settles on something that is not the answer: at (10, 2.5, -10000)
-    it returns about 0.2498 where the true value is 0.00025, and its convergence
-    test is satisfied, so nothing downstream can tell.
+    For a positive first argument with a large negative third one the fraction
+    settles on something that is not the ratio, so neither copy answers there.
+    The interpreter raises and names the region. The generated C cannot raise, so
+    its helper returns NaN and the run fails on the right-hand side — and the
+    failure carries the same explanation, because describing a non-finite
+    witness re-evaluates the model at that state and passes the refusal on.
 
-    What this checks is not the value, which is wrong, but that both copies are
-    wrong in the same way. That is the property the port owes: whoever fixes
-    #453 will fix the C++, and this fails immediately if the generated C is not
-    brought along. Pinning the wrong number instead would just red the build for
-    them and say nothing about the port.
+    Without that the compiled path reported a bare ``CV_FIRST_RHSFUNC_ERR`` and
+    nothing about mratio, which is a worse answer than the wrong number it
+    replaced was to diagnose.
     """
     body = "k*mratio(10,2.5,-10000)"
-    compiled = np.asarray(_run(tmp_path, body, 1.0, 1.0, 10.0, codegen=True, t_end=1.0).species)[
-        :, 0
-    ]
-    plain = np.asarray(_run(tmp_path, body, 1.0, 1.0, 10.0, codegen=False, t_end=1.0).species)[
-        :, 0
-    ]
-    assert compiled == pytest.approx(plain, rel=1e-11, abs=0.0)
-    assert abs(plain[-1] - plain[0]) > 1e-9  # the rate law is live, not zero
+    messages = {}
+    for codegen in (False, True):
+        with pytest.raises(Exception) as excinfo:
+            _run(tmp_path, body, 1.0, 1.0, 10.0, codegen=codegen, t_end=1.0)
+        messages[codegen] = str(excinfo.value)
+    for codegen, message in messages.items():
+        assert "not reliable" in message, f"codegen={codegen} said nothing about the refusal"
+        assert "#453" in message
+        assert "mratio" in message
+    # The compiled one reaches it the long way round, through the witness.
+    assert "non-finite" in messages[True]
