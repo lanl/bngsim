@@ -458,6 +458,14 @@ def _inline_functions(
 #
 # Matched on the type name during one traversal, because Min/Max are Application
 # but *not* Function subclasses, so ``atoms(sp.Function)`` misses them.
+#
+# A name qualifies only when *every* argument position is underivable, and only
+# when *neither* emitter could print the result. The scan below refuses the call
+# as soon as a differentiation variable appears anywhere inside it, so a function
+# that is differentiable in one argument, or printable by one emitter, would be
+# pre-declined for cases that work. ``mratio`` is the first function on either
+# count — closed form in its third argument only, and only in C (issue #457) — so
+# it is deliberately absent. test_jacobian_symbolic.py re-derives the whole set.
 _NONDIFFERENTIABLE_EMITTER_FUNCS = frozenset({"Abs", "Max", "Min", "ceiling", "floor", "sign"})
 
 
