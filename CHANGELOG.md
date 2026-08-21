@@ -135,29 +135,44 @@ in `CMakeLists.txt`) is derived from it.
   model has the stops without the roots, so the exclusion is now made on the stops
   themselves.
 
-  Two neighbouring shapes are measured and left alone. A BNGL model more often
+  **The schedule half of this also repairs SBML**, which the root registration
+  did not. A GH #72 root is evaluated on the *boolean*, and the boolean of a
+  repeating schedule reads the same on both sides of a step spanning a whole
+  period, so there is no sign change for the root finder to see. The accumulator
+  above written as an SBML `piecewise` on `time - 24*floor(time/24) >= 7`
+  reported 10.6 against the same answer of 17, with its one root registered and
+  none of its twenty edges stopped at.
+
+  One neighbouring shape is measured and left alone. A BNGL model more often
   measures time with a counter species than with `time()`, and a rate law that
   thresholds the counter has the same defect: that is issue #443, and admitting
   it moves the stepping of 37 corpus models and needs a BioNetGen parity re-run,
   which matters more there because BioNetGen's own integrator has the same
   blindness and a reference trajectory may itself have stepped over the switch.
-  And the schedule enumeration is applied only to conditions bngsim derived
-  itself, never to one an SBML loader registered, which already carries a root
-  and possibly a GH #88 step bound: that is issue #444, and it reaches nine
-  corpus models, two of them oscillatory enough that no oracle at hand separates
-  the two answers.
 
   Corpus census, two arms over the same 1908 models (585 `.net` and 1323 SBML):
-  **no model's trajectory moved, no model gained or lost an error, and no model
-  gained a stop.** This repository's `.net` corpus contains no model that switches
-  on simulation time — 80 of the 585 carry a conditional rate law and none of
-  those mentions time — so the parity checks against BioNetGen and RoadRunner and
-  the timing benchmarks are all measuring models the change cannot touch. Cost,
-  measured serially: the per-run crossing resolution over all 339 SBML models that
-  carry a registered condition is 1079 ms against main's 1085 ms, and the one-time
-  recovery over all 80 conditional `.net` models is 2 ms. That last number is 43 ms
-  on the largest of them alone without the pre-check on the raw rate-law text,
-  which is why the pre-check asks about `time` and not only about `if()`.
+  **no model gained or lost an error, and nine models moved, all of them SBML
+  models with a repeating schedule.** This repository's `.net` corpus contains no
+  model that switches on simulation time at all — 80 of the 585 carry a
+  conditional rate law and none of those mentions time — so the BioNetGen parity
+  suite and the `.net` timing benchmarks measure models the change cannot touch.
+
+  Of the nine, seven move by 2e-5 or less. `BIOMD0000000808` sits at its
+  reference's own convergence in both arms (1.70e-7 against 1.68e-7 from a run
+  bounded at a fortieth of the pulse width). `MODEL0406793751` — a stimulus on for
+  one part in a thousand of its period — moves a long way and moves the right way:
+  against a reference bounded below the pulse width and converged to 5e-6, the
+  distance drops from 1.14e5 to 1.37e4 in the mean-square, from 6.07e3 to 4.97e2
+  in the mean, and from 9.20e5 to 1.02e5 at the peak. RoadRunner parity over all
+  nine is unchanged: eight PASS at `max_rel_err = 0` in both arms, and
+  `MODEL0406793751` is the ninth, which RoadRunner declines to load.
+
+  Cost, measured serially: the per-run crossing resolution over all 339 SBML
+  models that carry a registered condition is 1079 ms against main's 1085 ms, and
+  the one-time recovery over all 80 conditional `.net` models is 2 ms. That last
+  number is 43 ms on the largest of them alone without the pre-check on the raw
+  rate-law text, which is why the pre-check asks about `time` and not only about
+  `if()`.
 
 - **A crossing time that steps rather than moves is declined instead of crashing
   the codegen pass (issue #436).** `if(time() >= sign(P), ...)` took bngsim down
