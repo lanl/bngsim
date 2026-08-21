@@ -33,7 +33,8 @@ What this locks:
   5. a threshold written behind a derived parameter or a function call is still
      found, and one that reads live state is not;
   6. a model with no time condition gets no stops at all, so its stepping is
-     untouched;
+     untouched, and neither does a condition an SBML loader registered, whose
+     schedule stops are issue #444;
   7. a batch row stops where its own parameter point puts the crossing, and a
      crossing a fitted parameter moves keeps the sensitivity jump it already
      had.
@@ -100,7 +101,12 @@ def _final_A(path, **kw):
 def _conditions_and_stops(path):
     model = bngsim.Model.from_net(str(path))
     conds = model.time_discontinuity_conditions()
-    return conds, fixed_time_crossings(model._core, 0.0, _T_END, conds)
+    # ``schedules`` exactly as Simulator._apply_crossing_stops resolves it: on
+    # for conditions bngsim derived itself, off for a set an SBML loader
+    # registered. A .net model is always the first of those.
+    return conds, fixed_time_crossings(
+        model._core, 0.0, _T_END, conds, schedules=not model._time_disc_conditions
+    )
 
 
 # ── 1. The windows the issue reports ────────────────────────────────────────
@@ -264,6 +270,22 @@ def test_a_model_with_no_condition_gets_no_stops(tmp_path):
     conds, stops = _conditions_and_stops(_net(tmp_path, "k*2"))
     assert conds == ()
     assert stops == []
+
+
+def test_a_registered_condition_is_not_given_schedule_stops(tmp_path):
+    """The schedule enumeration is for conditions bngsim derived itself.
+
+    A condition the SBML loader registered already carries a CVODE root, and GH
+    #88 decides separately whether that model also needs a step bound. Placing
+    schedule stops there as well moves nine corpus models and is issue #444.
+    The restriction has to be a decision rather than an accident, so this asks
+    for the same condition both ways and gets two different answers.
+    """
+    model = bngsim.Model.from_net(str(_net(tmp_path, _WINDOWS[1][0])))
+    conds = model.time_discontinuity_conditions()
+    assert conds
+    assert len(fixed_time_crossings(model._core, 0.0, _T_END, conds, schedules=True)) == 20
+    assert fixed_time_crossings(model._core, 0.0, _T_END, conds) == []
 
 
 def test_a_schedule_that_never_turns_over_places_no_stop(tmp_path):

@@ -1708,7 +1708,9 @@ def _schedule_stop_times(
     return [value for value, _partials in edges]
 
 
-def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> list[float]:
+def fixed_time_crossings(
+    core, t_start: float, t_end: float, conditions=(), *, schedules: bool = False
+) -> list[float]:
     """Times in ``(t_start, t_end]`` at which a registered time discontinuity
     flips, for ``SolverOptions.set_crossing_stop_times`` (issue #305).
 
@@ -1730,10 +1732,18 @@ def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> l
     :func:`time_discontinuity_conditions` derives the same thing for a model
     whose loader could not.
 
-    Two kinds of crossing are placed. A residual linear in time
-    (:func:`_crossing_time_of_condition`) has one, solved exactly. A repeating
-    schedule (:func:`_schedule_stop_times`) has one per period, enumerated from
-    the pattern issue #436 recognizes.
+    A residual linear in time (:func:`_crossing_time_of_condition`) has one
+    crossing, solved exactly. ``schedules`` additionally admits a repeating
+    schedule (:func:`_schedule_stop_times`), which has one per period,
+    enumerated from the pattern issue #436 recognizes.
+
+    ``schedules`` is off by default, and the caller turns it on only for
+    conditions bngsim derived itself. A condition the SBML loader registered
+    already carries a CVODE root, and GH #88 decides separately whether that
+    model also needs a step bound. Placing schedule stops there as well moves
+    nine corpus models, two of them by more than any oracle at hand can
+    adjudicate, so it wants a measurement of its own and is issue #444 rather
+    than part of issue #440.
 
     Empty (so: no change to any model's stepping) unless some condition's
     crossing time is a constant of the run. Resolution reads the *current*
@@ -1750,9 +1760,11 @@ def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> l
     out: list[float] = []
     for cond in conditions:
         t_star = _crossing_time_of_condition(cond, scope, t_start, t_end, aliases)
-        times = (
-            [t_star] if t_star is not None else _schedule_stop_times(cond, scope, t_start, t_end)
-        )
+        times: list[float] | None = None
+        if t_star is not None:
+            times = [t_star]
+        elif schedules:
+            times = _schedule_stop_times(cond, scope, t_start, t_end)
         for t_cross in times or ():
             if not (t_start < t_cross <= t_end):
                 continue
