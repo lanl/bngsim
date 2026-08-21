@@ -55,6 +55,37 @@ a transient isolated build env and never into `.venv`. On `--extra test` the
 script falls back to whatever pybind11 the system supplies, and tells you when it
 is doing that.
 
+### One build directory per interpreter, not per configuration
+
+`build-dir = "build/{wheel_tag}"` — the wheel tag is the Python version and the
+platform. It says nothing about the virtual environment being installed into, or
+about the options passed, so **every** build for one interpreter shares one CMake
+cache. A second install with different options rewrites the cache the first one
+is using (GH #459):
+
+```bash
+uv pip install --python /tmp/other/bin/python \
+    --config-settings=cmake.define.BNGSIM_ENABLE_MIR=ON \
+    --config-settings=cmake.define.BNGSIM_ENABLE_KLU=OFF .
+```
+
+Give a differently configured install its own tree and the two stay apart:
+
+```bash
+--config-settings=build-dir=/tmp/otherbuild/{wheel_tag}
+```
+
+`rebuild_editable.py` names every feature option on its configure line rather
+than inheriting any of them, and stops rather than building on a tree whose cache
+disagrees with what it asked for — the recovery it names is `rm -rf` on the tree
+plus a reinstall, because reconfiguring an already-built tree leaves link
+settings from the configuration it was built with. To change an option for one
+rebuild, set the same-named environment variable:
+
+```bash
+BNGSIM_ENABLE_MIR=1 python scripts/rebuild_editable.py
+```
+
 ### Re-locking after a `pyproject.toml` change
 
 `uv.lock` records `provides-extras`, so **any** edit to this project's dependency

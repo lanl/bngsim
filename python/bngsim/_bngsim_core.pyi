@@ -1180,11 +1180,11 @@ def reserved_names() -> dict:
     """
     Return dict of reserved constant and function names
     """
-HAS_KLU: bool = True
-HAS_LAPACK_DENSE: bool = True
-HAS_MIR: bool = False
-HAS_NFSIM: bool = True
-HAS_RULEMONKEY: bool = True
+HAS_KLU: bool = ...
+HAS_LAPACK_DENSE: bool = ...
+HAS_MIR: bool = ...
+HAS_NFSIM: bool = ...
+HAS_RULEMONKEY: bool = ...
 __build_commit__: str = 'unknown'
 __pybind11_version__: str = 'unknown'
 __version__: str = 'unknown'
