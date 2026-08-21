@@ -450,7 +450,7 @@ _DEFAULT_SHARD_MEM_MB = 512
 #                     __declspec(dllexport), so GetProcAddress("bngsim_codegen_rhs")
 #                     failed (lanl/bngsim #5). Unix ELF/Mach-O export global
 #                     symbols by default, so there it expands to nothing.
-_CODEGEN_PRELUDE_LINES = (
+_CODEGEN_MACRO_LINES = (
     "#ifndef BNGSIM_NOINLINE",
     "#if defined(__GNUC__) || defined(__clang__)",
     "#define BNGSIM_NOINLINE __attribute__((noinline))",
@@ -468,6 +468,122 @@ _CODEGEN_PRELUDE_LINES = (
     "#endif",
     "#endif",
 )
+
+
+# ── Special functions the generated C needs its own copy of ──────────────────
+#
+# The engine gives a model more functions than <math.h> has. Most of the extras
+# are one-line expressions and are rewritten in place by _replace_engine_calls
+# (issue #448). One is not: `mratio` is a loop, so the generated source needs
+# the loop.
+#
+# To add another special function of that kind, three things are needed and they
+# are the only three:
+#
+#   1. Register it on the interpreter, in src/expression.cpp, and add its name
+#      to `reserved_names()` there and to `reserved_functions_` in
+#      src/bngsim_api.cpp. That is what lets a model call it at all.
+#   2. Add its C to the tuple below, under a `#ifndef` guard, named with a
+#      `bngsim_` prefix so it cannot collide with anything the model or the
+#      platform provides. The guard matters: the sensitivity source and the
+#      right-hand side source can end up in one translation unit.
+#   3. Add `"<engine name>": ("bngsim_<name>", False)` to _BUILTIN_IDENT_MAP, so
+#      the call in the model's text is rewritten to the helper.
+#
+# The C is emitted into every generated source rather than only into the ones
+# that use it. It costs a few dozen lines in a file that is routinely megabytes,
+# the compiler drops it when it is unused, and the alternative is a per-model
+# flag that has to be threaded to every emitter and would fail silently the
+# first time somebody forgot to set it.
+#
+# The derivative is a separate question. A model that calls one of these in a
+# rate law still declines the analytic sensitivity right-hand side and uses
+# CVODES' difference quotient, exactly as before, because nothing here tells the
+# differentiation layer what the function means. For mratio that is a shame
+# rather than a necessity: d/dz of M(a+1,b+1,z)/M(a,b,z) is closed form in mratio
+# itself, see the note in the changelog entry for issue #451.
+_SPECIAL_FUNCTION_C_LINES = (
+    "#ifndef BNGSIM_MRATIO_DEFINED",
+    "#define BNGSIM_MRATIO_DEFINED",
+    "/* mratio(a,b,z) = M(a+1,b+1,z) / M(a,b,z), the ratio of contiguous Kummer",
+    "   1F1 functions, by Gauss's continued fraction evaluated with the modified",
+    "   Lentz method. A line-for-line port of expr_compat::mratio in",
+    "   src/expression.cpp, which stays the single source of truth: a change",
+    "   there is a change here.",
+    "",
+    "   The C++ throws when the iteration cap is reached. There is no exception",
+    "   to throw here, so this returns NaN. The caller in cvode_simulator.cpp",
+    "   already tests the right-hand side for non-finite values and turns one",
+    "   into a recoverable step failure that names the time and the state, so",
+    "   the failure stays loud without a new mechanism. Reaching the cap takes",
+    "   some doing: the arguments a BNG model produces converge in about 25",
+    "   iterations, and the slowest point found anywhere in a parameter sweep",
+    "   took under 1200.",
+    "",
+    "   This copies the C++ exactly, including where the C++ is wrong: for a",
+    "   positive first argument and a large negative third one the continued",
+    "   fraction settles on something that is not the answer, in both. That is",
+    "   issue #453, and it is deliberately not patched on one side only. */",
+    "static double bngsim_mratio(double a, double b, double z) {",
+    "    const double eps = 1.0e-16;",
+    "    const double tiny = 1.0e-32;",
+    "    const int max_iter = 100000;",
+    "    /* Lentz: f_0 = q_0, but q_0 = 0 here, so substitute tiny. C_0 = f_0,",
+    "       D_0 = 0. odd/even track which formula the next p_j takes. */",
+    "    double fsave = tiny;",
+    "    double Csave = fsave;",
+    "    double Dsave = 0.0;",
+    "    double err = 1.0 + eps;",
+    "    double f = 0.0;",
+    "    int odd = 1, even = 0, iodd = 0, ieven = 0, j = 0;",
+    "    while (err > eps) {",
+    "        double p, D, C, Delta;",
+    "        int swap_tmp;",
+    "        ++j;",
+    "        if (j > max_iter) {",
+    "            return NAN;",
+    "        }",
+    "        if (j == 1) {",
+    "            p = 1.0;",
+    "        } else {",
+    "            const double den = (b + (j - 2)) * (b + (j - 1));",
+    "            double num;",
+    "            if (odd == 1) {",
+    "                ++iodd;",
+    "                num = z * (a + iodd);",
+    "            } else {",
+    "                ++ieven;",
+    "                num = z * (a - (b + (ieven - 1)));",
+    "            }",
+    "            p = num / den;",
+    "        }",
+    "        D = 1.0 + p * Dsave;",
+    "        if (fabs(D) < tiny) {",
+    "            D = tiny;",
+    "        }",
+    "        C = 1.0 + p / Csave;",
+    "        if (fabs(C) < tiny) {",
+    "            C = tiny;",
+    "        }",
+    "        D = 1.0 / D;",
+    "        Delta = C * D;",
+    "        f = Delta * fsave;",
+    "        err = fabs(Delta - 1.0);",
+    "        fsave = f;",
+    "        Csave = C;",
+    "        Dsave = D;",
+    "        swap_tmp = odd;",
+    "        odd = even;",
+    "        even = swap_tmp;",
+    "    }",
+    "    return f;",
+    "}",
+    "#endif",
+)
+
+# What every generated source opens with: the portability macros, then the
+# special functions C does not have.
+_CODEGEN_PRELUDE_LINES = _CODEGEN_MACRO_LINES + _SPECIAL_FUNCTION_C_LINES
 
 
 def _chunk_threshold() -> int | None:
@@ -5210,6 +5326,9 @@ _BUILTIN_IDENT_MAP: dict[str, tuple[str, bool]] = {
     # never be user-defined model symbols that would need to win the lookup.)
     "max": ("fmax", False),
     "min": ("fmin", False),
+    # A loop, not an expression, so it is a helper the generated source carries
+    # rather than a rewrite — see _SPECIAL_FUNCTION_C_LINES (issue #451).
+    "mratio": ("bngsim_mratio", False),
 }
 
 

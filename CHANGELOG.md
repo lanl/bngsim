@@ -102,6 +102,56 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A rate law using `mratio()` now compiles (issue #451).** `mratio` is the last
+  of the engine's reserved functions that C has no name for. Issue #448 dealt
+  with the other five by rewriting each to a C expression. This one is a loop, so
+  the generated source now carries the loop: a port of `expr_compat::mratio` from
+  `src/expression.cpp`, emitted into every generated file alongside the
+  portability macros, with `mratio` in a model's text rewritten to call it.
+  `src/expression.cpp` stays the single source of truth, and the port is held to
+  that by tests that ask both for the same numbers over a swept argument and
+  require them to be equal rather than close. They are: over seven models that
+  ride `z`, `a` and `b` through the species, including the large-argument case
+  the C++ comment singles out, the two paths agree bit for bit.
+
+  The C++ throws when its iteration cap is reached. There is no exception to
+  throw in C, so the port returns NaN there, which the caller already turns into
+  a recoverable step failure naming the time and the state that produced it. No
+  new mechanism, and the cap is far out of reach in any case: the arguments a
+  BNG model produces converge in about 25 iterations.
+
+  Adding a special function of this kind now takes three steps and only three,
+  written down next to the code that does it: register it on the interpreter, add
+  its C to one tuple, and add one line to the name table.
+
+  The derivative is unchanged: a model calling `mratio` in a rate law still
+  declines the analytic sensitivity right-hand side and uses CVODES' difference
+  quotient, because nothing here tells the differentiation layer what the
+  function means. Worth recording for whoever picks that up, since it is not
+  obvious: with `R(a,b,z) = mratio(a,b,z)`, Kummer's identity
+  `dM/dz = (a/b) M(a+1,b+1,z)` gives
+
+      dR/dz = R(a,b,z) * [ (a+1)/(b+1) * R(a+1,b+1,z) - (a/b) * R(a,b,z) ]
+
+  so the derivative with respect to the third argument is two calls to `mratio`
+  itself, needing no new function and no new numerics. It was checked against
+  `scipy.special.hyp1f1` and against finite differences of both scipy's ratio and
+  bngsim's own, agreeing to 1e-10, and it works at `a = -1000, b = 9001,
+  z = -10000` where scipy overflows and cannot form the ratio at all. That
+  derivative is the one a fit needs: both models in this repository that use
+  `mratio` do so with `z = -1/Keq`. The derivatives with respect to the first two
+  arguments have no such closed form.
+
+  Measuring the port turned up something separate and worse, now filed as issue
+  #453: the algorithm itself returns a badly wrong value, with no warning, when
+  its first argument is positive and its third is a large negative number. Over
+  576 grid points checked against a 60 digit reference, every one of the 288 with
+  a non-positive first argument is right to about 1e-15, and 15 of the rest are
+  wrong, the worst by a factor of a thousand. The regime BNG models produce is
+  entirely inside the good region. The port copies that behaviour rather than
+  diverging from it, and a test pins the two copies to each other so that fixing
+  one without the other fails immediately.
+
 - **A rate law using `sign()`, `sgn()`, `clamp()`, `avg()` or `sum()` now compiles
   (issue #448).** All five are in the engine's reserved function list, so a model
   is allowed to call them and the interpreter evaluates them, but C has none of
