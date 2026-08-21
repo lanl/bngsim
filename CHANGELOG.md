@@ -140,11 +140,12 @@ in `CMakeLists.txt`) is derived from it.
   gained a stop.** This repository's `.net` corpus contains no model that switches
   on simulation time — 80 of the 585 carry a conditional rate law and none of
   those mentions time — so the parity checks against BioNetGen and RoadRunner and
-  the timing benchmarks are all measuring models the change cannot touch. The
-  recovery costs 43 ms once per model on the largest conditional `.net` model in
-  the corpus and is cached on the model and carried to its clones; a pre-check on
-  the raw rate-law text keeps it off every model whose rate laws never mention
-  time, which is all 80 of them.
+  the timing benchmarks are all measuring models the change cannot touch. Cost,
+  measured serially: the per-run crossing resolution over all 339 SBML models that
+  carry a registered condition is 1079 ms against main's 1085 ms, and the one-time
+  recovery over all 80 conditional `.net` models is 2 ms. That last number is 43 ms
+  on the largest of them alone without the pre-check on the raw rate-law text,
+  which is why the pre-check asks about `time` and not only about `if()`.
 
 - **A crossing time that steps rather than moves is declined instead of crashing
   the codegen pass (issue #436).** `if(time() >= sign(P), ...)` took bngsim down
