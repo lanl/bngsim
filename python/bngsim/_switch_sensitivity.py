@@ -1843,6 +1843,12 @@ def _rewrite_counter_clock(
         return None
     idx = next(iter(indices))
     offset = float(core.get_concentration(core.species_names[idx])) - t_start
+    if not math.isfinite(offset):
+        # A counter seeded nan or inf (issue #353 leaves a nan concentration
+        # rather than refusing the model). Every crossing time computed from it
+        # would be nan, and a stop at nan is not a stop.
+        logger.debug("crossing stop: counter clock for %r reads %r; skipping", cond, offset)
+        return None
     rewritten = cond
     for sym in syms:
         rewritten = _clock_symbol_sub(rewritten, sym, f"(time()+({offset!r}))")

@@ -724,3 +724,20 @@ def test_a_registered_root_on_a_counter_is_not_stepped_over(tmp_path):
 
     result = bngsim.Simulator(model).run(t_span=(0.0, 10.0), n_points=11)
     assert float(result.observables["fired"][-1]) == pytest.approx(1.0)
+
+
+def test_a_counter_reading_nan_places_no_stop(tmp_path):
+    """A crossing computed from a nan clock is a nan, and a stop at nan is not
+    a stop.
+
+    Reachable because a nan concentration is a state bngsim runs rather than
+    refuses: issue #353 substitutes a compartment size and warns instead of
+    stopping the model. So the offset is checked rather than assumed finite.
+    """
+    from bngsim._switch_sensitivity import fixed_crossing_stops
+
+    model = bngsim.Model.from_net(str(_counter_net(tmp_path, _COUNTER_WINDOWS[0][0])))
+    conds = model.time_discontinuity_conditions()
+    assert len(fixed_crossing_stops(model._core, 0.0, _T_END, conds)) == 2
+    model.set_concentration("counter()", float("nan"))
+    assert fixed_crossing_stops(model._core, 0.0, _T_END, conds) == []
