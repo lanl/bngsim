@@ -1505,7 +1505,18 @@ def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
     trajectory. Derived parameters are inlined first, so ``time() >= onset``
     with ``onset = t0 + delay`` is read as the comparison against ``t0 + delay``
     that it is.
+
+    Orderings only. An equality is excluded, which is what the SBML scan does
+    too — see the comment on the check.
     """
+    if is_equality_atom(atom):
+        # `time() == T` is true for one instant of measure zero, so its branch
+        # contributes nothing to the integral and there is nothing to miss.
+        # Stopping there would be worse than not: the step that restarts AT the
+        # crossing reads the rate law where the equality holds and carries that
+        # value forward over a whole step. The SBML scan registers only
+        # orderings for the same reason.
+        return False
     flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
     if not _TIME_REF.search(flat):
         return False

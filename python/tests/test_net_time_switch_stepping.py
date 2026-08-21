@@ -178,6 +178,22 @@ def test_a_threshold_that_reads_state_is_declined(tmp_path):
     assert stops == []
 
 
+def test_an_equality_over_time_is_not_stopped_at(tmp_path):
+    """``time() == 100`` is true for one instant of measure zero, so its branch
+    contributes nothing to the integral and there is no window to miss.
+
+    Stopping there would be worse than leaving it alone: the step that restarts
+    at the crossing reads the rate law where the equality holds and carries that
+    value over a whole step, turning an instant into a pulse. The SBML scan
+    registers only orderings for the same reason.
+    """
+    path = _net(tmp_path, "if(time()==100,k,0)")
+    conds, stops = _conditions_and_stops(path)
+    assert conds == ()
+    assert stops == []
+    assert _final_A(path) == pytest.approx(0.0, abs=1e-9)
+
+
 def test_a_model_with_no_condition_gets_no_stops(tmp_path):
     """The common case, and the one whose stepping must be untouched."""
     conds, stops = _conditions_and_stops(_net(tmp_path, "k*2"))
