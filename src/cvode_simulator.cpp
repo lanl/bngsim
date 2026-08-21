@@ -88,12 +88,11 @@ namespace bngsim {
 // Both kinds of stop read this one rule so they cannot drift apart: the issue
 // #48 sensitivity jump, which has always needed it, and the plain issue
 // #305/#443 crossing stop, which needs it the moment a .net model's condition
-// thresholds a counter rather than literal time. Returns whether it moved the
-// state, which is what tells the crossing-stop handler that a restart is now
-// required even where a root already reinitialised.
-bool land_clock_on_threshold(double *y_data, int ns, int clock_species_idx0, double threshold) {
+// thresholds a counter rather than literal time.
+static void land_clock_on_threshold(double *y_data, int ns, int clock_species_idx0,
+                                    double threshold) {
     if (clock_species_idx0 < 0 || clock_species_idx0 >= ns) {
-        throw std::runtime_error("crossing stop names clock species index " +
+        throw std::runtime_error("a crossing names clock species index " +
                                  std::to_string(clock_species_idx0) +
                                  ", which this model does not have (issue #82)");
     }
@@ -102,9 +101,7 @@ bool land_clock_on_threshold(double *y_data, int ns, int clock_species_idx0, dou
     const double drift_max = 1e-9 * std::max(std::fabs(threshold), 1.0);
     if (drift < 0.0 && -drift <= drift_max) {
         y_data[clk] = std::nextafter(threshold, std::numeric_limits<double>::infinity());
-        return true;
     }
-    return false;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -6653,11 +6650,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // issue #146), so this runs only when none fired: an unconditional
             // second reinit would be harmless but wasteful, while skipping the
             // s⁻ capture/resume on the path where no root fires would not be.
-            // The exception is a counter clock that had to be landed on its
-            // threshold just below: that moved the state after the root's own
-            // reinit read it, so the restart has to happen again to pick it up.
             if (stop_at_crossing && static_cast<double>(t_ret) >= t_crossing - switch_t_eps) {
-                bool landed_clock = false;
                 while (next_crossing < crossing_stops.size() &&
                        crossing_stops[next_crossing].t_star <=
                            static_cast<double>(t_ret) + switch_t_eps) {
@@ -6682,12 +6675,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // only the ulp of state that has to stand down.
                     const CrossingStop &reached = crossing_stops[next_crossing];
                     if (n_roots == 0 && reached.clock_species_idx0 >= 0) {
-                        landed_clock |= land_clock_on_threshold(
-                            y_data, ns, reached.clock_species_idx0, reached.threshold);
+                        land_clock_on_threshold(y_data, ns, reached.clock_species_idx0,
+                                                reached.threshold);
                     }
                     ++next_crossing;
                 }
-                if (flag != CV_ROOT_RETURN || landed_clock) {
+                if (flag != CV_ROOT_RETURN) {
                     std::vector<std::vector<double>> cross_s_minus;
                     if (sens.n_total > 0) {
                         cross_s_minus = impl_->capture_event_sens(cvode_mem, ns,

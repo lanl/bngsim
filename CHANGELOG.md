@@ -184,6 +184,89 @@ in `CMakeLists.txt`) is derived from it.
   pre-check on the raw rate-law text, which is why that pre-check asks about
   `time` and not only about `if()`.
 
+- **A BNGL rate law that switches on a counter species is no longer integrated
+  straight over the switch either (issue #443).** Issue #440 fixed the same defect
+  written against `time()`. This is the spelling BNGL models actually use: a
+  species fed by a zeroth-order reaction at rate 1, read back through a group and
+  conventionally called `t`. Of the 585 `.net` models in this repository's corpus
+  **37 threshold such a counter and none thresholds `time()`**, so until now the
+  fix reached no model here at all. The issue's own accumulator, which fills at
+  0.1 for 40 of its 240 time units, reported `0.0` where the answer is `4.0`.
+
+  A counter obeys `dc/dt = 1`, so its value is simulation time plus a constant
+  offset for the whole of the run and one substitution turns a condition on the
+  counter into the condition on time it already is: `c` becomes
+  `time() + (c(t_start) - t_start)`. Both resolvers issue #440 built then read it
+  unchanged, so a single threshold and a repeating schedule are both placed, and
+  neither of them, nor anything below them, needs a second code path. The
+  conversion is the one `compute_switch_time_sens` has always used to put an issue
+  #48 switch time on a counter clock, and `_unit_rate_clock_species` is the same
+  detector deciding what counts as a counter, so the stepping and the gradient
+  cannot disagree about which species is a clock.
+
+  A stop on a counter is not a stop on a time, and the difference is issue #82. A
+  counter is *integrated*, so at the stop it reads a couple of parts in `1e14`
+  BELOW the threshold it is defined as reaching there, the condition is still
+  false, and the run restarts on the branch that just ended and meets the
+  discontinuity inside the first step after a restart with no history to fall back
+  on. Issue #82 already repairs this on the forward-sensitivity path, because a
+  sensitivity record carries the clock index and the threshold beside the time.
+  The crossing stop list was a plain vector of doubles and carried neither, so it
+  is now a record too, and both paths land the clock through one shared rule. On
+  the issue's own witness the counter reads `99.99999999999993` at the stop
+  without the repair.
+
+  The repair stands down on a run that has registered roots, and that is not
+  caution. CVODE finds a root by a sign change across a step it accepts; moving
+  the clock past the threshold during the restart presents no such step, and the
+  root then never fires at all. An SBML rate rule `dk/dt = 1` makes `k` a counter,
+  and on a model whose events trigger on `k > 4.5` the whole event was lost, with
+  the pre-event stoichiometry carried to the end of the run. A `.net` model has
+  stops precisely because it could register no root, which is the whole population
+  this issue is about. The stop itself is still placed either way, and is still
+  what makes the root reachable.
+
+  Corpus census over the 37, each run over its own reported horizon against a
+  reference bounded at a thirty-two-thousandth of that horizon and integrated at
+  `rtol = atol = 1e-12`, with the reference's own reproducibility measured
+  alongside it: **every model's mean error is 1.1e-4 or below in both arms, and
+  33 of the 37 are at 1.1e-7 or below.** `model_step2_v1` is the clear mover: a
+  reference-independent 7.8e-4 before, 1.2e-4 after. Four models sit slightly
+  further from the reference afterwards, at most 1.1e-4 in the mean, and a
+  tolerance sweep says why: both arms converge to the same trajectory at the same
+  rate as `rtol` tightens, and by `rtol = 1e-10` the stopped arm is equal or
+  better on all four. A stop in the wrong place would leave a floor no tolerance
+  could remove, and there is none.
+
+  All 592 BioNetGen ODE parity jobs were re-run against BioNetGen 2.9.3 in both
+  arms: **the same 590 passing and the same 2 differing, with no model changing
+  its verdict.** Comparing the 37 against `run_network`'s own trajectories is the
+  one place a number gets worse, and the reason is the one the issue predicted:
+  22 of the 37 move away from BioNetGen, most of them from `1e-13` to about
+  `1e-7`, because BioNetGen's integrator has exactly the same blindness and
+  bngsim used to reproduce its error step for step. Against a converged reference
+  those same models do not move at all.
+
+  On the SBML side **exactly one model of 1323 is reached**, MODEL1508170000,
+  whose rate rules make two parameters counters and whose rate laws threshold
+  them at 480 to 483. Its parity job stops at an invented horizon of 100, so
+  nothing in the suite touches those crossings; run out to 600 it moves by 8.2e-4
+  at the peak and 1.6e-9 in the mean, and both arms sit the same distance from
+  RoadRunner.
+
+  Issue #54's stall fixture is a counter-clock model, so it now integrates rather
+  than collapsing its step size at `sigma`, which is the better outcome and is
+  asserted as such. The three tests that need the stall reach it by standing the
+  crossing stop down, which is what a model whose crossing time bngsim cannot
+  resolve looks like anyway.
+
+  Cost: the one-time recovery over the whole 585-model `.net` corpus goes from
+  19 ms to 211 ms, because 37 models now build a context they used to skip. The
+  right-hand-side probe that decides whether a model has a counter at all costs
+  0.6 ms across the 77 conditional models that never mention time, which is what
+  keeps the rest of that work off them. Per-run crossing resolution over the 37 is
+  26 ms once the issue #440 memo is warm.
+
 - **A crossing time that steps rather than moves is declined instead of crashing
   the codegen pass (issue #436).** `if(time() >= sign(P), ...)` took bngsim down
   with a `RecursionError`: sympy answers `d/dP sign(P)` with an unevaluated
