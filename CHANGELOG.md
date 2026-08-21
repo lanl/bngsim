@@ -14,6 +14,47 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A rate law whose derivative keeps a `max()` or a `min()` no longer loses its
+  analytic Jacobian (issue #460).** The interpreted emitter wrote sympy's
+  spelling, `Max(k1, k2)`, and the engine's expression parser is case sensitive,
+  so it answered "Undefined symbol: 'Max'" and the model fell back to the
+  finite-difference Jacobian without saying so.
+
+  `_SYMPY_FUNC_TO_EXPRTK` did map `Min` and `Max` to the engine's names, and
+  those two entries had never once been read. sympy's `Min` and `Max` are not
+  `Function` subclasses, so they never reached the printer's `_print_Function`,
+  and sympy's own `StrPrinter._print_LatticeOp` handled them instead. That
+  method prints the class name. The C emitter was never affected, because it has
+  carried its own `_print_Min` and `_print_Max` all along.
+
+  The same defect cost a second thing. The zero-logarithm guard from issue #333
+  rewrites a rate law by parsing it to sympy and printing it back through this
+  same printer, so a law carrying both a guardable logarithm and a `max()` came
+  back spelled `Max(...)`, the engine refused to install it, and the guard was
+  dropped in silence. Such a law then answers `nan` at zero concentration where
+  it should answer zero, which is the outcome issue #333 exists to prevent.
+
+  Two models in the parity corpus are affected, `ATG_model_v12` and
+  `ATG_model_v16`, and both now attach the analytic Jacobian they were meant to
+  have. Nothing about their runs moves: every solver statistic is identical and
+  the trajectories agree to 2e-12, which is where an exact Jacobian and a
+  difference-quotient one differ inside the corrector. Both models are small, so
+  there is no measurable speed difference either. No model in a 1703 model sweep
+  loses the logarithm guard this way.
+
+  A `max()` over a variable being differentiated is a separate matter and stays
+  refused on purpose, since its derivative is a step.
+
+  Two guards come with it, for the blind spot rather than the instance. Anything
+  else reaching `_print_LatticeOp` is now refused instead of printed under its
+  class name. And the boolean nodes sympy can build but no printer here has a
+  spelling for are refused too. That last one is not a defect anything reaches
+  today, but its cost is different in kind: sympy prints `Xor` infix as `^`,
+  which is legal ExprTk and means exponentiation there, so it would be a wrong
+  number rather than a refusal.
+
 ### Added
 
 - **A model that calls `mratio()` in a rate law now gets an analytic forward
@@ -33,7 +74,7 @@ in `CMakeLists.txt`) is derived from it.
   special function and no new numerics. This is the derivative worth having:
   BNG builds `a` and `b` from molecule counts and puts the rate constant in `z`,
   as `z = -1/Keq`, so fitting a rate constant goes through exactly this. The
-  first two arguments have no comparable closed form and get none; a model
+  first two arguments have no comparable closed form and get none. A model
   differentiating through one of them declines and keeps the difference
   quotient, as it did before.
 

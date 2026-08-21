@@ -619,12 +619,19 @@ def differentiate_rate_law(
     return result
 
 
+#: Boolean node types at least one emitter can print. Everything else in the
+#: family is refused by :func:`_is_emittable` — see the note there (issue #460).
+_EMITTABLE_BOOLEAN_FUNCS = frozenset({"And", "Or", "Not", "ITE"})
+
+
 def _is_emittable(expr) -> bool:
-    """True iff every function in ``expr`` maps to an ExprTk builtin. Rejects
-    derivatives that introduced Heaviside / DiracDelta / special functions, and
-    any unevaluated ``Derivative`` (GH #250)."""
+    """True iff every function in ``expr`` maps to a builtin one of the emitters
+    has. Rejects derivatives that introduced Heaviside / DiracDelta / special
+    functions, any unevaluated ``Derivative`` (GH #250), and any boolean node no
+    printer has a spelling for (issue #460)."""
     try:
         import sympy as sp
+        from sympy.logic.boolalg import BooleanFunction
     except ImportError:
         return False
     # An unevaluated Derivative is sympy saying it *cannot* differentiate the
@@ -661,6 +668,26 @@ def _is_emittable(expr) -> bool:
         # writing the identity out instead would hand the interpreted engine a
         # derivative that throws where the compiled helper falls back.
         if name not in _SYMPY_FUNC_TO_EXPRTK and name not in _SYMPY_FUNC_TO_C:
+            return False
+    # Boolean nodes are ``Application`` but not ``Function``, so the scan above
+    # is blind to them in the same way it is blind to ``Min`` and ``Max``. Three
+    # of them have a printer method of their own, plus ``ITE``, which
+    # ``_normalize_booleans`` rewrites into those three on the way into either
+    # emitter (this predicate also runs before that rewrite, in
+    # ``differentiate_rate_law``, so it has to let one through). Anything else
+    # falls through to sympy's own spelling, and sympy's spellings are not the
+    # engine's: ``Implies`` and ``Equivalent`` print under their class names,
+    # which nothing accepts, and ``Xor`` prints infix ``^``, which ExprTk reads
+    # as EXPONENTIATION. That last one would be a wrong number rather than a
+    # refusal.
+    #
+    # No rate law in the corpus produces any of the three, and no rewrite here
+    # builds one: ``_rewrite_logicals`` emits only ``And``/``Or``/``Not``/``Eq``/
+    # ``Ne``. The guard is here because the blind spot that let ``Max`` print
+    # its class name for so long (issue #460) is this same blind spot, and the
+    # cost of being wrong differs by a lot between the two.
+    for node in expr.atoms(BooleanFunction):
+        if type(node).__name__ not in _EMITTABLE_BOOLEAN_FUNCS:
             return False
     return True
 
@@ -1568,6 +1595,40 @@ def _make_printer():
         def _print_Abs(self, expr):
             return f"abs({self._print(expr.args[0])})"
 
+        # ``Min`` and ``Max`` are not ``Function`` subclasses, so they never reach
+        # ``_print_Function`` above and the ``_SYMPY_FUNC_TO_EXPRTK`` entries for
+        # them were never read. sympy's own ``StrPrinter._print_LatticeOp``
+        # handled them instead, and it prints the class name: ``Max(k1, k2)``.
+        # ExprTk is case sensitive, so the engine rejected that with "Undefined
+        # symbol: 'Max'" and the model lost its analytic Jacobian for that
+        # reaction, or its zero-logarithm guard, without saying so (issue #460).
+        #
+        # Folded into nested binary calls rather than emitted n-ary, matching the
+        # C twin below and the shape the loader already produces for an n-ary
+        # ``max()`` in a model's own text.
+        def _print_Min(self, expr):
+            return self._fold("min", expr.args)
+
+        def _print_Max(self, expr):
+            return self._fold("max", expr.args)
+
+        def _fold(self, fn, args):
+            printed = [self._print(a) for a in args]
+            out = printed[0]
+            for p in printed[1:]:
+                out = f"{fn}({out},{p})"
+            return out
+
+        def _print_LatticeOp(self, expr):
+            # Everything reaching here is a lattice operation with no method of
+            # its own above, and sympy's fallback for one is to print its class
+            # name — which is what made ``Max`` look like a working emission for
+            # so long. Refuse instead, so the next such node declines to the
+            # finite-difference Jacobian rather than emitting a call the engine
+            # cannot parse. ``And`` and ``Or`` are lattice operations too and are
+            # unaffected: their own methods above are more specific.
+            raise _ExprTkEmitError(f"lattice operation {type(expr).__name__}")
+
         def _print_Float(self, expr):
             # Full round-trippable precision; ExprTk parses standard C floats.
             return repr(float(expr))
@@ -1770,6 +1831,12 @@ def _make_c_printer():
 
         def _print_Max(self, expr):
             return self._cfold("fmax", expr.args)
+
+        def _print_LatticeOp(self, expr):
+            # The ExprTk twin's note applies here too (issue #460). This printer
+            # already had Min and Max, so it never emitted a sympy class name,
+            # but the fallback that let its twin do so is the same one.
+            raise _CEmitError(f"lattice operation {type(expr).__name__}")
 
         def _cfold(self, fn, args):
             ps = [self._print(a) for a in args]
