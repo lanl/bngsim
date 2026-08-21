@@ -51,7 +51,9 @@ What this locks:
      ``time()``. A counter is *integrated*, so it needs two things a literal
      clock does not: its offset from time, and being put exactly on its
      threshold at the stop, without which the run restarts on the branch that
-     just ended.
+     just ended. Landing it is a repair for a stop that stands IN PLACE OF a
+     root, so where a root is registered it stands down rather than stepping
+     over it, on the forward-sensitivity path as well as this one.
 """
 
 import logging
@@ -741,3 +743,90 @@ def test_a_counter_reading_nan_places_no_stop(tmp_path):
     assert len(fixed_crossing_stops(model._core, 0.0, _T_END, conds)) == 2
     model.set_concentration("counter()", float("nan"))
     assert fixed_crossing_stops(model._core, 0.0, _T_END, conds) == []
+
+
+# The same counter and event, plus a rate law thresholding the counter at a
+# FITTED parameter. That is the one shape that reaches the issue #48 switch-time
+# jump with a counter clock, and it is the shape whose events are most likely to
+# trigger on the same value.
+_SBML_COUNTER_FITTED_SWITCH = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="counter_fitted_switch">
+    <listOfCompartments><compartment id="C" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k1" value="0" constant="false"/>
+      <parameter id="T" value="4.5" constant="true"/>
+      <parameter id="kf" value="1.0" constant="true"/>
+      <parameter id="fired" value="0" constant="false"/>
+    </listOfParameters>
+    <listOfRules>
+      <rateRule variable="k1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><cn type="integer">1</cn></math>
+      </rateRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="R1" reversible="false">
+        <listOfProducts>
+          <speciesReference species="A" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <piecewise>
+              <piece><ci>kf</ci><apply><geq/><ci>k1</ci><ci>T</ci></apply></piece>
+              <otherwise><cn type="integer">0</cn></otherwise>
+            </piecewise>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+    <listOfEvents>
+      <event id="E0" useValuesFromTriggerTime="true">
+        <trigger initialValue="true" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><gt/><ci>k1</ci><ci>T</ci></apply>
+          </math>
+        </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="fired">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><cn type="integer">1</cn></math>
+          </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>
+"""
+
+
+def test_the_sensitivity_jump_does_not_step_over_a_root_either(tmp_path):
+    """The same rule on the forward-sensitivity path, which had the same hole.
+
+    The issue #48 jump lands the clock on its threshold for its own reasons and
+    has done since issue #82, before any of this. On a model with a registered
+    root that lands the state past the root and the root never fires, exactly as
+    a crossing stop would — and only on a sensitivity run, so the plain
+    trajectory and the fitted one disagreed about whether the event happened at
+    all. This is that model, and the answers are arithmetic: A accumulates ``kf``
+    for the ``10 - T`` time units after the counter passes ``T``, so A(10) is 5.5
+    and ``dA/dT`` is exactly ``-kf``.
+    """
+    xml = tmp_path / "fitted_switch.xml"
+    xml.write_text(_SBML_COUNTER_FITTED_SWITCH)
+
+    plain = bngsim.Simulator(bngsim.Model.from_sbml(str(xml))).run(t_span=(0.0, 10.0), n_points=11)
+    assert float(plain.observables["fired"][-1]) == pytest.approx(1.0)
+    assert float(plain.species[-1][0]) == pytest.approx(5.5, rel=1e-6)
+
+    fitted = bngsim.Simulator(bngsim.Model.from_sbml(str(xml)), sensitivity_params=["T"]).run(
+        t_span=(0.0, 10.0), n_points=11
+    )
+    assert float(fitted.observables["fired"][-1]) == pytest.approx(1.0)
+    assert float(fitted.species[-1][0]) == pytest.approx(5.5, rel=1e-6)
+    # (time, species, parameter). Landing the clock is what the gradient needed
+    # in the first place, so this pins that standing it down here did not cost
+    # it: the jump is still applied, only the ulp of state is not.
+    assert float(fitted.sensitivities[-1][0][0]) == pytest.approx(-1.0, rel=1e-6)

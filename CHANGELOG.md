@@ -224,7 +224,21 @@ in `CMakeLists.txt`) is derived from it.
   the pre-event stoichiometry carried to the end of the run. A `.net` model has
   stops precisely because it could register no root, which is the whole population
   this issue is about. The stop itself is still placed either way, and is still
-  what makes the root reachable.
+  what makes the root reachable. Where a root IS registered it reinitialises at
+  the crossing itself, which is the whole of what the repair exists to do, so
+  nothing is given up by standing it down there.
+
+  **The issue #48 sensitivity jump had the same hole and is fixed with it**,
+  because that is where the repair has lived since issue #82 and it applied
+  unconditionally. On a model whose rate law thresholds a counter at a *fitted*
+  parameter — the one shape that reaches the jump with a counter clock — and
+  whose event triggers on the same value, the event fired on the plain run and
+  did not fire on the sensitivity run, so the trajectory a fit saw disagreed with
+  the trajectory a plain call saw about whether the event happened. It is
+  reachable only through that combination, which no model in either corpus
+  writes: the one SBML model with a counter-clock condition thresholds it at
+  literals, so no parameter moves it and no switch-time record is emitted for it
+  at all.
 
   Corpus census over the 37, each run over its own reported horizon against a
   reference bounded at a thirty-two-thousandth of that horizon and integrated at

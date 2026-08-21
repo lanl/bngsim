@@ -1689,9 +1689,12 @@ struct CvodeSimulator::Impl {
 
     // Jump dx/dθ across a switch-time crossing and restart both steppers at
     // the kink.
+    // `land_clock` is false on a run that has registered roots: see the call to
+    // land_clock_on_threshold inside for why the ulp of state has to stand down
+    // there.
     void apply_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
                                        const SwitchTimeSens &sw, SwitchJumpScratch &scratch,
-                                       SensitivityState &sens);
+                                       SensitivityState &sens, bool land_clock);
 
     // Add the saltation jump of a state-dependent rate-law switch to `s` in
     // place (issue #150). `batch` is every switch whose residual root fired at
@@ -4363,7 +4366,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
 void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns,
                                                          double t_evt, const SwitchTimeSens &sw,
                                                          SwitchJumpScratch &scratch,
-                                                         SensitivityState &sens) {
+                                                         SensitivityState &sens, bool land_clock) {
     auto &sp_vec_outer = const_cast<std::vector<Species> &>(model.species());
     double *y_data = N_VGetArrayPointer(y);
     const int n_sens_p = sens.n_p;
@@ -4466,7 +4469,21 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // resumed integration reads the after-branch (issue #82). The rule itself
     // is `land_clock_on_threshold` at the top of this file, shared with the
     // plain crossing stop so the two cannot drift apart.
-    if (!time_clock) {
+    //
+    // `land_clock` is false on a run with registered roots, for the reason the
+    // crossing-stop handler stands the same repair down: CVODE finds a root by
+    // a sign change across a step it ACCEPTS, and a state that jumps during the
+    // restart presents no step to find it in, so the root never fires. An SBML
+    // rate rule `dk/dt = 1` makes k a counter, and a model that thresholds it at
+    // a FITTED parameter — the one shape that reaches this function with a
+    // counter clock — is exactly the model whose events are likely to trigger on
+    // the same value. On such a model the event was lost outright, and only on
+    // the sensitivity run, so the plain trajectory and the fitted one disagreed
+    // about whether the event happened at all. Where a root IS registered it
+    // reinitialises at the crossing itself, which is the whole of what this
+    // repair exists to do; there is nothing left for it to fix and it can only
+    // pre-empt the root.
+    if (!time_clock && land_clock) {
         land_clock_on_threshold(y_data, ns, sw.clock_species_idx0, sw.threshold);
     }
 
@@ -6631,7 +6648,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                            static_cast<double>(t_ret) + switch_t_eps) {
                     impl_->apply_switch_sensitivity_jump(
                         cvode_mem, y, ns, static_cast<double>(t_ret), *switch_list[next_switch],
-                        sw_scratch, sens);
+                        sw_scratch, sens, n_roots == 0);
                     ++next_switch;
                 }
             }
