@@ -1574,8 +1574,15 @@ class Simulator:
         the second one at 24 — where it has no crossing — measurably perturbs
         its steady-state march.
 
-        A no-op for every model that registers no time discontinuity, which is
-        almost all of them; their stepping is untouched.
+        A no-op for every model with no time discontinuity, which is almost all
+        of them; their stepping is untouched.
+
+        Where the conditions come from is :meth:`Model.time_discontinuity_conditions`.
+        An SBML model hands over the set its loader registered as roots. A
+        ``.net``/BNGL model has no registered set — it is built entirely in C++,
+        with no build-time seam for a loader to add a root at — so its
+        conditions are recovered from the built model's function bodies, and
+        this stop is the whole of what keeps the step off them (issue #440).
 
         ``model`` is the model this run integrates — the batch and chunked
         sensitivity paths run on a *clone* carrying that row's parameter point,
@@ -1583,7 +1590,7 @@ class Simulator:
         wrong time for exactly the rows a scan exists to explore.
         """
         model = model if model is not None else self._model
-        conditions = getattr(model, "_time_disc_conditions", ())
+        conditions = model.time_discontinuity_conditions()
         if not conditions:
             return
         from bngsim._switch_sensitivity import fixed_time_crossings

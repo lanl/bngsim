@@ -102,6 +102,88 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A BNGL rate law that switches on simulation time is no longer integrated
+  straight over the switch (issue #440).** A pure accumulator that fills at 0.1
+  for 40 of its 240 time units reported `0.0` where the answer is `4.0`, and
+  nothing warned. Inside each branch of `if(time() >= 100, k, 0)` the right-hand
+  side is a constant, so CVODE's local error estimate over a step spanning the
+  whole branch is near zero and nothing stops the step from growing until it
+  swallows the window. Tightening `rtol` does not help, because there is no error
+  to see. A repeating schedule is worse, because there are many windows to miss:
+  `if(time() - 24*floor(time()/24) >= 7, k, 0)` reported 23.3 against an answer of
+  17, and a three-unit period with a half-unit window reported `0.0` against 4.
+
+  The same model written in SBML was already right. Its loader walks the document
+  at load time and registers every `time` comparison as a CVODE root, and issue
+  #305 resolves each root to a crossing time and ends the step exactly on it. A
+  `.net`/BNGL model is built entirely in C++, so its loader has no build-time seam
+  to register anything at, and it registered nothing at all.
+
+  The conditions are now recovered from the built model's own function bodies —
+  the same scan the forward-sensitivity path already ran over the same text — and
+  handed to the same stop-time machinery, which lands the step on the crossing and
+  reinitialises there. A repeating schedule gets one stop per edge, enumerated
+  from the pattern recogniser issue #436 added. Admission is narrow: a comparison
+  against simulation time, against values that hold still for the whole run.
+  A threshold over live state crosses at a time nobody knows in advance and is
+  left to issue #150, and an equality is left alone as well, matching what the
+  SBML scan admits.
+
+  One C++ line goes with it. The warm CVODE fast path has no stop-time handling of
+  its own, and until this issue nothing could reach it carrying stops, because
+  every model that had them had registered the roots that produced them. A `.net`
+  model has the stops without the roots, so the exclusion is now made on the stops
+  themselves.
+
+  **The schedule half of this also repairs SBML**, which the root registration
+  did not. A GH #72 root is evaluated on the *boolean*, and the boolean of a
+  repeating schedule reads the same on both sides of a step spanning a whole
+  period, so there is no sign change for the root finder to see. The accumulator
+  above written as an SBML `piecewise` on `time - 24*floor(time/24) >= 7`
+  reported 10.6 against the same answer of 17, with its one root registered and
+  none of its twenty edges stopped at.
+
+  One neighbouring shape is measured and left alone. A BNGL model more often
+  measures time with a counter species than with `time()`, and a rate law that
+  thresholds the counter has the same defect: that is issue #443, and admitting
+  it moves the stepping of 37 corpus models and needs a BioNetGen parity re-run,
+  which matters more there because BioNetGen's own integrator has the same
+  blindness and a reference trajectory may itself have stepped over the switch.
+
+  Corpus census, two arms over the same 1908 models (585 `.net` and 1323 SBML):
+  **no model gained or lost an error, and nine models moved, all of them SBML
+  models with a repeating schedule.** This repository's `.net` corpus contains no
+  model that switches on simulation time at all — 80 of the 585 carry a
+  conditional rate law and none of those mentions time — so the BioNetGen parity
+  suite and the `.net` timing benchmarks measure models the change cannot touch.
+  Confirmed rather than assumed: all 592 ODE jobs were re-run against BioNetGen
+  2.9.3 in both arms and **not one number moved**, with the same 590 passing, the
+  same 2 differing (a Lorenz attractor and a proliferation model, both already
+  differing before this), and every error against the reference identical to the
+  last digit.
+
+  Of the nine, seven move by 2e-5 or less. `BIOMD0000000808` sits at its
+  reference's own convergence in both arms (1.70e-7 against 1.68e-7 from a run
+  bounded at a fortieth of the pulse width). `MODEL0406793751` — a stimulus on for
+  one part in a thousand of its period — moves a long way and moves the right way:
+  against a reference bounded below the pulse width and converged to 5e-6, the
+  distance drops from 1.14e5 to 1.37e4 in the mean-square, from 6.07e3 to 4.97e2
+  in the mean, and from 9.20e5 to 1.02e5 at the peak. RoadRunner parity over all
+  nine is unchanged: eight PASS at `max_rel_err = 0` in both arms, and
+  `MODEL0406793751` is the ninth, which RoadRunner declines to load.
+
+  Cost, measured serially: the per-run crossing resolution over all 339 SBML
+  models that carry a registered condition is 1098 ms against main's 1085 ms, and
+  the one-time recovery over all 80 conditional `.net` models is 2 ms. Both
+  numbers took a memo to reach. Recognizing a schedule and then checking it
+  against the model's own residual is seven sympy round trips, paid on every
+  `run()` and so on every evaluation of a fit, which put the first of those
+  numbers at 1183 ms; it is now keyed on the condition text, the window and the
+  parameters the condition reads, exactly as the issue #305 crossing memo already
+  was. The second number is 43 ms on the largest `.net` model alone without the
+  pre-check on the raw rate-law text, which is why that pre-check asks about
+  `time` and not only about `if()`.
+
 - **A crossing time that steps rather than moves is declined instead of crashing
   the codegen pass (issue #436).** `if(time() >= sign(P), ...)` took bngsim down
   with a `RecursionError`: sympy answers `d/dP sign(P)` with an unevaluated

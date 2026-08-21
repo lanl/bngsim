@@ -99,6 +99,7 @@ class Model:
         "_varvol_event_resize_map",
         "_periodic_disc_max_step",
         "_time_disc_conditions",
+        "_derived_time_disc_conditions",
         "_want_output_sens",
         "_output_sens_analysis",
         "_named_conc_states",
@@ -231,6 +232,11 @@ class Model:
         # to crossing times and stops the step on each, because a registered
         # root is only reachable on a step CVODE accepts. See _sbml_loader.py.
         self._time_disc_conditions: tuple[str, ...] = ()
+        # Issue #440: the same thing for a model whose loader registered
+        # nothing, derived from the built core on first ask and cached here.
+        # None means "not looked yet"; a tuple (often empty) means the scan has
+        # run. See time_discontinuity_conditions().
+        self._derived_time_disc_conditions: tuple[str, ...] | None = None
         # Issue #11: named saved concentration states. Maps a user label to a
         # snapshot of the full live species-concentration vector (a copy of
         # get_state(), ordered like species_names). This is the multi-slot
@@ -759,6 +765,41 @@ class Model:
 
         return model, parse_bngl_protocol(Path(path), strict=False)
 
+    # ─── Time-discontinuity conditions (GH #72, issue #440) ───────────────
+
+    def time_discontinuity_conditions(self) -> tuple[str, ...]:
+        """The branch conditions this model switches on simulation time with.
+
+        What :meth:`Simulator.run` resolves to crossing *times* and stops the
+        integration step on, so an ``if(time() >= 100, ...)`` window cannot be
+        stepped over (issue #305 for the mechanism, issue #440 for why a BNGL
+        model needs it).
+
+        Two sources, in that order. The SBML loader walks the document at load
+        time and registers each condition it finds as a CVODE root, and hands
+        the registered set over verbatim — reading it back here rather than
+        re-deriving one is what keeps the stops a subset of the roots. A
+        ``.net``/BNGL model is built entirely in C++, so its loader has no seam
+        to register a root at and there is nothing to read back; the conditions
+        are recovered from the built model's own function bodies instead, once,
+        and cached. The recovery is the expensive half, so it runs only for a
+        model that registered nothing, and only when something asks.
+        """
+        if self._time_disc_conditions:
+            return self._time_disc_conditions
+        if self._derived_time_disc_conditions is None:
+            try:
+                from bngsim._switch_sensitivity import time_discontinuity_conditions
+
+                self._derived_time_disc_conditions = time_discontinuity_conditions(self._core)
+            except Exception as e:  # pragma: no cover - defensive
+                # Recovery is best-effort: without it a model keeps the stepping
+                # it had before this existed, which is correct wherever it does
+                # not step over a switch.
+                logger.debug("Time-discontinuity scan unavailable (%s)", e)
+                self._derived_time_disc_conditions = ()
+        return self._derived_time_disc_conditions
+
     # ─── Lazy analytical Jacobian (GH #145) ───────────────────────────────
 
     def prepare_analytical_jacobian(self) -> bool:
@@ -879,6 +920,7 @@ class Model:
         m._varvol_event_resize_map = dict(self._varvol_event_resize_map)
         m._periodic_disc_max_step = self._periodic_disc_max_step
         m._time_disc_conditions = self._time_disc_conditions
+        m._derived_time_disc_conditions = self._derived_time_disc_conditions
         # Issue #11: carry named concentration snapshots to the clone, each a
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)
