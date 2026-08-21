@@ -37,9 +37,12 @@ What this locks:
      untouched;
   7. a batch row stops where its own parameter point puts the crossing, and a
      crossing a fitted parameter moves keeps the sensitivity jump it already
-     had.
+     had;
+  8. a schedule asking for more stops than the budget allows places none and
+     says so, rather than stopping at a prefix of them in silence.
 """
 
+import logging
 import os
 import subprocess
 import sys
@@ -335,6 +338,24 @@ def test_a_model_with_no_condition_gets_no_stops(tmp_path):
     conds, stops = _conditions_and_stops(_net(tmp_path, "k*2"))
     assert conds == ()
     assert stops == []
+
+
+def test_a_schedule_with_too_many_edges_says_so(tmp_path, caplog):
+    """A schedule can ask for an unbounded number of stops, since the count is
+    the run window divided by the period rather than a property of the model.
+
+    Past the budget bngsim places none of them and says so. Saying so is the
+    point: this is the one case where it knows the schedule is there and cannot
+    stop at it, and the alternative is a trajectory that is quietly wrong in
+    exactly the way this issue is about.
+    """
+    # A hundredth of a time unit over 240 of them is 48,000 edges.
+    path = _net(tmp_path, "if(time()-0.01*floor(time()/0.01)>=0.005,k,0)")
+    with caplog.at_level(logging.WARNING, logger="bngsim"):
+        conds, stops = _conditions_and_stops(path)
+    assert conds
+    assert stops == []
+    assert any("more than 8192 edges" in r.getMessage() for r in caplog.records)
 
 
 def test_a_schedule_that_never_turns_over_places_no_stop(tmp_path):
