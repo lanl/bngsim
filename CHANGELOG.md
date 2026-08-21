@@ -224,9 +224,17 @@ in `CMakeLists.txt`) is derived from it.
   the pre-event stoichiometry carried to the end of the run. A `.net` model has
   stops precisely because it could register no root, which is the whole population
   this issue is about. The stop itself is still placed either way, and is still
-  what makes the root reachable. Where a root IS registered it reinitialises at
-  the crossing itself, which is the whole of what the repair exists to do, so
-  nothing is given up by standing it down there.
+  what makes the root reachable. Where a root IS registered on the crossing it
+  reinitialises there itself, which is the whole of what the repair exists to do,
+  so nothing is given up by leaving it to do it.
+
+  The question is asked of the roots rather than assumed, and that matters:
+  "stand down whenever the run has any root" would be simple and wrong. 21 of
+  the 37 counter-clock models root on a state threshold — `V > 0` and the like —
+  that has nothing to do with the clock, and those roots are registered on a
+  fitted run, so such a rule would take the issue #82 repair away from exactly
+  the runs that need it. Instead the clock is moved, the root function is asked
+  again, and the move is taken back only where some root changed sign.
 
   **The issue #48 sensitivity jump had the same hole and is fixed with it**,
   because that is where the repair has lived since issue #82 and it applied
@@ -238,7 +246,7 @@ in `CMakeLists.txt`) is derived from it.
   reachable only through that combination, which no model in either corpus
   writes: the one SBML model with a counter-clock condition thresholds it at
   literals, so no parameter moves it and no switch-time record is emitted for it
-  at all.
+  at all. Both paths ask the same question of the roots, so neither can drift.
 
   Corpus census over the 37, each run over its own reported horizon against a
   reference bounded at a thirty-two-thousandth of that horizon and integrated at
