@@ -71,12 +71,17 @@ where M(a, b, z) = ₁F₁(a; b; z) is Kummer's confluent hypergeometric functio
 This ratio arises in stochastic gene expression models (e.g., the steady-state
 distribution of mRNA in a two-state promoter model).
 
-Ported from BNG's `Util::Mratio` (W. S. Hlavacek, 2018).
+Ported from BNG's `Util::Mratio` (W. S. Hlavacek, 2018). Evaluated by Gauss's
+continued fraction with the modified Lentz method, and by an asymptotic expansion
+for arguments the fraction cannot be trusted with. Arguments neither method can
+vouch for are refused rather than answered, because the fraction is silently
+wrong there. See `expr_compat::mratio` in `src/expression.cpp` for the region and
+the reasoning behind it.
 
 `mratio` is differentiable in its third argument, so a rate law that reaches a
 fitted rate constant through `z` (BNG writes `z = -1/Keq`) gets an analytic
 forward-sensitivity gradient rather than CVODES' difference quotient. The first
-two arguments have no closed-form derivative; a model differentiating through
+two arguments have no closed-form derivative, so a model differentiating through
 one of them falls back to the difference quotient.
 
 Example in a `.net` file:
