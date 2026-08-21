@@ -18,11 +18,11 @@ Since issue #443 this fixture no longer wedges when it is run as written. Its
 switch thresholds a counter species, bngsim now works out that the counter
 reaches ``sigma`` at t = sigma and stops the step exactly there, and the run
 completes — which is the better fix and is asserted at the bottom of this file.
-So the three tests that need the stall stand the crossing stop down first, by
-emptying the conditions the model derived. That is not an artificial state: it
-is what every model whose crossing time bngsim cannot resolve still looks like —
-a threshold on live state, a residual that is not linear in time — and those are
-the models the bounded retry is there for.
+So the ``stall_model`` fixture stands the crossing stop down, by emptying the
+conditions the model derived. That is not an artificial state: it is what every
+model whose crossing time bngsim cannot resolve still looks like — a threshold on
+live state, a residual that is not linear in time — and those are the models the
+bounded retry is there for.
 """
 
 from __future__ import annotations
