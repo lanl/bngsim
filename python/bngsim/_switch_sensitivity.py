@@ -1499,6 +1499,13 @@ def _switches_on_time_alone(atom: str, scope: SwitchConditionScope) -> bool:
     crosses at a time no one knows in advance; and ``time() < S1`` does not
     either, for the same reason written the other way round.
 
+    A *counter-species* clock — the BNGL idiom of a species fed at rate 1 and
+    read through a group — is excluded too, even though its crossing time is
+    just as knowable (``t_start + threshold − c(t_start)``, the conversion issue
+    #48 already makes). It is the spelling BNGL models actually use, so
+    admitting it moves far more than this does, and it is tracked separately as
+    issue #443.
+
     "Never move" is :attr:`SwitchConditionScope.run_constants` — primary
     parameters, less the slots a model *function* owns, whose value is rewritten
     from the function body before every derivative evaluation and so tracks the
@@ -1633,11 +1640,10 @@ def _schedule_stop_times(
     enumeration read for the far simpler purpose of stopping the step at each
     one.
 
-    Only a schedule over literal simulation time. A counter-species clock is
-    read from live state, and while its crossing time is just as knowable
-    (``t_start + threshold − c(t_start)``, the conversion issue #48 makes), a
-    stop placed from a state value is a different claim about the model than a
-    stop placed from the clock, and this stays with the one the issue is about.
+    Only a schedule over literal simulation time, matching what
+    :func:`_switches_on_time_alone` admits. A counter-species clock is read from
+    live state, which is a different claim about the model, and it is tracked as
+    issue #443.
 
     The chain rule ``_periodic_schedule_terms`` computes is not needed here — a
     stop carries no ``∂t*/∂p`` — so the numbers are read straight through
