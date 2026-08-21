@@ -307,6 +307,61 @@ def test_a_threshold_behind_a_function_call_is_found(tmp_path):
     assert _final_A(path) == pytest.approx(14.0, rel=1e-6)
 
 
+# ── 6. The paths that run on a clone ────────────────────────────────────────
+def test_every_batch_row_stops_at_its_own_crossing(tmp_path):
+    """A batch row integrates a clone carrying that row's parameter point, so
+    each row's crossing is at a different time and each has to be stopped at
+    where it actually is."""
+    path = _net(
+        tmp_path,
+        "if(time()>=onset,k,0)",
+        params=("1 k       0.1  # Constant", "2 onset   100.0  # Constant"),
+    )
+    model = bngsim.Model.from_net(str(path))
+    onsets = [40.0, 100.0, 200.0]
+    results = bngsim.Simulator(model).run_batch(
+        t_span=(0.0, _T_END), n_points=3, params=[{"onset": o} for o in onsets]
+    )
+    for onset, result in zip(onsets, results, strict=True):
+        assert float(result.species[-1][0]) == pytest.approx(0.1 * (_T_END - onset), rel=1e-6)
+
+
+def test_a_crossing_a_parameter_moves_keeps_its_sensitivity_jump(tmp_path):
+    """A stop and an issue #48 switch time can land on the same instant.
+
+    When the threshold is a requested sensitivity parameter, the switch-time
+    machinery already stops there and carries a jump for it. The crossing stop
+    must not pre-empt that stop, or the jump would be keyed on an instant the
+    stop had already consumed. The core drops a crossing stop that a switch has
+    claimed; this is the check that the gradient survives it.
+
+    A(240) is ``k*(240 - onset)``, so ``dA/donset`` is exactly ``-k``.
+    """
+    path = _net(
+        tmp_path,
+        "if(time()>=onset,k,0)",
+        params=("1 k       0.1  # Constant", "2 onset   100.0  # Constant"),
+    )
+    model = bngsim.Model.from_net(str(path))
+    result = bngsim.Simulator(model, sensitivity_params=["onset"]).run(
+        t_span=(0.0, _T_END), n_points=3
+    )
+    assert float(result.species[-1][0]) == pytest.approx(14.0, rel=1e-6)
+    assert float(result.sensitivities[-1][0][0]) == pytest.approx(-0.1, rel=1e-6)
+
+
+def test_a_clone_carries_the_answer_rather_than_rescanning(tmp_path):
+    """The scan is the expensive half and the conditions are text, so they do
+    not depend on any parameter value. A fan-out of clones must not repeat it."""
+    path = _net(tmp_path, _WINDOWS[0][0])
+    model = bngsim.Model.from_net(str(path))
+    conds = model.time_discontinuity_conditions()
+    assert conds
+    clone = model.clone()
+    assert clone._derived_time_disc_conditions is not None
+    assert clone.time_discontinuity_conditions() == conds
+
+
 def test_the_crossing_is_resolved_against_live_parameter_values(tmp_path):
     """Resolution happens per run, not at load: a fitted onset moves the stop.
 
