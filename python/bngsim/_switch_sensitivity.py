@@ -1625,6 +1625,21 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     return tuple(found)
 
 
+# Resolved schedule edge lists, keyed the same way :data:`_CROSSING_CACHE` is:
+# on the condition text, the run window, and the value of every parameter the
+# condition reads once derived names are inlined. Recognizing a schedule and
+# then checking it against the model's own residual is seven sympy round trips,
+# which is 7 ms on a model spelling 38 conditions and is paid on every ``run()``
+# — so a fit paid it on every evaluation. Everything a schedule's answer depends
+# on is in the key, and the parameters a schedule reads (a dose period, a
+# stimulus start) change once per experiment rather than once per evaluation, so
+# the hit rate is close to 1.
+#
+# The cached list is never handed out for mutation: the one caller iterates it.
+_SCHEDULE_CACHE: dict[tuple, list[float] | None] = {}
+_SCHEDULE_CACHE_MAX = 4096
+
+
 def _schedule_stop_times(
     cond: str, scope: SwitchConditionScope, t_start: float, t_end: float
 ) -> list[float] | None:
@@ -1663,8 +1678,37 @@ def _schedule_stop_times(
     # first is the same thing :func:`_crossing_time_of_condition` does with the
     # same text, and it is what lets an SBML model be read at all: without it
     # every registered schedule declines for a reason that is about a paren
-    # rather than about the schedule.
+    # rather than about the schedule. Done before the memo key is built, so two
+    # spellings of one condition share a cache entry.
     atom = _strip_redundant_parens(cond.strip())
+    read = sorted(
+        {
+            m.group(0)
+            for m in _IDENTIFIER.finditer(
+                _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+            )
+            if m.group(0) in scope.param_idx
+        }
+    )
+    key = (
+        atom,
+        t_start,
+        t_end,
+        tuple((n, scope.values[scope.param_idx[n]]) for n in read),
+    )
+    if key in _SCHEDULE_CACHE:
+        return _SCHEDULE_CACHE[key]
+    answer = _resolve_schedule_stop_times(atom, scope, t_start, t_end)
+    if len(_SCHEDULE_CACHE) >= _SCHEDULE_CACHE_MAX:
+        _SCHEDULE_CACHE.clear()
+    _SCHEDULE_CACHE[key] = answer
+    return answer
+
+
+def _resolve_schedule_stop_times(
+    atom: str, scope: SwitchConditionScope, t_start: float, t_end: float
+) -> list[float] | None:
+    """:func:`_schedule_stop_times` without the memo, on an already-unwrapped atom."""
     sched = _clock_periodic_schedule(atom, scope.clock_symbols)
     if sched is None or sched.clock not in _TIME_SYMBOLS:
         return None
@@ -1705,7 +1749,7 @@ def _schedule_stop_times(
             "Periodic schedule %r has more than %d edges between t=%r and t=%r; the "
             "integrator will step over them unclamped and may miss whole windows "
             "(issue #440). Pass max_step to bound the step instead.",
-            cond,
+            atom,
             _SCHEDULE_EDGE_BUDGET,
             t_start,
             t_end,
