@@ -135,13 +135,17 @@ in `CMakeLists.txt`) is derived from it.
   model has the stops without the roots, so the exclusion is now made on the stops
   themselves.
 
-  A BNGL model more often measures time with a counter species than with
-  `time()`, and a rate law that thresholds the counter has the same defect. That
-  is filed as issue #443 rather than fixed here: admitting it moves the stepping
-  of 37 corpus models, and the measurement it needs includes a BioNetGen parity
-  re-run, which matters more there because BioNetGen's own integrator has the
-  same blindness and a reference trajectory may itself have stepped over the
-  switch.
+  Two neighbouring shapes are measured and left alone. A BNGL model more often
+  measures time with a counter species than with `time()`, and a rate law that
+  thresholds the counter has the same defect: that is issue #443, and admitting
+  it moves the stepping of 37 corpus models and needs a BioNetGen parity re-run,
+  which matters more there because BioNetGen's own integrator has the same
+  blindness and a reference trajectory may itself have stepped over the switch.
+  And the schedule enumeration is applied only to conditions bngsim derived
+  itself, never to one an SBML loader registered, which already carries a root
+  and possibly a GH #88 step bound: that is issue #444, and it reaches nine
+  corpus models, two of them oscillatory enough that no oracle at hand separates
+  the two answers.
 
   Corpus census, two arms over the same 1908 models (585 `.net` and 1323 SBML):
   **no model's trajectory moved, no model gained or lost an error, and no model
