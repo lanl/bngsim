@@ -14,47 +14,6 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
-### Fixed
-
-- **A rate law whose derivative keeps a `max()` or a `min()` no longer loses its
-  analytic Jacobian (issue #460).** The interpreted emitter wrote sympy's
-  spelling, `Max(k1, k2)`, and the engine's expression parser is case sensitive,
-  so it answered "Undefined symbol: 'Max'" and the model fell back to the
-  finite-difference Jacobian without saying so.
-
-  `_SYMPY_FUNC_TO_EXPRTK` did map `Min` and `Max` to the engine's names, and
-  those two entries had never once been read. sympy's `Min` and `Max` are not
-  `Function` subclasses, so they never reached the printer's `_print_Function`,
-  and sympy's own `StrPrinter._print_LatticeOp` handled them instead. That
-  method prints the class name. The C emitter was never affected, because it has
-  carried its own `_print_Min` and `_print_Max` all along.
-
-  The same defect cost a second thing. The zero-logarithm guard from issue #333
-  rewrites a rate law by parsing it to sympy and printing it back through this
-  same printer, so a law carrying both a guardable logarithm and a `max()` came
-  back spelled `Max(...)`, the engine refused to install it, and the guard was
-  dropped in silence. Such a law then answers `nan` at zero concentration where
-  it should answer zero, which is the outcome issue #333 exists to prevent.
-
-  Two models in the parity corpus are affected, `ATG_model_v12` and
-  `ATG_model_v16`, and both now attach the analytic Jacobian they were meant to
-  have. Nothing about their runs moves: every solver statistic is identical and
-  the trajectories agree to 2e-12, which is where an exact Jacobian and a
-  difference-quotient one differ inside the corrector. Both models are small, so
-  there is no measurable speed difference either. No model in a 1703 model sweep
-  loses the logarithm guard this way.
-
-  A `max()` over a variable being differentiated is a separate matter and stays
-  refused on purpose, since its derivative is a step.
-
-  Two guards come with it, for the blind spot rather than the instance. Anything
-  else reaching `_print_LatticeOp` is now refused instead of printed under its
-  class name. And the boolean nodes sympy can build but no printer here has a
-  spelling for are refused too. That last one is not a defect anything reaches
-  today, but its cost is different in kind: sympy prints `Xor` infix as `^`,
-  which is legal ExprTk and means exponentiation there, so it would be a wrong
-  number rather than a refusal.
-
 ### Added
 
 - **A model that calls `mratio()` in a rate law now gets an analytic forward
@@ -296,7 +255,305 @@ in `CMakeLists.txt`) is derived from it.
   of bngsim's own files: it is counted under its own kind, `clear` removes it, and
   `prune` removes it exactly when it removes the artifact it describes.
 
+
+- **A rate-law switch condition quadratic in the clock is now compensated at
+  both of its crossings, so its forward-sensitivity run is no longer refused
+  (issue #421).** `if((time()-5)*(time()-5) >= thresh, ...)` is how a model
+  writes a *window*: true early, false through the middle, true again late. Every
+  recogniser before this one could name at most one crossing, so issue #414
+  refused the shape outright. The quadratic formula writes both crossings in
+  closed form, and differentiating a root expression is the implicit function
+  theorem for that residual, so each crossing is an ordinary issue #48 record —
+  evaluate it for `t*`, differentiate it for `∂t*/∂p`. `(time()-5)^2 >= thresh`
+  at `thresh = 9` now stops at t=2 and t=8 with `∂t*/∂thresh` of ∓1/6, and the
+  sensitivity column matches a central finite difference of two trajectories to
+  5e-6 away from the two nodes.
+
+  The recogniser therefore answers with a *list* of thresholds, and an atom is
+  compensated only when every crossing in that list is. Compensating one edge of
+  a window while the other flips the branch unjumped would be a silently wrong
+  gradient, so the gate and the detector read one shared per-crossing rule and
+  refuse the whole atom together.
+
+  A clock threshold cubic or higher stays refused, and not because sympy declines
+  to write its roots down: a cubic with three real roots has none expressible in
+  real radicals, so the closed forms route through complex intermediates that
+  would be read as crossings that never happen — dropping real jumps silently.
+  Those want a numeric root find over the run window, which is different
+  machinery.
+
+- **A clock crossing whose time comes out non-real is read as a crossing that
+  does not happen, instead of an unreadable threshold (issue #421).**
+  `time()*time() >= thresh` at a negative `thresh` is true for the entire run:
+  the branch never flips and `∂f/∂thresh` is a correct clean zero. bngsim refused
+  the run, because the solved crossing time `sqrt(thresh)` did not evaluate to a
+  real number and that was indistinguishable from a threshold it could not read
+  at all. It now tells the two apart and runs. This mattered little while only
+  single powers were solved; with the quadratic formula the discriminant of
+  `(time()-5)^2 >= thresh` goes negative as soon as `thresh` does, so a whole
+  region of parameter space is in this case and a fit could walk into it.
+
+- **`capabilities()` answers behavioural questions, and says which build it is
+  (issue #431).** The report described compiled backends and build options,
+  which is the right answer to "was NFsim linked in?" and the wrong answer to
+  the question a fitting frontend has to settle before it commits to hours of
+  gradient work: does this build compute the thing correctly? Four new keys in
+  `features` answer that one, and a new top-level `build` block says which build
+  is answering.
+
+  A version string could not stand in. bngsim bumps `__version__` at the
+  **start** of a release cycle, so the string identifies a cycle rather than a
+  build, and every from-source build made between the bump and a given fix
+  declares the same number as the release that finally carries it. Nor could a
+  `hasattr` probe: these fixes change what a build *computes*, not what it
+  *exposes*, so nothing in the namespace appears or disappears at any of them.
+  Downstream, PyBNF was reading `features["effective_ic_sensitivity"]` as a
+  **witness** for the event fixes — a key about initial conditions, usable only
+  because issue #155 landed a few commits after them (lanl/PyBNF#605). That is a
+  fact about commit ordering, not about semantics, and it stops being evidence
+  the moment the two are decoupled, silently.
+
+  What makes this expensive rather than untidy is that the two wrong answers are
+  not symmetric. A build without one of these fixes does not *refuse* the case
+  it cannot handle — it returns a finite tensor with a term missing. A consumer
+  that guesses "absent" loses a gradient fit; one that guesses "present" runs to
+  completion, converges, and reports a number with nothing wrong on its face. On
+  0.12.1 a state-reading event assignment reported `-10.96` where the model's own
+  central difference says `-311.20`.
+
+  The keys, all four published on every build so that a `False` is an answer
+  rather than a silence (an absent key means only "too old to have been asked"):
+
+  | key | claims | issue |
+  |---|---|---|
+  | `event_sensitivities` | forward sensitivities survive a discrete event, carrying a state-reading assignment's `∂h/∂x·s⁻` and the sensitivity history across a root that fires nothing | #144, #146 |
+  | `cross_compartment_sensitivities` | a reaction whose species live in compartments of different size keeps the analytic `∂f/∂p` instead of putting every column of the model on difference quotients | #160 |
+  | `per_species_atol` | `Simulator.run(atol=...)` takes a vector | #196 |
+  | `tracking_atol` | `Simulator.run(atol=TrackingAtol(...))` is honoured | #213 |
+
+  Each probe reads the half of the install that can actually be wrong. Three ask
+  the loaded extension for a binding the fix added, because two of these fixes
+  are half C++ and in a source checkout the extension is built separately and
+  does not rebuild on import (issue #23); the fourth reads
+  `BNGSIM_NO_FUNCTIONAL_SENS_RHS`, the A/B hatch that is the only way to turn its
+  behaviour off. `python/tests/test_behaviour_capability_keys.py` measures what
+  each key claims — a closed form across the event, the emitted source for the
+  cross-compartment model, the analytical solution for both tolerances — and
+  asserts the key against the measurement, so a key cannot go on being published
+  after the behaviour it names has gone.
+
+  `capabilities()["build"]` is `{"commit": ..., "stale": ...}`: the commit CMake
+  baked into the extension (`None` when it was built outside a git checkout), and
+  whether that extension is older than the C++ next to it. Two installs
+  declaring one `version` are distinguishable by the commit and by nothing else
+  in the public API. The staleness bit is here because an install reporting
+  `0.12.2` was found whose compiled core predated its own `.cpp` by three days:
+  every version-, metadata- and feature-based check passes there, because nothing
+  in the Python layer moved. bngsim already warns about it at import, which for a
+  consumer package is while that package is still loading, before its logging is
+  configured — so the same signal is now readable at a moment of the consumer's
+  choosing, without importing a private module. Both come from
+  `bngsim._build_provenance.summary()`, which is new and public within that
+  module, and both honour `BNGSIM_NO_BUILD_CHECK` like every other reader there.
+
+  Also fixed while making the contract true in both directions: **`missing`
+  never explained `mir`**. It is `False` on every default build (an off-by-default
+  prototype), so a caller doing the documented thing — read `features[name]`, and
+  on `False` print `missing[name]` — got a `KeyError` instead of a sentence. It
+  now names `-DBNGSIM_ENABLE_MIR=ON` and says that nothing needs it, and a test
+  asserts the two directions symmetrically: every unavailable feature is
+  explained, and every explanation belongs to an unavailable feature.
+
+### Changed
+
+- **The manuscript's eight named BNGL models are generated from their curated
+  `BNGL-Models` records, once, and every suite that runs them reads the same
+  artifact (issue #423).** `suites/ssa_table5` (Table 5, exact Gillespie SSA),
+  `suites/psa` (Table 7, partial-scaling approximation) and `suites/ssa`
+  (cross-engine correctness) each vendored their own pre-generated `.net` files.
+  `tcr_signaling` existed as **three** copies, and the three sets predated
+  `wshlavacek/bngsim-paper#6`'s re-pointing of the manuscript's named models at
+  the house-curated collection. A benchmark re-run would have faithfully
+  re-measured superseded networks and left the manuscript citing files nothing
+  had simulated.
+
+  `benchmarks/models/bngl/curated/` now holds the eight records verbatim,
+  `benchmarks/models/net/curated/` the networks generated from them, and
+  `benchmarks/models/regenerate_curated_nets.py` generates and verifies both
+  against `curated_nets.json`, which pins every upstream and artifact sha256.
+  `--check` regenerates into a temp directory and diffs, so a stale artifact
+  fails rather than being re-measured. Generation strips every action *except*
+  `generate_network`, so a record's own protocol never runs — the horizons stay
+  the manuscript's, which several records disagree with — and keeps
+  `generate_network`'s options, which is what decides the network. All eight
+  are read by `suites/ssa_table5`, five of them by `suites/ssa`, three by
+  `suites/psa`; the byte-identical `models/{bngl,net}/{psa,ssa}` duplicates are
+  removed, and `models/bngl/ssa/` is down to the seven models with no curated
+  record.
+
+  Three networks moved, and the manuscript re-measures those rows:
+
+  | model | was | now | why |
+  |---|---|---|---|
+  | `prion_aggregation` | 104/2809 | **121/3843** | the record raises `max_iter=>150` over BNG's 100-iteration default, so chains reach its own `max_stoich=>{PrP=>120}` cap; the 17 added species are zero-population chain tails, so the event count holds (~605 k at `t_end=10`) and only per-event cost rises (~20 %) |
+  | `samoilov_futile_cycle` | 6/6 | **7/10** | the record is the primary file, external noise driver included |
+  | `gene_expr_3stage` | 6/6 | **4/6** | the superseded copy carried a `Src()` marker and a `$Null()` sink the record does not; dynamics unchanged |
+
+  `tcr_signaling` keeps its 37/97 network but starts from the paper's primed
+  state (~3 % more events); `erk_activation` is a pure relabelling, identical to
+  the event; `gene_expression` and `mckane_predator_prey` are unchanged.
+
+  `gene_bursts` keeps its `Protein=467` seed, but *derived* rather than
+  hand-baked: a model may declare a `relax` step, which generation runs against
+  the record before writing the artifact. It is the one thing generation adds
+  beyond `generate_network`, and two rules keep it from becoming a place to hide
+  hand-tuning. The horizon must be **converged**, so the seed is a steady state
+  — a property of the model — not a point on a transient; `gene_bursts` gives
+  the identical state at 3.6e5, 3.6e6 and 3.6e7 s, where the record's own
+  3.6e4 s stops at `Protein=111.7`, still climbing. And the seeds are **rounded
+  to whole molecules**, because a fractional molecule count is ill-posed for a
+  discrete solver and the engines disagree about it: bngsim and `run_network`
+  round, but RoadRunner's gillespie takes 0.389 literally and walks the species
+  negative — the signature that got Smith2013/474 dropped from the corpus.
+
+  The row measures identically either way (median 923 / mean 930 events at
+  `t_end=3600` over 200 seeds, for this `.net` and the superseded one alike), so
+  the manuscript's B07 number does not move. Without the relaxation it would
+  have: `t_end=3600` is one cell cycle, and from the bare `0/0` seeds the model
+  sits in its basal regime — median 95 events, with **25 of 200 replicates
+  firing nothing**. B07's horizon and its initial state were a matched pair in
+  the superseded actions block (`simulate ode t_end=360000` immediately followed
+  by `simulate ssa t_end=3600`), and the manuscript kept the horizon; keeping
+  half the pair is what would have made the row arbitrary.
+
+  One coverage cell moved with them: the curated Samoilov record's driver step
+  `N + N -> E+ + N` is a repeated reactant, whose converted SBML law `k*N*N` is
+  not the exact propensity `k*N*(N-1)`, so **`samoilov_futile_cycle`/RoadRunner
+  is now N/A** (COPASI derives the combinatorial propensity itself and its cell
+  stands). `convert_all.py` now checks every conversion verdict it computes
+  against the coverage table the orchestrator obeys and exits non-zero if they
+  disagree, so that class of drift cannot go unnoticed again.
+
+- **Table 5's `samoilov_futile_cycle` row runs the curated record's own horizon,
+  `t_end=10` (issue #425).** Re-pointing the row above changed its model and left
+  its horizon alone, so it ran a 7/10 model at `t_end=0.0018` — a value chosen for
+  the 6/6 artifact that had just been replaced. That value does not come from
+  Samoilov et al. (2005) at all: it is the `@SIM` annotation of
+  `benchmarks/models/antimony/ssys/Samoilov2005.ant`, the file the superseded
+  artifact was converted from, which is a deterministic ODE encoding kept in a
+  different corpus as a stiffness pathology case. The record's own protocol runs
+  to `t_end=10` sampled every 0.005 s, reproducing Fig. 3A, so the model and the
+  horizon now come from the same file.
+
+  Two measurements decided it. The model has not started at 0.0018 s: the
+  trajectory is still in the burn-in from the paper's initial condition, with `X*`
+  down only from 2000 to about 1600 molecules against the record's own operating
+  band of 110–286, which it first enters at a median 0.0167 s over 30 seeds. And
+  the cell was timing setup rather than simulation: interleaved against a run of
+  the same model that fires zero events, 91 % of the bngsim wall and 89 % of the
+  `run_network` wall was per-run fixed overhead, which makes it a poor row in a
+  cost table however the modelling question is settled.
+
+  The short horizon was never a cost concession. At `t_end=10` a replicate fires a
+  median 1.36e7 events for 0.46 s of bngsim wall and 1.70 s of `run_network` wall,
+  both far inside the harness's 120 s per-run cap and in the range of the other
+  rows. **This one does move a published number** — B10's cost rises by about four
+  orders of magnitude — where the `gene_bursts` fix above moved none. Coverage is
+  unaffected: the RoadRunner cell is N/A because of the repeated reactant at any
+  horizon, and the record's `_unordered_pair` variant does not rescue it, since it
+  writes the same reaction with the rate constant halved.
+
+  So that a horizon cannot outlive its model again, every BNGL row in
+  `corpus.json` now carries `record_horizon`, the `t_end` of the record's own
+  exact-SSA action. One test reads that value back out of the record and fails if
+  the corpus disagrees; another requires a row running a different horizon to name
+  the record's value in its caveats. Writing the guard turned up two divergences
+  nobody had written down: `gene_expr_3stage` runs 2e8 where its record runs 2.1e8
+  (harmless — the record discards its first 1e7 s as burn-in, so both measure the
+  same window), and `prion_aggregation` runs 300 where its record runs 10, with
+  both files crediting Lin et al. (2019) for their value. The paper settles that
+  one (issue #429): Fig. 7 runs the prion model from 0 to 300 days, so `t_end=300`
+  is the published benchmark horizon, the model's time unit is days, and the
+  record's ten-day run is its own choice, which its protocol note used to credit to
+  Lin. `wshlavacek/BNGL-Models#45` corrected that note and the vendored copy here
+  is the corrected file, so the collection pin moves to `a158912`. **B14's cost
+  does not move**, and neither does the generated network: the upstream fix was
+  comments only, so every `net_sha256` is unchanged and only `source_sha256`
+  moved. Both divergences now say so in the corpus.
+
+- **`ssa_table5`'s `corpus.json` is the corpus SSOT.** Artifacts, horizons and
+  output-point counts were typed out in both `corpus.json` and `_ssa_config.py`;
+  the corpus is not on the timing path, so a horizon edited in one and not the
+  other would have stayed invisible until the manuscript quoted it.
+  `_ssa_config.MODELS` is derived from the corpus and keeps only runner policy
+  (warm-N, cheap→expensive order, coverage). The psa suite's `Nc` sweep is
+  likewise declared once, in `run.POPLEVELS` — its README and emitter documented
+  a 4-value sweep while the runner swept 5.
+
 ### Fixed
+
+- **`CHANGELOG.md`'s `[Unreleased]` had drifted to five subsections (issue
+  #466).** The file's header says it follows Keep a Changelog, which gives each
+  release one of each `###` heading in a fixed order. `[Unreleased]` carried
+  `Added`, `Fixed`, `Added`, `Changed`, `Fixed`, because an entry gets appended
+  under a fresh heading rather than into the existing one and nothing objected.
+  At that point the heading no longer says where to find an entry, and two of the
+  same kind can sit six hundred lines apart.
+
+  Consolidated to `Added`, `Changed`, `Fixed`, with every entry kept in its
+  existing relative order within its kind. The move is content-preserving: the
+  same 1016 lines, and everything below `[Unreleased]` is byte-identical.
+
+  A test now holds the line, because the file has been tidied before and drifted
+  again. It checks `[Unreleased]` for a repeated heading, for a heading outside
+  Keep a Changelog's vocabulary, and for order — each assertion verified to fail
+  on the shape it describes.
+
+  Scoped to `[Unreleased]` on purpose. Five *released* sections carry the same
+  duplication — 0.12.2, 0.11.17, 0.11.7, 0.5.0 and 0.4.0, more than the one the
+  issue reported — and those are frozen history: rewriting them would edit the
+  record of what shipped to fix something nobody reads them for. `[Unreleased]`
+  is the only section anyone still edits, and the one the next release inherits.
+
+- **A rate law whose derivative keeps a `max()` or a `min()` no longer loses its
+  analytic Jacobian (issue #460).** The interpreted emitter wrote sympy's
+  spelling, `Max(k1, k2)`, and the engine's expression parser is case sensitive,
+  so it answered "Undefined symbol: 'Max'" and the model fell back to the
+  finite-difference Jacobian without saying so.
+
+  `_SYMPY_FUNC_TO_EXPRTK` did map `Min` and `Max` to the engine's names, and
+  those two entries had never once been read. sympy's `Min` and `Max` are not
+  `Function` subclasses, so they never reached the printer's `_print_Function`,
+  and sympy's own `StrPrinter._print_LatticeOp` handled them instead. That
+  method prints the class name. The C emitter was never affected, because it has
+  carried its own `_print_Min` and `_print_Max` all along.
+
+  The same defect cost a second thing. The zero-logarithm guard from issue #333
+  rewrites a rate law by parsing it to sympy and printing it back through this
+  same printer, so a law carrying both a guardable logarithm and a `max()` came
+  back spelled `Max(...)`, the engine refused to install it, and the guard was
+  dropped in silence. Such a law then answers `nan` at zero concentration where
+  it should answer zero, which is the outcome issue #333 exists to prevent.
+
+  Two models in the parity corpus are affected, `ATG_model_v12` and
+  `ATG_model_v16`, and both now attach the analytic Jacobian they were meant to
+  have. Nothing about their runs moves: every solver statistic is identical and
+  the trajectories agree to 2e-12, which is where an exact Jacobian and a
+  difference-quotient one differ inside the corrector. Both models are small, so
+  there is no measurable speed difference either. No model in a 1703 model sweep
+  loses the logarithm guard this way.
+
+  A `max()` over a variable being differentiated is a separate matter and stays
+  refused on purpose, since its derivative is a step.
+
+  Two guards come with it, for the blind spot rather than the instance. Anything
+  else reaching `_print_LatticeOp` is now refused instead of printed under its
+  class name. And the boolean nodes sympy can build but no printer here has a
+  spelling for are refused too. That last one is not a defect anything reaches
+  today, but its cost is different in kind: sympy prints `Xor` infix as `^`,
+  which is legal ExprTk and means exponentiation there, so it would be a wrong
+  number rather than a refusal.
+
 
 - **A second build with different options silently changed what
   `scripts/rebuild_editable.py` produced (issue #459).** Every build for one
@@ -862,243 +1119,6 @@ in `CMakeLists.txt`) is derived from it.
   both pinned against the engine itself in `test_builtin_constants.py`, so this
   second copy of the table cannot drift from the C++ one.
 
-### Added
-
-- **A rate-law switch condition quadratic in the clock is now compensated at
-  both of its crossings, so its forward-sensitivity run is no longer refused
-  (issue #421).** `if((time()-5)*(time()-5) >= thresh, ...)` is how a model
-  writes a *window*: true early, false through the middle, true again late. Every
-  recogniser before this one could name at most one crossing, so issue #414
-  refused the shape outright. The quadratic formula writes both crossings in
-  closed form, and differentiating a root expression is the implicit function
-  theorem for that residual, so each crossing is an ordinary issue #48 record —
-  evaluate it for `t*`, differentiate it for `∂t*/∂p`. `(time()-5)^2 >= thresh`
-  at `thresh = 9` now stops at t=2 and t=8 with `∂t*/∂thresh` of ∓1/6, and the
-  sensitivity column matches a central finite difference of two trajectories to
-  5e-6 away from the two nodes.
-
-  The recogniser therefore answers with a *list* of thresholds, and an atom is
-  compensated only when every crossing in that list is. Compensating one edge of
-  a window while the other flips the branch unjumped would be a silently wrong
-  gradient, so the gate and the detector read one shared per-crossing rule and
-  refuse the whole atom together.
-
-  A clock threshold cubic or higher stays refused, and not because sympy declines
-  to write its roots down: a cubic with three real roots has none expressible in
-  real radicals, so the closed forms route through complex intermediates that
-  would be read as crossings that never happen — dropping real jumps silently.
-  Those want a numeric root find over the run window, which is different
-  machinery.
-
-- **A clock crossing whose time comes out non-real is read as a crossing that
-  does not happen, instead of an unreadable threshold (issue #421).**
-  `time()*time() >= thresh` at a negative `thresh` is true for the entire run:
-  the branch never flips and `∂f/∂thresh` is a correct clean zero. bngsim refused
-  the run, because the solved crossing time `sqrt(thresh)` did not evaluate to a
-  real number and that was indistinguishable from a threshold it could not read
-  at all. It now tells the two apart and runs. This mattered little while only
-  single powers were solved; with the quadratic formula the discriminant of
-  `(time()-5)^2 >= thresh` goes negative as soon as `thresh` does, so a whole
-  region of parameter space is in this case and a fit could walk into it.
-
-- **`capabilities()` answers behavioural questions, and says which build it is
-  (issue #431).** The report described compiled backends and build options,
-  which is the right answer to "was NFsim linked in?" and the wrong answer to
-  the question a fitting frontend has to settle before it commits to hours of
-  gradient work: does this build compute the thing correctly? Four new keys in
-  `features` answer that one, and a new top-level `build` block says which build
-  is answering.
-
-  A version string could not stand in. bngsim bumps `__version__` at the
-  **start** of a release cycle, so the string identifies a cycle rather than a
-  build, and every from-source build made between the bump and a given fix
-  declares the same number as the release that finally carries it. Nor could a
-  `hasattr` probe: these fixes change what a build *computes*, not what it
-  *exposes*, so nothing in the namespace appears or disappears at any of them.
-  Downstream, PyBNF was reading `features["effective_ic_sensitivity"]` as a
-  **witness** for the event fixes — a key about initial conditions, usable only
-  because issue #155 landed a few commits after them (lanl/PyBNF#605). That is a
-  fact about commit ordering, not about semantics, and it stops being evidence
-  the moment the two are decoupled, silently.
-
-  What makes this expensive rather than untidy is that the two wrong answers are
-  not symmetric. A build without one of these fixes does not *refuse* the case
-  it cannot handle — it returns a finite tensor with a term missing. A consumer
-  that guesses "absent" loses a gradient fit; one that guesses "present" runs to
-  completion, converges, and reports a number with nothing wrong on its face. On
-  0.12.1 a state-reading event assignment reported `-10.96` where the model's own
-  central difference says `-311.20`.
-
-  The keys, all four published on every build so that a `False` is an answer
-  rather than a silence (an absent key means only "too old to have been asked"):
-
-  | key | claims | issue |
-  |---|---|---|
-  | `event_sensitivities` | forward sensitivities survive a discrete event, carrying a state-reading assignment's `∂h/∂x·s⁻` and the sensitivity history across a root that fires nothing | #144, #146 |
-  | `cross_compartment_sensitivities` | a reaction whose species live in compartments of different size keeps the analytic `∂f/∂p` instead of putting every column of the model on difference quotients | #160 |
-  | `per_species_atol` | `Simulator.run(atol=...)` takes a vector | #196 |
-  | `tracking_atol` | `Simulator.run(atol=TrackingAtol(...))` is honoured | #213 |
-
-  Each probe reads the half of the install that can actually be wrong. Three ask
-  the loaded extension for a binding the fix added, because two of these fixes
-  are half C++ and in a source checkout the extension is built separately and
-  does not rebuild on import (issue #23); the fourth reads
-  `BNGSIM_NO_FUNCTIONAL_SENS_RHS`, the A/B hatch that is the only way to turn its
-  behaviour off. `python/tests/test_behaviour_capability_keys.py` measures what
-  each key claims — a closed form across the event, the emitted source for the
-  cross-compartment model, the analytical solution for both tolerances — and
-  asserts the key against the measurement, so a key cannot go on being published
-  after the behaviour it names has gone.
-
-  `capabilities()["build"]` is `{"commit": ..., "stale": ...}`: the commit CMake
-  baked into the extension (`None` when it was built outside a git checkout), and
-  whether that extension is older than the C++ next to it. Two installs
-  declaring one `version` are distinguishable by the commit and by nothing else
-  in the public API. The staleness bit is here because an install reporting
-  `0.12.2` was found whose compiled core predated its own `.cpp` by three days:
-  every version-, metadata- and feature-based check passes there, because nothing
-  in the Python layer moved. bngsim already warns about it at import, which for a
-  consumer package is while that package is still loading, before its logging is
-  configured — so the same signal is now readable at a moment of the consumer's
-  choosing, without importing a private module. Both come from
-  `bngsim._build_provenance.summary()`, which is new and public within that
-  module, and both honour `BNGSIM_NO_BUILD_CHECK` like every other reader there.
-
-  Also fixed while making the contract true in both directions: **`missing`
-  never explained `mir`**. It is `False` on every default build (an off-by-default
-  prototype), so a caller doing the documented thing — read `features[name]`, and
-  on `False` print `missing[name]` — got a `KeyError` instead of a sentence. It
-  now names `-DBNGSIM_ENABLE_MIR=ON` and says that nothing needs it, and a test
-  asserts the two directions symmetrically: every unavailable feature is
-  explained, and every explanation belongs to an unavailable feature.
-
-### Changed
-
-- **The manuscript's eight named BNGL models are generated from their curated
-  `BNGL-Models` records, once, and every suite that runs them reads the same
-  artifact (issue #423).** `suites/ssa_table5` (Table 5, exact Gillespie SSA),
-  `suites/psa` (Table 7, partial-scaling approximation) and `suites/ssa`
-  (cross-engine correctness) each vendored their own pre-generated `.net` files.
-  `tcr_signaling` existed as **three** copies, and the three sets predated
-  `wshlavacek/bngsim-paper#6`'s re-pointing of the manuscript's named models at
-  the house-curated collection. A benchmark re-run would have faithfully
-  re-measured superseded networks and left the manuscript citing files nothing
-  had simulated.
-
-  `benchmarks/models/bngl/curated/` now holds the eight records verbatim,
-  `benchmarks/models/net/curated/` the networks generated from them, and
-  `benchmarks/models/regenerate_curated_nets.py` generates and verifies both
-  against `curated_nets.json`, which pins every upstream and artifact sha256.
-  `--check` regenerates into a temp directory and diffs, so a stale artifact
-  fails rather than being re-measured. Generation strips every action *except*
-  `generate_network`, so a record's own protocol never runs — the horizons stay
-  the manuscript's, which several records disagree with — and keeps
-  `generate_network`'s options, which is what decides the network. All eight
-  are read by `suites/ssa_table5`, five of them by `suites/ssa`, three by
-  `suites/psa`; the byte-identical `models/{bngl,net}/{psa,ssa}` duplicates are
-  removed, and `models/bngl/ssa/` is down to the seven models with no curated
-  record.
-
-  Three networks moved, and the manuscript re-measures those rows:
-
-  | model | was | now | why |
-  |---|---|---|---|
-  | `prion_aggregation` | 104/2809 | **121/3843** | the record raises `max_iter=>150` over BNG's 100-iteration default, so chains reach its own `max_stoich=>{PrP=>120}` cap; the 17 added species are zero-population chain tails, so the event count holds (~605 k at `t_end=10`) and only per-event cost rises (~20 %) |
-  | `samoilov_futile_cycle` | 6/6 | **7/10** | the record is the primary file, external noise driver included |
-  | `gene_expr_3stage` | 6/6 | **4/6** | the superseded copy carried a `Src()` marker and a `$Null()` sink the record does not; dynamics unchanged |
-
-  `tcr_signaling` keeps its 37/97 network but starts from the paper's primed
-  state (~3 % more events); `erk_activation` is a pure relabelling, identical to
-  the event; `gene_expression` and `mckane_predator_prey` are unchanged.
-
-  `gene_bursts` keeps its `Protein=467` seed, but *derived* rather than
-  hand-baked: a model may declare a `relax` step, which generation runs against
-  the record before writing the artifact. It is the one thing generation adds
-  beyond `generate_network`, and two rules keep it from becoming a place to hide
-  hand-tuning. The horizon must be **converged**, so the seed is a steady state
-  — a property of the model — not a point on a transient; `gene_bursts` gives
-  the identical state at 3.6e5, 3.6e6 and 3.6e7 s, where the record's own
-  3.6e4 s stops at `Protein=111.7`, still climbing. And the seeds are **rounded
-  to whole molecules**, because a fractional molecule count is ill-posed for a
-  discrete solver and the engines disagree about it: bngsim and `run_network`
-  round, but RoadRunner's gillespie takes 0.389 literally and walks the species
-  negative — the signature that got Smith2013/474 dropped from the corpus.
-
-  The row measures identically either way (median 923 / mean 930 events at
-  `t_end=3600` over 200 seeds, for this `.net` and the superseded one alike), so
-  the manuscript's B07 number does not move. Without the relaxation it would
-  have: `t_end=3600` is one cell cycle, and from the bare `0/0` seeds the model
-  sits in its basal regime — median 95 events, with **25 of 200 replicates
-  firing nothing**. B07's horizon and its initial state were a matched pair in
-  the superseded actions block (`simulate ode t_end=360000` immediately followed
-  by `simulate ssa t_end=3600`), and the manuscript kept the horizon; keeping
-  half the pair is what would have made the row arbitrary.
-
-  One coverage cell moved with them: the curated Samoilov record's driver step
-  `N + N -> E+ + N` is a repeated reactant, whose converted SBML law `k*N*N` is
-  not the exact propensity `k*N*(N-1)`, so **`samoilov_futile_cycle`/RoadRunner
-  is now N/A** (COPASI derives the combinatorial propensity itself and its cell
-  stands). `convert_all.py` now checks every conversion verdict it computes
-  against the coverage table the orchestrator obeys and exits non-zero if they
-  disagree, so that class of drift cannot go unnoticed again.
-
-- **Table 5's `samoilov_futile_cycle` row runs the curated record's own horizon,
-  `t_end=10` (issue #425).** Re-pointing the row above changed its model and left
-  its horizon alone, so it ran a 7/10 model at `t_end=0.0018` — a value chosen for
-  the 6/6 artifact that had just been replaced. That value does not come from
-  Samoilov et al. (2005) at all: it is the `@SIM` annotation of
-  `benchmarks/models/antimony/ssys/Samoilov2005.ant`, the file the superseded
-  artifact was converted from, which is a deterministic ODE encoding kept in a
-  different corpus as a stiffness pathology case. The record's own protocol runs
-  to `t_end=10` sampled every 0.005 s, reproducing Fig. 3A, so the model and the
-  horizon now come from the same file.
-
-  Two measurements decided it. The model has not started at 0.0018 s: the
-  trajectory is still in the burn-in from the paper's initial condition, with `X*`
-  down only from 2000 to about 1600 molecules against the record's own operating
-  band of 110–286, which it first enters at a median 0.0167 s over 30 seeds. And
-  the cell was timing setup rather than simulation: interleaved against a run of
-  the same model that fires zero events, 91 % of the bngsim wall and 89 % of the
-  `run_network` wall was per-run fixed overhead, which makes it a poor row in a
-  cost table however the modelling question is settled.
-
-  The short horizon was never a cost concession. At `t_end=10` a replicate fires a
-  median 1.36e7 events for 0.46 s of bngsim wall and 1.70 s of `run_network` wall,
-  both far inside the harness's 120 s per-run cap and in the range of the other
-  rows. **This one does move a published number** — B10's cost rises by about four
-  orders of magnitude — where the `gene_bursts` fix above moved none. Coverage is
-  unaffected: the RoadRunner cell is N/A because of the repeated reactant at any
-  horizon, and the record's `_unordered_pair` variant does not rescue it, since it
-  writes the same reaction with the rate constant halved.
-
-  So that a horizon cannot outlive its model again, every BNGL row in
-  `corpus.json` now carries `record_horizon`, the `t_end` of the record's own
-  exact-SSA action. One test reads that value back out of the record and fails if
-  the corpus disagrees; another requires a row running a different horizon to name
-  the record's value in its caveats. Writing the guard turned up two divergences
-  nobody had written down: `gene_expr_3stage` runs 2e8 where its record runs 2.1e8
-  (harmless — the record discards its first 1e7 s as burn-in, so both measure the
-  same window), and `prion_aggregation` runs 300 where its record runs 10, with
-  both files crediting Lin et al. (2019) for their value. The paper settles that
-  one (issue #429): Fig. 7 runs the prion model from 0 to 300 days, so `t_end=300`
-  is the published benchmark horizon, the model's time unit is days, and the
-  record's ten-day run is its own choice, which its protocol note used to credit to
-  Lin. `wshlavacek/BNGL-Models#45` corrected that note and the vendored copy here
-  is the corrected file, so the collection pin moves to `a158912`. **B14's cost
-  does not move**, and neither does the generated network: the upstream fix was
-  comments only, so every `net_sha256` is unchanged and only `source_sha256`
-  moved. Both divergences now say so in the corpus.
-
-- **`ssa_table5`'s `corpus.json` is the corpus SSOT.** Artifacts, horizons and
-  output-point counts were typed out in both `corpus.json` and `_ssa_config.py`;
-  the corpus is not on the timing path, so a horizon edited in one and not the
-  other would have stayed invisible until the manuscript quoted it.
-  `_ssa_config.MODELS` is derived from the corpus and keeps only runner policy
-  (warm-N, cheap→expensive order, coverage). The psa suite's `Nc` sweep is
-  likewise declared once, in `run.POPLEVELS` — its README and emitter documented
-  a 4-value sweep while the runner swept 5.
-
-### Fixed
 
 - **`test_neither_suite_vendors_a_net_of_its_own` no longer fails on a machine
   that has run the other benchmark suites.** It searched every suite for a
