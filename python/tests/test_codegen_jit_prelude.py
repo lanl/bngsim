@@ -20,6 +20,12 @@ theoretical: the no-observables function-block call args pass ``NULL`` for
 differentiate. Both were unreachable only because ``size_t`` failed first. That
 is what this file guards — the *class*, not the one instance.
 
+The prelude is only half of the deal. ``mir_jit.hpp`` says the other half out
+loud: "M_PI/M_E are still provided by the generated source's own #ifndef/#define
+blocks." Nothing checked that, and the sensitivity source was not doing it (GH
+#470), so :class:`TestEachSourceDefinesTheMathMacrosItUses` checks it here, one
+generated source at a time.
+
 Two levels, because the end-to-end one only bites where the JIT actually runs:
 
 * :class:`TestPreludeSuppliesWhatTheCodegenEmits` compares emitted C against
@@ -33,6 +39,7 @@ Two levels, because the end-to-end one only bites where the JIT actually runs:
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 from pathlib import Path
@@ -152,6 +159,12 @@ def _jit_prelude_text() -> str:
 # Names the generated C can only get from a system header, so every one of them
 # is a candidate #85. Deliberately wider than what is emitted today: the point is
 # to fail the day the codegen starts emitting a *new* one.
+#
+# M_PI and M_E are deliberately NOT here, even though they belong to the same
+# family. This check reads the COMBINED source, which always opens with the RHS,
+# and the RHS always carries a define for both — so listing them here would
+# report every model as covered no matter which piece of the source actually
+# names them. They get their own per-source check further down (GH #470).
 HEADER_NAMES = (
     "size_t",
     "ptrdiff_t",
@@ -177,8 +190,13 @@ HEADER_NAMES = (
 BUNDLED_HEADER = {"size_t": "stddef.h", "ptrdiff_t": "stddef.h"}
 
 
+def _defines(c_source: str, name: str) -> bool:
+    """Whether ``c_source`` carries a ``#define`` for ``name``."""
+    return bool(re.search(rf"^\s*#\s*define\s+{re.escape(name)}\b", c_source, re.M))
+
+
 def _prelude_supplies(prelude: str, name: str) -> bool:
-    if re.search(rf"^\s*#\s*define\s+{re.escape(name)}\b", prelude, re.M):
+    if _defines(prelude, name):
         return True
     if re.search(rf"\btypedef\b[^;\n]*\b{re.escape(name)}\s*;", prelude):
         return True
@@ -225,6 +243,148 @@ class TestPreludeSuppliesWhatTheCodegenEmits:
             f"fixtures cover {sorted(used)}; they are supposed to reach size_t (#198 index "
             f"casts), NULL (no-observables function-block args) and NAN (the #198 "
             f"unsupported-function sentinel)."
+        )
+
+
+# ─── the other half of the contract (GH #470) ───────────────────────────────
+#
+# A rate law written over the engine's ``_pi`` or ``_e`` reaches the generated C
+# as ``M_PI`` / ``M_E``, and ``<math.h>`` is not a dependable place to get either
+# one: MSVC defines neither without ``_USE_MATH_DEFINES``, and glibc hides both
+# in strict C mode. On the JIT path the include is stripped outright, so a
+# ``#define`` in the source is the only supplier there is. Every generated source
+# that means to compile on its own therefore has to define what it uses.
+MATH_H_MACROS = ("M_PI", "M_E")
+
+# A derived rate constant written over both constants. The chain rule for it is
+# what lands in the sensitivity source, so this is the model that puts the two
+# names in *that* source; the RHS reads the finished value out of p[] and names
+# neither.
+DERIVED_CONSTANT = """\
+begin parameters
+    1 k1   0.3  # Constant
+    2 kpe  k1*_pi*_e
+end parameters
+begin species
+    1 A() 10.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 kpe #_R1
+end reactions
+begin groups
+    1 Aobs                    1
+end groups
+"""
+
+# A functional rate law over both constants. The RHS evaluates the function
+# inline, so this is the model that puts the two names in the RHS. It cannot also
+# serve the sensitivity sources: a Functional reaction is exactly what the .net
+# sensitivity path declines, which is why the two fixtures are separate.
+FUNCTIONAL_CONSTANT = """\
+begin parameters
+    1 k1   0.3  # Constant
+end parameters
+begin functions
+    1 kpe() k1*_pi*_e*Aobs
+end functions
+begin species
+    1 A() 10.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 kpe #_R1
+end reactions
+begin groups
+    1 Aobs                    1
+end groups
+"""
+
+# The four generated sources that open with their own ``#include <math.h>``, each
+# paired with a model that reaches it. The Jacobian, the output evaluator and the
+# output-sensitivity block emit no include of their own and only ever compile
+# behind an RHS, so they are outside this contract by construction.
+STANDALONE_SOURCES = [
+    ("generate_rhs_c", FUNCTIONAL_CONSTANT, lambda net, model: cg.generate_rhs_c(str(net))),
+    (
+        "generate_rhs_from_model",
+        FUNCTIONAL_CONSTANT,
+        lambda net, model: cg.generate_rhs_from_model(model),
+    ),
+    (
+        "generate_sens_rhs_c",
+        DERIVED_CONSTANT,
+        lambda net, model: cg.generate_sens_rhs_c(str(net)),
+    ),
+    (
+        "generate_sens_from_model",
+        DERIVED_CONSTANT,
+        lambda net, model: cg.generate_sens_from_model(model),
+    ),
+]
+
+# A source's own guard lines mention a macro without using it. Drop them before
+# asking what the source reads, or a source that defines M_PI and never touches
+# it again would report as using it and the fixture check below would pass on
+# nothing.
+_MACRO_GUARD_LINE = re.compile(
+    r"^[ \t]*#[ \t]*(?:ifndef|define)[ \t]+(?:" + "|".join(MATH_H_MACROS) + r")\b.*$", re.M
+)
+
+
+def _math_macros_used(c_source: str) -> set[str]:
+    return _names_used(_MACRO_GUARD_LINE.sub(" ", c_source), MATH_H_MACROS)
+
+
+class TestEachSourceDefinesTheMathMacrosItUses:
+    """One source at a time, never the combined text.
+
+    The combined source is what hid this: both places that assemble it put the
+    RHS first and append the sensitivity source to it, so the RHS's defines
+    covered the whole translation unit and the sensitivity source was never asked
+    to carry its own. Asking each source on its own is the only form of the
+    question that can fail.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "net_text", "generate"),
+        STANDALONE_SOURCES,
+        ids=[s[0] for s in STANDALONE_SOURCES],
+    )
+    def test_it_defines_every_math_macro_it_uses(self, tmp_path, name, net_text, generate):
+        model = _model(tmp_path, net_text, name="constants.net")
+        c_source = generate(model._net_path, model)
+        assert c_source is not None, f"{name} declined this model, so the case checks nothing"
+        assert "#include <math.h>" in c_source, (
+            f"{name} no longer emits an `#include <math.h>` of its own, so it is a fragment "
+            f"appended to someone else's translation unit rather than a source that stands "
+            f"alone. Take it out of STANDALONE_SOURCES above."
+        )
+        used = _math_macros_used(c_source)
+        assert used == set(MATH_H_MACROS), (
+            f"{name} uses {sorted(used)} on this model, not {sorted(MATH_H_MACROS)}. The case "
+            f"covers less than it claims to — give it a model that reaches both names."
+        )
+        missing = sorted(n for n in used if not _defines(c_source, n))
+        assert not missing, (
+            f"{name} writes {missing} into its own translation unit and defines nothing for "
+            f"it. Today that compiles only because this source is concatenated after the RHS, "
+            f"which does define both. Add the same `#ifndef M_PI` / `#ifndef M_E` block the "
+            f"RHS emitters open with (GH #470)."
+        )
+
+    def test_no_further_standalone_source_has_appeared(self):
+        """The table above is written by hand, so it cannot notice a new source.
+        The emitters can: a source that means to stand on its own writes its own
+        ``#include <math.h>``. Three emitters, four entry points — the two
+        sensitivity generators share ``_emit_sens_rhs_body``."""
+        emitters = len(re.findall(r'_emit\("#include <math\.h>"\)', inspect.getsource(cg)))
+        assert emitters == 3, (
+            f"_codegen.py emits `#include <math.h>` from {emitters} places, not the 3 the "
+            f"table above covers. If a new generated source now stands on its own, give it "
+            f"an entry there and its own M_PI / M_E defines (GH #470). If the three headers "
+            f"were merged into one emitter instead, drop the entries that no longer exist "
+            f"and lower this count."
         )
 
 

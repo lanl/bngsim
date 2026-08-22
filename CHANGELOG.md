@@ -563,6 +563,33 @@ in `CMakeLists.txt`) is derived from it.
   is filed separately because it moves a model from declined to admitted, which
   wants the finite-difference oracle rather than a recogniser unit test.
 
+- **The generated sensitivity source now defines `M_PI` and `M_E` itself (issue
+  #470).** A rate expression written over the engine's `_pi` or `_e` reaches the
+  generated C as `M_PI` or `M_E`. The two right-hand-side sources have always
+  opened with an `#ifndef M_PI` block defining both. The sensitivity source used
+  the names and defined neither.
+
+  Nothing failed. Both places that assemble the C put a right-hand-side source
+  first and append the sensitivity source to it, so the combined translation unit
+  already carried the defines, and the sharded compile copies the header of the
+  combined source into every unit. The sensitivity source simply could not stand
+  on its own.
+
+  It is meant to. `math.h` is not a dependable supplier of either name: MSVC
+  defines neither without `_USE_MATH_DEFINES`, and glibc hides both in strict C
+  mode. On the MIR JIT backend there is no `math.h` at all, because c2mir cannot
+  parse the platform's copy and every `#include <...>` line is stripped before it
+  sees the source. The comment on the JIT prelude in
+  `include/bngsim/mir_jit.hpp` records where the two names come from instead:
+  the generated source's own blocks. Two of the three sources were holding that
+  up. Now all three do.
+
+  The test that guards the prelude gains the other half of the same question, and
+  it has to ask it one source at a time. That test reads the combined source,
+  where the right-hand-side block supplies both names to everything appended
+  after it, so adding `M_PI` and `M_E` to its existing list of names would have
+  passed on every model and caught nothing.
+
 - **`CHANGELOG.md`'s `[Unreleased]` had drifted to five subsections (issue
   #466).** The file's header says it follows Keep a Changelog, which gives each
   release one of each `###` heading in a fixed order. `[Unreleased]` carried

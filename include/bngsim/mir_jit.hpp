@@ -358,7 +358,11 @@ class MirJit {
     // Forward declarations for every libc/libm function the codegen can emit
     // (see _BUILTIN_IDENT_MAP, the ^→pow lowering, the MM sqrt, and ExprTk
     // builtins that pass through to <math.h>). M_PI/M_E are still provided by
-    // the generated source's own #ifndef/#define blocks.
+    // the generated source's own #ifndef/#define blocks: every source carrying
+    // its own #include <math.h> defines both. The sensitivity source did not,
+    // and got away with it only because it is concatenated after an RHS that
+    // does — python/tests/test_codegen_jit_prelude.py now asks each source on
+    // its own (GH #470).
     //
     // Stripping the headers also strips the *types and macros* they define, and
     // the generated source names three of those (GH #85 — a missing one is a
