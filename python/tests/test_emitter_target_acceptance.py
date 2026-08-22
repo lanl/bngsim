@@ -199,6 +199,21 @@ CASES: tuple[Case, ...] = (
         notes="rewritten to and/or/not before printing; nothing prints an ITE",
     ),
     Case(
+        "comparison against a boolean constant",
+        sp.Piecewise((x0, sp.Ne(x1 > 1, sp.false)), (x2, True)),
+        notes="GH #467: a model's own boolean coercion, `(x1>1) != 0`, once the "
+        "other side of the `!=` folds. `Eq` / `Ne` do not simplify against a "
+        "boolean constant the way `And` / `Or` / `Not` do, so the atom reaches "
+        "the printers, and sympy's own spelling for it is `False` — an "
+        "undefined symbol to the engine and to C alike",
+    ),
+    Case(
+        "comparison against the other boolean constant",
+        sp.Piecewise((x0, sp.Ne(x1 > 1, sp.true)), (x2, True)),
+        notes="the same, for the other atom — `(24.0 > 0)` folds to `True` and "
+        "reaches a different printer method",
+    ),
+    Case(
         "two conditions",
         sp.Piecewise((x0, x1 > 1), (x1, x2 > 0), (x2, True)),
         notes="nested, so the second condition is only asked when the first fails",
@@ -528,6 +543,8 @@ CONDITION_TEXTS = (
     "if(x0!=1,k1,0)",
     "if((x0>1)==(x1>1),k1,0)",
     "if((x0>1)!=(x1>1),k1,0)",
+    "if(((x0>1)!=0)!=((x1>1)!=0),k1,0)",
+    "if(((x0>1)!=0)!=((24.0<0)!=0),k1,0)",
     "if((x0>1 and not(x1>1)) or (not(x0>1) and x1>1),k1,0)",
     "if(if(x0>1,1,0)==1,k1,0)",
     "if(x0>1,if(x1>1,k1,0),0)",

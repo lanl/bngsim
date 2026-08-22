@@ -2126,6 +2126,126 @@ class TestTheRemExpansionAgainstAFiniteDifference(TestAPeriodicScheduleAgainstAF
         )
 
 
+# ─── ExprTk's boolean coercion (issue #467) ────────────────────────────────
+#
+# The other spelling of the sign test above. ExprTk has no boolean type — a
+# comparison is worth 1.0 or 0.0 — so a boolean written back into arithmetic
+# comes out as `(X) != 0`, and that is how bngsim's SBML loader lowers MathML's
+# `<xor/>`. BIOMD0000000577 is the corpus model that writes it: its SBML spells
+# `rem(time()-28, 24)` as a piecewise over a `<xor/>` of two comparisons, and the
+# residual below is the loader's own text for it, verbatim.
+
+_XOR_GUARD = "(((((time()-28.0)<0))!=0)!=(((24.0<0))!=0))"
+_XOR_RESIDUAL = (
+    f"if({_XOR_GUARD},"
+    "((time()-28.0)-(24.0*ceil(((time()-28.0)/24.0)))),"
+    "((time()-28.0)-(24.0*floor(((time()-28.0)/24.0)))))"
+)
+_XOR_ATOM = f"{_XOR_RESIDUAL}>=4.0"
+
+#: A model whose only rate law is a given expression, so the *engine* can be
+#: asked what that expression is worth. ExprTk evaluating its own text is the
+#: only oracle for "the model's own arithmetic" that does not go back through
+#: the parse under test.
+_ONE_LAW = """begin parameters
+    1 k1 1.0  # Constant
+end parameters
+begin observables
+    1 Molecules x0 A
+end observables
+begin functions
+    1 law() {body}
+end functions
+begin species
+    1 A() 1.0
+end species
+begin reactions
+    1 1 0 law #_R1
+end reactions
+begin groups
+    1 x0                    1
+end groups
+"""
+
+
+class TestABooleanCoercedToANumberKeepsItsClock:
+    """Issue #467. `(X) != 0` means "X is true" when X is a comparison. sympy
+    reads it as something else: its parser makes `(X)` a `Boolean`, a `Boolean`
+    is never equal to the integer `0`, so `Ne((X), 0)` folds to `True` **whatever
+    X is** — and both sides of the guard fold together, leaving `Ne(True, True)`
+    = `False`. The `if()` collapsed to its else branch before anything looked at
+    it, and the whole sign test disappeared.
+
+    What it cost is a schedule that is right for one half of the run and wrong
+    for the other. `rem` here takes the sign of its numerator, so below `t = 28`
+    the remainder is negative and the condition never holds — while the schedule
+    read off the collapsed atom predicts an on-edge at `28 - 24 + 4 = 8`. A run
+    starting at 0 would get a stop time, and a jump, where the branch does not
+    change.
+
+    :func:`_schedule_matches_residual` is the check that would ordinarily catch a
+    schedule the model does not follow, and it could not see this one twice over:
+    it reaches sympy through the same preparation (GH #108) and inherited the
+    same fold, and its probe points sit a period either side of the *offset*,
+    where this schedule happens to be right.
+    """
+
+    def test_the_guard_keeps_the_clock_it_switches_on(self):
+        """The defect, at the parse. The guard has to come back as a condition
+        that still reads the clock, rather than as a truth value."""
+        import sympy as sp
+        from sympy.parsing.sympy_parser import parse_expr
+
+        text = sw._clock_symbol_sub(_XOR_GUARD, "time()", sw._CLOCK_SOLVE_SYMBOL)
+        cond = parse_expr(cg._preprocess_derived_expr(text))
+        assert isinstance(cond, sp.logic.boolalg.Boolean)
+        assert sp.Symbol(sw._CLOCK_SOLVE_SYMBOL) in cond.free_symbols
+        assert cond is not sp.true and cond is not sp.false
+
+    def test_no_schedule_is_read_off_it(self):
+        """`rem(time()-28, 24)` changes which branch is live at `t = 28`, so no
+        one period, offset and duty describes the window — MODEL1006230027's
+        ground, reached by a different spelling. Before this the recogniser
+        answered `PeriodicSchedule(period='24.0', offset='28.0', duty='4.0')`,
+        which is right above 28 and wrong below it."""
+        clocks = frozenset({"time", "time()"})
+        assert sw._clock_periodic_schedule(_XOR_ATOM, clocks, _scope_over()) is None
+
+    @pytest.mark.parametrize("clock,expected", [(8.0, -24.0), (32.0, 0.0)])
+    def test_the_residual_now_reads_the_models_own_arithmetic(self, tmp_path, clock, expected):
+        """The probe and the recogniser were wrong in the same place, which is the
+        one failure mode a check like this cannot see. `_evaluate_threshold`
+        answered `0.0` at both of these — an edge at `t = 8` that the model does
+        not have, agreeing with the schedule that invented it.
+
+        Held to the engine rather than to a number typed out here: ExprTk
+        evaluating the model's own text is what "the model's own arithmetic"
+        means, and it is the one oracle that does not go back through the parse
+        this issue is about."""
+        import re
+
+        residual = sw._clock_solve_residual(_XOR_ATOM, frozenset({"time", "time()"}))[1]
+        engine = _model(tmp_path, _ONE_LAW.format(body=_XOR_RESIDUAL + "-4.0"))._core
+        assert engine._eval_functions(clock, [1.0])["law"] == pytest.approx(expected)
+
+        text = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(sw._CLOCK_SOLVE_SYMBOL)}(?![A-Za-z0-9_])",
+            f"({clock!r})",
+            sw._CEIL_CALL.sub("ceiling(", residual),
+        )
+        assert sw._evaluate_threshold(text, {}, (), {}) == pytest.approx(expected)
+
+    def test_the_sign_spelling_of_the_same_guard_still_reads_as_a_schedule(self):
+        """The regression guard. Issue #465 reads `if(sign(a)!=sign(b), …)` — the
+        neighbouring spelling, and one whose `!=` has numbers on both sides — and
+        that has to keep answering with the schedule it always did."""
+        clocks = frozenset({"time", "time()"})
+        scope = _scope_over(P=24.0, d=7.0)
+        bare = sw._clock_periodic_schedule("time()-P*floor(time()/P)>=d", clocks, scope)
+        assert bare is not None
+        assert sw._clock_periodic_schedule(f"{_REM_RESIDUAL}>=d", clocks, scope) == bare
+
+
 UNCOMPENSATED = "beta*(I>1)*I"
 
 

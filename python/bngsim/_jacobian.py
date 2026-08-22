@@ -1581,6 +1581,20 @@ def _make_printer():
             lhs, rhs = (self._print(a) for a in expr.args)
             return f"({lhs} {expr.rel_op} {rhs})"
 
+        # ExprTk has no boolean type: a comparison is worth ``1.0`` or ``0.0``,
+        # and these are the constants of that arithmetic. Without a spelling
+        # here sympy's ``StrPrinter`` prints its own — ``True`` / ``False`` —
+        # which the engine rejects as an undefined symbol. They are reachable
+        # from ``Ne(x < 0, False)``, which is what a model's own boolean
+        # coercion parses to once one side of it folds (GH #467): sympy's
+        # ``Eq`` / ``Ne`` do not simplify against a boolean constant the way
+        # ``And`` / ``Or`` / ``Not`` do, so the atom survives to the printer.
+        def _print_BooleanTrue(self, expr):
+            return "1"
+
+        def _print_BooleanFalse(self, expr):
+            return "0"
+
         def _print_And(self, expr):
             return "(" + " and ".join(self._print(a) for a in expr.args) + ")"
 
@@ -1805,6 +1819,14 @@ def _make_c_printer():
             # spelling (GH #310).
             lhs, rhs = (self._print(a) for a in expr.args)
             return f"({lhs} {expr.rel_op} {rhs})"
+
+        # The ExprTk twin's note applies here too (GH #467); C spells a boolean
+        # the same way, as ``1`` and ``0``.
+        def _print_BooleanTrue(self, expr):
+            return "1"
+
+        def _print_BooleanFalse(self, expr):
+            return "0"
 
         def _print_And(self, expr):
             return "(" + " && ".join(self._print(a) for a in expr.args) + ")"
