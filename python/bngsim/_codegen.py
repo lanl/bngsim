@@ -3972,6 +3972,21 @@ def _emit_sens_rhs_body(
     _emit("#include <math.h>")
     _emit("#include <string.h>")
     _emit("")
+    # The same block the two RHS sources open with. A rate constant written over
+    # the engine's _pi or _e reaches this source as M_PI/M_E (see
+    # _BUILTIN_CONSTANT_VALUES), and <math.h> is not a reliable source for
+    # either: MSVC defines neither without _USE_MATH_DEFINES, and glibc hides
+    # both in strict C mode. On the MIR JIT backend every "#include <...>" line
+    # is stripped before c2mir sees the source, so these two defines are the
+    # only place the names come from at all — which is what the prelude comment
+    # in include/bngsim/mir_jit.hpp says is supposed to be happening here.
+    _emit("#ifndef M_PI")
+    _emit("#define M_PI 3.14159265358979323846")
+    _emit("#endif")
+    _emit("#ifndef M_E")
+    _emit("#define M_E 2.71828182845904523536")
+    _emit("#endif")
+    _emit("")
     _emit(f"#define N_SPECIES {n_sp}")
     _emit(f"#define N_PARAMS  {n_params}")
     _emit("")
