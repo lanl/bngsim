@@ -19,6 +19,7 @@ import hashlib
 import itertools
 import json
 import logging
+import operator
 import os
 import platform
 import re
@@ -1863,6 +1864,54 @@ def _is_zero_literal(s: str) -> bool:
         return False
 
 
+#: A numeric literal in the spellings a rate law may carry: ``0``, ``24.0``,
+#: ``.5``, ``1e-3``, with an optional sign. Deliberately not ``float()`` alone,
+#: which also accepts ``inf``, ``nan`` and Python's ``1_0`` — all of which are
+#: identifiers to the engine, so reading one as a number would put a parameter's
+#: name where its value belongs.
+_NUMERIC_LITERAL_RE = re.compile(r"\A[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\Z")
+
+
+def _numeric_literal(s: str) -> float | None:
+    """*s* as a number when it is a bare numeric literal, else ``None``."""
+    s = _strip_outer_parens(s)
+    return float(s) if _NUMERIC_LITERAL_RE.match(s) else None
+
+
+#: The four ordering relationals as Python operators, for deciding a comparison
+#: between two numeric literals without going near a parser.
+_ORDERING_OPS = {
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
+
+
+def _constant_comparison(s: str) -> bool | None:
+    """The truth value of *s* when it compares two numeric literals, else
+    ``None`` (GH #473).
+
+    ``120.0 < 0`` is one, and it is not a test anyone makes at run time: it is
+    what is left of a sign test on a period the model wrote as a number. sympy's
+    parser folds it to ``False`` on sight, which is why :func:`_boolean_zero_test`
+    has to know its value here — by the time the surrounding ``!=`` is built the
+    operand is a boolean constant, and ``Ne`` against one of those is a shape
+    sympy cannot work with at all.
+    """
+    s = _strip_outer_parens(s)
+    spans = _depth0_token_spans(s, _ORDERING_TOKENS)
+    if len(spans) != 1:
+        return None
+    start, end = spans[0]
+    op = _ORDERING_OPS.get(s[start:end])
+    left = _numeric_literal(s[:start])
+    right = _numeric_literal(s[end:])
+    if op is None or left is None or right is None:
+        return None
+    return op(left, right)
+
+
 def _boolean_zero_test(fn: str, left: str, right: str) -> str | None:
     """``X`` for ``X != 0`` and ``Not(X)`` for ``X == 0`` when ``X`` is boolean,
     else ``None`` — leave it to the caller's ``Eq`` / ``Ne`` call form (GH #467).
@@ -1885,14 +1934,32 @@ def _boolean_zero_test(fn: str, left: str, right: str) -> str | None:
     same preparation, so they inherit the fold together — the guard fails in the
     same place as the thing it guards.
 
-    Deliberately narrow. Only a comparison against a literal zero is claimed, and
-    only when the other operand is *syntactically* boolean, so ``p != 0`` on a
-    parameter — where ExprTk's coercion is a real numeric test — keeps the
-    meaning it has always had.
+    The other operand of that ``!=`` gets the same treatment (GH #473). MathML
+    ``<xor/>`` is lowered with the coercion on *both* sides, and when the second
+    one compares two numbers — ``(120.0 < 0) != 0``, the sign of a period the
+    model wrote as a literal — sympy's parser folds it to the boolean constant
+    ``False`` before the outer ``!=`` is built. sympy has no reading for ``Ne``
+    against a boolean constant: it does not simplify, and asking it for the set
+    of clock values where it holds raises, which is what a nested ``if()`` in a
+    condition ends up doing. So the constant is folded here instead, and
+    ``X != False`` becomes ``X`` while ``X != True`` becomes ``Not(X)``.
+
+    Deliberately narrow. Only a literal zero and a comparison between two
+    numeric literals are claimed as the constant, and only when the other
+    operand is *syntactically* boolean, so ``p != 0`` on a parameter — where
+    ExprTk's coercion is a real numeric test — keeps the meaning it has always
+    had.
     """
     for operand, other in ((left, right), (right, left)):
-        if _is_zero_literal(other) and _is_boolean_operand(operand):
+        if not _is_boolean_operand(operand):
+            continue
+        if _is_zero_literal(other):
             return operand if fn == "Ne" else f"Not({operand})"
+        constant = _constant_comparison(other)
+        if constant is None:
+            continue
+        negate = constant if fn == "Ne" else not constant
+        return f"Not({operand})" if negate else operand
     return None
 
 
