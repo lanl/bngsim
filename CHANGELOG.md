@@ -492,6 +492,77 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **ExprTk's `(X) != 0` boolean coercion no longer folds the comparison away
+  (issue #467).** ExprTk has no boolean type: a comparison is worth `1.0` or
+  `0.0`. A tool lowering MathML leans on that when it writes a boolean back into
+  arithmetic, and bngsim's own SBML loader does it for `<xor/>` — which is how
+  the corpus spells the sign test inside libSBML's expansion of `rem(a, b)`.
+
+  Read as an equality against a number, that is not what it means. sympy's
+  parser makes `(X)` a `Boolean`, and a `Boolean` is never equal to the integer
+  `0`, so `Ne((x<0), 0)` folds to `True` **whatever `x` is**. Both operands of
+  `BIOMD0000000577`'s guard folded together, `Ne(True, True)` is `False`, and the
+  `if()` collapsed to its else branch before anything downstream looked at it:
+
+      if( (((time()-28.0)<0))!=0 != ((24.0<0))!=0,
+          (time()-28.0)-24.0*ceil((time()-28.0)/24.0),
+          (time()-28.0)-24.0*floor((time()-28.0)/24.0) ) >= 4.0
+
+  What that cost is a schedule right for half of a run. `_clock_periodic_schedule`
+  read the atom above as `PeriodicSchedule(period='24.0', offset='28.0',
+  duty='4.0')`, which is right above `t = 28` and wrong below it: `rem` here
+  takes the sign of its numerator, so the remainder is negative there and the
+  condition never holds, while the schedule predicts an on-edge at
+  `28 - 24 + 4 = 8`. A run starting at 0 would have got a stop time, and a jump,
+  where the branch does not change.
+
+  `_schedule_matches_residual` is the check that exists to catch a schedule the
+  model does not follow, and it could not see this one. It reaches sympy through
+  the same preparation (GH #108) and inherited the same fold, so it read `0.0` at
+  `t = 8` where the model's own arithmetic gives `-24.0` — the probe and the
+  recogniser agreeing because they were wrong in the same place, which is the one
+  failure mode that check cannot see. (Reading honestly would not have been
+  enough on its own either: its four probe points sit a period either side of the
+  *offset*, where this schedule happens to be right.)
+
+  `(X) != 0` now rewrites to `X`, and `(X) == 0` to `Not(X)`, at the same surface
+  pass that turned `==` / `!=` into `Eq` / `Ne` for issue #335 — the neighbouring
+  case, and for the same reason: keep the operator out of Python's hands. Narrow
+  on purpose. Only a literal zero, and only against an operand that is
+  syntactically a comparison, so `p != 0` on a parameter — where the coercion is
+  a real numeric test — keeps the meaning it has always had. The atom above now
+  declines: its guard changes which branch is live at `t = 28`, so no single
+  period, offset and duty describes the window, which is the ground
+  `MODEL1006230027` was already declined on for issue #465.
+
+  **The other half is what the fold was keeping from the emitters.** A comparison
+  that survives the rewrite can be left facing a boolean *constant* — `(24.0 < 0)`
+  is `False` before sympy ever sees the `!=` — and sympy's `Eq` / `Ne` do not
+  simplify against one the way `And` / `Or` / `Not` do. So `Ne(x < 0, False)`
+  reaches the printers, and sympy's own spelling for that atom is `False`: an
+  undefined symbol to the engine, and a C compile error. Both emitters now spell a
+  boolean constant `1` and `0`, which is what it is worth in either target. Four
+  rows in issue #464's acceptance harness hold it, each asking the engine and the
+  C compiler directly, and each fails on the spelling sympy would have written.
+
+  Latent rather than live, and measured rather than argued. Eleven corpus models
+  carry a MathML `<xor/>`, which is the whole population whose text this rewrite
+  can touch. **No gate verdict moves for any of them**, and every trajectory
+  agrees with the old one to 2.4e-9 of its own scale: the right-hand side is
+  untouched — the engine evaluates the model's own text, which this does not
+  rewrite — so what moves is the analytic Jacobian, and with it the solver's step
+  selection across the jumps these schedules have. (The one relative difference
+  above that sits on an observable worth 2e-12 in a column whose scale is 7e-2,
+  at `t = 96`, i.e. below the run's own `atol`.)
+  Two models lose a schedule neither was using: `BIOMD0000000577`'s is the wrong one
+  above, and `BIOMD0000000808` writes `rem(time(), 120)`, whose guard folded to
+  the branch that happens to be live for a positive clock. Both models decline for
+  other reasons before and after. Issue #473 tracks the widening that would let
+  808 reach its schedule through the honest reading — `time() < 0` is false over a
+  run's clock domain, the same ground `sign(clock) = 1` already stands on — and it
+  is filed separately because it moves a model from declined to admitted, which
+  wants the finite-difference oracle rather than a recogniser unit test.
+
 - **`CHANGELOG.md`'s `[Unreleased]` had drifted to five subsections (issue
   #466).** The file's header says it follows Keep a Changelog, which gives each
   release one of each `###` heading in a fixed order. `[Unreleased]` carried

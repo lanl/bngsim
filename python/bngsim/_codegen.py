@@ -1739,6 +1739,11 @@ def _rewrite_logicals(expr: str) -> str:
     it keeps the operator out of Python's hands and preserves the same tighter-
     than-logical precedence. The four ordering relationals build sympy
     relationals directly and are left untouched.
+
+    One spelling of an equality is not an equality at all. ExprTk has no boolean
+    type, so a boolean written back into arithmetic reads ``(X) != 0``, and
+    :func:`_boolean_zero_test` turns that back into ``X`` — reading it as a
+    comparison against a number is what makes the comparison vanish (GH #467).
     """
     if not _LOGICAL_OR_EQUALITY_PRESENT_RE.search(expr):
         return expr
@@ -1780,6 +1785,117 @@ def _split_equality_depth0(s: str) -> tuple[str, str, str] | None:
     return fn, s[:start], s[end:]
 
 
+# Names the logical rewrite emits whose result is a sympy ``Boolean`` rather than
+# a number. Used to recognize an already-rewritten boolean operand; the ordering
+# relationals are recognized by their operator instead, since ``parse_expr``
+# builds those directly and the rewrite leaves them as written.
+_BOOLEAN_CALL_NAMES = frozenset({"And", "Or", "Not", "Eq", "Ne"})
+
+# The four ordering relationals, longest spelling first so ``<=`` is never read
+# as ``<`` followed by a stray ``=``.
+_ORDERING_TOKENS: tuple[tuple[str, bool], ...] = (
+    ("<=", False),
+    (">=", False),
+    ("<", False),
+    (">", False),
+)
+
+_CALL_HEAD_RE = re.compile(r"\A([A-Za-z_]\w*)\s*\(")
+
+
+def _strip_outer_parens(s: str) -> str:
+    """``s`` with every redundant wrapping ``(...)`` removed.
+
+    ``(((x<0)))`` → ``x<0``. A group that closes before the end — ``(a)+(b)`` —
+    is not a wrapper and is left alone.
+    """
+    s = s.strip()
+    while s.startswith("(") and s.endswith(")"):
+        depth = 0
+        close = -1
+        for pos, c in enumerate(s):
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    close = pos
+                    break
+        if close != len(s) - 1:
+            return s  # unbalanced, or the first group closes early
+        s = s[1:-1].strip()
+    return s
+
+
+def _is_boolean_operand(s: str) -> bool:
+    """Whether the rewritten expression *s* denotes a sympy ``Boolean``.
+
+    True for a bare ordering comparison (``x < 0``) and for a whole-string call
+    to one of the connectives the rewrite emits (``Ne(a, b)``, ``And(...)``).
+    False for everything numeric, including a name — a parameter's *value* may
+    well be 0 or 1, but the expression is not a boolean and must keep its
+    comparison against zero.
+    """
+    s = _strip_outer_parens(s)
+    if not s:
+        return False
+    if _depth0_token_spans(s, _ORDERING_TOKENS):
+        return True
+    m = _CALL_HEAD_RE.match(s)
+    if m is None or m.group(1) not in _BOOLEAN_CALL_NAMES:
+        return False
+    depth = 0
+    for i in range(m.end() - 1, len(s)):
+        if s[i] == "(":
+            depth += 1
+        elif s[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i == len(s) - 1
+    return False
+
+
+def _is_zero_literal(s: str) -> bool:
+    """Whether *s* is a numeric literal equal to zero (``0``, ``0.0``, ``0.``)."""
+    try:
+        return float(_strip_outer_parens(s)) == 0.0
+    except ValueError:
+        return False
+
+
+def _boolean_zero_test(fn: str, left: str, right: str) -> str | None:
+    """``X`` for ``X != 0`` and ``Not(X)`` for ``X == 0`` when ``X`` is boolean,
+    else ``None`` — leave it to the caller's ``Eq`` / ``Ne`` call form (GH #467).
+
+    ExprTk has no boolean type: a comparison evaluates to ``1.0`` or ``0.0``, and
+    anything writing a boolean back into arithmetic leans on that. bngsim's own
+    SBML loader does it for MathML's ``<xor/>``, which is how the corpus spells
+    the sign test inside an expansion of ``rem(a, b)``::
+
+        if( ((a<0))!=0 != ((b<0))!=0, a - b*ceil(a/b), a - b*floor(a/b) )
+
+    Left as an equality against a number, sympy reads that as something else
+    entirely. A ``Boolean`` is never equal to the integer ``0``, so ``Ne(a<0, 0)``
+    folds to ``True`` *whatever* ``a`` is, the sign test disappears, and the
+    ``if()`` collapses to one branch before anything downstream looks at it. Both
+    the recognizer that reads such a condition as a schedule
+    (``_switch_sensitivity._clock_periodic_schedule``) and the probe that checks
+    the schedule against the model's own residual
+    (``_switch_sensitivity._schedule_matches_residual``) reach sympy through this
+    same preparation, so they inherit the fold together — the guard fails in the
+    same place as the thing it guards.
+
+    Deliberately narrow. Only a comparison against a literal zero is claimed, and
+    only when the other operand is *syntactically* boolean, so ``p != 0`` on a
+    parameter — where ExprTk's coercion is a real numeric test — keeps the
+    meaning it has always had.
+    """
+    for operand, other in ((left, right), (right, left)):
+        if _is_zero_literal(other) and _is_boolean_operand(operand):
+            return operand if fn == "Ne" else f"Not({operand})"
+    return None
+
+
 def _rewrite_logicals_checked(s: str, budget: int) -> str:
     if budget <= 0 or not _LOGICAL_OR_EQUALITY_PRESENT_RE.search(s):
         return s
@@ -1803,13 +1919,15 @@ def _rewrite_logicals_checked(s: str, budget: int) -> str:
     rel = _split_equality_depth0(s)
     if rel is not None:
         fn, left, right = rel
-        return (
-            f"{fn}("
-            + _rewrite_logicals_checked(left, budget - 1)
-            + ", "
-            + _rewrite_logicals_checked(right, budget - 1)
-            + ")"
-        )
+        left = _rewrite_logicals_checked(left, budget - 1)
+        right = _rewrite_logicals_checked(right, budget - 1)
+        # ``(X) != 0`` is ExprTk's spelling of the boolean X itself, not a
+        # comparison against a number; reading it as one folds the comparison
+        # away at parse time (GH #467).
+        coerced = _boolean_zero_test(fn, left, right)
+        if coerced is not None:
+            return coerced
+        return f"{fn}({left}, {right})"
     return _rewrite_logicals_in_groups(s, budget)
 
 
@@ -1853,9 +1971,10 @@ def _preprocess_derived_expr(expr: str) -> str:
     The same pipeline ``_jacobian._preprocess_exprtk`` runs for rate laws, minus
     the ``time()`` placeholder (a ConstantExpression is evaluated once, off the
     integration clock): ``if(c,t,f)`` → ``Piecewise``, ``^`` → ``**``,
-    ``not(x)`` → ``Not(x)``, and logical AND / OR → sympy ``And``/``Or`` call
-    form. Anything this pass leaves untranslated makes ``parse_expr`` raise, and
-    the caller then drops the chain rule for that parameter (issue #56).
+    ``not(x)`` → ``Not(x)``, logical AND / OR → sympy ``And``/``Or`` call form,
+    and ExprTk's boolean coercion ``(X) != 0`` → ``X`` (GH #467). Anything this
+    pass leaves untranslated makes ``parse_expr`` raise, and the caller then
+    drops the chain rule for that parameter (issue #56).
     """
     s = _translate_bngl_if_to_piecewise(expr)
     s = s.replace("^", "**")

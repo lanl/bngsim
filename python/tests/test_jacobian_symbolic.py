@@ -358,6 +358,95 @@ class TestEqualityOperators:
             assert J._exprtk_to_sympy(s) is not None, f"emitted {s!r} does not re-parse"
 
 
+class TestBooleanCoercedToANumber:
+    """GH #467. ExprTk has no boolean type — a comparison is worth ``1.0`` or
+    ``0.0`` — so a tool lowering MathML writes a boolean back into arithmetic as
+    ``(X) != 0``. bngsim's own SBML loader does it for ``<xor/>``, which is how
+    the corpus spells the sign test inside libSBML's expansion of ``rem(a, b)``.
+
+    Left as an equality against a number that is *not* what sympy reads. Its
+    parser makes ``(X)`` a ``Boolean``, and a ``Boolean`` is never equal to the
+    integer ``0``, so ``Ne((x<0), 0)`` folds to ``True`` whatever ``x`` is and
+    the comparison disappears before anything downstream looks at it. Rewritten
+    to ``X`` (and ``(X) == 0`` to ``Not(X)``) at the same surface pass that turns
+    ``==`` / ``!=`` into ``Eq`` / ``Ne`` for GH #335 above, which is the
+    neighbouring case.
+    """
+
+    def test_a_relational_compared_to_zero_keeps_its_comparison(self):
+        """The defect itself: before the rewrite this parsed to a bare ``1``,
+        the condition gone and the matched branch left behind."""
+        x = sp.Symbol("x")
+        got = J._exprtk_to_sympy("if(((x<0))!=0,1,2)")
+        assert got == sp.Piecewise((1, x < 0), (2, True))
+        assert got != sp.Integer(1)
+
+    def test_equality_against_zero_negates_the_comparison(self):
+        """``(X) == 0`` is ExprTk for "X is false"; sympy folds ``Not(x<0)`` to
+        the opposite comparison."""
+        x = sp.Symbol("x")
+        assert J._exprtk_to_sympy("if(((x<0))==0,1,2)") == sp.Piecewise((1, x >= 0), (2, True))
+
+    def test_the_xor_expansion_keeps_the_symbol_it_switches_on(self):
+        """BIOMD0000000577's shape, as bngsim's SBML loader writes ``<xor/>``:
+        each operand is boolean-normalised with ``!= 0`` and the pair folded with
+        ``!=``. Both operands folded to ``True`` before the rewrite, so the whole
+        sign test collapsed to ``False`` and the branch was chosen for every
+        ``x``. It has to keep switching on ``x``."""
+        x = sp.Symbol("x")
+        got = J._exprtk_to_sympy("if((((x<0))!=0)!=(((24.0<0))!=0),1,2)")
+        assert x in got.free_symbols
+        assert got.subs(x, -1) == 1 and got.subs(x, 1) == 2
+
+    @pytest.mark.parametrize("text", ["if(p!=0,1,2)", "if(p==0,1,2)"])
+    def test_a_number_compared_to_zero_is_left_alone(self, text):
+        """The rewrite is claimed only for a *syntactically* boolean operand. A
+        parameter's value may well be 0 or 1, but ``p != 0`` there is a real
+        numeric test and keeps the meaning it has always had (GH #335)."""
+        p = sp.Symbol("p")
+        rel = sp.Ne if "!=" in text else sp.Eq
+        assert J._exprtk_to_sympy(text) == sp.Piecewise((1, rel(p, 0)), (2, True))
+
+    def test_a_relational_compared_to_a_non_zero_number_is_left_alone(self):
+        """Only zero. ``(x<0) != 1`` is not a spelling anything writes, and
+        reading it as a negation would be a guess."""
+        assert J._rewrite_logicals("((x<0))!=1") == "Ne(((x<0)), 1)"
+
+    def test_both_targets_spell_the_boolean_constant_they_are_handed(self):
+        """The fold that made the comparison vanish also kept a boolean *atom*
+        away from the printers. It arrives now — ``(24.0<0)`` is ``False`` before
+        sympy sees the ``!=`` — and neither target knows sympy's ``False``."""
+        d = J.differentiate_rate_law(
+            "if((((A<Km))!=0)!=(((24.0<0))!=0), k*A*A, k*A)", {}, {"A"}, {"k", "Km"}
+        )["A"]
+        text = J.sympy_to_exprtk(d)
+        assert text is not None and "False" not in text and "True" not in text
+        assert J._exprtk_to_sympy(text) is not None, f"emitted {text!r} does not re-parse"
+        c = J.sympy_to_c(d, lambda n: {"A": "y[0]", "k": "p[0]", "Km": "p[1]"}.get(n))
+        assert c is not None and "False" not in c and "True" not in c
+
+    def test_derivative_tracks_the_branch_the_coercion_selects(self):
+        """The payoff, against a finite difference of the *plain* spelling of the
+        same law. The oracle cannot be a re-parse of the coerced text: that goes
+        through this very rewrite, so before the fix both sides folded together
+        and agreed on the wrong answer — which is the shape of the whole issue.
+        Held to `if(A<Km, …)` instead, the two spellings have to differentiate
+        alike, and before the fix the coerced one answered `k` on both sides of
+        `Km` because its condition was gone."""
+        coerced = "if((((A<Km))!=0)!=(((24.0<0))!=0), k*A*A, k*A)"
+        plain = "if(A<Km, k*A*A, k*A)"
+        obs, const = {"A"}, {"k", "Km"}
+        terms = J.build_per_observable_terms(coerced, {}, obs, const)
+        assert terms is not None, "boolean-coerced law unexpectedly fell back"
+        varnames = sorted(obs | const) + [_TIME]
+        f = _lambdify(plain, varnames)
+        for A in (1.0, 3.0):  # below Km, then above
+            region = {"A": A, "k": 0.5, "Km": 2.0, _TIME: 0.0}
+            for obs_name, deriv_str in terms:
+                df = _lambdify(deriv_str, varnames)
+                assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
+
+
 class TestBooleanConditionEmission:
     """GH #335 second-order effect. Comparing a 1/0 ``if`` to a constant — a
     common BNGL boolean-coercion idiom, ``if((if(c,1,0)==1) and rest, …)`` — makes
