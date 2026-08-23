@@ -110,6 +110,17 @@ Without them `uv lock` fails with `ModuleNotFoundError: No module named
 'setuptools'`, or with a `CalledProcessError` from `pip install numpy` — neither
 of which names the venv as the missing piece.
 
+**Do not run `uv lock` when you have not changed a dependency.** Bumping the
+version for a release does not need it: edit the `version = "..."` line under
+`[[package]] name = "bngsim"` in `uv.lock` by hand, and confirm with
+`uv lock --check`, which exits 0. Running `uv lock` on an unchanged tree
+rewrites roughly 118 unrelated lines, dropping redundant
+`python_full_version >= '3.11'` markers from inside the `amici` package block.
+That churn is cosmetic — the `amici` gate itself survives, and both forms export
+an identical dependency set — but which form you get depends on your uv version,
+so the file ping-pongs between contributors for no reason. `uv lock --check`
+runs in CI and is tolerant of the difference, so it will not fail on either form.
+
 ### Legacy BioNetGen (BNG2.pl) for `parity_checks/`
 
 bngsim has no BNGL parser, so every BNGL job shells out to BNG2.pl for network

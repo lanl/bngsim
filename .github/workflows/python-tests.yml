@@ -168,6 +168,21 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
+      # `uv sync` below re-resolves instead of installing from the lock when the
+      # lock does not match pyproject.toml, and a re-resolve fetches metadata for
+      # every locked package — including the parity group's git-pinned
+      # PyBioNetGen. The failure then surfaces as a PyBioNetGen build error on a
+      # PR that never touched it (CONTRIBUTING.md says as much). `--check` asserts
+      # the lock is up to date and costs milliseconds, so the real cause is named
+      # here instead of being diagnosed from that misleading error later.
+      #
+      # It is deliberately tolerant of pure formatting differences between uv
+      # versions. uv rewrites redundant dependency markers when it happens to
+      # write the file, but `--check` does not treat that as stale, so this does
+      # not fail on a lock written by a different uv.
+      - name: Assert uv.lock is up to date
+        run: uv lock --check
+
       # No SuiteSparse install step, on any leg — see the header. All three build
       # the pinned KLU subset from source through BNGSIM_KLU_AUTOBUILD, which is
       # what an sdist `pip install` on a bare host does.
