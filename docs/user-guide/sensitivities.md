@@ -87,6 +87,111 @@ gradient: `gradient`, `sse_gradient`, `chi2_gradient` and
 zero, so a fit that never scores that species still gets a number. Weight one and
 the gradient is `NaN`, which is the honest answer.
 
+## Parameters that set *when*, not *how fast*
+
+Some fitted parameters never appear in a rate. They set the **time at which the
+dynamics change** — the onset of an intervention, the start of a dose, the
+moment a promoter flips. BNGL and `.net` models spell this as an `if()` over a
+clock:
+
+```
+begin functions
+    1 rate_X()  if((t>=sigma), k, 0)
+end functions
+```
+
+where `t` is an observable on a unit-rate counter species (`dT/dt = 1`), which
+is how BNG models read simulation time inside a rate law.
+
+`sigma` is reached only through the *condition*, so `∂f/∂sigma` is a clean `0`
+inside each branch — sympy drops the boundary delta when a parameter appears
+nowhere else. A forward sensitivity that used only the variational source term
+would therefore report a flat zero for a parameter the trajectory obviously
+depends on. The whole gradient is a finite jump at the crossing `t*`:
+
+```
+s(t*⁺) = s(t*⁻) + (f⁻ − f⁺) · ∂t*/∂p
+```
+
+BNGsim locates the crossings, computes `∂t*/∂p`, stops the integration *on*
+`t*`, and applies the jump. Nothing needs declaring: `.net` and BNGL models
+register no discontinuity triggers — only the SBML loader does — so the
+conditions are recovered from the function bodies themselves.
+
+```python
+res = sim.run(t_span=(0, 10), n_points=101, sensitivity_params=["sigma", "k"])
+res.sensitivities[:, x_idx, 0]   # ∂X/∂sigma: exactly 0 before t*, −k after
+```
+
+A model with `if()` conditions but **no fitted switch time** yields no records
+at all, and its stepping stays bit-for-bit identical to a run without
+sensitivities.
+
+### Clock forms that are recognised
+
+The crossing has to be solved for from the condition. These forms are handled:
+
+| Condition shape | Example | Notes |
+|---|---|---|
+| Affine in the clock | `t >= sigma` | The common case. `∂t*/∂p = ∂(threshold)/∂p`. |
+| A monomial in the clock | `t^3 >= thresh` | Any degree. `c·clock^n` is monotonic over a non-negative clock, so it crosses once. |
+| A quadratic in the clock | `a*t^2 + b*t >= c` | The first shape with genuinely two crossings, and both are compensated (issue #421). A *general* polynomial of degree 3 or more is declined: a cubic with three real roots has no usable radical form, and from degree 5 there is none at all. |
+| Repeating schedule | `rem(t, P) >= d` | A `floor()`-periodic dosing schedule (issue #436). |
+| libSBML's `rem()` expansion | `if(sign(a)!=sign(b), …)` | libSBML does not emit `rem()`; it expands it into a sign test over two remainders. Read back to the same schedule (issue #465), so a model gets the same gradient whichever tool wrote its SBML. |
+| A guard spelled as a comparison | `(t < 0) == 0` | Resolved the way the equivalent boolean is (issue #473). |
+
+A crossing time that comes out non-real is treated as a crossing that never
+happens, rather than crashing the run.
+
+### Derived switch times
+
+A threshold built from other parameters is chain-ruled to the fitted primaries.
+With `sigma = t0 + t_delta` and `tau1 = sigma + t_delta2`, a `t0` jump is placed
+at **both** the `sigma` and `tau1` crossings, while `t_delta2` gets a jump only
+at `tau1`. A threshold the run never reaches contributes an exactly zero column.
+
+### Two switches at the same instant
+
+When two crossings share an instant, each must be charged only its own jump. The
+before-branch is read with the other switch's threshold bumped away, so a
+coincident pair does not merge into a single doubled jump (issue #375). Models
+with distinct switch times are unaffected and read the plain `f⁻ − f⁺`.
+
+### Landing on the crossing
+
+A discontinuity root alone cannot catch these. CVODE tests for a root only on a
+step it *accepts*, so where the jump is large enough that the error test rejects
+every step containing the crossing, `t` creeps to the last double below `t*` and
+wedges at `t + h == t` without the root ever firing (issue #305). BNGsim
+therefore registers the crossing times as explicit stops, so the integrator
+lands on each one and restarts on the far side. This applies to a rate law
+switching on simulation time (issue #445) and to one switching on a counter
+species (issue #443), where the counter is landed exactly on its threshold so
+the restart reads the after-branch.
+
+These stops are added for any model carrying such a switch, sensitivities or
+not, because stepping over the discontinuity was never correct.
+
+### What is declined
+
+A condition whose crossing time moves with the *state* rather than with a
+parameter is a different problem, and the analytic path declines it rather than
+returning a gradient that silently omits the saltation term. So does a
+conjunction, a negation, and a comparison whose sides are themselves
+comparisons. A parameter that both sets a switch time and acts inside a branch
+is rejected rather than answered with the jump alone.
+
+A decline is never silent. Ask the Simulator directly:
+
+```python
+sim.has_analytic_sens_rhs      # False when the run falls back
+sim.sens_rhs_decline_reason    # why, in words, or None
+```
+
+The fallback is CVODES' own difference quotient, which is correct and slower.
+See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
+for using this to triage a fit.
+
 ## Parallel sensitivity computation
 
 For models with many parameters (Np), computing all sensitivities serially

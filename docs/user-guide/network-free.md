@@ -85,6 +85,58 @@ canonical, dispatch = normalize_method("rm")
 # canonical = "nf_exact", dispatch = "rulemonkey"
 ```
 
+## How a rule's rate is counted
+
+Both network-free engines have to answer the same question before they can fire
+a rule: **how many distinct reactions does this rule represent right now?** Two
+model features make that answer non-obvious, and getting either wrong changes a
+trajectory by an integer factor rather than by a little. Both are settled the
+same way in NFsim and RuleMonkey, so `method="nf"` and `method="rm"` agree.
+
+### The symmetry factor
+
+A reactant pattern with a non-trivial automorphism matches the same reaction
+more than once. `A(b) + A(b) -> A(b!1).A(b!1)` matches each unordered pair of
+molecules twice, once in each order, so a naive count doubles the propensity.
+
+BNG2.pl computes the correction as `1/automorphisms/context-permutations` and
+writes it into the XML as `symmetry_factor`, **independently of the rate law
+type** — a symmetric rule carries `symmetry_factor="0.5"` with `type="Ele"`,
+`type="Function"` and `type="MM"` alike. BNGsim applies it on all of them:
+elementary rate constants, global functions, local functions, function products
+and Michaelis-Menten (issue #195).
+
+For Michaelis-Menten the factor goes on the **substrate count inside the law**,
+not on the finished propensity (issue #282). The factor corrects a match
+multiplicity, so the law is being handed `2N` where `N` exists, and
+`σ·MM(2N, E)` equals `MM(σ·2N, E)` only where the law is linear. Above
+saturation the two placements genuinely differ. Only the substrate needs it: an
+MM rule does not transform its enzyme, and BNG counts reaction-centre
+automorphisms, so an enzyme-side symmetry arrives as `symmetry_factor="1"`.
+
+### Reactant patterns with no reaction centre
+
+A reactant pattern that the rule never modifies is pure *context* — a
+multi-subunit scaffold a rule reads but does not touch. Such a pattern is
+counted **once per complex**, not once per way it embeds into that complex
+(issues #281, #298, #300). Counting embeddings runs a multi-subunit catalyst two
+or three times too fast.
+
+### `TotalRate`
+
+Under `TotalRate` the rate law states the whole propensity of the rule outright.
+There is no match count to correct, so **the symmetry factor is not applied at
+all** (issue #426). Applying it ran a `TotalRate` rule with a symmetric reaction
+centre at half the rate the model asks for.
+
+Two cautions on `TotalRate` generally. BioNetGen does not implement it for
+network simulations — `RxnRule.pm` carries the note that it is implemented only
+for XML network-free output — so `generate_network` writes the rate law into the
+`.net` as an ordinary rate constant and the ODE integrates plain mass action.
+A `TotalRate` model therefore has no BNG2 result to check a network-free run
+against. It is also rejected by BNG2.pl on saturable, Michaelis-Menten, Hill and
+Arrhenius laws, and on local functions.
+
 ### Stateful network-free sessions
 
 For advanced workflows that mutate parameters or live particle counts between
