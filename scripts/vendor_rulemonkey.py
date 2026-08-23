@@ -696,7 +696,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--summary",
         action="store_true",
-        help="Print a no-write summary of the vendoring impact before refreshing.",
+        help="Print a no-write summary of the vendoring impact; write nothing.",
     )
     parser.add_argument(
         "--compare-ref",
@@ -748,7 +748,7 @@ def main() -> int:
                 checkout_info,
             )
             if not args.check:
-                print()
+                return 0
 
         if args.check:
             if differences:
