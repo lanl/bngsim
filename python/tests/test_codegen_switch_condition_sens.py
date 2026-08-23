@@ -2440,6 +2440,261 @@ class TestTheComparisonSpellingAgainstAFiniteDifference(
         )
 
 
+# ─── a derived parameter's own crossing column (issue #475) ────────────────
+#
+# ``sigma = t0 + t_delta`` is how the corpus spells a fitted onset, and four
+# hand-written `.net` models in the benchmark corpus write their switch times
+# that way. Asking for ``sigma`` by name used to give a column that carried the
+# in-branch term and none of the crossing jump.
+
+_DERIVED_ONSET = (
+    "    5 t0      2.0  # Constant\n"
+    "    8 t_delta 1.0  # Constant\n"
+    "    9 sigma   t0+t_delta  # ConstantExpression\n"
+)
+
+
+def _derived_onset_model(tmp_path, name="m.net"):
+    """``SWITCHED`` with its onset ``sigma`` defined as ``t0 + t_delta``."""
+    text = SWITCHED.replace("    5 sigma   3.0  # Constant\n", _DERIVED_ONSET)
+    return _model(tmp_path, text, name=name)
+
+
+class TestADerivedParameterGetsItsOwnCrossingColumn:
+    """Issue #475. A derived parameter is an ordinary sensitivity coordinate in
+    bngsim: its column is the derivative of *writing that slot*, which is what a
+    ``force_override`` pin makes real and what
+    ``bngsim.jax.differentiable_solve(flat=True)`` differentiates over.
+
+    The smooth half of such a column already came out that way, because the
+    emitted right-hand side reads the parameter's own slot. The crossing jump did
+    not: ``_threshold_crossing_terms`` chain-ruled the threshold down to the
+    primaries and the derived name reached no column at all, so the two halves of
+    one column answered different questions and the total was neither. What a
+    caller saw was a column short of exactly its jumps, with nothing said about
+    it.
+    """
+
+    def test_the_derived_name_moves_its_own_crossing(self, tmp_path):
+        """The defect, at the detector. ``sigma`` is the threshold, so writing it
+        moves the crossing one-for-one. Before this the request returned no
+        records at all."""
+        core = _derived_onset_model(tmp_path)._core
+        records, _pinned = sw.compute_switch_time_sens(core, ["sigma"], 0.0, 40.0, True)
+        assert [r.dtstar[0] for r in records] == [1.0]
+
+    def test_the_primaries_underneath_keep_the_column_they_had(self, tmp_path):
+        """The half that already worked, pinned so widening the answer cannot
+        narrow it. ``t0`` and ``t_delta`` reach the threshold through ``sigma``
+        and each moves the crossing one-for-one."""
+        core = _derived_onset_model(tmp_path)._core
+        records, _pinned = sw.compute_switch_time_sens(core, ["t0", "t_delta"], 0.0, 40.0, True)
+        assert [list(r.dtstar) for r in records] == [[1.0, 1.0]]
+
+    def test_asking_for_both_gives_each_its_own(self, tmp_path):
+        """The two are not independent — writing ``t0`` re-derives ``sigma`` —
+        but each column is still the derivative of writing that one slot, and
+        both are 1 here. A caller fitting both at once has a degeneracy to
+        answer for; that is not something this can decide for them."""
+        core = _derived_onset_model(tmp_path)._core
+        records, pinned = sw.compute_switch_time_sens(core, ["t0", "sigma"], 0.0, 40.0, True)
+        assert [list(r.dtstar) for r in records] == [[1.0, 1.0]]
+        assert len(pinned) == 2
+
+    def test_a_derived_name_the_threshold_does_not_reach_gets_nothing(self, tmp_path):
+        """The narrowness guard. ``scale`` is derived and never read by the
+        condition, so its crossing column stays the 0 it should be — the answer
+        is the derivative, not "derived names get a jump"."""
+        text = SWITCHED.replace(
+            "    5 sigma   3.0  # Constant\n",
+            _DERIVED_ONSET + "   10 scale   beta*2.0  # ConstantExpression\n",
+        )
+        core = _model(tmp_path, text)._core
+        records, _pinned = sw.compute_switch_time_sens(core, ["sigma", "scale"], 0.0, 40.0, True)
+        assert [list(r.dtstar) for r in records] == [[1.0, 0.0]]
+
+    def test_it_reaches_through_a_chain_of_derived_parameters(self, tmp_path):
+        """``t0`` here is itself derived, one step further from the threshold
+        than ``sigma`` is — the shape ``m15.bngl.net`` writes, where
+        ``t0 = t0__FREE`` and ``sigma = t0 + t_delta``. The walk has to stop at
+        the name that was asked for and chain-rule through the ones that were
+        not."""
+        text = SWITCHED.replace(
+            "    5 sigma   3.0  # Constant\n",
+            "    5 t0_free 2.0  # Constant\n"
+            "    8 t_delta 1.0  # Constant\n"
+            "    9 t0      t0_free  # ConstantExpression\n"
+            "   10 sigma   t0+t_delta  # ConstantExpression\n",
+        )
+        core = _model(tmp_path, text)._core
+        records, _pinned = sw.compute_switch_time_sens(
+            core, ["t0_free", "t0", "sigma"], 0.0, 40.0, True
+        )
+        assert [list(r.dtstar) for r in records] == [[1.0, 1.0, 1.0]]
+
+    def test_the_derivative_is_the_derived_expression_not_a_flat_one(self, tmp_path):
+        """A column of 1 for everything would pass every test above, so here the
+        threshold is ``2*sigma`` and ``sigma`` is ``t0/4``: the crossing moves by
+        2 per unit of ``sigma`` and by 0.5 per unit of ``t0``."""
+        text = SWITCHED.replace(
+            "    5 sigma   3.0  # Constant\n",
+            "    5 t0      12.0  # Constant\n    8 sigma   t0/4  # ConstantExpression\n",
+        ).replace("if(t>=sigma,beta,0)*I", "if(t>=2*sigma,beta,0)*I")
+        core = _model(tmp_path, text)._core
+        records, _pinned = sw.compute_switch_time_sens(core, ["sigma", "t0"], 0.0, 40.0, True)
+        assert [list(r.dtstar) for r in records] == [[2.0, 0.5]]
+
+    def test_two_spellings_of_one_threshold_stay_one_crossing(self, tmp_path):
+        """The trap this fix had to avoid, pinned as a test.
+
+        A crossing's *identity* is its ∂threshold/∂primary, which is what keeps
+        one threshold gating several rate laws from being jumped several times
+        (issue #375). Here the same instant is written once as ``sigma`` and once
+        as ``t0+t_delta``. If the derived parameter's own partial were let into
+        that identity, only one of the two would carry it, the two would stop
+        looking like the same crossing, and two crossings on one instant go down
+        the issue #375 isolation path — which can refuse a model that has nothing
+        wrong with it."""
+        text = (
+            SWITCHED.replace("    5 sigma   3.0  # Constant\n", _DERIVED_ONSET)
+            .replace(
+                "    1 betaI() if(t>=sigma,beta,0)*I\n",
+                "    1 betaI() if(t>=sigma,beta,0)*I\n    2 other() if(t>=t0+t_delta,gamma,0)\n",
+            )
+            .replace("    2 2 3 gamma #_R2\n", "    2 2 3 other #_R2\n")
+        )
+        core = _model(tmp_path, text)._core
+        records, _pinned = sw.compute_switch_time_sens(core, ["sigma", "t0"], 0.0, 40.0, True)
+        assert len(records) == 1, "two spellings of one threshold must be one crossing"
+        assert list(records[0].dtstar) == [1.0, 1.0]
+
+    def test_the_gate_is_not_asked_a_different_question(self, tmp_path):
+        """What makes a crossing *compensated* is still a question about the
+        primaries alone, so the issue #68 gate and the detector cannot answer
+        differently about a condition because of who asked. The own-terms
+        partials are added after that decision, never before it."""
+        core = _derived_onset_model(tmp_path)._core
+        scope = sw.switch_condition_scope(core)
+        plain = sw._threshold_crossing_terms("sigma", scope)
+        widened = sw._threshold_crossing_terms("sigma", scope, frozenset({"sigma"}))
+        assert plain is not None and widened is not None
+        assert plain.value == widened.value
+        assert plain.partials == {"t0": 1.0, "t_delta": 1.0}
+        assert widened.partials == {"t0": 1.0, "t_delta": 1.0, "sigma": 1.0}
+
+    def test_an_impure_derived_switch_parameter_is_judged_like_the_primary(self, tmp_path):
+        """A derived name is judged for issue #358 purity the same way a primary
+        is, which needed a second look at how that is read.
+
+        ``_condition_only_params`` asks whether a parameter appears outside an
+        ``if()`` condition, and it reads the text with derived references
+        *inlined* — which is exactly what removes a derived name from it. Read
+        that way ``sigma`` looks condition-only however it is used, and on the
+        difference-quotient path that would pin a parameter whose in-branch term
+        is real and hold it at a wrong 0: the failure issue #358 refuses over.
+        Two corpus models write this shape (BIOMD0000000636 and
+        BIOMD0000000808, whose ``ModelValue_30`` is both the duty of its dose
+        schedule and the divisor of the dose rate).
+
+        So the answer has to be the same for ``sigma`` as for the ``t0`` it is
+        built from: accepted where an analytic sensitivity RHS carries the
+        in-branch term, refused where CVODES' difference quotient is all there
+        is."""
+        text = SWITCHED.replace("    5 sigma   3.0  # Constant\n", _DERIVED_ONSET).replace(
+            "if(t>=sigma,beta,0)*I", "if(t>=sigma,sigma*beta,0)*I"
+        )
+        core = _model(tmp_path, text)._core
+        scope = sw.switch_condition_scope(core)
+        assert sw._condition_only_params(core, {"sigma"}, scope.derived_exprs) == set()
+        assert sw._condition_only_params(core, {"t0"}, scope.derived_exprs) == set()
+        for name in ("sigma", "t0"):
+            records, _pinned = sw.compute_switch_time_sens(core, [name], 0.0, 40.0, True)
+            assert [list(r.dtstar) for r in records] == [[1.0]]
+            with pytest.raises(bngsim.SensitivityUnsupportedError):
+                sw.compute_switch_time_sens(core, [name], 0.0, 40.0, False)
+
+    def test_a_pure_derived_switch_parameter_is_still_accepted(self, tmp_path):
+        """The companion. ``sigma`` reaches the rate law only through the
+        condition here, so it is condition-only on either path and the widened
+        reading above must not start refusing it."""
+        core = _derived_onset_model(tmp_path)._core
+        scope = sw.switch_condition_scope(core)
+        assert sw._condition_only_params(core, {"sigma"}, scope.derived_exprs) == {"sigma"}
+        for flag in (True, False):
+            records, _pinned = sw.compute_switch_time_sens(core, ["sigma"], 0.0, 40.0, flag)
+            assert [list(r.dtstar) for r in records] == [[1.0]]
+
+
+class TestADerivedColumnAgainstAFiniteDifference:
+    """The oracle for issue #475, and the only thing that separates a column
+    with its jump from one without.
+
+    ``A`` fills while the schedule is on and drains all the time, so its value at
+    any instant carries every edge that has passed — the issue #436 fixture,
+    reused because a difference of two trajectories has something to compare
+    against only when the edges leave a mark.
+
+    The duty here is a *derived* parameter equal to a primary, so the two columns
+    are the same number computed two different ways: one through the chain rule
+    to the primary, one on the derived name's own terms. Before this fix the
+    second came back short of every jump in the window.
+    """
+
+    #: Schedule fixture with the duty read through a derived parameter.
+    _NET = SCHEDULED.replace(
+        "    2 d        7.0  # Constant\n",
+        "    2 d0       7.0  # Constant\n    6 d        d0*1.0  # ConstantExpression\n",
+    )
+
+    _FD_STEPS = (1e-2, 1e-3, 1e-4, 1e-5)
+
+    def _run(self, tmp_path, name, overrides, sens=None):
+        model = _model(tmp_path, self._NET, name=name)
+        for key, value in overrides.items():
+            model.set_param(key, value)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=sens)
+        # ``max_step`` for the same reason issue #436's oracle needs it: the
+        # right-hand side is constant inside each branch, so the local error
+        # estimate is near zero and an unbounded step spans a whole pulse.
+        return sim.run(
+            sample_times=list(np.arange(0.0, 240.001, 4.0) + 0.37),
+            rtol=1e-11,
+            atol=1e-13,
+            max_step=0.5,
+        )
+
+    @pytest.mark.parametrize("name", ["d", "d0"])
+    def test_the_column_matches_a_central_difference(self, tmp_path, name):
+        analytic = np.asarray(self._run(tmp_path, "an.net", {}, sens=[name]).sensitivities)[
+            :, :, 0
+        ]
+        errors = {}
+        for fraction in self._FD_STEPS:
+            step = 7.0 * fraction
+            up = np.asarray(self._run(tmp_path, "up.net", {name: 7.0 + step}).species)
+            down = np.asarray(self._run(tmp_path, "dn.net", {name: 7.0 - step}).species)
+            fd = (up - down) / (2.0 * step)
+            scale = float(np.max(np.abs(fd)))
+            assert scale > 1e-3, f"the {name} column is too small for the difference to test"
+            errors[fraction] = float(np.max(np.abs(analytic - fd))) / scale
+        # The best of a ladder, never one step: a central difference trades
+        # truncation against cancellation and its best step moves with the
+        # machine (issue #436's CI lesson). A column missing its jumps is wrong
+        # at every step of it.
+        assert min(errors.values()) < 1e-4, (
+            f"the {name} column matches no central difference: "
+            + ", ".join(f"h={f * 7.0:.3g} -> {e:.3e}" for f, e in errors.items())
+        )
+
+    def test_the_two_spellings_agree_column_for_column(self, tmp_path):
+        """``d`` and ``d0`` hold the same number and move the same edges, so the
+        two columns have to be the same array — which is the plainest statement
+        of what was wrong: one of them used to be short of every jump."""
+        derived = np.asarray(self._run(tmp_path, "a.net", {}, sens=["d"]).sensitivities)[:, :, 0]
+        primary = np.asarray(self._run(tmp_path, "b.net", {}, sens=["d0"]).sensitivities)[:, :, 0]
+        assert derived == pytest.approx(primary, rel=1e-9, abs=1e-12)
+
+
 UNCOMPENSATED = "beta*(I>1)*I"
 
 
