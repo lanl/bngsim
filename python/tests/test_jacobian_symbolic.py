@@ -413,9 +413,16 @@ class TestBooleanCoercedToANumber:
         assert J._rewrite_logicals("((x<0))!=1") == "Ne(((x<0)), 1)"
 
     def test_both_targets_spell_the_boolean_constant_they_are_handed(self):
-        """The fold that made the comparison vanish also kept a boolean *atom*
-        away from the printers. It arrives now — ``(24.0<0)`` is ``False`` before
-        sympy sees the ``!=`` — and neither target knows sympy's ``False``."""
+        """Neither target knows sympy's ``False``, so whatever reaches them has to
+        come out as a number.
+
+        GH #473 has since taken this text's own route to a boolean constant away:
+        ``(24.0<0)`` is folded on the way in, so what the printers get here is an
+        ordinary comparison. The emitted text is still checked, because that is
+        the claim a reader of this test cares about, and the printers' own
+        handling of a boolean constant is kept covered by two rows built
+        directly in ``test_emitter_target_acceptance.py`` rather than by a rate
+        law that no longer produces one."""
         d = J.differentiate_rate_law(
             "if((((A<Km))!=0)!=(((24.0<0))!=0), k*A*A, k*A)", {}, {"A"}, {"k", "Km"}
         )["A"]
@@ -424,6 +431,9 @@ class TestBooleanCoercedToANumber:
         assert J._exprtk_to_sympy(text) is not None, f"emitted {text!r} does not re-parse"
         c = J.sympy_to_c(d, lambda n: {"A": "y[0]", "k": "p[0]", "Km": "p[1]"}.get(n))
         assert c is not None and "False" not in c and "True" not in c
+        for node in (sp.Ne(sp.Symbol("A") < sp.Symbol("Km"), sp.false), sp.Ne(sp.true, sp.false)):
+            spelled = J.sympy_to_exprtk(sp.Piecewise((sp.Integer(1), node), (sp.Integer(2), True)))
+            assert spelled is not None and "False" not in spelled and "True" not in spelled
 
     def test_derivative_tracks_the_branch_the_coercion_selects(self):
         """The payoff, against a finite difference of the *plain* spelling of the
@@ -433,6 +443,90 @@ class TestBooleanCoercedToANumber:
         Held to `if(A<Km, …)` instead, the two spellings have to differentiate
         alike, and before the fix the coerced one answered `k` on both sides of
         `Km` because its condition was gone."""
+        coerced = "if((((A<Km))!=0)!=(((24.0<0))!=0), k*A*A, k*A)"
+        plain = "if(A<Km, k*A*A, k*A)"
+        obs, const = {"A"}, {"k", "Km"}
+        terms = J.build_per_observable_terms(coerced, {}, obs, const)
+        assert terms is not None, "boolean-coerced law unexpectedly fell back"
+        varnames = sorted(obs | const) + [_TIME]
+        f = _lambdify(plain, varnames)
+        for A in (1.0, 3.0):  # below Km, then above
+            region = {"A": A, "k": 0.5, "Km": 2.0, _TIME: 0.0}
+            for obs_name, deriv_str in terms:
+                df = _lambdify(deriv_str, varnames)
+                assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
+
+
+class TestAConstantBooleanOperandIsFolded:
+    """GH #473, the other half. GH #467 above reads ``(X) != 0`` as the boolean
+    ``X``. MathML's ``<xor/>`` is lowered with that coercion on *both* sides, and
+    when the second one compares two numbers — ``(120.0 < 0) != 0``, the sign of a
+    period the model wrote as a literal — sympy's parser folds it to the boolean
+    constant ``False`` before the outer ``!=`` is built.
+
+    sympy has no reading for ``Ne`` against a boolean constant. It does not
+    simplify it, and asking it which values satisfy it raises ``TypeError``,
+    which is exactly what building a ``Piecewise`` whose condition holds another
+    ``Piecewise`` ends up asking for. So a rate law spelling a periodic schedule
+    that way did not parse at all and the model kept the finite-difference
+    Jacobian. BIOMD0000000808 is the corpus model.
+
+    The constant is folded on the way in instead: ``X != False`` is ``X`` and
+    ``X != True`` is ``Not(X)``.
+    """
+
+    #: The guard as bngsim's SBML loader writes it, with a literal period.
+    _GUARD = "(((x<0))!=0)!=(((24.0<0))!=0)"
+
+    def test_a_condition_holding_that_guard_parses(self):
+        """The defect, at its smallest. The outer ``if()`` has an ``if()`` in its
+        *condition*, which is what makes sympy ask for the set of ``x`` where the
+        guard holds — and before this it raised there and the whole law was
+        declined."""
+        law = f"if(if({self._GUARD},1.0,2.0)>1.5,k1,0)"
+        assert J._exprtk_to_sympy(law) is not None
+
+    @pytest.mark.parametrize(
+        ("text", "below", "above"),
+        [
+            ("if((((x<0))!=0)!=(((24.0<0))!=0),1,2)", 1, 2),
+            ("if((((x<0))!=0)!=(((24.0>0))!=0),2, 1)", 1, 2),
+            ("if((((x<0))!=0)==(((24.0<0))!=0),2,1)", 1, 2),
+            ("if((((x<0))!=0)==(((24.0>0))!=0),1,2)", 1, 2),
+        ],
+    )
+    def test_the_fold_keeps_the_meaning_of_both_operators(self, text, below, above):
+        """Four combinations, because a fold that flipped a sign would still
+        parse and still look like a condition. Against a constant that is false
+        the comparison survives; against one that is true it is negated; and
+        ``==`` is the opposite of ``!=`` in both. Each law here is written so the
+        answer is ``1`` below zero and ``2`` above it."""
+        x = sp.Symbol("x")
+        got = J._exprtk_to_sympy(text)
+        assert x in got.free_symbols
+        assert got.subs(x, -1.0) == below
+        assert got.subs(x, 1.0) == above
+
+    def test_a_comparison_that_is_not_constant_is_left_alone(self):
+        """Only a comparison between two *literals* is folded, and only when the
+        other operand is boolean. ``p < 0`` on a parameter is a real test whose
+        value is not known here, so the guard keeps both of its halves — and
+        sympy handles that shape perfectly well."""
+        got = J._exprtk_to_sympy("if((((x<0))!=0)!=(((p<0))!=0),1,2)")
+        assert {sp.Symbol("x"), sp.Symbol("p")} <= got.free_symbols
+
+    @pytest.mark.parametrize("text", ["if(p!=0,1,2)", "if(p==0,1,2)"])
+    def test_a_number_compared_to_zero_is_still_left_alone(self, text):
+        """The GH #467 restriction, still in force: a parameter's value may well
+        be 0 or 1, but ``p != 0`` there is a real numeric test."""
+        p = sp.Symbol("p")
+        rel = sp.Ne if "!=" in text else sp.Eq
+        assert J._exprtk_to_sympy(text) == sp.Piecewise((1, rel(p, 0)), (2, True))
+
+    def test_the_derivative_tracks_the_branch_the_guard_selects(self):
+        """The payoff, against a finite difference of the plain spelling of the
+        same law — the same oracle GH #467 uses, for the same reason: a re-parse
+        of the coerced text goes back through the rewrite under test."""
         coerced = "if((((A<Km))!=0)!=(((24.0<0))!=0), k*A*A, k*A)"
         plain = "if(A<Km, k*A*A, k*A)"
         obs, const = {"A"}, {"k", "Km"}

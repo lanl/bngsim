@@ -828,7 +828,9 @@ def _collapse_clock_piecewise(expr, t, scope: SwitchConditionScope | None):
 
     * ``sign(clock)`` is 1, because a simulation clock is positive. The one point
       where it is not is ``t = 0``, and there both remainders are 0, so nothing
-      downstream can see which branch was taken;
+      downstream can see which branch was taken. A guard that spells the same
+      sign test as a comparison — ``clock < 0`` false, ``clock >= 0`` true — is
+      resolved on the same ground and without that caveat (issue #473);
     * what is left must be clock-free. A guard that still reads the clock changes
       which branch is live *partway through the run*, so no single period, offset
       and duty describes the window — MODEL1006230027's shape, and out of scope
@@ -876,6 +878,31 @@ def _guard_holds(cond, t, scope: SwitchConditionScope | None) -> bool | None:
     # A simulation clock is positive, so `sign(clock)` is 1. Applied before the
     # clock-free test below, which is what lets the sign test resolve at all.
     cond = cond.replace(sp.sign(t), sp.Integer(1))
+    # The same fact, for a guard that spells the sign test as a comparison rather
+    # than as a call (issue #473). A run's clock domain is `[0, inf)`, so
+    # `clock < 0` is false and `clock >= 0` is true for the whole of it. Both are
+    # exact in a way `sign(clock) = 1` is not: they hold at `t = 0` too, so
+    # neither carries the single-instant caveat written up on
+    # :func:`_clock_guard_cannot_cross`.
+    #
+    # Only those two, on purpose. `clock > 0` and `clock <= 0` say the same thing
+    # everywhere except at `t = 0`, where they are wrong, and what excuses the
+    # `sign(0) = 0` caveat is an argument about the shape of libSBML's remainder
+    # expansion — both of its branches are equal at 0 — not about clock guards in
+    # general. Nothing here can check that for an arbitrary guard, so those two
+    # keep declining.
+    #
+    # Collected from the relationals actually present rather than substituted by
+    # a literal key, because `clock < 0` and `clock < 0.0` are different sympy
+    # expressions and the corpus writes both. sympy puts the clock on the left
+    # for either way round, so `0 > clock` arrives here as `clock < 0`.
+    zero_tests = {
+        rel: (sp.false if isinstance(rel, sp.StrictLessThan) else sp.true)
+        for rel in cond.atoms(sp.StrictLessThan, sp.GreaterThan)
+        if rel.lhs == t and rel.rhs.is_zero
+    }
+    if zero_tests:
+        cond = cond.subs(zero_tests)
     if t in cond.free_symbols:
         return None  # the live branch changes partway through the run
     if cond is sp.true:
@@ -899,8 +926,9 @@ def _guard_holds(cond, t, scope: SwitchConditionScope | None) -> bool | None:
 
 
 def _clock_guard_cannot_cross(atom: str, scope: SwitchConditionScope) -> bool:
-    """True when *atom* reads the clock only through ``sign()``, and so holds one
-    truth value for the whole run (issue #465).
+    """True when *atom* reads the clock only in ways that hold one truth value
+    for the whole run — through ``sign()`` (issue #465), or as a comparison
+    against zero (issue #473).
 
     The companion to :func:`_collapse_clock_piecewise`. libSBML's expansion of
     ``rem(a, b)`` puts an ``if()`` inside the condition, and
@@ -921,21 +949,22 @@ def _clock_guard_cannot_cross(atom: str, scope: SwitchConditionScope) -> bool:
     value-dependent already and is what the digest carries.
 
     Deliberately narrow. Only an atom that *reads the clock* and stops reading it
-    once ``sign(clock)`` is resolved is claimed here, so ``time() >= sigma`` —
-    whose clock survives the substitution — is left to the recognizers exactly as
-    before, and an atom with no clock in it at all is left to
+    once :func:`_guard_holds` has made its substitutions is claimed here, so
+    ``time() >= sigma`` — whose clock survives them — is left to the recognizers
+    exactly as before, and an atom with no clock in it at all is left to
     :func:`condition_cannot_cross`. Widening it to those would admit a derived
     parameter that function deliberately refuses, which is a different question
     from this one.
 
-    The one instant the substitution is wrong about is ``t = 0``, where
-    ``sign(0)`` is 0. For the expansion this exists to read, both branches are
-    equal there — a remainder is 0 at 0 either way — so nothing downstream can
-    see it. A guard whose branches genuinely differ at exactly the run's first
-    instant would be read as not crossing when it does; no corpus model writes
-    one, and the schedule the guard sits inside is checked against the model's
-    own residual afterwards regardless
-    (:func:`_schedule_matches_residual`).
+    The one instant the ``sign()`` substitution is wrong about is ``t = 0``,
+    where ``sign(0)`` is 0. For the expansion this exists to read, both branches
+    are equal there — a remainder is 0 at 0 either way — so nothing downstream
+    can see it. A guard whose branches genuinely differ at exactly the run's
+    first instant would be read as not crossing when it does; no corpus model
+    writes one, and the schedule the guard sits inside is checked against the
+    model's own residual afterwards regardless
+    (:func:`_schedule_matches_residual`). The comparison spelling carries no such
+    caveat, which is why only the two exact ones are claimed there.
     """
     if _clock_free(atom, scope.clock_symbols):
         return False  # not a clock atom; condition_cannot_cross judges it

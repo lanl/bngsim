@@ -492,6 +492,67 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A clock guard written as a comparison is now resolved the way one written
+  with `sign()` already was (issue #473).** `_guard_holds` knew that a
+  simulation clock is positive, but only through `sign()`: it replaced
+  `sign(clock)` with `1` and required what was left to be free of the clock,
+  which is what let issue #465 read libSBML's expansion of `rem(a, b)` as the
+  repeating schedule behind it.
+
+  A comparison says the same thing and was not read. `time() < 0` is false for
+  the whole of a run's clock domain and `time() >= 0` is true, so a guard
+  spelled either way picks its branch before the first step and holds it to the
+  last. Neither resolved, so the clock stayed in the guard's free symbols and
+  the schedule around it was declined. That is the `<xor/>` spelling of the same
+  expansion: ExprTk has no boolean type, so bngsim's SBML loader lowers MathML
+  `<xor/>` to `(A)!=0 != (B)!=0`, and for `rem(time(), P)` the sign test comes
+  out as a comparison rather than as a call. `BIOMD0000000808` writes it:
+
+      if( (((time()<0))!=0) != (((120.0<0))!=0),
+          time()-120.0*ceil(time()/120.0),
+          time()-120.0*floor(time()/120.0) ) >= 0.0
+
+  So `clock < 0` now resolves to false and `clock >= 0` to true, next to the
+  `sign(clock)` substitution and on the same ground. Those two only. `clock > 0`
+  and `clock <= 0` say the same thing everywhere except at `t = 0`, where they
+  are wrong, and the one-instant caveat that excuses `sign(0) = 0` is an
+  argument about the shape of a remainder — both of its branches are equal at 0
+  — not about clock guards in general, so those keep declining. Both spellings
+  of zero are matched, because `clock < 0` and `clock < 0.0` are different sympy
+  expressions and the corpus writes both.
+
+  **Reading the guard was not enough on its own.** With the period written as a
+  number, the second half of the guard compares two literals, and sympy's parser
+  folds that to the boolean constant `False` before the outer `!=` is built.
+  sympy has no reading for `Ne` against a boolean constant: it does not simplify
+  it, and asking which clock values satisfy it raises outright, which is what
+  building a `Piecewise` whose condition holds another `Piecewise` ends up
+  asking. The rate law did not parse at all, so the model kept the difference
+  quotient however well its schedule was read. The constant is now folded on the
+  way in, at the same surface pass that reads `(X) != 0` as `X` for issue #467:
+  `X != False` is `X` and `X != True` is `Not(X)`. Still narrow — only a
+  comparison between two numeric literals counts as the constant, so `p != 0` on
+  a parameter and `(x<0) != (p<0)` both keep the meaning they have always had.
+
+  Census over the whole corpus, 1323 SBML models and 585 `.net` files, two arms
+  differing by exactly this change: four models move from declined to admitted
+  (`BIOMD0000000808`, `BIOMD0000000858`, `BIOMD0000000859`, `BIOMD0000001005`),
+  none moves the other way, no model that was already admitted changes the edges
+  it places, and no model gains an error. `BIOMD0000000808` is the one whose
+  edges actually move with a parameter — 144 of them in its own run window — and
+  the column for the parameter that moves them (`S_interval`, the length of each
+  infusion) matches a central difference of two trajectories to 1.2e-6 of the
+  difference's own scale, where before the whole model refused forward
+  sensitivity outright. The other three write a schedule built entirely from
+  literals, so their edges are fixed and their `dt*/dp` is exactly zero.
+
+  Checking that gradient turned up a separate defect, filed as issue #475 and not
+  fixed here: a schedule threshold written as a *derived* parameter gets a
+  sensitivity column of exactly zero, because the crossing records are emitted
+  for the primary parameter and not for the derived name. It reproduces on the
+  plain `floor()` schedule issue #436 shipped and has nothing to do with how the
+  guard is spelled.
+
 - **ExprTk's `(X) != 0` boolean coercion no longer folds the comparison away
   (issue #467).** ExprTk has no boolean type: a comparison is worth `1.0` or
   `0.0`. A tool lowering MathML leans on that when it writes a boolean back into

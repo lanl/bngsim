@@ -2246,6 +2246,200 @@ class TestABooleanCoercedToANumberKeepsItsClock:
         assert sw._clock_periodic_schedule(f"{_REM_RESIDUAL}>=d", clocks, scope) == bare
 
 
+# ─── the same guard spelled as a comparison (issue #473) ───────────────────
+#
+# The third spelling of the sign test, and the one BIOMD0000000808 carries. The
+# guard says the same thing as `sign(time()) != sign(P)` — is the clock the same
+# sign as the period — but it says it with a comparison against zero instead of
+# with a call, which is what MathML's `<xor/>` reduces to once both of its
+# operands are read as the booleans they are (issue #467).
+
+_CMP_GUARD = "(((time()<0))!=0)!=(((P<0))!=0)"
+_CMP_RESIDUAL = f"if({_CMP_GUARD},time()-P*ceil(time()/P),time()-P*floor(time()/P))"
+_CMP_LAW = f"if({_CMP_RESIDUAL}>=d,kin,0)"
+
+#: The same guard with the period written as a number, which is how the corpus
+#: model writes it — BIOMD0000000808 spells `rem(time(), 120)` — so the second
+#: comparison has literals on both sides and is a constant before the outer `!=`
+#: is built. The period here is 24 to match the fixture's other spellings.
+_CMP_LITERAL_GUARD = "(((time()<0))!=0)!=(((24.0<0))!=0)"
+_CMP_LITERAL_RESIDUAL = (
+    f"if({_CMP_LITERAL_GUARD},time()-24.0*ceil(time()/24.0),time()-24.0*floor(time()/24.0))"
+)
+_CMP_LITERAL_LAW = f"if({_CMP_LITERAL_RESIDUAL}>=d,kin,0)"
+
+
+class TestAClockGuardSpelledAsAComparison:
+    """Issue #473. `_guard_holds` knew a run's clock is positive, but only
+    through `sign()`: it replaced `sign(clock)` with 1 and required what was left
+    to be clock-free, which is what lets issue #465 read libSBML's expansion of
+    `rem(a, b)` as the schedule behind it.
+
+    A comparison says the same thing. `time() < 0` is false for the whole of a
+    run's clock domain and `time() >= 0` is true, so a guard written either way
+    picks its branch before the first step and holds it to the last. Neither
+    resolved, so the clock stayed in the guard's free symbols, `_guard_holds`
+    answered "not decidable", and the schedule around it was declined.
+
+    Which cost the same thing issue #465 set out to stop costing: the gradient a
+    model gets depended on which spelling of one sign test its SBML happened to
+    carry.
+    """
+
+    def test_it_reads_as_the_same_schedule_the_other_two_spellings_do(self):
+        """The whole claim. These are one 24-hour schedule written three ways —
+        the remainder written out, the sign test as a call, the sign test as a
+        comparison — and all three have to come back as the same period, offset
+        and duty."""
+        clocks = frozenset({"time", "time()"})
+        scope = _scope_over(P=24.0, d=7.0)
+        bare = sw._clock_periodic_schedule("time()-P*floor(time()/P)>=d", clocks, scope)
+        assert bare is not None
+        assert sw._clock_periodic_schedule(f"{_REM_RESIDUAL}>=d", clocks, scope) == bare
+        assert sw._clock_periodic_schedule(f"{_CMP_RESIDUAL}>=d", clocks, scope) == bare
+
+    @pytest.mark.parametrize(
+        ("guard", "period"),
+        [
+            ("time()<0", "P"),
+            ("time()<0.0", "P"),
+            ("0>time()", "P"),
+            ("time()>=0", "-P"),
+            ("time()>=0.0", "-P"),
+            ("0<=time()", "-P"),
+            ("not(time()<0)", "-P"),
+        ],
+    )
+    def test_the_two_exact_comparisons_resolve_either_way_round(self, guard, period):
+        """`time() < 0` is false on the whole clock domain and `time() >= 0` is
+        true, so each picks one branch of the remainder: the `floor` one, whose
+        period is `P`, or the `ceil` one, whose period is `-P`. Sympy writes a
+        reversed comparison and a negated one in the same two canonical forms, so
+        those come along for free.
+
+        `0` and `0.0` are both here because they are *different* sympy
+        expressions and the corpus writes both: BIOMD0000000808 writes the
+        integer and BIOMD0000001005 the float. Matching one spelling and not the
+        other left the second model declined, which is what the corpus sweep for
+        this change caught."""
+        clocks = frozenset({"time", "time()"})
+        atom = f"if({guard},time()-P*ceil(time()/P),time()-P*floor(time()/P))>=d"
+        sched = sw._clock_periodic_schedule(atom, clocks, _scope_over(P=24.0, d=7.0))
+        assert sched is not None and sched.period == period
+
+    @pytest.mark.parametrize("guard", ["time()>0", "time()<=0"])
+    def test_the_two_inexact_comparisons_are_left_declining(self, guard):
+        """The scope decision, pinned. `time() > 0` and `time() <= 0` say the same
+        thing as the pair above everywhere except at `t = 0`, where they are
+        wrong — and unlike `sign(0) = 0`, whose one-instant caveat is excused by
+        both branches of a remainder being equal at 0, nothing here can check
+        whether the branches a general guard chooses between agree there. So they
+        keep declining rather than resolve on an argument that does not carry."""
+        clocks = frozenset({"time", "time()"})
+        atom = f"if({guard},time()-P*ceil(time()/P),time()-P*floor(time()/P))>=d"
+        assert sw._clock_periodic_schedule(atom, clocks, _scope_over(P=24.0, d=7.0)) is None
+
+    def test_a_negative_period_takes_the_other_branch(self):
+        """The guard is resolved against the parameter point, not assumed away.
+        At `P = -24` the two comparisons disagree, the `ceil` branch is live, and
+        the recognised period is `-P`. Both spellings describe a 24-hour cycle;
+        which branch carries it depends on a value."""
+        clocks = frozenset({"time", "time()"})
+        sched = sw._clock_periodic_schedule(
+            f"{_CMP_RESIDUAL}>=d", clocks, _scope_over(P=-24.0, d=7.0)
+        )
+        assert sched is not None and sched.period == "-P"
+
+    def test_a_guard_that_shifts_the_clock_is_still_declined(self):
+        """The companion that keeps this narrow. BIOMD0000000577 writes
+        `rem(time()-28, 24)`, whose guard is `time() - 28 < 0` — true below 28 and
+        false above it, so which branch is live really does change partway
+        through the run and no one period, offset and duty describes the window.
+        Only a comparison of the bare clock against zero is claimed."""
+        clocks = frozenset({"time", "time()"})
+        assert sw._clock_periodic_schedule(_XOR_ATOM, clocks, _scope_over()) is None
+
+    def test_the_inner_guard_is_not_judged_as_a_crossing_of_its_own(self, tmp_path):
+        """`_iter_condition_atoms` descends into an `if()`'s condition, so the
+        guard arrives as an atom in its own right and used to refuse the model on
+        its own. It holds one truth value for the whole run, so it is not a
+        crossing — the same ground issue #465 established for the `sign()`
+        spelling, reached by a comparison instead of by a call."""
+        core = _model(tmp_path, _with_dose(_CMP_LAW))._core
+        scope = sw.switch_condition_scope(core)
+        assert sw.clock_crossing_compensated(_CMP_GUARD, scope)
+
+    def test_the_gate_admits_it(self, tmp_path):
+        core = _model(tmp_path, _with_dose(_CMP_LAW))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, f"the comparison spelling must be admitted, got: {reason}"
+
+    def test_a_period_written_as_a_number_is_admitted_too(self, tmp_path):
+        """The corpus model's own shape. With the period a literal, the second
+        comparison of the guard has numbers on both sides and sympy folds it to a
+        boolean constant on sight — and `Ne` against one of those is a shape
+        sympy cannot work with, so the rate law did not even parse. That half is
+        pinned in ``test_jacobian_symbolic.py``'s
+        ``TestAConstantBooleanOperandIsFolded``."""
+        core = _model(tmp_path, _with_dose(_CMP_LITERAL_LAW))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, f"the literal-period spelling must be admitted, got: {reason}"
+
+    def test_it_places_exactly_the_edges_the_bare_spelling_does(self, tmp_path):
+        """End to end, and the assertion that matters most: the same model
+        written the two ways has to produce the same stop times and the same
+        ``∂t*/∂p``, down to the last edge in the window."""
+        got = {}
+        for label, law in (("bare", _BARE_LAW), ("cmp", _CMP_LAW)):
+            core = _model(tmp_path, _with_dose(law), name=f"{label}.net")._core
+            records, pinned = sw.compute_switch_time_sens(
+                core, ["P", "d"], 0.0, 100.0, has_analytic_sens_rhs=True
+            )
+            got[label] = (
+                [r.t_star for r in records],
+                [r.dtstar[0] for r in records],
+                [r.dtstar[1] for r in records],
+                pinned,
+            )
+        assert got["cmp"][0] == pytest.approx([7.0, 24.0, 31.0, 48.0, 55.0, 72.0, 79.0, 96.0])
+        assert got["cmp"] == got["bare"]
+
+    def test_the_engine_and_the_substitution_agree_on_the_guard(self, tmp_path):
+        """Held to the model's own arithmetic rather than to a truth table typed
+        out here. ExprTk evaluating its own text is the one oracle that does not
+        go back through the parse this issue is about, and `t = 0` is in the list
+        because that is the instant the substitution is claimed to be exact at."""
+        core = _model(tmp_path, _ONE_LAW.format(body=f"if({_CMP_LITERAL_GUARD},1.0,2.0)"))._core
+        for clock in (0.0, 5.0, 30.0):
+            # The guard is false throughout, so the model takes its else branch
+            # from the first instant — which is what `_guard_holds` now says.
+            assert core._eval_functions(clock, [1.0])["law"] == pytest.approx(2.0)
+
+
+class TestTheComparisonSpellingAgainstAFiniteDifference(
+    TestAPeriodicScheduleAgainstAFiniteDifference
+):
+    """The oracle, on the spelling issue #473 adds. Inherits every step of the
+    reference from the issue #436 class — the same accumulating fixture, the same
+    bounded plain run, the same h-ladder — and swaps only the rate law, so what it
+    measures is the spelling and nothing else."""
+
+    @staticmethod
+    def _run(tmp_path, name, overrides, sens=None):
+        import numpy as np
+
+        model = _model(tmp_path, _with_dose(_CMP_LAW), name=name)
+        for key, value in overrides.items():
+            model.set_param(key, value)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=sens)
+        return sim.run(
+            sample_times=list(np.arange(0.0, 240.001, 4.0) + 0.37),
+            rtol=1e-11,
+            atol=1e-13,
+            max_step=0.5,
+        )
+
+
 UNCOMPENSATED = "beta*(I>1)*I"
 
 
