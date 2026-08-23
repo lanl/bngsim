@@ -57,6 +57,7 @@ Five groups are asserted:
 import bngsim
 import numpy as np
 import pytest
+from bngsim import _switch_sensitivity as sw
 from bngsim._bngsim_core import ModelBuilder
 
 # ── SBML event model: S degrades, an event resets S:=100 at t>=1 (fixed-time) ─
@@ -1279,3 +1280,73 @@ class TestEventTimeSensitivity:
         assert compute_event_time_sens(m._core, ["T0"], 0.0, 10.0).records == [(0, [1.0])]
         # t* = 2.5 is past the end of this window: the event never fires.
         assert compute_event_time_sens(m._core, ["T0"], 0.0, 1.0).records == []
+
+
+class TestADerivedTriggerParameterGetsItsOwnColumn:
+    """Issue #475, on the event-time path. A trigger threshold written as a
+    *derived* parameter used to get a column of exactly zero while the primary
+    it is defined from got the right answer.
+
+    bngsim treats a derived parameter as an ordinary sensitivity coordinate —
+    naming one is "a statement that you want that derivative on its own terms,
+    treating the parameter as a free axis", which is what
+    ``docs/user-guide/sensitivities.md`` says and what
+    ``bngsim.jax.differentiable_solve(flat=True)`` relies on. The rate-law switch
+    times had the same gap; this is the same fix on the sibling machinery, kept
+    together so the two cannot drift.
+    """
+
+    @staticmethod
+    def _model(T0v=T0):
+        """:func:`_onset_model` with its trigger read through ``sigma = T0``."""
+        b = ModelBuilder()
+        b.add_parameter("kin", KIN)
+        b.add_parameter("kout", KOUT)
+        b.add_parameter("T0", T0v)
+        b.add_parameter("toff", 100.0)
+        b.add_parameter("sigma", T0v, expression="T0", is_expression=True)
+        x = b.add_species("X", 0.0)
+        on = b.add_species("on", 0.0)
+        b.add_reaction([on], [on, x], "elementary", "kin")
+        b.add_reaction([x], [], "elementary", "kout")
+        b.add_observable("Xobs", [(x, 1.0)])
+        b.add_event("onset", "time() >= sigma", [(on, "1.0")])
+        return bngsim.Model(_core=b.build())
+
+    def test_the_detector_moves_the_event_for_the_derived_name(self):
+        """The defect, at the detector: the request used to come back with no
+        record at all, so the firing time moved for nobody."""
+        core = self._model()._core
+        assert sw.compute_event_time_sens(core, ["sigma"], 0.0, 10.0).records == [(0, [1.0])]
+        assert sw.compute_event_time_sens(core, ["T0"], 0.0, 10.0).records == [(0, [1.0])]
+        assert sw.compute_event_time_sens(core, ["sigma", "T0"], 0.0, 10.0).records == [
+            (0, [1.0, 1.0])
+        ]
+
+    def test_a_parameter_the_trigger_does_not_read_still_moves_nothing(self):
+        """The narrowness guard: ``kout`` is not the trigger, so it has no
+        firing-time jump and must keep the empty answer it always had."""
+        core = self._model()._core
+        assert sw.compute_event_time_sens(core, ["kout"], 0.0, 10.0).records == []
+
+    def test_both_columns_match_the_closed_form(self):
+        """The oracle, and it is a closed form rather than a finite difference:
+        ``X`` is continuous at the onset, so ``dX/dT0 = -kin·e^(-kout(t-T0))``
+        exactly. The derived spelling has to reproduce it as well as the primary
+        does — before this it returned zeros."""
+        t, sens = _xobs_sens(self._model(), ["sigma", "T0"])
+        _x, dx = _onset_closed_form(t)
+        # Skip the sample that lands exactly ON the crossing, for the reason the
+        # neighbouring tests give: the analytic column is right-continuous there.
+        mask = (np.abs(dx) > 1e-9) & (np.abs(t - T0) > 1e-12)
+        assert mask.any()
+        for col, name in enumerate(("sigma", "T0")):
+            relerr = np.abs(sens[mask, col] - dx[mask]) / np.abs(dx[mask])
+            assert relerr.max() < 1e-6, f"{name}: max relerr {relerr.max():.3e}"
+
+    def test_the_two_spellings_give_the_same_column(self):
+        """``sigma`` is ``T0``, so the two columns are one number computed two
+        ways — through the chain rule to the primary, and on the derived name's
+        own terms. Being the same array is the plainest statement of the fix."""
+        _t, sens = _xobs_sens(self._model(), ["sigma", "T0"])
+        assert sens[:, 0] == pytest.approx(sens[:, 1], rel=1e-12, abs=1e-14)

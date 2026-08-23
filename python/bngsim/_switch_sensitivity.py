@@ -324,49 +324,76 @@ def _condition_only_params(
     params = data["parameters"]
     func_map = dict(core.functional_jacobian_context()["function_map"])
 
-    def _flatten(expr: str) -> str:
-        return _inline_derived_param_refs(_inline_functions(expr, func_map) or expr, derived_exprs)
-
     pats = {
         name: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
         for name in candidates
     }
     pure = set(candidates)
 
+    # A *derived* candidate cannot be judged on the fully inlined text, because
+    # inlining is exactly what removes its name from it (issue #475). It is
+    # asked on text where everything derived EXCEPT itself is inlined, so its
+    # own occurrences stay visible while the primaries underneath the others are
+    # still attributed. One flattening for all the primary candidates, one more
+    # per derived candidate — and there are never many of those.
+    #
+    # It matters: BIOMD0000000636 and BIOMD0000000808 each write a derived
+    # threshold parameter that also appears inside a branch. Read on the inlined
+    # text they look condition-only, which on the difference-quotient path would
+    # pin a parameter whose in-branch term is real and hold it at a wrong 0 —
+    # the failure issue #358 refuses over.
+    groups = [(set(candidates) - derived_exprs.keys(), derived_exprs)]
+    groups += [
+        ({name}, {k: v for k, v in derived_exprs.items() if k != name})
+        for name in sorted(candidates & derived_exprs.keys())
+    ]
+
     # The reaction rate laws, fully inlined. A helper function reaches the RHS
     # only where it is referenced, so inlining it into the rate law that uses it
     # puts each of its parameters in the branch or the condition it actually
     # occupies there — which scanning the helper on its own cannot know.
+    bodies: list[str] = []
     for rxn in data["reactions"]:
         if rxn.get("type") != "functional":
             continue
         fname = rxn.get("function_name")
         body = func_map.get(fname) if fname else rxn.get("rate_expression")
-        if not body:
-            continue
-        flat = _flatten(body)
-        if not flat:
-            continue
-        spans = _condition_spans(flat)
-        for name in list(pure):
-            for m in pats[name].finditer(flat):
-                if not any(lo <= m.start() and m.end() <= hi for lo, hi in spans):
-                    pure.discard(name)
-                    break
+        if body:
+            bodies.append(_inline_functions(body, func_map) or body)
 
     # An elementary reaction's rate constant is read directly, never through a
     # condition. (A *functional* reaction's rate_param_indices entry is the
     # synthesized holder for the function's value, whose body is covered by the
     # rate-law scan above.)
+    constants: list[str] = []
     for rxn in data["reactions"]:
         if rxn.get("type") != "elementary":
             continue
         for pidx in rxn.get("rate_param_indices", []):
-            if not (0 <= pidx < len(params)):
+            if 0 <= pidx < len(params):
+                p = params[pidx]
+                constants.append(p.get("expression", "") or p["name"])
+
+    for group_names, exprs in groups:
+        for body in bodies:
+            asking = pure & group_names
+            if not asking:
+                break
+            flat = _inline_derived_param_refs(body, exprs)
+            if not flat:
                 continue
-            p = params[pidx]
-            flat = _flatten(p.get("expression", "") or p["name"])
-            for name in list(pure):
+            spans = _condition_spans(flat)
+            for name in sorted(asking):
+                for m in pats[name].finditer(flat):
+                    if not any(lo <= m.start() and m.end() <= hi for lo, hi in spans):
+                        pure.discard(name)
+                        break
+        for text in constants:
+            asking = pure & group_names
+            if not asking:
+                break
+            flat = _inline_derived_param_refs(text, exprs)
+            for name in sorted(asking):
                 if pats[name].search(flat):
                     pure.discard(name)
 
@@ -2432,8 +2459,12 @@ class CrossingTerms(NamedTuple):
 
     ``value`` is the clock value at the crossing, or ``None`` for a root that
     does not occur at this parameter point (a non-real one). ``partials`` is
-    ``∂threshold/∂primary`` over the primaries with a non-zero partial, empty for
-    a crossing nothing moves.
+    ``∂threshold/∂p`` over the parameters with a non-zero partial, empty for a
+    crossing nothing moves — the primaries always, plus any *derived* parameter
+    the caller asked to be differentiated on its own terms (issue #475).
+
+    Only the primaries decide whether the crossing is compensated, so the gate
+    and the detector read one rule whatever either of them asked for.
     """
 
     partials: dict[str, float]
@@ -2441,7 +2472,9 @@ class CrossingTerms(NamedTuple):
 
 
 def _threshold_crossing_terms(
-    threshold_expr: str, scope: SwitchConditionScope
+    threshold_expr: str,
+    scope: SwitchConditionScope,
+    own_names: AbstractSet[str] = frozenset(),
 ) -> CrossingTerms | None:
     """``CrossingTerms`` for one crossing time, or ``None`` when nothing
     compensates it.
@@ -2465,6 +2498,16 @@ def _threshold_crossing_terms(
       that as "unreadable threshold" refuses a model whose gradient is a correct
       clean zero.
 
+    ``own_names`` are derived parameters a caller wants a column for. Each one
+    the threshold reaches gets ``∂threshold/∂(that name)`` in ``partials``
+    alongside the primaries, with the name held as an independent input rather
+    than chain-ruled away into what it is defined from (issue #475). That is the
+    same question the smooth half of its column already answers, since the
+    emitted right-hand side reads the parameter's own slot; computing the jump
+    any other way leaves the two halves of one column disagreeing. It is added
+    after the decision above and never feeds it, so what makes a crossing
+    compensated is a question about the primaries alone whoever asked.
+
     A threshold that *steps* as a parameter moves — ``floor(P)``, ``ceil(P)``,
     ``sign(P)`` — is none of the three, and falls through to the refusal at the
     end. Its partials come back empty because sympy has no derivative for a step
@@ -2478,14 +2521,20 @@ def _threshold_crossing_terms(
     # ``warn_on_failure=False`` for the same reason the detector passes it: an
     # empty result is the supported "not a switch time" answer, which the caller
     # reports (or hands to the state path) rather than warns about.
-    partials = _derived_expr_partials_numeric(
+    wanted = {n for n in own_names if n in scope.derived_exprs}
+    walked = _derived_expr_partials_numeric(
         threshold_expr,
         set(scope.primary_names),
         scope.param_idx,
         list(scope.values),
         scope.derived_exprs,
         warn_on_failure=False,
+        include_derived=bool(wanted),
     )
+    # Split rather than widened. The primaries alone decide whether the crossing
+    # is compensated, so that decision reads exactly what it read before issue
+    # #475 and the gate cannot answer it differently from the detector.
+    partials = {n: v for n, v in walked.items() if n in scope.primary_names}
     value = _evaluate_threshold(threshold_expr, scope.param_idx, scope.values, scope.derived_exprs)
     if value is None:
         if _threshold_is_non_real(
@@ -2496,7 +2545,10 @@ def _threshold_crossing_terms(
     # ``value`` is already known to be a number here, so the text scan is the
     # whole of :func:`_fixed_threshold_expr` that is left to check.
     if partials or _threshold_has_no_parameter(threshold_expr, scope):
-        return CrossingTerms({n: float(v) for n, v in partials.items() if v != 0.0}, value)
+        out = {n: float(v) for n, v in partials.items() if v != 0.0}
+        # Added AFTER the decision above, never before it (issue #475).
+        out.update({n: float(v) for n, v in walked.items() if n in wanted and v != 0.0})
+        return CrossingTerms(out, value)
     return None
 
 
@@ -2509,8 +2561,10 @@ class ScheduleTerms(NamedTuple):
     """What a repeating schedule contributes, before a window is applied.
 
     The three numbers are the schedule read at the current parameter point, and
-    the three dictionaries are ``∂(that number)/∂primary`` over the primaries
-    with a non-zero partial. ``crosses`` is whether the condition turns over at
+    the three dictionaries are ``∂(that number)/∂p`` over the parameters with a
+    non-zero partial — the primaries, plus any derived parameter the caller
+    asked :func:`_threshold_crossing_terms` to keep on its own terms (issue
+    #475). ``crosses`` is whether the condition turns over at
     all: it needs the duty to fall strictly inside a period, and a corpus model
     really does write ``time() - P*floor(time()/P) >= 0``, which is true at every
     instant of the run and never crosses.
@@ -2625,7 +2679,10 @@ def _schedule_matches_residual(
 
 
 def _periodic_schedule_terms(
-    atom: str, sched: PeriodicSchedule, scope: SwitchConditionScope
+    atom: str,
+    sched: PeriodicSchedule,
+    scope: SwitchConditionScope,
+    own_names: AbstractSet[str] = frozenset(),
 ) -> ScheduleTerms | None:
     """:class:`ScheduleTerms` for a recognized schedule, or ``None`` when nothing
     compensates its crossings (issue #436).
@@ -2646,7 +2703,7 @@ def _periodic_schedule_terms(
     values: list[float] = []
     partials: list[dict[str, float]] = []
     for text in (sched.period, sched.offset, sched.duty):
-        part = _threshold_crossing_terms(text, scope)
+        part = _threshold_crossing_terms(text, scope, own_names)
         if part is None or part.value is None:
             return None
         values.append(float(part.value))
@@ -2728,8 +2785,8 @@ def _schedule_edges(
     terms: ScheduleTerms, v_lo: float, v_hi: float, limit: int
 ) -> list[tuple[float, dict[str, float]]] | None:
     """Every edge of a repeating schedule in ``(v_lo, v_hi]``, as
-    ``(clock value, ∂(clock value)/∂primary)`` — or ``None`` when there are more
-    than ``limit`` of them (issue #436).
+    ``(clock value, ∂(clock value)/∂p)`` over whatever parameters *terms* carries
+    — or ``None`` when there are more than ``limit`` of them (issue #436).
 
     Two edges per period, and they are different kinds of edge. The condition
     turns over inside the period where the residual passes through zero, at
@@ -3212,15 +3269,35 @@ class _Crossing(NamedTuple):
     clock_idx0: int
     threshold: float
     dtstar: list[float]
-    # ∂threshold/∂primary over ALL primaries, not just the requested columns.
-    # This is the crossing's identity: two spellings of one threshold share it,
-    # two thresholds that merely share a value do not (issue #375).
+    # ∂threshold/∂primary over ALL primaries, not just the requested columns,
+    # and primaries ONLY (:func:`_crossing_identity`). This is the crossing's
+    # identity: two spellings of one threshold share it, two thresholds that
+    # merely share a value do not (issue #375). ``dtstar`` above is where a
+    # requested derived parameter's own-terms partial lands (issue #475), so the
+    # column a caller reads and the identity two crossings are compared on stay
+    # separate questions.
     partials: dict[str, float]
 
 
 def _q(x: float) -> str:
     """A relative-precision key for a float, for grouping crossings."""
     return f"{x:.12g}"
+
+
+def _crossing_identity(
+    partials: dict[str, float], scope: SwitchConditionScope
+) -> dict[str, float]:
+    """*partials* reduced to the primaries, which is what identifies a crossing.
+
+    Since issue #475 a requested *derived* parameter also gets a partial, and
+    that one must not reach :func:`_is_same_crossing`: two spellings of one
+    threshold — ``sigma`` and the ``t0 + t_delta`` it is defined as — reach the
+    same instant through the same primaries and are one crossing, but only one
+    of them names the derived parameter. Letting that into the identity would
+    split them, and two crossings on one instant go down the issue #375
+    isolation path, which can refuse a model that has nothing wrong with it.
+    """
+    return {n: v for n, v in partials.items() if n in scope.primary_names}
 
 
 def _is_same_crossing(a: _Crossing, b: _Crossing) -> bool:
@@ -3425,6 +3502,7 @@ def _absorb_schedule_crossings(
     t_start: float,
     t_end: float,
     n_cols: int,
+    own_names: AbstractSet[str] = frozenset(),
 ) -> None:
     """Add every edge of *atom*'s repeating schedule that falls in the run window
     (issue #436), or do nothing when *atom* is not one.
@@ -3450,7 +3528,7 @@ def _absorb_schedule_crossings(
     sched = _clock_periodic_schedule(atom, scope.clock_symbols, scope)
     if sched is None:
         return
-    terms = _periodic_schedule_terms(atom, sched, scope)
+    terms = _periodic_schedule_terms(atom, sched, scope, own_names)
     if terms is None or not terms.crosses:
         # Unreadable (the gate declines the model over it, so no analytic RHS is
         # emitted and there is nothing to compensate here), or a schedule that
@@ -3511,7 +3589,7 @@ def _absorb_schedule_crossings(
                 clock_idx0=clock_idx0,
                 threshold=value,
                 dtstar=dtstar,
-                partials=dict(partials),
+                partials=_crossing_identity(partials, scope),
             ),
             found_index,
         )
@@ -3617,10 +3695,15 @@ def compute_switch_time_sens(
     clock_symbols = set(scope.clock_symbols)
     param_idx = scope.param_idx
     derived_exprs = scope.derived_exprs
-    # A requested parameter that is itself derived has no independent axis: its
-    # partials are attributed to the primaries it is built from, exactly as the
-    # #41/#43 chain rules do. Columns for such a name stay 0.
     col_of = {name: c for c, name in enumerate(names)}
+    # A requested parameter that is itself derived gets a column of its own, on
+    # the same terms the smooth half of that column already uses: the derivative
+    # of writing that slot, holding what it is built from (issue #475). It used
+    # to get a hard 0 here while `bngsim_dfdp` gave it a real in-branch term, so
+    # a model whose switch time was written as a derived parameter — `sigma =
+    # t0 + t_delta` is the shape four hand-written corpus models use — reported
+    # a column that was missing exactly its crossing jump.
+    own_names = frozenset(names) & set(derived_exprs)
 
     # Every clock threshold this model spells, one entry per DISTINCT crossing.
     # "Distinct" is decided by ∂threshold/∂primary, not by the threshold's value:
@@ -3679,6 +3762,7 @@ def compute_switch_time_sens(
                         t_start,
                         t_end,
                         len(names),
+                        own_names,
                     )
                     continue
                 clock_sym, threshold_exprs = split
@@ -3695,7 +3779,7 @@ def compute_switch_time_sens(
                 # into `found` — a condition flipping at an instant contaminates
                 # the f⁻−f⁺ read there whether or not anyone can jump it (issue
                 # #375) — they just carry no ∂t*/∂p.
-                terms = [_threshold_crossing_terms(e, scope) for e in threshold_exprs]
+                terms = [_threshold_crossing_terms(e, scope, own_names) for e in threshold_exprs]
                 compensated = all(t is not None for t in terms)
 
                 for threshold_expr, term in zip(threshold_exprs, terms, strict=True):
@@ -3740,7 +3824,7 @@ def compute_switch_time_sens(
                             clock_idx0=clock_idx0,
                             threshold=threshold_value,
                             dtstar=dtstar,
-                            partials=dict(partials),
+                            partials=_crossing_identity(partials, scope),
                         ),
                         found_index,
                     )
@@ -3980,6 +4064,12 @@ def compute_event_time_sens(
     all_bodies = dict(scope.derived_exprs)
     all_bodies.update({n: b for n, b in dict(ctx["function_map"]).items() if b})
     requested = set(names)
+    # A requested parameter that is itself derived gets a column of its own, on
+    # the same terms the rate-law switch times use (issue #475). Restricted to
+    # genuinely derived names: `thresholds.exprs` also holds the rule-bound
+    # parameters, and a column for one of those is refused outright elsewhere
+    # because a function owns the slot (issues #227, #329).
+    own_names = requested & set(scope.derived_exprs)
 
     records: list[tuple[int, list[float]]] = []
     compensated: list[int] = []
@@ -3989,7 +4079,7 @@ def compute_event_time_sens(
     for ei in range(min(n_events, len(triggers))):
         trigger = triggers[ei] or ""
         analysis = _analyze_event_trigger(
-            core, trigger, scope, thresholds, clocks, clock_symbols, t_start
+            core, trigger, scope, thresholds, clocks, clock_symbols, t_start, own_names
         )
         if isinstance(analysis, str):
             # Only worth reporting when the trigger names something; a literal
@@ -4039,14 +4129,23 @@ def _analyze_event_trigger(
     clocks: dict[str, int],
     clock_symbols: set[str],
     t_start: float,
+    own_names: AbstractSet[str] = frozenset(),
 ):
     """Reduce an event trigger to its rising edge.
 
-    Returns ``(t_star, {primary: ∂threshold/∂primary})`` when the trigger is a
+    Returns ``(t_star, {name: ∂threshold/∂name})`` when the trigger is a
     conjunction of clock thresholds with a well-defined false→true edge,
     ``None`` when it is such a conjunction but has no rising edge (no lower
     bound, or an empty true-interval), or a reason string when it cannot be
     reduced at all.
+
+    ``own_names`` are derived parameters the caller wants a column for, read the
+    way :func:`_threshold_crossing_terms` reads them: as an independent input
+    rather than chain-ruled away into what the name is defined from (issue
+    #475). They join the returned partials and nothing else — the kink test
+    below still compares two atoms on their primaries alone, because two
+    spellings of one threshold reach the same instant through the same
+    primaries and only one of them names the derived parameter.
     """
     expr = trigger.strip()
     if not expr:
@@ -4083,7 +4182,10 @@ def _analyze_event_trigger(
             "jump is derived for into a true→false one"
         )
 
-    lower: list[tuple[float, dict[str, float]]] = []  # (t_star, partials)
+    # (t_star, ∂threshold/∂primary, ∂threshold/∂(requested derived name)).
+    # The last is kept apart from the second so the kink test below can
+    # compare two atoms on the primaries alone (issue #475).
+    lower: list[tuple[float, dict[str, float], dict[str, float]]] = []
     upper: list[float] = []
     for atom in _split_logical_atoms(expr):
         split = _clock_threshold_split_oriented(atom, clock_symbols)
@@ -4133,23 +4235,30 @@ def _analyze_event_trigger(
         if kind == "upper":
             upper.append(t_atom)
             continue
-        partials = _derived_expr_partials_numeric(
+        wanted = {n for n in own_names if n in thresholds.exprs}
+        walked = _derived_expr_partials_numeric(
             threshold_expr,
             set(thresholds.primaries),
             scope.param_idx,
             list(scope.values),
             thresholds.exprs,
             warn_on_failure=False,
+            include_derived=bool(wanted),
         )
-        lower.append((t_atom, partials))
+        partials = {n: v for n, v in walked.items() if n in thresholds.primaries}
+        own = {n: v for n, v in walked.items() if n in wanted}
+        lower.append((t_atom, partials, own))
 
     if not lower:
         # `time <= toff` alone: true from t_start, so the event fires at the
         # run's start (or not at all) and its firing time does not move.
         return None
-    t_star = max(t for t, _ in lower)
-    winners = [p for t, p in lower if t == t_star]
-    if len(winners) > 1 and any(w != winners[0] for w in winners[1:]):
+    t_star = max(t for t, _p, _o in lower)
+    winners = [(p, o) for t, p, o in lower if t == t_star]
+    # Compared on the primaries only, for the reason in the docstring: a derived
+    # partial belongs to a column, never to the question of whether two atoms
+    # describe the same edge (issue #475).
+    if len(winners) > 1 and any(w[0] != winners[0][0] for w in winners[1:]):
         return (
             f"two atoms of the trigger {trigger!r} put the rising edge at the same time "
             f"t={t_star:.6g} with different derivatives, so t*(p) has a kink there rather "
@@ -4157,7 +4266,7 @@ def _analyze_event_trigger(
         )
     if upper and t_star > min(upper):
         return None  # the true-interval is empty; the event never fires
-    return t_star, winners[0]
+    return t_star, {**winners[0][0], **winners[0][1]}
 
 
 # The only function names the clock solvers above put into a threshold

@@ -492,6 +492,77 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A derived parameter used as a switch time now gets the crossing half of its
+  sensitivity column (issue #475).** bngsim treats a derived parameter — an SBML
+  `<assignmentRule>` target, a `.net` ConstantExpression — as an ordinary
+  sensitivity coordinate. Its column is the derivative of *writing that slot*,
+  which is the column a `force_override` pin makes real and the one
+  `bngsim.jax.differentiable_solve(flat=True)` differentiates over.
+
+  The smooth half of that column already came out that way, because the emitted
+  right-hand side reads the parameter's own slot. The crossing jump did not.
+  `_threshold_crossing_terms` chain-ruled every threshold down to the primary
+  parameters, so a derived name reached no column at all and its crossings
+  contributed nothing. The two halves of one column were answering different
+  questions, and what a caller got was a column short of exactly its jumps, with
+  nothing said about it:
+
+      d0 = 7.0                        # primary
+      d  = d0*1.0                     # derived, the same number
+      dose() if(time()-P*floor(time()/P)>=d, kin, 0)
+
+  `d0` returned -0.0611632 and `d` returned 0.0, where a central difference of
+  two trajectories gives -0.0611633 for both.
+
+  Both now do. The chain rule that walks the derived-parameter graph keeps each
+  node's own partial as well as folding it into the primaries underneath, which
+  is the sum over every path that reaches that node, so one walk answers for
+  every name rather than only for the leaves. A parameter in the middle of a
+  chain — `t0 = t0_free`, `sigma = t0 + t_delta` — gets the same answer as either
+  end.
+
+  Two things had to be kept out of it. A crossing's *identity* is still its
+  `∂threshold/∂primary` and nothing else: two spellings of one threshold, once as
+  `sigma` and once as the `t0 + t_delta` it is defined as, reach the same instant
+  through the same primaries and are one crossing, and letting the derived
+  partial into that comparison would split them and send a perfectly ordinary
+  model down the issue #375 isolation path. And what makes a crossing
+  *compensated* is still a question about the primaries alone, so the issue #68
+  gate and the run-time detector cannot answer differently about a condition
+  because of who asked.
+
+  **A derived switch parameter is also judged for purity the way a primary is.**
+  `_condition_only_params` asks whether a parameter appears outside an `if()`
+  condition, and it read the text with derived references inlined — which is
+  exactly what removes a derived name from it, so one always looked
+  condition-only however it was used. On the difference-quotient path that would
+  pin a parameter whose in-branch term is real and hold it at a wrong 0, which is
+  the failure issue #358 refuses over. Two corpus models write that shape:
+  `BIOMD0000000636`, and `BIOMD0000000808` whose `ModelValue_30` is both the duty
+  of its dose schedule and the divisor of its dose rate. Each derived candidate
+  is now read on text where everything derived except itself is inlined.
+
+  **The event-time path had the same gap and gets the same fix.** An event
+  trigger `time >= sigma` with `sigma` derived returned no record at all, so the
+  firing time moved for nobody while the `t0` underneath it moved normally. It is
+  the same question asked of a different machinery, fixed alongside rather than
+  left to drift, and with the same care about what a derived partial may not
+  reach: the test for two trigger atoms putting the rising edge at the same
+  instant with different derivatives still compares them on their primaries.
+
+  Census over the whole corpus, 1323 SBML models and 585 `.net` files, two arms
+  differing by exactly this change: eleven models gain a crossing jump on a
+  derived column, none loses one, no model changes which crossings it places or
+  which primary columns move, and no gate or analytic-RHS verdict moves. Four of
+  the eleven are hand-written `.net` models that spell a fitted onset as
+  `sigma = t0 + t_delta`, which is the shape this was costing. On
+  `BIOMD0000000808` the `ModelValue_30` column now matches a central difference
+  of two trajectories to 1.2e-6 of the difference's own scale, exactly as the
+  `S_interval` it is defined as does; before it was off by a factor of 36. The
+  event half is held to a closed form rather than a difference: on the onset
+  model whose `dX/dT0` is known exactly, the derived spelling reproduces it to
+  6e-8, as the primary does.
+
 - **A clock guard written as a comparison is now resolved the way one written
   with `sign()` already was (issue #473).** `_guard_holds` knew that a
   simulation clock is positive, but only through `sign()`: it replaced

@@ -2792,6 +2792,7 @@ def _derived_expr_partials_numeric(
     param_values: list,
     derived_exprs: dict[str, str],
     warn_on_failure: bool = True,
+    include_derived: bool = False,
 ) -> dict[str, float]:
     """Numeric ∂(expr)/∂primary at the nominal parameter values, for every
     primary ``expr`` reaches through the derived-parameter DAG.
@@ -2810,6 +2811,15 @@ def _derived_expr_partials_numeric(
     C-emitting one — ``ode/synthesis_v3`` reaches a 40 KB flattened expression
     through a species initial condition, so **every** parameter-sensitivity run
     on that model hung here, before any codegen.
+
+    ``include_derived`` additionally reports each **derived** parameter the walk
+    passes through, as ``∂expr/∂(that parameter)`` with it held as an independent
+    input — the sum over every path from ``expr`` down to it, which is what the
+    accumulation below already computes on the way past. bngsim treats a derived
+    parameter as an ordinary sensitivity coordinate (the column a
+    ``force_override`` pin makes real), so a caller that needs its column asks
+    for it here rather than chain-ruling it away (issue #475). Off by default:
+    every other caller wants the primaries alone.
 
     Returns ``{primary_name: float_partial}`` over the primaries with a non-zero
     partial, or ``{}`` when sympy is unavailable, nothing parses, or no primary
@@ -2833,7 +2843,15 @@ def _derived_expr_partials_numeric(
     primaries = set(primary_param_names)
     derived_exprs = derived_exprs or {}
     out, reason = _derived_expr_partials_numeric_dag(
-        s, primaries, param_idx, param_values, derived_exprs, warn_on_failure, {}, ()
+        s,
+        primaries,
+        param_idx,
+        param_values,
+        derived_exprs,
+        warn_on_failure,
+        {},
+        (),
+        include_derived,
     )
     if reason is not None:
         # Name the primaries whose chain rule was lost, which after #99 is the
@@ -2879,6 +2897,7 @@ def _derived_expr_partials_numeric_dag(
     warn_on_failure: bool,
     cache: dict[str, tuple[dict[str, float] | None, str | None]],
     stack: tuple[str, ...],
+    include_derived: bool = False,
 ) -> tuple[dict[str, float] | None, str | None]:
     """:func:`_derived_param_jacobian_dag` with floats: the same chain rule
 
@@ -2890,6 +2909,11 @@ def _derived_expr_partials_numeric_dag(
     guard, same all-or-nothing failure: a lost sub-partial is a lost chain rule
     for every primary that reaches it, and the caller reads a missing partial as
     a hard zero.
+
+    ``include_derived`` keeps each derived node's own partial as well as folding
+    it, so one walk answers for every node in the DAG rather than only its leaves
+    (issue #475). The memo stays valid: what it holds is the sub-expression's
+    partials w.r.t. everything below it, which is the same either way.
     """
     direct, reason = _direct_derived_partials_numeric(
         expr, primary_names, derived_exprs.keys(), param_idx, param_values, warn_on_failure
@@ -2902,6 +2926,11 @@ def _derived_expr_partials_numeric_dag(
         if name not in derived_exprs:
             out[name] = out.get(name, 0.0) + d_val
             continue
+        if include_derived:
+            # The derived node's OWN partial, kept as well as folded. Summed
+            # over every path that reaches it, which is what makes it the total
+            # derivative of writing that slot (issue #475).
+            out[name] = out.get(name, 0.0) + d_val
         if name in stack:
             return None, f"reference cycle through the derived parameter {name!r}"
         hit = cache.get(name)
@@ -2915,6 +2944,7 @@ def _derived_expr_partials_numeric_dag(
                 warn_on_failure,
                 cache,
                 stack + (name,),
+                include_derived,
             )
             cache[name] = hit
         sub, why = hit
