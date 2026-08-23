@@ -4,15 +4,15 @@
   "source": {
     "authoritative_remote": "https://github.com/richardposner/RuleMonkey.git",
     "authoritative_branch": "main",
-    "local_checkout": "/private/tmp/claude-11919/-Users-hlavacek-Code-bngsim/b98b7c3d-cd6b-49f4-8012-cbfb09e6687c/scratchpad/rulemonkey-vendor-candidate",
+    "local_checkout": "/tmp/rulemonkey-vendor-candidate",
     "upstream_remote": "https://github.com/richardposner/RuleMonkey.git",
     "local_origin_remote": "https://github.com/richardposner/RuleMonkey.git",
     "local_upstream_remote": null,
     "fork_remote": null,
     "branch_or_ref": "origin/main",
-    "commit": "1d14160cfa73d60d4ee7e9f6f4812a51a0fba430"
+    "commit": "3d97f66c26dde54571b42581bf42373a937ce9bc"
   },
-  "imported_at_utc": "2026-08-14T15:40:54+00:00",
+  "imported_at_utc": "2026-08-23T09:45:05+00:00",
   "pruning": {
     "included_paths": [
       "CMakeLists.txt",
@@ -30,7 +30,7 @@
   },
   "exprtk_sync": {
     "rulemonkey_vendor_note": "third_party/bngsim_expr/VENDOR",
-    "pinned_bngsim_commit": "eb8081424a8a3793207f34bb8392541c2f54c570",
+    "pinned_bngsim_commit": "c8369f68bd92d0f5395af52033adbdb95ee99db9",
     "verified_against_bngsim_paths": [
       "bngsim/third_party/exprtk/exprtk.hpp",
       "bngsim/include/bngsim/expression.hpp",

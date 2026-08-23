@@ -254,6 +254,27 @@ The runtime severity model is two-level:
   files. RM searches both the XML directory and one level up to handle
   both author-side and harness-side layouts. Counter sources may be
   `time`, a parameter, an observable, or another function.
+- **`TotalRate`** — a rate-law *modifier* rather than a type: it says the
+  rate law gives the whole propensity rather than a rate per set of
+  reactants, so RM does not multiply by the reactant match counts. That is
+  the reading BioNetGen documents in `RateLaw.pm`, and NFsim computes the
+  same thing. Every `TotalRate` rule warns at load anyway (issue #61):
+  BNG2 does not implement the keyword for network simulations — it writes
+  the rate law into the `.net` as an ordinary rate constant — so such a
+  model cannot be checked against BioNetGen's own result. The one shape
+  where RM and NFsim genuinely disagree is refused; see the Tier-0 table
+  below.
+- **`reactant_N()`** — the reactant match count of the rule's `N`-th
+  reactant pattern, resolved against the rule whose rate law reads it
+  (issue #59). A rate law that is not a total rate states the rate *per*
+  set of reactants, so the propensity is already the law's value times
+  those counts, and `reactant_1()*reactant_2()*k` therefore prices the rule
+  at `(N1·N2)²·k` rather than `N1·N2·k`. NFsim reads it the same way, so RM
+  is not diverging here — but it is easy to write by accident, so it warns.
+  Mark the rule `TotalRate` where the law was meant to give the whole
+  propensity on its own. These placeholders are excluded from
+  `function_names()` and from a `Result`'s `function_values`, having no
+  value outside the rule that reads them.
 
 ### Observables
 
@@ -379,6 +400,9 @@ treat at least one of these as a signal to refuse the model.
 | Any `<MoleculeType population="1">` | Hybrid particle-population SSA not implemented; would be silently treated as ordinary particles with diverging trajectories. |
 | Multi-molecule or bonded `<Species Fixed="1">` | RM currently supports only single-molecule, unbonded Fixed species. |
 | Two or more `<Species Fixed="1">` of the same `MoleculeType` | RM currently allows at most one Fixed species per molecule type to avoid matching-overlap ambiguity. |
+| A `TotalRate` rule whose reactant pattern touches a component that its molecule type declares two or more of | RM and NFsim disagree on the rate and BNG2 cannot settle it, since it does not implement `TotalRate` for network simulations at all (issue #61). Such a component can land on more than one of a molecule's slots, which is exactly what NFsim permutes over: it expands the rule into one reaction class per permutation and gives *each* class the whole total rate, so the rule runs at `rate × #{populated permutations}`, while RM takes the rate law as the whole propensity. Measured on `C(s) + D(t)`: 1.00x with one free site, 2.02x with two, 2.98x with three. BNG2's network expansion implies a third number again. Name the components distinctly, or drop `TotalRate` and fold the reactant counts into the rate law. The test is structural and deliberately conservative — every `TotalRate` rule in NFsim's own validation models (`v21`–`v26`), in `oscSystem`, and in the RuleHub examples names its components distinctly and is **not** refused. |
+| A rate law reading `reactant_N()` on a rule with fewer than `N` reactant patterns | There is no such reactant to count, so the placeholder never receives a value: a propensity of zero and a rule that silently never fires (issue #59). |
+| A rate law reading `reactant_N()` that is also a local (per-instance) function | RM resolves reactant counts for whole-rule rate functions only. The placeholder would again read zero, giving the same silent no-op. |
 
 The CLI's `--ignore-unsupported` flag downgrades these to runs-anyway
 mode. Each error message includes the specific behavior change that
@@ -393,6 +417,10 @@ These are emitted as `Severity::Warn` and the run proceeds.
 |---|---|
 | Any rule with `MoveConnected` operation | Requires compartments; emitted as a warning because RM ignores the operation entirely. |
 | Any rule with a `priority` attribute | Honored as ordinary rule firing; the priority modifier is ignored. |
+| Any `TotalRate` rule not caught by the refusal above | Runs on RM's reading: the rate law is the whole propensity. Warned because BNG2 does not implement `TotalRate` for network simulations, so there is no BioNetGen result to check the model against. NFsim agrees with RM on these shapes (verified on unimolecular, heterodimer, homodimer carrying `symmetry_factor="0.5"`, zero-order synthesis, and an observable-driven rate law). |
+| A rate law reading `reactant_N()` on a rule not marked `TotalRate` | Runs, but the reactant counts land on the propensity twice — once inside the law and once as the rule's own match counts — so the rate grows with the square of each count rather than in proportion to it. NFsim reads it the same way, so this is not a divergence from it. Mark the rule `TotalRate` if the law was meant to give the whole propensity. |
+| An `MM(kcat,Km)` rule whose substrate or enzyme pattern can match more than one species | BNG2 expands this into one MM reaction per matching species pair, each evaluating the law on that pair's own counts, so its ODE/SSA runs faster than RM — measured 2.00x for a two-species substrate in saturation, 1.81x for a two-species enzyme with the enzyme in excess. RM applies one law to the summed match counts. Enumerate the species in separate rules for BNG2's reading, or write the enzyme mechanism explicitly (issue #45). |
+| An `MM(kcat,Km)` rule with a non-unit `symmetry_factor` that transforms **both** reactant patterns | The factor cannot be attributed to a slot from the XML, the scalar being a product of both patterns' factors. RM applies the whole factor to the substrate count, which reproduces BNG2 for the ordinary catalyst shape and anywhere the law is linear, and runs up to 2x fast against BNG2 in saturation if the symmetry was the enzyme slot's (issues #37, #45). |
 
 ## Multi-molecule reactant patterns
 

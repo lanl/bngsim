@@ -227,6 +227,14 @@ struct RateLaw {
   bool global_dep_time = false;
   bool global_dep_opaque = false;
 
+  // Largest N for which this rate law's function chain reads the
+  // `reactant_N()` placeholder described on GlobalFunction, and 0 when it
+  // reads none — which is every rate law that does not use the construct.
+  // The engine binds the rule's own reactant-pattern match counts into
+  // those slots before evaluating the rate, so the rate function sees the
+  // counts NFsim's CompositeFunction would see.
+  int max_reactant_count_index = 0;
+
   // For MM
   double mm_Km = 0.0;
   double mm_kcat = 0.0;
@@ -432,6 +440,17 @@ struct GlobalFunction {
   std::vector<std::string> global_observable_names; // read at system scope
 
   bool is_local() const { return !argument_names.empty(); }
+
+  // BNGL's `reactant_N()` placeholder.  A model that wants the match count
+  // of a rule's Nth reactant pattern inside a rate law declares an empty
+  // function by that name (`reactant_1()` on its own line in the functions
+  // block) and writes `reactant_1()*...` in the rate law.  BNG2 emits it as
+  // an ordinary Function with an empty <Expression>, so nothing in the XML
+  // says what it means; the name is the whole convention, and NFsim reads it
+  // the same way.  Holds N (1-based) for such a placeholder and 0 for every
+  // ordinary function.  The value is per rule, so the placeholder has no
+  // global value of its own — see Engine::Impl::bind_reactant_counts.
+  int reactant_count_index = 0;
 
   // TFUN backing
   bool is_tfun = false;

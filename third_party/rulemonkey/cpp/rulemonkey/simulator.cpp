@@ -1070,8 +1070,12 @@ Model load_model(const std::string& xml_path,
                         // `a.c_str()` / `b.c_str()` here as
                         // use-after-move via std::sort's swap path,
                         // but the comparator only reads the operands.
-                        char* ea = nullptr;
-                        char* eb = nullptr;
+                        // `strtol`'s endptr parameter is `char**`, so these
+                        // cannot be `const char*` however read-only they are
+                        // here — misc-const-correctness does not model the
+                        // out-param's type requirement.
+                        char* ea = nullptr; // NOLINT(misc-const-correctness)
+                        char* eb = nullptr; // NOLINT(misc-const-correctness)
                         // NOLINTBEGIN(clang-analyzer-cplusplus.Move)
                         long const va = std::strtol(a.c_str(), &ea, 10);
                         long const vb = std::strtol(b.c_str(), &eb, 10);
@@ -1392,6 +1396,16 @@ Model load_model(const std::string& xml_path,
         if (expr_node && !expr_node->text.empty())
           gf.expression_text = trim(expr_node->text);
       }
+
+      // `reactant_N()` placeholder (see GlobalFunction::reactant_count_index).
+      // Recognized by shape alone, since that is all BNG2 emits: the name
+      // `reactant_` plus a single digit 1-9, no arguments, and no expression
+      // body.  A function that has a body of its own is an ordinary function
+      // whatever it is called, so the model keeps whatever it wrote.
+      if (gf.expression_text.empty() && gf.argument_names.empty() && !gf.is_tfun &&
+          gf.name.size() == 10 && gf.name.compare(0, 9, "reactant_") == 0 && gf.name[9] >= '1' &&
+          gf.name[9] <= '9')
+        gf.reactant_count_index = gf.name[9] - '0';
 
       // Split the referenced observables by scope (issue #38).  An
       // observable is local iff the expression applies it to one of THIS
@@ -2256,6 +2270,49 @@ Model load_model(const std::string& xml_path,
     }
   }
 
+  // ---- 8c. Rate laws that read `reactant_N()` (issue #59) ----
+  //
+  // The placeholder has no value of its own; it stands for the match count
+  // of the rule's Nth reactant pattern, so it can only be resolved once we
+  // know which rule is asking.  Record per rule the largest N its rate-law
+  // function chain reads, which is what the engine needs to bind the slots
+  // before evaluating the rate, and what the refusal below needs to check
+  // that the rule actually has that many reactant patterns.
+  //
+  // The walk follows function references, so a rate law that reaches the
+  // placeholder through a helper function is covered as well as the direct
+  // `reactant_1()*reactant_2()*f()` that BNG2 writes for the idiom.
+  {
+    std::unordered_map<std::string, int> fn_max;
+    std::unordered_set<std::string> in_progress;
+    auto max_index = [&](const std::string& fname, auto&& self) -> int {
+      auto fi = model.function_index.find(fname);
+      if (fi == model.function_index.end())
+        return 0;
+      if (auto memo = fn_max.find(fname); memo != fn_max.end())
+        return memo->second;
+      if (!in_progress.insert(fname).second)
+        return 0; // reference cycle: nothing more to learn down this arm
+      const auto& gf = model.functions[fi->second];
+      int best = gf.reactant_count_index;
+      for (const auto& tok : expr::collect_variables(gf.expression_text))
+        best = std::max(best, self(tok, self));
+      in_progress.erase(fname);
+      fn_max[fname] = best;
+      return best;
+    };
+
+    for (auto& rule : model.rules) {
+      auto& rl = rule.rate_law;
+      int best = 0;
+      if (!rl.function_name.empty())
+        best = std::max(best, max_index(rl.function_name, max_index));
+      if (!rl.function_name_b.empty())
+        best = std::max(best, max_index(rl.function_name_b, max_index));
+      rl.max_reactant_count_index = best;
+    }
+  }
+
   // Scan for unsupported features if requested
   if (unsupported_out) {
     *unsupported_out = scan_unsupported(*model_node);
@@ -2306,6 +2363,157 @@ Model load_model(const std::string& xml_path,
                "negative, and meaningless where it does not). Fix the parameter. Pass "
                "--ignore-unsupported to run anyway; the rule's propensity is clamped "
                "to zero, so it will not fire."});
+    }
+
+    // The `TotalRate` keyword.  BNG2.pl does not implement it for network
+    // simulations — RxnRule.pm carries the TODO saying it is "currently
+    // implemented only for XML network-free output" — and generate_network
+    // duly writes the rate law into the .net as an ordinary rate constant,
+    // so the ODE integrates plain mass action and the observable crashes to
+    // zero where NFsim holds it flat.  There is no BNG2 result to check a
+    // TotalRate model against, which leaves NFsim as the only implementation.
+    //
+    // On most rules RM and NFsim agree, and RM reads the keyword the way
+    // BNG2 documents it in RateLaw.pm ("If true, this ratelaw specifies the
+    // Total reaction rate"): the propensity IS the rate law's value.  Those
+    // rules warn, because nothing can verify them against the reference RM is
+    // written against, but they run and they agree.
+    //
+    // They stop agreeing when a reactant pattern can match one molecule more
+    // than once.  NFsim expands such a rule into one independent reaction
+    // class per permutation (`_R1_sym1`, `_R1_sym2`, ...; see
+    // NFinput.cpp::generateRxnPermutations).  For an ordinary rate law that
+    // is correct — the matches partition across the classes and sum back —
+    // but under TotalRate every class returns the WHOLE total rate, so the
+    // rule runs at
+    //
+    //     rate x #{permutations whose reactant lists are all non-empty}
+    //
+    // Measured against `C(s) + D(t)` at kf: one free site 1.00x, two 2.02x,
+    // three 2.98x, and 1.00x again when every C has the same slot pre-bound
+    // (only one permutation populated).  That factor counts NFsim's internal
+    // reaction classes rather than anything in the model — it is capped by
+    // the permutation count no matter how many molecules exist, and it steps
+    // down discretely as classes empty.  BNG2's network expansion, which
+    // writes the statistical factor per SPECIES and live (`3*_rateLaw1`,
+    // `2*_rateLaw1`, `_rateLaw1`), implies a third number again.  Three
+    // readings, no oracle: RM refuses those rather than pick one silently.
+    //
+    // The test is structural and deliberately conservative: the rule is
+    // refused when any reactant pattern touches a component whose molecule
+    // type declares two or more of that name.  That is what lets a pattern
+    // component land on more than one of the molecule's slots, which is
+    // exactly the condition NFsim permutes over.  A refusal only has to
+    // cover the divergence, so covering slightly more is safe; what it must
+    // not do is fire on the ordinary shapes, and it does not — every
+    // TotalRate rule in the NFsim validation models (v21-v26), in oscSystem,
+    // and in the RuleHub examples names its components distinctly.
+    for (const auto& rule : model.rules) {
+      if (!rule.rate_law.is_total_rate)
+        continue;
+
+      std::string ambiguous;
+      for (const auto& pm : rule.reactant_pattern.molecules) {
+        if (pm.type_index < 0 || pm.type_index >= static_cast<int>(model.molecule_types.size()))
+          continue;
+        const auto& mt = model.molecule_types[pm.type_index];
+        for (const auto& pc : pm.components) {
+          int declared = 0;
+          for (const auto& mtc : mt.components)
+            if (mtc.name == pc.name)
+              ++declared;
+          if (declared >= 2) {
+            ambiguous = pm.type_name + "(" + pc.name + ")";
+            break;
+          }
+        }
+        if (!ambiguous.empty())
+          break;
+      }
+
+      if (!ambiguous.empty()) {
+        unsupported_out->push_back(
+            {Severity::Error, "RateLaw@totalrate",
+             "Rule '" + rule.id + "' (" + rule.name +
+                 ") uses the TotalRate keyword, and its reactant pattern " + ambiguous +
+                 " can match one molecule in more than one way because the molecule type "
+                 "declares several components of that name. RM and NFsim disagree on what "
+                 "the rule's rate then is: NFsim expands the rule into one reaction per "
+                 "symmetry permutation and gives each the whole total rate, so the rule "
+                 "runs faster in proportion to the number of populated permutations, while "
+                 "RM takes the rate law as the whole propensity. BioNetGen cannot settle it "
+                 "-- it does not implement TotalRate for network simulations at all. Name "
+                 "the components distinctly, or drop TotalRate and fold the reactant counts "
+                 "into the rate law. Pass --ignore-unsupported to run anyway, on RM's "
+                 "reading."});
+        continue;
+      }
+
+      unsupported_out->push_back(
+          {Severity::Warn, "RateLaw@totalrate",
+           "Rule '" + rule.id + "' (" + rule.name +
+               ") uses the TotalRate keyword. BioNetGen does not implement TotalRate for "
+               "network simulations, only for the network-free XML it writes, so a model "
+               "using it cannot be checked against BioNetGen's own result. RM reads the "
+               "rate law as the whole propensity, which is what BioNetGen documents the "
+               "keyword to mean and what NFsim also computes for this rule."});
+    }
+
+    // `reactant_N()` in a rate law (issue #59): two shapes RM cannot resolve,
+    // and one it resolves in a way that is easy to write by accident.
+    for (const auto& rule : model.rules) {
+      int const n = rule.rate_law.max_reactant_count_index;
+      if (n == 0)
+        continue;
+
+      // ERROR-level.  Both of these would leave the rule reading a
+      // placeholder that never gets a value, i.e. a rate of zero and a rule
+      // that never fires, which is the silent no-op this construct was
+      // reported for in the first place.
+      std::string reason;
+      if (n > rule.molecularity) {
+        reason = "reads reactant_" + std::to_string(n) + "(), but the rule has " +
+                 std::to_string(rule.molecularity) +
+                 " reactant pattern(s), so there is no such reactant to count";
+      } else if (rule.rate_law.is_local || rule.rate_law.is_local_b) {
+        reason = "reads reactant_" + std::to_string(n) +
+                 "() from a rate law that is also a local (per-instance) function. "
+                 "RM resolves reactant counts for whole-rule rate functions only";
+      }
+      if (!reason.empty()) {
+        unsupported_out->push_back({Severity::Error, "RateLaw@type=Function",
+                                    "Rule '" + rule.id + "' (" + rule.name + ") " + reason +
+                                        ". Pass --ignore-unsupported to run anyway; the "
+                                        "placeholder reads zero, so the rule will not fire."});
+        continue;
+      }
+
+      // WARN-level: the counts land on the propensity twice.  A rate law
+      // that is not a total rate states the rate PER set of reactants, so
+      // the propensity is that value times the reactant match counts — and
+      // `reactant_N()` supplies those same counts a second time, inside the
+      // rate.  A bimolecular rule written `reactant_1()*reactant_2()*k` is
+      // therefore priced at `(N1*N2)^2 * k`, not `N1*N2*k`.
+      //
+      // This is not a divergence: NFsim multiplies by the counts after
+      // evaluating the rate function too, and RM matches it, which is why
+      // this warns rather than refusing.  What it buys is that a reading
+      // most people would not predict from the BNGL source is named at load
+      // instead of found by wondering why a rate constant is off by orders
+      // of magnitude.  `TotalRate` is the shape where the construct means
+      // what it looks like, and it is silent there.
+      if (!rule.rate_law.is_total_rate)
+        unsupported_out->push_back(
+            {Severity::Warn, "RateLaw@type=Function",
+             "Rule '" + rule.id + "' (" + rule.name +
+                 ") uses reactant_N() in its rate law and is not marked TotalRate. The "
+                 "value of a rate function is multiplied by the rule's reactant match "
+                 "counts to get the propensity, so the counts reactant_N() supplies are "
+                 "applied a second time: this rule's propensity grows with the square of "
+                 "each reactant count rather than in proportion to it. NFsim reads the "
+                 "same model the same way, so RM is not diverging from it here. If the "
+                 "rate law was meant to give the whole propensity on its own, mark the "
+                 "rule TotalRate."});
     }
 
     // WARN-level: MM constructs where RM cannot reproduce BNG2 (issue #45).
@@ -3277,11 +3485,13 @@ RuleMonkeySimulator::RuleMonkeySimulator(const std::string& xml_path, Method met
   impl_->base_parameters = impl_->model.parameters;
   impl_->obs_names = impl_->model.observable_names_ordered;
   impl_->param_names = impl_->model.parameter_names_ordered;
-  // Global (non-local) functions only — must use the same filter and
-  // declaration order as Engine::output_function_names so the simulator's
-  // function_names() agrees with a Result's function_names.
+  // Global (non-local) functions only, and not the `reactant_N()`
+  // placeholders, which have a value only inside a rule (issue #59) — must
+  // use the same filter and declaration order as
+  // Engine::output_function_names so the simulator's function_names()
+  // agrees with a Result's function_names.
   for (const auto& gf : impl_->model.functions) {
-    if (!gf.is_local())
+    if (!gf.is_local() && gf.reactant_count_index == 0)
       impl_->func_names.push_back(gf.name);
   }
 }

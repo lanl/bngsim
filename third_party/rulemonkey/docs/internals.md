@@ -9,6 +9,181 @@ grep for the function name to confirm.
 For BNGL semantics and what is supported / refused, see `model_semantics.md`.
 For the dev-time profiler, see the preamble in `cpp/rulemonkey/engine_profile.hpp`.
 
+## Session build
+
+`Engine::initialize` (near the bottom of `engine.cpp`) runs four steps,
+and their order is load-bearing:
+
+1. `init_species` — build the pool from the seed species.
+2. `init_incremental_observables` — classify each observable, build the
+   tracker's per-molecule contrib table and per-complex pass flags, and
+   settle `obs_values` for every tracked observable out of those tables
+   (`seed_tracked_obs_values`).
+3. `compute_observables(skip_tracked)` — the from-scratch walk, now only
+   for the observables the tracker does not keep.
+4. `init_rule_states` — needs `obs_values` settled, because a Function
+   rate law reads it.
+
+Step 2 comes before step 3 on purpose. Building the tracker's tables
+costs exactly the per-molecule embedding counts a full observable walk
+costs, so running the walk first and the tracker second counted every
+tracked observable twice — half of session build on a large pool
+(issue #65). It reads only the model and the pool, so it does not mind
+running before the other two.
+
+Both step 2's seeding and the per-event delta path go through
+`tracked_obs_contrib`, which owns the dispatch: a structurally
+unconstrained pattern (`T()`) contributes one per molecule of its type
+with no matching at all, a 2-molecule/1-bond pattern takes the
+`count_2mol_1bond_fc` specialization, and the rest fall to the generic
+BFS. Keep them on the shared routine — seeding used to write its own
+call and silently missed both shortcuts.
+
+`kLocalObsTrackInvariant` (Debug and ASan) proves the seeded values
+against a from-scratch walk at init, in addition to its original job on
+`evaluate_observable_on`.
+
+### Step 1 — the seed walk
+
+`init_species` runs in two passes. The first resolves each seed species
+into a `SeedTemplate`: the molecule types to create, the (component
+slot, state index) pairs to pin, and the bond endpoints, all of them
+already mapped through `build_comp_mapping` from the species XML's
+component order into the molecule type's declaration order. The second
+stamps out the copies. Nothing in a template depends on which copy is
+being made, so resolving one per copy — which is what this used to do —
+rebuilt a name-keyed `unordered_map` per molecule per copy, and was
+about a sixth of session build on a million-molecule pool (issue #67).
+A change here that leaves copy 1 right and copies 2..N wrong is the
+failure mode; `seed_build_test` is the gate.
+
+The first pass also totals the seed: molecules, components, and
+molecules per type. `AgentPool::reserve_for_seed` takes those and
+reserves every arena the walk grows, which otherwise doubles its way
+through the build — `molecules_` most expensively, since each element
+carries a vector. It is a capacity hint and nothing more: a total that
+is short, or that does not fit the `int` the pool addresses molecules
+with, costs only the growth it failed to pre-empt.
+
+### Step 4 — the per-rule tables
+
+`init_rule_states` settles each rule's shape (which reactant slots it
+has, whether its rate law is local, whether either slot is pure context)
+and then hands it to `rescan_all_molecules_for_rule`, which sizes that
+rule's per-molecule tables by the molecule arena and fills them.
+
+Those tables are **two** vectors, both indexed by molecule id and kept
+exactly the same length:
+
+- `mol_data` (`PerMolRuleData`, 12 bytes) — the two slots' embedding
+  counts and the P1 cache flag. Every rule with a reactant pattern
+  molecule to seed on carries one.
+- `mol_aux` (`PerMolRuleAux`, 64 bytes) — the shared-component split,
+  the four local-rate fields, and the pure-context complex ids. Only
+  allocated where `RuleState::needs_mol_aux` says the rule's shape reads
+  one; left empty otherwise.
+
+The row width is what a rule's table costs, once per molecule in the
+pool, in zeroing at every session build and in residency for the whole
+run. Before the split every rule paid the full 80-byte row, so a
+unimolecular non-local rule with no pure-context slot — which reads two
+of the eleven fields — cost 373 MB and about 0.1 s per session build on
+a 4.7e6-molecule pool for a table it wrote a handful of entries of
+(issue #71). Two things follow for anyone editing this:
+
+- Every site that grows one table must grow the other, which is what
+  `grow_mol_tables` is for. A `mol_aux` shorter than `mol_data` is an
+  out-of-bounds read on the next event, not a wrong number.
+- `rule_needs_mol_aux` is the single definition of which shapes get the
+  wide row. Reading a `mol_aux` field from a path a shape outside that
+  predicate can reach is the other way to break this.
+
+The rescan fills `mol_data` with the P1 cache flag already set, because
+a full rescan is what validates every row — including the zero-valued
+defaults for molecules of types the rule cannot seed on. The default in
+`PerMolRuleData` itself stays false, and the on-demand growth path takes
+that default: those rows are for molecules born since the rescan, which
+genuinely have not been computed.
+
+Two rules never get either table: an n-ary rule (three or more reactant
+patterns), whose counts live on `NaryState`, and a rule with no reactant
+pattern molecule to seed on (issue #68). Every indexed read of
+`mol_data` bounds-checks against its size or grows it first, so an empty
+table gives the same "no entry for this molecule" answer a zeroed one
+does.
+
+`rule_table_shape_test` is the gate: one rule of each shape over
+molecules made after the session build sized the tables, each arm priced
+against an analytic reference.
+
+#### What the tables hold
+
+The row width is settled; the **sizing** is not. Both tables are
+`assign(pool.molecule_count(), ...)` — the whole molecule arena, per rule
+— and so is the Fenwick sampler a slot gets once its type population
+passes `FENWICK_THRESHOLD`, and so are an n-ary rule's per-slot `counts`
+(plus `raw` / `cx_of` on its context slots). None of that is a function
+of the population the rule can actually see: a rule whose seed type holds
+one molecule out of four million is charged for four million rows.
+
+`RuleTableBytes` / `rule_table_bytes` account for what that comes to, and
+the `[RM tables]` block prints it per rule and per model at the end of a
+run, alongside the existing `[RM timing]` and `[RM per-rule]` blocks but
+under its own `RM_PRINT_TABLES=1` gate — `reach` below walks each rule's
+seed-type populations, and `RM_PRINT_TIMING` is what the wall-clock
+harnesses set on every replicate:
+
+```
+[RM tables] arena=8030 rules=26 tabled=26 bytes=14582704 (13.9 MB) mol=12783760 sampler=1798944 reach_bytes=12994704
+  RR1 (_R1): rows=8030 reach=7530 mol=610280 sampler=128496
+  ...
+```
+
+Three things about the numbers.
+
+They count rows *written* (`size()`), not rows allocated (`capacity()`).
+Everything in `[0, size)` has been written by the `assign` that sized the
+table or the `resize` that grew it, so it is resident; the tail up to
+`capacity()` is address space the geometric growth of `resize(mid + 1)`
+reserved and nothing has touched. Counting capacity put several corpus
+models over 100% of their own peak RSS, which is the tell. So this is a
+floor on what the tables cost, which is the right side to err on for an
+argument that they are too big.
+
+`reach_bytes` is the same total with every table cut to the highest live
+molecule id its rule can index — one past the top of its seed types'
+populations. Issue #71 names sizing the tables that way as the obvious
+shortcut and warns it does not generalize; `reach_bytes` is what makes
+that warning a number.
+
+Read it as a bound on what a table *needs*, not on what sizing it that
+way *delivers*. Building the tables at `reach` is safe — every read
+bounds-checks or grows first — but it does not hold, because
+`incremental_update` hands every rule every molecule an event touched and
+grows that rule's table to cover it whatever its type, so each table
+converges on the arena regardless. A molecule of a type neither slot
+seeds on scores zero on both counts forever; its row exists only because
+the loop made one. Measured: sizing by reach alone keeps 83.7% of the
+bytes over the sweep against the 59.2% `reach_bytes` implies, and
+`CaMKII_holo` keeps all of a table its rules reach 8.5% of.
+
+The per-complex tallies (`PerCxTally`) are deliberately not counted: they
+are sized by matching complexes rather than by the arena, so they are not
+part of the product this measures.
+
+`harness/rule_table_footprint.py` sweeps the three corpora with it,
+pairing each model's table footprint against the peak RSS of its own
+`rm_driver` process. What that sweep found, over all 189 models: on the
+26 whose arena reaches 10 000 molecules the median share of peak RSS
+held in these tables is 48.6%, and six are over 90% — `tcr_gen27ind33`
+is 158 rules over 155 471 molecules and holds 887 MB of a 956 MB peak.
+The unit cost is 44 bytes per (rule holding a table x arena row) at the
+median, and a quarter of the total is Fenwick samplers. `rule_table_footprint_test` is the gate on the
+accounting itself, and pins each rule shape's row width exactly: a field
+added to either per-molecule struct is a byte per molecule per rule of
+resident memory for the whole run, which is the change issue #71 says has
+to be made deliberately.
+
 ## SSA event loop
 
 Public entry: `Engine::run` (lines 7099–7103) → `Impl::run_ssa`
@@ -85,6 +260,49 @@ classify same-complex bond candidates without re-walking the graph.
   If not, it was a tree edge — partition into two pieces and redistribute
   the cycle count using `edges − vertices + 1` per piece (lines 586–630).
   The BFS visited-set is reused for the partition; no second walk.
+
+### Pool side tables
+
+Three `AgentPool` reads sit on the per-event path, so all three are O(1)
+side tables rather than walks, and all three have an ordering or
+bookkeeping contract a future edit can break silently:
+
+- `type_mol_index_[type]` — the live molecules of one type. Removal is a
+  swap-with-back using `type_mol_pos_[mol_id]`, **not** an order-preserving
+  erase: the erase is O(population of the type) and every deletion pays it,
+  which is enough on its own to make per-event cost grow with system size
+  (issue #62). The list is therefore in no particular order. Nothing may
+  depend on its order — `molecules_of_type` consumers scan it whole or
+  sample from it by weight, and the Fenwick samplers key on molecule id,
+  not on position.
+- `active_mol_count_` — the live molecule count, maintained by
+  `add_molecule` / `delete_molecule`. `active_molecule_count()` is read
+  every event when a molecule limit is set, so it must never go back to
+  scanning for `.active`.
+- `cycle_bond_count_` — see above.
+
+`kPoolIndexSelfCheck` (Debug and ASan builds, gated from CMakeLists.txt)
+proves the first two on every deletion: the recorded position against the
+type list's own contents, and the tally against `molecules_ − free_mol_ids_`.
+Both checks are O(1).
+
+### Who marks a complex dirty
+
+`cxs_dirty_` is the canonical-label cache's invalidation set, and
+`cached_label_of` treats an id that is *absent* from the label cache as
+dirty too. Complex ids come from `next_complex_id_++` and are never
+recycled, so a complex that was just born cannot have a cache entry —
+which makes marking it dirty information-free. `add_molecule` therefore
+does not mark, and at seed time that is one hash insert saved per
+molecule (issue #67). Every mutator that edits an *existing* complex —
+`set_state`, `add_bond`, `remove_bond`, `merge_complexes`,
+`split_complex_if_needed` — still must, and missing one there is the bug
+`kCanonicalCacheSelfCheck` exists to catch.
+
+`cx_edits_` is not the same question and does not follow the same rule.
+Its reader has to see each edit rather than ask whether one is
+outstanding, so a birth is appended to it even though it is not marked
+dirty.
 
 ## Propensity
 
@@ -170,3 +388,11 @@ on `Simulator::save_state` in `include/rulemonkey/simulator.hpp`.
 - Crash under ASan → almost always `AgentPool` index reuse after
   `DeleteMolecule`. Check that the affected-molecules set was not
   populated with the deleted mid before compaction.
+- Per-event cost that grows with population → look for a walk over the
+  whole pool on the event path, not for an algorithmic change in
+  matching. Run the model at two scales, divide wall time by
+  `events=` from `RM_PRINT_TIMING=1`, and compare: a per-event cost
+  that tracks system size is a scan somewhere. The phase timers name
+  which of `fire_rule` / `incr_update` / `record_at` it lives in.
+  Sampling the process (`sample`, `perf`) then names the function
+  directly — this is how the pool side tables above were found.

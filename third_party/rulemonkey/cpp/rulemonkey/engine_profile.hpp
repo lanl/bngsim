@@ -182,10 +182,33 @@ inline constexpr bool kCanonicalCacheSelfCheck = false;
 // RULEMONKEY_LOCAL_OBS_SELFCHECK compile definition is set by CMakeLists.txt
 // for Debug and ASan and left unset for Release, so ctest and the guard
 // tier exercise the invariant while Release takes the bare table read.
+//
+// The same gate covers the other place a tracked observable is read out of
+// those tables instead of walked for: seed_tracked_obs_values, which settles
+// obs_values at init from the contribs and per-complex pass flags rather
+// than full-walking every tracked observable a second time (issue #65).
+// Same claim, same failure mode, so the same switch turns both proofs on.
 #ifdef RULEMONKEY_LOCAL_OBS_SELFCHECK
 inline constexpr bool kLocalObsTrackInvariant = true;
 #else
 inline constexpr bool kLocalObsTrackInvariant = false;
+#endif
+
+// AgentPool index self-check (issue #62).  Two O(population) walks in the
+// pool became O(1) side tables: `type_mol_pos_` records where each live
+// molecule sits in its type index so removal is a swap-with-back, and
+// `active_mol_count_` is a maintained tally rather than a scan for
+// `.active`.  Both are now capable of being silently wrong instead of
+// merely slow, so delete_molecule checks each against an independent
+// reading — the type list's own contents, and the free-id list — and
+// std::abort()s on mismatch.  Both checks are O(1), so leaving them on
+// costs the Debug and ASan runs nothing measurable.  Build-type driven
+// like the two gates above: RULEMONKEY_POOL_INDEX_SELFCHECK is set by
+// CMakeLists.txt for Debug and ASan and left unset for Release.
+#ifdef RULEMONKEY_POOL_INDEX_SELFCHECK
+inline constexpr bool kPoolIndexSelfCheck = true;
+#else
+inline constexpr bool kPoolIndexSelfCheck = false;
 #endif
 
 // ===========================================================================
@@ -1085,7 +1108,14 @@ inline void report_cmm_fc(const CmmFcProfile& q, const CountMultiProfile& cm) {
   std::fprintf(stderr,
                "  cross-check: rej_sum+matches=%llu  iters=%llu  (must be equal)"
                "  fm_hits=%llu (from count_multi)\n",
-               static_cast<unsigned long long>(rej_sum + q.fc_total_matches),
+               // Widen an operand, not the sum: both are already uint64_t, so
+               // the addition cannot overflow anything the cast would rescue,
+               // and on a platform where uint64_t IS unsigned long (Linux) a
+               // cast of the whole expression is a no-op that
+               // bugprone-misplaced-widening-cast flags.  On macOS the two
+               // types coincide and nothing fires, which is why this only
+               // ever showed up on the Linux CI leg.
+               static_cast<unsigned long long>(rej_sum) + q.fc_total_matches,
                static_cast<unsigned long long>(q.fc_candidate_iters),
                static_cast<unsigned long long>(cm.fm_hits));
   double const fc = q.fc_calls > 0 ? static_cast<double>(q.fc_calls) : 1.0;

@@ -12,3 +12,7 @@ __pycache__/
 
 # Local development scratch area (untracked)
 dev/
+
+# local_ci.py / local_ci_smoke.py output: machine-specific, never committed
+scripts/_reports/
+scripts/local_ci_report-*.md

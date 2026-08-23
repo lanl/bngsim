@@ -407,7 +407,9 @@ public:
   // Returns global-function names in XML declaration order captured at
   // construction — the `begin functions` entries with no local arguments,
   // parallel to a Result's `function_names`.  Local functions are
-  // excluded; the vector is empty for a model without global functions.
+  // excluded, as are `reactant_N()` placeholders, which have a value only
+  // inside the rule whose rate law reads them; the vector is empty for a
+  // model without global functions.
   // The returned vector is a copy.
   std::vector<std::string> function_names() const;
 
