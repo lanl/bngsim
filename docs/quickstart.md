@@ -1,7 +1,5 @@
 # Quickstart
 
-
-
 ## Load a model and simulate
 
 ```python
@@ -21,6 +19,26 @@ print(result.time.shape)          # (101,)
 print(result.species.shape)       # (101, n_species)
 print(result.observables.shape)   # (101, n_observables)
 ```
+
+## Other model formats
+
+`.net` is the native format. SBML, Antimony and BNGL load through the same
+`Model` interface:
+
+```python
+sbml_model = bngsim.Model.from_sbml("model.xml")
+ant_model  = bngsim.Model.from_antimony("model.ant")  # pip install bngsim[antimony]
+bngl_model = bngsim.Model.from_bngl("model.bngl")   # pip install bngsim[bngl]
+```
+
+`from_bngl` is not a parser. BNGsim simulates reaction *networks* and BNGL
+describes *rules*, so the model block is handed to `BNG2.pl generate_network`
+and the resulting `.net` is loaded through `from_net`. That makes BNG2.pl a
+requirement: the `bngl` extra supplies it, or point `$BNGPATH` at your own
+install. Generated networks are cached, so a repeated load of an unchanged
+model does not re-run BNG2.pl.
+
+See [Loading models](user-guide/loading-models.md) for the full picture.
 
 ## Parameter sweeps
 

@@ -39,7 +39,7 @@ exclude_patterns = ["bngsim-coyote-logo/*", "_build", "requirements.txt"]
 myst_enable_extensions = ["colon_fence", "deflist", "substitution", "tasklist"]
 # NB: dollarmath is intentionally OFF — pages contain shell `$VARS` and `$(...)`
 # that must not be parsed as math.
-myst_heading_anchors = 3  # auto-anchor h1-h3 so cross-page #links resolve
+myst_heading_anchors = 4  # auto-anchor h1-h4 so cross-page #links resolve
 
 # -- autodoc -----------------------------------------------------------------
 # On Read the Docs the compiled C++ core is built and installed (see
