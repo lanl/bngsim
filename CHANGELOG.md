@@ -366,6 +366,52 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Changed
 
+- **Re-vendored RuleMonkey 3.9.0 (`1d14160`) → 3.10.0 (`3d97f66`).** Three of the
+  changes alter what a model does under `method="rm"`, and one of those can turn a
+  model that ran into one that refuses.
+
+  **`TotalRate` now warns at load, and is refused where RuleMonkey and NFsim
+  genuinely disagree.** BioNetGen does not implement `TotalRate` for network
+  simulations, so `generate_network` writes the rate law into the `.net` as an
+  ordinary rate constant and there is no BNG2 result to check such a model
+  against. That leaves NFsim as the only other implementation, and it disagrees:
+  NFsim expands a rule whose reactant pattern has interchangeable components into
+  one reaction class per permutation, and under `TotalRate` every class returns
+  the *whole* rate, so the rule runs at `rate × #{populated permutations}` —
+  measured upstream at 1.00×, 2.02× and 2.98× as free sites go from one to three.
+  BNG2's own network expansion implies a third number again. All three disagree,
+  so RuleMonkey refuses *those* rules rather than silently picking a reading. The
+  test is structural and deliberately narrow: a `TotalRate` rule is refused only
+  when a reactant pattern touches a component whose molecule type declares two or
+  more of that name. Every other `TotalRate` rule warns and runs, because there
+  RuleMonkey and NFsim compute the same thing. Refusing all of them was measured
+  and rejected: it would have taken out six models from NFsim's own validation
+  suite, `oscSystem`, and around eleven RuleHub biology examples that RuleMonkey
+  runs in agreement with NFsim today.
+
+  **A rate law built on `reactant_N()` had a propensity of zero**, so any rule
+  using one never fired. It is now resolved against the rule asking for it.
+
+  **A session counted every tracked observable twice** and seeded it the same way.
+
+  The rest is either a fix to a shape bngsim's corpus does not currently write
+  (`MM(kcat, Km)` at the `Km <= 0` boundary, a pure-context reactant pattern
+  carrying a per-molecule local function, a rule with no reactant pattern to seed
+  on) or performance work with no behavioural component: per-molecule tables sized
+  by what a rule can see rather than by the molecule arena, seed species resolved
+  once instead of once per copy, and a canonical-representative election that no
+  longer builds a string.
+
+  The refresh also carries richardposner/RuleMonkey#78, which updates RuleMonkey's
+  standalone copy of bngsim's expression evaluator onto the `mratio` work of
+  issues #451, #453 and #456. That copy had been pinned to a bngsim commit
+  predating all three, so standalone RuleMonkey was still evaluating `mratio` with
+  the version that can be silently wrong. **It changes nothing here**: inside a
+  bngsim build CMake links the host `bngsim::expression` target and the vendored
+  copy is never compiled, which is exactly why the drift survived so long. Landing
+  it upstream was required before this refresh could run at all, because the
+  `EXPRTK_SYNC_FILES` guard fails closed on that drift.
+
 - **The manuscript's eight named BNGL models are generated from their curated
   `BNGL-Models` records, once, and every suite that runs them reads the same
   artifact (issue #423).** `suites/ssa_table5` (Table 5, exact Gillespie SSA),

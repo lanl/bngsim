@@ -139,6 +139,47 @@ public:
     type_mol_index_.resize(model.molecule_types.size());
   }
 
+  // Capacity hint for a bulk build: `n_molecules` molecules carrying
+  // `n_components` components between them, `per_type[t]` of them of
+  // molecule type `t`.  Every arena below otherwise grows by doubling
+  // through the whole walk, so the pool is reallocated and copied a
+  // logarithmic number of times — and `molecules_` copies a vector per
+  // element, so that is the most expensive of them (issue #67).
+  //
+  // Pure capacity: nothing here changes what the pool holds, and a count
+  // that is short only costs the growth it failed to pre-empt.  The
+  // totals are `long long` because they are products of a seed count and
+  // a per-species molecule count, either of which can be large; the pool
+  // addresses molecules and components with `int`, so a total that does
+  // not fit one is not a reservation to honour — skip it and let the
+  // walk fail where it always would.
+  void reserve_for_seed(long long n_molecules, long long n_components, long long n_complexes,
+                        const std::vector<long long>& per_type) {
+    constexpr long long kMax = std::numeric_limits<int>::max();
+    if (n_molecules <= 0 || n_molecules > kMax || n_components < 0 || n_components > kMax)
+      return;
+    auto const mols = static_cast<size_t>(n_molecules);
+    auto const comps = static_cast<size_t>(n_components);
+
+    molecules_.reserve(molecules_.size() + mols);
+    type_mol_pos_.reserve(molecules_.size() + mols);
+    cx_moves_.reserve(cx_moves_.size() + mols);
+    // Sized by the complexes the seed LEAVES, not the one-per-molecule the
+    // walk creates before its bonds merge them: a hash map never gives a
+    // bucket array back, so reserving the transient peak would hold it for
+    // the rest of the run.  A seed bond that closes a cycle rather than
+    // merging makes this an under-estimate by one, which costs a rehash
+    // near the end and nothing else.
+    if (n_complexes > 0 && n_complexes <= kMax)
+      complex_members_.reserve(complex_members_.size() + static_cast<size_t>(n_complexes));
+    components_.reserve(components_.size() + comps);
+    comp_to_mol_.reserve(comp_to_mol_.size() + comps);
+    for (size_t t = 0; t < per_type.size() && t < type_mol_index_.size(); ++t) {
+      if (per_type[t] > 0 && per_type[t] <= kMax)
+        type_mol_index_[t].reserve(type_mol_index_[t].size() + static_cast<size_t>(per_type[t]));
+    }
+  }
+
   // Create a new molecule of the given type. Returns molecule ID.
   int add_molecule(int type_index) {
     auto& mtype = model_.molecule_types[type_index];
@@ -157,6 +198,7 @@ public:
     mol.active = true;
 
     // Allocate components
+    mol.comp_ids.reserve(mtype.components.size());
     for (const auto& component : mtype.components) {
       int comp_id;
       if (!free_comp_ids_.empty()) {
@@ -178,10 +220,25 @@ public:
     int const cx = next_complex_id_++;
     mol.complex_id = cx;
     complex_members_[cx] = {mol_id};
-    mark_cx_dirty(cx); // a freshly born complex has no cached canonical label
+    // Deliberately not `mark_cx_dirty(cx)`.  `cx` was just minted from a
+    // counter that never recycles, so no entry for it can exist in any
+    // label cache, and `cached_label_of` already treats an absent id as
+    // dirty (see `cxs_dirty_`).  The set insert would be information-free
+    // — and at seed time it is one per molecule, which is what left the
+    // dirty set holding every complex in the model (issue #67).
+    //
+    // The edit log is a different question: its reader has to SEE the
+    // birth rather than ask whether an edit is outstanding, so it still
+    // gets the id.
+    if (track_cx_edits_)
+      cx_edits_.push_back(cx);
     cx_moves_.push_back(mol_id);
 
+    if (mol_id >= static_cast<int>(type_mol_pos_.size()))
+      type_mol_pos_.resize(molecules_.size(), -1);
+    type_mol_pos_[mol_id] = static_cast<int>(type_mol_index_[type_index].size());
     type_mol_index_[type_index].push_back(mol_id);
+    ++active_mol_count_;
     return mol_id;
   }
 
@@ -211,9 +268,33 @@ public:
       }
     }
 
-    // Remove from type index
+    // Remove from type index.  Swap-with-back, not an order-preserving
+    // erase: a linear `std::remove` here is O(population of the type),
+    // paid on every deletion, and that alone made per-event cost grow
+    // with system size (issue #62).  Nothing downstream depends on the
+    // list's order — `molecules_of_type` consumers either scan it whole
+    // or sample from it by weight, and the Fenwick samplers are keyed by
+    // molecule id, not by position — so the cheap removal is free of
+    // semantic consequence.  `type_mol_pos_` keeps each live molecule's
+    // slot so the swap is O(1); `kPoolIndexSelfCheck` (Debug and ASan
+    // builds) proves that slot against the list itself on every removal.
     auto& tlist = type_mol_index_[mol.type_index];
-    tlist.erase(std::remove(tlist.begin(), tlist.end(), mol_id), tlist.end());
+    int const pos = type_mol_pos_[mol_id];
+    if constexpr (kPoolIndexSelfCheck) {
+      if (pos < 0 || pos >= static_cast<int>(tlist.size()) || tlist[pos] != mol_id) {
+        fprintf(stderr,
+                "[pool_index_selfcheck] type_mol_pos_ out of step: mol=%d type=%d "
+                "pos=%d list_size=%d list_at_pos=%d\n",
+                mol_id, mol.type_index, pos, static_cast<int>(tlist.size()),
+                (pos >= 0 && pos < static_cast<int>(tlist.size())) ? tlist[pos] : -1);
+        std::abort();
+      }
+    }
+    int const moved = tlist.back();
+    tlist[pos] = moved;
+    type_mol_pos_[moved] = pos;
+    tlist.pop_back();
+    type_mol_pos_[mol_id] = -1;
 
     // Free component slots
     for (int const cid : mol.comp_ids) {
@@ -226,6 +307,17 @@ public:
     mol.comp_ids.clear();
     free_mol_ids_.push_back(mol_id);
     cx_moves_.push_back(mol_id);
+    --active_mol_count_;
+    if constexpr (kPoolIndexSelfCheck) {
+      // Independent reading: every inactive slot is on the free list and
+      // nothing else is, so the arena minus the free list is the live count.
+      auto const independent = static_cast<int>(molecules_.size() - free_mol_ids_.size());
+      if (active_mol_count_ != independent) {
+        fprintf(stderr, "[pool_index_selfcheck] active_mol_count_ drift: tally=%d arena-free=%d\n",
+                active_mol_count_, independent);
+        std::abort();
+      }
+    }
   }
 
   void set_state(int comp_id, int new_state) {
@@ -330,13 +422,12 @@ public:
     return (it != cycle_bond_count_.end()) ? it->second : 0;
   }
 
-  int active_molecule_count() const {
-    int n = 0;
-    for (auto& m : molecules_)
-      if (m.active)
-        ++n;
-    return n;
-  }
+  // O(1).  The SSA loop consults this every event when a molecule limit
+  // is set, so a scan of the pool here turned `-gml` into a per-event
+  // O(population) tax even when the cap could never bind (issue #62).
+  // Maintained by add_molecule / delete_molecule and recomputed on
+  // load_state.
+  int active_molecule_count() const { return active_mol_count_; }
 
   int molecule_count() const { return static_cast<int>(molecules_.size()); }
 
@@ -452,12 +543,19 @@ public:
     for (int i = 0; i < n; ++i)
       is >> free_comp_ids_[i];
 
-    // Rebuild type_mol_index from loaded molecules
+    // Rebuild type_mol_index (and its position side table, plus the live
+    // molecule tally) from loaded molecules
     type_mol_index_.clear();
     type_mol_index_.resize(model_.molecule_types.size());
+    type_mol_pos_.assign(molecules_.size(), -1);
+    active_mol_count_ = 0;
     for (int i = 0; i < static_cast<int>(molecules_.size()); ++i) {
-      if (molecules_[i].active)
-        type_mol_index_[molecules_[i].type_index].push_back(i);
+      if (molecules_[i].active) {
+        auto& tlist = type_mol_index_[molecules_[i].type_index];
+        type_mol_pos_[i] = static_cast<int>(tlist.size());
+        tlist.push_back(i);
+        ++active_mol_count_;
+      }
     }
 
     // P7: recompute cycle-bond counts per complex from the restored graph,
@@ -697,6 +795,11 @@ private:
   std::unordered_map<int, std::vector<int>> complex_members_;
   int next_complex_id_ = 0;
   std::vector<std::vector<int>> type_mol_index_;
+  // mol_id -> its slot in type_mol_index_[type], or -1 when the molecule
+  // is not live.  Sized by the molecule arena's high-water mark, so a
+  // reused mol_id slot is already addressable.
+  std::vector<int> type_mol_pos_;
+  int active_mol_count_ = 0;
   std::vector<int> free_mol_ids_;
   std::vector<int> free_comp_ids_;
 
@@ -2332,9 +2435,38 @@ struct FenwickTree {
 // Rate computation structures
 // ===========================================================================
 
+// The per-(rule, molecule) fields EVERY rule's table carries, kept apart
+// from the ones only some rule shapes ever touch (PerMolRuleAux below).
+// The split is what a rule's table costs: a full rescan sizes the table by
+// the molecule arena, so the row width is paid once per molecule in the
+// pool per rule, in zeroing at every session build and in residency for
+// the whole run.  A unimolecular, non-local rule with no pure-context slot
+// reads two of the eleven fields, and used to be charged for all of them —
+// 80 bytes a row against these 12 (issue #71).
 struct PerMolRuleData {
-  int count_a = 0;               // embeddings of reactant pattern A seed molecule
-  int count_b = 0;               // embeddings of reactant pattern B seed molecule
+  int count_a = 0; // embeddings of reactant pattern A seed molecule
+  int count_b = 0; // embeddings of reactant pattern B seed molecule
+  // P1 cache (step 2): set true after the first full recompute of this
+  // (rule, molecule) entry, so incremental_update can tell "valid cached
+  // value" from "default-initialized sentinel".  Bumped back to true on
+  // every recompute; never reset to false during a run.
+  bool cache_init = false;
+};
+
+// The per-(rule, molecule) fields a rule carries only if its shape uses
+// them, in a table parallel to `RuleState::mol_data` that is left empty
+// otherwise (`RuleState::needs_mol_aux`).  Three groups, and the shape
+// predicate is the union of what writes each:
+//   - the shared-component split, written only where the rule has two
+//     reactant slots;
+//   - the four local-rate fields, written only under a local rate law
+//     (including the FunctionProduct B side);
+//   - the pure-context complex ids, written only for a slot counted per
+//     complex.
+// A rule that needs any of them allocates all of them: the groups are
+// small next to the count fields, and the shapes that want one commonly
+// want another.
+struct PerMolRuleAux {
   double a_only = 0;             // binding sites matching only A
   double b_only = 0;             // binding sites matching only B
   double ab_both = 0;            // binding sites matching both A and B
@@ -2345,11 +2477,6 @@ struct PerMolRuleData {
   // Unused (left 0) for ordinary local-rate and non-local rules.
   double local_rate_b = 0.0;
   double local_propensity_b = 0.0;
-  // P1 cache (step 2): set true after the first full recompute of this
-  // (rule, molecule) entry, so incremental_update can tell "valid cached
-  // value" from "default-initialized sentinel".  Bumped back to true on
-  // every recompute; never reset to false during a run.
-  bool cache_init = false;
   // Complex this molecule is currently counted in by the pure-context tally
   // of reactant slot A / B (issue #33), or -1 when it is not in that tally at
   // all.  This is the tally's own record, deliberately NOT re-derived from
@@ -2694,7 +2821,14 @@ bool nary_shape_supported(const Rule& rule) {
 
 struct RuleState {
   std::vector<PerMolRuleData> mol_data; // indexed by mol_id
-  NaryState nary;                       // >= 3 reactant patterns (issue #24)
+  // The wide half of the per-molecule row, for the rules whose shape reads
+  // it (see PerMolRuleAux).  Either empty, or exactly as long as `mol_data`
+  // and indexed by the same mol_id — every site that grows one grows the
+  // other.  `needs_mol_aux` is the shape predicate, settled by
+  // rescan_all_molecules_for_rule before it sizes either table.
+  std::vector<PerMolRuleAux> mol_aux;
+  bool needs_mol_aux = false;
+  NaryState nary; // >= 3 reactant patterns (issue #24)
   double a_total = 0;
   double b_total = 0;
   double a_only_total = 0;
@@ -2776,6 +2910,129 @@ struct RuleState {
   bool clamp_warned = false;
   bool b_mask_complete = false;
 };
+
+// ---------------------------------------------------------------------------
+// Per-rule side-table residency (issue #71).
+//
+// Every per-molecule table a rule owns is sized by the molecule ARENA and
+// not by the population the rule can actually see, so what a model holds in
+// them is a (rule count x arena) product rather than a function of what the
+// rules match.  Four kinds, all of them indexed by mol_id:
+//
+//   * `mol_data`, carried by every rule with a reactant seed molecule;
+//   * `mol_aux`, carried by the shapes that read one (see PerMolRuleAux);
+//   * an n-ary rule's per-slot `counts`, plus `raw` / `cx_of` on its
+//     context slots;
+//   * a Fenwick tree per slot whose type population is over threshold,
+//     `init(pool.molecule_count())` on a sampler only ever updated at the
+//     ids of one type.
+//
+// #72 narrowed the row (80 bytes to 12, with the wide half allocated only
+// where it is read); the SIZING is what is left of #71, and the case for
+// changing it is residency on real models rather than on a synthetic
+// scale-up.  This is the accounting that measures it -- reported per rule
+// and per model by the `[RM tables]` block at the end of a run (gated on
+// RM_PRINT_TABLES), which is what `harness/rule_table_footprint.py` sweeps
+// the corpora with.
+//
+// `size()`, not `capacity()`.  Every row in [0, size) has been written by
+// the `assign` that sized the table or the `resize` that grew it, so it is
+// resident; the tail up to `capacity()` is address space the geometric
+// growth of `resize(mid + 1)` reserved and nothing has touched, which is
+// not.  Counting capacity put several corpus models over 100% of their own
+// peak RSS, which is the tell.  The consequence is that this UNDERSTATES
+// what the allocator holds -- a table that grew has slack, and a `clear()`
+// on a Fenwick whose type fell back below FENWICK_THRESHOLD returns
+// nothing -- so it is a floor on the residency, which is the right side to
+// err on for an argument that the tables are too big.
+//
+// The per-complex tallies (`PerCxTally`) are deliberately not counted: they
+// are sized by matching complexes, so they are not part of the arena
+// product this exists to measure, and their hash-map storage has no
+// equivalent of `size() * sizeof(row)` to report.
+// ---------------------------------------------------------------------------
+struct RuleTableBytes {
+  std::size_t mol = 0;     // per-molecule rows (mol_data, mol_aux, n-ary slots)
+  std::size_t sampler = 0; // Fenwick trees
+  std::size_t rows = 0;    // longest per-molecule table, in entries
+  std::size_t total() const { return mol + sampler; }
+};
+
+// `cap_rows`, when non-zero, caps every table at that many rows instead of
+// counting the rows it has: what the same rule would hold if its tables
+// were sized by something other than the arena.  A table that does not
+// exist stays at zero either way -- the cap shortens tables, it does not
+// conjure them.
+RuleTableBytes rule_table_bytes(const RuleState& rs, std::size_t cap_rows = 0) {
+  RuleTableBytes b;
+  auto capped = [cap_rows](std::size_t n) { return (cap_rows != 0) ? std::min(n, cap_rows) : n; };
+  auto add_rows = [&b, &capped](std::size_t n, std::size_t width) {
+    b.mol += capped(n) * width;
+    b.rows = std::max(b.rows, capped(n));
+  };
+  auto add_tree = [&b, &capped](std::size_t n) {
+    // A Fenwick over k rows is k + 1 doubles; it is 1-indexed.
+    b.sampler += (n == 0) ? 0 : std::min(n, capped(n - 1) + 1) * sizeof(double);
+  };
+  add_rows(rs.mol_data.size(), sizeof(PerMolRuleData));
+  add_rows(rs.mol_aux.size(), sizeof(PerMolRuleAux));
+  for (const auto& c : rs.nary.counts)
+    add_rows(c.size(), sizeof(int));
+  for (const auto& c : rs.nary.raw)
+    add_rows(c.size(), sizeof(int));
+  for (const auto& c : rs.nary.cx_of)
+    add_rows(c.size(), sizeof(int));
+  add_tree(rs.fenwick_a.tree.size());
+  add_tree(rs.fenwick_b.tree.size());
+  for (const auto& f : rs.nary.fenwick)
+    add_tree(f.tree.size());
+  return b;
+}
+
+// One past the highest live molecule id this rule's tables can be indexed
+// at.  The arena is what they are SIZED by; this is what they could be
+// sized by instead without any new pool-side machinery, since every read of
+// every one of them either bounds-checks against the table's length or
+// grows it first -- which is the audit #68 relied on to leave a seedless
+// rule's table empty outright.
+//
+// It is also the shortcut #71 names and warns about, and reporting it
+// beside the row count is how that warning gets a number: a rule whose seed
+// type happens to sit at the top of the arena reaches all of it and saves
+// nothing, and after #62 made type-index removal a swap-with-back, a
+// long-running model's ids of any one type have no reason to stay low.
+// Whether real models leave a rule short of the arena is a measurement.
+//
+// Derived here rather than recorded during the rescan, so that it is a
+// snapshot of the same instant as the row counts it prints next to.
+int rule_table_reach(const AgentPool& pool, const Rule& rule, const RuleState& rs) {
+  auto type_reach = [&pool](int type_index) {
+    int r = 0;
+    if (type_index < 0)
+      return r;
+    for (int const mid : pool.molecules_of_type(type_index))
+      if (pool.molecule(mid).active && mid + 1 > r)
+        r = mid + 1;
+    return r;
+  };
+  if (rs.nary.enabled) {
+    int r = 0;
+    for (int const t : rs.nary.slot_type_index)
+      r = std::max(r, type_reach(t));
+    return r;
+  }
+  const auto& mols = rule.reactant_pattern.molecules;
+  int const seed_a = rule.reactant_pattern_starts.empty() ? 0 : rule.reactant_pattern_starts[0];
+  if (seed_a >= static_cast<int>(mols.size()))
+    return 0; // no seed molecule, so no table at all (#68)
+  int r = type_reach(mols[seed_a].type_index);
+  if (rule.molecularity >= 2 && rule.reactant_pattern_starts.size() > 1) {
+    int const seed_b = rule.reactant_pattern_starts[1];
+    if (seed_b >= 0 && seed_b < static_cast<int>(mols.size()))
+      r = std::max(r, type_reach(mols[seed_b].type_index));
+  }
+  return r;
+}
 
 // Distinct-tuple sum D over the n reactant slots (issue #24).  See the
 // NaryState comment for the partition-lattice expansion this evaluates.
@@ -3352,6 +3609,17 @@ struct Engine::Impl {
   std::vector<int> species_mid_prev_cx;
   bool species_incr_any_tracked = false;
 
+  // Scratch for the Species full-walk in evaluate_observable: a
+  // generation stamp per molecule id marking "the complex this molecule
+  // belongs to has already been counted for the pattern in flight".
+  // Molecule ids are dense, so this replaces a per-call
+  // unordered_set<int> of complex ids — see the comment at the use site.
+  std::vector<uint64_t> obs_walk_cx_stamp;
+  uint64_t obs_walk_cx_gen = 0;
+  // One-element stand-in for the member list of a singleton complex, so
+  // the walk's inner loop stays a single code path.
+  std::vector<int> obs_walk_singleton_scratch{-1};
+
   // Max pattern diameter across all tracked obs.  Determines the BFS
   // depth required for incremental contrib updates: a bond/state
   // change on mol X can alter contrib(Y) only when Y is within
@@ -3423,8 +3691,12 @@ struct Engine::Impl {
   // Global (non-local) functions whose value is exposed to embedders via
   // Result::function_data and get_function_values().  Local functions are
   // excluded: they evaluate per-molecule and have no single global value.
-  // `output_function_indices` indexes into model.functions; the names are
-  // cached in declaration order to parallel Result::function_names.
+  // `reactant_N()` placeholders are excluded for the same reason one step
+  // further out — they have no value even at one molecule, only inside a
+  // rule — and NFsim does not create a function for one at all, so a column
+  // named after one would be RM inventing an output its reference does not
+  // have.  `output_function_indices` indexes into model.functions; the names
+  // are cached in declaration order to parallel Result::function_names.
   std::vector<int> output_function_indices;
   std::vector<std::string> output_function_names;
 
@@ -3440,6 +3712,26 @@ struct Engine::Impl {
   // (init_eval_layout writes them once) so they don't participate.
   uint64_t eval_vars_gen = 1;
   uint64_t eval_vars_seen_gen = 0;
+
+  // Eval-layout slots of the `reactant_N()` placeholders the model
+  // declares, as (N, slot) pairs in declaration order (issue #59).  The
+  // placeholder is an ordinary named slot — nothing else writes it, since
+  // it has no expression to evaluate — so binding a rule's reactant counts
+  // is a handful of stores into `eval_vars_flat` before the rate is
+  // evaluated.  Empty for the overwhelming majority of models, which never
+  // mention the construct.
+  std::vector<std::pair<int, int>> eval_reactant_slots;
+
+  // Which rule's counts a function should be evaluated against when the
+  // whole function table is settled (rebuild_eval_vars).  A rate law that
+  // reads a placeholder has no value outside the rule that owns it, so the
+  // settle pass binds that rule's counts first; -1 means the function does
+  // not read one.  Two rules sharing one rate function is not a shape BNG2
+  // writes — it names a fresh `_rateLawN` per rule — but if it happened the
+  // first owner wins and the settled value is that rule's.  Only the
+  // reported value is affected: evaluate_rate always binds the counts of
+  // the rule it was called for.
+  std::vector<int> gf_reactant_owner_rule_;
 
   // Slot index for each LOCAL function, precomputed once so
   // evaluate_local_rate can save/restore its overrides without
@@ -3553,7 +3845,7 @@ struct Engine::Impl {
     output_function_indices.clear();
     output_function_names.clear();
     for (int i = 0; i < static_cast<int>(model.functions.size()); ++i) {
-      if (!model.functions[i].is_local()) {
+      if (!model.functions[i].is_local() && model.functions[i].reactant_count_index == 0) {
         output_function_indices.push_back(i);
         output_function_names.push_back(model.functions[i].name);
       }
@@ -3563,6 +3855,25 @@ struct Engine::Impl {
     for (int i = 0; i < static_cast<int>(model.functions.size()); ++i) {
       if (model.functions[i].is_local() && gf_expr_id_[i] >= 0)
         eval_local_fn_slots.push_back(i);
+    }
+
+    // `reactant_N()` placeholders and the rate laws that read them (#59).
+    eval_reactant_slots.clear();
+    gf_reactant_owner_rule_.assign(model.functions.size(), -1);
+    for (int i = 0; i < static_cast<int>(model.functions.size()); ++i) {
+      int const n = model.functions[i].reactant_count_index;
+      if (n > 0)
+        eval_reactant_slots.emplace_back(n, eval_gf_main_slot[i]);
+    }
+    if (!eval_reactant_slots.empty()) {
+      for (int ri = 0; ri < static_cast<int>(model.rules.size()); ++ri) {
+        const auto& rl = model.rules[ri].rate_law;
+        if (rl.max_reactant_count_index == 0 || rl.function_name.empty())
+          continue;
+        auto fit = model.function_index.find(rl.function_name);
+        if (fit != model.function_index.end() && gf_reactant_owner_rule_[fit->second] < 0)
+          gf_reactant_owner_rule_[fit->second] = ri;
+      }
     }
   }
 
@@ -3787,7 +4098,102 @@ struct Engine::Impl {
     return mapping;
   }
 
+  // One seed species with every per-copy decision already made: which
+  // molecule types to create, which component slots to set to which
+  // state index, and which component slots to bond.  Everything here is
+  // a function of the SpeciesInit and the model alone, so it is the same
+  // for all `count` copies — resolving it per copy is what made
+  // `build_comp_mapping` (an unordered_map keyed by component name,
+  // built and thrown away per molecule) about a sixth of session build
+  // on a million-molecule pool (issue #67).
+  struct SeedTemplate {
+    struct Mol {
+      int type_index = -1;
+      // (component index in the molecule type, state index) — only the
+      // slots the species actually pins.  A component the species leaves
+      // unstated keeps the default add_molecule gives it.
+      std::vector<std::pair<int, int>> states;
+    };
+    struct Bond {
+      int mol_a = -1;
+      int local_a = -1; // component index within mol_a's molecule type
+      int mol_b = -1;
+      int local_b = -1;
+    };
+    std::vector<Mol> molecules;
+    std::vector<Bond> bonds;
+    int count = 0; // copies to instantiate
+  };
+
+  // Resolve one seed species against the model.  The guards match the
+  // per-copy code this replaced one for one: an unmapped component, a
+  // state name the type does not declare, a bond endpoint outside the
+  // species, and a component index outside the molecule type are all
+  // dropped rather than diagnosed, exactly as before.
+  SeedTemplate resolve_seed_template(const SpeciesInit& si, int count) const {
+    SeedTemplate tmpl;
+    tmpl.count = count;
+    tmpl.molecules.reserve(si.molecules.size());
+    // Species-XML component index -> molecule-type component index, per
+    // molecule.  Kept only until the bonds below are resolved.
+    std::vector<std::vector<int>> comp_mappings;
+    comp_mappings.reserve(si.molecules.size());
+
+    for (const auto& sim : si.molecules) {
+      const auto& mtype = model.molecule_types[sim.type_index];
+      auto const n_type_comps = static_cast<int>(mtype.components.size());
+      auto cmap = build_comp_mapping(sim, mtype);
+
+      SeedTemplate::Mol m;
+      m.type_index = sim.type_index;
+      for (int ci = 0; ci < static_cast<int>(sim.comp_states.size()); ++ci) {
+        const auto& [cname, cstate] = sim.comp_states[ci];
+        if (cstate.empty())
+          continue;
+        int const actual_ci = cmap[ci];
+        if (actual_ci < 0)
+          continue;
+        int const state_idx = mtype.state_index(actual_ci, cstate);
+        if (state_idx >= 0 && actual_ci < n_type_comps)
+          m.states.emplace_back(actual_ci, state_idx);
+      }
+      tmpl.molecules.push_back(std::move(m));
+      comp_mappings.push_back(std::move(cmap));
+    }
+
+    auto const n_mols = static_cast<int>(si.molecules.size());
+    for (const auto& bond : si.bonds) {
+      if (bond.mol_a >= n_mols || bond.mol_b >= n_mols || bond.comp_a < 0 || bond.comp_b < 0)
+        continue;
+      // A bond endpoint beyond the mapping is taken as already being a
+      // molecule-type component index.
+      int const local_a = (bond.comp_a < static_cast<int>(comp_mappings[bond.mol_a].size()))
+                              ? comp_mappings[bond.mol_a][bond.comp_a]
+                              : bond.comp_a;
+      int const local_b = (bond.comp_b < static_cast<int>(comp_mappings[bond.mol_b].size()))
+                              ? comp_mappings[bond.mol_b][bond.comp_b]
+                              : bond.comp_b;
+      auto const n_a = static_cast<int>(
+          model.molecule_types[si.molecules[bond.mol_a].type_index].components.size());
+      auto const n_b = static_cast<int>(
+          model.molecule_types[si.molecules[bond.mol_b].type_index].components.size());
+      if (local_a < 0 || local_b < 0 || local_a >= n_a || local_b >= n_b)
+        continue;
+      tmpl.bonds.push_back({bond.mol_a, local_a, bond.mol_b, local_b});
+    }
+    return tmpl;
+  }
+
   void init_species() {
+    std::vector<SeedTemplate> templates;
+    templates.reserve(model.initial_species.size());
+    // Seed totals, for the pool's capacity hint.  `long long` because
+    // each is a count times a per-species molecule count.
+    long long n_molecules = 0;
+    long long n_components = 0;
+    long long n_complexes = 0;
+    std::vector<long long> per_type(model.molecule_types.size(), 0);
+
     for (auto& si : model.initial_species) {
       // Truncate-toward-zero (NFsim parity).  NFsim's NFinput.cpp:774
       // explicitly does `(int) convertToDouble(specCount)` with a
@@ -3801,61 +4207,47 @@ struct Engine::Impl {
       // mismatch).  Keep the cast explicit and the truncation intent
       // documented rather than masking the FP edge case with rounding.
       int const count = static_cast<int>(si.concentration); // truncate toward zero (NFsim parity)
-      for (int n = 0; n < count; ++n) {
-        // Create molecules for this species instance
-        std::vector<int> mol_ids;
-        // Per-molecule component mappings (species XML index → MoleculeType index)
-        std::vector<std::vector<int>> comp_mappings;
+      if (count <= 0)
+        continue;
+      templates.push_back(resolve_seed_template(si, count));
+      {
+        // Complexes a copy leaves behind: one per molecule, less one for
+        // each bond that merges two of them.
+        const auto& t = templates.back();
+        auto const per_copy =
+            static_cast<long long>(t.molecules.size()) - static_cast<long long>(t.bonds.size());
+        n_complexes += count * (per_copy > 1 ? per_copy : 1);
+      }
+      for (const auto& m : templates.back().molecules) {
+        if (m.type_index < 0 || m.type_index >= static_cast<int>(per_type.size()))
+          continue; // capacity accounting only — the walk itself is unchanged
+        n_molecules += count;
+        n_components +=
+            count * static_cast<long long>(model.molecule_types[m.type_index].components.size());
+        per_type[m.type_index] += count;
+      }
+    }
 
-        for (auto& sim : si.molecules) {
-          int const mid = pool.add_molecule(sim.type_index);
-          auto& mtype = model.molecule_types[sim.type_index];
-          auto& mol = pool.molecule(mid);
+    pool.reserve_for_seed(n_molecules, n_components, n_complexes, per_type);
 
-          auto cmap = build_comp_mapping(sim, mtype);
-
-          // Set component states using the mapping
-          for (int ci = 0; ci < static_cast<int>(sim.comp_states.size()); ++ci) {
-            auto& [cname, cstate] = sim.comp_states[ci];
-            if (cstate.empty())
-              continue;
-            int const actual_ci = cmap[ci];
-            if (actual_ci < 0)
-              continue;
-            int const state_idx = mtype.state_index(actual_ci, cstate);
-            if (state_idx >= 0 && actual_ci < static_cast<int>(mol.comp_ids.size()))
-              pool.set_state(mol.comp_ids[actual_ci], state_idx);
-          }
-
+    std::vector<int> mol_ids; // one instance's molecules; reused across copies
+    for (const auto& tmpl : templates) {
+      mol_ids.reserve(tmpl.molecules.size());
+      for (int n = 0; n < tmpl.count; ++n) {
+        mol_ids.clear();
+        for (const auto& m : tmpl.molecules) {
+          int const mid = pool.add_molecule(m.type_index);
+          // Reference into the molecule arena: nothing below adds a
+          // molecule before it is done with, so it cannot dangle.
+          const auto& mol = pool.molecule(mid);
+          for (const auto& [local_ci, state_idx] : m.states)
+            pool.set_state(mol.comp_ids[local_ci], state_idx);
           mol_ids.push_back(mid);
-          comp_mappings.push_back(std::move(cmap));
         }
-
-        // Create bonds using the per-molecule component mappings
-        for (auto& bond : si.bonds) {
-          if (bond.mol_a < static_cast<int>(mol_ids.size()) &&
-              bond.mol_b < static_cast<int>(mol_ids.size()) && bond.comp_a >= 0 &&
-              bond.comp_b >= 0) {
-            int const mid_a = mol_ids[bond.mol_a];
-            int const mid_b = mol_ids[bond.mol_b];
-            auto& ma = pool.molecule(mid_a);
-            auto& mb = pool.molecule(mid_b);
-
-            int const actual_ci_a =
-                (bond.comp_a < static_cast<int>(comp_mappings[bond.mol_a].size()))
-                    ? comp_mappings[bond.mol_a][bond.comp_a]
-                    : bond.comp_a;
-            int const actual_ci_b =
-                (bond.comp_b < static_cast<int>(comp_mappings[bond.mol_b].size()))
-                    ? comp_mappings[bond.mol_b][bond.comp_b]
-                    : bond.comp_b;
-
-            if (actual_ci_a >= 0 && actual_ci_b >= 0 &&
-                actual_ci_a < static_cast<int>(ma.comp_ids.size()) &&
-                actual_ci_b < static_cast<int>(mb.comp_ids.size())) {
-              pool.add_bond(ma.comp_ids[actual_ci_a], mb.comp_ids[actual_ci_b]);
-            }
-          }
+        for (const auto& b : tmpl.bonds) {
+          int const cid_a = pool.molecule(mol_ids[b.mol_a]).comp_ids[b.local_a];
+          int const cid_b = pool.molecule(mol_ids[b.mol_b]).comp_ids[b.local_b];
+          pool.add_bond(cid_a, cid_b);
         }
       }
     }
@@ -5034,8 +5426,8 @@ struct Engine::Impl {
   static PerCxTally& tally_of(RuleState& rs, int slot) {
     return (slot != 0) ? rs.percx_b : rs.percx_a;
   }
-  static int& percx_cx_of(PerMolRuleData& md, int slot) {
-    return (slot != 0) ? md.percx_cx_b : md.percx_cx_a;
+  static int& percx_cx_of(PerMolRuleAux& ax, int slot) {
+    return (slot != 0) ? ax.percx_cx_b : ax.percx_cx_a;
   }
   static bool percx_canon_of(const RuleState& rs, int slot) {
     return (slot != 0) ? rs.percx_canon_b : rs.percx_canon_a;
@@ -5045,10 +5437,10 @@ struct Engine::Impl {
   }
   // The local rate priced for this molecule on this slot.  Zero for a rule
   // with no local function, which keeps rate_sum trivially 0 there.
-  static double percx_rate_of(const RuleState& rs, const PerMolRuleData& md, int slot) {
+  static double percx_rate_of(const RuleState& rs, const PerMolRuleAux& ax, int slot) {
     if (!rs.has_local_rates)
       return 0.0;
-    return (slot != 0) ? md.local_rate_b : md.local_rate;
+    return (slot != 0) ? ax.local_rate_b : ax.local_rate;
   }
 
   // Re-sum `cx`'s representative rate into rate_sum.  Called on every rep
@@ -5058,8 +5450,8 @@ struct Engine::Impl {
     auto it = t.entries.find(cx);
     if (it == t.entries.end())
       return;
-    double const nv = (it->second.rep >= 0 && it->second.rep < static_cast<int>(rs.mol_data.size()))
-                          ? percx_rate_of(rs, rs.mol_data[it->second.rep], slot)
+    double const nv = (it->second.rep >= 0 && it->second.rep < static_cast<int>(rs.mol_aux.size()))
+                          ? percx_rate_of(rs, rs.mol_aux[it->second.rep], slot)
                           : 0.0;
     t.rate_sum += nv - it->second.rep_rate;
     it->second.rep_rate = nv;
@@ -5070,8 +5462,8 @@ struct Engine::Impl {
   // count, so a molecule that has moved but not yet been re-synced cannot be
   // promoted into a complex it is no longer credited to.
   static bool percx_holds(RuleState& rs, int slot, int cx, int m) {
-    return m >= 0 && m < static_cast<int>(rs.mol_data.size()) &&
-           percx_cx_of(rs.mol_data[m], slot) == cx;
+    return m >= 0 && m < static_cast<int>(rs.mol_aux.size()) &&
+           percx_cx_of(rs.mol_aux[m], slot) == cx;
   }
 
   // Rank every name in the model the way the canonical color strings order
@@ -5267,10 +5659,11 @@ struct Engine::Impl {
   // Bring the tally's record for (rule slot, molecule) in line with the pool.
   void percx_sync(int ri, int slot, int mid) {
     auto& rs = rule_states[ri];
-    if (mid < 0 || mid >= static_cast<int>(rs.mol_data.size()))
+    if (mid < 0 || mid >= static_cast<int>(rs.mol_data.size()) ||
+        mid >= static_cast<int>(rs.mol_aux.size()))
       return;
     auto& md = rs.mol_data[mid];
-    int& cur = percx_cx_of(md, slot);
+    int& cur = percx_cx_of(rs.mol_aux[mid], slot);
     bool const live = mid < pool.molecule_count() && pool.molecule(mid).active;
     int const want = (live && count_of(md, slot) > 0) ? pool.complex_of(mid) : -1;
     if (cur == want)
@@ -5376,8 +5769,8 @@ struct Engine::Impl {
     auto& rs = rule_states[ri];
     PerCxTally& t = tally_of(rs, slot);
     t.clear();
-    for (auto& md : rs.mol_data)
-      percx_cx_of(md, slot) = -1;
+    for (auto& ax : rs.mol_aux)
+      percx_cx_of(ax, slot) = -1;
     auto& rule = model.rules[ri];
     int const seed =
         (slot != 0)
@@ -5415,8 +5808,8 @@ struct Engine::Impl {
       auto& e = t.entries[cx];
       if (canon && e.hits > 1)
         e.rep = percx_find_rep(rs, slot, cx, e.hits);
-      e.rep_rate = (e.rep >= 0 && e.rep < static_cast<int>(rs.mol_data.size()))
-                       ? percx_rate_of(rs, rs.mol_data[e.rep], slot)
+      e.rep_rate = (e.rep >= 0 && e.rep < static_cast<int>(rs.mol_aux.size()))
+                       ? percx_rate_of(rs, rs.mol_aux[e.rep], slot)
                        : 0.0;
       t.rate_sum += e.rep_rate;
     }
@@ -5431,6 +5824,70 @@ struct Engine::Impl {
   double percx_b(int ri) const {
     return rule_states[ri].per_complex_b ? static_cast<double>(rule_states[ri].percx_b.size())
                                          : -1.0;
+  }
+
+  // Match count of rule `ri`'s reactant pattern `slot` (0-based) — the same
+  // number compute_propensity multiplies the rate by, so a rate law that
+  // reads `reactant_N()` and one that does not are priced off one count
+  // (issue #59).  Out-of-range slots read 0; the loader refuses a rule whose
+  // rate law asks for more reactants than it has, so that is a floor and not
+  // a reachable answer.
+  double reactant_slot_count(int ri, int slot) const {
+    const auto& rs = rule_states[ri];
+    if (slot < 0 || slot >= model.rules[ri].molecularity)
+      return 0.0;
+    if (rs.nary.enabled)
+      return (slot < static_cast<int>(rs.nary.slot_totals.size())) ? rs.nary.slot_totals[slot]
+                                                                   : 0.0;
+    if (slot == 0) {
+      double const cx = percx_a(ri);
+      return (cx >= 0.0) ? cx : (rs.a_total / rs.embedding_correction_a);
+    }
+    double const cx = percx_b(ri);
+    return (cx >= 0.0) ? cx : (rs.b_total / rs.embedding_correction_b);
+  }
+
+  // Write rule `ri`'s reactant counts into the `reactant_N()` slots, so the
+  // next expression evaluation resolves them.  Passing ri = -1 clears them,
+  // which is what the settle pass leaves behind: outside a rule the
+  // placeholder stands for nothing.
+  void bind_reactant_counts(int ri) {
+    for (auto const& [n, slot] : eval_reactant_slots)
+      eval_vars_flat[slot] = (ri >= 0) ? reactant_slot_count(ri, n - 1) : 0.0;
+  }
+
+  // Does this rule's shape ever touch a PerMolRuleAux field?  The union of
+  // what writes each of the three groups:
+  //   - `molecularity >= 2` is the only thing that writes the
+  //     shared-component split (a_only / b_only / ab_both), in the rescan
+  //     and in incremental_update;
+  //   - a local rate law writes local_rate / local_propensity, and the
+  //     FunctionProduct (DOR2) law writes the _b pair as well;
+  //   - a pure-context slot writes percx_cx_a / percx_cx_b.
+  // Read once per rescan, before either table is sized.
+  static bool rule_needs_mol_aux(const Rule& rule, const RuleState& rs) {
+    return rule.molecularity >= 2 || rule.rate_law.is_local ||
+           rule.rate_law.type == RateLawType::FunctionProduct || rs.per_complex_a ||
+           rs.per_complex_b;
+  }
+
+  // The value a full rescan fills `mol_data` with: all counts zero, and the
+  // P1 cache flag already set because the rescan is what validates the row.
+  static PerMolRuleData rescanned_row() {
+    PerMolRuleData md;
+    md.cache_init = true;
+    return md;
+  }
+
+  // Grow both per-molecule tables to cover `mid`, keeping `mol_aux` exactly
+  // as long as `mol_data` for a rule that has one.  `proto` is the row the
+  // new `mol_data` entries take — `rescanned_row()` from inside a full
+  // rescan, a default row from the on-demand paths, which is the difference
+  // between "computed and zero" and "not computed yet".
+  static void grow_mol_tables(RuleState& rs, int mid, const PerMolRuleData& proto) {
+    rs.mol_data.resize(mid + 1, proto);
+    if (rs.needs_mol_aux)
+      rs.mol_aux.resize(mid + 1, PerMolRuleAux{});
   }
 
   void rescan_all_molecules_for_rule(int rule_idx) {
@@ -5448,8 +5905,6 @@ struct Engine::Impl {
       return;
     }
 
-    int const pool_size = pool.molecule_count();
-    rs.mol_data.assign(pool_size, PerMolRuleData{});
     rs.a_total = 0;
     rs.b_total = 0;
     rs.a_only_total = 0;
@@ -5464,6 +5919,19 @@ struct Engine::Impl {
         (rule.reactant_pattern_starts.size() > 1) ? rule.reactant_pattern_starts[1] : -1;
 
     if (seed_a >= static_cast<int>(rule.reactant_pattern.molecules.size())) {
+      // No reactant pattern molecule to seed on, so this rule has no
+      // per-molecule state at all — leave mol_data empty rather than
+      // sizing and zeroing one 80-byte entry per molecule in the pool
+      // for a table nothing will read (373 MB on a 4.7e6-molecule pool,
+      // per rule of this shape, at every session build).  The n-ary
+      // early-out above already returns without building mol_data on
+      // the same reasoning.  Every indexed read of mol_data elsewhere
+      // either bounds-checks against its size or resizes first, so an
+      // empty table is the same "no entry for this molecule" answer a
+      // zeroed one gives.
+      rs.mol_data.clear();
+      rs.mol_aux.clear();
+      rs.needs_mol_aux = false;
       // Synthesis rule (molecularity=0): propensity is just the rate
       if (rule.molecularity == 0) {
         double const rate = evaluate_rate(rule);
@@ -5474,6 +5942,26 @@ struct Engine::Impl {
       return;
     }
 
+    // Settle the shape predicate before either table is sized: it decides
+    // whether the wide half is allocated at all, and every later site that
+    // grows one table reads it to decide whether to grow the other.
+    rs.needs_mol_aux = rule_needs_mol_aux(rule, rs);
+
+    // Filled with the P1 cache flag already set.  A full rescan leaves every
+    // entry a valid snapshot of the current pool — including the zero-valued
+    // defaults for molecules of types this rule cannot seed on — so the flag
+    // is part of the value the table is filled with rather than a second
+    // pass over it afterwards, which on a 4.7e6-molecule pool was a whole
+    // extra walk writing one byte per row (issue #71).  `PerMolRuleData{}`'s
+    // own default stays false: the on-demand `resize(mid + 1)` in
+    // incremental_update adds an entry for a molecule born since the rescan,
+    // which genuinely has not been computed.
+    rs.mol_data.assign(pool.molecule_count(), rescanned_row());
+    if (rs.needs_mol_aux)
+      rs.mol_aux.assign(pool.molecule_count(), PerMolRuleAux{});
+    else
+      rs.mol_aux.clear();
+
     auto& pm_a = rule.reactant_pattern.molecules[seed_a];
 
     // Scan all molecules of the matching type
@@ -5481,7 +5969,7 @@ struct Engine::Impl {
       if (!pool.molecule(mid).active)
         continue;
       if (mid >= static_cast<int>(rs.mol_data.size()))
-        rs.mol_data.resize(mid + 1, PerMolRuleData{});
+        grow_mol_tables(rs, mid, rescanned_row());
 
       int count_a;
       if (rs.use_multi_mol_count) {
@@ -5507,7 +5995,7 @@ struct Engine::Impl {
         if (!pool.molecule(mid).active)
           continue;
         if (mid >= static_cast<int>(rs.mol_data.size()))
-          rs.mol_data.resize(mid + 1, PerMolRuleData{});
+          grow_mol_tables(rs, mid, rescanned_row());
 
         int count_b;
         if (rs.use_multi_mol_count_b) {
@@ -5529,20 +6017,21 @@ struct Engine::Impl {
         if (!pool.molecule(mid).active)
           continue;
         auto& md = rs.mol_data[mid];
+        auto& ax = rs.mol_aux[mid];
         if (md.count_a > 0 && md.count_b > 0) {
           compute_shared_components(pool, mid, rule, model, seed_a, seed_b, bi.bind_local_a,
-                                    bi.bind_local_b, bi.seed_mol_a, bi.seed_mol_b, md.a_only,
-                                    md.b_only, md.ab_both);
+                                    bi.bind_local_b, bi.seed_mol_a, bi.seed_mol_b, ax.a_only,
+                                    ax.b_only, ax.ab_both);
         } else {
-          md.a_only = md.count_a;
-          md.b_only = md.count_b;
-          md.ab_both = 0;
+          ax.a_only = md.count_a;
+          ax.b_only = md.count_b;
+          ax.ab_both = 0;
         }
-        rs.a_only_total += md.a_only;
-        rs.b_only_total += md.b_only;
-        rs.ab_both_total += md.ab_both;
+        rs.a_only_total += ax.a_only;
+        rs.b_only_total += ax.b_only;
+        rs.ab_both_total += ax.ab_both;
         if (rule.same_components)
-          rs.ab_both_sq_total += md.ab_both * md.ab_both;
+          rs.ab_both_sq_total += ax.ab_both * ax.ab_both;
         scanned.insert(mid);
       }
       // Also scan type B molecules not already scanned
@@ -5551,11 +6040,12 @@ struct Engine::Impl {
           if (scanned.count(mid) || !pool.molecule(mid).active)
             continue;
           auto& md = rs.mol_data[mid];
-          md.a_only = md.count_a;
-          md.b_only = md.count_b;
-          md.ab_both = 0;
-          rs.a_only_total += md.a_only;
-          rs.b_only_total += md.b_only;
+          auto& ax = rs.mol_aux[mid];
+          ax.a_only = md.count_a;
+          ax.b_only = md.count_b;
+          ax.ab_both = 0;
+          rs.a_only_total += ax.a_only;
+          rs.b_only_total += ax.b_only;
         }
       }
     }
@@ -5617,14 +6107,15 @@ struct Engine::Impl {
         if (mid >= static_cast<int>(rs.mol_data.size()))
           continue;
         auto& md = rs.mol_data[mid];
+        auto& ax = rs.mol_aux[mid];
         if (md.count_a > 0) {
-          md.local_rate = std::max<double>(evaluate_local_rate(rule, mid), 0);
-          md.local_propensity = (md.count_a / rs.embedding_correction_a) * md.local_rate;
+          ax.local_rate = std::max<double>(evaluate_local_rate(rule, mid), 0);
+          ax.local_propensity = (md.count_a / rs.embedding_correction_a) * ax.local_rate;
         } else {
-          md.local_rate = 0;
-          md.local_propensity = 0;
+          ax.local_rate = 0;
+          ax.local_propensity = 0;
         }
-        rs.local_propensity_total += md.local_propensity;
+        rs.local_propensity_total += ax.local_propensity;
       }
       if (seed_b >= 0 && seed_b < static_cast<int>(rule.reactant_pattern.molecules.size())) {
         auto& pm_b_loc = rule.reactant_pattern.molecules[seed_b];
@@ -5634,14 +6125,15 @@ struct Engine::Impl {
           if (mid >= static_cast<int>(rs.mol_data.size()))
             continue;
           auto& md = rs.mol_data[mid];
+          auto& ax = rs.mol_aux[mid];
           if (md.count_b > 0) {
-            md.local_rate_b = std::max<double>(evaluate_local_rate_b(rule, mid), 0);
-            md.local_propensity_b = (md.count_b / rs.embedding_correction_b) * md.local_rate_b;
+            ax.local_rate_b = std::max<double>(evaluate_local_rate_b(rule, mid), 0);
+            ax.local_propensity_b = (md.count_b / rs.embedding_correction_b) * ax.local_rate_b;
           } else {
-            md.local_rate_b = 0;
-            md.local_propensity_b = 0;
+            ax.local_rate_b = 0;
+            ax.local_propensity_b = 0;
           }
-          rs.local_propensity_b_total += md.local_propensity_b;
+          rs.local_propensity_b_total += ax.local_propensity_b;
         }
       }
       {
@@ -5665,15 +6157,16 @@ struct Engine::Impl {
         if (mid >= static_cast<int>(rs.mol_data.size()))
           continue;
         auto& md = rs.mol_data[mid];
+        auto& ax = rs.mol_aux[mid];
         if (md.count_a > 0) {
-          md.local_rate = evaluate_local_rate(rule, mid);
-          md.local_rate = std::max<double>(md.local_rate, 0);
-          md.local_propensity = (md.count_a / rs.embedding_correction_a) * md.local_rate;
+          ax.local_rate = evaluate_local_rate(rule, mid);
+          ax.local_rate = std::max<double>(ax.local_rate, 0);
+          ax.local_propensity = (md.count_a / rs.embedding_correction_a) * ax.local_rate;
         } else {
-          md.local_rate = 0;
-          md.local_propensity = 0;
+          ax.local_rate = 0;
+          ax.local_propensity = 0;
         }
-        rs.local_propensity_total += md.local_propensity;
+        rs.local_propensity_total += ax.local_propensity;
       }
       if (rs.per_complex_a) {
         percx_resum_rates(rule_idx, 0);
@@ -5686,14 +6179,6 @@ struct Engine::Impl {
       new_propensity = compute_propensity(rs, rule, rate, percx_a(rule_idx), percx_b(rule_idx));
     }
     set_rule_propensity(rs, new_propensity);
-
-    // P1 cache: after a full rescan every PerMolRuleData entry in rs.mol_data
-    // reflects the current pool state, so all entries — including the
-    // zero-valued defaults for type-mismatched or inactive slots — are
-    // valid cached snapshots.  Mark them so incremental_update's cache-hit
-    // check starts succeeding immediately.
-    for (auto& md : rs.mol_data)
-      md.cache_init = true;
   }
 
   // --- Rate evaluation ---
@@ -5723,6 +6208,14 @@ struct Engine::Impl {
       return rule.rate_law.rate_value;
 
     update_eval_vars();
+
+    // `reactant_N()` stands for this rule's own reactant counts, so bind
+    // them before the expression is evaluated (issue #59).  `rule` is always
+    // an element of model.rules — every call site indexes through it — so
+    // recovering its index by pointer arithmetic is well-defined here, the
+    // same trick set_rule_propensity uses on rule_states.
+    if (rule.rate_law.max_reactant_count_index > 0)
+      bind_reactant_counts(static_cast<int>(&rule - model.rules.data()));
 
     if (!rule.rate_law.function_name.empty()) {
       auto fit = model.function_index.find(rule.rate_law.function_name);
@@ -5837,6 +6330,12 @@ struct Engine::Impl {
       } else if (gf_expr_id_[i] >= 0) {
         if constexpr (kExprEvalProfile)
           expr_eval_profile_.global_fn_ast_evals++;
+        // A rate law that reads `reactant_N()` is only meaningful against
+        // the rule that owns it, so settle it against that rule's counts
+        // rather than against whatever was last bound (issue #59).
+        if (!eval_reactant_slots.empty() && gf_reactant_owner_rule_[i] >= 0 &&
+            gf_reactant_owner_rule_[i] < static_cast<int>(rule_states.size()))
+          bind_reactant_counts(gf_reactant_owner_rule_[i]);
         try {
           eval_vars_flat[eval_gf_main_slot[i]] = expr_eval_.evaluate(gf_expr_id_[i]);
         } catch (...) {
@@ -5844,6 +6343,12 @@ struct Engine::Impl {
         }
       }
     }
+
+    // The placeholders themselves have no value outside a rule; leave them
+    // at zero so a settled function table reads the same however the rules
+    // above happen to be ordered.
+    if (!eval_reactant_slots.empty())
+      bind_reactant_counts(-1);
 
     eval_vars_seen_gen = eval_vars_gen;
   }
@@ -6222,27 +6727,39 @@ struct Engine::Impl {
       }
     }
 
-    // Seed per-mol contribs for every tracked obs.  Both paths use
-    // count_multi_molecule_embeddings, which dispatches to the fast
-    // single-mol path when pat.molecules.size() == 1.
+    // Seed per-mol contribs for every tracked obs, through the same
+    // `tracked_obs_contrib` the per-event delta path uses — so seeding
+    // gets the trivial-pattern and 2-mol-1-bond shortcuts too, and the
+    // two can never answer differently.
+    //
+    // The walk is over the distinct seed types of the observable's
+    // patterns rather than per pattern: `tracked_obs_contrib` already
+    // sums a molecule's contribution across every pattern it can seed,
+    // so visiting a molecule once is both necessary and sufficient.
+    std::vector<int> seed_types;
     for (int const oi : incr_tracked_obs_indices) {
       obs_mol_contrib[oi].assign(n_mols, 0.0);
       auto& obs = model.observables[oi];
+      seed_types.clear();
       for (auto& pat : obs.patterns) {
-        auto& pm = pat.molecules[0];
-        for (int const mid : pool.molecules_of_type(pm.type_index)) {
+        int const t = pat.molecules[0].type_index;
+        if (std::find(seed_types.begin(), seed_types.end(), t) == seed_types.end())
+          seed_types.push_back(t);
+      }
+      for (int const t : seed_types) {
+        for (int const mid : pool.molecules_of_type(t)) {
           if (!pool.molecule(mid).active)
             continue;
-          obs_mol_contrib[oi][mid] +=
-              static_cast<double>(count_multi_molecule_embeddings(pool, mid, pat, model));
+          obs_mol_contrib[oi][mid] = tracked_obs_contrib(oi, mid);
         }
       }
     }
 
-    // For Species-tracked obs, seed per-cx totals and pass flags by
-    // full-walk.  obs_values is seeded separately by Engine::initialize
-    // via compute_observables(); we just need the per-cx bookkeeping to
-    // be consistent with that initial obs_values.
+    // For Species-tracked obs, seed per-cx totals and pass flags from
+    // the per-mol contribs above.  These pass flags are also what
+    // seed_tracked_obs_values() counts to settle the observable's
+    // initial value, so the two are consistent by construction rather
+    // than by two independent walks agreeing.
     if (species_incr_any_tracked) {
       for (int const oi : incr_tracked_obs_indices) {
         if (!incr_obs_is_species[oi])
@@ -6253,15 +6770,25 @@ struct Engine::Impl {
         for (auto& pat : obs.patterns) {
           auto& pm = pat.molecules[0];
           // Walk each live complex that contains a type-matching mol.
-          std::unordered_set<int> counted_cx;
+          // Visited complexes are marked by stamping their member
+          // molecules, the same allocation-free dedupe the Species full
+          // walk in evaluate_observable uses (issue #62) — a fresh
+          // unordered_set of complex ids here cost one hash node per
+          // complex at every session build.
+          ++obs_walk_cx_gen;
+          if (obs_walk_cx_stamp.size() < static_cast<size_t>(pool.molecule_count()))
+            obs_walk_cx_stamp.resize(pool.molecule_count(), 0);
           for (int const mid : pool.molecules_of_type(pm.type_index)) {
             if (!pool.molecule(mid).active)
               continue;
-            int const cx = pool.complex_of(mid);
-            if (!counted_cx.insert(cx).second)
+            if (obs_walk_cx_stamp[mid] == obs_walk_cx_gen)
               continue;
+            int const cx = pool.complex_of(mid);
+            obs_walk_cx_stamp[mid] = obs_walk_cx_gen;
             int total = 0;
             for (int const m : pool.molecules_in_complex(cx)) {
+              if (m >= 0 && m < static_cast<int>(obs_walk_cx_stamp.size()))
+                obs_walk_cx_stamp[m] = obs_walk_cx_gen;
               if (!pool.molecule(m).active)
                 continue;
               if (pool.molecule(m).type_index != pm.type_index)
@@ -6295,6 +6822,118 @@ struct Engine::Impl {
         species_mid_prev_cx[mid] = pool.complex_of(mid);
       }
     }
+
+    seed_tracked_obs_values();
+  }
+
+  // Settle obs_values for the tracked observables out of the tables
+  // init_incremental_observables has just built, so Engine::initialize
+  // does not have to full-walk them a second time.  The tables already
+  // hold the walk's own terms: obs_mol_contrib is its per-molecule
+  // embedding count, and obs_cx_passed is its per-complex verdict.  On a
+  // million-molecule pool the duplicate walk was about half of session
+  // build (issue #65).
+  //
+  // The equality this rests on is checked rather than asserted:
+  // `kLocalObsTrackInvariant` (Debug and ASan builds) re-derives every
+  // tracked observable from scratch here and aborts on a mismatch.
+  void seed_tracked_obs_values() {
+    if (incr_tracked_obs_indices.empty())
+      return;
+    ++eval_vars_gen;
+    obs_values.resize(model.observables.size(), 0.0);
+    for (int const oi : incr_tracked_obs_indices) {
+      double value = 0.0;
+      if (incr_obs_is_species[oi] != 0) {
+        // Species: one per complex whose match count passed the
+        // pattern's quantity predicate.
+        for (const auto& kv : obs_cx_passed[oi])
+          if (kv.second != 0)
+            value += 1.0;
+      } else {
+        // Molecules: the straight sum over per-molecule contribs, which
+        // is what the full walk accumulates, pattern by pattern.
+        for (double const contrib : obs_mol_contrib[oi])
+          value += contrib;
+      }
+      obs_values[oi] = value;
+
+      if constexpr (kLocalObsTrackInvariant) {
+        double const from_scratch = evaluate_observable(model.observables[oi]);
+        if (value != from_scratch) {
+          fprintf(stderr,
+                  "[local_obs_selfcheck] seeded obs_values disagrees with the "
+                  "full walk at init: oi=%d name=%s type=%s seeded=%.17g "
+                  "full_walk=%.17g\n",
+                  oi, model.observables[oi].name.c_str(), model.observables[oi].type.c_str(), value,
+                  from_scratch);
+          std::abort();
+        }
+      }
+    }
+  }
+
+  // One molecule's contribution to a tracked observable: the number of
+  // embeddings of the observable's patterns seeded at `mid`, summed over
+  // patterns.
+  //
+  // Both the init seeding walk and the per-event delta path want exactly
+  // this number, so they share the routine rather than each writing out
+  // the dispatch.  The dispatch is the part worth not duplicating: a
+  // structurally unconstrained pattern (`T()`) contributes one per
+  // molecule of its type with no matching at all, a 2-molecule/1-bond
+  // pattern goes through the `count_2mol_1bond_fc` specialization, and
+  // only what is left falls to the generic BFS.  Seeding used to call
+  // the generic BFS unconditionally while the per-event path took the
+  // shortcuts — half of what session build had left after the duplicate
+  // observable walk went away (issue #65).
+  double tracked_obs_contrib(int oi, int mid) {
+    auto& mol = pool.molecule(mid);
+    auto& obs = model.observables[oi];
+
+    if (incr_obs_trivial[oi] != 0) {
+      int const trivial_type = obs.patterns[0].molecules[0].type_index;
+      return (mol.active && mol.type_index == trivial_type) ? 1.0 : 0.0;
+    }
+    if (!mol.active)
+      return 0.0;
+
+    double total = 0.0;
+    int const n_pat = static_cast<int>(obs.patterns.size());
+    for (int pi = 0; pi < n_pat; ++pi) {
+      auto& pat = obs.patterns[pi];
+      auto& pm = pat.molecules[0];
+      if (mol.type_index != pm.type_index)
+        continue;
+      if constexpr (kObsIncrProfile) {
+        obs_incr_profile_.obs[oi].per_mid_calls++;
+      }
+      const FastMatchSlot* fm = nullptr;
+      if constexpr (kObsFastMatch) {
+        if (oi < static_cast<int>(obs_pat_fm.size()) &&
+            pi < static_cast<int>(obs_pat_fm[oi].size()) && obs_pat_fm[oi][pi].enabled) {
+          fm = &obs_pat_fm[oi][pi];
+        }
+      }
+      int c;
+      if (fm != nullptr) {
+        c = count_2mol_1bond_fc(pool, mid, *fm, &cmm_fc_profile_);
+        if constexpr (kObsFastMatchInvariant) {
+          int const ref = count_multi_molecule_embeddings(pool, mid, pat, model);
+          if (c != ref) {
+            std::fprintf(stderr,
+                         "[obs_fastmatch mismatch] oi=%d pi=%d mid=%d "
+                         "seed_type=%d partner_type=%d specialized=%d generic=%d\n",
+                         oi, pi, mid, fm->seed_type, fm->partner_type, c, ref);
+            std::abort();
+          }
+        }
+      } else {
+        c = count_multi_molecule_embeddings(pool, mid, pat, model);
+      }
+      total += static_cast<double>(c);
+    }
+    return total;
   }
 
   // Incrementally update tracked-observable values after affected
@@ -6373,13 +7012,10 @@ struct Engine::Impl {
     const auto& eff_affected = *affected_ptr;
 
     for (int const oi : incr_tracked_obs_indices) {
-      auto& obs = model.observables[oi];
       if (static_cast<int>(obs_mol_contrib[oi].size()) < n_mols)
         obs_mol_contrib[oi].resize(n_mols, 0.0);
 
       bool const is_species = incr_obs_is_species[oi];
-      bool const trivial = incr_obs_trivial[oi];
-      int const trivial_type = trivial ? obs.patterns[0].molecules[0].type_index : -1;
 
       oip_clock::time_point oip_t_obs_start;
       if constexpr (kObsIncrProfile) {
@@ -6397,45 +7033,7 @@ struct Engine::Impl {
           continue;
         auto& mol = pool.molecule(mid);
         double const old_c = obs_mol_contrib[oi][mid];
-        double new_c = 0.0;
-        if (trivial) {
-          new_c = (mol.active && mol.type_index == trivial_type) ? 1.0 : 0.0;
-        } else if (mol.active) {
-          int const n_pat = static_cast<int>(obs.patterns.size());
-          for (int pi = 0; pi < n_pat; ++pi) {
-            auto& pat = obs.patterns[pi];
-            auto& pm = pat.molecules[0];
-            if (mol.type_index != pm.type_index)
-              continue;
-            if constexpr (kObsIncrProfile) {
-              obs_incr_profile_.obs[oi].per_mid_calls++;
-            }
-            int c;
-            const FastMatchSlot* fm = nullptr;
-            if constexpr (kObsFastMatch) {
-              if (oi < static_cast<int>(obs_pat_fm.size()) &&
-                  pi < static_cast<int>(obs_pat_fm[oi].size()) && obs_pat_fm[oi][pi].enabled) {
-                fm = &obs_pat_fm[oi][pi];
-              }
-            }
-            if (fm) {
-              c = count_2mol_1bond_fc(pool, mid, *fm, &cmm_fc_profile_);
-              if constexpr (kObsFastMatchInvariant) {
-                int const ref = count_multi_molecule_embeddings(pool, mid, pat, model);
-                if (c != ref) {
-                  std::fprintf(stderr,
-                               "[obs_fastmatch mismatch] oi=%d pi=%d mid=%d "
-                               "seed_type=%d partner_type=%d specialized=%d generic=%d\n",
-                               oi, pi, mid, fm->seed_type, fm->partner_type, c, ref);
-                  std::abort();
-                }
-              }
-            } else {
-              c = count_multi_molecule_embeddings(pool, mid, pat, model);
-            }
-            new_c += static_cast<double>(c);
-          }
-        }
+        double const new_c = tracked_obs_contrib(oi, mid);
         if (new_c != old_c) {
           obs_mol_contrib[oi][mid] = new_c;
           if (!is_species)
@@ -6630,20 +7228,31 @@ struct Engine::Impl {
           if (rap_po)
             rap_po->species_branch_calls++;
         }
-        // Species: count complexes containing a match
-        std::unordered_set<int> counted_cx;
+        // Species: count complexes containing a match.
+        //
+        // Dedupe by stamping the molecules of each complex already
+        // visited, not by inserting its complex id into a set.  The set
+        // was rebuilt from empty on every call and grew one node per
+        // complex, so a sample of a million-complex pool spent more time
+        // hashing than counting matches — and every untracked Species
+        // observable pays this walk at every sample time (issue #62).
+        // Molecule ids are dense, so a generation-stamped side table is
+        // an allocation-free equivalent.
+        ++obs_walk_cx_gen;
+        if (obs_walk_cx_stamp.size() < static_cast<size_t>(pool.molecule_count()))
+          obs_walk_cx_stamp.resize(pool.molecule_count(), 0);
         for (int const mid : pool.molecules_of_type(pm.type_index)) {
           if (!pool.molecule(mid).active)
             continue;
-          int const cx = pool.complex_of(mid);
-          if (counted_cx.count(cx)) {
+          if (obs_walk_cx_stamp[mid] == obs_walk_cx_gen) {
             if constexpr (kRecordAtProfile) {
               if (rap_po)
                 rap_po->n_counted_cx_hits++;
             }
             continue;
           }
-          counted_cx.insert(cx);
+          int const cx = pool.complex_of(mid);
+          obs_walk_cx_stamp[mid] = obs_walk_cx_gen;
           if constexpr (kRecordAtProfile) {
             if (rap_po)
               rap_po->n_cx_visited++;
@@ -6652,13 +7261,29 @@ struct Engine::Impl {
           // Count total pattern matches across the entire complex.
           // For quantity constraints like "species with exactly N matches",
           // we need the complex-wide total, not just one molecule's count.
+          // A molecule with no bonded component is alone in its complex,
+          // so resolving `cx` through the complex map would only hand
+          // back {mid}.  Free monomers are the bulk of most pools, and
+          // that map lookup was the last per-molecule hash in this walk.
+          bool cx_is_singleton = true;
+          for (int const cid : pool.molecule(mid).comp_ids) {
+            if (pool.component(cid).bond_partner >= 0) {
+              cx_is_singleton = false;
+              break;
+            }
+          }
+          obs_walk_singleton_scratch[0] = mid;
+          const std::vector<int>& cx_members =
+              cx_is_singleton ? obs_walk_singleton_scratch : pool.molecules_in_complex(cx);
+
           int match_count = 0;
-          auto cx_members = pool.molecules_in_complex(cx);
           for (int const m : cx_members) {
             if constexpr (kRecordAtProfile) {
               if (rap_po)
                 rap_po->n_cx_members_walked++;
             }
+            if (m >= 0 && m < static_cast<int>(obs_walk_cx_stamp.size()))
+              obs_walk_cx_stamp[m] = obs_walk_cx_gen;
             if (!pool.molecule(m).active)
               continue;
             if (pool.molecule(m).type_index != pm.type_index)
@@ -7222,9 +7847,11 @@ struct Engine::Impl {
               : ~uint64_t{0};
 
       for (int const mid : update_set) {
-        // Ensure mol_data is large enough
+        // Ensure mol_data is large enough.  The default row's
+        // cache_init=false is the point here: this entry is for a molecule
+        // born since the last rescan, so nothing has computed it yet.
         if (mid >= static_cast<int>(rs.mol_data.size()))
-          rs.mol_data.resize(mid + 1, PerMolRuleData{});
+          grow_mol_tables(rs, mid, PerMolRuleData{});
 
         auto& old = rs.mol_data[mid];
 
@@ -7299,18 +7926,25 @@ struct Engine::Impl {
             prof_t_sub = iup_clock::now();
         }
 
-        // Subtract old values
+        // Subtract old values.  The aux aggregates move only for the rule
+        // shapes that keep an aux row; the other shapes never read them
+        // (a_only_total and friends are read only on the bimolecular branch
+        // of compute_propensity), and leaving them at the zero the rescan
+        // set is what a rule with no aux table has to say.
         rs.a_total -= old.count_a;
         rs.b_total -= old.count_b;
-        rs.a_only_total -= old.a_only;
-        rs.b_only_total -= old.b_only;
-        rs.ab_both_total -= old.ab_both;
-        if (rule.same_components)
-          rs.ab_both_sq_total -= old.ab_both * old.ab_both;
-        if (rs.has_local_rates)
-          rs.local_propensity_total -= old.local_propensity;
-        if (rule.rate_law.type == RateLawType::FunctionProduct)
-          rs.local_propensity_b_total -= old.local_propensity_b;
+        if (rs.needs_mol_aux) {
+          auto const& oldx = rs.mol_aux[mid];
+          rs.a_only_total -= oldx.a_only;
+          rs.b_only_total -= oldx.b_only;
+          rs.ab_both_total -= oldx.ab_both;
+          if (rule.same_components)
+            rs.ab_both_sq_total -= oldx.ab_both * oldx.ab_both;
+          if (rs.has_local_rates)
+            rs.local_propensity_total -= oldx.local_propensity;
+          if (rule.rate_law.type == RateLawType::FunctionProduct)
+            rs.local_propensity_b_total -= oldx.local_propensity_b;
+        }
 
         if constexpr (kIncrUpdateProfile) {
           if (prof_inner_sample) {
@@ -7322,6 +7956,7 @@ struct Engine::Impl {
 
         // Recompute
         PerMolRuleData nd{};
+        PerMolRuleAux ndx{};
 
         if (mid < pool.molecule_count() && pool.molecule(mid).active) {
           // Count A embeddings
@@ -7385,15 +8020,17 @@ struct Engine::Impl {
           }
 
           // Shared component analysis
-          if (rule.molecularity >= 2 && nd.count_a > 0 && nd.count_b > 0) {
-            if constexpr (kIncrUpdateProfile)
-              incr_profile_.shared_comp_calls++;
-            compute_shared_components(pool, mid, rule, model, seed_a, seed_b, bi.bind_local_a,
-                                      bi.bind_local_b, bi.seed_mol_a, bi.seed_mol_b, nd.a_only,
-                                      nd.b_only, nd.ab_both);
-          } else {
-            nd.a_only = nd.count_a;
-            nd.b_only = nd.count_b;
+          if (rs.needs_mol_aux) {
+            if (rule.molecularity >= 2 && nd.count_a > 0 && nd.count_b > 0) {
+              if constexpr (kIncrUpdateProfile)
+                incr_profile_.shared_comp_calls++;
+              compute_shared_components(pool, mid, rule, model, seed_a, seed_b, bi.bind_local_a,
+                                        bi.bind_local_b, bi.seed_mol_a, bi.seed_mol_b, ndx.a_only,
+                                        ndx.b_only, ndx.ab_both);
+            } else {
+              ndx.a_only = nd.count_a;
+              ndx.b_only = nd.count_b;
+            }
           }
 
           if constexpr (kIncrUpdateProfile) {
@@ -7416,16 +8053,16 @@ struct Engine::Impl {
               int const cx = pool.complex_of(mid);
               auto cit = local_rate_cache.find(cx);
               if (cit != local_rate_cache.end()) {
-                nd.local_rate = cit->second;
+                ndx.local_rate = cit->second;
               } else {
-                nd.local_rate = std::max(evaluate_local_rate(rule, mid), 0.0);
-                local_rate_cache[cx] = nd.local_rate;
+                ndx.local_rate = std::max(evaluate_local_rate(rule, mid), 0.0);
+                local_rate_cache[cx] = ndx.local_rate;
               }
             } else {
               // Molecule-level: evaluate per molecule
-              nd.local_rate = std::max(evaluate_local_rate(rule, mid), 0.0);
+              ndx.local_rate = std::max(evaluate_local_rate(rule, mid), 0.0);
             }
-            nd.local_propensity = (nd.count_a / rs.embedding_correction_a) * nd.local_rate;
+            ndx.local_propensity = (nd.count_a / rs.embedding_correction_a) * ndx.local_rate;
           }
 
           // FunctionProduct B-side factor f2, mirroring the A-side path above
@@ -7435,15 +8072,15 @@ struct Engine::Impl {
               int const cx = pool.complex_of(mid);
               auto cit = local_rate_cache_b.find(cx);
               if (cit != local_rate_cache_b.end()) {
-                nd.local_rate_b = cit->second;
+                ndx.local_rate_b = cit->second;
               } else {
-                nd.local_rate_b = std::max(evaluate_local_rate_b(rule, mid), 0.0);
-                local_rate_cache_b[cx] = nd.local_rate_b;
+                ndx.local_rate_b = std::max(evaluate_local_rate_b(rule, mid), 0.0);
+                local_rate_cache_b[cx] = ndx.local_rate_b;
               }
             } else {
-              nd.local_rate_b = std::max(evaluate_local_rate_b(rule, mid), 0.0);
+              ndx.local_rate_b = std::max(evaluate_local_rate_b(rule, mid), 0.0);
             }
-            nd.local_propensity_b = (nd.count_b / rs.embedding_correction_b) * nd.local_rate_b;
+            ndx.local_propensity_b = (nd.count_b / rs.embedding_correction_b) * ndx.local_rate_b;
           }
 
           if constexpr (kIncrUpdateProfile) {
@@ -7458,15 +8095,17 @@ struct Engine::Impl {
         // Add new values
         rs.a_total += nd.count_a;
         rs.b_total += nd.count_b;
-        rs.a_only_total += nd.a_only;
-        rs.b_only_total += nd.b_only;
-        rs.ab_both_total += nd.ab_both;
-        if (rule.same_components)
-          rs.ab_both_sq_total += nd.ab_both * nd.ab_both;
-        if (rs.has_local_rates)
-          rs.local_propensity_total += nd.local_propensity;
-        if (rule.rate_law.type == RateLawType::FunctionProduct)
-          rs.local_propensity_b_total += nd.local_propensity_b;
+        if (rs.needs_mol_aux) {
+          rs.a_only_total += ndx.a_only;
+          rs.b_only_total += ndx.b_only;
+          rs.ab_both_total += ndx.ab_both;
+          if (rule.same_components)
+            rs.ab_both_sq_total += ndx.ab_both * ndx.ab_both;
+          if (rs.has_local_rates)
+            rs.local_propensity_total += ndx.local_propensity;
+          if (rule.rate_law.type == RateLawType::FunctionProduct)
+            rs.local_propensity_b_total += ndx.local_propensity_b;
+        }
 
         if constexpr (kIncrUpdateProfile) {
           if (prof_inner_sample) {
@@ -7528,22 +8167,26 @@ struct Engine::Impl {
 
         // P1 cache: mark this (rule, molecule) entry as a valid snapshot.
         nd.cache_init = true;
-        // `nd` is a fresh record, so it carries no memory of which complex the
-        // pure-context tally is currently counting this molecule in.  Carry
-        // that across the overwrite: percx_sync is what moves the hit, and it
-        // has to know where to take it from.
-        nd.percx_cx_a = old.percx_cx_a;
-        nd.percx_cx_b = old.percx_cx_b;
         rs.mol_data[mid] = nd;
+        if (rs.needs_mol_aux) {
+          // `ndx` is a fresh record, so it carries no memory of which complex
+          // the pure-context tally is currently counting this molecule in.
+          // Carry that across the overwrite: percx_sync is what moves the
+          // hit, and it has to know where to take it from.
+          auto& ax = rs.mol_aux[mid];
+          ndx.percx_cx_a = ax.percx_cx_a;
+          ndx.percx_cx_b = ax.percx_cx_b;
+          ax = ndx;
+        }
         if (rs.per_complex_a) {
           percx_sync(ri, 0, mid);
-          if (rs.has_local_rates && rs.mol_data[mid].percx_cx_a >= 0)
-            percx_refresh_rate(rs, 0, rs.mol_data[mid].percx_cx_a);
+          if (rs.has_local_rates && rs.mol_aux[mid].percx_cx_a >= 0)
+            percx_refresh_rate(rs, 0, rs.mol_aux[mid].percx_cx_a);
         }
         if (rs.per_complex_b) {
           percx_sync(ri, 1, mid);
-          if (rs.has_local_rates && rs.mol_data[mid].percx_cx_b >= 0)
-            percx_refresh_rate(rs, 1, rs.mol_data[mid].percx_cx_b);
+          if (rs.has_local_rates && rs.mol_aux[mid].percx_cx_b >= 0)
+            percx_refresh_rate(rs, 1, rs.mol_aux[mid].percx_cx_b);
         }
 
         if constexpr (kIncrUpdateProfile) {
@@ -8412,8 +9055,8 @@ struct Engine::Impl {
     for (int const mid : mols) {
       if (!pool.molecule(mid).active)
         continue;
-      if (mid < static_cast<int>(rs.mol_data.size())) {
-        cum += use_b ? rs.mol_data[mid].local_propensity_b : rs.mol_data[mid].local_propensity;
+      if (mid < static_cast<int>(rs.mol_aux.size())) {
+        cum += use_b ? rs.mol_aux[mid].local_propensity_b : rs.mol_aux[mid].local_propensity;
         if (r < cum)
           return mid;
       }
@@ -9905,12 +10548,6 @@ struct Engine::Impl {
       ++rule_fire_counts[selected];
       auto t2 = std::chrono::steady_clock::now();
 
-      // Molecule limit check
-      if (molecule_limit > 0 && pool.active_molecule_count() > molecule_limit) {
-        // Exceeded limit — stop simulation
-        break;
-      }
-
       // Update rate-dependent observables BEFORE recomputing propensities,
       // so dynamic rate laws see the post-event observable values.
       // Tracked obs (Molecules per-mid delta + Species dirty-cx) are
@@ -9924,6 +10561,21 @@ struct Engine::Impl {
       if (!rate_dep_obs_indices.empty())
         compute_rate_dependent_observables();
       auto t3 = std::chrono::steady_clock::now();
+
+      // Molecule limit check.  After the observable refresh, not before:
+      // the event that breached the limit is not rolled back, so leaving
+      // it out of obs_values left the trailing sample rows one event
+      // behind the pool they describe — and only for the incrementally
+      // tracked observables, since the untracked ones full-walk the live
+      // pool at sample time.  Recomputing propensities we are about to
+      // throw away is the one event of wasted work this costs.
+      if (molecule_limit > 0 && pool.active_molecule_count() > molecule_limit) {
+        timing_sample += std::chrono::duration<double>(t1 - t0).count();
+        timing_fire += std::chrono::duration<double>(t2 - t1).count();
+        timing_obs += std::chrono::duration<double>(t3 - t2).count();
+        ++event_count;
+        break;
+      }
 
       // Incremental update (recomputes propensities using fresh observables)
       incremental_update(affected);
@@ -9949,7 +10601,9 @@ struct Engine::Impl {
     // off by default — embedders and CLI users want a quiet stderr.  Set
     // RM_PRINT_TIMING=1 in the environment to re-enable; the harness
     // scripts that parse `events=N` / `total=Xs` from rm_driver's stderr
-    // do this themselves.
+    // do this themselves.  RM_PRINT_TABLES is the second, separate gate,
+    // below: it costs wall time and this one is read by the wall-time
+    // harnesses.
     // getenv is read once via a function-local static; no concurrent
     // access surface even under multi-threaded callers.
     static const bool kPrintTiming = []() {
@@ -9994,6 +10648,72 @@ struct Engine::Impl {
         fprintf(stderr, "  %s (%s): fires=%llu  propensity=%.6g  a_total=%.6g\n", rule.id.c_str(),
                 rule.name.c_str(), static_cast<unsigned long long>(rule_fire_counts[ri]),
                 rs.propensity, rs.a_total);
+      }
+    }
+
+    // Per-rule side-table residency (issue #71).  Its own gate, not
+    // RM_PRINT_TIMING's: `rule_table_reach` walks each rule's seed-type
+    // populations, which is a sizeable fraction of a second on a model with
+    // a couple of hundred rules over a large arena, and RM_PRINT_TIMING is
+    // what the timing harnesses set on every replicate.  A memory question
+    // should not put its cost on a wall-clock measurement.
+    static const bool kPrintTables = []() {
+      const char* v = std::getenv("RM_PRINT_TABLES"); // NOLINT(concurrency-mt-unsafe)
+      return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+
+    if (kPrintTables) {
+      // See RuleTableBytes for what is counted and why it is `size()`.  One
+      // line per rule that holds a table -- a rule with no reactant seed
+      // molecule holds none at all (#68) and would otherwise be a line of
+      // zeroes -- and a model total, which is the number the sizing question
+      // turns on.
+      //
+      // `reach_bytes` is the same total with every table cut to the highest
+      // live id its rule can index, which is what sizing by the seed types'
+      // high-water mark would cost.  The gap between it and `bytes` is what
+      // that shortcut would buy on this model; see rule_table_reach for why
+      // it is not obviously anything.
+      //
+      // Bytes are exact so a sweep can do arithmetic on them; the MB
+      // rendering on the summary is for reading.
+      int const n_rules = static_cast<int>(model.rules.size());
+      struct Row {
+        int rule_index;
+        int reach;
+        RuleTableBytes held;
+      };
+      std::vector<Row> rows;
+      RuleTableBytes model_tables;
+      RuleTableBytes model_reach;
+      for (int ri = 0; ri < n_rules; ++ri) {
+        RuleTableBytes const tb = rule_table_bytes(rule_states[ri]);
+        if (tb.total() == 0)
+          continue;
+        int const reach = rule_table_reach(pool, model.rules[ri], rule_states[ri]);
+        RuleTableBytes const rb =
+            rule_table_bytes(rule_states[ri], static_cast<std::size_t>(reach));
+        model_tables.mol += tb.mol;
+        model_tables.sampler += tb.sampler;
+        model_reach.mol += rb.mol;
+        model_reach.sampler += rb.sampler;
+        rows.push_back(Row{ri, reach, tb});
+      }
+      fprintf(stderr,
+              "[RM tables] arena=%d rules=%d tabled=%d bytes=%llu (%.1f MB) mol=%llu "
+              "sampler=%llu reach_bytes=%llu\n",
+              pool.molecule_count(), n_rules, static_cast<int>(rows.size()),
+              static_cast<unsigned long long>(model_tables.total()),
+              static_cast<double>(model_tables.total()) / (1024.0 * 1024.0),
+              static_cast<unsigned long long>(model_tables.mol),
+              static_cast<unsigned long long>(model_tables.sampler),
+              static_cast<unsigned long long>(model_reach.total()));
+      for (const auto& row : rows) {
+        fprintf(stderr, "  %s (%s): rows=%llu reach=%d mol=%llu sampler=%llu\n",
+                model.rules[row.rule_index].id.c_str(), model.rules[row.rule_index].name.c_str(),
+                static_cast<unsigned long long>(row.held.rows), row.reach,
+                static_cast<unsigned long long>(row.held.mol),
+                static_cast<unsigned long long>(row.held.sampler));
       }
     }
 
@@ -10146,9 +10866,19 @@ canonical::ComplexGraph pattern_to_complex_graph(const Pattern& pat) {
 
 void Engine::initialize() {
   impl_->init_species();
-  impl_->compute_observables(); // must come before init_rule_states for Function rate laws
-  impl_->init_rule_states();
+  // Tracker first.  Building its tables costs exactly the per-molecule
+  // embedding counts an observable full-walk costs, so seeding
+  // obs_values out of them (seed_tracked_obs_values) lets the walk below
+  // skip every tracked observable rather than repeat the work — half of
+  // session build on a million-molecule pool (issue #65).  The tracker
+  // reads only the model and the pool, so it does not care that the
+  // other two steps have not run yet.
   impl_->init_incremental_observables();
+  // Still before init_rule_states, which reads obs_values for Function
+  // rate laws — but now only for the observables the tracker does not
+  // keep.
+  impl_->compute_observables(/*skip_tracked=*/impl_->use_incremental_obs);
+  impl_->init_rule_states();
   impl_->initialized = true;
 }
 

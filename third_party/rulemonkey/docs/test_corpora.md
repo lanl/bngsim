@@ -174,11 +174,13 @@ tests/
       sim_params.tsv                                 # per-model t_end, n_steps, flags
       summary.tsv                                    # per-model NFsim wall times
       PROVENANCE.md                                  # generation history + SSA exceptions
+      MANIFEST.tsv                                   # SHA-256 of each vendored file above
       replicates/                                    # per-rep trajectories (gitignored, 1.9 GB)
     basicmodels/
       xml/r*.xml
       ensemble/r*.{mean,std,tint}.tsv
       sim_params.tsv
+      MANIFEST.tsv
       replicates/                                    # gitignored
       PROVENANCE.md
     rm/
@@ -188,3 +190,21 @@ tests/
 The `.tsv` aggregates are the canonical artifacts; the `replicates/`
 directories are disposable scratch held locally only when actively
 regenerating references.
+
+Each root carries a `MANIFEST.tsv` of SHA-256 hashes, and the harness
+verifies the tree against it before running anything — a hand-edited
+reference would otherwise shift a parity verdict with nothing to say it
+had.  The manifest covers the vendored files only: `replicates/` is
+absent on a clean clone and several gigabytes on a machine that just
+regenerated an ensemble, so hashing it would fail the gate in both
+directions over files no verdict reads.  The trees are
+marked `-text` in `.gitattributes` so that a checkout cannot rewrite the
+bytes the hashes were taken over — without that, Git for Windows' CRLF
+conversion faults every text file in every tree.  `ctest`'s
+`ref_manifest_test` checks each committed manifest against its tree, and
+the eol attribute alongside it, which is where a manifest that reached
+outside that coverage now surfaces (issue #63).
+To rewrite one after an intentional reference change, re-run its harness
+with the manifest-writing flags — `--generate-refs` / `--force-refs` for
+`feature_coverage`, `--no-verify-manifest --write-manifest` for
+`benchmark_full` / `basicmodels`.

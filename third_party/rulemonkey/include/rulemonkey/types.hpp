@@ -82,7 +82,10 @@ struct TimeSpec {
 // the fn_idx-th global function at the t_idx-th sample time, sampled at
 // the same time points as the observables.  Local functions are
 // excluded — they evaluate per-molecule and have no single global
-// value — so `function_names` may be shorter than the model's full
+// value — and so are `reactant_N()` placeholders, which stand for a
+// rule's reactant match counts and have no value outside the rule whose
+// rate law reads them (NFsim does not create a function for one at all).
+// So `function_names` may be shorter than the model's full
 // `begin functions` block.
 //
 // Construction and population is the engine's responsibility — host

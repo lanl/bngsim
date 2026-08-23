@@ -7,7 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.0] — 2026-08-21
+
 ### Added
+
+- **What a rule's per-molecule tables actually hold, measured across the
+  three corpora (issue #71).** #72 narrowed the per-molecule row from 80
+  bytes to 12 and left #71's other two directions — sizing the tables, and
+  the Fenwick samplers, by what the rule can see rather than by the molecule
+  arena — alone, for the reason the issue gives: both need a stable dense
+  per-type slot in the pool, which is a design question with a known failure
+  shape (#62 made type-index removal a swap-with-back, and #64 had to fix
+  what that broke), and the case for paying for it is residency on real
+  models rather than on a synthetic scale-up. That case was asserted, not
+  measured. It is measured now, and it is a good deal stronger than the
+  issue supposed.
+
+  `rule_table_bytes` is the accounting: what each rule holds across
+  `mol_data`, `mol_aux`, an n-ary rule's per-slot count tables and every
+  Fenwick tree. The `[RM tables]` stderr block prints it per rule and per
+  model at the end of a run, under its own `RM_PRINT_TABLES=1` gate rather
+  than `RM_PRINT_TIMING`'s — the block walks each rule's seed-type
+  populations, and `RM_PRINT_TIMING` is what the wall-clock harnesses set on
+  every replicate, so a memory question would otherwise put its cost on a
+  timing measurement. Rows *written*, not rows allocated: counting
+  `capacity()` put several corpus models over 100% of their own peak RSS,
+  the untouched tail of a geometrically grown vector being address space and
+  not residency. So every number below is a floor.
+
+  `harness/rule_table_footprint.py` sweeps all 189 models of
+  `feature_coverage`, `corpus` and `nfsim_basicmodels` with it — one
+  replicate each at the suite's canonical `(t_end, n_steps)` — pairing each
+  model's footprint against the peak RSS of its own `rm_driver` process,
+  taken from `os.wait4` so it is that run's number.
+
+  Across all 189 the median share is 1.79%, which is the wrong number to
+  read: 67 of them have arenas under 200 molecules, where the whole peak is
+  a 3.2 MB process floor. Conditioned on size it inverts. Of the 26 models
+  whose arena reaches 10 000 molecules the **median share is 48.6%**, and
+  six are over 90%:
+
+  | model | rules | arena | tables | peak RSS | share |
+  |---|---:|---:|---:|---:|---:|
+  | `tcr_gen27ind33` | 158 | 155 471 | 887.2 MB | 955.5 MB | **92.9%** |
+  | `example4_fit` | 158 | 158 456 | 904.3 MB | 980.8 MB | 92.2% |
+  | `tcr` | 158 | 67 042 | 387.2 MB | 425.7 MB | 91.0% |
+  | `ensemble` | 232 | 101 231 | 780.8 MB | 948.9 MB | 82.3% |
+  | `egfr_nf_iter5p12h10` | 26 | 302 009 | 294.9 MB | 387.6 MB | 76.1% |
+  | `CaMKII_holo` | 77 | 10 893 | 28.1 MB | 54.7 MB | 51.5% |
+
+  50 of the 189 are at or above 10% of peak and 15 at or above 50%. Per
+  suite the medians are 14.9% (`corpus`), 2.3% (`nfsim_basicmodels`) and
+  0.4% (`feature_coverage`), which tracks median arena size (4 500, 1 271,
+  100). The unit cost is 44 bytes per (rule holding a table x arena row) at
+  the median and 92 at the worst — 12 for the narrow row, 76 where the shape
+  reads the wide half, plus 8 per row per Fenwick-sampled slot; samplers are
+  24% of all the table bytes in the sweep. So the issue's "a dozen rules
+  over a few million molecules spends gigabytes on tables that are mostly
+  zeroes" is not the hypothetical it was labelled as: `ensemble` is 232
+  rules over 101 231 molecules and spends 780 MB, and it is in the reference
+  corpus.
+
+  The block also reports `reach` — one past the highest live molecule id a
+  rule can index, over its seed types — and `reach_bytes`, what the same
+  tables would hold cut to it. That is the shortcut #71 names and warns does
+  not generalize. Summed over the sweep it says the tables could be 59.2% of
+  their size: half on the `tcr` family, 8.5% on `CaMKII_holo`, and 99.9% on
+  `egfr_nf_iter5p12h10`, whose seed types span the arena.
+
+  It is a bound on what a table needs, and **not** on what sizing it that
+  way delivers, which was measured before this was written up. Building the
+  tables at `reach` in the rescan is safe — every read bounds-checks or
+  grows first, the audit #68 relied on — but it does not hold: the sweep
+  re-run against it keeps 83.7% of the bytes, not 59.2%, and no peak RSS at
+  all. `CaMKII_holo` keeps 100% of a table its rules can reach 8.5% of, in a
+  0.3 s run. The reason is in `incremental_update`, which hands every rule
+  every molecule an event touched and grows that rule's table to cover it
+  **whatever its type**, so each table converges on the arena no matter what
+  it was sized to. A molecule of a type neither slot seeds on scores zero on
+  both counts forever; the row exists only because the loop made one.
+
+  Sizing by reach *and* declining to materialize those rows does hold, tried
+  as an experiment against the same sweep: `tcr` 387.2 -> 194.0 MB,
+  `ensemble` 780.8 -> 491.5 MB, `CaMKII_holo` 28.1 -> 8.4 MB, `lat` 122.3 ->
+  92.3 MB, and `egfr_nf_iter5p12h10` unmoved at 294.7 MB, which is what
+  `reach` predicts for it. That is a change to the hot per-molecule loop
+  with a hazard the naive form has — an id the pool has handed to a molecule
+  of another type still owes its predecessor's count back to `a_total`, the
+  failure shape #62 introduced and #64 fixed — so it is not in this PR.
+  #71's directions 3 and 4 stay open with both numbers attached: what the
+  tables cost, and what the cheap sizing does and does not buy.
+
+  `rule_table_footprint_test` is the gate on the accounting, over three
+  fixtures already in the tree: `pool_churn_model` for the narrow row, the
+  wide row and a seedless rule that must hold no table at all (#68),
+  `trimolecular_model` for an n-ary rule's per-slot count tables and the
+  three Fenwick samplers its 400-molecule seed type earns, and
+  `rule_table_shape_model` for one rule per wide-half group. Each rule's row
+  width is pinned exactly, so a field added to either per-molecule struct
+  fails it and says what it costs; the summary is checked against the
+  per-rule detail it claims to sum. `docs/internals.md` gains the
+  corresponding subsection under "Step 4 — the per-rule tables".
+
+  Nothing outside the gated block changes: `feature_coverage` is 89/89
+  against the vendored NFsim ensembles, and ctest is 47/47 release and ASan.
 
 - **Load-time diagnostics for the two `MM(kcat,Km)` constructs where RM
   cannot reproduce BNG2 (issue #45).** BNG2.pl is the reference RM is written
@@ -65,6 +168,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins both diagnostics on a fixture where each rule trips exactly one, with
   `mm_symmetry_model` (four MM rules, including #37's enzyme-slot arm whose
   factor *is* attributable) as the negative control.
+
+- `tests/models/feature_coverage/ft_local_fcn_bimol.bngl` and
+  `ft_local_fcn_bimol_sym.bngl`, plus the `local_fcn_bimol_test` ctest
+  case, covering the two DOR1 shapes fixed below — a bimolecular rule
+  with a local-function rate, and the same rule carrying BNG2's
+  `symmetry_factor`. No existing corpus model used a local function on
+  a bimolecular rule, which is why the gap survived three minor
+  releases.
 
 ### Changed
 
@@ -253,7 +364,687 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CLI targets, which also means the test harnesses' own code is sanitized
   for the first time. All 37 tests pass with it on.
 
+- **The `TotalRate` keyword now warns at load, and is refused where RM and
+  NFsim genuinely disagree.** BioNetGen does not implement TotalRate for network
+  simulations — `RxnRule.pm` carries the TODO saying it is "currently
+  implemented only for XML network-free output" — and `generate_network`
+  duly writes the rate law into the `.net` as an ordinary rate constant, so
+  the ODE integrates plain mass action and the observable crashes to zero
+  where NFsim holds it flat. There is no BNG2 result to check a TotalRate
+  model against.
+
+  That leaves NFsim as the only implementation, and it disagrees with RM.
+  NFsim expands a rule whose reactant pattern has interchangeable components
+  into one independent reaction class per permutation (`_R1_sym1`,
+  `_R1_sym2`, ...). For an ordinary rate law that is correct, since the
+  matches partition across the classes and sum back; under TotalRate every
+  class returns the *whole* total rate, so the rule runs at
+  `rate x #{permutations whose reactant lists are all non-empty}`. Measured
+  on `C(s) + D(t)`: **1.00x** with one free site, **2.02x** with two,
+  **2.98x** with three, and 1.00x again when every C has the same slot
+  pre-bound, since only one permutation is populated then. That factor counts
+  NFsim's internal reaction classes rather than anything in the model — it is
+  capped by the permutation count however many molecules exist, and steps down
+  as classes empty. BNG2's network expansion writes the statistical factor per
+  species and live (`3*_rateLaw1`, `2*_rateLaw1`, `_rateLaw1`), implying a
+  third number again.
+
+  All three disagree, so RM refuses **those** rules instead of silently
+  picking a reading. The test is structural and deliberately conservative: a
+  TotalRate rule is refused when any reactant pattern touches a component
+  whose molecule type declares two or more of that name, which is what lets a
+  pattern component land on more than one slot.
+
+  Every other TotalRate rule warns and runs. RM reads the keyword the way
+  BioNetGen documents it in `RateLaw.pm` ("If true, this ratelaw specifies the
+  Total reaction rate") — the propensity is the rate law's value — and NFsim
+  computes the same thing there, so the two agree. Measured on unimolecular,
+  heterodimer, homodimer carrying `symmetry_factor="0.5"`, zero-order
+  synthesis, and a rate law that is a function of an observable. The warning
+  exists because nothing can check such a model against BioNetGen's own result.
+
+  Refusing every TotalRate rule was considered and rejected once the blast
+  radius was measured: it would take out six models from **NFsim's own
+  validation suite** (`v21`–`v26`), `oscSystem` in RM's corpus suite, and
+  around eleven curated RuleHub biology examples, every one of which RM runs
+  in agreement with NFsim today (verified over 12 seeds each: `oscSystem`
+  worst z = 1.04, `r21` z = 1.40). Neither the basicmodels suite nor
+  `oscSystem` is reachable from `ctest` or the guard tier, so that breakage
+  would not have surfaced in CI.
+
+  `ft_total_rate` was rewritten along with this. The model it replaces fired
+  four events over its whole run and could not tell TotalRate from anything
+  else, and its header stated the semantics wrongly ("binding rate is exactly
+  `k*[A]*[B]`" — TotalRate removes the counts entirely rather than merely
+  suppressing site multiplicity). The new one fires 313 events across three
+  arms whose closed forms separate TotalRate from mass action in both
+  directions: two linear-decay arms where mass action is curved, and an
+  observable-driven arm that is exponential where mass action would be
+  hyperbolic. Every arm names its components distinctly, so it is the warned
+  shape rather than the refused one, and it scores tz = 2.36 against a
+  20-replicate NFsim ensemble.
+
 ### Fixed
+
+- **The clang-tidy gate had been off, and said nothing about it.** Three
+  independent faults, only one of which was visible:
+
+  1. `.git/hooks/` was empty in a working clone — `pre-commit install` had
+     never been run, so *no* hook fired on commit: not clang-tidy, not
+     clang-format, not ruff, not the whitespace fixers. Nothing in the
+     README said to install them.
+  2. The hook was `language: system`, so it ran only for whoever happened
+     to have an LLVM on `PATH`, and `scripts/clang-tidy-staged.sh` exited
+     **0** when it found none. pre-commit prints nothing for a passing
+     hook, so a machine with no clang-tidy reported a clean lint.
+  3. Installing one by hand does not necessarily help: macOS SDK 26's
+     libc++ headers use `__builtin_clzg` / `__builtin_ctzg`, which
+     front-ends older than clang 19 lack, so clang-tidy 18 emits thousands
+     of `clang-diagnostic-error`s out of `<algorithm>` and `<charconv>`
+     and never reaches any RuleMonkey code.
+
+  The hook now takes its binary from pre-commit — `language: python` with
+  `additional_dependencies: ['clang-tidy==21.1.6']`, the same wheel family
+  the clang-format hook already pins — so it cannot be missing or the
+  wrong version, and no system LLVM is required. "Not found" is now a real
+  fault and exits non-zero, and the script carries a front-end version
+  floor that names the SDK mismatch instead of drowning in it. Both
+  failure paths print `NOT LINTED` rather than a hint that scrolls past.
+  The one remaining soft path is a missing
+  `build/release/compile_commands.json`, which a fresh clone genuinely has
+  until the first `cmake --preset release`; it too now says plainly that
+  nothing was checked.
+
+  With the gate actually running, clang-tidy 21.1.6 over all 44 C++
+  translation units reports **seven** findings, all `misc-const-correctness`
+  and none in code this repo has touched recently: six variables that can
+  be declared `const` (three in `canonical_test`, one each in
+  `seed_build_test` and `species_enumeration_test`, plus a `char*` pair in
+  `simulator.cpp`) — fixed. The seventh is a false positive: the check
+  wants `const char*` for `strtol`'s endptr, whose parameter is `char**`,
+  so the suggested form does not compile; that site takes a targeted
+  `NOLINT` with the reason, next to the `NOLINTBEGIN` it already carried
+  for a different checker's false positive on the same lines.
+
+  `pre-commit run --all-files` is now green on every hook. Verified
+  end-to-end rather than by inspection: a planted `int* p = 0;` in
+  `smoke_test.cpp` fails the hook on `modernize-use-nullptr`, and a
+  clang-tidy 18 on `PATH` is refused by name instead of reporting the
+  standard library as broken.
+
+  The README gains a "Contributing setup" section, since the gate is only
+  as real as the `pre-commit install` nobody was told to run. `.clang-tidy`
+  loses a stale comment claiming `WarningsAsErrors` was intentionally
+  empty — it has not been empty since the ratchet was flipped — and gains
+  the front-end version floor.
+
+  And a `clang_tidy` CI job now runs the gate somewhere it cannot be
+  skipped, which is the durable half of this: a hook only runs in a clone
+  where someone ran `pre-commit install`, and nothing notices when that has
+  not happened. The job runs the *hook*, not its own clang-tidy invocation,
+  so the version pin, the check list and the wrapper script are the same
+  ones a developer gets locally rather than a second spelling that drifts.
+  It configures without building — nothing in this tree is generated, so
+  `cmake --preset release` alone produces the `compile_commands.json`
+  clang-tidy reads — and is independent of the `build` job, since a broken
+  build leg should not withhold lint feedback.
+
+  The job runs only the clang-tidy hook. clang-format, ruff and the
+  whitespace hooks sit in the same "runs only if installed" position and
+  could be swept in by dropping the hook id from that step; that is left as
+  a separate decision rather than taken here.
+
+  It earned itself on the first run, with a finding no amount of local
+  macOS linting could have produced: `bugprone-misplaced-widening-cast` on
+  `static_cast<unsigned long long>(rej_sum + q.fc_total_matches)` in
+  `engine_profile.hpp`. `uint64_t` is `unsigned long` on Linux, so the cast
+  is a no-op applied after the addition and the check fires; on macOS the
+  two types coincide and it does not. No defect either way — both operands
+  are already 64-bit, so nothing can overflow ahead of the cast — but the
+  widening now sits on an operand rather than the sum, which is what the
+  check asks for and is honest about the `%llu` it feeds.
+
+- **A rule's per-molecule table was sized by the whole molecule arena
+  *and* by every field any rule shape could want, so a rule that reads two
+  of eleven fields was charged for all of them (issue #71).** After #70,
+  `init_rule_states` was a third of an `error.bngl` session build at
+  `scale=100`, and five sixths of that third was allocating, zeroing and
+  re-walking side tables — not matching. The tables cost resident memory on
+  the same terms: 785 MB of a 1.69 GB peak on a model with two rules that
+  build one.
+
+  `PerMolRuleData` was 80 bytes: two embedding counts, a cache flag, a
+  three-field shared-component split, four doubles of local-rate state, and
+  two pure-context complex ids. It is now 12 bytes — the counts and the
+  flag, which every rule reads — with the other nine fields moved to a
+  `PerMolRuleAux` row in a second table a rule allocates only if its shape
+  reads one. The predicate (`rule_needs_mol_aux`) is the union of what
+  writes each group: two reactant slots for the shared-component split, a
+  local rate law (including the FunctionProduct B side) for the four rate
+  fields, a pure-context slot for the complex ids. A unimolecular,
+  non-local rule with no pure-context slot — the shape this is about —
+  allocates no second table at all, so its row goes 80 bytes to 12; a rule
+  that does need one pays 76 across the two, and neither its build nor its
+  event loop measurably moves.
+
+  Both tables are indexed by mol_id and either the aux table is empty or it
+  is *exactly* as long as the other, which is what `grow_mol_tables` is
+  for: an aux table shorter than `mol_data` is an out-of-bounds read on the
+  next event, not a wrong number. All 63 `mol_data` sites were audited onto
+  one side or the other.
+
+  The `cache_init` flag goes the same way — #71's cheapest item. It is now
+  part of the value the rescan fills the table with, instead of a second
+  full pass over the table writing one byte per 80-byte row afterwards. A
+  full rescan is what validates every row, including the zero-valued
+  defaults for molecules of types the rule cannot seed on, so the fill can
+  carry the flag. The default in `PerMolRuleData` itself stays false, and
+  the on-demand growth path still takes it: those rows are for molecules
+  born since the rescan, which genuinely have not been computed.
+
+  Measured on macOS arm64, release preset, `error.bngl` at `scale=100`
+  (4 661 136 molecules, three rules, two of which build a table), `t_end=1`
+  so the SSA loop is empty. Best of seven paired runs — the two binaries
+  alternated so both saw the same machine, which had other work on it:
+
+  | | before | after | |
+  |---|---:|---:|---:|
+  | `init_rule_states` | 0.385 s | 0.144 s | **2.7x** |
+  | session build | 1.147 s | 0.886 s | 1.3x |
+  | peak RSS | 1.74 GB | 1.10 GB | |
+
+  Per rule, inside the phase, same seven paired runs:
+
+  | | `delta()->0` | `I(N!1).I(N!1)->0` |
+  |---|---:|---:|
+  | seed-type population | 1.55e6 | 3.11e6 |
+  | `mol_data` fill | 0.087 → 0.009 s | 0.081 → 0.009 s |
+  | the embedding scan | 0.017 → 0.008 s | 0.051 → 0.032 s |
+  | Fenwick init + fill | 0.031 → 0.031 s | 0.052 → 0.051 s |
+  | `cache_init` tail pass | 0.032 s → gone | 0.021 s → gone |
+  | total | 0.174 → 0.048 s | 0.213 → 0.099 s |
+
+  The fill goes down by more than the 6.7x the row width alone predicts,
+  and the embedding scan gets faster without being touched at all: writing
+  one count into a 12-byte row touches a fraction of the cache lines an
+  80-byte row does. The Fenwick column is flat, which is both expected —
+  that code is untouched here — and a check on the harness. What is left of
+  the phase is now mostly that Fenwick `init`, a 37 MB zeroing sized by the
+  arena for a tree only ever updated at ids of one type. That is #71's
+  fourth item, and it is left alone with the third for the reason the issue
+  gives: both need a stable dense per-type slot in the pool, which is a
+  design question and should be measured before it is attempted.
+
+  Where it bites hardest is the shape #71 sharpened it to — the same model
+  plus four molecule types seeded with one molecule each and one
+  unimolecular rule apiece. Rules that between them can see four molecules:
+
+  | | before | after | |
+  |---|---:|---:|---:|
+  | `init_rule_states` | 0.908 s | 0.206 s | **4.4x** |
+  | session build | 1.682 s | 0.986 s | 1.7x |
+  | peak RSS | 3.12 GB | 1.33 GB | |
+
+  Nothing regresses for the shapes that do carry an aux row. On
+  `A(b) + B(a) <-> A(b!1).B(a!1)` with 2e6 of each, peak RSS goes 1.40 GB
+  to 1.06 GB — the forward rule saves 4 bytes a row, and the unbinding
+  rule, which is unimolecular, saves 68 — and session build is 3.92 s
+  against 3.99 s, best of three. If that 2% is real rather than noise it is
+  the second `assign` on a row that only got 4 bytes narrower, which is
+  what an aux-carrying rule trades for the arithmetic above. Three
+  feature-coverage stress models run to a 20 000-unit horizon are unchanged
+  within 1% (13.47/8.36/10.37 s against 13.02/8.44/10.41 s), which is the
+  event-loop check: the aux row costs one predicate test and one more
+  indexed table per updated molecule.
+
+  `rule_table_shape_test` is the new gate: one rule of each aux group plus
+  one of the no-aux shape in a single pool, every reacting molecule made by
+  a maker rule so each arm is priced on rows created after the session
+  build sized the tables. Structural assertions are exact; the four arm
+  means are 4-sigma bands against analytic references (the CME steady state
+  for the homodimer, plain exponential survivor counts for the rest), so
+  each arm is priced rather than merely observed. Deleting the aux-table
+  growth segfaults it. `docs/internals.md` gains a "Step 4 — the per-rule
+  tables" section covering the two-table invariant.
+
+  ctest 46/46 release and ASan; feature_coverage 89/89 and basicmodels
+  29/29 against the vendored NFsim ensembles.
+
+- **`init_species` re-resolved every seed species once per copy, and grew
+  the pool by doubling while it did (issue #67).** After #65, session
+  build was two thirds of an `error.bngl` replicate's setup and two
+  thirds of *that* was `init_species` — populating the pool from the seed
+  species, at a flat ~330 ns per molecule, before any matching,
+  propensity or observable work happens. It is now ~110 ns per molecule:
+  at `scale=100` (4.66e6 molecules) `init_species` takes 0.52 s where it
+  took 1.55 s, session build 1.12 s against 2.05 s, a full `t_end=2400`
+  replicate 8.6 s against 10.3 s, and peak RSS 1.93 GB against 2.23 GB —
+  for a byte-identical `.gdat`.
+
+  Three things, none of which changes what the pool ends up holding.
+
+  **The per-copy work did not depend on the copy.** For each of the
+  `count` copies of a seed species, the walk rebuilt the species-XML
+  component index → molecule-type component index mapping — a
+  `std::unordered_map<std::string, int>` keyed by component name, built
+  and thrown away once per molecule — re-ran the state-name lookups
+  through it, re-resolved the bond endpoints against it, and allocated
+  two scratch vectors. All of that is a function of the `SpeciesInit` and
+  the model alone. Each seed species is now resolved once into a
+  `SeedTemplate` and the copies are stamped out from it; on
+  `I(N!1).I(N!1)` at 1.55e6 copies, the old shape meant 3.1e6 name-keyed
+  hash maps built and destroyed.
+
+  **Nothing was reserved.** `molecules_`, `components_`, `comp_to_mol_`,
+  the per-type indices, the complex map and the move side-channel all
+  grew by doubling through the whole walk, from totals the first pass now
+  knows before the second starts. `molecules_` is the expensive one —
+  each element carries a `comp_ids` vector, so every reallocation moves
+  4.7e6 of them. `AgentPool::reserve_for_seed` is a capacity hint and
+  nothing more: a total that is short, or that does not fit the `int` the
+  pool addresses molecules with, costs only the growth it failed to
+  pre-empt. The complex map is sized by the complexes the seed *leaves*
+  rather than the one-per-molecule the walk creates before its bonds
+  merge them, since a hash map never gives a bucket array back.
+
+  **A newborn complex marked itself dirty.** `add_molecule` inserted the
+  complex it had just created into `cxs_dirty_`, the canonical-label
+  cache's invalidation set — one hash insert per molecule, which left the
+  set holding every complex in the model. It was information-free the
+  whole time, by the set's own documented contract: complex ids come from
+  a counter that never recycles, so a just-born complex cannot have a
+  cache entry, and `cached_label_of` already treats an absent id as
+  dirty. Every mutator that edits an *existing* complex still marks.
+  `cx_edits_` is a different question — its reader has to see the birth
+  rather than ask whether an edit is outstanding — so that one still gets
+  the id.
+
+  Verified byte-identical against a build of the parent commit: every
+  `.gdat` over the 187 model XMLs in `tests/reference/nfsim`,
+  `tests/models/feature_coverage` and `tests/cpp`, and every
+  `--species` census over the 160 of them that produce one.
+
+  `seed_build_test` pins the seed walk itself. Its model's seed species
+  list their components out of the molecule type's declaration order —
+  which BNG2's `writeXML` normalizes away, so the XML is hand-edited on
+  top of BNG2's output and the test refuses to run if that ordering is
+  ever regenerated out of it. Every count it makes is a hand-derived
+  integer, and each of the three ways the hoist could go wrong (a bond
+  endpoint resolved without the mapping, duplicate component names
+  collapsed onto one slot, the states applied to the first copy only) was
+  introduced on purpose and confirmed to fail it. Its last arm runs past
+  the seed, where `kCanonicalCacheSelfCheck` (Debug and ASan) covers the
+  dropped dirty mark; deleting a mark that *is* needed was likewise
+  confirmed to abort there.
+
+  What remains of the issue is its last direction: `complex_members_` is
+  a hash map to a heap-allocated vector per complex, the overwhelming
+  majority of them singletons, and it is now most of what `init_species`
+  still spends. That one changes `AgentPool`'s representation rather than
+  one loop — the pool is read from the matching layer, the propensity
+  layer, the observable tracker, save/load and species enumeration — so
+  it stays open.
+
+- **The `basicmodels` parity suite could not run from a clean clone: its
+  reference manifest gated on gitignored files (issue #63).**
+  `MANIFEST.tsv` is bootstrapped by walking the live reference tree, and
+  the machine that bootstrapped `tests/reference/basicmodels/` still held
+  the `replicates/` scratch its ensembles had been aggregated from — so
+  2900 of that manifest's 3018 rows named per-rep `.gdat` files that
+  `.gitignore` (`tests/reference/*/replicates/`) keeps out of the
+  repository. Verification hard-fails on a missing file, so
+  `harness/basicmodels.py` refused to start anywhere those had not been
+  generated locally, over files no verdict reads: the comparison opens the
+  aggregated `ensemble/*.{mean,std,tint}.tsv`, which are vendored, and
+  `PROVENANCE.md` describes `replicates/` as scratch in the same breath as
+  writing it. Regenerating was not a way out either — that path re-runs
+  NFsim 100 times per model against a locally patched NFsim build that is
+  not vendored. The suite is the manual gate for 29 curated models and
+  (like `oscSystem`) is not reachable from `ctest`, so an engine change
+  that moves every trajectory had nothing to check itself against.
+
+  The manifest now covers the vendored artifacts and only those, which is
+  what the corpus manifest next to it already did: the tree walk prunes
+  `replicates/` and OS noise (`.DS_Store`, `Thumbs.db`) on both write and
+  verify, so one manifest serves a clean clone and a machine holding a
+  freshly regenerated ensemble alike. The second case used to fail the
+  other way — as `untracked file in reference tree` — which is why the
+  fix has to be symmetric rather than a one-off row deletion. The
+  basicmodels manifest is rewritten accordingly, dropping 2900 rows and
+  keeping 118. Every hash it keeps is byte-identical to the one it
+  carried, bar `PROVENANCE.md`'s — edited here to state the coverage rule
+  next to the `replicates/` line that already called them gitignored — so
+  no reference data changed. `harness/basicmodels.py` then runs all 29
+  models green from a tree with no `replicates/` in it.
+
+  Four smaller defects in the same helper — three on the path anyone
+  hitting a manifest problem walks, the fourth caught by the new test on
+  CI's Windows leg:
+
+  - Rows reaching outside that coverage are now one diagnostic naming the
+    count and the first path, rather than one `missing reference file`
+    line per file. The failure in #63 printed 2900 of them and pushed the
+    line saying what to do about it off the screen; the list is capped at
+    20 with an `… and N more` tail for the same reason.
+  - The abort's regeneration hint named `--generate-refs` /
+    `--force-refs` regardless of who called it. `benchmark_full.py` (and so
+    `basicmodels.py`) accepts neither — it takes `--no-verify-manifest
+    --write-manifest` — so the one line telling you how to fix the tree
+    named flags that would have errored. Each caller now supplies its own.
+  - Manifest paths are written `/`-separated on every platform.
+    `os.path.relpath` yields backslashes on Windows, and while the
+    existence check tolerates either, the untracked-file check compares
+    the two spellings directly: a manifest written on Windows would have
+    reported every file in the tree as untracked. Latent until now
+    because nothing in the build verified a manifest.
+  - The `# root` header line was `os.path.relpath(ref_root)` — relative
+    to the working directory rather than to the repository, which the
+    format comment claimed and which is what the committed manifests
+    actually hold. So the line moved with wherever the harness was
+    invoked from, and on Windows, writing a manifest for a tree on
+    another drive than the CWD raised `ValueError: path is on mount 'C:',
+    start on mount 'D:'` and took the writer down with it. Now
+    repo-relative, falling back to an absolute path for a tree outside
+    the repository. The line is cosmetic — `read_manifest` skips comments
+    — but nothing else in `write_manifest` could fail, so it was the
+    whole failure.
+
+  Windows checkouts could never have passed the gate at all, and this is
+  the first change that would have noticed: Git for Windows converts text
+  files to CRLF on checkout, so every `.tsv` and `.xml` under a reference
+  root hashes differently there — CI's Windows leg reported 306 of 306
+  `feature_coverage` files as drifted, against a tree that is pristine
+  (the live hash it printed is exactly the CRLF rewrite of the committed
+  bytes). A new `.gitattributes` marks the hashed trees `-text`, so their
+  bytes survive a checkout unchanged everywhere. `-text` rather than
+  `text eol=lf`: normalising on the way in as well would mean a reference
+  regenerated on Windows — Python text mode writes CRLF — is committed as
+  something other than what its author hashed, and the manifest would
+  fault on the next fresh checkout.
+
+  `ctest` gains `ref_manifest_test` (`tests/harness/test_ref_manifest.py`,
+  stdlib-only, no `rm_driver`), which pins the coverage rule on a
+  synthetic tree and verifies every committed `MANIFEST.tsv` against the
+  tree beside it. On CI that checkout is a clean clone, so a manifest that
+  reaches outside its coverage now fails the build on all three OS legs
+  instead of surfacing when someone reaches for a parity suite.
+
+- **A rule with no reactant pattern to seed on still got a per-molecule
+  table, one 80-byte entry per molecule in the pool, that nothing ever
+  read (issue #67).** `rescan_all_molecules_for_rule` sized and zeroed
+  `rs.mol_data` before deciding whether the rule had a seed molecule at
+  all, so a zero-order synthesis (`0 -> X()`) took the allocation and the
+  373 MB of zeroing on a 4.7e6-molecule pool, then returned from the
+  early-out below it without ever indexing the table. The n-ary early-out
+  a few lines above already returned without building `mol_data`, on the
+  same reasoning; this extends that to the seedless case, and clears the
+  table rather than leaving it sized.
+
+  Every indexed read of `mol_data` elsewhere either bounds-checks against
+  its size or resizes first, so an empty table gives the same "no entry
+  for this molecule" answer a zeroed one gave.
+
+  The cost is per rule of that shape and per session build, so it shows
+  up mainly as resident memory. On `error.bngl` at 4.7e6 molecules, whose
+  one such rule is `0 -> tim()`:
+
+  | | peak RSS | session build |
+  |---|---:|---:|
+  | before | 2.21 GB | 2.26–2.39 s |
+  | after  | 1.88 GB | 2.16–2.26 s |
+
+  and on the same model with four more zero-order rules added:
+
+  | | peak RSS | session build |
+  |---|---:|---:|
+  | before | 3.46 GB | 2.67–2.72 s |
+  | after  | 1.91 GB | 2.14–2.20 s |
+
+  — i.e. the added rules now cost essentially nothing, where each one
+  used to cost 373 MB and about 0.09 s.
+
+  `pool_churn_test`'s synthesis arm is the regression guard: its
+  `0 -> W()` rule is exactly this shape, and the test pins the population
+  a molecule limit stops it at to an exact integer. That arm now also
+  prices the rule — a ±6 sd band on its Poisson yield — rather than only
+  observing that it fired, since a seedless rule's propensity has nothing
+  to come from but its rate.
+
+- **Session build counted every tracked observable twice, and seeded it the
+  slow way both times (issue #65).** With the per-event costs from #62
+  gone, `Engine::initialize()` was what a run spent most of its wall
+  clock on: 14.0 s of a 22.0 s replicate of `error.bngl` at 4.7e6
+  molecules, against 8.1 s for the SSA loop it was setting up. It is now
+  2.7 s, and the replicate is 9.9 s.
+
+  **The observable walk and the tracker's tables were computed
+  independently.** `initialize()` ran `compute_observables()` — a
+  from-scratch walk of every observable — and then
+  `init_incremental_observables()`, which recomputed the same
+  per-molecule embedding counts to seed `obs_mol_contrib`. On
+  `Species Initiator_I2_SSA I(N!1).I(N!1)` over 3.1e6 `I` molecules that
+  is 3.1e6 multi-molecule embedding counts, done twice. The second
+  computation subsumes the first: the contribs are the walk's
+  per-molecule terms and the per-complex pass flags are its per-complex
+  verdicts. The tracker now runs first and settles `obs_values` out of
+  its own tables (`seed_tracked_obs_values`), and the walk that follows
+  skips every observable the tracker keeps.
+
+  **Seeding took the generic matcher where the per-event path takes
+  shortcuts.** `incremental_update_observables` computes a molecule's
+  contribution through a dispatch — a structurally unconstrained pattern
+  (`T()`) contributes one per molecule of its type with no matching at
+  all, a 2-molecule/1-bond pattern goes through the
+  `count_2mol_1bond_fc` specialization, and only what is left falls to
+  the generic BFS. The seeding loop called the generic BFS
+  unconditionally, including for patterns whose `FastMatchSlot` had been
+  built a few lines above it in the same function. The generic path
+  allocates per call — `bond_infos`, a vector-of-vectors adjacency, a
+  `std::function` closure per seed embedding, and inside
+  `count_embeddings_single` a `std::vector<bool>` and a vector-of-vectors
+  of candidates — and the init profile was about half allocator traffic
+  as a result. Both callers now share one `tracked_obs_contrib`, so
+  seeding gets the shortcuts and the two can no longer answer
+  differently.
+
+  The Species per-complex seeding also deduped complexes with a fresh
+  `std::unordered_set<int>` — the same thing #62 replaced in
+  `evaluate_observable`, in the other copy of that walk. It now uses the
+  same generation stamp.
+
+  Measured on `error.bngl` at `scale=100`, `t_end=2400, n_steps=240`, for
+  a byte-identical `.gdat`:
+
+  | | session build | SSA loop | process wall |
+  |---|---:|---:|---:|
+  | before | 14.0 s | 8.1 s | 22.0 s |
+  | after  |  2.7 s | 7.2 s |  9.9 s |
+
+  Session build against system size, `initialize()` alone:
+
+  | population (`I20`) | before | after |
+  |-------------------:|-------:|------:|
+  |             1.55e4 | 0.083 s | 0.024 s |
+  |             1.55e5 | 0.862 s | 0.212 s |
+  |             4.66e5 | 2.753 s | 0.676 s |
+  |             9.32e5 | 7.221 s | 1.299 s |
+  |             1.55e6 | 14.186 s | 2.369 s |
+
+  Still linear in population, which it has to be — the tracker's tables
+  are per-molecule — so this is the constant, not the exponent. The SSA
+  loop comes out about 11% faster too, reproducibly across runs; the
+  likely reason is that build no longer leaves the allocator holding
+  hundreds of millions of freed small blocks, but that was not chased
+  further.
+
+  What the seeded values are now rests on an equality rather than on a
+  second measurement, so it is checked both ways.
+  `kLocalObsTrackInvariant` (Debug and ASan builds, the gate that already
+  covers the contrib table's other fast-path read) re-derives every
+  tracked observable from scratch at init and aborts on a mismatch;
+  `init_obs_seed_test` pins the seeded values in Release, against
+  hand-computed counts over the model's seed species and against a
+  from-scratch walk of the identical initial pool.
+
+- **A three-rule model could not finish one replicate in eleven hours,
+  because per-event cost grew with the molecule population (issue #62).**
+  `error.bngl` is three rules over 4.7e6 molecules, every rate law a
+  constant, and NFsim's per-event cost on it is flat at 5–7 µs from
+  1.5e4 molecules to 9.3e5. RuleMonkey's was 53 µs/event at the small
+  end and 2798 µs/event at 100x the population — the two engines
+  executing essentially the same number of events, so the growth was
+  pure per-event cost. None of it was in the matching or propensity code
+  the model's shape would point at (the issue's own triage note flags
+  `percx_resum_rates`, which this model never reaches: its rate laws are
+  all constants, so the local-rate path never engages). Three pool walks
+  were responsible; each is now an O(1) side table.
+
+  **Removing a molecule from its type index was O(population of that
+  type).** `AgentPool::delete_molecule` erased the id from
+  `type_mol_index_[type]` with an order-preserving `std::remove` — a
+  linear scan over every live molecule of that type, plus the shift,
+  charged on every deletion. It was 59% of a sampled profile of the SSA
+  loop at 2.8e6 molecules, and it is not a niche path: any rule that degrades,
+  dissociates into nothing, or changes a molecule's type deletes. The
+  list's order carries no meaning — `molecules_of_type` consumers scan it
+  whole or sample from it by weight, and the Fenwick samplers key on
+  molecule id rather than on position — so removal is now a
+  swap-with-back through a `type_mol_pos_` side table. On the reproducer
+  at `t_end=60` this alone took the SSA loop from 32.6 s to 2.6 s.
+
+  **The `-gml` molecule limit re-counted the whole pool on every event.**
+  The limit check called `active_molecule_count()`, which scanned
+  `molecules_` for `.active`. A cap that cannot possibly bind therefore
+  cost exactly what a binding one would, per event, forever.
+  `error.bngl` declares `gml=>2.147e9` — an eyeballed `INT_MAX`, i.e.
+  "no limit" — over 4.7e6 molecules: measured, that cap cost 104.6 s
+  against 32.3 s for the identical run with no cap at all, and it now
+  costs nothing measurable (1.05 s against 1.23 s, inside run-to-run
+  spread). The three models in a 210-model NFsim-parity sweep that could
+  not produce a RuleMonkey replicate are exactly the three declaring
+  `gml >= 1e9`. The count is now a tally maintained by `add_molecule` /
+  `delete_molecule`.
+
+  **A Species observable outside the incremental tracker rebuilt a hash
+  set of every complex, at every sample.** The full walk deduped
+  complexes by inserting each complex id into a fresh
+  `std::unordered_set<int>` — one node allocated per complex, per
+  observable, per sample time — and then copied each complex's member
+  vector by value to walk it (`auto` where the accessor returns a
+  reference). Species observables whose pattern is a bare `T()` are
+  deliberately excluded from per-event tracking, because a model like
+  `rm_tlbr_rings` declares 300 of them and tracking all 300 costs more
+  than the walk; that trade assumed the walk was cheap, which it was not
+  at 1.5e6 complexes. Dedupe is now a generation stamp on the member
+  molecules — molecule ids are dense, so no hashing is needed — the
+  member list is taken by reference, and a molecule with no bonded
+  component skips the complex lookup entirely, since it is alone in its
+  complex by definition. Sample-time cost on the reproducer fell 6.4x.
+
+  Measured end to end on `error.bngl` at its own `scale=100`, on one
+  machine, at the model's own `t_end=2400, n_steps=240` horizon: the SSA
+  loop goes from 1223 s to 9.9 s, and the whole `rm_driver` invocation
+  from 1239 s to 25.4 s, for a byte-identical `.gdat`. (The reporter saw
+  more than eleven hours where this machine takes twenty minutes; at
+  `t_end=60` the two agree to within a percent, so the difference is in
+  the horizon or the host, not in the effect.) Per-event cost across
+  system size, SSA-loop wall over `events=`, at `t_end=60` (the population
+  column is the model's own `I20`, as in the issue's table; the pool
+  holds three molecules per unit of it):
+
+  | population (`I20`) | before (µs/event) | after (µs/event) |
+  |-------------------:|------------------:|-----------------:|
+  |             1.55e4 |                53 |             10.6 |
+  |             1.55e5 |               243 |             17.2 |
+  |             4.66e5 |               839 |             38.4 |
+  |             9.32e5 |              1664 |             65.3 |
+  |             1.55e6 |              2798 |             86.8 |
+
+  The remaining growth at this horizon is the fixed per-run cost — first
+  touch of the pool's pages, and seven whole-pool sample points — spread
+  over few events; at the real horizon the same configuration runs at
+  22.8 µs/event.
+
+  Two O(1) checks guard the new tables on every deletion under
+  `kPoolIndexSelfCheck` (compiled in for Debug and ASan, out of Release,
+  like the canonical-cache and local-observable self-checks): the
+  recorded type-index position against the type list's own contents, and
+  the live tally against `molecules_` minus the free-id list.
+
+- **A run stopped by a molecule limit reported its last sample rows one
+  event behind the pool they described (issue #62).** The limit check sat
+  before the observable refresh, and the breaching event is not rolled
+  back, so the trailing sample rows — written after the SSA loop exits —
+  carried pre-event values for every incrementally tracked observable
+  while the untracked ones, which full-walk the live pool at sample time,
+  carried post-event values. The same row disagreed with itself, and with
+  `get_molecule_count()` on the session left behind. The check now runs
+  after the refresh; the cost is one event's worth of propensity update
+  that is then discarded.
+
+- **A rate law built on `reactant_N()` had a propensity of zero, so the rule
+  never fired and the run finished with no events at all (issue #59).** A
+  BNGL model that wants the match count of a rule's Nth reactant pattern
+  inside that rule's own rate law declares an empty function by that name
+  and writes it into the rate expression:
+
+  ```
+  begin functions
+     reactant_1()
+     reactant_2()
+     NucF()=if(Dimer<1,kNuc,0)
+  end functions
+  A(b) + A(b) -> A(b!1).A(b!1)   reactant_1()*reactant_2()*NucF()
+  ```
+
+  BNG2 emits both placeholders as ordinary functions with an empty
+  `<Expression>`, so nothing in the XML says what they mean — the name is
+  the whole convention, and NFsim reads it the same way. RM read them as
+  what they literally are, a function with no body, i.e. the constant zero,
+  so every rate law built on one evaluated to zero. The rule's propensity
+  was zero, no reaction ever fired, and nothing was reported: the run
+  finished instantly with the initial condition unchanged and an exit code
+  of zero. The rate law is not a total rate, so the count the placeholder
+  supplies is multiplied in on top of the ordinary mass-action count, which
+  is what NFsim does and what RM now does.
+
+  The engine resolves the placeholder against the rule being priced, using
+  the same per-pattern match count that already multiplies the rate, and
+  the load-time walk records per rule which counts its rate function reads
+  so models that never mention the construct pay nothing.  A placeholder is
+  not reported as a function: it has no value outside the rule that reads
+  it, and NFsim drops an empty-bodied declaration rather than creating a
+  function for one, so `function_names()`, `get_function_values()`,
+  `Result::function_names` and `rm_driver --print-functions` carry no column
+  named after one.  Rate laws that read a placeholder, `_rateLaw1` and the
+  like, report the value the engine actually uses. Two shapes are
+  refused at load rather than resolved to zero: a count of a reactant the
+  rule does not have (`reactant_2()` on a one-reactant rule), and a count
+  read from a rate law that is also a local, per-instance function.
+
+  A third shape warns. A rate law that is not a total rate states the rate
+  *per set of reactants*, so the propensity is that value times the reactant
+  match counts, and `reactant_N()` supplies those same counts a second time
+  inside the rate. A bimolecular rule written `reactant_1()*reactant_2()*k`
+  is therefore priced at `(N1*N2)^2 * k`, not `N1*N2*k`, which is not what
+  the BNGL source reads like. NFsim does the same thing, so RM is not
+  diverging and does not refuse; the warning exists so that reading is named
+  at load instead of found by wondering why a rate constant is off by orders
+  of magnitude. `TotalRate` is the one shape where the construct means what
+  it looks like — there the rate function states the whole propensity, so
+  `reactant_1()*k` is exactly mass action at `k` — and the warning is silent
+  there. Verified against NFsim on a `TotalRate` model: RM 35.8, NFsim 37.7
+  over 20 seeds each, against the `100*exp(-1) = 36.8` the law predicts.
+
+  Reported on `actin_branch_forFitToData.bngl`, whose only initially
+  possible reaction is a nucleation rule of exactly this shape, so the whole
+  model was inert. It now nucleates and grows a filament, and over twelve
+  seeds its subunit count at `t = 10` averages 78.3 against NFsim's 73.9,
+  agreeing inside the seed-to-seed spread. The regression test measures the
+  propensity itself rather than just checking that something fires: running
+  400 replicates of the reported reproducer to exactly the mean waiting time
+  of the expected propensity, 62.3% of them have fired against the 63.2% the
+  rate predicts.
 
 - **A pure-context reactant pattern carrying a per-molecule local function
   tag was priced at the lowest-id matching molecule, so two identical
@@ -635,14 +1426,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untouched: its `/2` in `compute_propensity` already is the 0.5, and
   `homodimer_rate_test` still pins it against the chemical master
   equation.
-
-### Added
-
-- `tests/models/feature_coverage/ft_local_fcn_bimol.bngl` and
-  `ft_local_fcn_bimol_sym.bngl`, plus the `local_fcn_bimol_test` ctest
-  case, covering the DOR1 shapes above. No existing corpus model used a
-  local function on a bimolecular rule, which is why the gap survived
-  three minor releases.
 
 ## [3.9.0] — 2026-08-07
 
@@ -1885,7 +2668,8 @@ The legacy implementation, RuleMonkey 2.0.25, was introduced in:
 > RG. *RuleMonkey: software for stochastic simulation of rule-based
 > models.* BMC Bioinformatics 11:404 (2010). PMID: 20673321.
 
-[Unreleased]: https://github.com/richardposner/RuleMonkey/compare/v3.9.0...HEAD
+[Unreleased]: https://github.com/richardposner/RuleMonkey/compare/v3.10.0...HEAD
+[3.10.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.10.0
 [3.9.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.9.0
 [3.8.1]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.8.1
 [3.8.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.8.0
