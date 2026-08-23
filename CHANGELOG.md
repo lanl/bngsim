@@ -14,6 +14,8 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-23
+
 ### Added
 
 - **A model that calls `mratio()` in a rate law now gets an analytic forward
