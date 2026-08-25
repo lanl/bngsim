@@ -20,16 +20,21 @@ sub-particle SSA artifact says nothing about the ODE run):
                     non-finite output (NaN/Inf) over the horizon, so there is no
                     valid reference to compare against. The auto-derived taxonomy
                     keys only on raised-vs-not, so such a job lands in EXCEPTION
-                    (mislabeling it an actionable bngsim bug) when bngsim also
-                    failed; this narrow human disposition reclassifies it to
-                    ``Outcome.BAD_TEST`` (no parity signal). The runner applies it
-                    only while the premise holds — bngsim failed AND RR's output
-                    is non-finite — and otherwise flags the entry STALE (recovery
-                    stays visible; it can never silently mask a real bngsim bug).
-                    ODE-only in practice. Each entry MUST cite evidence (the RR
-                    finite fraction + the bngsim failure mode). The bar is the
-                    same as KNOWN_ARTIFACT: this is *not* a place to bury a real
-                    bngsim defect — a finite RR reference makes it stale at once.
+                    (mislabeling it an actionable bngsim bug) or, once bngsim can
+                    integrate the model, in DIFF (scoring the NaN against bngsim
+                    as a divergence); this narrow human disposition reclassifies
+                    it to ``Outcome.BAD_TEST`` (no parity signal). The runner
+                    applies it only while the premise holds — RR's output is
+                    non-finite, and on a DIFF that non-finite output accounts for
+                    the whole divergence (#485) — and otherwise flags the entry
+                    STALE (recovery stays visible; it can never silently mask a
+                    real bngsim bug). ODE-only in practice. Each entry MUST cite
+                    evidence (the RR finite fraction, and what settles bngsim's
+                    own trajectory: its failure mode, or an independent oracle).
+                    The bar is the same as KNOWN_ARTIFACT: this is *not* a place
+                    to bury a real bngsim defect — a finite RR reference makes it
+                    stale at once, and so does a failing cell in any column RR
+                    kept finite.
 
   NO_ORACLE_ADJUDICATED — a REFERENCE_FAILED row (bngsim ran, RoadRunner refused)
                     whose correctness blind spot was closed by an INDEPENDENT
@@ -283,23 +288,39 @@ KNOWN_ARTIFACT: dict[str, dict] = {
 # --------------------------------------------------------------------------- #
 # Reference engine ran but produced no usable trajectory (non-finite output) ->
 # reclassified to BAD_TEST. Keyed "model_id:method". `issue` is optional.
-# Applied only while the premise holds (bngsim failed AND RR non-finite); a
-# finite RR reference or a now-running bngsim makes the entry STALE.
+# Applied only while the premise holds (RR non-finite, and on a DIFF only where
+# the non-finite columns account for every surviving failure); a finite RR
+# reference, or a failure in a column RR kept finite, makes the entry STALE.
 # --------------------------------------------------------------------------- #
 INVALID_REFERENCE: dict[str, dict] = {
     "MODEL2002070001:ode": {
-        "issue": None,
+        "issue": 485,
         "reason": (
             "No valid reference: RoadRunner runs without raising but its "
             "trajectory is non-finite over the horizon (101/707 = 14.3% finite "
-            "cells, verified 2026-06-03), so it is not a usable oracle. bngsim "
-            "also fails to integrate this IVP — CVODE flag=-4 (error test failed "
-            "repeatedly / |h|=hmin) at t~=0.0134. Neither engine produces a "
-            "usable result, so this is a BAD_TEST (both broken), not the "
-            "EXCEPTION the raised-vs-not taxonomy would record (which would "
-            "mislabel a non-finite RR run as an actionable bngsim bug). If RR "
-            "ever returns a finite trajectory here the override goes stale and "
-            "the natural verdict — including any real bngsim bug — resurfaces."
+            "cells, re-verified 2026-08-25 against RR 2.9.2), so it is not a "
+            'usable oracle. Both compartments declare size="NaN"; every '
+            "species is hasOnlySubstanceUnits=true and no <math> block in the "
+            "file names either compartment, so the IVP is well posed in amounts "
+            "and the size is inert — but RR carries species as concentrations, "
+            "so x1..x6 (the species in those compartments) are NaN from t=0 "
+            "while x7, the one rate-rule variable that is not a species, stays "
+            "finite and agrees with bngsim cell for cell. The NaN reaches RR's "
+            "state through the compartment, not through the dynamics. bngsim "
+            "used to fail here too (CVODE flag=-4, error test failed repeatedly "
+            "/ |h|=hmin, at t~=0.0134); since the #353 unit-volume substitution "
+            "for a non-finite size it integrates the model (707/707 finite) and "
+            "AMICI 1.0.1 confirms that trajectory independently — 0/707 cells "
+            "failing, max_rel_err 0.0 at the sweep tolerance. So the half of "
+            'this entry\'s original premise that read "bngsim also failed" is '
+            "gone, and the half that matters is not: there is still no reference "
+            "trajectory to compare against, which is BAD_TEST (no parity signal) "
+            "rather than the DIFF the taxonomy would record — a DIFF would score "
+            "RR's NaN as a bngsim divergence. NOT reclassified to PASS, which "
+            "would credit RR with validating a model it answered NaN on. If RR "
+            "ever returns a finite trajectory here, or any surviving failure "
+            "lands in a column RR kept finite, the override goes stale and the "
+            "natural verdict — including any real bngsim bug — resurfaces."
         ),
     },
 }
