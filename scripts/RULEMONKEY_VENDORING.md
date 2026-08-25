@@ -14,16 +14,19 @@ land it upstream in RuleMonkey first and then re-run `vendor_rulemonkey.py`.
 
 - `bngsim/third_party/rulemonkey/VENDOR.json` currently records authoritative
   branch `main`, resolved source ref `origin/main`, and commit
-  `3d97f66c26dde54571b42581bf42373a937ce9bc` (RuleMonkey 3.10.0 plus the
-  vendored-expression refresh in richardposner/RuleMonkey#78).
-- **Refreshing this pin is a two-repo, ordered job.** The `EXPRTK_SYNC_FILES`
+  `87628b39973ed6d4f0a1720ab5e9ff903cdec2a6` (RuleMonkey 3.10.1, the
+  `chore(release):` commit itself).
+- **Refreshing this pin can be a two-repo, ordered job.** The `EXPRTK_SYNC_FILES`
   guard compares RuleMonkey's standalone `third_party/bngsim_expr` copy against
   this tree's `expression.cpp` and friends, and it fails closed. So when
   bngsim's expression layer has moved, run RuleMonkey's *own*
   `scripts/vendor_exprtk.py --bngsim-repo <bngsim>` in the candidate checkout,
   land that upstream, and only then vendor here. No RuleMonkey release tag is
-  needed in between: the pin before this one, `1d14160`, was itself such a
-  refresh commit rather than a `chore(release):` one.
+  needed in between: the pin `1d14160` was itself such a refresh commit rather
+  than a `chore(release):` one. It is only required when bngsim's expression
+  layer has actually moved since RuleMonkey's copy was last synced — check the
+  `ExprTk sync pin` line that `--summary` prints. The 3.10.0 → 3.10.1 refresh
+  needed no such step, because that pin already matched this tree.
 - Vendoring metadata records canonical upstream remote
   `https://github.com/richardposner/RuleMonkey.git`.
 - The preferred disposable checkout is `/tmp/rulemonkey-vendor-candidate`.

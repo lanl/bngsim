@@ -285,8 +285,14 @@ The runtime severity model is two-level:
   and substantially outperforms NFsim on count-relation Species
   observables — see `docs/timing_comparison.md`).
 - Multi-pattern observables (BNGL `Molecules X A(),B()` with multiple
-  patterns under one observable) — the engine sums embeddings across
-  all listed patterns.
+  patterns under one observable) — the patterns are summed, never
+  merged, for both types. A `Molecules` observable adds each pattern's
+  embedding count, so a molecule two patterns match counts twice; a
+  `Species` observable adds each pattern's species count, so a *complex*
+  two patterns match counts twice, and each pattern's `==N` / `>=N`
+  quantifier applies to that pattern's own complex-wide count. This is
+  what NFsim reports, and what the incremental tracker keeps per pattern
+  rather than per observable (issue #81).
 
 ### Strict BNGL semantics
 

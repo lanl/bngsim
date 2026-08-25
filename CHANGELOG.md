@@ -16,6 +16,50 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Changed
 
+- **Re-vendored RuleMonkey 3.10.0 (`3d97f66`) → 3.10.1 (`87628b3`).** A patch
+  release of two performance fixes. Nothing a model does under `method="rm"`
+  changes: both upstream entries record all 164 corpus, feature-coverage and
+  BNG2-oracle models producing byte-identical output, RuleMonkey's `include/` is
+  byte-identical to 3.10.0, and no Tier-0 refusal, warning or diagnostic is added
+  or removed. Only cost changes, and it changes by orders of magnitude.
+
+  **A rate law that reads a `Species` observable no longer full-walks the pool
+  after every SSA event.** A `Species` observable is tracked incrementally, but
+  the tracked value only settled when its dirty complexes were flushed, and that
+  flush fired at sample time — far too late for a rate law reading the value on
+  the very next propensity recompute. So RuleMonkey excluded rate-dependent
+  `Species` observables from the tracker outright and walked every complex holding
+  a molecule of the pattern's seed type, from scratch, after every event. That
+  made such a model quadratic in its own seed population; the flush now also runs
+  after each event, for the observables a rate law actually reads.
+
+  | seed | before | after |
+  |---:|---:|---:|
+  | 10 000 | 88.9 us/event | 5.3 us/event |
+  | 100 000 | 559.0 us/event | 3.3 us/event |
+  | 300 000 | did not finish | 3.6 us/event |
+
+  The charge did not need the observable to move: a rate over a `Species`
+  observable of an inert pool no rule touches paid a flat ~650 us/event for a
+  value that could not have changed.
+
+  **The same fix then had to reach multi-pattern `Species` observables**, which
+  the first gate admitted only one pattern at a time — `Species` has taken any
+  number of patterns all along, so those kept falling through to the full walk
+  (3 502 us/event at 10 000 seed, against 14.3 after). Lifting it was a semantics
+  change rather than a gate change: the walk applies each pattern's quantity
+  relation to that pattern's own complex-wide count, so a complex matched by two
+  patterns counts twice, and the tracker's one-tally-per-complex tables had to be
+  split per pattern first. An n-pattern observable now holds n times as much;
+  the peak-RSS sweep across all 164 models moves by less than its own
+  run-to-run spread.
+
+  Unlike the 3.9.0 → 3.10.0 refresh, this one needed no two-repo ordering.
+  RuleMonkey's standalone `third_party/bngsim_expr` copy already matched this
+  tree on all four `EXPRTK_SYNC_FILES` paths, so the guard passed as-is and the
+  vendored surface moved by four files: `CHANGELOG.md`, `CMakeLists.txt`,
+  `cpp/rulemonkey/engine.cpp` and `docs/model_semantics.md`.
+
 - **`MODEL2002070001`'s `INVALID_REFERENCE` premise is relaxed: a reference that
   answers `NaN` is not a comparison basis, whatever bngsim did (#485).** The
   0.15.0 sweep flagged the entry stale — `natural=DIFF, rr_finite=False` — and it

@@ -7,6 +7,180 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.1] — 2026-08-25
+
+### Fixed
+
+- **A rate law reading a *multi-pattern* `Species` observable still
+  full-walked the pool after every event (issue #81).** #80 let a
+  `Species` observable that a rate law reads onto the incremental
+  tracker, but `init_incremental_observables` admitted one only when it
+  declared exactly a single pattern. A multi-pattern `Species` observable
+  — `Molecules` has taken any number of patterns all along — kept falling
+  through to `compute_rate_dependent_observables`, which walks every
+  complex holding a molecule of the seed type, from scratch, once per
+  pattern, after every SSA event:
+
+  ```bngl
+  begin observables
+    Species Rtot  R(x~U), R(x~P), R(), S()
+  end observables
+  begin functions
+    conv_rate() = kt*Rtot
+  end functions
+  begin reaction rules
+    R(x~U) -> R(x~P)  kp
+    R() -> P()        conv_rate()
+  end reaction rules
+  ```
+
+  | seed `R` | before | after | `Molecules` twin |
+  |---:|---:|---:|---:|
+  | 2 500 | 1 067 us/event | 17.4 us/event | 13.7 us/event |
+  | 5 000 | 1 979 us/event | 13.6 us/event | 15.6 us/event |
+  | 10 000 | 3 502 us/event | 14.3 us/event | 9.9 us/event |
+  | 30 000 | 9 615 us/event | 12.5 us/event | 9.5 us/event |
+  | 100 000 | did not finish | 10.3 us/event | 8.1 us/event |
+
+  Lifting the restriction was a semantics change rather than a gate
+  change, which is why #80 left it. The full walk in
+  `evaluate_observable` re-walks the pool once per pattern and adds one
+  for every complex *that pattern* passes on its own, applying that
+  pattern's quantity relation to that pattern's own complex-wide count.
+  So a complex matched by two of an observable's patterns counts twice,
+  and `Species Mixed A()>=3, B()==1` cannot be answered from one number
+  per complex at all. The tracker kept exactly one — one tally, one
+  verdict, one row of per-molecule contributions — so admitting these
+  observables meant splitting those tables per pattern first.
+  `obs_cx_match_count` and `obs_cx_passed` are now indexed
+  `[observable][pattern]`, and a `Species` observable keeps its
+  per-molecule contributions per pattern instead of summed across them
+  (the sum is what a `Molecules` observable's value *is*, and what a
+  `Species` observable cannot use).
+
+  A one-pattern `Species` observable holds exactly what it held before;
+  an n-pattern one holds n times as much, which is the cost of
+  representing what the walk computes. Almost nothing in the tree pays
+  it. The largest multi-pattern `Species` observables there are
+  histograms — `Clusters EGFR()==1, ..., EGFR()==20` in
+  `egfr_nf_iter5p12h10` and `example2_fit` — whose patterns are
+  structurally unconstrained and which no rate law reads, so they stay
+  off the tracker under the same rule that keeps `rm_tlbr_rings`'s 300
+  `Size_N R()=N` observables off it. Their peak RSS is unmoved or lower
+  over three runs each — `egfr_nf_iter5p12h10` 380.2-382.5 MB before and
+  372.0-382.5 MB after, `example2_fit` 372.1-383.5 against 382.0-384.7,
+  `rm_tlbr_rings` 9.8-9.9 MB against 8.6-8.8 MB. The one model in the
+  tree that newly allocates is `edg_multi_pattern_obs`, whose
+  `HetSpec A(s!+), B(a!+), C(a!+)` now holds three contribution rows over
+  a 90-molecule arena — about 2 kB, and its peak RSS moves from
+  3.2-3.3 MB to 3.3-3.4 MB. Across all 164 models the peak-RSS sweep
+  moves by less than its own run-to-run spread, which reaches several
+  percent on models that declare no `Species` observable at all.
+
+  Admitting an observable also moves it off the per-sample full walk,
+  which is a trade rather than a win, and `edg_multi_pattern_obs` scaled
+  to a 90 000-molecule pool prices it: 5.96-7.35 s before against
+  4.26-4.40 s after at the suite's 60 samples, and 3.64-3.96 s before
+  against 4.15-4.33 s after at 2 samples. Tracking wins wherever the run
+  is sampled at all, and loses a little where it is barely sampled —
+  which is the same trade every non-trivial single-pattern `Species`
+  observable has taken since the tracker learned about them.
+
+  The trajectory is unchanged too: all 164 produce byte-identical output,
+  and the whole tree runs clean under `kSpeciesIncrObsInvariant`, which
+  re-derives every tracked observable from a full walk at every sample.
+  `multi_pattern_species_obs_test` is the coverage that was missing. One
+  arm runs the defect shape against a `Molecules`-observable twin that is
+  exact on both trajectory and cost — 2369x on the pre-fix engine, 1.7x
+  after. The other pins the per-pattern semantics on a seed whose answer
+  is computable by hand: every seeded
+  `A(s!1,t,b!3).A(s!2,t!1,b).A(s,t!2,b).B(a!3)` trimer satisfies both
+  patterns of two different observables, so a tally merged across an
+  observable's patterns reports half. It then re-checks every observable
+  against a from-scratch walk after a polymerising run, with each
+  rate-read observable paired against an unread twin — one served by the
+  full walk at every sample, one tracked on the once-per-sample flush
+  cadence over the same drained dead-complex side channel.
+
+- **An observable pattern with no molecules in it segfaulted session
+  build (found while fixing issue #81).** The incremental tracker keys
+  every one of its tables off `pat.molecules[0]`, and nothing checked
+  that a pattern had a `[0]`: an `<Observable>` carrying a `<Pattern>`
+  whose `<ListOfMolecules>` is empty indexed an empty vector in the
+  seeding walk and took the process down before the first sample.
+  `evaluate_observable` has always skipped such a pattern, so the shape
+  was never wrong, only unsurvivable. An observable that carries one is
+  now left to the full walk entire, which skips the pattern and counts
+  the rest. BNGL has no syntax for a pattern with nothing in it and BNG2
+  will never write one, so only a host handing RuleMonkey XML directly
+  reaches this; `empty_pattern_obs_model.xml` is that XML, and arm 3 of
+  `multi_pattern_species_obs_test` runs it.
+
+- **`Species` observables with several patterns were documented as taking
+  the union of the matching species.** They do not, and never did — both
+  observable types sum across their patterns, so a complex two patterns
+  match is counted once per pattern. The NFsim reference for
+  `edg_multi_pattern_obs` settles it: at t=0.5 it reports 11.4 bound B,
+  11.6 bound C, 4.6 doubly-bound A and `HetSpec` 34.40, which is the sum
+  11.4 + 11.4 + 11.6 and not the merge 11.4 + 11.6 - 4.6 = 18.40. Fixed
+  in `docs/model_semantics.md` and in that fixture's own header, which
+  had additionally called the double count a regression.
+
+- **A rate law reading a `Species` observable full-walked the pool after
+  every event (issue #79).** A `Species` observable is tracked
+  incrementally, but the tracked value only settles when its dirty
+  complexes are flushed, and that flush fired at sample time — far too
+  late for a rate law that reads the value on the very next propensity
+  recompute. So `init_incremental_observables` excluded any
+  rate-dependent `Species` observable from the tracker outright and left
+  it to `compute_rate_dependent_observables`, which walks every complex
+  holding a molecule of the pattern's seed type, from scratch, after
+  every SSA event.
+
+  That made a one-rule model quadratic in its own seed population:
+
+  ```bngl
+  begin observables
+    Species Rtot rho()
+  end observables
+  begin functions
+    rate() = kt*Rtot
+  end functions
+  begin reaction rules
+    rho() -> pi()  rate()
+  end reaction rules
+  ```
+
+  | seed `rho` | before | after |
+  |---:|---:|---:|
+  | 10 000 | 88.9 us/event | 5.3 us/event |
+  | 30 000 | 174.8 us/event | 3.3 us/event |
+  | 100 000 | 559.0 us/event | 3.3 us/event |
+  | 300 000 | did not finish | 3.6 us/event |
+
+  The charge does not need the observable to move. A rate over a
+  `Species` observable of an inert pool that no rule touches paid a flat
+  ~650 us/event for a value that could not have changed — the per-event
+  cost is the walk itself, sized by the observable's own pattern, which
+  is why it tracked neither the arena nor the rule's instance count.
+
+  Such an observable is now tracked like any other, with the dirty-cx
+  flush also run after each event — and only for the observables a rate
+  law actually reads, so an unrelated `Species` observable keeps its
+  once-per-sample cadence rather than picking up the same per-event
+  charge. Dead-complex bookkeeping stays global: the pool's side channel
+  is drained, not copied, so every tracked `Species` observable takes the
+  notification into its own dirty set before any of them is skipped.
+
+  Per-event cost is now flat in population and level with NFsim, and the
+  trajectory is unchanged — all 164 corpus, feature-coverage and
+  BNG2-oracle models produce byte-identical output, since none of them
+  happened to contain this shape. `dynamic_rate_species_obs_test` is the
+  coverage that was missing: one arm runs the defect against a
+  `Molecules`-observable twin that is exact on both trajectory and cost,
+  the other pins the tracker's bookkeeping over a polymerising pool
+  against a from-scratch walk.
+
 ## [3.10.0] — 2026-08-21
 
 ### Added
@@ -2668,7 +2842,8 @@ The legacy implementation, RuleMonkey 2.0.25, was introduced in:
 > RG. *RuleMonkey: software for stochastic simulation of rule-based
 > models.* BMC Bioinformatics 11:404 (2010). PMID: 20673321.
 
-[Unreleased]: https://github.com/richardposner/RuleMonkey/compare/v3.10.0...HEAD
+[Unreleased]: https://github.com/richardposner/RuleMonkey/compare/v3.10.1...HEAD
+[3.10.1]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.10.1
 [3.10.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.10.0
 [3.9.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.9.0
 [3.8.1]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.8.1
