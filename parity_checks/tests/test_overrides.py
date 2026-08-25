@@ -15,6 +15,10 @@ overrides_for
 stale_keys
   * flags an authored key whose model is absent from the built set, and stays
     silent when every key is matched
+  * the COMMITTED overrides carry no stale key against the COMMITTED manifests
+    (the regression guard: build_*_jobs.py only `print`s a WARN, and cannot run
+    at all without $BIOMODELS_SEDML_DIR, so nothing else notices a key going
+    stale — three had accumulated undetected since the initial public release)
 
 _job_overrides (runner side)
   * reads a tol Override into a {rtol, atol} dict, and a known_artifact /
@@ -25,9 +29,14 @@ _job_overrides (runner side)
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import overrides as ov
-from _core import Job, Oracle, Override
+import pytest
+from _core import Job, Oracle, Override, read_manifest
 from rr_run import _job_overrides
+
+RR_PARITY = Path(__file__).resolve().parents[1] / "rr_parity"
 
 
 # --------------------------------------------------------------------------- #
@@ -177,3 +186,29 @@ def test_job_overrides_reads_no_oracle_adjudicated():
     tol, artifact, invalid_ref, adjudication = _job_overrides(job)
     assert tol is None and artifact is None and invalid_ref is None
     assert adjudication == ("confirm", "scipy BDF reproduces to max_rel=0", "GH #117")
+
+
+# --------------------------------------------------------------------------- #
+# The committed state
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("method,manifest", [("ode", "ode_jobs.json"), ("ssa", "ssa_jobs.json")])
+def test_committed_overrides_have_no_stale_keys(method, manifest):
+    """No authored override key may name a model the committed manifest doesn't
+    build.
+
+    A stale key is silent rot: it reads as a live disposition while covering
+    nothing, and it is the shape a typo'd or renamed model_id takes — an
+    override that was meant to reclassify a row and never did. The only existing
+    detection is a ``print("WARN: ...")`` in build_ode_jobs.py / build_ssa_jobs.py,
+    which nothing fails on and which cannot run at all in a checkout without
+    ``$BIOMODELS_SEDML_DIR``; three ODE keys had accumulated undetected since the
+    initial public release (retired in the GH #482 follow-up, with their
+    dispositions kept as comments in overrides.py). This asserts the committed
+    overrides against the committed manifests, which needs neither.
+
+    Retiring a key is the fix when the model genuinely left the corpus; correcting
+    it is the fix when the model_id is wrong. Both are better than a warning
+    nobody reads.
+    """
+    _, jobs = read_manifest(RR_PARITY / manifest)
+    assert ov.stale_keys({j.model_id for j in jobs}, method) == []
