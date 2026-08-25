@@ -14,6 +14,49 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Changed
+
+- **BIOMD0000000627's rr_parity divergence is allow-listed as a `KNOWN_ARTIFACT`:
+  RoadRunner steps over a smooth pre-stimulus ramp, and bngsim is the correct
+  engine (#482).** Reported as a 0.13.0 regression on the premise that the
+  pre-switch trajectory is a steady state, so every sample before `t = 200` must
+  sit on a flat baseline. It is not, and they must not.
+
+  Jolivet2015 gates its stimulus on an assignment rule,
+  `is_stimulated = piecewise(0, (time<=200) or (time>=t_0+t_end), 1)`, but the
+  blood-flow multiplier alongside it is *ungated*: `f_CBF_dyn` is a logistic
+  centred at `t_0 + t_1 - 3` = 199, so perfusion (`F_in = F_0*f_CBF_dyn`) runs
+  1.0000004 → 1.4157864 over `t` = 196..200 — the response leads the stimulus by
+  one second, by construction. `species_24` (CO2) is washed out along that ramp,
+  so the correct trajectory is already falling well before the switch.
+
+  bngsim resolves the ramp because the #305 crossing stop lands the step on
+  `t = 200`, which pulls the step size down on the approach. The ramp itself is
+  smooth: it brackets no #72 root, and the model has no `floor`/`ceiling`/
+  `modulo`, so `_periodic_disc_max_step` is `None` and #274 never enters. Remove
+  the #305 stop and bngsim reproduces RoadRunner's answer bit for bit — which is
+  exactly what bngsim ≤ 0.12.2 did, and why the fix reads as a regression.
+
+  RoadRunner at the sweep grid steps clean over the ramp and reports the flat
+  baseline 2.2084924 through `t = 200` (worst `species_24` at `t` = 199.6:
+  bngsim 1.9434505 vs RR 2.2084924, reld 0.136). Its answer gets *worse* as tol
+  tightens — at rtol/atol 1e-11/1e-14 and 1e-12/1e-16 it stays flat through
+  `t` = 200.4 as well, then missing part of the stimulus response too. Tol-stable
+  wrongness is the signature of a feature never sampled, and a denser output grid
+  cannot help, because `CV_NORMAL` interpolates output points. `TOL_OVERRIDES` is
+  therefore not the remedy.
+
+  Three independent converged references agree with bngsim to 7 digits at
+  `t` = 197.6/198.8/199.6/200.0/200.4
+  (2.2081597/2.1457629/1.9434505/1.9173758/1.9130018): RoadRunner with
+  `maximum_time_step` 0.05; RoadRunner with `maximum_time_step` 0.01, agreeing
+  with the first to 7 digits and so converged; and RoadRunner with *no* step
+  bound at all, simply restarted at `t = 190` so its own step control has to
+  resolve the window.
+
+  Suite-side only — no bngsim behavior changes. `parity_checks/rr_parity/
+  overrides.py` gains the entry and `ode_jobs.json` re-bakes the one job record.
+
 ## [0.15.0] - 2026-08-23
 
 ### Added
