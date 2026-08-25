@@ -180,6 +180,44 @@ KNOWN_ARTIFACT: dict[str, dict] = {
             "sensitive). See dev/notes/rr_parity_triage.md."
         ),
     },
+    "BIOMD0000000627:ode": {
+        "issue": 482,
+        "reason": (
+            "RoadRunner steps over a smooth pre-stimulus ramp (bngsim correct, "
+            "oracle-confirmed). Jolivet2015 neuro-glial metabolism: the stimulus is "
+            "gated by `is_stimulated = piecewise(0, (time<=200) or (time>=t_0+t_end), "
+            "1)`, but the blood-flow multiplier is NOT gated. `f_CBF_dyn` is a "
+            "logistic centred at `t_0+t_1-3` = 199, so perfusion (`F_in = "
+            "F_0*f_CBF_dyn`) rises 1.0000004 -> 1.4157864 over t=196..200 — one "
+            "second BEFORE the switch. The pre-200 trajectory is therefore NOT a "
+            "steady state, and species_24 (CO2) is washed out along that ramp. "
+            "bngsim resolves it because the #305 crossing stop lands the step on "
+            "t=200, which pulls the step size down through the ramp approaching it; "
+            "the ramp itself is smooth, so it registers no #72 root and earns no #88 "
+            "bound of its own (the model has no floor/ceiling/modulo, so "
+            "_periodic_disc_max_step is None — #274 is not involved). RoadRunner at "
+            "the sweep grid steps clean over the ramp and reports the flat "
+            "pre-stimulus baseline 2.2084924 right through t=200 (worst species_24 at "
+            "t=199.6: bngsim 1.9434505 vs RR 2.2084924, reld 0.136). RR's value is "
+            "the outlier and gets WORSE as tol tightens: at rtol/atol 1e-11/1e-14 and "
+            "1e-12/1e-16 it stays flat through t=200.4 too, then missing part of the "
+            "stimulus response as well. Tol-stable wrongness is the signature of a "
+            "feature never sampled, and a denser output grid cannot help because "
+            "CV_NORMAL interpolates output points (OBSERVED behavior — RR source not "
+            "inspected, so no mechanism is asserted). Third-oracle attribution — "
+            "three independent converged references, all matching bngsim to 7 digits "
+            "at t=197.6/198.8/199.6/200.0/200.4 "
+            "(2.2081597/2.1457629/1.9434505/1.9173758/1.9130018): (1) RR with "
+            "maximum_time_step=0.05; (2) RR with maximum_time_step=0.01, agreeing "
+            "with (1) to 7 digits and so converged; (3) RR with NO step bound at all, "
+            "simply restarted at t=190 so its own step control has to resolve the "
+            "window. Conversely, disabling the #305 crossing stop in bngsim "
+            "reproduces RR's default numbers bit for bit — which is what bngsim <= "
+            "0.12.2 did, and why this reads as a 0.13.0 regression when it is the "
+            "0.13.0 fix. TOL_OVERRIDE cannot help (tightening tol moves RR the wrong "
+            "way). See GH #482."
+        ),
+    },
     "BIOMD0000000338:ode": {
         "issue": None,
         "reason": (
