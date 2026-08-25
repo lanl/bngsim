@@ -41,7 +41,11 @@ the first raise), so a failure is attributed to the engine that caused it:
 REFERENCE_FAILED and BAD_TEST are auto-derived (never a manual list), so a model
 *leaving* either bucket — because RoadRunner gained support, or bngsim/the
 loader was fixed — is a visible win on the next run. EXCEPTION now means *only*
-"bngsim raised but the reference succeeded" = a real bngsim defect.
+"bngsim raised but the reference succeeded" = a real bngsim defect. The one
+authored way into BAD_TEST is an INVALID_REFERENCE override, for the case the
+raised-vs-not taxonomy cannot see: a reference that *ran* and answered NaN. It
+self-stales the moment that stops being true, so it cannot pin a row there
+either (``overrides.py``, ``_apply_invalid_reference``).
 
 Each REFERENCE_FAILED row is further sub-classified by WHY RoadRunner refused
 (``JobResult.reference_refusal``, via ``classify_reference_refusal``), because
@@ -147,13 +151,47 @@ DEFAULT_ATOL = rc.DEFAULT_ATOL
 # --------------------------------------------------------------------------- #
 # Comparison (the oracle, applied in the worker)
 # --------------------------------------------------------------------------- #
-def _compare_ode(bn, rr) -> tuple[str, float, str, str, float]:
-    """(status, value, comment, metric, tol) for one deterministic job.
+def _reference_nonfinite_covers(a: np.ndarray, b: np.ndarray) -> bool:
+    """Does the reference's non-finite output account for the WHOLE divergence?
+
+    ``a``/``b`` are the aligned bngsim/reference value blocks of a job that came
+    back ``diff``. True iff the reference emitted a non-finite cell here AND the
+    same verdict re-run over only the columns it kept finite *passes* — i.e.
+    every failure that survived the differ's gates is a cell the reference never
+    produced a number for, and no bngsim divergence is hiding beside it. (A
+    reference that is non-finite in every compared column has no finite column
+    left to disagree in, so it covers by construction.)
+
+    Restricting the columns can only make the re-run stricter: ``scale`` is the
+    file-wide peak over the retained block, so dropping the non-finite columns
+    shrinks it, which tightens both the file-scaled absolute term and the
+    significance gate. The claim it licenses is therefore never a loosening.
+
+    This is what lets an INVALID_REFERENCE override hold on a DIFF (#485). Before
+    that the override also required bngsim to have failed, which was its guard
+    against masking a bngsim defect; a model bngsim can now integrate has no such
+    guard, and this replaces it with the stronger, per-cell one.
+    """
+    finite_col = np.isfinite(b).all(axis=0)
+    if finite_col.all():
+        return False  # reference finite throughout — nothing to attribute it to
+    if not finite_col.any():
+        return True  # no finite reference column remains to disagree in
+    return bool(differ.deterministic_verdict(a[:, finite_col], b[:, finite_col])["passed"])
+
+
+def _compare_ode(bn, rr) -> tuple[str, float, str, str, float, bool]:
+    """(status, value, comment, metric, tol, ref_nonfinite_covers) for one job.
 
     Applies the shared ``_core.differ.deterministic_verdict`` protocol (combined
     abs+rel per-cell tolerance + fail-fraction budget + hard ceilings) over the
     common species. The reported metric is ``max_rel_err`` = the post-budget
     worst remaining relative error (0.0 on PASS), gated at ``REL_TOL``.
+
+    ``ref_nonfinite_covers`` is ``_reference_nonfinite_covers`` on a ``diff``
+    (False otherwise, including on the two pre-comparison diffs below — a
+    mismatched time grid or a disjoint species set is a divergence no reference
+    NaN explains). Only an INVALID_REFERENCE override reads it.
     """
     bn_t, bn_v, bn_n = bn
     rr_t, rr_v, rr_n = rr
@@ -165,6 +203,7 @@ def _compare_ode(bn, rr) -> tuple[str, float, str, str, float]:
             f"time grid mismatch (bn n={bn_t.shape}, rr n={rr_t.shape})",
             metric,
             tol,
+            False,
         )
     align = rc.align_common(bn_n, rr_n)
     if align is None:
@@ -174,15 +213,18 @@ def _compare_ode(bn, rr) -> tuple[str, float, str, str, float]:
             f"disjoint species sets: bn={bn_n[:4]} rr={rr_n[:4]}",
             metric,
             tol,
+            False,
         )
     bn_idx, rr_idx, common = align
-    v = differ.deterministic_verdict(bn_v[:, bn_idx], rr_v[:, rr_idx])
+    a, b = bn_v[:, bn_idx], rr_v[:, rr_idx]
+    v = differ.deterministic_verdict(a, b)
     status = "pass" if v["passed"] else "diff"
     comment = (
         f"{len(common)} sp; fail {v['n_fail']}/{v['n_cells']} "
         f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, forgiven {v['budget_forgiven']})"
     )
-    return status, v["max_rel"], comment, metric, tol
+    covers = _reference_nonfinite_covers(a, b) if status == "diff" else False
+    return status, v["max_rel"], comment, metric, tol, covers
 
 
 # --------------------------------------------------------------------------- #
@@ -254,29 +296,57 @@ def _classify_failure(bn_exc: str, rr_exc: str) -> tuple[str, str]:
     return "exception", bn_exc  # the reference ran but bngsim raised -> bngsim bug
 
 
-def _apply_invalid_reference(outcome, rr_finite, reason: str, issue, comment: str):
+def _apply_invalid_reference(
+    outcome, rr_finite, reason: str, issue, comment: str, *, rr_covers_diff: bool = False
+):
     """Resolve an INVALID_REFERENCE override against one job's natural result.
 
-    Returns ``(outcome, comment, is_stale)``. The override holds only while its
-    premise does — bngsim failed (natural EXCEPTION or BAD_TEST) AND the
-    reference is unusable (RoadRunner raised, so ``rr_finite is None``, or ran
-    with non-finite output, ``rr_finite is False``). Then the job is reclassified
-    to ``BAD_TEST`` with the reason recorded. Otherwise the premise is broken — a
-    finite reference (``rr_finite is True``) or a now-running bngsim (natural
-    PASS/DIFF/REFERENCE_FAILED) — so the natural outcome is kept and ``is_stale``
-    is True, surfacing both the recovery and any real bngsim bug the override
-    would have masked. ``rr_finite`` is True/False when RR ran, None otherwise.
+    Returns ``(outcome, comment, is_stale)``. The premise is that the reference
+    produced no usable trajectory, and it holds in exactly three shapes:
+
+      * natural BAD_TEST — RoadRunner raised and so did bngsim (``rr_finite`` is
+        None, there being no trajectory to test);
+      * natural EXCEPTION with ``rr_finite is False`` — RR ran but emitted
+        non-finite output, and bngsim raised;
+      * natural DIFF with ``rr_finite is False`` **and** ``rr_covers_diff`` — RR
+        ran non-finite, bngsim produced a trajectory, and every failure that
+        survived the differ's gates lies in a column RR left non-finite
+        (``_reference_nonfinite_covers``).
+
+    Then the job is reclassified to ``BAD_TEST`` with the reason recorded.
+
+    The DIFF shape is #485: the override used to require that bngsim had failed
+    too, which made it self-stale the moment bngsim gained the model — correct
+    while "bngsim also failed" was the only thing keeping it from burying a
+    bngsim defect, but wrong as a premise, because a reference that answers NaN
+    is not a comparison basis whatever bngsim did. ``rr_covers_diff`` is the
+    replacement guard, and a per-cell one: a real bngsim divergence beside the
+    NaN leaves a failing cell in a finite reference column and keeps the DIFF.
+
+    Otherwise the premise is broken — a finite reference (``rr_finite is True``),
+    a reference whose usability cannot be established (``rr_finite is None`` on
+    anything but a BAD_TEST, e.g. a segfaulted child), a natural PASS (the
+    compared columns were usable after all), or a DIFF the reference's NaN does
+    not account for — so the natural outcome is kept and ``is_stale`` is True,
+    surfacing both the recovery and any real bngsim bug the override would have
+    masked. ``rr_finite`` is True/False when RR ran, None otherwise.
     """
     tag = f" ({issue})" if issue else ""
-    if outcome == Outcome.BAD_TEST or (outcome == Outcome.EXCEPTION and rr_finite is False):
+    holds = outcome == Outcome.BAD_TEST or (
+        rr_finite is False
+        and (outcome == Outcome.EXCEPTION or (outcome == Outcome.DIFF and rr_covers_diff))
+    )
+    if holds:
         if outcome == Outcome.BAD_TEST:  # already both-broken; just append context
             extra = f" | {comment}" if comment else ""
-        else:  # record the natural verdict so "bngsim also failed" stays visible
+        else:  # record the natural verdict so what bngsim did stays visible
             extra = f" | was {outcome}" + (f": {comment}" if comment else "")
         return Outcome.BAD_TEST, f"invalid reference{tag}: {reason}{extra}", False
+    covers = f", rr_covers_diff={rr_covers_diff}" if outcome == Outcome.DIFF else ""
     note = (f"{comment} | " if comment else "") + (
-        f"STALE invalid-reference entry{tag}: natural={outcome}, rr_finite={rr_finite}"
-        " — reference usable / bngsim runs now, re-triage or prune"
+        f"STALE invalid-reference entry{tag}: natural={outcome}, rr_finite={rr_finite}{covers}"
+        " — usable reference / a divergence its non-finite output does not"
+        " account for, re-triage or prune"
     )
     return outcome, note, True
 
@@ -400,9 +470,13 @@ def _worker(spec: dict, q) -> None:
 
     # --- both ran: compare (shared _core.differ protocol; metric realized here) ---
     try:
-        status, value, comment, metric, m_tol = _compare_ode(bn, rr)
+        status, value, comment, metric, m_tol, covers = _compare_ode(bn, rr)
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
+        # Only an INVALID_REFERENCE override reads this: on a DIFF, is the whole
+        # divergence in columns the reference left non-finite? (See
+        # _reference_nonfinite_covers and _apply_invalid_reference.)
+        res["rr_covers_diff"] = covers
     except Exception as exc:
         res["status"] = "exception"
         res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
@@ -694,18 +768,24 @@ def main() -> int:
                     f"STALE known-artifact entry{tag}: passes on its own now — prune it"
                 )
                 n_stale_artifact += 1
-        # Invalid-reference disposition: the reference engine ran but produced no
-        # usable trajectory, so a job that landed in EXCEPTION/BAD_TEST is really
-        # "both broken" -> BAD_TEST with the reason in the comment. Applied ONLY
-        # while the premise holds (bngsim failed AND no usable reference — RR
-        # raised, or ran with non-finite output); a finite reference or a
-        # now-running bngsim flags the entry STALE so recovery (and any real
-        # bngsim bug the override was masking) resurfaces — never silent.
+        # Invalid-reference disposition: the reference engine produced no usable
+        # trajectory, so there is no comparison to score -> BAD_TEST with the
+        # reason in the comment. Applied ONLY while that premise holds — RR
+        # raised while bngsim did too, or RR ran with non-finite output (and on a
+        # DIFF, only where that non-finite output accounts for the whole
+        # divergence, #485). A finite reference, an unestablishable one, or a
+        # divergence the NaN does not cover flags the entry STALE so recovery
+        # (and any real bngsim bug the override was masking) resurfaces.
         invalid_ref = invalid_refs.get(r.get("key"))
         if invalid_ref:
             reason, issue = invalid_ref
             outcome, comment, stale = _apply_invalid_reference(
-                outcome, r.get("rr_finite"), reason, issue, comment
+                outcome,
+                r.get("rr_finite"),
+                reason,
+                issue,
+                comment,
+                rr_covers_diff=bool(r.get("rr_covers_diff")),
             )
             n_stale_invalid_ref += int(stale)
             n_invalid_ref += int(not stale)

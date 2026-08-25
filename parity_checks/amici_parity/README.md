@@ -140,9 +140,13 @@ Two dispositions, and the difference is which engine (if either) is at fault:
 agreed and they did not — this is the mirror of what #319/#323 did for bngsim's
 own declared refusals (`UNSUPPORTED` rather than a silent `EXCEPTION`): name the
 gap, do not claim the win. `REFERENCE_FAILED` and **not** `BAD_TEST`, because
-`BAD_TEST` means neither engine could run the model, and here bngsim did.
-(rr_parity's `invalid_reference` lands on `BAD_TEST` for exactly the reason it
-does not apply here: *there*, bngsim had also failed.) `COMPARISON_ARTIFACT` is
+`BAD_TEST` means the *model or test* is the problem, and here it is the reference
+engine: AMICI returns finite numbers that a defect of its own makes wrong.
+(rr_parity's `invalid_reference` lands on `BAD_TEST` because what it covers is
+the other case — a reference that answers `NaN` on a model whose own SBML is
+what put the `NaN` there. It no longer requires bngsim to have failed too, since
+GH #485; the guard against burying a bngsim defect is now that every surviving
+failing cell must sit in a column the reference left non-finite.) `COMPARISON_ARTIFACT` is
 correspondingly **narrower** than rr_parity's `KNOWN_ARTIFACT`, which also covers
 "the reference engine has the bug" — that case is `INVALID_REFERENCE` here,
 precisely so a reference defect is never dressed up as agreement.

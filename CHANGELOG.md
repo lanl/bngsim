@@ -16,6 +16,66 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Changed
 
+- **`MODEL2002070001`'s `INVALID_REFERENCE` premise is relaxed: a reference that
+  answers `NaN` is not a comparison basis, whatever bngsim did (#485).** The
+  0.15.0 sweep flagged the entry stale — `natural=DIFF, rr_finite=False` — and it
+  was half right. The entry claimed *both* engines were broken; bngsim's half of
+  that stopped being true in 0.14.0, when the #353 unit-volume substitution for a
+  non-finite compartment size let it integrate the model. RoadRunner's half is
+  unchanged. So the natural verdict resurfaced as a `DIFF` with `max_rel_err`
+  `inf`, 606/707 cells failing — RoadRunner's `NaN` scored against bngsim as a
+  divergence, the one thing it is not.
+
+  The model is well posed and the `NaN` is not in its dynamics. Both compartments
+  declare `size="NaN"`, but every species is `hasOnlySubstanceUnits="true"`, the
+  dynamics are 7 rate rules with no reaction, and no `<math>` block in the file
+  names `mucosa` or `lumen` — nothing reads a size, so the IVP is well posed in
+  amounts and bngsim's substitution warning describes a value nothing reads.
+  RoadRunner carries species as concentrations, so `x1..x6` — the six species in
+  those compartments — are `NaN` from `t = 0`, while `x7`, the one rate-rule
+  variable that is a *parameter* rather than a species, stays finite and agrees
+  with bngsim cell for cell. The `NaN` reaches RoadRunner's state through the
+  compartment, not through the dynamics.
+
+  At the sweep tolerance (rtol 1e-9 / atol 1e-12, `t` = 0..100, 101 points):
+  bngsim 707/707 cells finite; RoadRunner 2.9.2 runs without raising and returns
+  101/707; AMICI 1.0.1 confirms bngsim's trajectory independently, 0/707 cells
+  failing at `max_rel_err` 0.0. Two engines produce *a* trajectory here and the
+  third produces `NaN`, which is all the override needs to claim: RoadRunner's
+  output is not a usable comparison basis.
+
+  `_apply_invalid_reference` now keys the premise on the reference alone — RR ran
+  and emitted non-finite output — instead of also requiring that bngsim failed.
+  What that requirement was really doing was guarding against burying a bngsim
+  defect, and a model bngsim can now integrate needs a guard that still works:
+  `_reference_nonfinite_covers` re-runs the same verdict over just the columns
+  the reference kept finite, and the override holds on a `DIFF` only if that
+  passes. A real bngsim divergence beside the `NaN` leaves a failing cell in a
+  finite reference column, and the row stays a `DIFF`. Restricting the columns
+  can only tighten the re-run (`scale` is the peak over the retained block), so
+  the claim it licenses is never a loosening.
+
+  Two shapes the relaxation deliberately does **not** cover. `rr_finite is None`
+  — RoadRunner raised, or a segfaulted child left no per-engine status — stays
+  stale on anything but a natural `BAD_TEST`: "the reference raised" and "we
+  never learned" are indistinguishable there, and `REFERENCE_FAILED` is already
+  the right bucket for the first. A natural `PASS` stays stale too: if the
+  compared columns agreed, the reference was usable for the comparison whatever
+  it did elsewhere.
+
+  The row lands on `BAD_TEST`, not `PASS`. `PASS` is the #482/#483 treatment for
+  a divergence attributable to the reference engine, and it would score
+  RoadRunner as having *validated* a model it answered `NaN` on. `BAD_TEST` says
+  what happened: the model's own SBML put a `NaN` in the reference's state, and
+  no comparison exists. Both are non-scoring, so neither costs bngsim a model.
+
+  Suite-side only — no bngsim behavior changes. `overrides.py` rewrites the entry
+  (now citing #485, the AMICI confirmation, and the `x7` control),
+  `ode_jobs.json` re-bakes the one job record, and `test_outcome_classify.py`
+  pins the relaxed premise and the new guard. This was the last `DIFF` in the ODE
+  sweep: 1237 `PASS` / 27 `REFERENCE_FAILED` / 54 `BAD_TEST` / 5 `TIMEOUT` over
+  1323 jobs, no `DIFF` and no `EXCEPTION` row, and no override flagged stale.
+
 - **BIOMD0000000627's rr_parity divergence is allow-listed as a `KNOWN_ARTIFACT`:
   RoadRunner steps over a smooth pre-stimulus ramp, and bngsim is the correct
   engine (#482).** Reported as a 0.13.0 regression on the premise that the
