@@ -3567,38 +3567,58 @@ struct Engine::Impl {
   // Incremental observable tracking.  Originally molecules-only, extended
   // to Species observables in the record_at Step 2 sprint.
   //
-  // For every tracked observable (Molecules or Species, single-mol
-  // patterns), obs_mol_contrib[oi][mid] holds the per-mol contribution.
-  // Molecules observables aggregate the contribs by sum into obs_values;
-  // Species observables aggregate by complex and apply the pattern's
-  // quantity predicate, flushing dirty complexes at sample time.
+  // For every tracked Molecules observable, obs_mol_contrib[oi][mid]
+  // holds the per-mol contribution summed over the observable's
+  // patterns, which is what the observable's value is a sum of.  Species
+  // observables cannot fold their patterns together — see
+  // obs_species_pat_contrib below — so they leave this row empty and
+  // aggregate per pattern, per complex, applying that pattern's quantity
+  // predicate and flushing dirty complexes at sample time.
   std::vector<std::vector<double>> obs_mol_contrib;
-  std::vector<int> rate_dep_obs_indices; // rate-dependent obs only (kept for
-                                         // compute_rate_dependent_observables)
+  std::vector<int> rate_dep_obs_indices; // rate-dependent obs the tracker
+                                         // cannot take, for
+                                         // compute_rate_dependent_observables
   bool use_incremental_obs = false;
 
   // Species-path state (populated only for Species-tracked obs).
   // incr_tracked_obs_indices is the union of Molecules-tracked and
   // Species-tracked observables; incr_obs_is_species[oi] distinguishes
-  // them.  Molecules-tracked obs also live in rate_dep_obs_indices when
-  // they are rate-dependent, for the BFS delta path.
+  // them.
   std::vector<int> incr_tracked_obs_indices;
   std::vector<char> incr_obs_is_species; // size = model.observables.size()
   std::vector<char> incr_obs_is_tracked; // 1 if either path; size = model.observables.size()
-  // Trivial-pattern flag: obs with exactly one pattern of exactly one
-  // molecule with no components — `R()`, `L()`, etc.  For these, the
-  // per-mid contribution is 1 for any active type-matching mol and
-  // doesn't depend on state or bonds, so the per-event recompute can
-  // skip the count_multi_molecule_embeddings call.  Dirty-cx marking
-  // still fires for Species trivials so bond-op cx changes are seen.
-  std::vector<char> incr_obs_trivial;
+  // Trivial-pattern flag, per tracked obs and per pattern: a pattern of
+  // exactly one molecule with no components and no bonds — `R()`, `L()`,
+  // etc.  For these the per-mid contribution is 1 for any active
+  // type-matching mol and doesn't depend on state or bonds, so the
+  // per-event recompute can skip the count_multi_molecule_embeddings
+  // call.  Dirty-cx marking still fires for Species trivials so bond-op
+  // cx changes are seen.  Indexed [oi][pi]; empty for untracked obs.
+  std::vector<std::vector<char>> incr_obs_pat_trivial;
 
-  // Per Species-tracked obs: per-complex aggregate + passes cache + dirty
-  // set.  Indexed by obs index (sparse — non-tracked slots hold empty
-  // containers).
-  std::vector<std::unordered_map<int, int>> obs_cx_match_count;
-  std::vector<std::unordered_map<int, char>> obs_cx_passed;
+  // Per Species-tracked obs: per-complex aggregate + passes cache, both
+  // split per pattern, plus one dirty set shared by the obs's patterns.
+  // Indexed [oi][pi] (sparse — non-tracked obs slots hold empty vectors).
+  //
+  // Per-pattern rather than per-obs because that is what the full walk in
+  // `evaluate_observable` does: it re-walks the pool once per pattern and
+  // adds 1 for every complex that pattern passes on its own, so a complex
+  // matched by two patterns of the same observable counts twice.  Folding
+  // the patterns into one tally per complex would collapse those two into
+  // one, and would also have to invent a rule for composing two patterns'
+  // quantity relations — `species_quantity_passes` is defined per pattern.
+  std::vector<std::vector<std::unordered_map<int, int>>> obs_cx_match_count;
+  std::vector<std::vector<std::unordered_map<int, char>>> obs_cx_passed;
   std::vector<std::unordered_set<int>> obs_dirty_cx;
+
+  // Per Species-tracked obs: per-pattern per-molecule contribution,
+  // indexed [oi][pi][mid].  The Molecules path sums a molecule's
+  // contribution across patterns into `obs_mol_contrib` because that sum
+  // is the observable; the Species path cannot, because each pattern
+  // needs its own per-complex tally.  Species obs therefore leave
+  // `obs_mol_contrib[oi]` empty and use this instead, so a one-pattern
+  // Species obs costs exactly what it did before the split.
+  std::vector<std::vector<std::vector<double>>> obs_species_pat_contrib;
 
   // Per-mid snapshot of the last-seen complex id across all Species-
   // tracked obs.  Populated/updated whenever a mid is touched by an
@@ -3608,6 +3628,12 @@ struct Engine::Impl {
   // for every mid of a type referenced by a tracked Species obs.
   std::vector<int> species_mid_prev_cx;
   bool species_incr_any_tracked = false;
+  // True when at least one Species-tracked obs is read by a rate law
+  // (issue #79).  Such an obs has to be flushed after every event, not
+  // only at sample time, because a dynamic rate law reads obs_values on
+  // the very next propensity recompute.  Off for the common case, where
+  // the flush stays once per sample.
+  bool species_incr_rate_dep = false;
 
   // Scratch for the Species full-walk in evaluate_observable: a
   // generation stamp per molecule id marking "the complex this molecule
@@ -6506,31 +6532,34 @@ struct Engine::Impl {
                   current_time, oi, ob.name.c_str(), ob.type.c_str(), obs_values[oi], ref[oi]);
           if (incr_obs_is_species[oi]) {
             fprintf(stderr, "[species_incr_invariant] cx_passed dump:\n");
-            auto& pass_map = obs_cx_passed[oi];
-            auto& mc_map = obs_cx_match_count[oi];
-            // Print all stored cx entries
-            for (auto& kv : pass_map) {
-              int const cx = kv.first;
-              int const stored_mc = mc_map.count(cx) ? mc_map[cx] : -1;
-              auto members = pool.molecules_in_complex(cx);
-              int live_total = 0;
-              auto& pat = ob.patterns[0];
+            int const n_pat = static_cast<int>(ob.patterns.size());
+            for (int pi = 0; pi < n_pat; ++pi) {
+              auto& pass_map = obs_cx_passed[oi][pi];
+              auto& mc_map = obs_cx_match_count[oi][pi];
+              auto& pat = ob.patterns[pi];
               int const pm_type = pat.molecules[0].type_index;
-              for (int const m : members) {
-                if (!pool.molecule(m).active)
-                  continue;
-                if (pool.molecule(m).type_index != pm_type)
-                  continue;
-                int const c = count_multi_molecule_embeddings(pool, m, pat, model);
-                live_total += c;
-              }
-              bool const live_pass = species_quantity_passes(pat, live_total);
-              if ((kv.second != 0) != live_pass) {
-                fprintf(stderr,
-                        "  cx=%d stored_pass=%d stored_mc=%d "
-                        "live_total=%d live_pass=%d members=%zu\n",
-                        cx, static_cast<int>(kv.second), stored_mc, live_total,
-                        static_cast<int>(live_pass), members.size());
+              // Print all stored cx entries
+              for (auto& kv : pass_map) {
+                int const cx = kv.first;
+                int const stored_mc = mc_map.count(cx) ? mc_map[cx] : -1;
+                auto members = pool.molecules_in_complex(cx);
+                int live_total = 0;
+                for (int const m : members) {
+                  if (!pool.molecule(m).active)
+                    continue;
+                  if (pool.molecule(m).type_index != pm_type)
+                    continue;
+                  int const c = count_multi_molecule_embeddings(pool, m, pat, model);
+                  live_total += c;
+                }
+                bool const live_pass = species_quantity_passes(pat, live_total);
+                if ((kv.second != 0) != live_pass) {
+                  fprintf(stderr,
+                          "  pi=%d cx=%d stored_pass=%d stored_mc=%d "
+                          "live_total=%d live_pass=%d members=%zu\n",
+                          pi, cx, static_cast<int>(kv.second), stored_mc, live_total,
+                          static_cast<int>(live_pass), members.size());
+                }
               }
             }
           }
@@ -6593,7 +6622,8 @@ struct Engine::Impl {
     incr_tracked_obs_indices.clear();
     incr_obs_is_species.assign(n_obs, 0);
     incr_obs_is_tracked.assign(n_obs, 0);
-    incr_obs_trivial.assign(n_obs, 0);
+    incr_obs_pat_trivial.clear();
+    incr_obs_pat_trivial.resize(n_obs);
     obs_mol_contrib.clear();
     obs_mol_contrib.resize(n_obs);
     obs_cx_match_count.clear();
@@ -6602,23 +6632,45 @@ struct Engine::Impl {
     obs_cx_passed.resize(n_obs);
     obs_dirty_cx.clear();
     obs_dirty_cx.resize(n_obs);
+    obs_species_pat_contrib.clear();
+    obs_species_pat_contrib.resize(n_obs);
     species_mid_prev_cx.clear();
     species_incr_any_tracked = false;
+    species_incr_rate_dep = false;
     use_incremental_obs = false;
     obs_max_pattern_depth = 0;
     obs_pat_fm.clear();
     obs_pat_fm.resize(n_obs);
 
     // Classify each observable.
-    //   Molecules path: all patterns single-mol (seed-sum aggregation).
-    //   Species path: exactly one pattern, any mol count (per-cx
-    //                  aggregation via pattern-seeded contribs).
-    // Multi-pattern Species obs and rate-dependent Species obs fall
-    // through to the full-walk / rate-dep fallback.
+    //   Molecules path: per-mid contribs summed into obs_values.
+    //   Species path: per-pattern per-cx aggregation via pattern-seeded
+    //                  contribs, flushed from a dirty-cx set.
+    // Either path takes any number of patterns of any molecule count.
+    // What is left for the rate-dep full-walk fallback is an observable
+    // of neither type, or one carrying a pattern with no molecules to
+    // seed on — both tables here are indexed from `pat.molecules[0]`.
     for (int oi = 0; oi < n_obs; ++oi) {
       auto& obs = model.observables[oi];
       if (obs.patterns.empty())
         continue;
+      // A pattern with no molecules has no seed type, so it has no
+      // per-mid contribution to track.  `evaluate_observable` skips such
+      // a pattern outright; the tracker cannot, because every one of its
+      // tables is keyed off the seed molecule.  Leave the whole
+      // observable to the full walk rather than tracking it in part.
+      bool seedable = true;
+      for (auto& pat : obs.patterns) {
+        if (pat.molecules.empty()) {
+          seedable = false;
+          break;
+        }
+      }
+      if (!seedable) {
+        if (obs.rate_dependent)
+          rate_dep_obs_indices.push_back(oi);
+        continue;
+      }
 
       if (obs.type == "Molecules") {
         // Tracked via the per-mid delta path; obs_values stays fresh
@@ -6629,31 +6681,42 @@ struct Engine::Impl {
         incr_obs_is_species[oi] = 0;
         incr_obs_is_tracked[oi] = 1;
         incr_tracked_obs_indices.push_back(oi);
-      } else if (obs.type == "Species" && kSpeciesIncrObs && !obs.rate_dependent &&
-                 obs.patterns.size() == 1) {
-        // Rate-dependent Species obs fall through to the full-walk
-        // post-event path (compute_rate_dependent_observables); the
-        // dirty-cx flush only fires at sample time and so can't
-        // keep obs_values fresh enough for rate-law evaluation on
-        // every event.
+      } else if (obs.type == "Species" && kSpeciesIncrObs) {
+        // Trivial Species obs (every pattern a bare `T()` with no
+        // components or bonds) are skipped: rm_tlbr_rings declares 300
+        // `Size_N R()=N` histogram observables with identical
+        // structure, and per-event tracking across all 300 costs more
+        // than the per-sample full-walk (< 0.3 s for 100 samples at
+        // Step 1's baseline).  Full-walk is the cheaper path for this
+        // class of obs.
         //
-        // Trivial Species obs (pattern is a bare `T()` with no
-        // components or bonds) are also skipped: rm_tlbr_rings
-        // declares 300 `Size_N R()=N` histogram observables with
-        // identical structure, and per-event tracking across all 300
-        // costs more than the per-sample full-walk (< 0.3 s for 100
-        // samples at Step 1's baseline).  Full-walk is the cheaper
-        // path for this class of obs.
-        auto& p0 = obs.patterns[0];
-        bool const trivial_pat =
-            p0.molecules.size() == 1 && p0.molecules[0].components.empty() && p0.bonds.empty();
-        if (trivial_pat) {
+        // Not when a rate law reads it (issue #79).  For a rate-dependent
+        // obs the fallback is not the per-sample full-walk — it is
+        // compute_rate_dependent_observables, which full-walks after
+        // EVERY event, so `Species Rtot rho()` over a pool of N cost
+        // O(N) per event and the run went quadratic.  Tracking is
+        // strictly cheaper the moment the walk is per-event, trivial
+        // pattern or not.
+        bool trivial_pat = true;
+        for (auto& pat : obs.patterns) {
+          if (pat.molecules.size() != 1 || !pat.molecules[0].components.empty() ||
+              !pat.bonds.empty()) {
+            trivial_pat = false;
+            break;
+          }
+        }
+        if (trivial_pat && !obs.rate_dependent) {
           continue; // fall back to sample-time full-walk
         }
         incr_obs_is_species[oi] = 1;
         incr_obs_is_tracked[oi] = 1;
         incr_tracked_obs_indices.push_back(oi);
         species_incr_any_tracked = true;
+        // A tracked Species obs only settles when its dirty complexes are
+        // flushed; being read by a rate law is what forces that flush to
+        // run after every event rather than once per sample.
+        if (obs.rate_dependent)
+          species_incr_rate_dep = true;
       } else if (obs.rate_dependent) {
         // Rate-dependent obs that doesn't fit either path — keep the
         // existing rate_dep full-walk fallback.
@@ -6663,10 +6726,17 @@ struct Engine::Impl {
       // Trivial-pattern detection (kept for tracked obs only).  Avoids
       // a per-event per-mid count_multi_molecule_embeddings call when
       // the pattern has no structural constraints (R(), L(), ...).
-      if (incr_obs_is_tracked[oi] && obs.patterns.size() == 1 &&
-          obs.patterns[0].molecules.size() == 1 &&
-          obs.patterns[0].molecules[0].components.empty() && obs.patterns[0].bonds.empty()) {
-        incr_obs_trivial[oi] = 1;
+      // Per pattern, not per observable: a multi-pattern obs can mix
+      // trivial and constrained patterns, and each one's contribution is
+      // computed on its own.
+      if (incr_obs_is_tracked[oi]) {
+        int const n_pat = static_cast<int>(obs.patterns.size());
+        incr_obs_pat_trivial[oi].assign(n_pat, 0);
+        for (int pi = 0; pi < n_pat; ++pi) {
+          auto& pat = obs.patterns[pi];
+          if (pat.molecules.size() == 1 && pat.molecules[0].components.empty() && pat.bonds.empty())
+            incr_obs_pat_trivial[oi][pi] = 1;
+        }
       }
     }
 
@@ -6728,18 +6798,35 @@ struct Engine::Impl {
     }
 
     // Seed per-mol contribs for every tracked obs, through the same
-    // `tracked_obs_contrib` the per-event delta path uses — so seeding
-    // gets the trivial-pattern and 2-mol-1-bond shortcuts too, and the
-    // two can never answer differently.
+    // routines the per-event delta path uses — so seeding gets the
+    // trivial-pattern and 2-mol-1-bond shortcuts too, and the two can
+    // never answer differently.
     //
-    // The walk is over the distinct seed types of the observable's
-    // patterns rather than per pattern: `tracked_obs_contrib` already
-    // sums a molecule's contribution across every pattern it can seed,
-    // so visiting a molecule once is both necessary and sufficient.
+    // Molecules obs walk the distinct seed types of the observable's
+    // patterns rather than one pass per pattern: `tracked_obs_contrib`
+    // already sums a molecule's contribution across every pattern it can
+    // seed, so visiting a molecule once is both necessary and
+    // sufficient.  Species obs keep the patterns apart, so they walk
+    // each pattern's own seed type into that pattern's own row.
     std::vector<int> seed_types;
     for (int const oi : incr_tracked_obs_indices) {
-      obs_mol_contrib[oi].assign(n_mols, 0.0);
       auto& obs = model.observables[oi];
+      int const n_pat = static_cast<int>(obs.patterns.size());
+      if (incr_obs_is_species[oi] != 0) {
+        auto& pat_contribs = obs_species_pat_contrib[oi];
+        pat_contribs.assign(n_pat, std::vector<double>());
+        for (int pi = 0; pi < n_pat; ++pi) {
+          pat_contribs[pi].assign(n_mols, 0.0);
+          int const t = obs.patterns[pi].molecules[0].type_index;
+          for (int const mid : pool.molecules_of_type(t)) {
+            if (!pool.molecule(mid).active)
+              continue;
+            pat_contribs[pi][mid] = tracked_obs_pattern_contrib(oi, pi, mid);
+          }
+        }
+        continue;
+      }
+      obs_mol_contrib[oi].assign(n_mols, 0.0);
       seed_types.clear();
       for (auto& pat : obs.patterns) {
         int const t = pat.molecules[0].type_index;
@@ -6765,10 +6852,15 @@ struct Engine::Impl {
         if (!incr_obs_is_species[oi])
           continue;
         auto& obs = model.observables[oi];
-        auto& mc_map = obs_cx_match_count[oi];
-        auto& pass_map = obs_cx_passed[oi];
-        for (auto& pat : obs.patterns) {
+        int const n_pat = static_cast<int>(obs.patterns.size());
+        obs_cx_match_count[oi].resize(n_pat);
+        obs_cx_passed[oi].resize(n_pat);
+        for (int pi = 0; pi < n_pat; ++pi) {
+          auto& pat = obs.patterns[pi];
           auto& pm = pat.molecules[0];
+          auto& mc_map = obs_cx_match_count[oi][pi];
+          auto& pass_map = obs_cx_passed[oi][pi];
+          auto& contribs = obs_species_pat_contrib[oi][pi];
           // Walk each live complex that contains a type-matching mol.
           // Visited complexes are marked by stamping their member
           // molecules, the same allocation-free dedupe the Species full
@@ -6793,21 +6885,17 @@ struct Engine::Impl {
                 continue;
               if (pool.molecule(m).type_index != pm.type_index)
                 continue;
-              total += static_cast<int>(obs_mol_contrib[oi][m]);
+              total += static_cast<int>(contribs[m]);
             }
-            mc_map[cx] += total; // patterns with overlapping types sum
+            // A complex the pattern does not match leaves no entry at
+            // all: `species_quantity_passes` refuses a zero count for
+            // every relation, so an absent entry and a stored zero mean
+            // the same thing, and the flush erases such entries anyway.
+            if (total == 0)
+              continue;
+            mc_map[cx] = total;
+            pass_map[cx] = species_quantity_passes(pat, total) ? 1 : 0;
           }
-        }
-        for (auto& kv : mc_map) {
-          // A multi-pattern obs may see the same cx through different
-          // patterns; species_quantity_passes is per-pattern.  v1
-          // assumes Species obs have one pattern (true for all three
-          // target models).  When obs has multiple patterns, fall back
-          // to evaluating with the first pattern's quantity predicate;
-          // multi-pattern Species obs will be caught by the invariant
-          // gate if this is ever wrong.
-          bool const pass = species_quantity_passes(obs.patterns[0], kv.second);
-          pass_map[kv.first] = pass ? 1 : 0;
         }
       }
 
@@ -6845,11 +6933,13 @@ struct Engine::Impl {
     for (int const oi : incr_tracked_obs_indices) {
       double value = 0.0;
       if (incr_obs_is_species[oi] != 0) {
-        // Species: one per complex whose match count passed the
-        // pattern's quantity predicate.
-        for (const auto& kv : obs_cx_passed[oi])
-          if (kv.second != 0)
-            value += 1.0;
+        // Species: one per (pattern, complex) whose match count passed
+        // that pattern's quantity predicate — the full walk's own sum,
+        // which counts a complex once for each pattern it satisfies.
+        for (const auto& pass_map : obs_cx_passed[oi])
+          for (const auto& kv : pass_map)
+            if (kv.second != 0)
+              value += 1.0;
       } else {
         // Molecules: the straight sum over per-molecule contribs, which
         // is what the full walk accumulates, pattern by pattern.
@@ -6879,61 +6969,64 @@ struct Engine::Impl {
   //
   // Both the init seeding walk and the per-event delta path want exactly
   // this number, so they share the routine rather than each writing out
-  // the dispatch.  The dispatch is the part worth not duplicating: a
-  // structurally unconstrained pattern (`T()`) contributes one per
-  // molecule of its type with no matching at all, a 2-molecule/1-bond
-  // pattern goes through the `count_2mol_1bond_fc` specialization, and
-  // only what is left falls to the generic BFS.  Seeding used to call
-  // the generic BFS unconditionally while the per-event path took the
-  // shortcuts — half of what session build had left after the duplicate
-  // observable walk went away (issue #65).
+  // the dispatch.  The dispatch is the part worth not duplicating (see
+  // `tracked_obs_pattern_contrib`): a structurally unconstrained pattern
+  // (`T()`) contributes one per molecule of its type with no matching at
+  // all, a 2-molecule/1-bond pattern goes through the
+  // `count_2mol_1bond_fc` specialization, and only what is left falls to
+  // the generic BFS.  Seeding used to call the generic BFS
+  // unconditionally while the per-event path took the shortcuts — half
+  // of what session build had left after the duplicate observable walk
+  // went away (issue #65).
   double tracked_obs_contrib(int oi, int mid) {
-    auto& mol = pool.molecule(mid);
-    auto& obs = model.observables[oi];
-
-    if (incr_obs_trivial[oi] != 0) {
-      int const trivial_type = obs.patterns[0].molecules[0].type_index;
-      return (mol.active && mol.type_index == trivial_type) ? 1.0 : 0.0;
-    }
-    if (!mol.active)
-      return 0.0;
-
     double total = 0.0;
-    int const n_pat = static_cast<int>(obs.patterns.size());
-    for (int pi = 0; pi < n_pat; ++pi) {
-      auto& pat = obs.patterns[pi];
-      auto& pm = pat.molecules[0];
-      if (mol.type_index != pm.type_index)
-        continue;
-      if constexpr (kObsIncrProfile) {
-        obs_incr_profile_.obs[oi].per_mid_calls++;
-      }
-      const FastMatchSlot* fm = nullptr;
-      if constexpr (kObsFastMatch) {
-        if (oi < static_cast<int>(obs_pat_fm.size()) &&
-            pi < static_cast<int>(obs_pat_fm[oi].size()) && obs_pat_fm[oi][pi].enabled) {
-          fm = &obs_pat_fm[oi][pi];
-        }
-      }
-      int c;
-      if (fm != nullptr) {
-        c = count_2mol_1bond_fc(pool, mid, *fm, &cmm_fc_profile_);
-        if constexpr (kObsFastMatchInvariant) {
-          int const ref = count_multi_molecule_embeddings(pool, mid, pat, model);
-          if (c != ref) {
-            std::fprintf(stderr,
-                         "[obs_fastmatch mismatch] oi=%d pi=%d mid=%d "
-                         "seed_type=%d partner_type=%d specialized=%d generic=%d\n",
-                         oi, pi, mid, fm->seed_type, fm->partner_type, c, ref);
-            std::abort();
-          }
-        }
-      } else {
-        c = count_multi_molecule_embeddings(pool, mid, pat, model);
-      }
-      total += static_cast<double>(c);
-    }
+    int const n_pat = static_cast<int>(model.observables[oi].patterns.size());
+    for (int pi = 0; pi < n_pat; ++pi)
+      total += tracked_obs_pattern_contrib(oi, pi, mid);
     return total;
+  }
+
+  // One molecule's contribution to one pattern of a tracked observable.
+  // The Molecules path wants these summed across the observable's
+  // patterns (`tracked_obs_contrib` above), because that sum is the
+  // observable.  The Species path wants them one pattern at a time: each
+  // pattern carries its own quantity relation and its own per-complex
+  // verdict, so the tallies never merge.
+  double tracked_obs_pattern_contrib(int oi, int pi, int mid) {
+    auto& mol = pool.molecule(mid);
+    auto& pat = model.observables[oi].patterns[pi];
+    if (!mol.active || mol.type_index != pat.molecules[0].type_index)
+      return 0.0;
+    if (incr_obs_pat_trivial[oi][pi] != 0)
+      return 1.0;
+
+    if constexpr (kObsIncrProfile) {
+      obs_incr_profile_.obs[oi].per_mid_calls++;
+    }
+    const FastMatchSlot* fm = nullptr;
+    if constexpr (kObsFastMatch) {
+      if (oi < static_cast<int>(obs_pat_fm.size()) &&
+          pi < static_cast<int>(obs_pat_fm[oi].size()) && obs_pat_fm[oi][pi].enabled) {
+        fm = &obs_pat_fm[oi][pi];
+      }
+    }
+    int c;
+    if (fm != nullptr) {
+      c = count_2mol_1bond_fc(pool, mid, *fm, &cmm_fc_profile_);
+      if constexpr (kObsFastMatchInvariant) {
+        int const ref = count_multi_molecule_embeddings(pool, mid, pat, model);
+        if (c != ref) {
+          std::fprintf(stderr,
+                       "[obs_fastmatch mismatch] oi=%d pi=%d mid=%d "
+                       "seed_type=%d partner_type=%d specialized=%d generic=%d\n",
+                       oi, pi, mid, fm->seed_type, fm->partner_type, c, ref);
+          std::abort();
+        }
+      }
+    } else {
+      c = count_multi_molecule_embeddings(pool, mid, pat, model);
+    }
+    return static_cast<double>(c);
   }
 
   // Incrementally update tracked-observable values after affected
@@ -7012,10 +7105,15 @@ struct Engine::Impl {
     const auto& eff_affected = *affected_ptr;
 
     for (int const oi : incr_tracked_obs_indices) {
-      if (static_cast<int>(obs_mol_contrib[oi].size()) < n_mols)
-        obs_mol_contrib[oi].resize(n_mols, 0.0);
-
       bool const is_species = incr_obs_is_species[oi];
+      int const n_pat = static_cast<int>(model.observables[oi].patterns.size());
+      if (is_species) {
+        for (auto& contribs : obs_species_pat_contrib[oi])
+          if (static_cast<int>(contribs.size()) < n_mols)
+            contribs.resize(n_mols, 0.0);
+      } else if (static_cast<int>(obs_mol_contrib[oi].size()) < n_mols) {
+        obs_mol_contrib[oi].resize(n_mols, 0.0);
+      }
 
       oip_clock::time_point oip_t_obs_start;
       if constexpr (kObsIncrProfile) {
@@ -7023,32 +7121,42 @@ struct Engine::Impl {
           oip_t_obs_start = oip_clock::now();
       }
 
-      // Molecules: contrib is summed across all patterns into
-      // obs_values.  Species: contrib is summed into obs_mol_contrib
-      // and aggregated at flush time per cx.  Multi-pattern Species
-      // obs fall through to full-walk at init, so here obs.patterns
-      // has exactly one entry for Species and 1+ entries for Molecules.
+      // Molecules: contrib is summed across all patterns straight into
+      // obs_values.  Species: contrib is kept per pattern in
+      // obs_species_pat_contrib and aggregated at flush time per
+      // (pattern, cx), because each pattern carries its own quantity
+      // relation and contributes its own complex count.
       for (int const mid : eff_affected) {
         if (mid < 0 || mid >= n_mols)
           continue;
         auto& mol = pool.molecule(mid);
-        double const old_c = obs_mol_contrib[oi][mid];
-        double const new_c = tracked_obs_contrib(oi, mid);
-        if (new_c != old_c) {
-          obs_mol_contrib[oi][mid] = new_c;
-          if (!is_species)
-            obs_values[oi] += (new_c - old_c);
-          if constexpr (kObsIncrProfile) {
-            obs_incr_profile_.obs[oi].contrib_deltas++;
-          }
-        }
         if (is_species) {
+          auto& pat_contribs = obs_species_pat_contrib[oi];
+          for (int pi = 0; pi < n_pat; ++pi) {
+            double const new_c = tracked_obs_pattern_contrib(oi, pi, mid);
+            if (new_c != pat_contribs[pi][mid]) {
+              pat_contribs[pi][mid] = new_c;
+              if constexpr (kObsIncrProfile) {
+                obs_incr_profile_.obs[oi].contrib_deltas++;
+              }
+            }
+          }
           int const cx_now = mol.active ? pool.complex_of(mid) : -1;
           if (cx_now >= 0) {
             obs_dirty_cx[oi].insert(cx_now);
             if constexpr (kObsIncrProfile) {
               obs_incr_profile_.obs[oi].dirty_inserts++;
             }
+          }
+          continue;
+        }
+        double const old_c = obs_mol_contrib[oi][mid];
+        double const new_c = tracked_obs_contrib(oi, mid);
+        if (new_c != old_c) {
+          obs_mol_contrib[oi][mid] = new_c;
+          obs_values[oi] += (new_c - old_c);
+          if constexpr (kObsIncrProfile) {
+            obs_incr_profile_.obs[oi].contrib_deltas++;
           }
         }
       }
@@ -7105,12 +7213,21 @@ struct Engine::Impl {
     }
   }
 
-  // Flush dirty complexes for every Species-tracked obs and sync
-  // obs_values.  Called from record_at before record_time_point so the
-  // sample output sees up-to-date values.
-  void flush_species_incr_observables() {
+  // Flush dirty complexes for Species-tracked obs and sync obs_values.
+  // Called from record_at before record_time_point so the sample output
+  // sees up-to-date values, and — with `rate_dep_only` — after every
+  // event, so a dynamic rate law reads a settled value (issue #79).
+  //
+  // The per-event call settles only the obs a rate law actually reads.
+  // Every other Species obs keeps its once-per-sample cadence: its value
+  // is not consulted between samples, and flushing it on every event
+  // would re-introduce, per unrelated obs, exactly the per-event charge
+  // this issue is about.  Dead-complex bookkeeping is NOT selective —
+  // see below.
+  void flush_species_incr_observables(bool rate_dep_only = false) {
     if (!species_incr_any_tracked)
       return;
+    ++eval_vars_gen; // obs_values about to change → invalidate eval_vars_flat
 
     using oip_clock = std::chrono::steady_clock;
     bool oip_flush_sampled = false;
@@ -7136,45 +7253,68 @@ struct Engine::Impl {
     if constexpr (kObsIncrProfile) {
       obs_incr_profile_.flush_dead_cx_sum += dead_cxs.size();
     }
+    // Fold the dead complexes into EVERY Species obs's dirty set before
+    // any obs is skipped.  consume_dead_cxs drains the pool's side
+    // channel, so a per-event call that only looked at the rate-dep obs
+    // would swallow the notification the once-per-sample obs still need
+    // — their stored pass flag for that cx would never be retired.  The
+    // dirty set is what carries it forward to their own next flush.
+    for (int const oi : incr_tracked_obs_indices) {
+      if (!incr_obs_is_species[oi])
+        continue;
+      for (auto& mc_map : obs_cx_match_count[oi]) {
+        for (int const cx : dead_cxs) {
+          if (mc_map.count(cx))
+            obs_dirty_cx[oi].insert(cx);
+        }
+      }
+    }
+
     for (int const oi : incr_tracked_obs_indices) {
       if (!incr_obs_is_species[oi])
         continue;
       auto& obs = model.observables[oi];
-      auto& pat = obs.patterns[0];
-      int const pm_type = pat.molecules[0].type_index;
-      auto& mc_map = obs_cx_match_count[oi];
-      auto& pass_map = obs_cx_passed[oi];
-      auto& contribs = obs_mol_contrib[oi];
-      for (int const cx : dead_cxs) {
-        if (mc_map.count(cx))
-          obs_dirty_cx[oi].insert(cx);
-      }
+      if (rate_dep_only && !obs.rate_dependent)
+        continue;
+      int const n_pat = static_cast<int>(obs.patterns.size());
+      auto& pat_contribs = obs_species_pat_contrib[oi];
       if constexpr (kObsIncrProfile) {
         obs_incr_profile_.flush_dirty_cx_sum += obs_dirty_cx[oi].size();
       }
+      // Complex outer, pattern inner: the member list is resolved once
+      // per dirty complex and re-read by each pattern, rather than once
+      // per (pattern, complex) pair.
       for (int const cx : obs_dirty_cx[oi]) {
-        int total = 0;
-        for (int const m : pool.molecules_in_complex(cx)) {
-          if (!pool.molecule(m).active)
-            continue;
-          if (pool.molecule(m).type_index != pm_type)
-            continue;
-          if (m >= 0 && m < static_cast<int>(contribs.size()))
-            total += static_cast<int>(contribs[m]);
-        }
-        bool const new_pass = species_quantity_passes(pat, total);
-        auto pit = pass_map.find(cx);
-        bool const old_pass = (pit != pass_map.end()) && (pit->second != 0);
-        if (new_pass != old_pass) {
-          obs_values[oi] += (new_pass ? 1.0 : -1.0);
-        }
-        if (total == 0 && !new_pass) {
-          // Dead or empty cx: drop both maps to bound memory.
-          mc_map.erase(cx);
-          pass_map.erase(cx);
-        } else {
-          mc_map[cx] = total;
-          pass_map[cx] = new_pass ? 1 : 0;
+        const std::vector<int>& members = pool.molecules_in_complex(cx);
+        for (int pi = 0; pi < n_pat; ++pi) {
+          auto& pat = obs.patterns[pi];
+          int const pm_type = pat.molecules[0].type_index;
+          auto& mc_map = obs_cx_match_count[oi][pi];
+          auto& pass_map = obs_cx_passed[oi][pi];
+          auto& contribs = pat_contribs[pi];
+          int total = 0;
+          for (int const m : members) {
+            if (!pool.molecule(m).active)
+              continue;
+            if (pool.molecule(m).type_index != pm_type)
+              continue;
+            if (m >= 0 && m < static_cast<int>(contribs.size()))
+              total += static_cast<int>(contribs[m]);
+          }
+          bool const new_pass = species_quantity_passes(pat, total);
+          auto pit = pass_map.find(cx);
+          bool const old_pass = (pit != pass_map.end()) && (pit->second != 0);
+          if (new_pass != old_pass) {
+            obs_values[oi] += (new_pass ? 1.0 : -1.0);
+          }
+          if (total == 0 && !new_pass) {
+            // Dead or empty cx: drop both maps to bound memory.
+            mc_map.erase(cx);
+            pass_map.erase(cx);
+          } else {
+            mc_map[cx] = total;
+            pass_map[cx] = new_pass ? 1 : 0;
+          }
         }
       }
       obs_dirty_cx[oi].clear();
@@ -10554,10 +10694,17 @@ struct Engine::Impl {
       // maintained by incremental_update_observables; Molecules
       // obs_values is kept fresh; Species obs_values stays stale
       // between events but its contribs drive any later flush.
-      // Fallback rate-dep obs (multi-mol or Species rate-dep) are
-      // full-walked here every event.
+      // Whatever is left in rate_dep_obs_indices — an observable of
+      // neither type, or one whose patterns have no molecule to seed
+      // on — is full-walked here every event.
       if (use_incremental_obs)
         incremental_update_observables(affected);
+      // Settle the Species-tracked obs a rate law reads (issue #79).
+      // The flush is O(complexes this event dirtied), against the O(pool)
+      // full walk compute_rate_dependent_observables would otherwise do
+      // here on every single event.
+      if (species_incr_rate_dep)
+        flush_species_incr_observables(/*rate_dep_only=*/true);
       if (!rate_dep_obs_indices.empty())
         compute_rate_dependent_observables();
       auto t3 = std::chrono::steady_clock::now();

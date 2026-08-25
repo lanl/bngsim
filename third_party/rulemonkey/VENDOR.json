@@ -10,9 +10,9 @@
     "local_upstream_remote": null,
     "fork_remote": null,
     "branch_or_ref": "origin/main",
-    "commit": "3d97f66c26dde54571b42581bf42373a937ce9bc"
+    "commit": "87628b39973ed6d4f0a1720ab5e9ff903cdec2a6"
   },
-  "imported_at_utc": "2026-08-23T09:45:05+00:00",
+  "imported_at_utc": "2026-08-25T21:51:53+00:00",
   "pruning": {
     "included_paths": [
       "CMakeLists.txt",
