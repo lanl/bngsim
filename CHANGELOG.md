@@ -14,6 +14,8 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-08-25
+
 ### Changed
 
 - **Re-vendored RuleMonkey 3.10.0 (`3d97f66`) → 3.10.1 (`87628b3`).** A patch
