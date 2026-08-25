@@ -348,16 +348,18 @@ TOL_OVERRIDES: dict[str, dict] = {
             "(both engines) zero real columns remain -> PASS. Stiff IVP."
         ),
     },
-    "MODEL0913003363:ode": {
-        "rtol": 1e-10,
-        "atol": 1e-16,
-        "reason": (
-            "Tolerance artifact (both engines converge when tightened). 'm' + 3 "
-            "other columns diverge sharply at the sweep tol (worst reldiv 0.951, "
-            "an early transient); at 1e-10/1e-16 (both engines) zero real columns "
-            "remain -> PASS. Ill-conditioned transient at the loose default."
-        ),
-    },
+    # MODEL0913003363:ode — RETIRED 2026-08-25 as a stale key (GH #482 follow-up).
+    # The model is `drop,no_model` in the stage-1 corpus filter
+    # (benchmarks/suites/biomodels/manifest.csv): its fetched file is zero bytes
+    # (sha256 = the empty string's, e3b0c442...b855), one of 305 corpus entries in
+    # that state. build_ode_jobs.py therefore builds no job for it and the key
+    # could never match — `stale_keys` has flagged it since the initial public
+    # release. Recorded here rather than deleted outright, so the disposition is
+    # not re-derived if the corpus ever fetches the model successfully:
+    # tolerance artifact, both engines converge when tightened. 'm' + 3 other
+    # columns diverged sharply at the sweep tol (worst reldiv 0.951, an early
+    # transient); at rtol/atol 1e-10/1e-16 on BOTH engines zero real columns
+    # remained -> PASS. Ill-conditioned transient at the loose default.
     "BIOMD0000000827:ode": {
         "rtol": 1e-10,
         "atol": 1e-16,
@@ -457,15 +459,13 @@ NO_ORACLE_ADJUDICATED: dict[str, dict] = {
             "below the significance floor). bngsim confirmed."
         ),
     },
-    "MODEL1006230083:ode": {
-        "verdict": "confirm",
-        "issue": "GH #117",
-        "reason": (
-            "RR CVODE CV_TOO_MUCH_WORK + COPASI failed. Pure rate-rule ODE system "
-            "on 5 parameters (no reactions). Independent scipy LSODA/BDF reproduce "
-            "to max_rel=0 (peak-rel ~1e-8). bngsim confirmed."
-        ),
-    },
+    # MODEL1006230083:ode — RETIRED 2026-08-25 as a stale key (GH #482 follow-up),
+    # same cause as MODEL6963432821 below and MODEL0913003363 in TOL_OVERRIDES:
+    # `drop,no_model` in the stage-1 corpus filter, so no job is built and the key
+    # can never match. The GH #117 adjudication it carried, kept for the record:
+    # RR CVODE CV_TOO_MUCH_WORK + COPASI failed; pure rate-rule ODE system on 5
+    # parameters (no reactions); independent scipy LSODA/BDF reproduce to
+    # max_rel=0 (peak-rel ~1e-8); verdict confirm — bngsim confirmed.
     "MODEL1112050001:ode": {
         "verdict": "confirm",
         "issue": "GH #117",
@@ -495,15 +495,13 @@ NO_ORACLE_ADJUDICATED: dict[str, dict] = {
             "confirmed."
         ),
     },
-    "MODEL6963432821:ode": {
-        "verdict": "confirm",
-        "issue": "GH #117",
-        "reason": (
-            "RR CVODE CV_TOO_MUCH_WORK + COPASI failed. Pure rate-rule ODE system "
-            "on 7 parameters. Independent scipy LSODA/BDF reproduce to max_rel=0 "
-            "(peak-rel ~4e-9). bngsim confirmed."
-        ),
-    },
+    # MODEL6963432821:ode — RETIRED 2026-08-25 as a stale key (GH #482 follow-up),
+    # same cause as MODEL1006230083 above: `drop,no_model` in the stage-1 corpus
+    # filter, so no job is built and the key can never match. The GH #117
+    # adjudication it carried, kept for the record: RR CVODE CV_TOO_MUCH_WORK +
+    # COPASI failed; pure rate-rule ODE system on 7 parameters; independent scipy
+    # LSODA/BDF reproduce to max_rel=0 (peak-rel ~4e-9); verdict confirm — bngsim
+    # confirmed.
     "MODEL9811206584:ode": {
         "verdict": "confirm",
         "issue": "GH #117",

@@ -57,6 +57,32 @@ in `CMakeLists.txt`) is derived from it.
   Suite-side only — no bngsim behavior changes. `parity_checks/rr_parity/
   overrides.py` gains the entry and `ode_jobs.json` re-bakes the one job record.
 
+- **Three `rr_parity` override keys that could never match are retired, and a
+  test now says so (#482 follow-up).** `MODEL0913003363:ode` (`TOL_OVERRIDES`),
+  `MODEL1006230083:ode` and `MODEL6963432821:ode` (both `NO_ORACLE_ADJUDICATED`)
+  name models the ODE manifest does not build: all three are `drop,no_model` in
+  the stage-1 corpus filter, their fetched files zero bytes (sha256 = the empty
+  string's), one of 305 corpus entries in that state. They have been stale since
+  the initial public release.
+
+  A stale key is silent rot. It reads as a live disposition while covering
+  nothing, and it is the shape a typo'd or renamed `model_id` takes — an override
+  meant to reclassify a row that never did. The only detection was a
+  `print("WARN: ...")` in `build_ode_jobs.py` / `build_ssa_jobs.py`, which
+  nothing fails on and which cannot run at all in a checkout without
+  `$BIOMODELS_SEDML_DIR`. That is why three accumulated unnoticed.
+
+  Each is retired as a comment rather than deleted, carrying its disposition
+  forward so it is not re-derived if the corpus ever fetches the model
+  successfully — the same treatment `MODEL2205030001:ode` got when GH #119
+  retired it. `test_committed_overrides_have_no_stale_keys` then asserts the
+  committed overrides against the committed manifests for both regimes, which
+  needs neither the mirror nor the build. Verified to fail on an injected stale
+  key.
+
+  Suite-side only; no bngsim behaviour changes, and no job's disposition moves —
+  none of these keys was reaching a job to begin with.
+
 ## [0.15.0] - 2026-08-23
 
 ### Added
