@@ -67,6 +67,21 @@ in `CMakeLists.txt`) is derived from it.
   moves. Every `--help` probe in the test above now runs with `$HOME` pointed at
   an empty directory, which is what surfaced this.
 
+- **`gen_networks.py` did not create the `.net` cache it exists to fill** (#492).
+  Phase 1 of the full-network ODE benchmark writes every generated network into
+  `benchmarks/suites/ode_fullnet/nets/` and never created that directory, so on
+  a fresh checkout — or one where the cache had been cleaned to reclaim disk —
+  every model failed. Expensively: generation happens first and only the *write*
+  fails, so six models spent 28 s to produce nothing and the full corpus would
+  spend hours. The script whose job is to *build* the cache was the one script
+  that could not create it, which left a missing cache with no recovery path.
+  The pass now creates the directory before it reports it, so the `cache:` line
+  names somewhere that exists. A write failure that survives that — the
+  directory removed *while* a multi-hour sweep is in flight — is recorded as
+  `cache_write_failed` naming the directory, rather than as a bare
+  `FileNotFoundError` on a `.net` path, which was indistinguishable from a
+  genuine BNG2.pl netgen failure.
+
 ## [0.15.1] - 2026-08-25
 
 ### Changed

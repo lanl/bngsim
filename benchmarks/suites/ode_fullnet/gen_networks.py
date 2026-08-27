@@ -45,6 +45,7 @@ with a longer ``--timeout`` for the slow-netgen tail.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -93,6 +94,41 @@ def resolve_bng2pl() -> str:
     if not p.exists():
         sys.exit(f"ABORT: BNG2.pl not found at {p} (set BNGPATH to the BioNetGen-2.9.3 root)")
     return str(p)
+
+
+def ensure_cache_dir(nets: Path) -> None:
+    """Create the ``.net`` cache this script exists to fill (GH #492).
+
+    It never did. Every model generated its network, spent its netgen seconds,
+    and then failed on the write -- 28 s across six models, a long run across
+    the full corpus, and nothing produced. The one script whose job is to
+    *build* the cache was the one script that could not create it, so a fresh
+    checkout, or one where the cache had been cleaned to reclaim disk, had no
+    recovery path at all.
+    """
+    nets.mkdir(parents=True, exist_ok=True)
+
+
+def describe_write_failure(exc: OSError, dest: Path, nets: Path) -> str:
+    """Name the directory, not the file, when the cache directory is the problem.
+
+    The reason GH #492 cost time to diagnose is that the failure named the
+    wrong thing: ``FileNotFoundError`` on a ``.net`` path reads as "this model
+    could not be generated", which is what a genuine BNG2.pl failure looks like
+    too. ``ensure_cache_dir`` makes that unreachable on a normal run, so what is
+    left is the case it cannot cover -- the directory removed *while* a
+    multi-hour sweep is in flight -- and that deserves to say so plainly rather
+    than borrow netgen's error shape.
+    """
+    if exc.errno == errno.ENOENT and not nets.is_dir():
+        # Path first: the console truncates a row's detail, and the directory is
+        # the whole answer here.
+        return (
+            f"{nets} (the .net cache directory) no longer exists -- it is created at "
+            "the start of the pass, so it was removed mid-run; the network itself "
+            "generated fine"
+        )
+    return f"writing {dest}: {type(exc).__name__}: {exc}"
 
 
 def net_counts(net_path: Path) -> tuple[int, int]:
@@ -170,7 +206,12 @@ def gen_one(job, bng2_pl: str, timeout: float) -> dict:
             text,
             flags=re.DOTALL | re.IGNORECASE,
         )
-        dest.write_text(text)
+        try:
+            dest.write_text(text)
+        except OSError as exc:
+            row["status"] = "cache_write_failed"
+            row["detail"] = describe_write_failure(exc, dest, NETS)[:400]
+            return row
         row.update({"status": "ok", "net_file": dest.name, "n_species": nsp, "n_reactions": nrxn})
         return row
     except Exception as exc:  # noqa: BLE001 - record, don't abort the sweep
@@ -193,7 +234,7 @@ def save_manifest(man: dict) -> None:
     tmp.replace(MANIFEST)
 
 
-def main() -> int:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -204,7 +245,7 @@ def main() -> int:
     )
     ap.add_argument("--models", default="", help="Comma-separated model_id substring filter.")
     ap.add_argument("--limit", type=int, default=0, help="Max models after filtering (0=all).")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     bng2_pl = resolve_bng2pl()
     _meta, alljobs = read_manifest(JOBS)
@@ -228,6 +269,10 @@ def main() -> int:
         todo.append(j)
     if args.limit:
         todo = todo[: args.limit]
+
+    # Before the header, so the "cache:" line below reports a directory that
+    # exists rather than one every write is about to fail against (GH #492).
+    ensure_cache_dir(NETS)
 
     print("=" * 72)
     print("  Phase 1 — full-network generation + .net cache (ode_fullnet)")
