@@ -16,11 +16,14 @@ It needs no ``run_network`` and is independent of the correctness gate, so it co
 the cells ``run.py`` leaves blank. The paper's ``generate_psa_table.py`` uses this as
 the BNGsim(s) source for those cells (Table 7).
 
-    python run_bngsim_timing.py            # all models x Nc (BNGsim only)
+    python run_bngsim_timing.py                  # all models x Nc (BNGsim only)
+    python run_bngsim_timing.py --effort low     # cheap subset (cumulative tiers)
+    python run_bngsim_timing.py --warmup 0 --runs 1 --out /tmp/probe.json   # smoke test
 
-Writes ``results/psa_bngsim_timing.json``.
+Writes ``results/psa_bngsim_timing.json`` unless ``--out`` redirects it.
 """
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -29,21 +32,71 @@ from statistics import median
 _BENCH_ROOT = Path(__file__).resolve().parents[2]  # bngsim/benchmarks
 sys.path.insert(0, str(_BENCH_ROOT))
 import _netbench as nb  # noqa: E402
+from _effort import add_effort_arg, filter_by_effort  # noqa: E402
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from run import MODELS, NET_DIR, RESULTS_DIR  # noqa: E402  (shared registry)
 
+#: Default output, relative to the suite's ``results/``.  ``--out`` redirects a
+#: scoped or diagnostic run away from it: a probe writing this name is
+#: indistinguishable from a finished sweep by anything but its contents, and the
+#: paper's ``generate_psa_table.py`` reads it (GH #488).
+DEFAULT_OUT_NAME = "psa_bngsim_timing.json"
 
-def main():
-    warmup, runs = nb.DEFAULT_WARMUP, nb.DEFAULT_RUNS
+
+def build_parser():
+    """The CLI.  Its existence is the point: ``--help`` must not measure.
+
+    This script takes ~20 minutes at its defaults and writes a fixed path, so
+    for a while the first thing anyone typed at it -- ``--help`` -- silently
+    started the sweep instead of answering, with no way to aim the result
+    somewhere harmless (GH #488).  The flags are the protocol knobs ``run.py``
+    already exposes under the same names, so the two runners stay one protocol;
+    ``--out`` is what makes a probe possible at all.
+    """
+    parser = argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=nb.DEFAULT_WARMUP,
+        help=f"Discarded warmup passes per (model, Nc) (default: {nb.DEFAULT_WARMUP}).",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=nb.DEFAULT_RUNS,
+        help=f"Timed passes per (model, Nc), medianed (default: {nb.DEFAULT_RUNS}).",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Write the JSON here instead of results/{DEFAULT_OUT_NAME}.",
+    )
+    add_effort_arg(parser)
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    warmup, runs = args.warmup, args.runs
+    if warmup < 0 or runs < 1:
+        parser.error("--warmup must be >= 0 and --runs must be >= 1")
+    models = filter_by_effort(MODELS, args.effort, key=lambda m: m["effort"])
     print("=" * 70)
     print("  PSA suite -- BNGsim-only warm timing (companion to run.py)")
     print("=" * 70)
     print(f"  protocol: {warmup} warmup + {runs} timed runs, median; BNGsim only")
+    print(f"  effort={args.effort}: {len(models)} of {len(MODELS)} models")
 
     results = []
-    for cfg in MODELS:
+    for cfg in models:
         name = cfg["name"]
         net_path = NET_DIR / f"{name}.net"
         print(f"\n=== {name} ({cfg['species']} sp, {cfg['reactions']} rxn) ===")
@@ -87,10 +140,14 @@ def main():
         "metric": "bngsim warm PSA cost = median wall (s) over warmup+runs timed passes",
         "warmup": warmup,
         "runs": runs,
+        # The subset this payload covers.  Recorded because the default path is
+        # fixed: without it, a --effort low run and a full sweep are the same
+        # file name holding different corpora (GH #488).
+        "effort": args.effort,
         "results": results,
     }
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / "psa_bngsim_timing.json"
+    out = args.out if args.out is not None else RESULTS_DIR / DEFAULT_OUT_NAME
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, default=str))
     print(f"\nResults: {out}")
 

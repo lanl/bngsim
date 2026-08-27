@@ -14,6 +14,23 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two benchmark runners parsed no `argv`, so `--help` started measuring**
+  (#488). `benchmarks/suites/psa/run_bngsim_timing.py` — a ~20-minute PSA sweep
+  writing a fixed `results/psa_bngsim_timing.json` — and
+  `benchmarks/suites/nf/run.py`, which `run_all.py` itself invokes, read no
+  command line at all: `--help` began the run, and a mistyped flag was accepted
+  in silence. Both now parse `argv`, so `--help` prints usage and exits 0 and an
+  unrecognized flag exits 2. The PSA companion additionally takes `--out`,
+  `--warmup`/`--runs` and `--effort` (the same names `psa/run.py` already uses),
+  which is what makes a seconds-long probe possible without overwriting the
+  finished sweep's report; its payload now records the `effort` subset it
+  covers. `python/tests/test_benchmark_runner_help.py` pins the contract for
+  every script `run_all.py`'s registry names, plus that companion. No measured
+  value changes — every runner behaves identically when invoked as the
+  orchestrator invokes it.
+
 ## [0.15.1] - 2026-08-25
 
 ### Changed
