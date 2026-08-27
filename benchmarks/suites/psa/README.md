@@ -73,3 +73,24 @@ python run.py --replicates 40     # larger correctness ensemble
 `run_network` is located via `BNGPATH` / `RUN_NETWORK` (see the
 top-level `benchmarks/README.md`). Results are written to the
 git-ignored `results/` (`psa_results.json` + `psa_results.md`).
+
+## BNGsim-only warm timing
+
+`run.py` reports a cross-engine timing only where the correctness gate
+passed, so a `(model, Nc)` whose `run_network` ensemble cannot be
+obtained gets a blank cell even though BNGsim runs it fine.
+`run_bngsim_timing.py` measures BNGsim's own warm PSA cost for every
+cell under the identical protocol, needing no `run_network`:
+
+```sh
+python run_bngsim_timing.py                             # all models x Nc
+python run_bngsim_timing.py --effort low                # cheap subset
+python run_bngsim_timing.py --warmup 0 --runs 1 \
+    --out /tmp/probe.json                               # seconds-long probe
+```
+
+Results go to `results/psa_bngsim_timing.json` unless `--out` redirects
+them. Redirect any scoped run: the default path is what the paper's
+`generate_psa_table.py` reads, and the file name cannot say whether it
+holds a full sweep or a probe (the payload's `effort`, `warmup` and
+`runs` can).

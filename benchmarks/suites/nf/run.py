@@ -13,8 +13,14 @@ via BNGSIM_NF_INCLUDE_EXPERIMENTAL=1.
 
 Usage:
     python run.py
+
+This runner is configured entirely through the environment; it takes no
+options. It still parses argv, so ``--help`` prints this and exits instead
+of starting the sweep, and a mistyped flag is refused rather than ignored
+(GH #488).
 """
 
+import argparse
 import json
 import os
 import re
@@ -447,7 +453,35 @@ def compare_gdat(ref_names, ref_data, bng_names, bng_data, model_name):
     }
 
 
-def main():
+ENV_EPILOG = """environment:
+  BNGPATH                          BioNetGen install root (default: ~/Simulations/BioNetGen-2.9.3)
+  BNG2_PL                          BNG2.pl path, overriding BNGPATH
+  BNGSIM_NF_INCLUDE_EXPERIMENTAL   1 to add the experimental canaries (see EXPERIMENTAL.md)
+  BNGSIM_NF_V1143_COMPAT           1 for NFsim v1.14.3 compatibility mode
+  BNGSIM_NF_CONNECTIVITY           auto (default) / on / off
+
+Writes results/nf_sweep_results.json.
+"""
+
+
+def build_parser():
+    """The CLI: no options, but argv is parsed rather than ignored.
+
+    This sweep shells out to BNG2.pl once per model and takes minutes. Until
+    GH #488 it read no argv at all, so ``python run.py --help`` -- the first
+    thing anyone types at an unfamiliar runner -- started the sweep instead of
+    answering. Its knobs are environment variables, listed in the epilog.
+    """
+    return argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        epilog=ENV_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def main(argv=None):
+    build_parser().parse_args(argv)
     print("=" * 70)
     print("  NFsim Correctness Sweep: BNGsim vs BNG2.pl NFsim")
     print("=" * 70)
