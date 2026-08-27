@@ -328,6 +328,12 @@ _RUNNERS = {
 
 
 def main():
+    # Spawned, not typed. run_ssa_timing.py builds this argv itself
+    # (``cmd = [PY, CELL, engine, model_key, str(outf)]``), and that is the
+    # measurement path for Table 5's serial --workers 1 pass. Deliberately NOT
+    # given an ArgumentParser under GH #489: nobody hand-runs this file, so a
+    # parser here would only change a caller's contract. The docstring above is
+    # the usage; the caller is the only user.
     engine, model_key, out_json = sys.argv[1], sys.argv[2], sys.argv[3]
     out = Path(out_json)
     m = C.MODELS[model_key]

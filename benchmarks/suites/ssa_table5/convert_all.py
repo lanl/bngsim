@@ -30,6 +30,7 @@ a disagreement, naming the cell.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import warnings
@@ -198,7 +199,24 @@ def check_coverage(log) -> list[str]:
     return problems
 
 
-def main():
+def build_parser():
+    """The CLI: no options, but argv is parsed rather than ignored (GH #489).
+
+    This step re-converts all 14 models and rewrites `results/converted/`
+    plus the `conversion_log.json` that `_ssa_config.COVERAGE` is checked
+    against. It takes no options -- the corpus and the tolerances are
+    declared in `corpus.json` / `_ssa_config.py` -- but ``--help`` has to
+    answer rather than start converting.
+    """
+    return argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def main(argv=None):
+    build_parser().parse_args(argv)
     OUT.mkdir(parents=True, exist_ok=True)
     import bngsim
 

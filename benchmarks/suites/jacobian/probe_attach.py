@@ -17,10 +17,10 @@ Usage::  python probe_attach.py [MODEL_ID ...]   (default: the suite's TARGETS)
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
-import sys
 from contextlib import redirect_stderr
 from pathlib import Path
 
@@ -88,17 +88,52 @@ def probe(model_id: str) -> dict:
     return rec
 
 
-def main():
-    ids = sys.argv[1:] or DEFAULT_IDS
-    out = [probe(mid) for mid in ids]
-    (HERE / "results" / "attach_probe.json").write_text(json.dumps(out, indent=2))
+#: Default report path. Tracked, which is why ``--out`` exists (GH #489).
+DEFAULT_OUT = HERE / "results" / "attach_probe.json"
+
+
+def build_parser():
+    """The CLI. Same positional contract as before, now actually parsed.
+
+    ``ids = sys.argv[1:] or DEFAULT_IDS`` accepted anything, so ``--help``
+    probed a model literally named ``--help``, failed to find it, and wrote the
+    one-row failure over the tracked ``results/attach_probe.json`` -- a probe
+    typed to find out what this script does, destroying the answer it would
+    have printed (GH #489). Nothing spawns this script, so the positional
+    contract is with a human and an ``ArgumentParser`` only sharpens it.
+    """
+    parser = argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "model_id",
+        nargs="*",
+        default=DEFAULT_IDS,
+        help="Models to probe (default: the suite's own target list).",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=DEFAULT_OUT,
+        help=f"Write the JSON here (default: {DEFAULT_OUT.relative_to(HERE)}).",
+    )
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    out = [probe(mid) for mid in args.model_id]
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(out, indent=2))
     for r in out:
         print(
             f"{r['model']}: attached={r.get('attached')} "
             f"n_func_rxns={r.get('n_functional_rxns')} ns={r.get('n_species')} "
             f"self_check_failed={r.get('self_check_failed')} err={r.get('error')}"
         )
-    print("WROTE results/attach_probe.json")
+    print(f"WROTE {args.out}")
 
 
 if __name__ == "__main__":
