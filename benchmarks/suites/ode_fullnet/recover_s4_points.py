@@ -26,7 +26,13 @@ import shutil
 import sys
 from pathlib import Path
 
-BNGSIM = Path(os.environ.get("BNGSIM_ROOT", Path.home() / "Code" / "bngsim"))
+# Default to the checkout this file lives in (benchmarks/suites/<suite>/), not
+# ~/Code/bngsim: the old default made every import below resolve only on a
+# machine whose clone happened to sit at that path, and the module-scope
+# `import _bng_common` died with ModuleNotFoundError anywhere else -- CI
+# included (GH #489). BNGSIM_ROOT still overrides, which is the documented case:
+# a different venv running against the canonical checkout.
+BNGSIM = Path(os.environ.get("BNGSIM_ROOT") or Path(__file__).resolve().parents[3])
 BNG_PARITY = BNGSIM / "parity_checks" / "bng_parity"
 sys.path.insert(0, str(BNGSIM / "parity_checks"))
 sys.path.insert(0, str(BNG_PARITY))

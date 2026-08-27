@@ -26,6 +26,15 @@ agreement.py`` ran all three engines before overwriting its committed report.
 networks through BNG2.pl, rewrite the characterization, then copy both files
 into a *different repository's* ``latex/generated/``.
 
+Widening the family to the whole tree then turned up a second defect the first
+sweep could not see: eight scripts defaulted their repo root to ``~/Code/bngsim``
+and put ``<root>/parity_checks`` on ``sys.path``, so their module-scope
+``import _bng_common`` resolved only on a machine whose clone sat at that path.
+``--help`` on any of them was a ``ModuleNotFoundError`` anywhere else. Every
+probe below therefore runs with ``$HOME`` pointed at an empty directory -- see
+the ``elsewhere`` fixture -- because a script that only imports on its author's
+machine has not answered anything.
+
 **Discovery is by structure, not by a table.** The family is every ``suites/``
 script with a ``__main__`` guard, so a script added to any suite inherits the
 rule without an edit here. The contract pinned on it is deliberately weak and
@@ -51,6 +60,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import types
@@ -139,14 +149,34 @@ def _rel(path: Path) -> str:
 FAMILY = _family() if SUITES_DIR.is_dir() else []
 
 
-def _invoke(script: Path, *args: str) -> subprocess.CompletedProcess:
+@pytest.fixture(scope="session")
+def elsewhere(tmp_path_factory) -> Path:
+    """An empty directory to run every probe as ``$HOME``.
+
+    Eight of these scripts defaulted their repo root to ``~/Code/bngsim`` and
+    inserted ``<root>/parity_checks`` on ``sys.path``, so their module-scope
+    ``import _bng_common`` resolved only on a machine whose clone happened to
+    sit at that path -- and died with ``ModuleNotFoundError`` everywhere else,
+    CI included. Nothing in the assertion caught it, because the author's ``$HOME``
+    made the wrong default look right. Probing from a home directory that holds
+    nothing is what makes "anyone can run ``--help``" mean anyone.
+    """
+    return tmp_path_factory.mktemp("no-home")
+
+
+def _invoke(script: Path, *args: str, home: Path | None = None) -> subprocess.CompletedProcess:
     """Run ``script`` from its own directory -- runners resolve siblings by cwd."""
+    env = dict(os.environ)
+    if home is not None:
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)  # Path.home() reads this one on Windows
     return subprocess.run(
         [sys.executable, script.name, *args],
         cwd=script.parent,
         capture_output=True,
         text=True,
         timeout=HELP_TIMEOUT,
+        env=env,
     )
 
 
@@ -166,30 +196,34 @@ def test_every_orchestrated_script_is_in_the_family():
 
 
 @pytest.mark.parametrize("script", FAMILY, ids=_rel)
-def test_help_answers_instead_of_measuring(script: Path):
-    """``--help`` prints usage and exits 0, well inside the timeout."""
-    proc = _invoke(script, "--help")
+def test_help_answers_instead_of_measuring(script: Path, elsewhere: Path):
+    """``--help`` prints usage and exits 0, well inside the timeout.
+
+    Run from an empty ``$HOME``: a script that only imports on the author's
+    machine has not answered anything (see the ``elsewhere`` fixture).
+    """
+    proc = _invoke(script, "--help", home=elsewhere)
     assert proc.returncode == 0, f"{_rel(script)} --help exited {proc.returncode}\n{proc.stderr}"
     assert "usage:" in proc.stdout, f"{_rel(script)} --help printed no usage line"
 
 
 @pytest.mark.parametrize("script", FAMILY, ids=_rel)
-def test_unrecognized_flag_is_refused(script: Path):
+def test_unrecognized_flag_is_refused(script: Path, elsewhere: Path):
     """A mistyped flag is refused (argparse's exit 2), never silently ignored."""
-    proc = _invoke(script, "--not-a-real-flag")
+    proc = _invoke(script, "--not-a-real-flag", home=elsewhere)
     assert proc.returncode == 2, (
         f"{_rel(script)} accepted --not-a-real-flag (exit {proc.returncode})"
     )
 
 
 @pytest.mark.parametrize("rel", sorted(TRACKED_ARTIFACTS), ids=lambda r: r)
-def test_help_leaves_a_committed_artifact_alone(rel: str):
+def test_help_leaves_a_committed_artifact_alone(rel: str, elsewhere: Path):
     """Probing a harness must not destroy the report it would have described."""
     artifact = SUITES_DIR / TRACKED_ARTIFACTS[rel]
     if not artifact.exists():
         pytest.skip(f"{TRACKED_ARTIFACTS[rel]} is not in this checkout")
     before = artifact.read_bytes()
-    proc = _invoke(SUITES_DIR / rel, "--help")
+    proc = _invoke(SUITES_DIR / rel, "--help", home=elsewhere)
     assert proc.returncode == 0, proc.stderr
     assert artifact.read_bytes() == before, f"{rel} --help rewrote {TRACKED_ARTIFACTS[rel]}"
 
@@ -217,15 +251,15 @@ def test_spawned_worker_exemptions_are_all_real_files():
     assert not gone, f"SPAWNED_WORKERS names files that are not there: {gone}"
 
 
-def test_psa_timing_refuses_an_empty_timed_protocol():
+def test_psa_timing_refuses_an_empty_timed_protocol(elsewhere: Path):
     """``--runs 0`` would median an empty list; argparse refuses it up front."""
     script = SUITES_DIR / "psa" / "run_bngsim_timing.py"
-    proc = _invoke(script, "--runs", "0")
+    proc = _invoke(script, "--runs", "0", home=elsewhere)
     assert proc.returncode == 2, f"--runs 0 was accepted (exit {proc.returncode})"
     assert "--runs must be >= 1" in proc.stderr
 
 
-def test_psa_timing_out_redirects_away_from_the_tracked_path(tmp_path):
+def test_psa_timing_out_redirects_away_from_the_tracked_path(tmp_path, elsewhere: Path):
     """``--out`` plus a scoped protocol gives a probe that clobbers nothing.
 
     The second half of GH #488: even once ``--help`` is safe, a diagnostic run
@@ -237,7 +271,18 @@ def test_psa_timing_out_redirects_away_from_the_tracked_path(tmp_path):
     before = default_out.read_bytes() if default_out.exists() else None
 
     out = tmp_path / "probe.json"
-    proc = _invoke(script, "--effort", "low", "--warmup", "0", "--runs", "1", "--out", str(out))
+    proc = _invoke(
+        script,
+        "--effort",
+        "low",
+        "--warmup",
+        "0",
+        "--runs",
+        "1",
+        "--out",
+        str(out),
+        home=elsewhere,
+    )
     assert proc.returncode == 0, proc.stderr
 
     payload = json.loads(out.read_text())

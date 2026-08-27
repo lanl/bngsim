@@ -54,6 +54,19 @@ in `CMakeLists.txt`) is derived from it.
   changes: every runner behaves identically when invoked as the orchestrator
   invokes it.
 
+- **Eight benchmark scripts imported only on a machine with the checkout at
+  `~/Code/bngsim`** (#489). `ode_engines_s3/run_s3_timing.py`,
+  `ode_engines_s4_sbml/{run_s4_timing,check_sbml_engine_agreement}.py` and the
+  five `ode_fullnet/` scripts resolved `BNGSIM_ROOT` to `Path.home() / "Code" /
+  "bngsim"` and inserted `<root>/parity_checks` on `sys.path`, so the
+  module-scope `import _bng_common` raised `ModuleNotFoundError` in any clone
+  living somewhere else — a fresh checkout, a worktree, CI. The default is now
+  the checkout the file itself lives in; the `BNGSIM_ROOT` override is unchanged
+  and still covers the case it was written for, a different venv running against
+  a canonical checkout. On a machine where the two already coincided, nothing
+  moves. Every `--help` probe in the test above now runs with `$HOME` pointed at
+  an empty directory, which is what surfaced this.
+
 ## [0.15.1] - 2026-08-25
 
 ### Changed
