@@ -896,6 +896,16 @@ def main() -> int:
         default=",".join(ENGINE_ORDER),
         help="Comma-separated subset of engines to run.",
     )
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=OUT,
+        # A scoped run -- --engines / --models / --limit -- otherwise replaces the
+        # committed cross-engine report with a narrower one under the same name,
+        # and nothing but the diff says which it holds (GH #493). Resume reads
+        # from this path too, so a probe does not inherit the committed rows.
+        help=f"Write (and resume from) this report instead of {OUT.name}.",
+    )
     args = ap.parse_args()
 
     rn_bin = resolve_run_network()
@@ -903,9 +913,9 @@ def main() -> int:
     models = resolve_models(args)
 
     prior = {}
-    if OUT.exists():
+    if args.out.exists():
         with contextlib.suppress(Exception):
-            prior = {r["model_id"]: r for r in json.loads(OUT.read_text()).get("results", [])}
+            prior = {r["model_id"]: r for r in json.loads(args.out.read_text()).get("results", [])}
 
     print("=" * 74)
     print("  Table S4 — cross-engine ODE timing (6 largest SBML BioModels x 6 engines)")
@@ -1117,7 +1127,7 @@ def main() -> int:
         _write(results, args, want_engines)
         print()
 
-    print(f"  report: {OUT}")
+    print(f"  report: {args.out}")
     return 0
 
 
@@ -1143,7 +1153,14 @@ def _print_engine(eng, r):
 
 
 def _write(results, args, want_engines):
-    ordered = sorted(results.values(), key=lambda r: (r.get("row") or 0))
+    ordered = sorted(results.values(), key=lambda r: r.get("row") or 0)
+    # What the file *holds*, beside what this run *asked for*. Without --redo a
+    # scoped `--engines bngsim` run re-times nothing, yet still rewrote "engines"
+    # to ["bngsim"] while every row kept all six -- metadata describing the
+    # request rather than the contents (GH #493). Additive: "engines" keeps its
+    # meaning for anything already reading it.
+    present = {e for r in ordered for e in (r.get("engines") or {})}
+    engines_present = [e for e in ENGINE_ORDER if e in present]
     doc = {
         "_meta": {
             "suite": "ode_engines_s4_sbml",
@@ -1157,6 +1174,7 @@ def _write(results, args, want_engines):
                 "charged; recorded in net_conversion)."
             ),
             "engines": want_engines,
+            "engines_present": engines_present,
             "metric": {
                 "cold": "build_sec + integrate_cold_sec (= cold_total_sec)",
                 "warm": "integrate_warm_median_sec (= warm_sec)",
@@ -1169,15 +1187,21 @@ def _write(results, args, want_engines):
             ),
             "tol_override": {"rtol": args.rtol, "atol": args.atol},
             "convert_gate": args.convert_gate,
+            # The filters this run was scoped by, so a --models/--limit report is
+            # distinguishable from a full sweep by more than its row count (#493).
+            "models_filter": args.models or None,
+            "limit": args.limit or None,
             "versions": _versions(),
             "hardware": rc.hardware_info(),
             "n_results": len(ordered),
         },
         "results": ordered,
     }
-    tmp = OUT.with_suffix(".json.tmp")
+    dest = args.out
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=1))
-    tmp.replace(OUT)
+    tmp.replace(dest)
 
 
 if __name__ == "__main__":

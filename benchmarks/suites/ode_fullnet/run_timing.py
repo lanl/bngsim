@@ -194,6 +194,15 @@ def main() -> int:
     ap.add_argument("--models", default="", help="Comma-separated model_id substring filter.")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--redo", action="store_true", help="Re-time models already PASS.")
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=OUT,
+        # A --models/--limit run otherwise replaces the committed full-corpus
+        # report with a narrower one under the same name (GH #493). Resume reads
+        # from this path too, so a probe does not inherit the committed rows.
+        help=f"Write (and resume from) this report instead of {OUT.name}.",
+    )
     args = ap.parse_args()
 
     rn_bin = resolve_run_network()
@@ -204,8 +213,8 @@ def main() -> int:
     model_rel = {j.model_id: j.model for j in alljobs}
 
     prior = {}
-    if OUT.exists():
-        prior = {r["model_id"]: r for r in json.loads(OUT.read_text()).get("results", [])}
+    if args.out.exists():
+        prior = {r["model_id"]: r for r in json.loads(args.out.read_text()).get("results", [])}
 
     todo = []
     for mid, row in nets.items():
@@ -257,7 +266,7 @@ def main() -> int:
     from collections import Counter
 
     tally = Counter(r["outcome"] for r in results.values())
-    print(f"\n  timed {done} in {dt:.0f}s. outcomes: {dict(tally)}\n  report: {OUT}")
+    print(f"\n  timed {done} in {dt:.0f}s. outcomes: {dict(tally)}\n  report: {args.out}")
     return 0
 
 
@@ -270,7 +279,7 @@ def _write(results: dict, args) -> None:
     with contextlib.suppress(Exception):
         ver["sundials"] = bc.sundials_version()
     ordered = sorted(
-        results.values(), key=lambda r: ((r["timing"].get("spec") or {}).get("n_species") or 0)
+        results.values(), key=lambda r: (r["timing"].get("spec") or {}).get("n_species") or 0
     )
     from collections import Counter
 
@@ -285,12 +294,18 @@ def _write(results: dict, args) -> None:
             "rtol": args.rtol,
             "atol": args.atol,
             "default_horizon": {"t_end": args.default_tend, "n_steps": args.default_nsteps},
+            # The filters this run was scoped by, so a --models/--limit report is
+            # distinguishable from a full sweep by more than its row count (#493).
+            "models_filter": args.models or None,
+            "limit": args.limit or None,
         },
         "results": ordered,
     }
-    tmp = OUT.with_suffix(".json.tmp")
+    dest = args.out
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=1))
-    tmp.replace(OUT)
+    tmp.replace(dest)
 
 
 if __name__ == "__main__":

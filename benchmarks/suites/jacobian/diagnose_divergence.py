@@ -157,6 +157,15 @@ def build_parser():
     parser.add_argument(
         "N", nargs="?", type=int, default=200, help="Output points (default: 200)."
     )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        # The per-model default is committed, and re-running at a different T/N
+        # replaces it with numbers from a different experiment under the same
+        # name (GH #493). None here because the default derives from model_id.
+        help="Write the JSON here instead of results/diag_<MODEL_ID>.json.",
+    )
     return parser
 
 
@@ -172,6 +181,7 @@ def main(argv=None):
 
     args = build_parser().parse_args(argv)
     model_id, T, N = args.model_id, args.T, args.N
+    out_json_path = args.out or (HERE / "results" / f"diag_{model_id}.json")
     path = sbml_path(model_id)
     if path is None:
         print(f"MISSING {model_id}")
@@ -227,7 +237,8 @@ def main(argv=None):
         },
         "comparisons": comps,
     }
-    (HERE / "results" / f"diag_{model_id}.json").write_text(json.dumps(out_json, indent=2))
+    out_json_path.parent.mkdir(parents=True, exist_ok=True)
+    out_json_path.write_text(json.dumps(out_json, indent=2))
     print()
     for c in comps:
         print(f"* {c['label']}")
@@ -240,7 +251,7 @@ def main(argv=None):
             f"    worst: t_idx={at.get('t_idx')} species={at.get('species')} "
             f"a={at.get('a'):.6g} b={at.get('b'):.6g}"
         )
-    print(f"\nWROTE results/diag_{model_id}.json")
+    print(f"\nWROTE {out_json_path}")
 
 
 if __name__ == "__main__":
