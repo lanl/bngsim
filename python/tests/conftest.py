@@ -352,6 +352,12 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         _LOCAL_ONLY,
         "CI syncs --extra dev, which declares pybind11; absent only in a narrower venv",
     ),
+    # test_benchmark_scoped_run_out_flag.py asks git which report artifacts are
+    # tracked, so its table cannot rot into a list of files nobody commits. A ZIP
+    # export carries benchmarks/ but no .git and genuinely cannot answer; a CI leg
+    # that cannot is a checkout that has broken, and the trackedness check would
+    # have stopped running silently.
+    ("not a git checkout", _LOCAL_ONLY, "actions/checkout always leaves a work tree"),
     ("no C compiler", _LOCAL_ONLY, "a CI leg without cc has broken, not adapted"),
     ("codegen compile unavailable", _LOCAL_ONLY, "same condition, reported from the codegen side"),
     ("no codegen backend available", _LOCAL_ONLY, "as above"),
