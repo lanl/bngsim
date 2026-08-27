@@ -35,8 +35,13 @@ python run.py --effort low         # cheap subset (cumulative tiers)
 python run.py --quick              # one analytical run per model, smoke
 
 python probe_attach.py             # per-model: does the analytical Jacobian attach?
+python probe_attach.py MODEL9089538076 --out /tmp/probe.json   # scoped, off the tracked report
 python diagnose_divergence.py MODEL9089538076   # tolerance-convergence of a divergence
 ```
+
+`probe_attach.py` writes the committed `results/attach_probe.json` by
+default, so redirect a scoped run with `--out` — the file is the record
+of which models genuinely attach, and a one-model run replaces it.
 
 Run the timing sweep as the **sole** heavy job — the large models are
 compute-bound and a contended machine inflates the spread badly.

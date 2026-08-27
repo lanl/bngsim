@@ -10,6 +10,7 @@ Outputs:
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -125,7 +126,23 @@ def eng_events_run(r):
     return f"{ref:,}†" if ref else "—"
 
 
-def main():
+def build_parser():
+    """The CLI: no options, but argv is parsed rather than ignored (GH #489).
+
+    This emitter rewrites `results/ssa_timing_ballpark.json` in place (it
+    enriches every cell with a normalized `reason`) as well as rendering
+    the `.md`, so an accidental invocation edits the result set rather than
+    only re-rendering from it.
+    """
+    return argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def main(argv=None):
+    build_parser().parse_args(argv)
     d = json.loads(JPATH.read_text())
     by = {(r["model"], r["engine"]): r for r in d["results"]}
     # enrich + persist reason

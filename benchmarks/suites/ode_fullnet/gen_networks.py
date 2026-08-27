@@ -57,7 +57,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # --- Resolve the bng_parity + parity_checks modules we reuse -----------------
-BNGSIM = Path(os.environ.get("BNGSIM_ROOT", Path.home() / "Code" / "bngsim"))
+# Default to the checkout this file lives in (benchmarks/suites/<suite>/), not
+# ~/Code/bngsim: the old default made every import below resolve only on a
+# machine whose clone happened to sit at that path, and the module-scope
+# `import _bng_common` died with ModuleNotFoundError anywhere else -- CI
+# included (GH #489). BNGSIM_ROOT still overrides, which is the documented case:
+# a different venv running against the canonical checkout.
+BNGSIM = Path(os.environ.get("BNGSIM_ROOT") or Path(__file__).resolve().parents[3])
 PARITY = BNGSIM / "parity_checks"
 BNG_PARITY = PARITY / "bng_parity"
 sys.path.insert(0, str(PARITY))

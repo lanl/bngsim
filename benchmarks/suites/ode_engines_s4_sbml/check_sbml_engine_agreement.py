@@ -21,11 +21,13 @@ Cheap (bngsim + RoadRunner + COPASI; no AMICI compile); safe to run outside the
 timing sweep. Writes ``report_ode_engines_s4_agreement.json``.
 
     export BNGPATH=~/Simulations/BioNetGen-2.9.3
-    ~/Code/PyBNF-Private/bngsim/.venv/bin/python check_sbml_engine_agreement.py
+    python check_sbml_engine_agreement.py            # writes the default report
+    python check_sbml_engine_agreement.py --out /tmp/probe.json
 """
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import os
@@ -35,7 +37,13 @@ from pathlib import Path
 
 import numpy as np
 
-BNGSIM = Path(os.environ.get("BNGSIM_ROOT", Path.home() / "Code" / "bngsim"))
+# Default to the checkout this file lives in (benchmarks/suites/<suite>/), not
+# ~/Code/bngsim: the old default made every import below resolve only on a
+# machine whose clone happened to sit at that path, and the module-scope
+# `import _bng_common` died with ModuleNotFoundError anywhere else -- CI
+# included (GH #489). BNGSIM_ROOT still overrides, which is the documented case:
+# a different venv running against the canonical checkout.
+BNGSIM = Path(os.environ.get("BNGSIM_ROOT") or Path(__file__).resolve().parents[3])
 PARITY = BNGSIM / "parity_checks"
 for _p in (str(PARITY), str(PARITY / "bng_parity")):
     if _p not in sys.path:
@@ -163,7 +171,32 @@ def _copasi_final_species(xml, t0, t1, npnt, rtol, atol):
             COPASI.CRootContainer.removeDatamodel(dm)
 
 
-def main() -> int:
+def build_parser():
+    """The CLI. ``--help`` must not start the agreement pass (GH #489).
+
+    This script reads no argv at all, so ``--help`` ran all three engines over
+    the Table S4 models and overwrote the *committed*
+    ``report_ode_engines_s4_agreement.json`` at the end. ``--out`` is what makes
+    a diagnostic run possible without that; the pass itself takes no options,
+    since the model list and tolerance are fixed here by design.
+    """
+    parser = argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=OUT,
+        help=f"Write the report here (default: {OUT.name}).",
+    )
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
     import bngsim
 
     jobs = {j["model_id"]: j for j in json.loads(ODE_JOBS.read_text())["jobs"]}
@@ -265,8 +298,9 @@ def main() -> int:
         },
         "results": results,
     }
-    OUT.write_text(json.dumps(doc, indent=1))
-    print(f"\nwrote: {OUT}")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(doc, indent=1))
+    print(f"\nwrote: {args.out}")
     return 0
 
 

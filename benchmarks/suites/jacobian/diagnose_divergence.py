@@ -26,6 +26,7 @@ Usage::
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -135,15 +136,42 @@ def compare(a_npz, b_npz, label):
     }
 
 
-def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "--worker":
-        _, _, path, mode, T, N, rtol, atol, out = sys.argv
+def build_parser():
+    """The CLI for the *driver* path -- the one a person types (GH #489).
+
+    ``--worker`` is not registered here on purpose: that argv is composed by
+    :func:`_spawn` below and never typed, so routing it through the parser
+    would put a human-facing surface on this file's re-entry into itself. It is
+    matched before parsing instead, and the parser then owns everything else --
+    which is what makes ``--help`` print rather than be read as a model id.
+    """
+    parser = argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("model_id", help="Model id under parity_checks/rr_parity/models/.")
+    parser.add_argument(
+        "T", nargs="?", type=float, default=100.0, help="Integration horizon (default: 100)."
+    )
+    parser.add_argument(
+        "N", nargs="?", type=int, default=200, help="Output points (default: 200)."
+    )
+    return parser
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--worker":
+        # Internal re-entry from _spawn(): one (mode, tol) run in a fresh
+        # process, because the Jacobian choice is a load-time env decision.
+        # Positional and unparsed by design -- see build_parser().
+        _, path, mode, T, N, rtol, atol, out = argv
         worker(path, mode, float(T), int(N), float(rtol), float(atol), out)
         return
 
-    model_id = sys.argv[1]
-    T = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
-    N = int(sys.argv[3]) if len(sys.argv) > 3 else 200
+    args = build_parser().parse_args(argv)
+    model_id, T, N = args.model_id, args.T, args.N
     path = sbml_path(model_id)
     if path is None:
         print(f"MISSING {model_id}")

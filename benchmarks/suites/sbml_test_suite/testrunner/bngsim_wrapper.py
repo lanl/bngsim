@@ -117,6 +117,12 @@ def run_case(suite_dir: str, case_id: str, out_dir: str, level: str, version: st
 
 
 def main(argv) -> int:
+    # Spawned, not typed. The official SBML Test Suite runner invokes this
+    # through bngsim_wrapper.sh on the fixed ``%d %n %o %l %v`` template, and
+    # export_results.py imports run_case() directly. Deliberately NOT given an
+    # ArgumentParser under GH #489: the argc check below already refuses a hand
+    # invocation with a usage line and exit 2 -- which is the behaviour a parser
+    # would add -- while leaving the runner's contract exactly as it found it.
     if len(argv) < 6:
         sys.stderr.write(
             "usage: bngsim_wrapper.py <suite_dir> <case_id> <out_dir> <level> <version>\n"

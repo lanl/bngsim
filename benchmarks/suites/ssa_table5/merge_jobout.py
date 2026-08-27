@@ -8,6 +8,7 @@ per-run cap). Does NOT re-run any simulation — pure re-assembly.
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -19,7 +20,22 @@ JOBOUT = HERE / "results" / "_jobout"
 JPATH = HERE / "results" / "ssa_timing_ballpark.json"
 
 
-def main():
+def build_parser():
+    """The CLI: no options, but argv is parsed rather than ignored (GH #489).
+
+    Pure re-assembly -- it re-runs no simulation -- but it does overwrite
+    `results/ssa_timing_ballpark.json` from whatever `results/_jobout/`
+    currently holds, so a stale or partial `_jobout` becomes the result set.
+    """
+    return argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def main(argv=None):
+    build_parser().parse_args(argv)
     prev = json.loads(JPATH.read_text()) if JPATH.exists() else {}
     records, missing = [], []
     for k in C.ordered_models():

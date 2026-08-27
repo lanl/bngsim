@@ -16,20 +16,56 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
-- **Two benchmark runners parsed no `argv`, so `--help` started measuring**
-  (#488). `benchmarks/suites/psa/run_bngsim_timing.py` — a ~20-minute PSA sweep
-  writing a fixed `results/psa_bngsim_timing.json` — and
-  `benchmarks/suites/nf/run.py`, which `run_all.py` itself invokes, read no
-  command line at all: `--help` began the run, and a mistyped flag was accepted
-  in silence. Both now parse `argv`, so `--help` prints usage and exits 0 and an
-  unrecognized flag exits 2. The PSA companion additionally takes `--out`,
-  `--warmup`/`--runs` and `--effort` (the same names `psa/run.py` already uses),
-  which is what makes a seconds-long probe possible without overwriting the
-  finished sweep's report; its payload now records the `effort` subset it
-  covers. `python/tests/test_benchmark_runner_help.py` pins the contract for
-  every script `run_all.py`'s registry names, plus that companion. No measured
-  value changes — every runner behaves identically when invoked as the
-  orchestrator invokes it.
+- **Every benchmark script now answers `--help` instead of running** (#488,
+  #489). A script that parses no `argv` answers "what does this do?" by doing
+  it — no usage text, no refusal for a mistyped flag, and a results file
+  overwritten by the command typed to avoid exactly that. #488 fixed the two
+  cases the orchestrator can reach; #489 swept the rest of
+  `benchmarks/suites/`, where the hazard turned out to be demonstrated rather
+  than argued:
+
+  | script | what `--help` used to do |
+  |---|---|
+  | `psa/run_bngsim_timing.py` | started a ~20-minute PSA sweep onto a fixed path |
+  | `nf/run.py` | started the NFsim correctness sweep |
+  | `jacobian/probe_attach.py` | probed a model named `--help`, overwriting the **committed** `results/attach_probe.json` with the one-row failure |
+  | `ode_engines_s4_sbml/check_sbml_engine_agreement.py` | ran three engines, then overwrote its **committed** report |
+  | `ode_fullnet/recover_s4_points.py` | regenerated two networks through BNG2.pl and copied the result into another repository's `latex/generated/` |
+  | `ssa_table5/convert_all.py`, `emit_ssa_table.py`, `merge_jobout.py` | reconverted the corpus / rewrote the Table 5 result set |
+  | `jacobian/diagnose_divergence.py` | read `--help` as a model id |
+
+  All of them now build an `ArgumentParser`, so `--help` exits 0 with usage and
+  an unrecognized flag exits 2. Where a probe needs somewhere harmless to write,
+  it now has a flag: `--out` on `psa/run_bngsim_timing.py` (alongside
+  `--warmup` / `--runs` / `--effort`, the names `psa/run.py` already uses, which
+  turn the sweep into a one-second smoke test and are recorded in its payload),
+  `--out` on `probe_attach.py` and `check_sbml_engine_agreement.py`, and
+  `--paper-dir` / `--no-copy` on `recover_s4_points.py` — which also skips
+  rather than crashes when the paper checkout is absent.
+
+  Two scripts are exempt by decision: `ssa_table5/_ssa_cell.py` and the SBML
+  test suite's `bngsim_wrapper.py` are launched by a caller on a fixed argv, so
+  a parser there would change a measurement path's contract to buy a usage line
+  for an invocation nobody makes. Each now names its caller instead.
+
+  `python/tests/test_benchmark_runner_help.py` pins the contract by structure —
+  every `suites/` script with a `__main__` guard, minus that exemption list — so
+  a script added to any suite inherits it without an edit. No measured value
+  changes: every runner behaves identically when invoked as the orchestrator
+  invokes it.
+
+- **Eight benchmark scripts imported only on a machine with the checkout at
+  `~/Code/bngsim`** (#489). `ode_engines_s3/run_s3_timing.py`,
+  `ode_engines_s4_sbml/{run_s4_timing,check_sbml_engine_agreement}.py` and the
+  five `ode_fullnet/` scripts resolved `BNGSIM_ROOT` to `Path.home() / "Code" /
+  "bngsim"` and inserted `<root>/parity_checks` on `sys.path`, so the
+  module-scope `import _bng_common` raised `ModuleNotFoundError` in any clone
+  living somewhere else — a fresh checkout, a worktree, CI. The default is now
+  the checkout the file itself lives in; the `BNGSIM_ROOT` override is unchanged
+  and still covers the case it was written for, a different venv running against
+  a canonical checkout. On a machine where the two already coincided, nothing
+  moves. Every `--help` probe in the test above now runs with `$HOME` pointed at
+  an empty directory, which is what surfaced this.
 
 ## [0.15.1] - 2026-08-25
 

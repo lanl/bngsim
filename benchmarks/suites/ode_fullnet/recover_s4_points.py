@@ -11,11 +11,14 @@ latex/generated/ so generate_klu_figure.py picks up 585 (not 583) points.
 The 7 genuinely network-free-by-design models stay excluded (no finite ODE network).
 
     export BNGPATH=~/Simulations/BioNetGen-2.9.3
-    ~/Code/bngsim/.venv/bin/python recover_s4_points.py
+    python recover_s4_points.py                 # characterize, merge, copy
+    python recover_s4_points.py --no-copy       # leave the paper checkout alone
+    python recover_s4_points.py --paper-dir DIR # copy somewhere else
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -23,7 +26,13 @@ import shutil
 import sys
 from pathlib import Path
 
-BNGSIM = Path(os.environ.get("BNGSIM_ROOT", Path.home() / "Code" / "bngsim"))
+# Default to the checkout this file lives in (benchmarks/suites/<suite>/), not
+# ~/Code/bngsim: the old default made every import below resolve only on a
+# machine whose clone happened to sit at that path, and the module-scope
+# `import _bng_common` died with ModuleNotFoundError anywhere else -- CI
+# included (GH #489). BNGSIM_ROOT still overrides, which is the documented case:
+# a different venv running against the canonical checkout.
+BNGSIM = Path(os.environ.get("BNGSIM_ROOT") or Path(__file__).resolve().parents[3])
 BNG_PARITY = BNGSIM / "parity_checks" / "bng_parity"
 sys.path.insert(0, str(BNGSIM / "parity_checks"))
 sys.path.insert(0, str(BNG_PARITY))
@@ -60,7 +69,38 @@ TARGETS = [
 ]
 
 
-def main() -> int:
+def build_parser():
+    """The CLI. This script had the longest reach of any that ignored argv.
+
+    A bare invocation regenerates two networks through BNG2.pl, rewrites the
+    characterization under ``parity_checks/bng_parity/runs/``, and then copies
+    both files into a *different repository's* ``latex/generated/`` -- one of
+    them committed there. It read no argv, so ``--help`` did all of that
+    (GH #489). ``--paper-dir`` and ``--no-copy`` bound the last step; the
+    recovery itself takes no options, since the two target models are the
+    point of the script.
+    """
+    parser = argparse.ArgumentParser(
+        prog=Path(__file__).name,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--paper-dir",
+        type=Path,
+        default=PAPER_GEN,
+        help=f"Where to copy the refreshed raw + analysis (default: {PAPER_GEN}).",
+    )
+    parser.add_argument(
+        "--no-copy",
+        action="store_true",
+        help="Merge and re-analyze only; do not touch the paper checkout.",
+    )
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
     root = Path(os.environ.get("BNGPATH", str(Path.home() / "Simulations" / "BioNetGen-2.9.3")))
     bng2_pl = str(root if root.name == "BNG2.pl" else root / "BNG2.pl")
     horizons = jc.load_horizons()
@@ -92,10 +132,18 @@ def main() -> int:
     print(f"re-analyzed -> {ANA}", flush=True)
 
     # Copy refreshed raw (gitignored) + analysis (committed) into the paper.
-    shutil.copyfile(RAW, PAPER_GEN / "jacobian_characterization.json")
-    shutil.copyfile(ANA, PAPER_GEN / "jacobian_characterization_analysis.json")
-    print(f"copied raw + analysis to {PAPER_GEN}")
-    print("now run: /Users/wish/Code/PyBNF/.venv/bin/python scripts/generate_klu_figure.py")
+    # Absent target = skip, not crash: the merge above has already happened, and
+    # this directory only exists on a machine with the paper checked out beside
+    # bngsim.
+    if args.no_copy:
+        print("--no-copy: left the paper checkout alone")
+    elif not args.paper_dir.is_dir():
+        print(f"skipped copy: {args.paper_dir} is not a directory (pass --paper-dir)")
+    else:
+        shutil.copyfile(RAW, args.paper_dir / "jacobian_characterization.json")
+        shutil.copyfile(ANA, args.paper_dir / "jacobian_characterization_analysis.json")
+        print(f"copied raw + analysis to {args.paper_dir}")
+        print("now run the paper's scripts/generate_klu_figure.py")
     return 0
 
 
