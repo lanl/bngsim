@@ -127,6 +127,14 @@ def main():
     ap.add_argument("--T", type=float, default=100.0)
     ap.add_argument("--N", type=int, default=50)
     ap.add_argument("--worker", nargs=4, metavar=("PATH", "MODE", "T", "N"))
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=RESULTS / "robustness_sweep.json",
+        # A --stride/--max-models run otherwise replaces the committed sweep with
+        # a narrower one under the same name (GH #493).
+        help="Write the JSON here (default: results/robustness_sweep.json).",
+    )
     args = ap.parse_args()
 
     if args.worker:
@@ -193,14 +201,18 @@ def main():
         "T": args.T,
         "N": args.N,
         "stride": args.stride,
+        # Recorded alongside stride, which was already here: the two together are
+        # what say whether this sweep covered the corpus or a slice of it (#493).
+        "max_models": args.max_models,
         "n_scanned": len(ids),
         "n_functional": n_functional,
         "n_compared": len(compared),
         "rows": rows,
     }
-    (RESULTS / "robustness_sweep.json").write_text(json.dumps(payload, indent=2))
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(payload, indent=2))
     _summarize(payload)
-    print("WROTE", RESULTS / "robustness_sweep.json")
+    print("WROTE", args.out)
 
 
 def _summarize(payload):

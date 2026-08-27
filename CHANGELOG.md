@@ -82,6 +82,28 @@ in `CMakeLists.txt`) is derived from it.
   `FileNotFoundError` on a `.net` path, which was indistinguishable from a
   genuine BNG2.pl netgen failure.
 
+- **A scoped benchmark run could not avoid the committed report it replaced**
+  (#493). Seven scripts under `benchmarks/suites/` accept a flag that narrows
+  what they measure — `--engines`, `--models`, `--limit`, `--effort`, `--quick`,
+  `--stride`, `--max-models` — and wrote a tracked artifact at a path fixed in
+  the source, with no `--out` and no environment override. All seven now take
+  `--out`, defaulting to today's path so an unflagged run is unchanged; where a
+  script resumes from its own report, `--out` moves the resume read too, so a
+  probe does not inherit the committed run's rows. `run_forced.py`'s default
+  derives from `--mode`, so it resolves through one helper rather than an
+  argparse default. Each report also records the filters it was scoped by
+  (`models_filter`, `limit`, `max_models`, `quick`), which several did not.
+
+  The sharp case is `--engines`: re-timing a model records a row holding only
+  the engines that run measured, so `--redo --engines bngsim` replaced six
+  models' cross-engine rows with one-engine ones — 513 lines of committed
+  measurement, written atomically, so it reads as a finished run. Without
+  `--redo` the rows survive but `_meta.engines` was still rewritten to the
+  request, leaving a report that claimed one engine while holding six. The Table
+  S3/S4 reports now also carry `engines_present`, derived from the rows
+  themselves; `engines` keeps its existing meaning for anything already reading
+  it.
+
 ## [0.15.1] - 2026-08-25
 
 ### Changed

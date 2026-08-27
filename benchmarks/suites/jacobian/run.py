@@ -308,6 +308,16 @@ def main():
         "--quick", action="store_true", help="one analytical run per model, smoke only"
     )
     ap.add_argument("--worker", nargs="*", metavar="ARGS")
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=RESULTS / "jacobian_results.json",
+        # An --effort/--quick run otherwise replaces the committed full-sweep
+        # report with a subset under the same name (GH #493). The .md is written
+        # beside it, from the same stem, so the pair cannot come apart.
+        help="Write the JSON here; the .md is written beside it (default: "
+        "results/jacobian_results.json).",
+    )
     add_effort_arg(ap)
     args = ap.parse_args()
 
@@ -369,11 +379,16 @@ def main():
         "mode": args.mode,
         "effort": args.effort,
         "repeats": args.repeats,
+        # --quick is one analytical run per model, a smoke pass. It was the one
+        # scoping flag the payload did not record (#493).
+        "quick": args.quick,
         "results": rows,
     }
-    (RESULTS / "jacobian_results.json").write_text(json.dumps(payload, indent=2, default=str))
-    write_md(payload, args)
-    print("WROTE", RESULTS / "jacobian_results.json", RESULTS / "jacobian_results.md")
+    md_out = args.out.with_suffix(".md")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(payload, indent=2, default=str))
+    write_md(payload, args, md_out)
+    print("WROTE", args.out, md_out)
 
 
 def _stat(row_mode, key):
@@ -383,7 +398,7 @@ def _stat(row_mode, key):
         return None
 
 
-def write_md(payload, args):
+def write_md(payload, args, out: Path):
     rows = payload["results"]
     info = payload.get("machine_info", {})
     ver = info.get("bngsim_version") or ""
@@ -531,7 +546,7 @@ def write_md(payload, args):
             )
             L.append("")
 
-    (RESULTS / "jacobian_results.md").write_text("\n".join(L) + "\n")
+    out.write_text("\n".join(L) + "\n")
 
 
 if __name__ == "__main__":

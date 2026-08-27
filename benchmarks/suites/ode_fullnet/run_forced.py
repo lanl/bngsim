@@ -85,6 +85,18 @@ def out_path(mode: str) -> Path:
     return HERE / f"report_ode_timing_forced_{mode}.json"
 
 
+def resolve_out(args) -> Path:
+    """``--out`` if given, else the per-mode default.
+
+    Unlike its siblings this report's default path *derives* from ``--mode``, so
+    it cannot be an argparse default -- the mode is not known when the parser is
+    built. The override still has to reach every use, resume included, or a
+    scoped run would read the committed report and write the scratch one
+    (GH #493).
+    """
+    return args.out if args.out is not None else out_path(args.mode)
+
+
 def check_mode_supported(mode: str) -> None:
     """Abort unless the installed bngsim can actually pin this mode.
 
@@ -291,6 +303,15 @@ def main() -> int:
     ap.add_argument("--models", default="", help="Comma-separated model_id substring filter.")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--redo", action="store_true")
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        # A --models/--limit run otherwise replaces the committed report for this
+        # mode with a narrower one under the same name (GH #493).
+        help="Write (and resume from) this report instead of "
+        "report_ode_timing_forced_<mode>.json.",
+    )
     args = ap.parse_args()
 
     check_mode_supported(args.mode)
@@ -302,7 +323,7 @@ def main() -> int:
     model_rel = {j.model_id: j.model for j in alljobs}
     auto_spec = _horizon_from_auto_report()
 
-    out = out_path(args.mode)
+    out = resolve_out(args)
     prior = {}
     if out.exists():
         prior = {r["model_id"]: r for r in json.loads(out.read_text()).get("results", [])}
@@ -370,7 +391,7 @@ def _write(results: dict, args) -> None:
     with contextlib.suppress(Exception):
         ver["sundials"] = bc.sundials_version()
     ordered = sorted(
-        results.values(), key=lambda r: ((r["timing"].get("spec") or {}).get("n_species") or 0)
+        results.values(), key=lambda r: (r["timing"].get("spec") or {}).get("n_species") or 0
     )
     doc = {
         "_meta": {
@@ -390,10 +411,15 @@ def _write(results: dict, args) -> None:
             "per_solve_timeout_sec": args.timeout,
             "workers": args.workers,
             "default_horizon": {"t_end": args.default_tend, "n_steps": args.default_nsteps},
+            # The filters this run was scoped by, so a --models/--limit report is
+            # distinguishable from a full sweep by more than its row count (#493).
+            "models_filter": args.models or None,
+            "limit": args.limit or None,
         },
         "results": ordered,
     }
-    out = out_path(args.mode)
+    out = resolve_out(args)
+    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=1))
     tmp.replace(out)
