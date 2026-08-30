@@ -589,3 +589,100 @@ def test_cli_lossy_strict_exits_nonzero(tmp_path: Path) -> None:
 
     rc = main([str(_SMITH), "-o", str(tmp_path / "smith.net")])
     assert rc == 1  # strict refusal → non-zero exit
+
+
+_DECAY_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="decay">
+    <listOfCompartments>
+      <compartment id="c" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="10"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="v1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>k</ci><ci>S</ci>{extra}</apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+
+def _rate_law_params(model: bngsim.Model) -> list[tuple[str, bool, str]]:
+    return [
+        (p["name"], p["is_const"], p["expression"])
+        for p in model._core.codegen_data()["parameters"]
+        if p["name"].startswith("_rateLaw")
+    ]
+
+
+def _max_sensitivity(model: bngsim.Model) -> float:
+    sim = bngsim.Simulator(
+        model, method="ode", sensitivity_params=["k"], sensitivity_method="staggered"
+    )
+    result = sim.run(t_span=(0.0, 5.0), n_points=20, rtol=1e-10, atol=1e-12)
+    return float(np.max(np.abs(np.asarray(result.sensitivities))))
+
+
+def test_synthesized_rate_law_keeps_its_parameter_reference(tmp_path: Path) -> None:
+    """A synthesized _rateLaw_* must not be folded to a literal in the .net.
+
+    Folding drops its reference to the model parameter it was built from. The
+    parameter stays declared, so nothing objects, but the right-hand side no
+    longer mentions it and a forward sensitivity comes back identically zero,
+    finite and unflagged, disagreeing with the same model via from_sbml.
+    """
+    src = tmp_path / "decay.xml"
+    src.write_text(_DECAY_SBML.format(extra=""), encoding="utf-8")
+    out = tmp_path / "decay.net"
+
+    sbml_to_net(src, out, validate=None)
+
+    from_sbml = bngsim.Model.from_sbml(src)
+    from_net = bngsim.Model.from_net(out)
+
+    # The reference survives the round trip rather than becoming a constant.
+    (_, net_is_const, net_expr) = _rate_law_params(from_net)[0]
+    assert not net_is_const
+    assert "k" in net_expr
+
+    # A model may only be sensitivity-solved once without a reset, so take
+    # each measurement a single time.
+    net_max = _max_sensitivity(from_net)
+    sbml_max = _max_sensitivity(from_sbml)
+
+    # dS/dk for S(t) = S0 exp(-kt) peaks at t = 1/k, giving 10 * (1/0.3) / e.
+    expected = 10.0 * (1.0 / 0.3) * np.exp(-1.0)
+    assert net_max == pytest.approx(expected, rel=1e-3)
+    assert net_max == pytest.approx(sbml_max)
+
+
+def test_rate_law_with_explicit_compartment_factor_is_unchanged(tmp_path: Path) -> None:
+    """A law carrying its own compartment factor synthesizes no _rateLaw_*.
+
+    That path already round-tripped correctly and must stay on literals.
+    """
+    src = tmp_path / "decay_cf.xml"
+    src.write_text(_DECAY_SBML.format(extra="<ci>c</ci>"), encoding="utf-8")
+    out = tmp_path / "decay_cf.net"
+
+    sbml_to_net(src, out, validate=None)
+
+    from_net = bngsim.Model.from_net(out)
+    assert _rate_law_params(from_net) == []
+    assert _max_sensitivity(from_net) == pytest.approx(
+        _max_sensitivity(bngsim.Model.from_sbml(src))
+    )
