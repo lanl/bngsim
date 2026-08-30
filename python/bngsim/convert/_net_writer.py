@@ -469,11 +469,22 @@ def write_net(
         )
     lines.append("")
 
-    # parameters — emit evaluated literal values (derived params are constant
-    # expressions; their numeric value is exact and avoids re-evaluation hazards).
+    # parameters — a literal is exact and avoids re-evaluation hazards, so it
+    # stays the default. A non-constant parameter is not a constant expression
+    # though: a synthesized _rateLaw_* refers to the model parameters it was
+    # built from, and folding it to a number drops that reference. The
+    # parameter is still declared, so nothing downstream objects, but the ODE
+    # right-hand side no longer mentions the model parameter and a forward
+    # sensitivity with respect to it comes back identically zero. Keep the
+    # expression for those. codegen_data lists parameters in dependency order,
+    # so anything an expression refers to is already declared above it.
     lines.append("begin parameters")
     for i, p in enumerate(params, 1):
-        lines.append(f"    {i} {p['name']} {_fmt(p['value'])}")
+        expression = p.get("expression")
+        if not p.get("is_const", True) and expression:
+            lines.append(f"    {i} {p['name']} {expression}")
+        else:
+            lines.append(f"    {i} {p['name']} {_fmt(p['value'])}")
     lines.append("end parameters")
     lines.append("")
 
