@@ -16,6 +16,17 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A `.net` parameter expression keeps the whitespace it was written with**
+  (#498). The `.net` reader split a parameter line on whitespace and then joined
+  the value tokens back with nothing between them, so a space separating two
+  word characters was deleted and the tokens welded together:
+  `if(k > 0.1 and thr > 0.5, k, 0.0)` was read as `if(k>0.1andthr>0.5,k,0.0)`.
+  ExprTk parses `0.1andthr` without complaint, so the parameter took a wrong
+  value that was finite, with no warning and no error — the same rate law
+  written with parentheses instead of spaces gave a different number. The
+  functions block twenty lines away in the same file has always joined with a
+  space; the parameters block now matches it.
+
 - **Every benchmark script now answers `--help` instead of running** (#488,
   #489). A script that parses no `argv` answers "what does this do?" by doing
   it — no usage text, no refusal for a mistyped flag, and a results file

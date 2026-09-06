@@ -151,10 +151,14 @@ static std::vector<ParsedParam> parse_parameters(std::ifstream &file) {
         ParsedParam p;
         p.name = tokens[1];
 
-        // Value/expression: join remaining tokens (expressions may have spaces)
+        // Value/expression: join remaining tokens with a space, the way the
+        // functions block does. Concatenating them instead deletes whitespace
+        // that separates two word characters, so `if(k > 0.1 and thr > 0.5, ...)`
+        // reads back as `if(k>0.1andthr>0.5, ...)` and ExprTk evaluates a
+        // different, finite value without warning (issue #498).
         std::string value_str = tokens[2];
         for (size_t i = 3; i < tokens.size(); ++i)
-            value_str += tokens[i];
+            value_str += " " + tokens[i];
 
         p.expression = value_str;
         p.is_expression = false;
