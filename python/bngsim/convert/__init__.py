@@ -319,10 +319,11 @@ def sbml_to_net(
         state (no integration): a direct ODE-RHS identity self-check
         (:attr:`~ConversionReport.max_rhs_delta`) that reloads the ``.net`` and
         confirms it reproduces the source right-hand side, and an assignment-rule
-        report check (:attr:`~ConversionReport.max_ar_report_delta`) that catches a
-        varying AssignmentRule-target species emitted ``fixed`` (its live value is a
-        Simulator report transform the flat ``.net`` cannot carry — invisible to the
-        RHS probe because its ``dy/dt`` is zero in both models; GH #18). Together
+        report check (:attr:`~ConversionReport.max_ar_report_delta`) that compares
+        what the two models *report* for each AssignmentRule-target species emitted
+        ``fixed`` (its live value is a Simulator report transform the reloaded
+        network rebuilds from the ``.net``'s structure, #515 — invisible to the RHS
+        probe because its ``dy/dt`` is zero in both models; GH #18). Together
         they close the GH #223 / GH #18 silent-loss hole: a network whose constructs
         were emitted as constants the ``.net`` cannot drive (assignment/rate-rule
         forcing the writer can't carry) is flagged (``strict=True`` raises;
@@ -416,14 +417,15 @@ def sbml_to_net(
             #     so index-aligned). Catches forcing the flat .net cannot carry
             #     (assignment/rate-rule constructs frozen to constants) that the
             #     structural counts miss — the GH #223 silent-loss class.
-            #   • max_ar_report_delta — whether any AssignmentRule-target species
-            #     (emitted ``fixed``, its live value applied only as a Simulator
-            #     report transform the .net cannot carry) has a rule that actually
-            #     varies. The RHS probe is *blind* to this: the frozen species has
-            #     dy/dt = 0 in both models, so a varying rule gives max_rhs_delta ≈ 0
-            #     yet the .net reports it frozen at its initial value (GH #18).
+            #   • max_ar_report_delta — whether every AssignmentRule-target species
+            #     (emitted ``fixed``, its live value applied as a Simulator report
+            #     transform) is *reported* the same by the reloaded network, which
+            #     rebuilds that transform from the .net's structure (#515). The RHS
+            #     probe is *blind* to this: the frozen species has dy/dt = 0 in both
+            #     models, so a lost rule gives max_rhs_delta ≈ 0 yet the .net reports
+            #     the species frozen at its initial value (GH #18).
             max_rhs_delta = _max_rhs_delta(model, net_model)
-            max_ar_report_delta = _ar_report_delta(model)
+            max_ar_report_delta = _ar_report_delta(model, net_model)
             rhs_faithful = max_rhs_delta <= rhs_tol and max_ar_report_delta <= rhs_tol
             if not rhs_faithful:
                 if max_rhs_delta > rhs_tol:
@@ -436,12 +438,13 @@ def sbml_to_net(
                     )
                 else:
                     note = (
-                        f"one or more assignment-rule-target species vary over the "
-                        f"trajectory (max scale-relative |Δ| = {max_ar_report_delta:.2e} "
-                        f"> {rhs_tol:.0e}) but are emitted as fixed species frozen at "
-                        "their initial value — the rule's live value is a run-time "
-                        "report transform the flat .net cannot carry; the network "
-                        "reports these species unfaithfully"
+                        f"one or more assignment-rule-target species are reported "
+                        f"differently by the round-tripped .net (max scale-relative "
+                        f"|Δ| = {max_ar_report_delta:.2e} > {rhs_tol:.0e}) — the rule's "
+                        "live value is a run-time report transform the reloaded network "
+                        "could not rebuild from the .net, so it reports these species "
+                        "frozen at their initial value; the network reports them "
+                        "unfaithfully"
                     )
                 if strict:
                     raise ConversionError(

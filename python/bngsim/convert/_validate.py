@@ -168,62 +168,92 @@ def _max_rhs_delta(a_model: Model, b_model: Model) -> float:
     return worst
 
 
-def _ar_report_delta(model: Model) -> float:
-    """How much an AssignmentRule-target species' *reported* value varies with state.
+def _ar_report_delta(model: Model, back_model: Model | None = None) -> float:
+    """Largest scale-relative difference in what the two models *report* for an
+    AssignmentRule-target species.
 
     An AR-target species is emitted ``fixed`` (its ODE derivative is zeroed) and
-    ``Simulator.run`` overwrites its reported column with the rule's live value —
-    a report-time transform (``_apply_ar_report_map``) that the plain ``.net``
-    cannot carry, so a round-tripped network reports these species *frozen at their
-    initial value*. That loss is invisible to :func:`_max_rhs_delta` (the frozen
-    species has ``dy/dt = 0`` in both models). It is a faithfulness loss **iff the
-    rule's value actually varies**: a constant rule (``EGF := 30``) freezes to the
-    same value the source reports, so it round-trips faithfully.
+    ``Simulator.run`` overwrites its reported column with the rule's live value — a
+    report-time transform (``_apply_ar_report_map``) carried on the model rather than
+    in the network. :func:`_max_rhs_delta` is blind to that column (``dy/dt = 0`` in
+    both models), so it is probed here directly: each AR-target's live value on the
+    source, against what ``back_model`` would report for the same species at the same
+    state — its own rule's live value where ``Model.from_net`` rebuilt the map
+    (#515), the frozen state value where it did not. Three probe states: the shared
+    initial state, the uniform perturbation :func:`_max_rhs_delta` uses, and a
+    per-species non-uniform one. The last is what makes a difference rule visible:
+    ``ppERKc = x1 - x2`` with ``x1(0) == x2(0)`` is zero at both uniform states, and
+    BIOMD0000000251 / BIOMD0000000269 were certified faithful that way while their
+    reloaded ``.net`` reported a species that never moved.
 
-    We measure that variation directly on the source model, at the same two states
-    :func:`_max_rhs_delta` probes: the shared initial state and a nonlinear
-    perturbation. The rule's live value is its bare-name observable (linear-on-
-    species rules) or expression/function (everything else). Returns the largest
-    scale-relative change of any AR-target's live value between the two states —
-    ``0.0`` when the model has no AR-target species or all their rules are
-    constant, ``inf`` when a rule cannot be evaluated (conservatively unfaithful).
+    Without ``back_model`` the reload is taken to report every AR-target frozen at
+    its initial value — the source-only question this probe used to ask (GH #18).
+    Returns ``0.0`` when the source has no AR-target species, ``inf`` when a rule
+    cannot be evaluated (conservatively unfaithful).
     """
     import numpy as np
 
     amap = getattr(model, "_ar_report_map", None)
     if not amap:
         return 0.0
-    core = model._core
-    data = core.codegen_data()
-    obs_entries = {o["name"]: o["entries"] for o in data["observables"]}
     y0 = np.asarray(model.get_state(), dtype=np.float64)
-    states = [(0.0, y0), (1.0, y0 * 1.37 + 0.05)]
-    fn_by_state: list[dict | None] = []
-    for _t, y in states:
-        try:
-            fn_by_state.append(core._eval_functions(_t, y.tolist()))
-        except Exception:  # noqa: BLE001 — out-of-domain probe leaves this state undecided
-            fn_by_state.append(None)
+    rng = np.random.default_rng(0)
+    n = len(y0)
+    states = [
+        (0.0, y0),
+        (1.0, y0 * 1.37 + 0.05),
+        (1.0, y0 * (0.3 + 2.0 * rng.random(n)) + 1e-3 * (1.0 + rng.random(n))),
+    ]
 
-    def _live_value(kind: str, src: str, y: np.ndarray, fns: dict | None) -> float | None:
-        if kind == "observable" and src in obs_entries:
-            return float(sum(float(f) * float(y[int(i)]) for i, f in obs_entries[src]))
-        if kind == "expression" and fns is not None and src in fns:
-            try:
-                return float(fns[src])
-            except (TypeError, ValueError):
-                return None
-        return None
+    class _Side:
+        """One model's view: its map, observable entries and per-state functions."""
 
+        def __init__(self, m: Model) -> None:
+            self.map = getattr(m, "_ar_report_map", None) or {}
+            data = m._core.codegen_data()
+            self.obs = {o["name"]: o["entries"] for o in data["observables"]}
+            self.species = {sp["name"]: i for i, sp in enumerate(data["species"])}
+            self.core = m._core
+            self.fns: dict[tuple[float, int], dict | None] = {}
+
+        def functions(self, t: float, k: int, y: np.ndarray) -> dict | None:
+            if (t, k) not in self.fns:
+                try:
+                    self.fns[(t, k)] = self.core._eval_functions(t, y.tolist())
+                except Exception:  # noqa: BLE001 — out-of-domain probe leaves this undecided
+                    self.fns[(t, k)] = None
+            return self.fns[(t, k)]
+
+        def reported(self, name: str, t: float, k: int, y: np.ndarray) -> float | None:
+            entry = self.map.get(name)
+            if entry is None:
+                j = self.species.get(name)
+                return None if j is None else float(y[j])
+            kind, src = entry[0], entry[1]
+            vdiv = float(entry[2]) if len(entry) > 2 and entry[2] else 1.0
+            if kind == "observable" and src in self.obs:
+                return float(sum(float(f) * float(y[int(i)]) for i, f in self.obs[src])) / vdiv
+            if kind == "expression":
+                fns = self.functions(t, k, y)
+                if fns is not None and src in fns:
+                    try:
+                        return float(fns[src]) / vdiv
+                    except (TypeError, ValueError):
+                        return None
+            return None
+
+    source = _Side(model)
+    back = _Side(back_model) if back_model is not None else None
     worst = 0.0
-    for entry in amap.values():
-        kind, src = entry[0], entry[1]
-        v0 = _live_value(kind, src, states[0][1], fn_by_state[0])
-        v1 = _live_value(kind, src, states[1][1], fn_by_state[1])
-        if v0 is None or v1 is None:
-            return float("inf")  # can't prove constant → treat as unfaithful
-        scale = max(abs(v0), 1.0)
-        worst = max(worst, abs(v1 - v0) / scale)
+    for name in amap:
+        frozen = source.reported(name, states[0][0], 0, states[0][1])
+        for k, (t, y) in enumerate(states):
+            a = source.reported(name, t, k, y)
+            b = back.reported(name, t, k, y) if back is not None else frozen
+            if a is None or b is None:
+                return float("inf")  # can't establish the reported value → unfaithful
+            scale = max(abs(a), 1.0)
+            worst = max(worst, abs(a - b) / scale)
     return worst
 
 

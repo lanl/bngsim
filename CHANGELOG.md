@@ -16,6 +16,25 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A species assignment rule survives the `.net` round trip, and the default
+  gate can tell when it does not** (#515). `Model.from_sbml` reports an
+  assignment-rule species at its rule's live value through a report map the
+  simulator applies at output time; the flat `.net` never carried that map, so
+  the reloaded model reported the species frozen at its initial value while its
+  dynamics were already right — every rate law bound the rule's observable or
+  function, not the clamped species. `Model.from_net` now rebuilds the map from
+  the file's own structure: a fixed species that shares its name with a
+  non-identity observable (a linear rule) or with a function (any other rule)
+  reports through it, exactly as the source model does. The `sbml_to_net`
+  L2 gate compares the two models' *reported* values at the probe states
+  instead of asking only whether the source rule varies, and probes a
+  non-uniform state as well: the old uniform perturbation left a difference
+  rule whose summands start equal (`ppERKc = x1 - x2`) at zero on both sides,
+  which is how BIOMD0000000251 and BIOMD0000000269 were certified faithful
+  while their reloaded `.net` reported a species that never moved. A varying
+  assignment-rule species is therefore no longer refused under strict (GH #18):
+  it round-trips.
+
 - **`sbml_to_net` keeps a parameter-valued species initial condition
   symbolic** (#514). The sibling of #496 at the species block: `write_net`
   wrote every species' initial value as a number, so a species whose initial

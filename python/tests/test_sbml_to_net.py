@@ -25,6 +25,7 @@ from bngsim.convert._net_writer import (
     _rateof_refs,
     capability_report,
 )
+from bngsim.convert._validate import _ar_report_delta
 
 pytestmark = pytest.mark.skipif(not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml")
 
@@ -383,31 +384,30 @@ def test_flux_guard_zero_crossing_reactant_roundtrips_faithfully(tmp_path: Path)
     )
 
 
-def test_ar_report_frozen_species_refused(tmp_path: Path) -> None:
-    """GH #18: a model with a *varying* AssignmentRule-target species is refused.
+def test_ar_report_species_round_trips(tmp_path: Path) -> None:
+    """GH #18 / #515: a model with *varying* AssignmentRule-target species round-trips.
 
     vonDassow2000 (BIOMD0000001065) emits 12 AssignmentRule-target ``_T`` totals as
-    ``fixed`` species; their live rule value is a Simulator report transform the flat
-    ``.net`` cannot carry, so the reloaded network reports them frozen at their
-    initial value. The ODE-RHS probe is blind (a fixed species has ``dy/dt = 0`` in
-    both models, giving ``max_rhs_delta ≈ 0``); the assignment-rule report probe
-    catches the varying rule and refuses under strict."""
+    ``fixed`` species whose live value is a Simulator report transform. The flat
+    ``.net`` has no line for that map, so this used to be refused under strict;
+    ``Model.from_net`` now rebuilds the map from the network's structure, the two
+    models report the same columns, and the default gate passes. The RHS probe is
+    still blind to the column (a fixed species has ``dy/dt = 0`` in both models);
+    the report probe is what now compares the two sides."""
     sbml = _corpus_xml("BIOMD0000001065")
-    with pytest.raises(bngsim.ConversionError) as exc:
-        sbml_to_net(sbml, tmp_path / "vd.net")  # default L2 + strict
-    msg = str(exc.value)
-    assert "assignment-rule" in msg and "frozen" in msg
-    assert "strict=False" in msg or "--allow-lossy" in msg
-
-    # strict=False emits a best-effort network and records the loss, not raises.
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        report = sbml_to_net(sbml, tmp_path / "vd.net", strict=False)
-    assert report.rhs_faithful is False and report.ok is False
-    # the RHS probe is blind; the AR-report probe is what fires
+    report = sbml_to_net(sbml, tmp_path / "vd.net")  # default L2 + strict: must NOT raise
+    assert report.ok and report.rhs_faithful is True
     assert report.max_rhs_delta is not None and report.max_rhs_delta <= 1e-6
-    assert report.max_ar_report_delta is not None and report.max_ar_report_delta > 1e-6
-    assert any(issubclass(w.category, bngsim.ConversionWarning) for w in caught)
+    assert report.max_ar_report_delta is not None and report.max_ar_report_delta <= 1e-6
+
+    src = bngsim.Model.from_sbml(sbml)
+    back = bngsim.Model.from_net(tmp_path / "vd.net")
+    assert src._ar_report_map and set(back._ar_report_map) == set(src._ar_report_map)
+    a = _run_ode(src)
+    b = _run_ode(back)
+    for name in src._ar_report_map:
+        ya, yb = _species_column(a, name), _species_column(b, name)
+        assert np.max(np.abs(ya - yb)) <= 1e-6 * max(float(np.max(np.abs(ya))), 1.0), name
 
 
 def test_ar_report_constant_rule_passes(tmp_path: Path) -> None:
@@ -837,3 +837,144 @@ def test_amount_valued_initial_condition_in_nonunit_volume_keeps_its_literal(
     assert list(from_sbml._core.species_ic_param_ref_divisors) == [2.0]
     assert _species_lines(out)["S"] == "5.0"
     assert list(bngsim.Model.from_net(out).get_state()) == list(from_sbml.get_state())
+
+
+# ─── #515: a species assignment rule survives the round trip ────────────────
+# ``y`` is set by rule; ``a → b`` is the only dynamics. With ``a(0) == b(0)`` the
+# difference rule is zero at t = 0 *and* at any uniform perturbation of the
+# state, which is the blind spot the old report probe had.
+
+_AR_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="ar">
+    <listOfCompartments>
+      <compartment id="c" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="a" compartment="c" initialConcentration="5"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="b" compartment="c" initialConcentration="5"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="y" compartment="c" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="true" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="y">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">{rule}</math>
+      </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="v1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="a" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="b" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>k</ci><ci>a</ci><ci>c</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+_RULE_DIFF = "<apply><minus/><ci>a</ci><ci>b</ci></apply>"
+_RULE_PROD = "<apply><times/><ci>a</ci><ci>b</ci></apply>"
+
+
+def _ar_model(tmp_path: Path, rule: str) -> tuple[Path, Path, ConversionReport]:
+    src = tmp_path / "ar.xml"
+    src.write_text(_AR_SBML.format(rule=rule), encoding="utf-8")
+    out = tmp_path / "ar.net"
+    return src, out, sbml_to_net(src, out)  # default L2 + strict
+
+
+def _run_ode(model: bngsim.Model):
+    return bngsim.Simulator(model, method="ode").run(
+        t_span=(0.0, 10.0), n_points=11, rtol=1e-8, atol=1e-10
+    )
+
+
+def _species_column(result, name: str) -> np.ndarray:
+    return np.asarray(result.species)[:, list(result.species_names).index(name)]
+
+
+def _drop_group(text: str, name: str) -> str:
+    """The ``.net`` text without the observable ``name`` — a reload that cannot
+    rebuild the report map, which is what the writer used to hand every caller."""
+    head, sep, rest = text.partition("begin groups")
+    body, sep2, tail = rest.partition("end groups")
+    kept = [ln for ln in body.splitlines() if not (len(ln.split()) >= 2 and ln.split()[1] == name)]
+    return head + sep + "\n".join(kept) + "\n" + sep2 + tail
+
+
+def test_linear_difference_rule_round_trips_and_is_reported(tmp_path: Path) -> None:
+    """The #515 shape: ``y = a - b`` with equal summands at t = 0. The reload
+    rebuilds the report map from the fixed species and its weighted observable,
+    reports ``y`` at the rule's value, and the default gate passes."""
+    src, out, report = _ar_model(tmp_path, _RULE_DIFF)
+    assert report.ok and report.rhs_faithful is True
+    assert report.max_ar_report_delta is not None and report.max_ar_report_delta <= 1e-6
+
+    from_sbml, from_net = bngsim.Model.from_sbml(src), bngsim.Model.from_net(out)
+    assert from_sbml._ar_report_map == {"y": ("observable", "y", 1.0)}
+    assert from_net._ar_report_map == {"y": ("observable", "y", 1.0)}
+
+    ys = _species_column(_run_ode(from_sbml), "y")
+    yn = _species_column(_run_ode(from_net), "y")
+    assert abs(ys[-1]) > 1.0  # the rule moved well away from its zero start
+    assert yn == pytest.approx(ys, rel=1e-6, abs=1e-9)
+
+
+def test_nonlinear_rule_round_trips_through_its_function(tmp_path: Path) -> None:
+    """``y = a*b`` is not linear on species, so the loader carries it as a function
+    under the species' name; the reload maps the species through that function."""
+    src, out, report = _ar_model(tmp_path, _RULE_PROD)
+    assert report.ok and report.rhs_faithful is True
+
+    from_sbml, from_net = bngsim.Model.from_sbml(src), bngsim.Model.from_net(out)
+    assert from_sbml._ar_report_map == {"y": ("expression", "y", 1.0)}
+    assert from_net._ar_report_map == {"y": ("expression", "y", 1.0)}
+
+    ys = _species_column(_run_ode(from_sbml), "y")
+    yn = _species_column(_run_ode(from_net), "y")
+    assert ys[-1] > 1.0
+    assert yn == pytest.approx(ys, rel=1e-6, abs=1e-9)
+
+
+def test_lost_rule_is_reported_frozen_and_fails_the_gate(tmp_path: Path) -> None:
+    """Without the observable the reload has nothing to rebuild the map from: it
+    reports ``y`` frozen at 0. The probe must see that even for a difference rule
+    with equal summands — the case the uniform perturbation could not tell apart."""
+    src, out, _ = _ar_model(tmp_path, _RULE_DIFF)
+    lost = tmp_path / "ar_lost.net"
+    lost.write_text(_drop_group(out.read_text(), "y"), encoding="utf-8")
+
+    from_sbml = bngsim.Model.from_sbml(src)
+    frozen = bngsim.Model.from_net(lost)
+    assert frozen._ar_report_map == {}
+    assert np.all(_species_column(_run_ode(frozen), "y") == 0.0)
+
+    assert _ar_report_delta(from_sbml, bngsim.Model.from_net(out)) <= 1e-6
+    assert _ar_report_delta(from_sbml, frozen) > 1e-6
+
+
+def test_plain_net_gets_no_report_map(data_dir: Path, tmp_path: Path) -> None:
+    """A BNG2.pl network (pattern species names) and a hand-written one whose
+    fixed species has only the writer-style identity group rebuild nothing."""
+    assert bngsim.Model.from_net(data_dir / "ic_derived_compound.net")._ar_report_map == {}
+    net = tmp_path / "plain.net"
+    net.write_text(
+        "begin parameters\n    1 k 0.3\nend parameters\n"
+        "begin species\n    1 $S 1.0\n    2 P 0.0\nend species\n"
+        "begin reactions\n    1 1 1,2 k\nend reactions\n"
+        "begin groups\n    1 S 1\n    2 P 2\nend groups\n"
+    )
+    assert bngsim.Model.from_net(net)._ar_report_map == {}

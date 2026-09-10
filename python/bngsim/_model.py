@@ -10,7 +10,7 @@ import logging
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 import numpy as np
 
@@ -175,9 +175,10 @@ class Model:
         # species name to ``(kind, source_name)`` where kind is
         # "observable" or "expression". Simulator.run uses it to report the
         # rule's live value in the species column instead of the frozen
-        # initial value (the species is emitted ``fixed``). Empty for .net
-        # and non-AR models. See _sbml_loader.py section 11.
-        self._ar_report_map: dict[str, tuple[str, str]] = {}
+        # initial value (the species is emitted ``fixed``). Empty for non-AR
+        # models. Set by the SBML loader (see _sbml_loader.py section 11) and
+        # rebuilt by from_net from the network's own structure (#515).
+        self._ar_report_map: dict[str, tuple] = {}
         # Populated by the SBML loader (GH #85): maps a mangled species name to
         # the mangled name of its variable-volume compartment (a rate-rule or
         # event-driven compartment, promoted to a species column). Simulator.run
@@ -615,6 +616,7 @@ class Model:
             raise ModelError(f"Failed to load {path}: {e}") from e
         m = cls(_core=core)
         m._net_path = str(path)
+        m._ar_report_map = _ar_report_map_from_net(core)
         # GH #145: the analytical Functional Jacobian (GH #76) is consumed only by
         # ODE solves, so it is no longer derived here at load — it is deferred to
         # the first ODE-solve setup (Simulator.__init__ →
@@ -2069,3 +2071,43 @@ class Model:
             f"Model(species={self.n_species}, reactions={self.n_reactions}, "
             f"observables={self.n_observables}, parameters={self.n_parameters})"
         )
+
+
+def _ar_report_map_from_net(core: Any) -> dict[str, tuple[str, str, float]]:
+    """Rebuild the assignment-rule report map the flat ``.net`` has no line for.
+
+    ``Model.from_sbml`` reports an AssignmentRule-target species at its rule's
+    live value through ``_ar_report_map``, a transform ``Simulator.run`` applies
+    at output time. ``sbml_to_net`` cannot write that map down, but the structure
+    it writes is unambiguous: the species is emitted ``fixed`` and its rule lives
+    under the species' own name — a weighted observable for a linear-on-species
+    rule, a function for any other (functions win the name lookup, so every rate
+    law already reads the rule; only the reported column was frozen). A fixed
+    species that shares its name with a non-identity observable or with a
+    function is therefore reported through it, exactly as the source model does
+    (#515). Neither BNG2.pl nor a hand-written network produces that collision —
+    a BNGL species name is a pattern, and the writer's per-species identity
+    group is excluded — so a plain ``.net`` keeps the empty map it always had.
+    ``codegen_data`` is consulted only when a name collides.
+    """
+    species = list(core.species_names)
+    obs_names = set(core.observable_names)
+    func_names = set(core.function_names)
+    hits = [i for i, name in enumerate(species) if name in obs_names or name in func_names]
+    if not hits:
+        return {}
+    data = core.codegen_data()
+    entries = {
+        o["name"]: [(int(i), float(f)) for i, f in o["entries"]] for o in data["observables"]
+    }
+    out: dict[str, tuple[str, str, float]] = {}
+    for i in hits:
+        s = data["species"][i]
+        name = s["name"]
+        if not s.get("fixed", False):
+            continue
+        if name in func_names:
+            out[name] = ("expression", name, 1.0)
+        elif entries.get(name) not in (None, [(i, 1.0)]):
+            out[name] = ("observable", name, 1.0)
+    return out

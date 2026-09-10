@@ -453,7 +453,8 @@ class Result:
         # redirects through this. GH #221 applies the same redirect to the
         # sensitivity TENSOR rows, so the two agree by construction; the redirect
         # is kept here because it also carries the by-name refusals below.
-        # Empty for .net and non-AR models (no redirect). Set by Simulator._stamp.
+        # Empty for non-AR models (no redirect); a .net model carries the map
+        # from_net rebuilt (#515). Set by Simulator._stamp.
         self._ar_sens_map: dict[str, tuple[str, str, float]] = {}
 
         # GH #205: AR-species names whose reported value also carries a
