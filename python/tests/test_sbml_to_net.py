@@ -686,3 +686,154 @@ def test_rate_law_with_explicit_compartment_factor_is_unchanged(tmp_path: Path) 
     assert _max_sensitivity(from_net) == pytest.approx(
         _max_sensitivity(bngsim.Model.from_sbml(src))
     )
+
+
+# ─── #514: a parameter-valued species initial condition keeps its reference ──
+# ``{size}`` / ``{hosu}`` shape the compartment and the species' unit
+# convention; ``{ia}`` is an optional initialAssignment block for ``S``. The
+# kinetic law carries its own compartment factor, so no ``_rateLaw_*`` is
+# synthesized and the parameters block stays out of the picture.
+
+_IC_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="ic_decay">
+    <listOfCompartments>
+      <compartment id="c" size="{size}" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="10"
+               hasOnlySubstanceUnits="{hosu}" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="S0" value="10" constant="true"/>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    {ia}
+    <listOfReactions>
+      <reaction id="v1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>k</ci><ci>S</ci><ci>c</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+_IA_S0 = """<listOfInitialAssignments>
+      <initialAssignment symbol="S">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>S0</ci></math>
+      </initialAssignment>
+    </listOfInitialAssignments>"""
+
+_IA_2S0 = """<listOfInitialAssignments>
+      <initialAssignment symbol="S">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><cn>2</cn><ci>S0</ci></apply>
+        </math>
+      </initialAssignment>
+    </listOfInitialAssignments>"""
+
+
+def _write_ic_model(
+    tmp_path: Path, *, ia: str = "", size: str = "1", hosu: str = "false", strict: bool = True
+) -> tuple[Path, Path]:
+    src = tmp_path / "ic.xml"
+    src.write_text(_IC_SBML.format(size=size, hosu=hosu, ia=ia), encoding="utf-8")
+    out = tmp_path / "ic.net"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sbml_to_net(src, out, validate=None, strict=strict)
+    return src, out
+
+
+def _species_lines(net: Path) -> dict[str, str]:
+    """``name → value text`` for every line of the species block."""
+    block = net.read_text().split("begin species")[1].split("end species")[0]
+    return {
+        ln.split()[1]: " ".join(ln.split()[2:])
+        for ln in block.splitlines()
+        if len(ln.split()) >= 3
+    }
+
+
+def _ic_refs(model: bngsim.Model) -> list[tuple[str, str]]:
+    """``(species, parameter)`` name pairs the core records as IC references."""
+    d = model._core.codegen_data()
+    sp = [s["name"] for s in d["species"]]
+    pn = [p["name"] for p in d["parameters"]]
+    return [(sp[i], pn[j]) for i, j in model._core.species_ic_param_refs]
+
+
+def _max_sens(model: bngsim.Model, param: str) -> float:
+    sim = bngsim.Simulator(
+        model, method="ode", sensitivity_params=[param], sensitivity_method="staggered"
+    )
+    result = sim.run(t_span=(0.0, 5.0), n_points=20, rtol=1e-10, atol=1e-12)
+    return float(np.max(np.abs(np.asarray(result.sensitivities))))
+
+
+def test_parameter_valued_initial_condition_keeps_its_reference(tmp_path: Path) -> None:
+    """``S ← S0`` is written as ``1 S S0``, the reload records the reference, and
+    the sensitivity with respect to ``S0`` matches ``from_sbml`` (#514). As a
+    literal the reload had no reference and returned identically zero."""
+    src, out = _write_ic_model(tmp_path, ia=_IA_S0)
+    assert _species_lines(out)["S"] == "S0"
+
+    from_sbml = bngsim.Model.from_sbml(src)
+    from_net = bngsim.Model.from_net(out)
+    assert _ic_refs(from_sbml) == [("S", "S0")]
+    assert _ic_refs(from_net) == [("S", "S0")]
+    assert list(from_net.get_state()) == list(from_sbml.get_state())
+
+    # dS/dS0 for S(t) = S0 exp(-kt) is exp(-kt), which is 1 at t = 0.
+    net_max = _max_sens(from_net, "S0")
+    assert net_max == pytest.approx(1.0, rel=1e-6)
+    assert net_max == pytest.approx(_max_sens(from_sbml, "S0"))
+
+
+def test_compound_initial_condition_names_its_derived_parameter(tmp_path: Path) -> None:
+    """``S ← 2*S0`` is lowered to a derived ``_ic_S``; the species line names it,
+    and the chain rule through it reaches ``S0`` from the reload as well."""
+    src, out = _write_ic_model(tmp_path, ia=_IA_2S0)
+    lines = _species_lines(out)
+    assert lines["S"] == "_ic_S"
+
+    from_sbml = bngsim.Model.from_sbml(src)
+    from_net = bngsim.Model.from_net(out)
+    assert _ic_refs(from_sbml) == [("S", "_ic_S")]
+    assert _ic_refs(from_net) == [("S", "_ic_S")]
+    ic = next(p for p in from_net._core.codegen_data()["parameters"] if p["name"] == "_ic_S")
+    assert not ic["is_const"]
+    assert "S0" in ic["expression"]
+
+    net_max = _max_sens(from_net, "S0")
+    assert net_max == pytest.approx(2.0, rel=1e-6)
+    assert net_max == pytest.approx(_max_sens(from_sbml, "S0"))
+
+
+def test_numeric_initial_condition_stays_literal(tmp_path: Path) -> None:
+    """No initialAssignment: the species line is the number it always was."""
+    src, out = _write_ic_model(tmp_path)
+    assert _species_lines(out)["S"] == "10.0"
+    assert _ic_refs(bngsim.Model.from_sbml(src)) == []
+    assert _ic_refs(bngsim.Model.from_net(out)) == []
+
+
+def test_amount_valued_initial_condition_in_nonunit_volume_keeps_its_literal(
+    tmp_path: Path,
+) -> None:
+    """An amount-valued species in a compartment of size 2 stores ``S0 / 2``.
+    The flat ``.net`` has no volume to divide by, so naming ``S0`` would load
+    the wrong number; the species keeps its literal and the reload matches the
+    stored state."""
+    src, out = _write_ic_model(tmp_path, ia=_IA_S0, size="2", hosu="true", strict=False)
+    from_sbml = bngsim.Model.from_sbml(src)
+    assert list(from_sbml._core.species_ic_param_ref_divisors) == [2.0]
+    assert _species_lines(out)["S"] == "5.0"
+    assert list(bngsim.Model.from_net(out).get_state()) == list(from_sbml.get_state())

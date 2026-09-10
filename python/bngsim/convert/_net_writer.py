@@ -446,6 +446,7 @@ def write_net(
     core = model._core
     data = core.codegen_data()
     params = data["parameters"]
+    params_by_name = {p["name"]: p for p in params}
     species = data["species"]
     observables = data["observables"]
     functions = data["functions"]
@@ -488,13 +489,36 @@ def write_net(
     lines.append("end parameters")
     lines.append("")
 
-    # species — value is the stored initial state (concentration space)
+    # species — value is the stored initial state (concentration space). A
+    # species whose initial condition *is* a parameter — an SBML
+    # ``initialAssignment`` naming one, or a compound parameter-only initial
+    # condition the loader lowered to a derived ``_ic_<species>`` — is written as
+    # that parameter's name. The reader resolves the name to the same number and
+    # records the reference, which is what seeds ``∂y(0)/∂p`` for a forward
+    # sensitivity; folded to a literal, the sensitivity with respect to that
+    # parameter came back identically zero (#514). The one reference the flat
+    # ``.net`` cannot carry is an amount-valued species in a compartment whose
+    # volume is not 1: the stored value is ``amount/V`` and the reader has no
+    # volume to divide by, so that species keeps its literal (the capability
+    # report already flags the class). A reference whose parameter no longer
+    # matches the stored state (the state was written after load) keeps the
+    # literal too — the number is what the caller has.
+    ic_param_name: dict[int, str] = {}
+    divisors = list(core.species_ic_param_ref_divisors)
+    for k, (sp_i, p_i) in enumerate(core.species_ic_param_refs):
+        divisor = divisors[k] if k < len(divisors) else 1.0
+        if divisor == 1.0 and 0 <= p_i < len(params):
+            ic_param_name[sp_i] = params[p_i]["name"]
     lines.append("begin species")
     for i, s in enumerate(species, 1):
         nm = s["name"]
         marker = "$" if s.get("fixed", False) else ""
         val = init_state[i - 1] if i - 1 < len(init_state) else 0.0
-        lines.append(f"    {i} {marker}{nm} {_fmt(val)}")
+        ref = ic_param_name.get(i - 1)
+        if ref is not None and float(params_by_name[ref]["value"]) == float(val):
+            lines.append(f"    {i} {marker}{nm} {ref}")
+        else:
+            lines.append(f"    {i} {marker}{nm} {_fmt(val)}")
     lines.append("end species")
     lines.append("")
 

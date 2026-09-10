@@ -16,6 +16,20 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`sbml_to_net` keeps a parameter-valued species initial condition
+  symbolic** (#514). The sibling of #496 at the species block: `write_net`
+  wrote every species' initial value as a number, so a species whose initial
+  condition *is* a parameter — an SBML `initialAssignment` naming one, or a
+  compound parameter-only initial condition lowered to a derived `_ic_*`
+  parameter — lost that reference on the round trip. The trajectories of the
+  two loaders were identical, but the reloaded model no longer seeded
+  `∂y(0)/∂p`, so a forward sensitivity with respect to that parameter came
+  back identically zero from `Model.from_net` while `Model.from_sbml` gave the
+  right answer. The species line now names the parameter, which the reader
+  has accepted all along (issue #79); an amount-valued species in a
+  compartment whose volume is not 1 keeps its literal, since the flat `.net`
+  carries no volume to divide by and the capability report already flags it.
+
 - **`sbml_to_bngl` keeps a synthesized rate-law parameter symbolic** (#513).
   The `.bngl` writer had the defect #497 fixed in `write_net`: every parameter
   was emitted as its evaluated literal, so a synthesized `_rateLaw_*` lost its
