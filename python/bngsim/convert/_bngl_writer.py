@@ -580,13 +580,27 @@ def write_bngl(
     lines.append("begin model")
     lines.append("")
 
+    # parameters — a literal is exact and avoids re-evaluation hazards, so it
+    # stays the default. A parameter that is not constant is written as its
+    # expression instead: a synthesized ``_rateLaw_*`` refers to the model
+    # parameters it was built from, and folding it to a number drops that
+    # reference. The parameter is still declared, so BNG2.pl and the reload
+    # accept the file, but a forward sensitivity with respect to the model
+    # parameter comes back identically zero (#513 — the ``.bngl`` side of #496).
+    # The expression takes the same ExprTk→BNGL normalization as the functions
+    # block. ``codegen_data`` lists parameters in dependency order, so anything
+    # an expression refers to is already declared above it.
     lines.append("begin parameters")
     k = 0
     for p in params:
         if p["name"] in shadow:
             continue
         k += 1
-        lines.append(f"    {k} {p['name']} {_fmt(p['value'])}")
+        expression = p.get("expression")
+        if not p.get("is_const", True) and expression:
+            lines.append(f"    {k} {p['name']} {_normalize_bngl_expr(expression)}")
+        else:
+            lines.append(f"    {k} {p['name']} {_fmt(p['value'])}")
     lines.append("end parameters")
     lines.append("")
 

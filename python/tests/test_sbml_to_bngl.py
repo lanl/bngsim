@@ -25,6 +25,7 @@ import warnings
 from pathlib import Path
 
 import bngsim
+import numpy as np
 import pytest
 from bngsim._exceptions import ConversionError, ConversionWarning
 from bngsim.convert import (
@@ -529,3 +530,134 @@ def _block(text: str, name: str) -> list[str]:
     m = re.search(rf"begin {re.escape(name)}\b(.*?)end {re.escape(name)}\b", text, re.DOTALL)
     assert m, f"block {name!r} not found"
     return [ln.strip() for ln in m.group(1).splitlines() if ln.strip()]
+
+
+# ─── #513: a derived parameter keeps its expression in the .bngl ────────────
+# The .bngl side of #496 / #497. The kinetic law below carries no compartment
+# factor, so the loader synthesizes a volume-normalised ``_rateLaw_v1``; with
+# ``{extra}`` = ``<ci>c</ci>`` it does not, which is the control.
+
+_DECAY_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="decay">
+    <listOfCompartments>
+      <compartment id="c" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="10"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="v1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>k</ci><ci>S</ci>{extra}</apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+
+def _write_decay(tmp_path: Path, extra: str) -> tuple[Path, Path]:
+    src = tmp_path / "decay.xml"
+    src.write_text(_DECAY_SBML.format(extra=extra), encoding="utf-8")
+    return src, tmp_path / "decay.bngl"
+
+
+def _parameter_values(text: str) -> dict[str, str]:
+    """``name → value text`` for every line of the parameters block."""
+    return {ln.split()[1]: " ".join(ln.split()[2:]) for ln in _block(text, "parameters")}
+
+
+def _is_literal(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _rate_law_params(model: bngsim.Model) -> list[tuple[str, bool, str]]:
+    return [
+        (p["name"], p["is_const"], p["expression"])
+        for p in model._core.codegen_data()["parameters"]
+        if p["name"].startswith("_rateLaw")
+    ]
+
+
+def _max_sensitivity(model: bngsim.Model) -> float:
+    sim = bngsim.Simulator(
+        model, method="ode", sensitivity_params=["k"], sensitivity_method="staggered"
+    )
+    result = sim.run(t_span=(0.0, 5.0), n_points=20, rtol=1e-10, atol=1e-12)
+    return float(np.max(np.abs(np.asarray(result.sensitivities))))
+
+
+def test_derived_parameter_is_written_as_its_expression(tmp_path):
+    """A non-constant parameter goes into the parameters block as its expression,
+    a constant as its literal (#513). Folding ``_rateLaw_v1`` to ``0.3`` dropped
+    the reference to ``k``: the file still built and loaded, and a sensitivity
+    with respect to ``k`` came back zero."""
+    src, _ = _write_decay(tmp_path, "")
+    values = _parameter_values(sbml_to_bngl(src, None, validate=None).output_text)
+    assert values["_rateLaw_v1"].replace(" ", "") == "k/(c/_V0_c)"
+    assert values["k"] == "0.3"
+    assert values["c"] == "1.0"
+
+
+def test_rate_law_with_explicit_compartment_factor_stays_literal(tmp_path):
+    """A law carrying its own compartment factor synthesizes no ``_rateLaw_*``,
+    so nothing is derived and the block stays all-literal (the control)."""
+    src, _ = _write_decay(tmp_path, "<ci>c</ci>")
+    values = _parameter_values(sbml_to_bngl(src, None, validate=None).output_text)
+    assert not any(name.startswith("_rateLaw") for name in values)
+    assert all(_is_literal(v) for v in values.values())
+
+
+@pytest.mark.skipif(_BNG2 is None or not _HAS_PERL, reason="BNG2.pl / perl not available")
+def test_synthesized_rate_law_survives_bng2_round_trip(tmp_path):
+    """``.bngl`` → BNG2.pl → ``from_net`` keeps ``_rateLaw_v1`` derived, and the
+    sensitivity with respect to ``k`` matches both the closed form and
+    ``from_sbml`` — the #496 check on the ``.bngl`` channel (#513)."""
+    src, out = _write_decay(tmp_path, "")
+    sbml_to_bngl(src, out, validate=None)
+
+    from_bngl = bngsim.Model.from_bngl(out, bng2_pl=_BNG2)
+    from_sbml = bngsim.Model.from_sbml(src)
+
+    (_, bngl_is_const, bngl_expr) = _rate_law_params(from_bngl)[0]
+    assert not bngl_is_const
+    assert "k" in bngl_expr
+
+    # A model may only be sensitivity-solved once without a reset, so take
+    # each measurement a single time.
+    bngl_max = _max_sensitivity(from_bngl)
+    sbml_max = _max_sensitivity(from_sbml)
+
+    # dS/dk for S(t) = S0 exp(-kt) peaks at t = 1/k, giving 10 * (1/0.3) / e.
+    expected = 10.0 * (1.0 / 0.3) * np.exp(-1.0)
+    assert bngl_max == pytest.approx(expected, rel=1e-3)
+    assert bngl_max == pytest.approx(sbml_max)
+
+
+@pytest.mark.skipif(_BNG2 is None or not _HAS_PERL, reason="BNG2.pl / perl not available")
+def test_literal_rate_law_still_agrees_after_bng2_round_trip(tmp_path):
+    """The control through BNG2.pl: no ``_rateLaw_*`` after the reload, and the
+    two loaders still agree on the sensitivity."""
+    src, out = _write_decay(tmp_path, "<ci>c</ci>")
+    sbml_to_bngl(src, out, validate=None)
+
+    from_bngl = bngsim.Model.from_bngl(out, bng2_pl=_BNG2)
+    assert _rate_law_params(from_bngl) == []
+    assert _max_sensitivity(from_bngl) == pytest.approx(
+        _max_sensitivity(bngsim.Model.from_sbml(src))
+    )

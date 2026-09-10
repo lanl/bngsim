@@ -16,6 +16,18 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`sbml_to_bngl` keeps a synthesized rate-law parameter symbolic** (#513).
+  The `.bngl` writer had the defect #497 fixed in `write_net`: every parameter
+  was emitted as its evaluated literal, so a synthesized `_rateLaw_*` lost its
+  reference to the model parameters it was built from, and a forward
+  sensitivity with respect to one of them came back identically zero from
+  `Model.from_bngl` — finite, no warning — while `Model.from_sbml` and, since
+  #497, `Model.from_net` gave the right answer. A parameter that is not
+  constant is now written as its expression, through the same ExprTk→BNGL
+  normalization the functions block uses; everything else stays a literal.
+  BNG2.pl carries the expression through to its `.net`, so the reload keeps
+  the reference.
+
 - **`sbml_to_net` keeps a synthesized rate-law parameter symbolic** (#496).
   `write_net` emitted every parameter as its evaluated literal, on the stated
   assumption that a derived parameter is a constant expression. A synthesized
