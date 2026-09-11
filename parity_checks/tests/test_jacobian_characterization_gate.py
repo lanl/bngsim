@@ -109,13 +109,19 @@ def test_main_refuses_to_run_without_the_gate_report(tmp_path, monkeypatch, caps
 
 
 def test_main_honours_an_explicit_horizons_path(tmp_path, monkeypatch, capsys):
+    """An empty jobs manifest and a stubbed BNG2.pl resolver: main() runs to completion
+    with no model, and the output's metadata names the report it was pointed at."""
     monkeypatch.setattr(J, "HERE", tmp_path)
-    rp = _report(tmp_path, [_gate_row()])
-    monkeypatch.setattr(sys, "argv", ["jc", "--horizons", str(rp.rename(tmp_path / "r.json"))])
-    # Past the horizons check, the next thing main() needs is jobs.json — its absence is
-    # the failure that proves the report was accepted.
-    with pytest.raises((FileNotFoundError, SystemExit)):
-        J.main()
+    monkeypatch.setattr(J.bc, "resolve_bng2_pl", lambda _env: "BNG2.pl")  # no job invokes it
+    (tmp_path / "jobs.json").write_text(json.dumps({"jobs": []}))
+    (tmp_path / "elsewhere").mkdir()
+    rp = _report(tmp_path / "elsewhere", [_gate_row()])
+    out = tmp_path / "o.json"
+    monkeypatch.setattr(sys, "argv", ["jc", "--horizons", str(rp), "--out", str(out)])
+    assert J.main() == 0
+    meta = json.loads(out.read_text())["_meta"]
+    assert meta["horizons"] == str(rp)
+    assert meta["n_models"] == 0
     assert "refusing to run" not in capsys.readouterr().err
 
 
