@@ -7030,6 +7030,20 @@ class SteadyStateResult:
         catch that, because near a separatrix the trajectory slows down and two
         successively tighter bursts hand Newton the same seed. Explains a
         ``method_used`` of ``"integration"`` from a ``method="newton"`` solve.
+    eigenvalues : ndarray, complex128
+        The spectrum :attr:`root_stability` was read off (issue #523): the
+        eigenvalues of the Jacobian restricted to the species the Newton polish
+        solved for, sorted by descending real part, a conjugate pair adjacent
+        with its ``+imaginary`` member first. One per *unknown* — ``n_species``
+        less one per conservation law less the masked species — so the full
+        system's spectrum is this plus one zero per conservation law. Filled
+        whenever the certificate computed a spectrum, whatever it concluded;
+        empty (shape ``(0,)``) when it did not: an integration result, or a
+        root it declined on before the eigensolver — more than 512 unknowns, a
+        solver failure — which is every ``"undetermined"`` except an all-zero
+        spectrum, reported as-is. Compare against
+        ``numpy.linalg.eigvals(model.jacobian(ss.concentrations))`` to see the
+        conservation-law zeros the restriction removes.
     sensitivity : ndarray or None
         Species ``dY_ss/dp`` matrix, shape ``(n_species, n_params)``. ``None``
         if no sensitivity was requested.
@@ -7132,6 +7146,7 @@ class SteadyStateResult:
         "unconverged_pure_sinks",
         "root_stability",
         "n_unstable_roots_rejected",
+        "eigenvalues",
         "rhs_backend",
         "solver_jacobian_source",
         "solver_jacobian_retried",
@@ -7169,6 +7184,9 @@ class SteadyStateResult:
         # candidate roots were thrown out for failing it.
         self.root_stability = getattr(core, "root_stability", "")
         self.n_unstable_roots_rejected = getattr(core, "n_unstable_roots_rejected", 0)
+        # Issue #523 — the spectrum the certificate read the verdict off; empty
+        # when it computed none (an integration result, or a declined root).
+        self.eigenvalues = np.asarray(getattr(core, "eigenvalues", []), dtype=np.complex128)
         # Issue #63 — which numerical path ran. getattr-guarded like the GH #12
         # blocks below so an older core stays loadable.
         self.rhs_backend = getattr(core, "rhs_backend", "exprtk")

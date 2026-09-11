@@ -2768,6 +2768,65 @@ int test_concurrent_clone_compile_evaluate() {
 // Main
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue #523: the public evaluators. fill_dense_fd_jacobian runs the
+// steady-state solver's difference-quotient rule (bngsim/fd_jacobian.hpp) on
+// compute_derivs, so it must reproduce the closed form on a model that has one;
+// compute_propensities is the SSA loop's propensity pass, refresh included.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_fd_jacobian_matches_analytical() {
+    auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
+    const int ns = model.n_species();
+    CHECK(ns == 3, "Expected 3 species");
+    CHECK(model.analytical_jacobian_complete(), "A + B <-> C has a closed-form Jacobian");
+
+    std::vector<double> y = {100.0, 50.0, 3.0};
+    std::vector<double> ja(static_cast<size_t>(ns) * ns, 0.0), jf(ja);
+    model.fill_dense_analytical_jacobian(0.0, y.data(), ja.data());
+    model.fill_dense_fd_jacobian(0.0, y.data(), jf.data());
+
+    // Column-major: jac[j*ns + i] = ∂f_i/∂x_j. f_A = -kf·A·B + kr·C.
+    CHECK_CLOSE(ja[0 * ns + 0], -0.001 * 50.0, 1e-12, "∂f_A/∂A = -kf·B");
+    CHECK_CLOSE(ja[1 * ns + 0], -0.001 * 100.0, 1e-12, "∂f_A/∂B = -kf·A");
+    CHECK_CLOSE(ja[2 * ns + 0], 0.1, 1e-12, "∂f_A/∂C = kr");
+    CHECK_CLOSE(ja[0 * ns + 2], 0.001 * 50.0, 1e-12, "∂f_C/∂A = kf·B");
+    for (int k = 0; k < ns * ns; ++k) {
+        const double tol = 1e-6 * std::max(1.0, std::abs(ja[k]));
+        CHECK(std::abs(jf[k] - ja[k]) <= tol,
+              "difference quotient agrees with the closed form at entry " + std::to_string(k) +
+                  " (fd=" + std::to_string(jf[k]) + ", analytical=" + std::to_string(ja[k]) + ")");
+    }
+    return 0;
+}
+
+int test_compute_propensities_ssa_convention() {
+    // A + A + A -> C at (1/6)·k: propensity (1/6)·k·x(x−1)(x−2), ODE rate k·x³/6.
+    auto trimer = bngsim::NetworkModel::from_net(data_path("ssa_aaa.net"));
+    CHECK(trimer.n_reactions() == 1, "Expected 1 reaction");
+    std::vector<double> y3 = {3.0, 0.0}, y2 = {2.0, 0.0}, a(1), f(2);
+    trimer.compute_propensities(0.0, y3.data(), a.data());
+    CHECK_CLOSE(a[0], 1.0, 1e-12, "falling factorial at x=3: 3·2·1/6");
+    trimer.compute_propensities(0.0, y2.data(), a.data());
+    CHECK_CLOSE(a[0], 0.0, 1e-12, "two molecules cannot form a trimer");
+    trimer.compute_derivs(0.0, y3.data(), f.data());
+    CHECK_CLOSE(f[1], 4.5, 1e-12, "the ODE rate is the monomial 27/6");
+
+    // Functional laws read observables: the pass refreshes them at the state
+    // passed in, not the stored one (see the func_composition.net header).
+    auto func = bngsim::NetworkModel::from_net(data_path("func_composition.net"));
+    CHECK(func.n_reactions() == 3, "Expected 3 reactions");
+    std::vector<double> stored = {100.0, 0.0, 50.0}, moved = {300.0, 0.0, 50.0}, af(3);
+    func.compute_propensities(0.0, stored.data(), af.data());
+    CHECK_CLOSE(af[0], 1000.0, 1e-12, "fRate0·A = k1·A_tot·A at A = 100 (BNGL species factor)");
+    CHECK_CLOSE(af[1], -10.0, 1e-12, "_rateLaw1 = -fRate0");
+    CHECK_CLOSE(af[2], 2.5, 1e-12, "fRate_cond = k2·C_tot while A_tot <= 200");
+    func.compute_propensities(0.0, moved.data(), af.data());
+    CHECK_CLOSE(af[0], 9000.0, 1e-12, "fRate0·A refreshed at A = 300");
+    CHECK_CLOSE(af[2], 0.0, 1e-12, "fRate_cond's branch switched at A_tot = 300");
+    return 0;
+}
+
 int main() {
     std::cout << "bngsim Phase A tests" << std::endl;
     std::cout << "====================" << std::endl;
@@ -2859,6 +2918,10 @@ int main() {
     RUN_TEST(test_validate_unknown_elementary_param);
     RUN_TEST(test_validate_unknown_functional_func);
     RUN_TEST(test_validate_valid_model_ok);
+
+    // Issue #523: the public evaluators.
+    RUN_TEST(test_fd_jacobian_matches_analytical);
+    RUN_TEST(test_compute_propensities_ssa_convention);
 
     std::cout << std::endl;
     std::cout << tests_passed << "/" << tests_run << " tests passed." << std::endl;

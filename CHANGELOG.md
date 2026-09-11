@@ -14,6 +14,45 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+
+- **The model's RHS, Jacobian, stoichiometry matrix and propensity vector are
+  public NumPy evaluators, and a steady-state result carries the spectrum its
+  stability verdict was read off (issue #523).** `Model.rhs(y, t)`,
+  `Model.jacobian(y, t, sparse=)`, `Model.propensities(y, t)` and
+  `Model.stoichiometry_matrix(sparse=)` evaluate at any state the caller
+  passes, under the live parameters, without touching the stored
+  concentrations. Each is the evaluator the corresponding engine runs, not a
+  re-derivation: `rhs` is the CVODE callback's interpreted RHS with its
+  observable-and-function refresh run at `y`; `jacobian` takes the closed form
+  when it covers every reaction and the steady-state solver's own difference
+  quotient otherwise — the same rule, lifted into `bngsim/fd_jacobian.hpp` so
+  the two cannot diverge — and reports which through `.source`
+  (`"analytical"` / `"finite-difference"`, the spellings
+  `solver_jacobian_source` already used); a partial analytical Jacobian is
+  never returned as if whole. `propensities` is the SSA loop's propensity pass,
+  refresh included, in the SSA volume convention (falling factorial for a
+  repeated reactant, times the compartment volume), and says so.
+  `stoichiometry_matrix` is the net-coefficient matrix conservation-law
+  detection row-reduces, 0-based, with a zero row for a `$`-fixed species. The
+  dense Jacobian is a `bngsim.JacobianMatrix` (an `ndarray` with `source`);
+  `sparse=True` on either matrix returns a scipy CSC array over the model's
+  structural pattern. The C++ names are bound one-to-one on the core
+  (`compute_derivs`, `fill_dense_analytical_jacobian`, `fill_dense_fd_jacobian`,
+  `fill_sparse_analytical_jacobian`, `compute_propensity`,
+  `compute_propensities`, `stoichiometry`, `jacobian_sparsity`,
+  `species_is_fixed`).
+
+  `SteadyStateResult.eigenvalues` is the spectrum of the Jacobian restricted to
+  the species the Newton polish solved for — the matrix the issue #78
+  certificate already took and discarded after reading one bit — sorted by
+  descending real part with a conjugate pair adjacent, `+imag` first. It is
+  filled whenever the certificate computed a spectrum and empty when it did
+  not: an integration result, or a root it declined on above 512 unknowns,
+  consistent with `"undetermined"` there. Together these are the provider the
+  continuation (#501), multistart (#524) and generator (#504) work assumes.
+  New user-guide page: *Model evaluators*.
+
 ### Changed
 
 - **The TotalRate symmetry carry is gone: RuleWorld/nfsim#92 merged and the

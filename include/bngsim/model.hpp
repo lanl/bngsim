@@ -315,6 +315,16 @@ class NetworkModel {
     // buffer; this memsets it to 0 first.
     void fill_sparse_analytical_jacobian(double t, const double *conc, double *vals);
 
+    // Assemble the dense Jacobian at (t, conc) by one-sided finite differences of
+    // compute_derivs(), into the same column-major n×n buffer the analytical
+    // fill writes (issue #523). One RHS evaluation per species plus one for the
+    // base point, stepped by the rule in bngsim/fd_jacobian.hpp — the rule the
+    // steady-state solver's own difference quotient uses, so a caller who is
+    // refused the closed form (analytical_jacobian_complete() false) gets the
+    // matrix the solver would have factored, not a different approximation.
+    // Fixed-species rows come out zero because compute_derivs zeroes them.
+    void fill_dense_fd_jacobian(double t, const double *conc, double *jac);
+
     // (species_idx0, param_idx0) pairs for species whose initial
     // concentration is set directly by a parameter (.net "begin species"
     // entries with a parameter name in the IC column). Used by forward
@@ -443,7 +453,24 @@ class NetworkModel {
 
     // Compute propensity for a single reaction (for SSA).
     // conc is 0-based n_species array.
+    //
+    // Reads whatever observable totals and function-bound parameters the model
+    // currently holds: the SSA loop refreshes those itself (update_observables +
+    // evaluate_functions, gated on has_functional_rates) before its propensity
+    // pass, and this is the per-reaction body of that pass, not the pass.
     double compute_propensity(int rxn_index, const double *conc);
+
+    // Every reaction's SSA propensity at (t, conc) into `out` (n_reactions), in
+    // reaction order (issue #523): the refresh the SSA loop runs before its
+    // propensity pass — observable totals and function-bound parameters at
+    // (t, conc), under the same has_functions gate compute_derivs_core takes —
+    // followed by compute_propensity for each reaction. SSA convention
+    // throughout: the falling-factorial species factor for a repeated reactant
+    // and the reaction's compartment volume factor (Reaction::ssa_volume_factor,
+    // or the live compartment-size parameter it names), so this is the
+    // amount/time propensity a stochastic step samples from, not the ODE rate.
+    // Does not write the model's stored concentrations.
+    void compute_propensities(double t, const double *conc, double *out);
 
     // GH #190 — structure-specialized propensity vector: reads each reaction's
     // rate constant from a runtime params array `p[]` (signature gains

@@ -3,6 +3,7 @@
 // Core RHS evaluation: update_observables → evaluate_functions → compute rates.
 // Ported from BNG's derivs_network() (network.cpp) to instance-based design.
 
+#include "bngsim/fd_jacobian.hpp"
 #include "bngsim/functional_jac_scatter.hpp"
 #include "bngsim/mm_jacobian.hpp"
 #include "bngsim/net_file_loader.hpp"
@@ -2213,6 +2214,16 @@ void NetworkModel::fill_dense_analytical_jacobian(double t, const double *conc, 
     }
 }
 
+void NetworkModel::fill_dense_fd_jacobian(double t, const double *conc, double *jac) {
+    // No excluded species: the probe scale is the whole state's magnitude. A
+    // masked steady-state solve keeps its accumulators out of that scale
+    // (issue #74); an arbitrary-state evaluation has no mask to honor.
+    static const std::vector<int> kNoExcluded;
+    fd_dense_state_jacobian(
+        [this](double tt, const double *y, double *f) { compute_derivs(tt, y, f); }, t, conc,
+        n_species(), kNoExcluded, jac);
+}
+
 void NetworkModel::fill_sparse_analytical_jacobian(double t, const double *conc, double *vals) {
     // Sparse mirror of fill_dense_analytical_jacobian: identical math, written by
     // CSC data index instead of (col·n + row). This is the canonical sparse
@@ -2942,6 +2953,25 @@ double NetworkModel::compute_propensity(int rxn_index, const double *conc) {
     }
     return compute_rxn_rate(impl_->shared->reactions[rxn_index], impl_->parameters, conc,
                             n_species(), impl_->species, true);
+}
+
+void NetworkModel::compute_propensities(double t, const double *conc, double *out) {
+    // The same refresh the SSA loop's sync_state runs before its propensity
+    // pass, under the gate compute_derivs_core applies to the RHS: a pure
+    // mass-action model reads no observable and binds no function, so both
+    // passes would be dead work there (and evaluate_functions early-returns
+    // anyway). A Functional rate law reads its function-bound parameter, which
+    // is only current once the observables it sums are.
+    if (impl_->has_functions) {
+        update_observables(conc);
+        evaluate_functions(t);
+    } else {
+        impl_->current_time = t;
+    }
+    const int nr = n_reactions();
+    for (int r = 0; r < nr; ++r) {
+        out[r] = compute_propensity(r, conc);
+    }
 }
 
 std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure() const {

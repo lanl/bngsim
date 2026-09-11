@@ -7,6 +7,7 @@
 // Exposes NumPy-friendly bindings, using zero-copy transfers where possible.
 // GIL is released during simulation for parallel-friendly execution.
 
+#include <pybind11/complex.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -125,6 +126,34 @@ static py::array_t<double> sens_block_to_ndarray_3d_rows(const std::vector<doubl
 // ─── Helper: a (n_rows × depth) row-major matrix as a 2-D NumPy array ─────────
 // GH #12. Empty/unpopulated buffers yield an empty (0, 0) array, matching the
 // steady-state ``sensitivity_data`` accessor.
+// A caller-supplied state vector for one of the public evaluators (issue #523):
+// 1-D, exactly n_species long, or a ValueError naming both. Returns the
+// contiguous float64 view the forcecast produced.
+static const double *
+state_arg(const bngsim::NetworkModel &model,
+          const py::array_t<double, py::array::c_style | py::array::forcecast> &y,
+          const char *what) {
+    if (y.ndim() != 1)
+        throw py::value_error(std::string(what) + ": expected a 1-D state vector, got " +
+                              std::to_string(y.ndim()) + "-D");
+    if (y.shape(0) != model.n_species())
+        throw py::value_error(std::string(what) + ": expected " +
+                              std::to_string(model.n_species()) + " species values, got " +
+                              std::to_string(y.shape(0)));
+    return y.data();
+}
+
+// A column-major n×n buffer (jac[j*n + i] = ∂f_i/∂x_j, the SUNDIALS layout every
+// C++ fill writes) as a C-ordered (n, n) ndarray with J[i, j] = ∂f_i/∂x_j.
+static py::array_t<double> colmajor_to_ndarray_2d(const std::vector<double> &jac, int n) {
+    py::array_t<double> out({n, n});
+    auto o = out.mutable_unchecked<2>();
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i)
+            o(i, j) = jac[static_cast<size_t>(j) * n + i];
+    return out;
+}
+
 static py::array_t<double> matrix_to_ndarray_2d(const std::vector<double> &data, int depth) {
     if (data.empty() || depth == 0) {
         return py::array_t<double>(py::array::ShapeContainer{0, 0});
@@ -1360,6 +1389,173 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "Assemble the dense analytical Jacobian at (t, conc), flat "
             "column-major. Test/diagnostic hook for the FD cross-check. GH #76.")
 
+        // ── Public evaluators (issue #523) ──────────────────────────────────
+        // The C++ names, bound one-to-one, so a reader of model.hpp finds the
+        // same surface here; Model.rhs/jacobian/propensities/stoichiometry_matrix
+        // wrap these with the array conventions a NumPy caller expects. Each
+        // releases the GIL around the C++ call, as find_steady_state does, so
+        // clone workers on a thread pool can evaluate in parallel; the argument
+        // checks and the output allocation happen before the release, and the
+        // evaluators call nothing that needs the interpreter.
+        .def(
+            "compute_derivs",
+            [](bngsim::NetworkModel &self, double t,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
+                const double *y = state_arg(self, conc, "compute_derivs");
+                const auto ns = static_cast<py::ssize_t>(self.n_species());
+                py::array_t<double> out(ns);
+                if (ns > 0) {
+                    double *o = static_cast<double *>(out.request().ptr);
+                    py::gil_scoped_release release;
+                    self.compute_derivs(t, y, o);
+                }
+                return out;
+            },
+            py::arg("t"), py::arg("conc"),
+            "dy/dt at (t, conc) as a float64 ndarray (n_species,): the interpreted RHS "
+            "the CVODE callback evaluates, with the same observable/function refresh "
+            "(rhs_evaluates_observables) against the live parameters. Leaves the "
+            "stored concentrations untouched. Issue #523.")
+        .def(
+            "fill_dense_analytical_jacobian",
+            [](bngsim::NetworkModel &self, double t,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
+                const double *y = state_arg(self, conc, "fill_dense_analytical_jacobian");
+                const int ns = self.n_species();
+                std::vector<double> jac(static_cast<size_t>(ns) * ns, 0.0);
+                if (ns > 0) {
+                    py::gil_scoped_release release;
+                    self.fill_dense_analytical_jacobian(t, y, jac.data());
+                }
+                return colmajor_to_ndarray_2d(jac, ns);
+            },
+            py::arg("t"), py::arg("conc"),
+            "The analytical Jacobian at (t, conc) as a float64 ndarray (n_species, "
+            "n_species), J[i, j] = ∂f_i/∂x_j. Only the closed-form terms the model "
+            "carries: check analytical_jacobian_complete first, or the matrix is "
+            "partial. Issue #523.")
+        .def(
+            "fill_dense_fd_jacobian",
+            [](bngsim::NetworkModel &self, double t,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
+                const double *y = state_arg(self, conc, "fill_dense_fd_jacobian");
+                const int ns = self.n_species();
+                std::vector<double> jac(static_cast<size_t>(ns) * ns, 0.0);
+                if (ns > 0) {
+                    py::gil_scoped_release release;
+                    self.fill_dense_fd_jacobian(t, y, jac.data());
+                }
+                return colmajor_to_ndarray_2d(jac, ns);
+            },
+            py::arg("t"), py::arg("conc"),
+            "The one-sided finite-difference Jacobian of compute_derivs at (t, conc) "
+            "as a float64 ndarray (n_species, n_species), J[i, j] = ∂f_i/∂x_j, "
+            "stepped by the steady-state solver's own rule. Issue #523.")
+        .def(
+            "fill_sparse_analytical_jacobian",
+            [](bngsim::NetworkModel &self, double t,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
+                const double *y = state_arg(self, conc, "fill_sparse_analytical_jacobian");
+                const int ns = self.n_species();
+                const auto &sp = self.jacobian_sparsity();
+                const auto nnz = static_cast<py::ssize_t>(ns > 0 ? sp.col_ptrs[ns] : 0);
+                py::array_t<double> out(nnz);
+                if (nnz > 0) {
+                    double *o = static_cast<double *>(out.request().ptr);
+                    py::gil_scoped_release release;
+                    self.fill_sparse_analytical_jacobian(t, y, o);
+                }
+                return out;
+            },
+            py::arg("t"), py::arg("conc"),
+            "The analytical Jacobian at (t, conc) as the float64 value array (nnz,) of "
+            "the CSC pattern jacobian_sparsity describes. Same completeness caveat as "
+            "fill_dense_analytical_jacobian. Issue #523.")
+        .def_property_readonly(
+            "jacobian_sparsity",
+            [](const bngsim::NetworkModel &self) {
+                const auto &sp = self.jacobian_sparsity();
+                py::dict out;
+                out["n"] = sp.n;
+                out["nnz"] = sp.nnz;
+                out["density"] = sp.density;
+                out["col_ptrs"] = py::array_t<int64_t>(static_cast<py::ssize_t>(sp.col_ptrs.size()),
+                                                       sp.col_ptrs.data());
+                out["row_indices"] = py::array_t<int64_t>(
+                    static_cast<py::ssize_t>(sp.row_indices.size()), sp.row_indices.data());
+                return out;
+            },
+            "The structural Jacobian sparsity pattern in CSC form: n, nnz, density, "
+            "col_ptrs (n+1, int64) and row_indices (nnz, int64), copied. Conservative "
+            "for a model with Functional rate laws. Issue #523.")
+        .def(
+            "compute_propensity",
+            [](bngsim::NetworkModel &self, int rxn_index,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
+                const double *y = state_arg(self, conc, "compute_propensity");
+                return self.compute_propensity(rxn_index, y);
+            },
+            py::arg("rxn_index"), py::arg("conc"),
+            "One reaction's SSA propensity at conc (0-based rxn_index), reading the "
+            "observable totals and function-bound parameters the model currently "
+            "holds — the per-reaction body of the SSA propensity pass, without its "
+            "refresh. Use compute_propensities for the refreshed vector. Issue #523.")
+        .def(
+            "compute_propensities",
+            [](bngsim::NetworkModel &self, double t,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
+                const double *y = state_arg(self, conc, "compute_propensities");
+                const auto nr = static_cast<py::ssize_t>(self.n_reactions());
+                py::array_t<double> out(nr);
+                if (nr > 0) {
+                    double *o = static_cast<double *>(out.request().ptr);
+                    py::gil_scoped_release release;
+                    self.compute_propensities(t, y, o);
+                }
+                return out;
+            },
+            py::arg("t"), py::arg("conc"),
+            "Every reaction's SSA propensity at (t, conc) as a float64 ndarray "
+            "(n_reactions,): the SSA loop's observable/function refresh followed by "
+            "compute_propensity per reaction. SSA volume convention (amount/time), "
+            "not the ODE rate. Issue #523.")
+        .def(
+            "stoichiometry",
+            [](const bngsim::NetworkModel &self) {
+                const auto &entries = self.stoichiometry();
+                const auto n = static_cast<py::ssize_t>(entries.size());
+                py::array_t<int64_t> species(n), reaction(n);
+                py::array_t<double> coeff(n);
+                auto sp = species.mutable_unchecked<1>();
+                auto rx = reaction.mutable_unchecked<1>();
+                auto cf = coeff.mutable_unchecked<1>();
+                for (py::ssize_t k = 0; k < n; ++k) {
+                    sp(k) = entries[static_cast<size_t>(k)].species_index;
+                    rx(k) = entries[static_cast<size_t>(k)].reaction_index;
+                    cf(k) = entries[static_cast<size_t>(k)].coefficient;
+                }
+                py::dict out;
+                out["species_index"] = std::move(species);
+                out["reaction_index"] = std::move(reaction);
+                out["coefficient"] = std::move(coeff);
+                return out;
+            },
+            "The StoichEntry list as three parallel arrays — species_index and "
+            "reaction_index (int64, 1-BASED, as the C++ struct holds them) and "
+            "coefficient (float64, the NET coefficient: products positive, reactants "
+            "negative, one entry per (species, reaction) pair). Issue #523.")
+        .def_property_readonly(
+            "species_is_fixed",
+            [](const bngsim::NetworkModel &self) {
+                std::vector<bool> out;
+                for (const auto &sp : self.species())
+                    out.push_back(sp.fixed);
+                return out;
+            },
+            "Per-species flag, in species order: True for a $-prefixed boundary "
+            "species, whose derivative the RHS zeroes and which the SSA step never "
+            "updates. Issue #523.")
+
         // Dense analytical-Jacobian scatter plan for the codegen .so (GH #76
         // Task 4). Serializes exactly what NetworkModel::fill_dense_analytical_
         // jacobian iterates for the Elementary + MM blocks — rows pre-resolved
@@ -2413,6 +2609,22 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("root_stability", &bngsim::SteadyStateResult::root_stability)
         .def_readonly("n_unstable_roots_rejected",
                       &bngsim::SteadyStateResult::n_unstable_roots_rejected)
+        // Issue #523 — the spectrum the certificate read the verdict off, as a
+        // complex128 ndarray (n_unknowns,); empty when it did not compute one.
+        .def_property_readonly(
+            "eigenvalues",
+            [](const bngsim::SteadyStateResult &r) {
+                const auto n = static_cast<py::ssize_t>(r.eigenvalues.size());
+                py::array_t<std::complex<double>> out(n);
+                auto o = out.mutable_unchecked<1>();
+                for (py::ssize_t i = 0; i < n; ++i)
+                    o(i) = r.eigenvalues[static_cast<size_t>(i)];
+                return out;
+            },
+            "Eigenvalues of the Jacobian restricted to the species the Newton polish "
+            "solved for, sorted by descending real part (issue #523). Empty when the "
+            "certificate did not compute a spectrum: an integration result, or a "
+            "root it declined on (more than 512 unknowns, a solver failure).")
         .def_readonly("n_sens_params", &bngsim::SteadyStateResult::n_sens_params)
         .def_readonly("sens_param_names", &bngsim::SteadyStateResult::sens_param_names)
         // Issue #63 — which numerical path actually ran, so a caller can tell an

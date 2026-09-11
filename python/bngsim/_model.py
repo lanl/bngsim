@@ -107,6 +107,7 @@ class Model:
         "_declared_ic_sens",
         "_ic_write_log",
         "_guarded_functions",
+        "_stoich_coo",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -278,6 +279,8 @@ class Model:
         # on a substring test for a logarithm, so a model without one — 97.9% of
         # the corpus — pays nothing and never touches sympy.
         self._guarded_functions: list[tuple[str, str, str]] = _guard_function_expressions(_core)
+        # Issue #523: the 0-based COO form of the stoichiometry, converted once.
+        self._stoich_coo: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 
     # ─── Factory methods ──────────────────────────────────────────────────
 
@@ -1801,6 +1804,208 @@ class Model:
         Jacobian these laws imply.
         """
         return self._core.conservation_laws
+
+    # ─── Public evaluators (issue #523) ───────────────────────────────────
+    # The RHS, Jacobian, stoichiometry and propensities the integrators run,
+    # as NumPy callables over an arbitrary state — the provider a continuation,
+    # a root classifier, or a moment/CME generator built outside bngsim needs.
+    # Each one calls the C++ evaluator the corresponding engine calls, so they
+    # cannot drift from what a solve sees.
+
+    def stoichiometry_matrix(self, *, sparse: bool = False):
+        """The net stoichiometry matrix ``S``, shape ``(n_species, n_reactions)``.
+
+        ``S[i, r]`` is the net change in species ``i`` when reaction ``r`` fires:
+        products positive, reactants negative, so ``A + A -> B`` puts ``-2`` in
+        A's row. 0-based, in :attr:`species_names` and reaction-index order.
+        For a mass-action ``.net`` model ``rhs(y) == S @ v(y)`` for the vector
+        of ODE reaction rates, and every conservation law satisfies
+        ``L @ S == 0`` — this is the matrix :attr:`conservation_laws` was
+        row-reduced from.
+
+        A ``$``-prefixed boundary species has an all-zero row: the RHS zeroes
+        its derivative and an SSA firing never updates it, so the matrix that
+        describes what the engines do has no entry there, whatever the
+        reaction line says.
+
+        Parameters
+        ----------
+        sparse : bool
+            ``False`` (default) returns a dense float64 ``ndarray``. ``True``
+            returns a :class:`scipy.sparse.csc_array` of the same shape, which
+            is the form to ask for on a large network — the dense matrix of a
+            10,000-species, 100,000-reaction model is 8 GB. Needs scipy.
+
+        Notes
+        -----
+        The 1-based C++ entry list is converted once per model and cached;
+        each call assembles a fresh matrix from it, so the caller may modify
+        what it gets back.
+        """
+        from bngsim._evaluators import scipy_sparse, stoichiometry_coo
+
+        if self._stoich_coo is None:
+            self._stoich_coo = stoichiometry_coo(self._core)
+        rows, cols, vals = self._stoich_coo
+        shape = (self.n_species, self.n_reactions)
+        if sparse:
+            return scipy_sparse().csc_array((vals, (rows, cols)), shape=shape)
+        S = np.zeros(shape, dtype=np.float64)
+        S[rows, cols] = vals
+        return S
+
+    def rhs(self, y, t: float = 0.0) -> np.ndarray:
+        """``dy/dt`` at state ``y`` and time ``t``, under the live parameters.
+
+        The same interpreted RHS the CVODE callback evaluates, with the same
+        observable-and-function refresh it runs — observable totals and
+        function-bound rate parameters are recomputed *at* ``y`` for a model
+        that has functions and skipped for a pure mass-action one (the
+        ``rhs_evaluates_observables`` gate) — against the model's current
+        :meth:`get_param` values. A ``$``-fixed species reports a zero
+        derivative, as it does in a solve.
+
+        The model's stored concentrations (:meth:`get_state`) are not read and
+        not written; only the caller's ``y`` enters. What does change is the
+        model's cached observable and function values, exactly as one
+        integrator step would change them.
+
+        Parameters
+        ----------
+        y : array_like, shape ``(n_species,)``
+            The state to evaluate at, in :attr:`species_names` order.
+        t : float
+            The time ``rateOf``, ``time``-dependent functions and table
+            functions read. ``0.0`` by default.
+
+        Returns
+        -------
+        ndarray, shape ``(n_species,)``
+            ``f(t, y)``, float64.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` is not 1-D or its length is not :attr:`n_species`.
+
+        See Also
+        --------
+        jacobian : ``∂f/∂y`` at the same point.
+        propensities : the SSA-convention reaction rates at ``y``.
+        """
+        return self._core.compute_derivs(float(t), np.asarray(y, dtype=np.float64))
+
+    def jacobian(self, y, t: float = 0.0, *, sparse: bool = False):
+        """``∂f/∂y`` at state ``y`` and time ``t`` — the ODE Jacobian.
+
+        ``J[i, j] = ∂f_i/∂x_j``, both indices in :attr:`species_names` order.
+        Built from the model's closed-form terms whenever they cover every
+        reaction, and from a one-sided difference quotient of :meth:`rhs`
+        otherwise; the result says which. That is the rule the ODE integrator
+        and the steady-state solver apply under ``jacobian="auto"``, and the
+        difference quotient is stepped by the steady-state solver's own rule,
+        so a caller gets the matrix a solve would have factored at that point
+        rather than a third approximation. A model whose analytical Jacobian is
+        *partial* (a rate law the differentiator declined) is never handed the
+        partial matrix: it is differenced, and reported as such.
+
+        The first call on a model with functional rate laws derives the
+        closed-form terms (:meth:`prepare_analytical_jacobian`), which an ODE
+        solve would do at its own setup; later calls reuse them.
+
+        Parameters
+        ----------
+        y : array_like, shape ``(n_species,)``
+            The state to linearize at.
+        t : float
+            The time, for time-dependent rate laws. ``0.0`` by default.
+        sparse : bool
+            ``False`` (default) returns a :class:`~bngsim.JacobianMatrix`, a
+            dense ``(n_species, n_species)`` float64 ``ndarray`` with a
+            ``source`` attribute. ``True`` returns a
+            :class:`scipy.sparse.csc_array` over the model's structural
+            sparsity pattern — the same pattern from either source, so a
+            consumer can allocate for it once — with the same ``source``
+            attribute set on it. Needs scipy.
+
+        Returns
+        -------
+        JacobianMatrix or scipy.sparse.csc_array
+            ``.source`` is ``"analytical"`` or ``"finite-difference"``, the
+            spellings :attr:`bngsim.SteadyStateResult.solver_jacobian_source`
+            uses for the same two cases.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` is not 1-D or its length is not :attr:`n_species`.
+        """
+        from bngsim._evaluators import (
+            ANALYTICAL,
+            FINITE_DIFFERENCE,
+            JacobianMatrix,
+            csc_from_pattern,
+            gather_pattern,
+        )
+
+        analytical = self.prepare_analytical_jacobian()
+        source = ANALYTICAL if analytical else FINITE_DIFFERENCE
+        y_arr = np.asarray(y, dtype=np.float64)
+        t = float(t)
+        if sparse:
+            if analytical:
+                vals = self._core.fill_sparse_analytical_jacobian(t, y_arr)
+            else:
+                vals = gather_pattern(self._core, self._core.fill_dense_fd_jacobian(t, y_arr))
+            return csc_from_pattern(self._core, vals, source)
+        if analytical:
+            dense = self._core.fill_dense_analytical_jacobian(t, y_arr)
+        else:
+            dense = self._core.fill_dense_fd_jacobian(t, y_arr)
+        return JacobianMatrix(dense, source)
+
+    def propensities(self, y, t: float = 0.0) -> np.ndarray:
+        """Every reaction's SSA propensity at state ``y`` and time ``t``.
+
+        One entry per reaction, in reaction-index order: the amount/time
+        propensity a stochastic step samples from, **in the SSA volume
+        convention** rather than the ODE one. Two things differ from the ODE
+        rate of the same reaction. A repeated reactant takes the falling
+        factorial — ``A + A -> B`` fires at ``k·x(x−1)/2``, where the ODE rate
+        is ``k·x²/2`` — and a reaction in a compartment of volume ``V`` is
+        multiplied by ``V`` (``Reaction::ssa_volume_factor``, or the live value
+        of the compartment-size parameter it names), converting the ODE's
+        storage-units rate to a per-event rate. For a ``.net`` model with
+        volume 1 and no repeated reactant the two conventions agree.
+
+        Observable totals and function-bound parameters are refreshed at ``y``
+        first, as the SSA loop refreshes them before its propensity pass, under
+        the same gate :meth:`rhs` takes. The stored concentrations are not
+        touched. Values are read from ``y`` as given — pass molecule counts
+        for a count-valued answer.
+
+        Parameters
+        ----------
+        y : array_like, shape ``(n_species,)``
+            The state to evaluate at, in :attr:`species_names` order.
+        t : float
+            The time, for time-dependent rate laws. ``0.0`` by default.
+
+        Returns
+        -------
+        ndarray, shape ``(n_reactions,)``
+            The propensity vector ``a(y)``, float64.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` is not 1-D or its length is not :attr:`n_species`.
+
+        See Also
+        --------
+        stoichiometry_matrix : the state change each of these reactions makes.
+        """
+        return self._core.compute_propensities(float(t), np.asarray(y, dtype=np.float64))
 
     @property
     def param_names(self) -> list[str]:

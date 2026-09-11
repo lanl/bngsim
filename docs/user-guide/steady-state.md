@@ -337,12 +337,13 @@ the root when any has a positive real part, continuing to integrate instead. The
 saddle above has eigenvalues `+0.406` and `-2.406`; the branch integration
 reaches has `-0.863` and `-1.137`.
 
-Two fields report it:
+Three fields report it:
 
 ```python
 ss = sim.steady_state(method="newton")
 ss.root_stability             # "stable" — the returned root is an attractor
 ss.n_unstable_roots_rejected  # 1 — a saddle was discarded on the way there
+ss.eigenvalues                # array([-0.863+0.j, -1.137+0.j]) — the spectrum it was read off
 ```
 
 - `root_stability` is `"stable"`, `"undetermined"`, or `"unstable"` for a root a
@@ -358,6 +359,17 @@ ss.n_unstable_roots_rejected  # 1 — a saddle was discarded on the way there
   same state — so the verdict is reported rather than acted on.
 - `n_unstable_roots_rejected > 0` on a result whose `method_used` is
   `"integration"` explains why the polish did not answer.
+- `eigenvalues` is the spectrum the verdict was read off (issue #523): the
+  Jacobian **restricted to the species the polish solved for** — one entry per
+  unknown, so `n_species` less one per conservation law less the masked
+  species — sorted by descending real part, a conjugate pair adjacent with its
+  `+imag` member first. The full system's spectrum is this plus one zero per
+  conservation law; `np.linalg.eigvals(model.jacobian(ss.concentrations))`
+  shows them (see [Model evaluators](evaluators.md)). It is empty when no
+  spectrum was computed — every integration result, and a root the certificate
+  declined on before the eigensolver, which is the size limit above. A
+  continuation that tracks a branch reads this field at each step: a Hopf
+  bifurcation is the leading conjugate pair crossing the imaginary axis.
 
 Rejecting a saddle does not cost the tighter residual the polish buys: the burst
 leaves the saddle's neighborhood on its own, and a later rung polishes the

@@ -26,6 +26,7 @@ from typing import Any
 from bngsim._atol import AUTO, TRACKING, TrackingAtol, derive_atol, normalize_atol_vector
 from bngsim._codegen import prepare_codegen
 from bngsim._eval_spec import EvaluationSpec
+from bngsim._evaluators import JacobianMatrix
 from bngsim._exceptions import (
     BngsimError,
     ConversionError,
@@ -375,6 +376,7 @@ __all__ = [
     "NfsimSession",
     "RuleMonkeySession",
     "NamedArray",
+    "JacobianMatrix",
     # Exceptions
     "BngsimError",
     "ConversionError",

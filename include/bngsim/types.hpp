@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <complex>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -1219,6 +1220,18 @@ struct SteadyStateResult {
     // successively tighter bursts hand Newton the same seed. Explains a
     // method_used of "integration" from a method="newton" solve.
     int n_unstable_roots_rejected = 0;
+
+    // The spectrum root_stability was read off (issue #523): the eigenvalues of
+    // the Jacobian restricted to the species the polish solved for — one per
+    // unknown, so n_species minus one per conservation law minus the masked
+    // species, not n_species — sorted by descending real part with a conjugate
+    // pair adjacent and its +imaginary member first. The full-system spectrum
+    // is this plus one zero per conservation law. Filled whenever the
+    // certificate computed a spectrum, whatever it then concluded; empty when it
+    // did not run (an integration result) or declined before the eigensolver
+    // (more than 512 unknowns, every species pinned, a solver failure), which is
+    // every "undetermined" except the all-zero spectrum, reported as-is.
+    std::vector<std::complex<double>> eigenvalues;
 
     // Names of the write-only accumulator species (pure sinks, see
     // NetworkModel::pure_sink_species) that were INCLUDED in the convergence

@@ -44,6 +44,7 @@ user-guide/codegen
 user-guide/sensitivities
 user-guide/steady-state
 user-guide/conservation-laws
+user-guide/evaluators
 user-guide/interchange
 user-guide/pybnf
 ```

@@ -38,6 +38,16 @@ Methods:
 - **`add_table_function(name, *, file, times, values, index)`** — Add a piecewise-linear table function
 - `n_table_functions`, `table_function_names` — TFUN introspection
 
+Evaluators (issue #523; see [Model evaluators](../user-guide/evaluators.md)). Each takes a state `y` of length `n_species` in `species_names` order, reads the live parameters, and leaves the stored concentrations alone:
+- **`rhs(y, t=0.0)`** → `ndarray (n_species,)` — `dy/dt` at `(t, y)`: the interpreted RHS the CVODE callback evaluates, with its observable/function refresh run at `y`
+- **`jacobian(y, t=0.0, *, sparse=False)`** → `JacobianMatrix` or `scipy.sparse.csc_array` — `∂f/∂y`, `J[i, j] = ∂f_i/∂x_j`; closed form when it covers every reaction, else the steady-state solver's difference quotient, and `.source` says which (`"analytical"` / `"finite-difference"`). `sparse=True` uses the model's structural pattern
+- **`propensities(y, t=0.0)`** → `ndarray (n_reactions,)` — every reaction's SSA propensity in the SSA volume convention (falling factorial for a repeated reactant, times the compartment volume), after the SSA loop's own observable refresh at `y`
+- **`stoichiometry_matrix(*, sparse=False)`** → `ndarray (n_species, n_reactions)` or `csc_array` — net coefficients, 0-based; a `$`-fixed species has a zero row. The matrix `conservation_laws` was row-reduced from, so `L @ S == 0`
+
+## `bngsim.JacobianMatrix`
+
+The dense return of `Model.jacobian`: a float64 `ndarray` subclass with one extra attribute, **`source`** — `"analytical"` or `"finite-difference"`. Behaves as an ordinary array otherwise.
+
 ## `bngsim.Simulator`
 
 Constructor:
@@ -240,6 +250,8 @@ Properties:
 - **`sensitivities_expressions`** — `ndarray (n_expressions, n_params)` `d(function)/dp` total derivative (state chain + explicit `∂func/∂p`)
 - **`rhs_backend`**, **`sens_jacobian_source`**, **`sens_dfdp_source`**, **`sens_output_source`** — which numerical path each piece took. `sens_output_source` (issue #75) is `"codegen"` / `"mixed"` / `"finite-difference"` for the `d(function)/dp` block: the compiled `bngsim_codegen_output_sens` chain rule answered every function, some of them, or none
 - **`sens_jacobian_rcond`** — `min|U_jj|/max|U_jj|` from the LU of the (reduced) Jacobian that was inverted; near-zero means the steady state is a continuum and `dY_ss/dp` does not exist
+- **`root_stability`**, **`n_unstable_roots_rejected`** — the issue #78 linear-stability verdict on a Newton root (`"stable"` / `"undetermined"` / `"unstable"`, `""` for integration), and how many candidate roots the certificate discarded
+- **`eigenvalues`** — `ndarray (n_unknowns,) complex128`; the spectrum the verdict was read off (issue #523): the Jacobian restricted to the species the polish solved for, sorted by descending real part, a conjugate pair adjacent with `+imag` first. Empty when no spectrum was computed — an integration result, or a root the certificate declined on (more than 512 unknowns)
 
 Methods:
 - **`resolve_outputs(selectors)`** → `list[dict]` — same selector grammar as `Result.resolve_outputs`

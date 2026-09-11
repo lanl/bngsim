@@ -139,6 +139,18 @@ class NetworkModel:
         """
         Dense analytical-Jacobian scatter plan (Elementary + MM, rows resolved) for the codegen .so. GH #76 Task 4.
         """
+    def compute_derivs(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        dy/dt at (t, conc) as a float64 ndarray (n_species,): the interpreted RHS the CVODE callback evaluates, with the same observable/function refresh (rhs_evaluates_observables) against the live parameters. Leaves the stored concentrations untouched. Issue #523.
+        """
+    def compute_propensities(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        Every reaction's SSA propensity at (t, conc) as a float64 ndarray (n_reactions,): the SSA loop's observable/function refresh followed by compute_propensity per reaction. SSA volume convention (amount/time), not the ODE rate. Issue #523.
+        """
+    def compute_propensity(self, rxn_index: typing.SupportsInt | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> float:
+        """
+        One reaction's SSA propensity at conc (0-based rxn_index), reading the observable totals and function-bound parameters the model currently holds — the per-reaction body of the SSA propensity pass, without its refresh. Use compute_propensities for the refreshed vector. Issue #523.
+        """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
         Return a reason string if any event blocks forward sensitivity for the given sensitivity-parameter names, else None (GH #212, issue #49, issue #144). event_time_compensated lists the 0-based indices of events whose ∂t*/∂p the caller supplies via SolverOptions.set_event_time_sens, which lifts the parameter-dependent-trigger refusal for exactly those.
@@ -150,6 +162,18 @@ class NetworkModel:
     def events_with_runtime_event_time_sens(self) -> list[int]:
         """
         0-based indices of the events whose ∂t*/∂p the solver differentiates at each fire, by the implicit function theorem on the trigger's residual (issue #144). These are the state-dependent triggers — `v > 30` and friends — that reduce to a single relational comparison. The Python guard subtracts them from its own blocked set, so the core stays the one authority on which crossings are differentiable.
+        """
+    def fill_dense_analytical_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        The analytical Jacobian at (t, conc) as a float64 ndarray (n_species, n_species), J[i, j] = ∂f_i/∂x_j. Only the closed-form terms the model carries: check analytical_jacobian_complete first, or the matrix is partial. Issue #523.
+        """
+    def fill_dense_fd_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        The one-sided finite-difference Jacobian of compute_derivs at (t, conc) as a float64 ndarray (n_species, n_species), J[i, j] = ∂f_i/∂x_j, stepped by the steady-state solver's own rule. Issue #523.
+        """
+    def fill_sparse_analytical_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        The analytical Jacobian at (t, conc) as the float64 value array (nnz,) of the CSC pattern jacobian_sparsity describes. Same completeness caveat as fill_dense_analytical_jacobian. Issue #523.
         """
     def functional_jacobian_context(self) -> dict:
         """
@@ -227,6 +251,10 @@ class NetworkModel:
         """
         Resolve one rate-law condition atom as a state switch (issue #150), returning (residual_source, why_not). A non-empty residual means the solver can locate this crossing as a root and differentiate dt*/dθ there, so the saltation jump (f⁻−f⁺)·dt*/dθ WILL be applied and the condition needs no refusal; an empty one comes with the reason it is not one — a conjunction, a negation, a comparison one of whose sides is itself a comparison (its residual would be a difference of two booleans, a step with no gradient), or a comparison that reads no live model state. The residual identifies the CROSSING rather than its spelling, so `X<1`, `X<=1` and `X==1` all return the same string and callers dedupe on it. An equality is admitted here and refused by the event-trigger path, which needs a rising edge rather than a surface (issue #381). This is the one authority: the codegen gate and the run-time detector both ask it, so neither can classify a condition the other would not.
         """
+    def stoichiometry(self) -> dict:
+        """
+        The StoichEntry list as three parallel arrays — species_index and reaction_index (int64, 1-BASED, as the C++ struct holds them) and coefficient (float64, the NET coefficient: products positive, reactants negative, one entry per (species, reaction) pair). Issue #523.
+        """
     @property
     def analytical_jacobian_complete(self) -> bool:
         """
@@ -280,6 +308,11 @@ class NetworkModel:
     @ic_state_dirty.setter
     def ic_state_dirty(self, arg1: bool) -> None:
         ...
+    @property
+    def jacobian_sparsity(self) -> dict:
+        """
+        The structural Jacobian sparsity pattern in CSC form: n, nnz, density, col_ptrs (n+1, int64) and row_indices (nnz, int64), copied. Conservative for a model with Functional rate laws. Issue #523.
+        """
     @property
     def load_warnings(self) -> list[str]:
         ...
@@ -369,6 +402,11 @@ class NetworkModel:
     def species_ic_param_refs(self) -> list:
         """
         List of (species_idx0, param_idx0) pairs recording each species whose initial concentration is set by a parameter reference in the .net ``begin species`` block. Consumed by the forward-sensitivity IC-seed chain rule (issue #43).
+        """
+    @property
+    def species_is_fixed(self) -> list[bool]:
+        """
+        Per-species flag, in species order: True for a $-prefixed boundary species, whose derivative the RHS zeroes and which the SSA step never updates. Issue #523.
         """
     @property
     def species_names(self) -> list[str]:
@@ -1043,6 +1081,11 @@ class SteadyStateResultCore:
     @property
     def converged(self) -> bool:
         ...
+    @property
+    def eigenvalues(self) -> numpy.typing.NDArray[numpy.complex128]:
+        """
+        Eigenvalues of the Jacobian restricted to the species the Newton polish solved for, sorted by descending real part (issue #523). Empty when the certificate did not compute a spectrum: an integration result, or a root it declined on (more than 512 unknowns, a solver failure).
+        """
     @property
     def excluded_species(self) -> list[int]:
         ...

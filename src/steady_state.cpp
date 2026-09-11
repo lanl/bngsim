@@ -31,6 +31,7 @@
 #include "bngsim/codegen_abi.hpp"
 #include "bngsim/dense_eigenvalues.hpp"
 #include "bngsim/dynamic_library.hpp"
+#include "bngsim/fd_jacobian.hpp"
 #include "bngsim/mir_jit.hpp"
 #include "bngsim/model.hpp"
 #include "bngsim/types.hpp"
@@ -55,6 +56,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -1533,10 +1535,21 @@ static SteadyStateResult ss_newton_from(NetworkModel &model, SteadyStateRhs &rhs
 // that cannot decide must not overturn behavior.
 enum class RootStability { Undetermined, Stable, Unstable };
 
-static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs &rhs,
-                                            const SteadyStateOptions &opts,
-                                            const ResidualSubspace &sub,
-                                            const std::vector<double> &y);
+// The verdict and the spectrum it was read off (issue #523). `eigenvalues` is
+// filled whenever the eigensolver ran and answered — the reduced Jacobian's
+// spectrum, sorted by descending real part — and left empty when the certificate
+// declined before that point (too many unknowns, no unknowns, a solver failure).
+// An all-zero spectrum is reported as-is alongside `Undetermined`: the numbers
+// are real, it is the verdict they cannot support.
+struct RootCertificate {
+    RootStability verdict = RootStability::Undetermined;
+    std::vector<std::complex<double>> eigenvalues;
+};
+
+static RootCertificate certify_root_stability(NetworkModel &model, SteadyStateRhs &rhs,
+                                              const SteadyStateOptions &opts,
+                                              const ResidualSubspace &sub,
+                                              const std::vector<double> &y);
 
 // SteadyStateResult::root_stability spelling of a verdict.
 static const char *root_stability_name(RootStability s) {
@@ -1604,8 +1617,9 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
             r.converged = false;
         }
         if (accept(r)) {
-            r.root_stability = root_stability_name(
-                certify_root_stability(model, rhs, opts, sub, r.concentrations));
+            RootCertificate cert = certify_root_stability(model, rhs, opts, sub, r.concentrations);
+            r.root_stability = root_stability_name(cert.verdict);
+            r.eigenvalues = std::move(cert.eigenvalues);
             restore();
             return finish(std::move(r));
         }
@@ -1693,9 +1707,9 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
                 } else if (have_prev &&
                            ss_states_agree(nr.concentrations, prev_newton, AGREE_RTOL)) {
                     // Seed-stable. Is it a state the dynamics can rest on?
-                    const RootStability st =
+                    RootCertificate cert =
                         certify_root_stability(model, rhs, opts, sub, nr.concentrations);
-                    if (st == RootStability::Unstable) {
+                    if (cert.verdict == RootStability::Unstable) {
                         // A saddle the trajectory is merely passing near. Discard
                         // it and keep integrating: the burst leaves the saddle's
                         // neighborhood on its own, and a later rung polishes the
@@ -1706,7 +1720,8 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
                         prev_newton.clear();
                         have_prev = false;
                     } else {
-                        nr.root_stability = root_stability_name(st);
+                        nr.root_stability = root_stability_name(cert.verdict);
+                        nr.eigenvalues = std::move(cert.eigenvalues);
                         restore();
                         return finish(std::move(nr)); // seed-stable and dynamically stable
                     }
@@ -1735,9 +1750,9 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
 // Steady-state sensitivity: dY_ss/dp = -J^{-1} * df/dp
 // ---------------------------------------------------------------------------
 
-// √(machine eps): the standard one-sided difference-quotient fraction, where the
-// O(h) truncation error and the O(eps/h) cancellation error meet.
-static constexpr double kFdEps = 1.4901161193847656e-8;
+// kFdEps, the species probe step and the dense column sweep live in
+// bngsim/fd_jacobian.hpp (issue #523) so Model.jacobian()'s fallback runs the
+// same rule this file does. The parameter probes below are still this file's.
 
 // One-sided step for probing a PARAMETER of value p (issue #76).
 //
@@ -1815,61 +1830,6 @@ static inline bool param_fd_widen(double response, double g_i, double term_scale
     return std::abs(response) <= kFdNoiseFactor * roundoff_floor(g_i, term_scale_i);
 }
 
-// One-sided step for probing SPECIES j of a state whose largest concentration
-// is `y_scale`.
-//
-// Relative to the species, floored at the scale of the state it belongs to
-// rather than at 1.0 — unlike parameters, which have no common unit, every
-// species is a concentration in the same one, so the state HAS a typical
-// magnitude and a species at (or near) zero can be probed against it. The
-// absolute 1.0 was wrong in both directions: a nanomolar model was probed at
-// 1 molar, and a model in molecule counts (1e6) was probed at 1e-14 of itself,
-// which is cancellation noise rather than a derivative. Scored against the
-// analytical Jacobian over 1,066 corpus model-states, this rule beats both the
-// old one (511 better vs 54 worse, at 10x) and the floor-free relative step
-// (291 vs 13) — the floor is what a species far below the state's scale needs
-// to stay out of the cancellation noise.
-static inline double state_fd_step(double y, double y_scale) {
-    return kFdEps * std::max(std::abs(y), y_scale);
-}
-
-// The perturbed value to write (`*x_plus`) for a probe of `x` by `h`, and the
-// step the difference quotient must divide by — the REALIZED `(x + h) - x`,
-// which differs from the requested h by a rounding. For a subnormal x no
-// relative step survives the addition at all; dividing by that zero would fill
-// the column with infinities, so fall back to the absolute step the old rule
-// used (exact for a rate law linear in x, and nothing better exists at 1e-310).
-static inline double fd_probe(double x, double h, double *x_plus) {
-    double xp = x + h;
-    if (xp == x) {
-        xp = x + kFdEps;
-    }
-    *x_plus = xp;
-    return xp - x;
-}
-
-// The state's own magnitude, which `state_fd_step` floors its probe at.
-//
-// Over the species that HAVE a steady value only. A species the caller masked
-// out (issue #74) is a write-only accumulator holding whatever integration left
-// it at — a quantity that grows without bound, 7.5e8 on Barua 2013 while the
-// other 405 species are settled at 1e-10 — and letting it set the scale would
-// drag every other species' probe up with it. `excluded` is ascending, as both
-// callers' sources guarantee. An all-zero state offers no scale at all, so it
-// keeps the historical 1.0.
-static double state_probe_scale(const double *y, int ns, const std::vector<int> &excluded) {
-    double scale = 0.0;
-    size_t e = 0;
-    for (int i = 0; i < ns; ++i) {
-        if (e < excluded.size() && excluded[e] == i) {
-            ++e;
-            continue;
-        }
-        scale = std::max(scale, std::abs(y[i]));
-    }
-    return scale > 0.0 ? scale : 1.0;
-}
-
 // ---------------------------------------------------------------------------
 // The Jacobian at a state, and its restriction to the unknown subspace
 // ---------------------------------------------------------------------------
@@ -1889,18 +1849,11 @@ static const char *ss_fill_state_jacobian(SteadyStateRhs &rhs, const double *y, 
         rhs.fill_dense_jacobian(0.0, y, J);
         return rhs.jacobian_source();
     }
-    // J[:,j] = (f(y + h·e_j) − f(y)) / h.
-    std::vector<double> f0(ns), f1(ns), y_pert(ns);
-    const double y_scale = state_probe_scale(y, ns, sub.excluded);
-    rhs.eval(0.0, y, f0.data());
-    for (int j = 0; j < ns; ++j) {
-        std::memcpy(y_pert.data(), y, static_cast<size_t>(ns) * sizeof(double));
-        const double h = fd_probe(y[j], state_fd_step(y[j], y_scale), &y_pert[j]);
-        rhs.eval(0.0, y_pert.data(), f1.data());
-        for (int i = 0; i < ns; ++i) {
-            J[static_cast<size_t>(j) * ns + i] = (f1[i] - f0[i]) / h; // column-major
-        }
-    }
+    // J[:,j] = (f(y + h·e_j) − f(y)) / h — the sweep in bngsim/fd_jacobian.hpp,
+    // which NetworkModel::fill_dense_fd_jacobian runs on the interpreted RHS for
+    // the public Model.jacobian() fallback (issue #523).
+    fd_dense_state_jacobian([&](double t, const double *yy, double *f) { rhs.eval(t, yy, f); }, 0.0,
+                            y, ns, sub.excluded, J);
     return "finite-difference";
 }
 
@@ -1997,13 +1950,14 @@ static constexpr double kStabilityRelTol = 1e-6;
 // exactly as before #78 — the limit is visible on the result rather than silent.
 static constexpr int kStabilitySpectrumMaxN = 512;
 
-static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs &rhs,
-                                            const SteadyStateOptions &opts,
-                                            const ResidualSubspace &sub,
-                                            const std::vector<double> &y) {
+static RootCertificate certify_root_stability(NetworkModel &model, SteadyStateRhs &rhs,
+                                              const SteadyStateOptions &opts,
+                                              const ResidualSubspace &sub,
+                                              const std::vector<double> &y) {
+    RootCertificate cert;
     const int ns = model.n_species();
     if (ns <= 0 || static_cast<int>(y.size()) != ns)
-        return RootStability::Undetermined;
+        return cert;
 
     // The unknown subspace the polish solved on — the same set, for the same
     // reasons (see ss_unknown_species). It has to be this matrix and not the full
@@ -2019,11 +1973,11 @@ static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs 
     if (use_reduced) {
         idx = ss_unknown_species(model, cl, sub);
         if (idx.empty())
-            return RootStability::Undetermined; // every species pinned; no dynamics left
+            return cert; // every species pinned; no dynamics left
     }
     const int n = use_reduced ? static_cast<int>(idx.size()) : ns;
     if (n > kStabilitySpectrumMaxN)
-        return RootStability::Undetermined;
+        return cert;
 
     // The analytical fill takes its observables from `y`, but the FD fallback
     // runs the RHS, so put the model on the root first and hand it back after.
@@ -2045,7 +1999,21 @@ static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs 
 
     std::vector<double> wr(static_cast<size_t>(n)), wi(static_cast<size_t>(n));
     if (!dense_eigenvalues(M.data(), n, wr.data(), wi.data()))
-        return RootStability::Undetermined;
+        return cert;
+
+    // Surface the spectrum (issue #523) in a fixed order — descending real part,
+    // so eigenvalues[0] is the one the verdict turns on, and a conjugate pair
+    // sits adjacent with its +imaginary member first. The eigensolver's own
+    // order follows its deflation and is not one a caller can rely on.
+    cert.eigenvalues.reserve(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i)
+        cert.eigenvalues.emplace_back(wr[i], wi[i]);
+    std::stable_sort(cert.eigenvalues.begin(), cert.eigenvalues.end(),
+                     [](const std::complex<double> &a, const std::complex<double> &b) {
+                         if (a.real() != b.real())
+                             return a.real() > b.real();
+                         return a.imag() > b.imag();
+                     });
 
     double max_re = -std::numeric_limits<double>::infinity();
     double radius = 0.0;
@@ -2056,9 +2024,11 @@ static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs 
     if (!(radius > 0.0)) {
         // Every eigenvalue is zero: the linearization says nothing at all about
         // this root (a fully degenerate system, or one the mask emptied).
-        return RootStability::Undetermined;
+        return cert;
     }
-    return (max_re > kStabilityRelTol * radius) ? RootStability::Unstable : RootStability::Stable;
+    cert.verdict =
+        (max_re > kStabilityRelTol * radius) ? RootStability::Unstable : RootStability::Stable;
+    return cert;
 }
 
 // dY_ss/dp = -J⁻¹·(∂f/∂p) by the implicit function theorem.
