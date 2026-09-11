@@ -29,6 +29,16 @@ counts the paper's representative-models table needs (issue #42):
 with the ``excluded_parameters`` names + reasons that produced it, so the count is
 reviewable rather than a hidden judgment. See :func:`seed_and_parameter_census`.
 
+The trajectory half runs on the parity gate's own horizon and tolerances, read from
+``runs/report_ode.json`` (or the report ``--horizons`` names): without that report the
+run refuses to start, and a model the gate has no row for gets its density only, never
+a made-up horizon (issue #509). Every row records the ``run`` block it was integrated
+on. Trajectory states are ``Result.state``, the full integrator state (issue #508); a
+sample whose RHS or Jacobian is non-finite is skipped and counted rather than voiding
+the model (issue #510); and the Jacobian is ``Model.jacobian``'s — closed-form when it
+covers every reaction, the difference quotient of ``Model.rhs`` otherwise — with
+``jacobian_method`` saying which (issue #512).
+
 Environment: run with the bngsim editable checkout venv, e.g.
     BNGPATH=/path/to/BioNetGen-2.9.3 \
       ~/Code/bngsim/.venv/bin/python jacobian_characterization.py --limit 5
@@ -116,12 +126,27 @@ def load_ode_jobs() -> list[dict]:
     return [j for j in jobs if j.get("method") == "ode"]
 
 
-def load_horizons() -> dict[str, dict]:
-    """model_id -> {t_start,t_end,n_steps,rtol,atol,n_species,cost_sec} from report_ode.json."""
+DEFAULT_HORIZONS = "runs/report_ode.json"  # the parity gate's report, relative to HERE
+
+
+def load_horizons(path: Path | None = None) -> dict[str, dict]:
+    """model_id -> {t_start,t_end,n_steps,rtol,atol,n_species,cost_sec,outcome,...} from the
+    parity gate's report (``runs/report_ode.json``, or ``path``).
+
+    Raises ``FileNotFoundError`` when the report is absent. The harness characterizes the
+    models the gate passed on the runs it passed them on, and without the report it has
+    no horizon or tolerances to run them on; ``runs/`` is gitignored, so a fresh checkout
+    has none — run ``bng_ode_run.py`` first, or pass ``--horizons`` (issue #509). The
+    gate writes the tolerances it resolved (its shared default, or the model's ``tol``
+    override) into ``timing.spec``, so these are the gate's, not the BNGL's.
+    """
     out: dict[str, dict] = {}
-    rp = HERE / "runs" / "report_ode.json"
+    rp = Path(path) if path is not None else HERE / DEFAULT_HORIZONS
     if not rp.exists():
-        return out
+        raise FileNotFoundError(
+            f"parity gate report not found: {rp} — run bng_ode_run.py first, or pass "
+            "--horizons <report_ode.json> (issue #509)"
+        )
     for r in json.loads(rp.read_text()).get("results", []):
         t = r.get("timing") or {}
         spec = t.get("spec") or {}
@@ -136,8 +161,37 @@ def load_horizons() -> dict[str, dict]:
             "cost_sec": bs.get("integrate_warm_median_sec"),
             "outcome": r.get("outcome"),
             "linear_solver": (bs.get("config") or {}).get("linear_solver"),
+            "source": str(rp),
         }
     return out
+
+
+def gate_run_settings(horizon: dict | None) -> dict | None:
+    """The horizon and tolerances the gate ran this model on — the ``run`` block every row
+    records so a report can be checked against the parity report it describes.
+
+    ``None`` when the gate has no row for the model: the caller then skips the trajectory
+    instead of integrating on a default ``t_end`` nothing in the output would admit to
+    (issue #509). A report row from before the gate recorded its tolerances falls back to
+    the gate's shared defaults and says so in ``tolerance_source``.
+    """
+    if not horizon or horizon.get("t_end") is None:
+        return None
+    rtol, atol = horizon.get("rtol"), horizon.get("atol")
+    tol_src = "gate_report"
+    if rtol is None or atol is None:
+        rtol = bc.DEFAULT_RTOL if rtol is None else rtol
+        atol = bc.DEFAULT_ATOL if atol is None else atol
+        tol_src = "gate_default"
+    return {
+        "t_start": float(horizon.get("t_start") or 0.0),
+        "t_end": float(horizon["t_end"]),
+        "n_steps": int(horizon.get("n_steps") or bc.DEFAULT_N_STEPS),
+        "rtol": float(rtol),
+        "atol": float(atol),
+        "horizon_source": horizon.get("source") or "gate_report",
+        "tolerance_source": tol_src,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +282,141 @@ def _classify_eigs(eigs: np.ndarray) -> dict:
         "max_re": max_re,
         "min_re": (float(nz.min()) if nz.size else 0.0),
         "oscillatory": osc,
+    }
+
+
+# ``jacobian_method`` spellings per ``JacobianMatrix.source``.
+JACOBIAN_METHOD = {"analytical": "native_analytical", "finite-difference": "finite_difference"}
+
+
+def jacobian_evaluators(m):
+    """``(jac_at, rhs_at, fields)`` for a loaded model (issue #512).
+
+    ``jac_at(y, t)`` is ``Model.jacobian``: the closed form when it covers every reaction,
+    the difference quotient of ``Model.rhs`` otherwise — never the partial assembly the
+    private ``_dense_analytical_jacobian`` hook returns when ``analytical_jacobian_complete``
+    is False, which characterized a Lorenz attractor as a zero Jacobian. ``fields`` carries
+    the flag and, next to it, ``jacobian_method``: which source the rows were computed from.
+    """
+    complete = bool(m.prepare_analytical_jacobian())
+    source = m.jacobian(np.asarray(m.get_state(), float)).source
+
+    def jac_at(y, t=0.0):
+        return np.asarray(m.jacobian(y, t=t), float)
+
+    def rhs_at(y, t=0.0):
+        return np.asarray(m.rhs(y, t=t), float)
+
+    fields = {
+        "analytical_jacobian_complete": complete,
+        "jacobian_method": JACOBIAN_METHOD.get(source, source),
+    }
+    return jac_at, rhs_at, fields
+
+
+def density_pattern(jac_at, n: int, samples: int = DENSITY_SAMPLES, seed: int = RNG_SEED):
+    """Structural pattern: the union of |J| > 0 over ``samples`` random strictly-positive
+    states. Both the closed form and the difference quotient return EXACT zeros where a
+    derivative is structurally zero, so |J| > 0 is the pattern from either source."""
+    rng = np.random.default_rng(seed)
+    pat = np.zeros((n, n), bool)
+    for _ in range(samples):
+        pat |= np.abs(jac_at(rng.uniform(0.1, 2.0, n))) > 0
+    return pat
+
+
+class NoFiniteSample(RuntimeError):
+    """Every sampled trajectory state had a non-finite RHS or Jacobian (issue #510)."""
+
+
+def sweep_trajectory(jac_at, rhs_at, X, T, idxs, ind, L, atol: float) -> dict:
+    """The eigenvalue sweep over the sampled trajectory states, tolerant of a degenerate
+    sample (issue #510).
+
+    An output-grid state is an interpolant and can sit slightly negative where the
+    integrator's internal states were not; a rate law with a fractional power or a log
+    is undefined there, so the RHS or the Jacobian is non-finite while the trajectory
+    itself is fine. A negative entry smaller in magnitude than ``atol`` — zero to the
+    solver — is clamped to zero before the evaluation, and a sample whose RHS or Jacobian
+    is still non-finite is skipped and counted instead of raising out of the whole model
+    (one such sample used to void a model's stiffness). Raises :class:`NoFiniteSample`
+    when no sample survives.
+
+    Returns ``per_time`` (one :func:`_classify_eigs` record per surviving sample),
+    ``pattern`` (the union of |J| > 0 over them) and the ``n_used`` / ``n_skipped`` /
+    ``n_clamped`` counts.
+    """
+    pat = None
+    per_time: list[dict] = []
+    n_skipped = n_clamped = 0
+    for i in idxs:
+        y = np.array(X[i], float)
+        below = (y < 0) & (np.abs(y) < atol)
+        if below.any():
+            y[below] = 0.0
+            n_clamped += 1
+        t = float(T[i])
+        f = np.asarray(rhs_at(y, t), float)
+        J = np.asarray(jac_at(y, t), float) if np.isfinite(f).all() else None
+        if J is None or not np.isfinite(J).all():
+            n_skipped += 1
+            continue
+        nz = np.abs(J) > 0
+        pat = nz if pat is None else (pat | nz)
+        eigs = np.linalg.eigvals(J[np.ix_(ind, range(J.shape[0]))] @ L)
+        per_time.append({"t": t, **_classify_eigs(eigs)})
+    if not per_time:
+        raise NoFiniteSample(
+            f"all {len(idxs)} sampled trajectory states had a non-finite RHS or Jacobian"
+        )
+    return {
+        "per_time": per_time,
+        "pattern": pat,
+        "n_used": len(per_time),
+        "n_skipped": n_skipped,
+        "n_clamped": n_clamped,
+    }
+
+
+def trajectory_fields(
+    res,
+    cl: dict,
+    n: int,
+    jac_at,
+    rhs_at,
+    pat,
+    atol: float,
+    dense_time_samples: int = DENSE_TIME_SAMPLES,
+) -> dict:
+    """The stiffness sweep over one solve, as row fields (issues #508, #510).
+
+    States come from ``Result.state`` — the full integrator state, which on an SBML model
+    with an event-promoted parameter or compartment is wider than ``Result.species`` and
+    is the only vector the evaluators accept (a ``species`` row used to be read past its
+    end). ``pat``, the random-state density pattern, is extended in place with the
+    sampled states' nonzeros, and the density is re-read from it.
+    """
+    X = np.asarray(res.state, float)
+    T = np.asarray(res.time, float)
+    if X.shape[1] != n:
+        raise ValueError(f"Result.state has {X.shape[1]} columns; the model has {n} state entries")
+    ind, L = _link_matrix(cl, n)
+    idxs = _time_indices(T, n, dense_time_samples)
+    sw = sweep_trajectory(jac_at, rhs_at, X, T, idxs, ind, L, atol)
+    pat |= sw["pattern"]
+    finite = [p["ratio"] for p in sw["per_time"] if np.isfinite(p["ratio"])]
+    return {
+        "n_reported_species": len(res.species_names),
+        "nnz": int(pat.sum()),
+        "density": int(pat.sum()) / (n * n),
+        "stiffness_ratio_max": float(max(finite)) if finite else float("inf"),
+        # median over finite per-time ratios = the "sustained" stiffness (vs the peak).
+        "stiffness_ratio_median": float(np.median(finite)) if finite else float("inf"),
+        "n_time_points": sw["n_used"],
+        "n_time_points_skipped": sw["n_skipped"],
+        "n_time_points_clamped": sw["n_clamped"],
+        "oscillatory": bool(any(p["oscillatory"] for p in sw["per_time"])),
+        "per_time": sw["per_time"],
     }
 
 
@@ -328,7 +517,15 @@ def characterize_model(
     timeout: float = DEFAULT_TIMEOUT,
     dense_time_samples: int = DENSE_TIME_SAMPLES,
 ) -> dict:
-    """Full characterization of one ODE model. Never raises: errors -> status field."""
+    """Full characterization of one ODE model. Never raises: errors -> status field.
+
+    ``horizon`` is the model's entry from :func:`load_horizons`. The composition census
+    and the density need no trajectory and are always computed; the stiffness sweep
+    integrates on the gate's horizon and tolerances (the row's ``run`` block) and is
+    skipped — status ``ok_density_only`` — when the gate has no row for the model,
+    rather than run on a default horizon nothing in the report would admit to (issue
+    #509). A sweep that fails keeps the density under ``ok_no_stiffness``.
+    """
     from bngsim import Model, Simulator
 
     row: dict = {"model_id": model_id, "status": "ok"}
@@ -336,6 +533,9 @@ def characterize_model(
     if not bngl_path.exists():
         return {**row, "status": "no_bngl"}
     bngl_text = bngl_path.read_text(errors="replace")
+    run = gate_run_settings(horizon)
+    row["gate_outcome"] = (horizon or {}).get("outcome")
+    row["run"] = run
 
     # network generation — same prefix the parity runner uses (single-phase state).
     gen_network = bc._model_gen_network(bngl_text)
@@ -370,75 +570,13 @@ def characterize_model(
         # Composition counts must be read while the state is still the IC (before run()).
         row.update(seed_and_parameter_census(m, net_text))
 
-        # BNGsim's own codegen'd analytical Jacobian (exact; what the integrator uses).
-        # core._dense_analytical_jacobian(t, conc) -> flat column-major; reshape order="F".
-        m.prepare_analytical_jacobian()
-        row["analytical_jacobian_complete"] = bool(
-            getattr(core, "analytical_jacobian_complete", False)
-        )
-        row["jacobian_method"] = "native_analytical"
-
-        def Jat(y, t=0.0):
-            flat = core._dense_analytical_jacobian(float(t), [float(v) for v in y])
-            return np.asarray(flat, float).reshape(n, n, order="F")
-
-        # structural density: union of nonzeros over random positive states. The native
-        # Jacobian returns EXACT zeros where structurally zero, so |J|>0 is the pattern.
-        rng = np.random.default_rng(RNG_SEED)
-        pat = np.zeros((n, n), bool)
-        for _ in range(DENSITY_SAMPLES):
-            pat |= np.abs(Jat(rng.uniform(0.1, 2.0, n))) > 0
+        # The Jacobian the model actually carries (issue #512) and the structural density
+        # from it: exact zeros where structurally zero, so |J|>0 is the pattern.
+        jac_at, rhs_at, jac_fields = jacobian_evaluators(m)
+        row.update(jac_fields)
+        pat = density_pattern(jac_at, n)
         row["nnz"] = int(pat.sum())
         row["density"] = row["nnz"] / (n * n)
-
-        if n > EIG_MAX_N:
-            return {
-                **row,
-                "status": "ok_density_only",
-                "detail": f"N={n} > EIG_MAX_N={EIG_MAX_N}; stiffness skipped",
-            }
-
-        # trajectory (match the parity horizon where available)
-        t_start = horizon.get("t_start", 0.0) or 0.0
-        t_end = horizon.get("t_end") or 100.0
-        n_steps = horizon.get("n_steps") or 100
-        run_kw = {}
-        if horizon.get("rtol"):
-            run_kw["rtol"] = horizon["rtol"]
-        if horizon.get("atol"):
-            run_kw["atol"] = horizon["atol"]
-        res = Simulator(m, method="ode").run(
-            t_span=(float(t_start), float(t_end)), n_points=int(n_steps) + 1, **run_kw
-        )
-        X = np.asarray(res.species, float)
-        T = np.asarray(res.time, float)
-
-        ind, L = _link_matrix(cl, n)
-        idxs = _time_indices(T, n, dense_time_samples)
-        per_time = []
-        any_osc = False
-        for i in idxs:
-            J = Jat(X[i], T[i])
-            pat |= np.abs(J) > 0  # amortize structural pattern
-            Jred = J[np.ix_(ind, range(n))] @ L
-            eigs = np.linalg.eigvals(Jred)
-            c = _classify_eigs(eigs)
-            any_osc = any_osc or c["oscillatory"]
-            per_time.append({"t": float(T[i]), **c})
-        row["nnz"] = int(pat.sum())
-        row["density"] = row["nnz"] / (n * n)
-
-        finite = [p["ratio"] for p in per_time if np.isfinite(p["ratio"])]
-        row["stiffness_ratio_max"] = float(max(finite)) if finite else float("inf")
-        # median over finite per-time ratios = the "sustained" stiffness (vs the peak).
-        row["stiffness_ratio_median"] = float(np.median(finite)) if finite else float("inf")
-        row["n_time_points"] = len(idxs)
-        row["oscillatory"] = bool(any_osc)
-        row["per_time"] = per_time
-        row["category"] = (
-            "oscillatory" if any_osc else "pending"
-        )  # stiff/nonstiff set in --analyze
-        return row
     except Exception as exc:
         return {
             **row,
@@ -450,6 +588,41 @@ def characterize_model(
         import shutil
 
         shutil.rmtree(workdir, ignore_errors=True)
+
+    if n > EIG_MAX_N:
+        return {
+            **row,
+            "status": "ok_density_only",
+            "detail": f"N={n} > EIG_MAX_N={EIG_MAX_N}; stiffness skipped",
+        }
+    if run is None:
+        return {
+            **row,
+            "status": "ok_density_only",
+            "detail": "no horizon for this model in the gate report; trajectory skipped (issue #509)",
+        }
+
+    # Trajectory + stiffness on the gate's run, in its own try: a sweep that fails must
+    # not lose the census and density already in the row.
+    try:
+        res = Simulator(m, method="ode").run(
+            t_span=(run["t_start"], run["t_end"]),
+            n_points=run["n_steps"] + 1,
+            rtol=run["rtol"],
+            atol=run["atol"],
+        )
+        row.update(
+            trajectory_fields(res, cl, n, jac_at, rhs_at, pat, run["atol"], dense_time_samples)
+        )
+        row["category"] = (
+            "oscillatory" if row["oscillatory"] else "pending"
+        )  # stiff/nonstiff set in --analyze
+        return row
+    except Exception as exc:
+        row["status"] = "ok_no_stiffness"
+        row["detail"] = f"{type(exc).__name__}: {exc}"[:300]
+        row["trace"] = traceback.format_exc()[-1200:]
+        return row
 
 
 # ---------------------------------------------------------------------------
@@ -473,15 +646,34 @@ def _loglog_fit(N, cost):
     return {"slope": float(slope), "intercept": float(intercept), "r2": r2, "n": int(x.size)}
 
 
-def analyze(char_path: Path, dense_threshold: float | None, stiff_threshold: float | None) -> dict:
-    """Reclassify, partition by solver-relevant regime (sparse/dense stiff), regress cost~N."""
+def analyze(
+    char_path: Path,
+    dense_threshold: float | None,
+    stiff_threshold: float | None,
+    horizons_path: Path | None = None,
+) -> dict:
+    """Reclassify, partition by solver-relevant regime (sparse/dense stiff), regress cost~N.
+
+    A row characterized from a partial analytical Jacobian — ``jacobian_method``
+    ``native_analytical`` with ``analytical_jacobian_complete`` False, which only a report
+    from before issue #512 can carry — is filed as ``incomplete_jacobian`` and kept out of
+    every census: its density and spectrum describe a matrix with terms missing, and a
+    Lorenz attractor came out "degenerate" that way. A row without a stiffness sweep
+    (``ok_density_only``) is ``no_stiffness``, not degenerate: degenerate means a zero
+    density, or a zero spectrum the sweep actually measured.
+    """
     char = json.loads(Path(char_path).read_text())["results"]
-    horizons = load_horizons()
+    try:
+        horizons = load_horizons(horizons_path)
+    except FileNotFoundError as exc:
+        print(f"[jac] {exc}; the cost~N regression will have no costs", file=sys.stderr)
+        horizons = {}
 
     def maxre(r):
         return max([p.get("max_re", 0) for p in (r.get("per_time") or [])], default=0.0)
 
     pts = []
+    incomplete: list[str] = []
     for r in char:
         if not str(r.get("status", "")).startswith("ok"):
             continue
@@ -489,8 +681,15 @@ def analyze(char_path: Path, dense_threshold: float | None, stiff_threshold: flo
         dens = r.get("density")
         if N is None or dens is None:
             continue
+        if (
+            r.get("jacobian_method") == "native_analytical"
+            and r.get("analytical_jacobian_complete") is False
+        ):
+            incomplete.append(r["model_id"])
+            continue
         h = horizons.get(r["model_id"], {})
-        degenerate = (dens == 0) or (maxre(r) == 0)  # zero-Jacobian / trivial
+        swept = bool(r.get("per_time"))
+        degenerate = (dens == 0) or (swept and maxre(r) == 0)  # zero-Jacobian / trivial
         pts.append(
             {
                 "model_id": r["model_id"],
@@ -499,6 +698,8 @@ def analyze(char_path: Path, dense_threshold: float | None, stiff_threshold: flo
                 "stiffness": r.get("stiffness_ratio_max"),
                 "degenerate": degenerate,
                 "oscillatory": bool(r.get("oscillatory")) and not degenerate,
+                "swept": swept,
+                "jacobian_method": r.get("jacobian_method"),
                 "cost_sec": h.get("cost_sec"),
                 "linear_solver": h.get("linear_solver"),
             }
@@ -506,6 +707,10 @@ def analyze(char_path: Path, dense_threshold: float | None, stiff_threshold: flo
 
     deg = [p for p in pts if p["degenerate"]]
     osc = [p for p in pts if p["oscillatory"]]
+    no_sweep = [p for p in pts if not p["swept"] and not p["degenerate"]]
+    methods: dict[str, int] = {}
+    for p in pts:
+        methods[str(p["jacobian_method"])] = methods.get(str(p["jacobian_method"]), 0) + 1
     live = [
         p
         for p in pts
@@ -571,9 +776,12 @@ def analyze(char_path: Path, dense_threshold: float | None, stiff_threshold: flo
 
     print("\n===== Jacobian regime analysis (reframed: solver x N) =====")
     print(
-        f"ok {len(pts)} -> degenerate {len(deg)}, genuine oscillatory {len(osc)}, live {len(live)}"
+        f"ok {len(pts)} -> degenerate {len(deg)}, genuine oscillatory {len(osc)}, "
+        f"no stiffness sweep {len(no_sweep)}, live {len(live)} "
+        f"| jacobian_method {methods} | incomplete analytical Jacobian (excluded) {len(incomplete)}"
     )
-    print(f"corr(log10 N, density) = {corr:+.2f}  (negative => big networks are sparse)")
+    corr_txt = "n/a" if corr is None else f"{corr:+.2f}"
+    print(f"corr(log10 N, density) = {corr_txt}  (negative => big networks are sparse)")
     print(
         f"density median {np.median(dvals):.3f} | thresholds: dense>= {dth:.3f}, stiff>= {sth:g}"
     )
@@ -597,8 +805,11 @@ def analyze(char_path: Path, dense_threshold: float | None, stiff_threshold: flo
             "ok": len(pts),
             "degenerate": len(deg),
             "oscillatory": len(osc),
+            "no_stiffness": len(no_sweep),
             "live": len(live),
+            "incomplete_jacobian": len(incomplete),
         },
+        "jacobian_method": methods,
         "corr_logN_density": corr,
         "thresholds": {"dense>=": dth, "stiff>=": sth},
         "density_pctiles": {q: pct(dvals, q) for q in (10, 25, 50, 75, 90)},
@@ -614,6 +825,8 @@ def analyze(char_path: Path, dense_threshold: float | None, stiff_threshold: flo
         },
         "degenerate": [p["model_id"] for p in deg],
         "oscillatory": [p["model_id"] for p in osc],
+        "no_stiffness": [p["model_id"] for p in no_sweep],
+        "incomplete_jacobian": incomplete,
     }
 
 
@@ -652,19 +865,31 @@ def main() -> int:
     )
     ap.add_argument("--dense-threshold", type=float, default=None)
     ap.add_argument("--stiff-threshold", type=float, default=None)
+    ap.add_argument(
+        "--horizons",
+        type=Path,
+        default=None,
+        help="the parity gate's report (bng_ode_run.py's runs/report_ode.json) each model's "
+        f"horizon and tolerances are taken from (default: {DEFAULT_HORIZONS}); the run "
+        "refuses to start without one (issue #509)",
+    )
     args = ap.parse_args()
 
     if args.analyze:
         path = args.out if args.analyze is True else Path(args.analyze)
-        res = analyze(path, args.dense_threshold, args.stiff_threshold)
+        res = analyze(path, args.dense_threshold, args.stiff_threshold, args.horizons)
         ap_out = path.with_name(path.stem + "_analysis.json")
         ap_out.write_text(json.dumps(res, indent=1))
         print(f"[jac] wrote {ap_out}")
         return 0
 
+    try:
+        horizons = load_horizons(args.horizons)
+    except FileNotFoundError as exc:
+        print(f"[jac] refusing to run: {exc}", file=sys.stderr)
+        return 2
     bng2_pl = bc.resolve_bng2_pl(os.environ.get("BNGPATH") or os.environ.get("BNG2_PL"))
     jobs = load_ode_jobs()
-    horizons = load_horizons()
     ids = [j["model_id"] for j in jobs]
     if args.model:
         ids = [i for i in ids if args.model in i]
@@ -693,7 +918,8 @@ def main() -> int:
                 f"N={r['N']} dens={r.get('density', float('nan')):.3f} "
                 f"stiff[max/med]={r.get('stiffness_ratio_max', float('nan')):.3g}/"
                 f"{r.get('stiffness_ratio_median', float('nan')):.3g} "
-                f"npts={r.get('n_time_points', '-')} "
+                f"npts={r.get('n_time_points', '-')}"
+                f"{'/skip' + str(r['n_time_points_skipped']) if r.get('n_time_points_skipped') else ''} "
                 f"ic0={r.get('n_seed_nonzero', '-')} par={r.get('n_independent_parameters', '-')} "
                 f"{'OSC ' if r.get('oscillatory') else ''}"
             )
@@ -704,6 +930,8 @@ def main() -> int:
             "generator": "jacobian_characterization.py",
             "bngsim_version": __import__("bngsim").__version__,
             "n_models": len(rows),
+            "horizons": str(args.horizons or (HERE / DEFAULT_HORIZONS)),
+            "n_models_with_horizon": sum(1 for i in ids if gate_run_settings(horizons.get(i))),
             "params": {
                 "DENSITY_SAMPLES": DENSITY_SAMPLES,
                 "NONZERO_REL_TOL": NONZERO_REL_TOL,

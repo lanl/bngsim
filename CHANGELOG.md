@@ -16,6 +16,19 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **`Result.state` / `Result.state_names`: the full integrator state
+  trajectory (issue #508).** `Result.species` is the *reported* block. An SBML
+  event that assigns a parameter or a compartment promotes its target to a
+  state entry the species projection hides (GH #71), and a species column in
+  an event-resized or rate-ruled compartment, or one an assignment rule
+  targets, is remapped to its reported value after the solve (GH #85, #131) —
+  so a row of `species` is not a state `Model.rhs` / `Model.jacobian` accept:
+  too short, or not the point the integrator was at. `state` is every entry
+  as the integrator held it, `(n_times, n_state)` in `Model.species_names`
+  order, and `state_names` names its columns; on a `.net` model, and on an
+  SBML model with nothing promoted or remapped, it is the same array as
+  `species`. Solve results only: a `Result` loaded from disk or stacked from
+  a batch raises `ValueError` for it.
 - **The model's RHS, Jacobian, stoichiometry matrix and propensity vector are
   public NumPy evaluators, and a steady-state result carries the spectrum its
   stability verdict was read off (issue #523).** `Model.rhs(y, t)`,
@@ -74,6 +87,50 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The `_eval_rhs` / `_dense_analytical_jacobian` test hooks refuse a state
+  of the wrong length (issue #508).** They copied whatever list they were
+  given and read `n_species` entries from it, so a shorter vector — a
+  `Result.species` row on a model with event-promoted state — was read past
+  its end: undefined behaviour that returned NaN on one call and a number on
+  the next. Both now raise `ValueError` naming the two lengths, as the public
+  evaluators of #527 already did.
+- **`parity_checks`: the two Jacobian characterization harnesses run on the
+  parity gate's own settings, from the full integrator state, tolerant of a
+  degenerate sample, and from the Jacobian the model actually carries (issues
+  #508, #509, #510, #512).** Four defects in
+  `bng_parity/jacobian_characterization.py` and
+  `rr_parity/jacobian_characterization_sbml.py`, all found re-measuring the
+  paper's Figure 2. *States* (#508): the SBML harness fed `Result.species`
+  rows to a Jacobian hook sized by the full core state, reading past the
+  buffer on the 219 corpus models with an event-promoted parameter or
+  compartment; both harnesses now sample `Result.state`. *Settings* (#509):
+  the BNGL harness silently integrated every model on `t_end = 100` when the
+  gate's `runs/report_ode.json` was absent — the state of every fresh
+  checkout — and the SBML harness ran at the SED-ML tolerances the gate
+  overrides. The BNGL run now refuses to start without the gate report (or an
+  explicit `--horizons`), a model the gate has no row for gets its density
+  only, and the SBML harness applies the gate's rule — the shared
+  `DEFAULT_RTOL` / `DEFAULT_ATOL` unless the job carries a per-model `tol`
+  override, integrating from the SED-ML `initial_time` as the gate does. Every
+  row records the `run` block it was integrated on (horizon, tolerances, their
+  sources) and the gate's outcome for the model. *Samples* (#510): one
+  output-grid state with a non-finite RHS or Jacobian — an interpolant
+  slightly negative where a rate law takes a root or a log — raised
+  `LinAlgError` out of the eigenvalue sweep and voided the model's stiffness
+  (seven models that pass parity). A negative entry smaller than `atol` is
+  clamped to zero before the evaluation, a sample still non-finite is skipped
+  and counted (`n_time_points_skipped`, `n_time_points_clamped`), and only a
+  sweep with no surviving sample fails the row. *Source* (#512): both
+  harnesses wrote `analytical_jacobian_complete` and then characterized from
+  the private hook's partial assembly regardless, under `jacobian_method:
+  "native_analytical"` — a Lorenz attractor came out at density 0 and was
+  filed as degenerate. They now evaluate through `Model.jacobian` (the
+  closed form when complete, the difference quotient of `Model.rhs`
+  otherwise) and record which as `jacobian_method`
+  (`native_analytical` / `finite_difference`); `--analyze` files a row from
+  an older report that carries the partial assembly as
+  `incomplete_jacobian`, excluded from every census, and no longer calls a
+  row without a stiffness sweep degenerate.
 - **`sbml_to_bngl` keeps a parameter-valued species initial condition
   symbolic** (#521). The `.bngl` writer had the defect #517 fixed in
   `write_net`: every species' initial value was written as a number, so a

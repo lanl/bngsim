@@ -671,6 +671,19 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                    }
                                    return out;
                                })
+        // The FULL integrator state (issue #508): every core state entry, the
+        // event-promoted parameters and compartments the species projection
+        // above hides included, exactly as the integrator held it and in
+        // NetworkModel::species_names order — the rows Model.rhs / jacobian
+        // take. Byte-identical to species_data / species_names when the
+        // projection is empty.
+        .def_property_readonly("state_data",
+                               [](const bngsim::Result &r) {
+                                   return vec_to_ndarray_2d(r.species_data(), r.n_times(),
+                                                            r.n_species());
+                               })
+        .def_property_readonly("state_names",
+                               [](const bngsim::Result &r) { return r.species_names(); })
         .def_property_readonly("observable_names",
                                [](const bngsim::Result &r) {
                                    const auto &raw = r.observable_names();
@@ -1367,10 +1380,18 @@ PYBIND11_MODULE(_bngsim_core, m) {
 
         // Test hooks (GH #76): RHS and the assembled dense analytical Jacobian
         // at an arbitrary (t, conc), for the entrywise finite-difference check.
+        // Both hooks refuse a state of the wrong length (issue #508): the C++
+        // evaluators read exactly n_species() entries, so a shorter vector —
+        // a Result.species row on a model with event-promoted state — used to
+        // be read past its end, and the answer depended on what lay there.
         .def(
             "_eval_rhs",
             [](bngsim::NetworkModel &self, double t, const std::vector<double> &conc) {
                 int ns = self.n_species();
+                if (static_cast<int>(conc.size()) != ns)
+                    throw py::value_error("_eval_rhs: expected " + std::to_string(ns) +
+                                          " species values, got " +
+                                          std::to_string(conc.size()));
                 std::vector<double> y = conc, dydt(ns, 0.0);
                 self.compute_derivs(t, y.data(), dydt.data());
                 return dydt;
@@ -1380,6 +1401,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "_dense_analytical_jacobian",
             [](bngsim::NetworkModel &self, double t, const std::vector<double> &conc) {
                 int ns = self.n_species();
+                if (static_cast<int>(conc.size()) != ns)
+                    throw py::value_error("_dense_analytical_jacobian: expected " +
+                                          std::to_string(ns) + " species values, got " +
+                                          std::to_string(conc.size()));
                 std::vector<double> y = conc,
                                     jac(static_cast<size_t>(ns) * static_cast<size_t>(ns), 0.0);
                 self.fill_dense_analytical_jacobian(t, y.data(), jac.data());

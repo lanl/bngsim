@@ -87,6 +87,30 @@ parameters are refreshed at `y` first, as the SSA loop refreshes them before
 its propensity pass. Values are read from `y` as given — pass molecule counts
 for a count-valued answer.
 
+## Evaluating along a trajectory
+
+The state a solve integrates is not always the state it reports.
+`Result.species` omits the entries an SBML event promotes to state (a
+parameter or a compartment the event assigns, GH #71), and a species column
+in an event-resized or rate-ruled compartment, or one an assignment rule
+targets, is remapped to its reported value after the solve (GH #85, #131). A
+row of `Result.species` on such a model is therefore not a state `rhs` or
+`jacobian` accepts: it is too short, or it is not the point the integrator
+was at. `Result.state` is the trajectory the integrator actually held —
+every entry, unprojected and unremapped, in `species_names` order — and
+`Result.state_names` names its columns.
+
+```python
+res = bngsim.Simulator(m, method="ode").run(t_span=(0.0, 10.0), n_points=101)
+X, T = res.state, res.time            # X.shape == (101, m.n_species)
+J = [m.jacobian(X[i], t=T[i]) for i in range(len(T))]
+```
+
+On a `.net` model, and on an SBML model without promoted or remapped
+entries, `state` and `species` are the same array. Only a result returned by
+a solve carries `state`; a result loaded from disk or stacked from a batch
+holds the reported block alone and raises `ValueError` for it.
+
 ## Classifying a root found elsewhere
 
 ```python

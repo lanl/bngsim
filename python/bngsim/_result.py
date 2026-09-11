@@ -586,6 +586,49 @@ class Result:
         return self._species
 
     @property
+    def state(self) -> NDArray[np.float64]:
+        """The full integrator state trajectory, shape ``(n_times, n_state)``.
+
+        Every core state entry, exactly as the integrator held it and in
+        :attr:`bngsim.Model.species_names` order, so a row is a state
+        :meth:`bngsim.Model.rhs` and :meth:`bngsim.Model.jacobian` accept as
+        is (issue #508). It differs from :attr:`species` on two kinds of
+        model. An SBML model whose event assigns a parameter or a compartment
+        promotes the target to a state entry that :attr:`species` and
+        :attr:`species_names` omit (GH #71), so this has more columns. A
+        model whose reported species column is remapped after the solve — an
+        assignment-rule target reported at the rule's live value, or a
+        species in an event-resized or rate-ruled compartment reported at
+        ``amount / V_live(t)`` (GH #85, #131) — reports the remapped value in
+        :attr:`species` and the stored one here. Elsewhere the two are
+        identical.
+
+        Only a result returned by a solve carries it: a result loaded from
+        disk or stacked from a batch holds the reported species block alone.
+
+        Raises
+        ------
+        ValueError
+            If this result was not produced directly by a solve.
+        """
+        return self._state_core("state").state_data
+
+    @property
+    def state_names(self) -> list[str]:
+        """Names of the :attr:`state` columns: the producing model's
+        :attr:`bngsim.Model.species_names`, promoted entries included."""
+        return list(self._state_core("state_names").state_names)
+
+    def _state_core(self, what: str) -> ResultCore:
+        if self._core is None:
+            raise ValueError(
+                f"Result.{what} is only available on a Result returned by a solve; a "
+                "loaded or stacked Result carries only the reported species block "
+                "(issue #508)."
+            )
+        return self._core
+
+    @property
     def observables(self) -> _ObservableAccessor:
         """Observable values with named access.
 
