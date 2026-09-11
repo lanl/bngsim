@@ -661,3 +661,182 @@ def test_literal_rate_law_still_agrees_after_bng2_round_trip(tmp_path):
     assert _max_sensitivity(from_bngl) == pytest.approx(
         _max_sensitivity(bngsim.Model.from_sbml(src))
     )
+
+
+# ─── #521: a parameter-valued species initial condition keeps its reference ──
+# The .bngl side of #514 / #517. ``{size}`` / ``{hosu}`` shape the compartment
+# and the species' unit convention; ``{ia}`` is an optional initialAssignment
+# block for ``S``. The kinetic law carries its own compartment factor, so no
+# ``_rateLaw_*`` is synthesized and the parameters block stays out of the
+# picture (#513).
+
+_IC_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
+  <model id="ic_decay">
+    <listOfCompartments>
+      <compartment id="c" size="{size}" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" initialConcentration="10"
+               hasOnlySubstanceUnits="{hosu}" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="S0" value="10" constant="true"/>
+      <parameter id="k" value="0.3" constant="true"/>
+    </listOfParameters>
+    {ia}
+    <listOfReactions>
+      <reaction id="v1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>k</ci><ci>S</ci><ci>c</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+
+_IA_S0 = """<listOfInitialAssignments>
+      <initialAssignment symbol="S">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>S0</ci></math>
+      </initialAssignment>
+    </listOfInitialAssignments>"""
+
+_IA_2S0 = """<listOfInitialAssignments>
+      <initialAssignment symbol="S">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><cn>2</cn><ci>S0</ci></apply>
+        </math>
+      </initialAssignment>
+    </listOfInitialAssignments>"""
+
+
+def _write_ic_model(
+    tmp_path: Path, *, ia: str = "", size: str = "1", hosu: str = "false", strict: bool = True
+) -> tuple[Path, Path]:
+    src = tmp_path / "ic.xml"
+    src.write_text(_IC_SBML.format(size=size, hosu=hosu, ia=ia), encoding="utf-8")
+    out = tmp_path / "ic.bngl"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sbml_to_bngl(src, out, validate=None, strict=strict)
+    return src, out
+
+
+def _species_values(text: str) -> list[str]:
+    """The value text of every line of the species block, in species order."""
+    return [" ".join(ln.split()[1:]) for ln in _block(text, "species")]
+
+
+def _ic_refs(model: bngsim.Model) -> list[tuple[str, str]]:
+    """``(species, parameter)`` name pairs the core records as IC references."""
+    d = model._core.codegen_data()
+    sp = [s["name"] for s in d["species"]]
+    pn = [p["name"] for p in d["parameters"]]
+    return [(sp[i], pn[j]) for i, j in model._core.species_ic_param_refs]
+
+
+def _reaches(model: bngsim.Model, name: str, target: str) -> bool:
+    """True when parameter ``name`` is ``target`` or an expression over it."""
+    p = next(p for p in model._core.codegen_data()["parameters"] if p["name"] == name)
+    return name == target or (not p["is_const"] and target in p["expression"])
+
+
+def _max_sens(model: bngsim.Model, param: str) -> float:
+    sim = bngsim.Simulator(
+        model, method="ode", sensitivity_params=[param], sensitivity_method="staggered"
+    )
+    result = sim.run(t_span=(0.0, 5.0), n_points=20, rtol=1e-10, atol=1e-12)
+    return float(np.max(np.abs(np.asarray(result.sensitivities))))
+
+
+def test_parameter_valued_initial_condition_names_its_parameter(tmp_path: Path) -> None:
+    """``S ← S0`` is written as ``@comp1:S() S0`` (#521). As a literal the reload
+    had no reference and a sensitivity with respect to ``S0`` came back zero."""
+    src, out = _write_ic_model(tmp_path, ia=_IA_S0)
+    assert _species_values(out.read_text()) == ["S0"]
+    assert _ic_refs(bngsim.Model.from_sbml(src)) == [("S", "S0")]
+
+
+def test_compound_initial_condition_names_its_derived_parameter(tmp_path: Path) -> None:
+    """``S ← 2*S0`` is lowered to a derived ``_ic_S``; the species line names it,
+    and since #513 the parameters block carries ``_ic_S`` as its expression, so
+    the chain from the species to ``S0`` is all in the file."""
+    src, out = _write_ic_model(tmp_path, ia=_IA_2S0)
+    text = out.read_text()
+    assert _species_values(text) == ["_ic_S"]
+    ic = _parameter_values(text)["_ic_S"]
+    assert not _is_literal(ic)
+    assert "S0" in ic
+    assert _ic_refs(bngsim.Model.from_sbml(src)) == [("S", "_ic_S")]
+
+
+def test_numeric_initial_condition_stays_literal(tmp_path: Path) -> None:
+    """No initialAssignment: the species line is the number it always was."""
+    src, out = _write_ic_model(tmp_path)
+    assert _species_values(out.read_text()) == ["10.0"]
+    assert _ic_refs(bngsim.Model.from_sbml(src)) == []
+
+
+def test_amount_valued_initial_condition_in_nonunit_volume_divides_the_parameter(
+    tmp_path: Path,
+) -> None:
+    """An amount-valued species in a compartment of size 2 stores ``S0 / 2``. The
+    flat ``.net`` has no volume to divide by and keeps a literal there (#517);
+    cBNGL can say the division, so the species line is ``S0 / 2.0``."""
+    src, out = _write_ic_model(tmp_path, ia=_IA_S0, size="2", hosu="true", strict=False)
+    from_sbml = bngsim.Model.from_sbml(src)
+    assert list(from_sbml._core.species_ic_param_ref_divisors) == [2.0]
+    assert list(from_sbml.get_state()) == [5.0]
+    assert _species_values(out.read_text()) == ["S0 / 2.0"]
+
+
+@pytest.mark.skipif(_BNG2 is None or not _HAS_PERL, reason="BNG2.pl / perl not available")
+@pytest.mark.parametrize(
+    ("ia", "size", "hosu", "strict", "expected"),
+    [
+        # dS/dS0 for S(t) = S0 exp(-kt) is exp(-kt), which is 1 at t = 0.
+        pytest.param(_IA_S0, "1", "false", True, 1.0, id="plain"),
+        # S ← 2 S0 through _ic_S: the chain rule doubles it.
+        pytest.param(_IA_2S0, "1", "false", True, 2.0, id="compound"),
+        # An amount S0 in a volume of 2 is a concentration S0 / 2: half.
+        pytest.param(_IA_S0, "2", "true", False, 0.5, id="divided"),
+    ],
+)
+def test_initial_condition_reference_survives_bng2_round_trip(
+    tmp_path: Path, ia: str, size: str, hosu: str, strict: bool, expected: float
+) -> None:
+    """``.bngl`` → BNG2.pl → ``from_net`` records the reference (a bare parameter
+    name is kept as is; an expression is lifted into a derived ``_InitialConc*``
+    parameter over it), the state is the source's, and the sensitivity with
+    respect to ``S0`` matches both the closed form and ``from_sbml`` — the #514
+    check on the ``.bngl`` channel (#521)."""
+    src, out = _write_ic_model(tmp_path, ia=ia, size=size, hosu=hosu, strict=strict)
+    from_sbml = bngsim.Model.from_sbml(src)
+    from_bngl = bngsim.Model.from_bngl(out, bng2_pl=_BNG2)
+    assert list(from_bngl.get_state()) == list(from_sbml.get_state())
+
+    refs = _ic_refs(from_bngl)
+    assert len(refs) == 1
+    assert _reaches(from_bngl, refs[0][1], "S0")
+
+    # A model may only be sensitivity-solved once without a reset, so take
+    # each measurement a single time.
+    bngl_max = _max_sens(from_bngl, "S0")
+    assert bngl_max == pytest.approx(expected, rel=1e-6)
+    assert bngl_max == pytest.approx(_max_sens(from_sbml, "S0"))
+
+
+def test_state_written_after_load_keeps_its_literal(tmp_path: Path) -> None:
+    """A reference whose parameter no longer matches the stored state — the
+    state was written after load — is not named: the number is what the caller
+    has."""
+    src, _ = _write_ic_model(tmp_path, ia=_IA_S0)
+    model = bngsim.Model.from_sbml(src)
+    model.set_state(np.array([7.0]))
+    assert _species_values(write_bngl(model)) == ["7.0"]

@@ -35,6 +35,22 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`sbml_to_bngl` keeps a parameter-valued species initial condition
+  symbolic** (#521). The `.bngl` writer had the defect #517 fixed in
+  `write_net`: every species' initial value was written as a number, so a
+  species whose initial condition *is* a parameter — an SBML
+  `initialAssignment` naming one, or a compound parameter-only initial
+  condition lowered to a derived `_ic_*` parameter — lost that reference, and
+  a forward sensitivity with respect to that parameter came back identically
+  zero from `Model.from_bngl` — finite, no warning — while `Model.from_sbml`
+  and, since #517, `Model.from_net` gave the right answer. The species line
+  now names the parameter; BNG2.pl carries the name into its `.net` and the
+  reader records the reference. An amount-valued species in a compartment
+  whose volume is not 1, which the flat `.net` has to leave as a literal, is
+  written as `name / V` here: BNG2.pl lifts the expression into a derived
+  `_InitialConc*` parameter and the reload reaches the model parameter
+  through it.
+
 - **A species assignment rule survives the `.net` round trip, and the default
   gate can tell when it does not** (#515). `Model.from_sbml` reports an
   assignment-rule species at its rule's live value through a report map the

@@ -657,11 +657,44 @@ def write_bngl(
         lines.append("end functions")
         lines.append("")
 
+    # species — value is the stored initial state (concentration space). A
+    # species whose initial condition *is* a parameter — an SBML
+    # ``initialAssignment`` naming one, or a compound parameter-only initial
+    # condition the loader lowered to a derived ``_ic_<species>`` — is written as
+    # that parameter's name (#521, the ``.bngl`` side of #514). BNG2.pl carries
+    # the name into its ``.net`` and the reader records the reference, which is
+    # what seeds ``∂y(0)/∂p`` for a forward sensitivity; folded to a literal, the
+    # sensitivity with respect to that parameter came back identically zero. An
+    # amount-valued species in a compartment whose volume is not 1 stores
+    # ``amount / V``; the flat ``.net`` has to leave that one as a literal
+    # (#517), but this channel can say the division, ``name / V`` — BNG2.pl
+    # lifts the expression into a derived ``_InitialConc*`` parameter and the
+    # reload reaches the model parameter through it. A reference whose
+    # parameter no longer matches the stored state (the state was written after
+    # load) keeps the literal — the number is what the caller has — and so does
+    # one to a shadow name, which this file does not declare.
+    ic_value: dict[int, str] = {}
+    divisors = list(core.species_ic_param_ref_divisors)
+    for k, (sp_i, p_i) in enumerate(core.species_ic_param_refs):
+        if not (0 <= p_i < len(params) and 0 <= sp_i < len(init_state)):
+            continue
+        pname = params[p_i]["name"]
+        if pname in shadow:
+            continue
+        divisor = divisors[k] if k < len(divisors) else 1.0
+        pval = float(params[p_i]["value"])
+        stored = float(init_state[sp_i])
+        if divisor in (0.0, 1.0):
+            if pval == stored:
+                ic_value[sp_i] = pname
+        elif pval / divisor == stored:
+            ic_value[sp_i] = f"{pname} / {_fmt(divisor)}"
     lines.append("begin species")
     for i, s in enumerate(species):
         marker = "$" if s.get("fixed", False) else ""
         val = init_state[i] if i < len(init_state) else 0.0
-        lines.append(f"    @{species_comp[i]}:{marker}{mol_names[i]}() {_fmt(val)}")
+        value = ic_value.get(i, _fmt(val))
+        lines.append(f"    @{species_comp[i]}:{marker}{mol_names[i]}() {value}")
     lines.append("end species")
     lines.append("")
 
