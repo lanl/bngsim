@@ -89,11 +89,11 @@ double FunctionalRxnClass::update_a() {
 	// Not under TotalRate, though.  The symmetry factor corrects a counting
 	// problem -- a reactant pattern with a non-trivial automorphism matches the
 	// same reaction more than once -- and TotalRate states the whole propensity
-	// of the rule outright, so there is no count to correct and the factor must
-	// not be applied.  It has to be skipped here rather than at construction:
+	// of the rule outright, so there is no count to correct.  It has to be
+	// skipped here rather than where the factor is folded into baseRate:
 	// NFinput calls setTotalRateFlag() well after both this class' constructor
-	// and setBaseRate(), so totalRateFlag is still false while baseRate is being
-	// folded, and a guard placed there would never fire.
+	// and setBaseRate(), so totalRateFlag is still false at both of those
+	// points and a guard placed there would never fire.
 	if (!this->totalRateFlag)
 	{	a *= this->baseRate;   }
 

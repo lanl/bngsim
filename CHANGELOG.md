@@ -14,6 +14,25 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Changed
+
+- **The TotalRate symmetry carry is gone: RuleWorld/nfsim#92 merged and the
+  vendored tree now takes the fix from upstream (issue #428).** The carry queue
+  is 13 topics, down from 14, and `third_party/nfsim` is rebuilt on upstream
+  `master` at `1a54f387`, the merge commit of #92 — deliberately not the
+  `master` tip, since the 160 commits after it are upstream's performance
+  campaign and a separate refresh (issue #519). The carry that left is the one bngsim
+  contributed upstream after #89 brought the symmetry factor to every rate law
+  (issue #426): a `TotalRate` rule states its whole propensity and has no match
+  count to correct, so the factor is skipped there. Upstream's commit is the
+  same guard; only the comment above it was reworded in review, which is the
+  one line-level change in the vendored tree. `git am` of the remaining 13
+  patches replays onto the new base without a conflict, and
+  `python/tests/test_nfsim_symmetry_factor.py` with its fixture pair
+  `tests/data/nfsim/symmetry_factor_total_rate.{bngl,xml}` passes unchanged
+  against the carry-free tree, which is what shows the upstream version behaves
+  the same.
+
 ### Fixed
 
 - **A species assignment rule survives the `.net` round trip, and the default

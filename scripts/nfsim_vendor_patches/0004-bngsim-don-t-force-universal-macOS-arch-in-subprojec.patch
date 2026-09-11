@@ -1,7 +1,7 @@
-From b7086fa9378fe2b72f4861458e7e58a455895691 Mon Sep 17 00:00:00 2001
+From 95471396cdf2664811f41effaeac9c21845e287e Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Mon, 18 May 2026 10:38:04 -0600
-Subject: [PATCH 04/14] bngsim: don't force universal macOS arch in subprojects
+Subject: [PATCH 04/13] bngsim: don't force universal macOS arch in subprojects
 
 ---
  CMakeLists.txt | 7 ++++++-

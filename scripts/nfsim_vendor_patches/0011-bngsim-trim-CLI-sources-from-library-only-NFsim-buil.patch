@@ -1,7 +1,7 @@
-From 3a379e9697e6271c39021301d26717d12defc0cf Mon Sep 17 00:00:00 2001
+From 46ebebfebb062dfa3a59d4a91641ad7d68a4dc24 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:33:55 -0600
-Subject: [PATCH 11/14] bngsim: trim CLI sources from library-only NFsim build
+Subject: [PATCH 11/13] bngsim: trim CLI sources from library-only NFsim build
 
 ---
  CMakeLists.txt | 10 ++++++++++
