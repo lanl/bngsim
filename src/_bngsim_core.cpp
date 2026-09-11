@@ -1390,8 +1390,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 int ns = self.n_species();
                 if (static_cast<int>(conc.size()) != ns)
                     throw py::value_error("_eval_rhs: expected " + std::to_string(ns) +
-                                          " species values, got " +
-                                          std::to_string(conc.size()));
+                                          " species values, got " + std::to_string(conc.size()));
                 std::vector<double> y = conc, dydt(ns, 0.0);
                 self.compute_derivs(t, y.data(), dydt.data());
                 return dydt;
