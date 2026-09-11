@@ -57,6 +57,45 @@ from bngsim._codegen import (
 
 logger = logging.getLogger("bngsim")
 
+# ─── Issue #506: every decline names its reason ───────────────────────────
+#
+# A model that ends up on the finite-difference Jacobian used to say so on only
+# two of its decline paths (the derivation budget, and Max/Min at DEBUG); the
+# rest — an un-inlinable function, a parse failure, a symbol that survived
+# inlining, a derivative no emitter prints, the C++ attach gate — went silent at
+# every level, and a harness could record nothing but the boolean. Each decline
+# site now calls _declined(reason): one INFO line, and the reason kept on the
+# thread so attach_functional_jacobian's caller (Model.prepare_analytical_jacobian)
+# can hand it out as Model.analytical_jacobian_status. Thread-local because a
+# derivation runs on the thread that loads the model and models load in parallel
+# on a pool; the reason is reset at the start of every attach.
+_decline_state = threading.local()
+
+
+def _declined(reason: str, *, log: bool = True) -> None:
+    """Record why the analytical Jacobian is declined, and say so at INFO."""
+    _decline_state.reason = reason
+    if log:
+        logger.info(
+            "GH#76 analytical Jacobian: %s; the model runs on the finite-difference Jacobian.",
+            reason,
+        )
+
+
+def _reset_decline() -> None:
+    _decline_state.reason = None
+
+
+def last_decline_reason() -> str | None:
+    """The reason recorded by the most recent decline on this thread, or ``None``."""
+    return getattr(_decline_state, "reason", None)
+
+
+def _short(rate_expr: str, limit: int = 80) -> str:
+    """A rate law quoted for a log line, elided past ``limit`` characters."""
+    return repr(rate_expr if len(rate_expr) <= limit else rate_expr[: limit - 3] + "...")
+
+
 # Placeholder symbol standing in for ExprTk ``time()`` / ``t()`` while the
 # expression lives in sympy. It is a constant w.r.t. species, and the ExprTk
 # emitter maps it back to ``time()``.
@@ -438,23 +477,21 @@ def _inline_functions(
 # decline however long the derivation is allowed to run.
 #
 # Derived rather than listed by hand: differentiate every name in
-# _SYMPY_FUNC_TO_EXPRTK and check whether the result survives _is_emittable and
-# the printers. Exactly six do not, in two flavours —
+# _SYMPY_FUNC_TO_EXPRTK the way differentiate_rate_law does (between
+# _prepare_kinks and _finish_kinks, issue #507) and keep the ones whose result
+# neither printer spells. Three do: ceiling / floor / sign come back as an
+# unevaluated Derivative, which is not a Function at all and needed
+# _is_emittable's own fix above. Abs / Min / Max were here too — sympy
+# differentiates them to re()/im()/Heaviside — until the two kink steps gave
+# Abs the derivative sign(a)·a' and spelled Heaviside as if().
 #
-#   * Abs / Min / Max produce re()/im()/Heaviside, which are Functions outside the
-#     emitter map, so _is_emittable already rejects them *after* the derivation;
-#   * ceiling / floor / sign produce an unevaluated Derivative, which is not a
-#     Function at all and needed _is_emittable's own fix above.
-#
-# Catching them before ``sp.diff`` is a build-time saving, not a behaviour change:
-# the model declines either way. The saving is not marginal, because these are
-# exactly the constructs sympy is worst at. BIOMD0000000385 carries three Abs over
-# its differentiation variables and spends **138 s** discovering the decline — a
-# 6.9x overshoot of the 20 s budget, and unbounded by it, since the budget can only
-# be tested between sp.diff calls and one of these *is* a single call. Subdividing
-# the derivation does not help: recursing to 117 checkable steps still leaves the
-# two dAbs at 62.4 s and 34.8 s, with every other step under 0.04 s. The 138 s
-# becomes ~0.5 s here, and the model lands on the same FD Jacobian it did before.
+# Catching the three before ``sp.diff`` is a build-time saving, not a behaviour
+# change: the model declines either way. The saving was not marginal when Abs was
+# still in the set — sympy is worst at exactly these constructs, and
+# BIOMD0000000385's three Abs over its differentiation variables cost **138 s**
+# discovering a decline against a 20 s budget, unbounded by it because one
+# ``sp.diff`` cannot be interrupted — and the pre-check stays for the names that
+# remain.
 #
 # Matched on the type name during one traversal, because Min/Max are Application
 # but *not* Function subclasses, so ``atoms(sp.Function)`` misses them.
@@ -466,7 +503,7 @@ def _inline_functions(
 # pre-declined for cases that work. ``mratio`` is the first function on either
 # count — closed form in its third argument only, and only in C (issue #457) — so
 # it is deliberately absent. test_jacobian_symbolic.py re-derives the whole set.
-_NONDIFFERENTIABLE_EMITTER_FUNCS = frozenset({"Abs", "Max", "Min", "ceiling", "floor", "sign"})
+_NONDIFFERENTIABLE_EMITTER_FUNCS = frozenset({"ceiling", "floor", "sign"})
 
 
 def _nondifferentiable_over(expr, targets: set[str]) -> str | None:
@@ -507,6 +544,84 @@ def _nondifferentiable_over(expr, targets: set[str]) -> str | None:
         else:
             stack.extend(node.args)
     return None
+
+
+_kink_sympy_cache: dict = {}
+
+
+def _kink_bindings(sp) -> dict:
+    """``{"absval": class}``: ``Abs`` with the derivative the emitters can print
+    (issue #507). sympy's own ``Abs`` differentiates to ``re()`` / ``im()`` over
+    the plain (not known real) symbols the parser creates; this twin
+    differentiates to ``sign(a)``, so ``d|a|/dx = sign(a)·a'`` — the size of
+    ``a'``, where the Piecewise ``(a, a >= 0), (-a, True)`` would copy ``a`` into
+    the condition and both branches and grow exponentially in nested ``abs``.
+    Built once, for the reason :func:`engine_sympy_bindings` gives."""
+    bindings = _kink_sympy_cache.get("bindings")
+    if bindings is None:
+
+        class absval(sp.Function):
+            nargs = 1
+
+            def fdiff(self, argindex=1):
+                return sp.sign(self.args[0])
+
+        bindings = {"absval": absval}
+        _kink_sympy_cache["bindings"] = bindings
+    return bindings
+
+
+def _prepare_kinks(expr, targets: set[str]):
+    """Before differentiation (issue #507): every ``Abs`` over a differentiation
+    variable becomes the ``absval`` twin of :func:`_kink_bindings`. ``Max`` and
+    ``Min`` need nothing here — sympy differentiates them to products of
+    ``Heaviside`` over their argument differences, which :func:`_finish_kinks`
+    spells — and neither does an ``Abs`` over parameters only, which is a value
+    factor of the derivative and prints best as ``abs(k)``. The walk skips the
+    condition half of every ``Piecewise`` pair for the reason
+    :func:`_nondifferentiable_over` gives: a condition is copied through
+    undifferentiated, so an ``Abs`` inside one is fine as it is.
+    """
+    try:
+        import sympy as sp
+    except ImportError:
+        return expr
+    absval = _kink_bindings(sp)["absval"]
+
+    def touches(node) -> bool:
+        return bool({str(sym) for sym in node.free_symbols} & targets)
+
+    def walk(node):
+        if isinstance(node, sp.Piecewise):
+            return sp.Piecewise(*[(walk(value), cond) for value, cond in node.args])
+        if not node.args:
+            return node
+        new_args = [walk(arg) for arg in node.args]
+        if any(n is not o for n, o in zip(new_args, node.args, strict=True)):
+            node = node.func(*new_args)
+        if isinstance(node, sp.Abs) and touches(node):
+            return absval(node.args[0])
+        return node
+
+    return walk(expr)
+
+
+def _finish_kinks(deriv):
+    """After differentiation (issue #507): ``Heaviside(u)`` — what ``d/da Max(a,
+    b)`` is — becomes ``Piecewise((1, u >= 0), (0, True))``, the step the emitters
+    print as ``if()``; and ``absval`` goes back to ``Abs`` so a value factor
+    prints as ``abs()``. At ``u = 0`` the value is a tie of the ``max``: a
+    switching surface, where the C++ self-check judges nothing (issue #511)."""
+    try:
+        import sympy as sp
+    except ImportError:
+        return deriv
+    absval = _kink_bindings(sp)["absval"]
+    deriv = deriv.replace(
+        lambda n: isinstance(n, sp.Heaviside),
+        lambda n: sp.Piecewise((sp.Integer(1), n.args[0] >= 0), (sp.Integer(0), True)),
+    )
+    return deriv.replace(lambda n: isinstance(n, absval), lambda n: sp.Abs(n.args[0]))
 
 
 # ─── Core: differentiate w.r.t. observables ────────────────────────────────
@@ -556,10 +671,15 @@ def differentiate_rate_law(
 
     inlined = _inline_functions(rate_expr, func_map)
     if inlined is None:
+        _declined(
+            f"rate law {_short(rate_expr)} references its functions in a cycle, or nests "
+            "them more than 64 deep"
+        )
         return None
 
     sym_expr = _exprtk_to_sympy(inlined)
     if sym_expr is None:
+        _declined(f"rate law {_short(rate_expr)} could not be parsed into sympy")
         return None
 
     # Build aliased name sets to match what _exprtk_to_sympy produced. Python
@@ -575,18 +695,27 @@ def differentiate_rate_law(
     if not free.issubset(allowed):
         # An un-inlined function name or an unrecognized (possibly state)
         # symbol survived → cannot guarantee a correct analytical derivative.
+        _declined(
+            f"rate law {_short(rate_expr)} still carries {sorted(free - allowed)} after "
+            "inlining, which is neither an observable, a constant nor time (a hidden "
+            "state, or a function that could not be inlined)"
+        )
         return None
+
+    targets = {a for a in obs_alias if a in free}
+    # Issue #507: an Abs over a differentiation variable gets a derivative the
+    # emitters print (sign(a)·a'); Max / Min get theirs spelled after the fact.
+    sym_expr = _prepare_kinks(sym_expr, targets)
 
     # GH #250: fall back *before* differentiating when the answer is already
     # decided. See _NONDIFFERENTIABLE_EMITTER_FUNCS — this is the same decline the
     # _is_emittable check below would reach, minus the derivation, and on the one
-    # corpus model that hits it that is 138 s minus.
-    blocked = _nondifferentiable_over(sym_expr, {a for a in obs_alias if a in free})
+    # corpus model that hit it that was 138 s minus.
+    blocked = _nondifferentiable_over(sym_expr, targets)
     if blocked is not None:
-        logger.debug(
-            "GH#76 analytical Jacobian: rate law uses %s over a differentiation "
-            "variable, whose derivative cannot be emitted; using finite differences.",
-            blocked,
+        _declined(
+            f"rate law {_short(rate_expr)} applies {blocked} to a differentiation "
+            "variable, and no emitter can print that derivative"
         )
         return None
 
@@ -607,10 +736,15 @@ def differentiate_rate_law(
             # GH #95: bail out of an over-budget derivation mid-rate-law so a
             # single law coupling many observables cannot blow the budget.
             raise _DerivationBudgetExceeded
-        deriv = sp.diff(sym_expr, sp.Symbol(alias))
+        deriv = _finish_kinks(sp.diff(sym_expr, sp.Symbol(alias)))
         if deriv == 0:
             continue
-        if not _is_emittable(deriv):
+        reason = _non_emittable_reason(deriv)
+        if reason is not None:
+            _declined(
+                f"the derivative of rate law {_short(rate_expr)} with respect to "
+                f"{obs_name} {reason}"
+            )
             return None
         result[obs_name] = deriv
     # Empty dict is a *success* (the rate has no state dependence ⇒ a zero
@@ -624,16 +758,18 @@ def differentiate_rate_law(
 _EMITTABLE_BOOLEAN_FUNCS = frozenset({"And", "Or", "Not", "ITE"})
 
 
-def _is_emittable(expr) -> bool:
-    """True iff every function in ``expr`` maps to a builtin one of the emitters
-    has. Rejects derivatives that introduced Heaviside / DiracDelta / special
+def _non_emittable_reason(expr) -> str | None:
+    """Why ``expr`` cannot be emitted, or ``None`` when every function in it maps
+    to a builtin one of the emitters has (:func:`_is_emittable` is this predicate).
+    Refuses a derivative that introduced Heaviside / DiracDelta / special
     functions, any unevaluated ``Derivative`` (GH #250), and any boolean node no
-    printer has a spelling for (issue #460)."""
+    printer has a spelling for (issue #460); the reason names the offending node,
+    for the decline log line of issue #506."""
     try:
         import sympy as sp
         from sympy.logic.boolalg import BooleanFunction
     except ImportError:
-        return False
+        return "cannot be checked because sympy is not importable"
     # An unevaluated Derivative is sympy saying it *cannot* differentiate the
     # node: sign, floor and ceiling all come back as `Derivative(f(x), x)`. It is
     # not a Function, so the atoms() scan below never sees it, and both printers
@@ -642,7 +778,7 @@ def _is_emittable(expr) -> bool:
     # what reached the emitter was a broken derivative rather than a fallback to
     # FD. Checked first because it is the cheap structural case (GH #250).
     if expr.has(sp.Derivative):
-        return False
+        return "carries an unevaluated Derivative (a node sympy could not differentiate)"
     # A symbolic ComplexInfinity / Infinity / NaN cannot be emitted: printed
     # verbatim it reads ``zoo`` / ``oo`` / ``nan``, which ExprTk rejects and the C
     # compiler will not build. sympy yields one where it could not resolve a
@@ -653,7 +789,7 @@ def _is_emittable(expr) -> bool:
     # *literal* folded in while printing (e.g. a ``1.0/0.0``); this catches the
     # symbolic singletons that check's regex does not spell.
     if expr.has(sp.zoo, sp.oo, -sp.oo, sp.nan):
-        return False
+        return "carries a symbolic zoo / oo / nan (an unresolved singularity)"
     for fn in expr.atoms(sp.Function):
         name = type(fn).__name__
         # Piecewise is a Function subclass in sympy but the printer emits it as
@@ -668,7 +804,7 @@ def _is_emittable(expr) -> bool:
         # writing the identity out instead would hand the interpreted engine a
         # derivative that throws where the compiled helper falls back.
         if name not in _SYMPY_FUNC_TO_EXPRTK and name not in _SYMPY_FUNC_TO_C:
-            return False
+            return f"carries the function {name}, which no emitter spells"
     # Boolean nodes are ``Application`` but not ``Function``, so the scan above
     # is blind to them in the same way it is blind to ``Min`` and ``Max``. Three
     # of them have a printer method of their own, plus ``ITE``, which
@@ -698,8 +834,13 @@ def _is_emittable(expr) -> bool:
     # make an ``Xor`` reachable, and it needs a spelling here first.
     for node in expr.atoms(BooleanFunction):
         if type(node).__name__ not in _EMITTABLE_BOOLEAN_FUNCS:
-            return False
-    return True
+            return f"carries the boolean node {type(node).__name__}, which no emitter spells"
+    return None
+
+
+def _is_emittable(expr) -> bool:
+    """True iff every function in ``expr`` maps to a builtin one of the emitters has."""
+    return _non_emittable_reason(expr) is None
 
 
 def _normalize_booleans(expr):
@@ -2259,6 +2400,10 @@ def build_per_species_sympy(
             if not math.isfinite(coeff):
                 # Degenerate chain-rule factor (e.g. an unset compartment volume
                 # surfaced as NaN). Defer the whole model to FD.
+                _declined(
+                    f"rate law {_short(rate_expr)} has a non-finite chain-rule factor "
+                    f"({coeff}) for species {sp_idx}: an unset compartment volume"
+                )
                 return None
             if coeff == 0.0:
                 continue
@@ -2317,6 +2462,10 @@ def build_per_species_terms(
     for sp_idx, expr in terms:
         s = sympy_to_exprtk(expr)
         if s is None:
+            _declined(
+                f"the derivative of rate law {_short(rate_expr)} for species {sp_idx} "
+                "could not be printed as ExprTk"
+            )
             return None
         out.append((sp_idx, s))
     # [] = covered with a zero column (constant-rate functional reaction); None
@@ -2355,6 +2504,10 @@ def build_per_observable_terms(
     for obs_name, dexpr in dd.items():
         s = sympy_to_exprtk(dexpr)
         if s is None:
+            _declined(
+                f"the derivative of rate law {_short(rate_expr)} with respect to "
+                f"{obs_name} could not be printed as ExprTk"
+            )
             return None
         out.append((obs_name, s))
     # [] = covered with a zero contribution (constant-rate functional reaction).
@@ -2878,7 +3031,9 @@ def attach_functional_jacobian(core) -> bool:
     #
     # Escape hatch: set BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0 to force the
     # finite-difference Jacobian on every model (e.g. to A/B the feature).
+    _reset_decline()
     if os.environ.get("BNGSIM_ANALYTICAL_FUNCTIONAL_JAC") == "0":
+        _declined("disabled by BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0")
         return False
 
     # GH #151: no hard SymPy gate here. Each rate law is tried on the native
@@ -2890,7 +3045,8 @@ def attach_functional_jacobian(core) -> bool:
 
     try:
         ctx = core.functional_jacobian_context()
-    except Exception:
+    except Exception as exc:
+        _declined(f"the model could not provide its functional-Jacobian context: {exc}")
         return False
     rxns = ctx.get("functional_reactions") or []
     if not rxns:
@@ -2947,6 +3103,7 @@ def attach_functional_jacobian(core) -> bool:
                     rate_expr, func_map, obs_names, constants, deadline
                 )
                 if obs_terms is None:
+                    logger.debug("GH#76 analytical Jacobian: reaction %d declined", rxn["rxn_idx"])
                     return False
                 keyed = [(obs_idx[name], expr) for name, expr in obs_terms]
                 all_terms.append((rxn["rxn_idx"], True, keyed))
@@ -2962,6 +3119,7 @@ def attach_functional_jacobian(core) -> bool:
                     species_volume_sym,
                 )
                 if sp_terms is None:
+                    logger.debug("GH#76 analytical Jacobian: reaction %d declined", rxn["rxn_idx"])
                     return False
                 all_terms.append((rxn["rxn_idx"], False, [(int(j), expr) for j, expr in sp_terms]))
             processed += 1
@@ -2999,22 +3157,27 @@ def attach_functional_jacobian(core) -> bool:
                 len(rxns),
                 elapsed,
             )
+        _declined(
+            f"the build-time derivation exceeded its {budget:.1f}s budget after "
+            f"{processed}/{len(rxns)} functional reactions",
+            log=False,  # the warning / info line above already said so
+        )
         return False
 
     try:
         attached = bool(core.set_functional_jacobian(all_terms))
-    except Exception:
+    except Exception as exc:
+        _declined(f"the C++ attach raised {type(exc).__name__}: {exc}")
         return False
     if not attached:
-        # Issues #506/#511: the C++ attach declines silently at every log level
+        # Issues #506/#511: the C++ attach declined silently at every log level
         # otherwise. It declines for a trustworthy analytical↔FD mismatch at a
         # probe state, an analytical entry that is non-finite where the RHS is
         # finite, or a derivative term outside the sparsity pattern.
-        logger.info(
-            "GH#76 analytical Jacobian: the derived terms were declined at attach "
-            "(the finite-difference self-check found a trustworthy mismatch, an entry "
-            "was non-finite at a probe state, or a term fell outside the sparsity "
-            "pattern); the model runs on the finite-difference Jacobian. "
-            "BNGSIM_JAC_DEBUG=1 prints the reason."
+        _declined(
+            "the C++ attach declined the derived terms (the finite-difference "
+            "self-check found a trustworthy mismatch, an entry was non-finite at a "
+            "probe state, or a term fell outside the sparsity pattern); "
+            "BNGSIM_JAC_DEBUG=1 prints the entry"
         )
     return attached

@@ -1,0 +1,31 @@
+# Issue #507: max / min / abs over a differentiation variable. sympy differentiates
+# Max to Heaviside and Abs to re()/im(), which no emitter prints, so any one of
+# these used to put the whole model on the finite-difference Jacobian. They are
+# rewritten to the Piecewise they are before differentiation; the derivatives
+# print as nested if(). No kink sits at the seed state (A != B, A != C, A != 1).
+
+begin parameters
+    1 k1 0.4
+    2 k2 0.7
+    3 k3 0.3
+end parameters
+begin species
+    1 A() 0.5
+    2 B() 1.5
+    3 C() 0.2
+end species
+begin functions
+    1 fMax() k1*max(A_tot,B_tot)
+    2 fAbs() k2*abs(A_tot-C_tot)
+    3 fMin() k3*min(A_tot,1.0)
+end functions
+begin reactions
+    1 1 2 fMax #A_to_B at k1*max(A,B)*A
+    2 0 3 fAbs #source_C at k2*|A-C|
+    3 2 1 fMin #B_to_A at k3*min(A,1)*B
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+    3 C_tot 3
+end groups

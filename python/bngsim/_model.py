@@ -89,6 +89,7 @@ class Model:
         "_interpret_sec",
         "_jac_derive_sec",
         "_jac_attempted",
+        "_jac_decline_reason",
         "_net_path",
         "_ssa_issues",
         "_ar_report_map",
@@ -162,6 +163,8 @@ class Model:
         # False for all-Elementary models and for legitimate FD fallbacks, which
         # would make a non-differentiable model re-run SymPy on every solve.
         self._jac_attempted: bool = False
+        # Issue #506: why the attempt declined, for analytical_jacobian_status.
+        self._jac_decline_reason: str | None = None
         # Set by Model.from_net so downstream consumers (esp. the codegen
         # auto-trigger in Simulator) can route to the .net codegen path,
         # which handles derived-parameter chain rules that the model-based
@@ -830,17 +833,43 @@ class Model:
             return bool(self._core.analytical_jacobian_complete)
         self._jac_attempted = True
         try:
-            from bngsim._jacobian import attach_functional_jacobian
+            from bngsim._jacobian import attach_functional_jacobian, last_decline_reason
 
             t0 = time.perf_counter()
             attach_functional_jacobian(self._core)
             self._jac_derive_sec = time.perf_counter() - t0
+            self._jac_decline_reason = last_decline_reason()
         except Exception as e:
             # attach_functional_jacobian is contractually no-raise (it falls back
             # to FD and logs over-budget / unsupported cases itself, GH #95); this
             # guard only surfaces a genuinely unexpected error without re-deriving.
             logger.debug("Analytical Functional Jacobian skipped: %s", e)
+            self._jac_decline_reason = f"an unexpected error during derivation: {e}"
         return bool(self._core.analytical_jacobian_complete)
+
+    @property
+    def analytical_jacobian_status(self) -> str:
+        """Whether the model carries a complete analytical Jacobian, in words.
+
+        ``"complete"`` when every reaction's derivative is closed-form — a
+        mass-action model from the start, a model with functional rate laws
+        once :meth:`prepare_analytical_jacobian` attached them;
+        ``"pending"`` while a model with functional rate laws has not derived
+        them yet (an ODE solve, or that call, derives them); and
+        ``"declined: <reason>"`` when it runs on the finite-difference Jacobian,
+        with the reason the derivation gave — the rate law and what stopped it,
+        the derivation budget, the C++ attach gate, or the environment switch.
+        The same reason goes to the ``bngsim`` logger at INFO when it happens;
+        this is the readable form a harness can record instead of only the
+        boolean :attr:`bngsim._bngsim_core.NetworkModel.analytical_jacobian_complete`
+        (issue #506).
+        """
+        if bool(self._core.analytical_jacobian_complete):
+            return "complete"
+        if not self._jac_attempted:
+            return "pending"
+        reason = self._jac_decline_reason or "no reason was recorded"
+        return f"declined: {reason}"
 
     # ─── Load-phase timing accessors ──────────────────────────────────────
     # Public read-only views of the per-model setup timings the SBML loader
@@ -910,6 +939,7 @@ class Model:
         # an un-warmed parent inherits _jac_attempted=False and derives on first
         # solve — hence warm-before-clone for parallel fitting, GH #145 §3).
         m._jac_attempted = self._jac_attempted
+        m._jac_decline_reason = self._jac_decline_reason
         # GH #97: same warm-clone reasoning for the #198 output-sens analysis — a
         # clone has the parent's structure, so re-running its sympy would be N×
         # waste in parallel fitting. Shared by reference (the analysis is

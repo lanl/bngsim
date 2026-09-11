@@ -218,4 +218,4 @@ def test_attach_decline_is_logged(tmp_path: Path, monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="bngsim"):
         m = bngsim.Model.from_net(str(p))
         assert m.prepare_analytical_jacobian() is False
-    assert any("declined at attach" in r.getMessage() for r in caplog.records), caplog.text
+    assert any("C++ attach declined" in r.getMessage() for r in caplog.records), caplog.text

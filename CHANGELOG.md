@@ -16,6 +16,13 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **`Model.analytical_jacobian_status`: why a model runs on the
+  finite-difference Jacobian, in words (issue #506).** `"complete"`,
+  `"pending"` (functional rate laws not derived yet), or `"declined: <reason>"`
+  — the rate law and what stopped its derivation, the derivation budget, the
+  C++ attach gate, or the environment switch — so a harness can record the
+  reason instead of only the boolean `analytical_jacobian_complete`. Carried
+  by `clone()`.
 - **`Result.state` / `Result.state_names`: the full integrator state
   trajectory (issue #508).** `Result.species` is the *reported* block. An SBML
   event that assigns a parameter or a compartment promotes its target to a
@@ -87,6 +94,44 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`max`, `min` and `abs` over a differentiation variable are
+  differentiated as the piecewise functions they are, so the model keeps its
+  analytical Jacobian (issue #507).** sympy differentiates `Max` to
+  `Heaviside` and `Abs` to `re()`/`im()`, which no emitter spells, so
+  `differentiate_rate_law` declined the rate law and the whole model — 28 in
+  the corpus, a Lorenz attractor among them — ran on finite differences. Now
+  `abs` differentiates to `sign(a)·a'` through a twin of `Abs` carrying that
+  derivative, and the `Heaviside` factors of a `max`/`min` derivative are
+  spelled `if(u >= 0, 1, 0)` afterwards — both forms the emitters already
+  print, and neither copies the argument the way a `Piecewise` rewrite of the
+  value would (nested `abs` grew exponentially that way; BIOMD0000000385's
+  derivatives are three times smaller and derive 2.6× faster than under the
+  rewrite). Only an `abs` over a differentiation variable is twinned
+  (`abs(k)` over a parameter still prints as `abs(k)`), and `Piecewise`
+  conditions are left alone. At a tie the derivative is a one-sided
+  convention; that is a switching surface, where the self-check judges
+  nothing since #530. `ceiling`, `floor` and `sign` stay pre-declined. Of the
+  28, 14 now attach and match finite differences to ~1e-10 at random states,
+  BIOMD0000000385 among them (it used to spend 138 s discovering a decline).
+  Five 472-reaction models (BIOMD0000000469–473) now derive to the edge of
+  the 20 s budget — they attach on an idle machine and not under load —
+  where they used to decline instantly; raise `BNGSIM_JAC_DERIV_BUDGET_S` to
+  keep them. The rest stop at the C++ gate or elsewhere for reasons of their
+  own, which the new `analytical_jacobian_status` names: five sit with their
+  seed exactly on a switching surface of their own `if(c > 0)` / `if(c < 0)`
+  rate-law pairs (ph_lorenz_attractor is one), where the Piecewise derivative
+  has a point defect the gate is right to refuse.
+- **Every path that declines the analytical Jacobian says why (issue #506).**
+  Four decline paths — a function that could not be inlined, a rate law that
+  could not be parsed, a symbol that survived inlining, a derivative no
+  emitter prints — and the C++ attach gate went silent at every log level, so
+  `prepare_analytical_jacobian()` returned `False` with no way to learn the
+  reason short of monkeypatching the differentiator. Each site now logs one
+  INFO line on the `bngsim` logger naming the rate law and the reason (the
+  surviving symbols, the offending node of the derivative, the failed parse,
+  the C++ gate's verdict), the former DEBUG line for the pre-declined
+  functions is at INFO with the rest, and the reason is readable as
+  `Model.analytical_jacobian_status`.
 - **The analytical-Jacobian self-check no longer rejects a correct Jacobian
   because the initial state sits on a switching surface of a piecewise rate
   law (issue #511).** `NetworkModel::set_functional_jacobian` validates the
