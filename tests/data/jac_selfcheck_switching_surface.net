@@ -1,0 +1,37 @@
+# Issue #511 reproducer: a correct analytical Jacobian rejected by the FD
+# self-check because the initial state sits ON a switching surface of a
+# piecewise rate law.
+#
+#   V() = P2 - P1 is exactly 0 at the seed state (both species start at 1), so
+#   fSwitch() = if(V>0, V*k, 0) is on its `else` branch there and the analytical
+#   d(rate)/dP2 is 0. Perturbing P2 up crosses into the `if` branch (slope k), down
+#   stays on `else` (slope 0): the central difference reads k/2, which is neither.
+#   The zero-species skip does not apply — P1 and P2 are 1, not 0; the kink is in
+#   a FUNCTION of the state, the wave-equation / Schrödinger pattern.
+#
+#   fSmooth() keeps ordinary, judgeable entries in the same model, so a Jacobian
+#   that is genuinely wrong there is still rejected.
+
+begin parameters
+    1 k 0.5
+    2 c 0.05
+end parameters
+begin species
+    1 P1() 1.0
+    2 P2() 1.0
+    3 Q() 0.3
+end species
+begin functions
+    1 V() P2_tot-P1_tot
+    2 fSwitch() if((V()>0),(V()*k),0)
+    3 fSmooth() c*Q_tot*P1_tot
+end functions
+begin reactions
+    1 1 2 fSwitch #P1_to_P2 at if(V>0, V*k, 0) * P1
+    2 0 3 fSmooth #source_Q at c*Q*P1
+end reactions
+begin groups
+    1 P1_tot 1
+    2 P2_tot 2
+    3 Q_tot 3
+end groups

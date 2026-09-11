@@ -3002,6 +3002,19 @@ def attach_functional_jacobian(core) -> bool:
         return False
 
     try:
-        return bool(core.set_functional_jacobian(all_terms))
+        attached = bool(core.set_functional_jacobian(all_terms))
     except Exception:
         return False
+    if not attached:
+        # Issues #506/#511: the C++ attach declines silently at every log level
+        # otherwise. It declines for a trustworthy analytical↔FD mismatch at a
+        # probe state, an analytical entry that is non-finite where the RHS is
+        # finite, or a derivative term outside the sparsity pattern.
+        logger.info(
+            "GH#76 analytical Jacobian: the derived terms were declined at attach "
+            "(the finite-difference self-check found a trustworthy mismatch, an entry "
+            "was non-finite at a probe state, or a term fell outside the sparsity "
+            "pattern); the model runs on the finite-difference Jacobian. "
+            "BNGSIM_JAC_DEBUG=1 prints the reason."
+        )
+    return attached

@@ -87,6 +87,34 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The analytical-Jacobian self-check no longer rejects a correct Jacobian
+  because the initial state sits on a switching surface of a piecewise rate
+  law (issue #511).** `NetworkModel::set_functional_jacobian` validates the
+  freshly attached closed-form Jacobian against reliability-gated central
+  finite differences, first at the initial state, and drops the whole
+  Jacobian on the first trustworthy mismatch. A rate law such as
+  `if(V > 0, V*k, 0)` switches on a quantity that is exactly 0 at the seed
+  state whenever the species it compares are still at their seed values, so
+  the initial probe sat *on* the switching surface: the forward probe took
+  one branch and the backward probe the other, the central difference was the
+  mean of the two one-sided slopes — Richardson-converged, since both step
+  sizes straddle the same surface — and the analytical value, the slope of
+  the branch the point itself is on, was flagged as a mismatch. Five corpus
+  models (a wave equation, a Schrödinger discretization,
+  BIOMD0000000075/161/613) ran their whole integration on the
+  finite-difference Jacobian that way, visibly only under
+  `BNGSIM_JAC_DEBUG=1`. The per-entry verdict now also requires the two
+  one-sided differences at the smaller step to agree — they come free from
+  the unperturbed RHS the gate already evaluates — and treats an entry where
+  they do not as a point with no derivative to check, leaving it to the
+  spread-out probe states, which do not sit on the seed's surfaces. A
+  Jacobian that is wrong on either branch is still caught there. The eleven
+  corpus models whose analytical entry is genuinely non-finite at the seed
+  (`∂(k·sqrt(A))/∂A` at `A = 0`) stay on finite differences, as before. The
+  dense self-check now prints the first mismatching or non-finite entry under
+  `BNGSIM_JAC_DEBUG=1`, as the sparse one already did, and an attach the C++
+  gate declines is logged at INFO instead of silently (the self-check path
+  of issue #506).
 - **The `_eval_rhs` / `_dense_analytical_jacobian` test hooks refuse a state
   of the wrong length (issue #508).** They copied whatever list they were
   given and read `n_species` entries from it, so a shorter vector — a

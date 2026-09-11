@@ -1857,12 +1857,16 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
         // that still disagrees with the analytical value; FD artifacts are simply
         // not judged. Validated across the BioModels SBML corpus (1597 models):
         // zero wrong attaches, ~129 needless fall-backs recovered — see
-        // dev/notes/gh76_investigation_findings.md.
+        // dev/notes/gh76_investigation_findings.md. The same rule judges an
+        // entry only where a derivative EXISTS: the two one-sided differences
+        // (free, given the unperturbed RHS) must agree, or the probe sits on a
+        // switching surface of a piecewise rate law and no finite difference is a
+        // reference there (issue #511, below).
         //
         // Per-entry verdict for a converged central difference at two step sizes:
         // true ⇒ a trustworthy analytical↔FD mismatch (reject the Jacobian).
-        auto entry_is_mismatch = [](double an, double fp1i, double fm1i, double fp2i, double fm2i,
-                                    double h1, double h2) -> bool {
+        auto entry_is_mismatch = [](double an, double f0i, double fp1i, double fm1i, double fp2i,
+                                    double fm2i, double h1, double h2) -> bool {
             double d1 = fp1i - fm1i, d2 = fp2i - fm2i;
             double fd1 = d1 / (2.0 * h1), fd2 = d2 / (2.0 * h2);
             if (!std::isfinite(fd1) || !std::isfinite(fd2))
@@ -1874,6 +1878,23 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
             double cden = std::max(std::max(std::abs(fd1), std::abs(fd2)), 1e-6);
             if (std::abs(fd1 - fd2) > 5e-3 * cden)
                 return false; // not Richardson-converged: FD is not a trustworthy oracle
+            // Issue #511: a piecewise rate law — if(), a min/max or a division
+            // guard — switches on a quantity that is exactly 0 at the seed state
+            // whenever the species it compares are still at their seed values, so
+            // the initial probe sits ON the switching surface. The forward and
+            // backward probes then evaluate different branches: the central
+            // difference is the mean of two one-sided slopes, converged in h (both
+            // steps straddle the same surface) and equal to neither the analytical
+            // value — the slope of the branch the point itself is on — nor anything
+            // a derivative could be, because none exists there. Five corpus models
+            // (a wave equation, a Schrödinger discretization, three BioModels) lost
+            // a correct Jacobian to that mean. Where the one-sided slopes disagree
+            // there is nothing to check at this probe; the spread-out probes below
+            // do not sit on the seed's surfaces and judge the entry there.
+            double fw = (fp2i - f0i) / h2, bw = (f0i - fm2i) / h2;
+            double oden = std::max(std::max(std::abs(fw), std::abs(bw)), 1e-6);
+            if (std::abs(fw - bw) > 5e-3 * oden)
+                return false; // one-sided slopes disagree: on a switching surface, no reference
             double ad = std::abs(an - fd2);
             double denom = std::max(std::max(std::abs(an), std::abs(fd2)), 1e-6);
             return ad > 1e-6 && ad > 1e-2 * denom; // symmetric 1% band on the converged estimate
@@ -1911,7 +1932,8 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
 
         if (!use_sparse) {
             std::vector<double> Ja(static_cast<size_t>(ns) * ns);
-            for (const auto &y : probes) {
+            for (size_t pi = 0; pi < probes.size(); ++pi) {
+                const auto &y = probes[pi];
                 // Skip a probe whose RHS is non-finite (degenerate point) rather
                 // than failing the whole check on it.
                 compute_derivs(0.0, y.data(), f0.data());
@@ -1926,10 +1948,15 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                 // would poison the integrator's Newton solve (e.g.
                 // ∂(k·sqrt(A))/∂A = k/(2·sqrt(A)) → ∞ at A=0 while the rate is a
                 // finite 0). FD tolerates this, so such a model must stay on FD.
-                for (double v : Ja)
-                    if (!std::isfinite(v)) {
+                for (size_t k = 0; k < Ja.size() && ok; ++k)
+                    if (!std::isfinite(Ja[k])) {
+                        if (std::getenv("BNGSIM_JAC_DEBUG"))
+                            std::fprintf(stderr,
+                                         "[jac] dense self-check probe %zu: non-finite analytical "
+                                         "entry at (row=%d, col=%d) value=%g\n",
+                                         pi, static_cast<int>(k % ns), static_cast<int>(k / ns),
+                                         Ja[k]);
                         ok = false;
-                        break;
                     }
                 for (int j = 0; j < ns && ok; ++j) {
                     // Scale-RELATIVE FD step (GH #168). A step floored at 1.0
@@ -1969,7 +1996,13 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     compute_derivs(0.0, ym.data(), fm2.data());
                     for (int i = 0; i < ns; ++i) {
                         double an = Ja[static_cast<size_t>(j) * ns + i];
-                        if (entry_is_mismatch(an, fp1[i], fm1[i], fp2[i], fm2[i], h1, h2)) {
+                        if (entry_is_mismatch(an, f0[i], fp1[i], fm1[i], fp2[i], fm2[i], h1, h2)) {
+                            if (std::getenv("BNGSIM_JAC_DEBUG")) {
+                                std::fprintf(stderr,
+                                             "[jac] dense self-check probe %zu: FD mismatch at "
+                                             "(row=%d, col=%d) analytical=%g fd=%g\n",
+                                             pi, i, j, an, (fp2[i] - fm2[i]) / (2.0 * h2));
+                            }
                             ok = false;
                             break;
                         }
@@ -2051,7 +2084,8 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k)
                         acol[sp.row_indices[k]] = vals[k];
                     for (int i = 0; i < ns; ++i) {
-                        if (entry_is_mismatch(acol[i], fp1[i], fm1[i], fp2[i], fm2[i], h1, h2)) {
+                        if (entry_is_mismatch(acol[i], f0[i], fp1[i], fm1[i], fp2[i], fm2[i], h1,
+                                              h2)) {
                             if (std::getenv("BNGSIM_JAC_DEBUG")) {
                                 double fd2 = (fp2[i] - fm2[i]) / (2.0 * h2);
                                 std::fprintf(stderr,
