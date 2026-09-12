@@ -20,9 +20,10 @@ back through this printer, so a law carrying both a guardable logarithm and a
 the guard was silently dropped. That law then returns ``nan`` at zero
 concentration where it should return zero.
 
-A ``max()`` over a variable being differentiated is a separate matter and stays
-refused on purpose, since its derivative is a step. This is only about one that
-survives differentiation untouched, such as a ``max()`` over two parameters.
+A ``max()`` over a variable being differentiated was a separate matter and stayed
+refused at the time, since its derivative is a step; issue #507 later spelled that
+step as ``if()``. This file is about one that survives differentiation untouched,
+such as a ``max()`` over two parameters.
 """
 
 from __future__ import annotations
@@ -120,11 +121,12 @@ def test_the_analytic_jacobian_attaches(tmp_path, body):
     assert attach_functional_jacobian(_core(_model(tmp_path, body, tag="_jac")))
 
 
-def test_a_min_or_max_over_a_differentiation_variable_is_still_refused(tmp_path):
-    """Its derivative is a step, so it has no emittable form and the model keeps
-    the finite-difference Jacobian. Unchanged by this, and the reason the fix is
-    only about the spelling."""
-    assert not attach_functional_jacobian(_core(_model(tmp_path, "max(Aobs,k1)", tag="_step")))
+def test_a_min_or_max_over_a_differentiation_variable_now_attaches(tmp_path):
+    """Its derivative is a step. When this test was written that had no emittable
+    form and the model kept the finite-difference Jacobian; since issue #507 the
+    step is spelled ``if(Aobs - k1 >= 0, 1, 0)`` and the Jacobian attaches. The
+    spelling fix above is still what lets the *value* ``max()`` print."""
+    assert attach_functional_jacobian(_core(_model(tmp_path, "max(Aobs,k1)", tag="_step")))
 
 
 def _solve(model):

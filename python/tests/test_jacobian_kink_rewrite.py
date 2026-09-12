@@ -130,7 +130,7 @@ def test_fixture_attaches_and_matches_finite_differences_on_every_branch(data_di
 _LORENZ = glob.glob("benchmarks/suites/ode_fullnet/nets/*ph_lorenz_attractor.bngl.net")
 
 
-@pytest.mark.skipif(not _LORENZ, reason="ode_fullnet corpus not materialized")
+@pytest.mark.skipif(not _LORENZ, reason="benchmark ode_fullnet corpus not present")
 def test_lorenz_attractor_derives_and_attaches_off_its_seed_surface():
     """The issue's reproducer. Its ``max(X_raw, 0.001)`` guards used to stop the
     derivation outright; they derive now. What remains is the model's own
