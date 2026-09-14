@@ -94,6 +94,12 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The SSA/PSA rejection of a delayed event points at the issue that tracks
+  delay support, not at a planning document that is no longer in the tree
+  (issue #526).** The message named the event and the remedy, then sent the
+  reader to "Phase 5c of the SBML SSA Support Plan". It now names issue #526,
+  and still says to use `method='ode'`, which runs delayed events, or remove
+  the delay. Delay support under SSA/PSA itself is still open in #526.
 - **A rate law shared by several reactions is derived once per model, so the
   linlog BioModels BIOMD0000000469–473 keep their analytical Jacobian on any
   machine (issue #532).** What a Functional rate law derives to depends on its

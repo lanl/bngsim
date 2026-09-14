@@ -2,8 +2,8 @@
 
 Mirrors the CVODE event tests in `test_events.py` for the cases that are
 in scope for Phase 5b: EventNoDelay only. Delay-bearing events are gated
-in C++ at SSA-run entry (Phase 5c will land delay support); the rejection
-is also exercised here.
+in C++ at SSA-run entry (delay support under SSA/PSA is issue #526); the
+rejection is also exercised here.
 """
 
 import math
@@ -100,9 +100,8 @@ def test_ssa_event_initialvalue_true_suppresses_t0_fire():
 
     Compared to the CVODE companion test, this v1 SSA implementation
     detects only one false→true crossing per τ-step (true→false→true
-    within a single τ is not detected); covering that corner case is
-    Phase 5c followup. Documented in
-    `dev/investigations/sbml_ssa_phase5b_*.md`.
+    within a single τ is not detected); covering that corner case is a
+    follow-up.
     """
     b = ModelBuilder()
     s_idx = b.add_species("S", 100.0)
@@ -286,7 +285,7 @@ def test_ssa_event_re_arms_after_self_falsifying_assignment():
 
 
 def test_ssa_event_with_delay_is_rejected():
-    """Phase 5c will land delay support; for now SSA must raise a clear
+    """Issue #526 tracks delay support; until then SSA must raise a clear
     error rather than silently ignoring the delay.
     """
     b = ModelBuilder()
@@ -295,8 +294,32 @@ def test_ssa_event_with_delay_is_rejected():
     model = b.build()
 
     sim = SsaSimulator(model)
-    with pytest.raises(RuntimeError, match=r"delay.*not yet supported"):
+    with pytest.raises(RuntimeError, match=r"delay.*not yet supported") as excinfo:
         sim.run(_ts(t_end=2.0, n_points=21), 1)
+    _assert_the_rejection_points_somewhere_real(str(excinfo.value), "delayed")
+
+
+def _assert_the_rejection_points_somewhere_real(message: str, event_id: str) -> None:
+    """Issue #526: the message named the event and the remedy, and then sent the
+    reader to "Phase 5c of the SBML SSA Support Plan", a planning document that
+    is no longer in the tree. It points at the issue that tracks the work now."""
+    assert f"Event '{event_id}'" in message
+    assert "issue #526" in message
+    assert "method='ode'" in message
+    assert "Support Plan" not in message and "Phase 5c" not in message
+
+
+def test_psa_event_with_delay_is_rejected_with_the_same_message():
+    """PSA reaches the same run-entry check, so it says the same thing."""
+    b = ModelBuilder()
+    s_idx = b.add_species("S", 0.0)
+    b.add_event("delayed", "time() >= 1", [(s_idx, "100")], delay=0.5)
+    model = b.build()
+
+    sim = SsaSimulator(model)
+    with pytest.raises(RuntimeError, match=r"delay.*not yet supported") as excinfo:
+        sim.run_psa(_ts(t_end=2.0, n_points=21), 1, 100.0, 0.0)
+    _assert_the_rejection_points_somewhere_real(str(excinfo.value), "delayed")
 
 
 def test_ssa_event_with_delay_expression_is_rejected():
@@ -309,8 +332,9 @@ def test_ssa_event_with_delay_expression_is_rejected():
     model = b.build()
 
     sim = SsaSimulator(model)
-    with pytest.raises(RuntimeError, match=r"delay.*not yet supported"):
+    with pytest.raises(RuntimeError, match=r"delay.*not yet supported") as excinfo:
         sim.run(_ts(t_end=2.0, n_points=21), 1)
+    _assert_the_rejection_points_somewhere_real(str(excinfo.value), "delayed_expr")
 
 
 def test_ssa_no_events_zero_overhead():

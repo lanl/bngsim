@@ -404,19 +404,20 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             "well-defined value in a stochastic (SSA) trajectory.");
     }
 
-    // Reject delay-bearing events. Phase 5b lands EventNoDelay only; Phase 5c
-    // tracks delay support (see dev/plans/SBML_SSA_SUPPORT_PLAN.md §5
-    // Phase 5c). Surface a clear error here rather than at Simulator
-    // construction so the message includes the event id.
+    // Reject delay-bearing events: SSA and PSA run non-delayed events only, and
+    // adding the pending-execution queue the ODE engine has is issue #526.
+    // Surface a clear error here rather than at Simulator construction so the
+    // message includes the event id. run() and run_psa() both come through here.
+    // The message used to send the reader to "Phase 5c of the SBML SSA Support
+    // Plan", a planning document that is no longer in the tree (issue #526).
     {
         const auto &evs = model.events();
         for (const auto &ev : evs) {
             if (ev.delay > 0.0 || ev.delay_expr_idx >= 0) {
                 throw std::runtime_error("Event '" + ev.id +
-                                         "' has a delay, which is not yet supported under SSA/PSA. "
-                                         "Phase 5c of the SBML SSA Support Plan tracks delay "
-                                         "support; for now, use method='ode' or remove the "
-                                         "delay attribute.");
+                                         "' has a delay, which is not yet supported under SSA/PSA "
+                                         "(issue #526 tracks adding it). Use method='ode', which "
+                                         "runs delayed events, or remove the delay.");
             }
         }
     }
@@ -683,9 +684,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // triggers can only flip at fire boundaries (state is constant during τ);
     // a post-fire trigger sweep handles those.
     //
-    // Delay support is deferred to Phase 5c: validate_for_ssa() (or the
-    // Simulator init-time check) raises on any event with delay > 0 or
-    // delay_expr_idx >= 0 before we ever reach this loop.
+    // Delayed events never reach this loop: the check at the top of
+    // run_internal() raises on any event with delay > 0 or delay_expr_idx >= 0
+    // (delay support under SSA/PSA is issue #526).
     std::vector<bool> trigger_was_true(n_events, false);
     auto &eval_ref = model.evaluator();
     auto &sp_vec_ref = const_cast<std::vector<Species> &>(model.species());
