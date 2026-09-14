@@ -94,6 +94,27 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The analytical-Jacobian self-check tests finite-difference convergence
+  across three step sizes, so a double-precision rounding plateau is no
+  longer mistaken for a converged slope (issue #533).** The gate judged an
+  entry once its central differences at `1e-5·|y|` and `5e-7·|y|` agreed.
+  BIOMD0000000393's rate laws carry the quadratic root
+  `(N/2)·(sqrt(1 + 4x/N) − 1)` with `4x/N ≈ 1e-6`, which doubles resolve to
+  only 8e-10 relative; its rounding structure is the same at both steps, so
+  the two differences agreed to 1e-6 while both sat 3% off the true slope on
+  an entry whose value is a small residual of ten O(1) contributions, and
+  the correct Jacobian was rejected at the third probe state. Rounding error
+  in a central difference grows as the step shrinks while truncation error
+  shrinks, so a third, coarser step at `2e-4·|y|` moves off the plateau: the
+  gate now requires all three differences to agree pairwise within the same
+  5e-3 band before it judges an entry, in both the dense and the sparse
+  path, and skips the entry as an FD artifact otherwise. A smooth entry
+  converges across all three (truncation at `2e-4·|y|` is ~1e-7 relative for
+  O(1) curvature), so a genuinely wrong derivative is still caught there.
+  BIOMD0000000393 attaches, with zero mismatches beyond 1% over ~3,300
+  converged entries at each of its four probe states, and the extracted
+  fixture `tests/data/jac_selfcheck_rounding_plateau.net` pins the
+  mechanism.
 - **`max`, `min` and `abs` over a differentiation variable are
   differentiated as the piecewise functions they are, so the model keeps its
   analytical Jacobian (issue #507).** sympy differentiates `Max` to

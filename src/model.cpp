@@ -1852,7 +1852,7 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
         // CORRECT analytical entry reads >1% off and a perfectly good Jacobian is
         // needlessly dropped to FD. The fix is to judge an entry ONLY where the
         // finite difference is itself trustworthy — finite, free of cancellation,
-        // and CONVERGED across two well-separated step sizes (Richardson). A
+        // and CONVERGED across well-separated step sizes (Richardson). A
         // genuine symbolic↔engine divergence then surfaces as a reliable FD entry
         // that still disagrees with the analytical value; FD artifacts are simply
         // not judged. Validated across the BioModels SBML corpus (1597 models):
@@ -1863,21 +1863,44 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
         // switching surface of a piecewise rate law and no finite difference is a
         // reference there (issue #511, below).
         //
-        // Per-entry verdict for a converged central difference at two step sizes:
-        // true ⇒ a trustworthy analytical↔FD mismatch (reject the Jacobian).
-        auto entry_is_mismatch = [](double an, double f0i, double fp1i, double fm1i, double fp2i,
-                                    double fm2i, double h1, double h2) -> bool {
-            double d1 = fp1i - fm1i, d2 = fp2i - fm2i;
-            double fd1 = d1 / (2.0 * h1), fd2 = d2 / (2.0 * h2);
-            if (!std::isfinite(fd1) || !std::isfinite(fd2))
+        // Convergence is tested across THREE step sizes, 20x apart, not two
+        // (issue #533). Two steps cannot see a plateau: a rate law written in a
+        // cancelling form — BIOMD0000000393's quadratic root
+        // (N/2)·(sqrt(1 + 4x/N) − 1) with 4x/N ~ 1e-6 resolves to 8e-10 relative in
+        // doubles — has a rounding structure that is the SAME at 1e-5·|y| and at
+        // 5e-7·|y|, so the two central differences agreed to 1e-6 while both
+        // sat 3% off the true slope (an entry whose derivative is small against
+        // the function's rounding floor), and a correct Jacobian was rejected.
+        // Rounding error in a central difference grows as the step shrinks and
+        // truncation error shrinks, so a difference that is right at one step
+        // and wrong at another moves between 2e-4·|y| and 1e-5·|y|; requiring
+        // the coarser step to agree as well exposes the plateau, and the entry
+        // is skipped as an FD artifact rather than judged. A smooth function
+        // converges across all three (the truncation error at 2e-4·|y| is
+        // ~1e-7 relative for O(1) curvature), so a genuine mismatch is still
+        // judged there.
+        //
+        // Per-entry verdict for a central difference converged across the three
+        // step sizes: true ⇒ a trustworthy analytical↔FD mismatch (reject the
+        // Jacobian).
+        auto entry_is_mismatch = [](double an, double f0i, double fp0i, double fm0i, double fp1i,
+                                    double fm1i, double fp2i, double fm2i, double h0, double h1,
+                                    double h2) -> bool {
+            double d0 = fp0i - fm0i, d1 = fp1i - fm1i, d2 = fp2i - fm2i;
+            double fd0 = d0 / (2.0 * h0), fd1 = d1 / (2.0 * h1), fd2 = d2 / (2.0 * h2);
+            if (!std::isfinite(fd0) || !std::isfinite(fd1) || !std::isfinite(fd2))
                 return false;
+            double sc0 = std::max(std::max(std::abs(fp0i), std::abs(fm0i)), 1.0);
             double sc1 = std::max(std::max(std::abs(fp1i), std::abs(fm1i)), 1.0);
             double sc2 = std::max(std::max(std::abs(fp2i), std::abs(fm2i)), 1.0);
-            if (std::abs(d1) <= 1e-9 * sc1 || std::abs(d2) <= 1e-9 * sc2)
+            if (std::abs(d0) <= 1e-9 * sc0 || std::abs(d1) <= 1e-9 * sc1 ||
+                std::abs(d2) <= 1e-9 * sc2)
                 return false; // catastrophic cancellation: slope is float noise
-            double cden = std::max(std::max(std::abs(fd1), std::abs(fd2)), 1e-6);
-            if (std::abs(fd1 - fd2) > 5e-3 * cden)
-                return false; // not Richardson-converged: FD is not a trustworthy oracle
+            double cden = std::max(std::max(std::abs(fd0), std::abs(fd1)), std::abs(fd2));
+            cden = std::max(cden, 1e-6);
+            if (std::abs(fd1 - fd2) > 5e-3 * cden || std::abs(fd0 - fd1) > 5e-3 * cden)
+                return false; // not converged across the three steps: FD is not a trustworthy
+                              // oracle
             // Issue #511: a piecewise rate law — if(), a min/max or a division
             // guard — switches on a quantity that is exactly 0 at the seed state
             // whenever the species it compares are still at their seed values, so
@@ -1901,7 +1924,7 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
         };
 
         std::vector<double> f0(ns);
-        std::vector<double> fp1(ns), fm1(ns), fp2(ns), fm2(ns);
+        std::vector<double> fp0(ns), fm0(ns), fp1(ns), fm1(ns), fp2(ns), fm2(ns);
 
         // Dense exhaustive validation costs O(ns²) memory + O(ns) RHS evals per
         // probe — fine for the modest models it was validated on, but infeasible
@@ -1984,8 +2007,13 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     double aj = std::abs(y[j]);
                     if (!(aj > 0.0))
                         continue; // zero species ⇒ no FD oracle; skip, don't reject
-                    double h1 = 1e-5 * aj, h2 = 5e-7 * aj; // two well-separated steps
+                    // three well-separated steps, 20x apart (issue #533)
+                    double h0 = 2e-4 * aj, h1 = 1e-5 * aj, h2 = 5e-7 * aj;
                     std::vector<double> yp = y, ym = y;
+                    yp[j] = y[j] + h0;
+                    ym[j] = y[j] - h0;
+                    compute_derivs(0.0, yp.data(), fp0.data());
+                    compute_derivs(0.0, ym.data(), fm0.data());
                     yp[j] = y[j] + h1;
                     ym[j] = y[j] - h1;
                     compute_derivs(0.0, yp.data(), fp1.data());
@@ -1996,7 +2024,8 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     compute_derivs(0.0, ym.data(), fm2.data());
                     for (int i = 0; i < ns; ++i) {
                         double an = Ja[static_cast<size_t>(j) * ns + i];
-                        if (entry_is_mismatch(an, f0[i], fp1[i], fm1[i], fp2[i], fm2[i], h1, h2)) {
+                        if (entry_is_mismatch(an, f0[i], fp0[i], fm0[i], fp1[i], fm1[i], fp2[i],
+                                              fm2[i], h0, h1, h2)) {
                             if (std::getenv("BNGSIM_JAC_DEBUG")) {
                                 std::fprintf(stderr,
                                              "[jac] dense self-check probe %zu: FD mismatch at "
@@ -2066,7 +2095,11 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     double aj = std::abs(y[j]);
                     if (!(aj > 0.0))
                         continue; // zero species ⇒ no FD oracle; skip, don't reject
-                    double h1 = 1e-5 * aj, h2 = 5e-7 * aj;
+                    double h0 = 2e-4 * aj, h1 = 1e-5 * aj, h2 = 5e-7 * aj; // issue #533
+                    yp[j] = y[j] + h0;
+                    ym[j] = y[j] - h0;
+                    compute_derivs(0.0, yp.data(), fp0.data());
+                    compute_derivs(0.0, ym.data(), fm0.data());
                     yp[j] = y[j] + h1;
                     ym[j] = y[j] - h1;
                     compute_derivs(0.0, yp.data(), fp1.data());
@@ -2084,8 +2117,8 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k)
                         acol[sp.row_indices[k]] = vals[k];
                     for (int i = 0; i < ns; ++i) {
-                        if (entry_is_mismatch(acol[i], f0[i], fp1[i], fm1[i], fp2[i], fm2[i], h1,
-                                              h2)) {
+                        if (entry_is_mismatch(acol[i], f0[i], fp0[i], fm0[i], fp1[i], fm1[i],
+                                              fp2[i], fm2[i], h0, h1, h2)) {
                             if (std::getenv("BNGSIM_JAC_DEBUG")) {
                                 double fd2 = (fp2[i] - fm2[i]) / (2.0 * h2);
                                 std::fprintf(stderr,
