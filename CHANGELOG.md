@@ -94,6 +94,38 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A rate law shared by several reactions is derived once per model, so the
+  linlog BioModels BIOMD0000000469–473 keep their analytical Jacobian on any
+  machine (issue #532).** What a Functional rate law derives to depends on its
+  text and on inputs fixed for the whole model — the function map, observable
+  groups, species metadata, constants and writable volumes — and never on which
+  reaction carries it: each reaction's stoichiometry is applied afterwards, by
+  the C++ scatter at attach and by the C scatter in the compiled Jacobian. Yet
+  `attach_functional_jacobian` derived it again for every reaction. Sharing is
+  common: a `.net` function drives every reaction its rule generated, and the
+  SBML loader emits a reaction with non-integer stoichiometry as one reaction
+  per species, each carrying the whole kinetic law. The five Smallbone 2013
+  linlog models have a biomass reaction with 65 reactants and 3 products; it
+  becomes 68 per-species reactions sharing one 5,413-character law, and deriving
+  that law 68 times was 92% of a 29 s derivation. Since #531 the models ran
+  into the 20 s budget and attached or declined by machine load. The attach now
+  derives each distinct rate law once per path and hands the terms to every
+  reaction that carries it; a decline still ends the attach with the same
+  reason. The compiled Jacobian's reconstruction
+  (`_codegen._functional_jacobian_groups`, shared with the compiled sensitivity
+  RHS) does the same, which matters because it only runs once the attach has
+  succeeded: on BIOMD0000000469 it re-derived for 30 s. Both caches live for
+  one derivation of one model. Measured one model at a time under the default
+  budget, BIOMD0000000469 and 470 now attach in 5 s and 3 s where they declined
+  at the budget, 471–473 attach in 2–4 s instead of 19–22 s, and their compiled
+  Jacobians are emitted in under 3 s instead of 17–20 s. Across the corpus, 94
+  models have reactions that share a rate law; for the 93 compared with the
+  budget off, the terms handed to the C++ attach and the emitted C are
+  identical to what main produced, and no attach verdict changed. The 94th
+  shares only a constant zero rate and was not compared, since its other rate
+  laws derive for minutes with no budget. `mt_music_sequencer`, the other model
+  #532 names, spends its budget on a few genuinely expensive rate laws that no
+  two reactions share, so it still declines at the budget.
 - **The stale-binary guard no longer calls a current extension STALE after a
   checkout, stash or rebase rewrites the C++ with identical bytes (issue
   #528).** The guard compares the loaded extension's mtime with the newest

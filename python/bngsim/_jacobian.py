@@ -3165,6 +3165,23 @@ def attach_functional_jacobian(core) -> bool:
 
     all_terms = []
     processed = 0
+    # Issue #532: what a rate law derives to depends on its text and on inputs that
+    # are fixed for this whole attach — the function map, the observable groups,
+    # the species metadata, the constants, the writable volumes — and never on
+    # which reaction carries it: the reaction's own stoichiometry is applied by
+    # the C++ scatter, not here. So the terms of a rate law shared by several
+    # reactions are derived once and handed to each of them. Sharing is common:
+    # a .net function drives every reaction its rule generated, and the SBML
+    # loader emits a reaction with non-integer stoichiometry as one reaction per
+    # species, each carrying the whole kinetic law. The five Smallbone 2013 linlog
+    # BioModels (BIOMD0000000469–473) have a biomass reaction, r_2584, with 65
+    # reactants and 3 products; its 5,413-character law was derived once for each
+    # of its 68 per-species reactions, which was 92% of a 29 s derivation that ran
+    # into the 20 s budget, so the models attached or declined by machine load.
+    # Keyed by path as well as text, because the per-species and per-observable
+    # terms of one text differ. Only a derivation that succeeded is kept: a
+    # decline ends the attach below.
+    derived: dict[tuple[bool, str], list] = {}
     try:
         for rxn in rxns:
             if deadline is not None and time.perf_counter() > deadline:
@@ -3180,36 +3197,42 @@ def attach_functional_jacobian(core) -> bool:
             # non-empty species factor (.net Functional) needs per-observable +
             # the product rule.
             has_species_factor = rxn["apply_species_factor"] and len(rxn["reactant_idx0"]) > 0
-            if has_species_factor:
-                # .net per-observable path: emit ∂func/∂obs_k; the C++ callback
-                # scatters through the observable group and applies the mass-action
-                # species-factor product rule. (Engaged once the C++ per-observable
-                # path lands; until then set_functional_jacobian rejects it and the
-                # model falls back to FD — never wrong, just not yet accelerated.)
-                obs_terms = build_per_observable_terms(
-                    rate_expr, func_map, obs_names, constants, deadline
-                )
-                if obs_terms is None:
+            key = (has_species_factor, rate_expr)
+            terms = derived.get(key)
+            if terms is None:
+                if has_species_factor:
+                    # .net per-observable path: emit ∂func/∂obs_k; the C++ callback
+                    # scatters through the observable group and applies the
+                    # mass-action species-factor product rule.
+                    terms = build_per_observable_terms(
+                        rate_expr, func_map, obs_names, constants, deadline
+                    )
+                else:
+                    # SBML per-species path.
+                    terms = build_per_species_terms(
+                        rate_expr,
+                        func_map,
+                        obs_groups,
+                        species_meta,
+                        constants,
+                        deadline,
+                        species_volume_sym,
+                    )
+                if terms is None:
                     logger.debug("GH#76 analytical Jacobian: reaction %d declined", rxn["rxn_idx"])
                     return False
-                keyed = [(obs_idx[name], expr) for name, expr in obs_terms]
+                derived[key] = terms
+            if has_species_factor:
+                keyed = [(obs_idx[name], expr) for name, expr in terms]
                 all_terms.append((rxn["rxn_idx"], True, keyed))
             else:
-                # SBML per-species path.
-                sp_terms = build_per_species_terms(
-                    rate_expr,
-                    func_map,
-                    obs_groups,
-                    species_meta,
-                    constants,
-                    deadline,
-                    species_volume_sym,
-                )
-                if sp_terms is None:
-                    logger.debug("GH#76 analytical Jacobian: reaction %d declined", rxn["rxn_idx"])
-                    return False
-                all_terms.append((rxn["rxn_idx"], False, [(int(j), expr) for j, expr in sp_terms]))
+                all_terms.append((rxn["rxn_idx"], False, [(int(j), expr) for j, expr in terms]))
             processed += 1
+        logger.debug(
+            "GH#76 analytical Jacobian: %d functional reactions, %d distinct rate laws derived",
+            len(rxns),
+            len(derived),
+        )
     except _DerivationBudgetExceeded:
         elapsed = time.perf_counter() - start
         if n_species >= _FD_COSTLY_SPECIES:

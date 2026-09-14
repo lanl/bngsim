@@ -7409,6 +7409,19 @@ def _functional_jacobian_groups(
             missed = True
         return line
 
+    # Issue #532: a rate law carried by several reactions derives to the same C
+    # terms for every one of them. Everything else build_per_species_c and
+    # differentiate_rate_law_c read is fixed for this reconstruction, and each
+    # reaction's own stoichiometry is applied by the scatter below, so each
+    # distinct rate law is derived once per path — the rule
+    # attach_functional_jacobian follows. Without it, a compiled Jacobian for the
+    # linlog BioModels (BIOMD0000000469–473) re-derived the 5,413-character law of
+    # their biomass reaction for each of the 68 per-species reactions the SBML
+    # loader emits it as, and took 30 s on a model whose interpreted attach, the
+    # gate for reaching this function at all, takes 5.
+    species_terms_by_law: dict[str, list] = {}
+    observable_terms_by_law: dict[str, list] = {}
+
     # Per-species (SBML) block — emitted for all reactions first so the scatter
     # accumulation order matches fill_dense_analytical_jacobian (all species_
     # terms, then all volume_terms, then all observable_terms).
@@ -7417,18 +7430,21 @@ def _functional_jacobian_groups(
         if has_sf:
             continue
         affected = _net_affected(rxn)
-        terms = build_per_species_c(
-            rxn["rate_expr"],
-            func_map,
-            obs_groups,
-            species_meta,
-            constants,
-            resolve_symbol,
-            deadline,
-            species_volume_sym,
-        )
+        terms = species_terms_by_law.get(rxn["rate_expr"])
         if terms is None:
-            return None
+            terms = build_per_species_c(
+                rxn["rate_expr"],
+                func_map,
+                obs_groups,
+                species_meta,
+                constants,
+                resolve_symbol,
+                deadline,
+                species_volume_sym,
+            )
+            if terms is None:
+                return None
+            species_terms_by_law[rxn["rate_expr"]] = terms
         if not affected:
             continue  # set_functional_jacobian drops empty-affected terms
         for sp_j, c_deriv in terms:
@@ -7491,11 +7507,14 @@ def _functional_jacobian_groups(
             continue
         affected = _net_affected(rxn)
         rxn_idx = int(rxn["rxn_idx"])
-        od = differentiate_rate_law_c(
-            rxn["rate_expr"], func_map, ctx_obs_names, constants, resolve_symbol, deadline
-        )
+        od = observable_terms_by_law.get(rxn["rate_expr"])
         if od is None:
-            return None
+            od = differentiate_rate_law_c(
+                rxn["rate_expr"], func_map, ctx_obs_names, constants, resolve_symbol, deadline
+            )
+            if od is None:
+                return None
+            observable_terms_by_law[rxn["rate_expr"]] = od
         fname = reactions_cd[rxn_idx]["function_name"]
         fidx = func_idx_by_name.get(fname, -1)
         if fidx < 0:
