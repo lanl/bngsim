@@ -94,6 +94,32 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The C++ attach gate's verdict reaches `Model.analytical_jacobian_status`
+  as text — the mismatching or non-finite entry, the probe state and both
+  values — instead of a pointer at `BNGSIM_JAC_DEBUG=1` (issue #534).**
+  `NetworkModel::set_functional_jacobian` returns a bool, and when it declined
+  the reason existed only as a stderr line under `BNGSIM_JAC_DEBUG=1`, so the
+  status read the same generic sentence for every refusal: 17 corpus models,
+  in two classes invisible from the status — eleven whose analytical entry is
+  non-finite at the seed while the RHS is finite (`∂(k·sqrt(A))/∂A` at
+  `A = 0`), and six with a mismatch, five of them with their seed on a
+  switching surface of their own `if(c > 0)` / `if(c < 0)` rate-law pairs,
+  where the analytical entry is 0 at probe 0 and the finite difference is the
+  smooth slope. The gate now records its verdict on the model — the kind of
+  refusal, the reaction or the entry, the probe, the analytical and
+  finite-difference values — readable as
+  `NetworkModel.last_functional_jacobian_decline()` (a dict, or `None` after
+  an attach that succeeded; carried by `clone()`), and the attach driver folds
+  it into the status with species names: `declined: the finite-difference
+  self-check found a trustworthy mismatch at probe 0 (the seed state) in
+  ∂f[LX()]/∂[LX()]: analytical 0, finite-difference -10`, or `declined:
+  ∂f[B()]/∂[A()] is non-finite (inf) at probe 0 (the seed state) while the
+  RHS is finite`. Every other refusal is named too — a term that did not
+  compile, with the compiler's message and the expression; an entry with no
+  slot in the sparsity pattern; a reaction or observable index the model does
+  not have — and the sparse self-check's non-finite line now carries the
+  column as well as the row. The stderr line under `BNGSIM_JAC_DEBUG=1`
+  stays.
 - **The analytical-Jacobian self-check tests finite-difference convergence
   across three step sizes, so a double-precision rounding plateau is no
   longer mistaken for a converged slope (issue #533).** The gate judged an

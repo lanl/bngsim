@@ -2014,6 +2014,31 @@ int test_analytical_jacobian() {
         CHECK(!model2.set_functional_jacobian({bad}),
               "Corrupted per-observable derivative rejected by self-check");
 
+        // Issue #534: the verdict is recorded on the instance — the self-check's
+        // mismatch names the probe, the entry and both values — a success leaves
+        // it empty, a bad reaction index is named as such, and a clone carries it.
+        {
+            using Kind = bngsim::FunctionalJacobianDecline::Kind;
+            const auto &why = model2.last_functional_jacobian_decline();
+            CHECK(why.kind == Kind::FdMismatch, "Rejection recorded as an FD mismatch");
+            CHECK(std::string(why.kind_name()) == "fd_mismatch", "kind_name spells the kind");
+            CHECK(why.probe >= 0 && why.row >= 0 && why.row < ns && why.col >= 0 && why.col < ns,
+                  "Mismatch names the probe and the entry");
+            CHECK(std::isfinite(why.analytical) && std::isfinite(why.finite_difference) &&
+                      why.analytical != why.finite_difference,
+                  "Mismatch carries both values");
+            CHECK(model.last_functional_jacobian_decline().kind == Kind::None,
+                  "A successful attach records no decline");
+            bngsim::FunctionalJacobianInput stray = in;
+            stray.rxn_idx = 99;
+            CHECK(!model2.set_functional_jacobian({stray}), "Bad reaction index rejected");
+            CHECK(model2.last_functional_jacobian_decline().kind == Kind::BadReactionIndex &&
+                      model2.last_functional_jacobian_decline().rxn_idx == 99,
+                  "Bad reaction index is named");
+            CHECK(model2.clone().last_functional_jacobian_decline().kind == Kind::BadReactionIndex,
+                  "Clone carries the verdict");
+        }
+
         // Clone recompiles the per-observable derivative ids and stays complete.
         auto clone = model.clone();
         CHECK(clone.analytical_jacobian_complete(),

@@ -195,6 +195,10 @@ class NetworkModel:
         """
         Bulk-copy all species concentrations into a new float64 ndarray, ordered like species_names(). O(n_species), one Python call (GH #102).
         """
+    def last_functional_jacobian_decline(self) -> typing.Any:
+        """
+        Why the last set_functional_jacobian call returned False, or None after one that returned True (issue #534). A dict: 'kind' ('fd_mismatch', 'nonfinite_entry', 'term_outside_pattern', 'compile_failed', 'bad_reaction_index', 'bad_observable_index', 'baked_volume', 'no_sparsity'); 'rxn_idx', 'per_observable' and 'target_idx' for the term the decline came from; 'row' and 'col' (0-based species indices) for the entry; 'probe' (0 is the seed state), 'analytical' and 'finite_difference' for the self-check's verdicts; 'n_nonfinite' for how many entries were non-finite; 'detail' for a compiler's message.
+        """
     def pending_sensitivity_seed(self) -> numpy.typing.NDArray[numpy.float64]:
         """
         The pending carry-over forward-sensitivity seed dx/dθ as an (n_species, n_params) ndarray, or shape (0, 0) when none is pending. Columns are pending_sensitivity_seed_param_names() (GH #210).
@@ -229,7 +233,7 @@ class NetworkModel:
         """
     def set_functional_jacobian(self, terms: list) -> bool:
         """
-        Compile and attach symbolically-derived Functional Jacobian terms (GH #76). Returns True if the analytical Jacobian was populated.
+        Compile and attach symbolically-derived Functional Jacobian terms (GH #76). Returns True if the analytical Jacobian was populated; last_functional_jacobian_decline() says why it was not.
         """
     def set_param(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex, force_override: bool = False) -> None:
         """

@@ -240,6 +240,9 @@ NetworkModel NetworkModel::clone() const {
             }
         }
     }
+    // The last attach's verdict (issue #534) is plain data: the clone reports
+    // the same decline its parent does, as Model.clone() carries the status.
+    copy.impl_->functional_jac_decline = impl_->functional_jac_decline;
 
     // Deep-copy events and re-compile their expressions in the new evaluator.
     // Each event carries indices into the evaluator's expression table for
@@ -1481,6 +1484,10 @@ const AnalyticalJacobianData &NetworkModel::analytical_jacobian() const {
 const FunctionalJacobianData &NetworkModel::functional_jacobian() const {
     return impl_->functional_jac;
 }
+
+const FunctionalJacobianDecline &NetworkModel::last_functional_jacobian_decline() const {
+    return impl_->functional_jac_decline;
+}
 bool NetworkModel::analytical_jacobian_complete() const {
     const auto &ajd = impl_->shared->analytical_jac;
     if (!ajd.available)
@@ -1556,8 +1563,20 @@ FunctionalJacobianContext NetworkModel::functional_jacobian_context() const {
 bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianInput> &terms) {
     const auto &sd = *impl_->shared;
     const auto &sp = sd.jac_sparsity;
-    if (sp.empty())
+
+    // Issue #534: every `return false` below first records its verdict on the
+    // instance, for last_functional_jacobian_decline() — which term or entry,
+    // at which probe, both values — so the reason reaches the Python status as
+    // text and not only the BNGSIM_JAC_DEBUG=1 stderr line. Reset here, so the
+    // record describes THIS call: a call that returns true leaves kind None.
+    using DeclineKind = FunctionalJacobianDecline::Kind;
+    FunctionalJacobianDecline &verdict = impl_->functional_jac_decline;
+    verdict = FunctionalJacobianDecline{};
+
+    if (sp.empty()) {
+        verdict.kind = DeclineKind::NoSparsity;
         return false;
+    }
 
     auto find_csc = [&](int row, int col) -> int64_t {
         int64_t lo = sp.col_ptrs[col], hi = sp.col_ptrs[col + 1];
@@ -1578,8 +1597,11 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
     FunctionalJacobianData fjac;
 
     for (const auto &in : terms) {
-        if (in.rxn_idx < 0 || in.rxn_idx >= static_cast<int>(sd.reactions.size()))
+        if (in.rxn_idx < 0 || in.rxn_idx >= static_cast<int>(sd.reactions.size())) {
+            verdict.kind = DeclineKind::BadReactionIndex;
+            verdict.rxn_idx = in.rxn_idx;
             return false;
+        }
         const auto &rxn = sd.reactions[in.rxn_idx];
         const bool dbg = std::getenv("BNGSIM_JAC_DEBUG") != nullptr;
 
@@ -1612,8 +1634,13 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
         if (in.per_observable && rxn.per_species_volume_scaling) {
             for (const auto &[i, c_i] : net) {
                 if (c_i != 0.0 && i >= 0 && i < static_cast<int>(impl_->species.size()) &&
-                    impl_->species[i].volume_param_idx0 >= 0)
+                    impl_->species[i].volume_param_idx0 >= 0) {
+                    verdict.kind = DeclineKind::BakedVolume;
+                    verdict.rxn_idx = in.rxn_idx;
+                    verdict.per_observable = true;
+                    verdict.row = i;
                     return false;
+                }
             }
         }
 
@@ -1633,6 +1660,7 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
 
             // Accumulate columns keyed by species j; build affected rows lazily.
             std::unordered_map<int, FunctionalJacobianData::ObservableTerm::Column> cols;
+            int outside_row = -1, outside_col = -1; // the entry ensure_col found no slot for
             auto ensure_col = [&](int j) -> FunctionalJacobianData::ObservableTerm::Column & {
                 auto it = cols.find(j);
                 if (it != cols.end())
@@ -1643,8 +1671,11 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     if (c_i == 0.0)
                         continue;
                     int64_t csc = find_csc(i, j);
-                    if (csc < 0)
+                    if (csc < 0) {
+                        outside_row = i;
+                        outside_col = j;
                         throw std::out_of_range("jac csc"); // signalled below
+                    }
                     c.affected.emplace_back(csc, row_coeff(i, c_i));
                 }
                 return cols.emplace(j, std::move(c)).first->second;
@@ -1653,8 +1684,13 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
             try {
                 // Term A: one ∂func/∂obs_k per observable index in deriv_terms.
                 for (const auto &[obs_idx, deriv_str] : in.deriv_terms) {
-                    if (obs_idx < 0 || obs_idx >= static_cast<int>(impl_->observables.size()))
+                    if (obs_idx < 0 || obs_idx >= static_cast<int>(impl_->observables.size())) {
+                        verdict.kind = DeclineKind::BadObservableIndex;
+                        verdict.rxn_idx = in.rxn_idx;
+                        verdict.per_observable = true;
+                        verdict.target_idx = obs_idx;
                         return false;
+                    }
                     int k_idx;
                     try {
                         k_idx = static_cast<int>(ot.dfunc_dobs_eval_ids.size());
@@ -1664,6 +1700,11 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                             std::fprintf(stderr,
                                          "[jac] rxn %d obs %d compile FAILED: %s\n  expr: %s\n",
                                          in.rxn_idx, obs_idx, e.what(), deriv_str.c_str());
+                        verdict.kind = DeclineKind::CompileFailed;
+                        verdict.rxn_idx = in.rxn_idx;
+                        verdict.per_observable = true;
+                        verdict.target_idx = obs_idx;
+                        verdict.detail = e.what();
                         return false;
                     }
                     const auto &obs = impl_->observables[obs_idx];
@@ -1692,8 +1733,14 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                 }
             } catch (const std::out_of_range &) {
                 if (dbg)
-                    std::fprintf(stderr, "[jac] rxn %d: per-observable entry outside sparsity\n",
-                                 in.rxn_idx);
+                    std::fprintf(stderr,
+                                 "[jac] rxn %d: per-observable entry J[%d][%d] outside sparsity\n",
+                                 in.rxn_idx, outside_row, outside_col);
+                verdict.kind = DeclineKind::TermOutsidePattern;
+                verdict.rxn_idx = in.rxn_idx;
+                verdict.per_observable = true;
+                verdict.row = outside_row;
+                verdict.col = outside_col;
                 return false; // a derivative entry fell outside the sparsity pattern
             }
 
@@ -1736,6 +1783,10 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                 if (dbg)
                     std::fprintf(stderr, "[jac] rxn %d species %d compile FAILED: %s\n  expr: %s\n",
                                  in.rxn_idx, species_j, e.what(), deriv_str.c_str());
+                verdict.kind = DeclineKind::CompileFailed;
+                verdict.rxn_idx = in.rxn_idx;
+                verdict.target_idx = species_j;
+                verdict.detail = e.what();
                 return false;
             }
             FunctionalJacobianData::SpeciesTerm st;
@@ -1750,6 +1801,11 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     if (dbg)
                         std::fprintf(stderr, "[jac] rxn %d: J[%d][%d] outside sparsity pattern\n",
                                      in.rxn_idx, i, species_j);
+                    verdict.kind = DeclineKind::TermOutsidePattern;
+                    verdict.rxn_idx = in.rxn_idx;
+                    verdict.target_idx = species_j;
+                    verdict.row = i;
+                    verdict.col = species_j;
                     return false; // derivative entry outside the sparsity pattern
                 }
                 st.affected.push_back(
@@ -1780,6 +1836,10 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                         std::fprintf(stderr,
                                      "[jac] rxn %d: varvol column J[%d][%d] outside sparsity\n",
                                      in.rxn_idx, i, L);
+                    verdict.kind = DeclineKind::TermOutsidePattern;
+                    verdict.rxn_idx = in.rxn_idx;
+                    verdict.row = i;
+                    verdict.col = L;
                     return false;
                 }
                 vt.entries.push_back({csc, rxn.stat_factor * c_i, L});
@@ -1971,16 +2031,29 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                 // would poison the integrator's Newton solve (e.g.
                 // ∂(k·sqrt(A))/∂A = k/(2·sqrt(A)) → ∞ at A=0 while the rate is a
                 // finite 0). FD tolerates this, so such a model must stay on FD.
-                for (size_t k = 0; k < Ja.size() && ok; ++k)
+                // Every entry is scanned so the verdict can say how many were
+                // non-finite; it names the first (issue #534).
+                int64_t n_nonfinite = 0;
+                for (size_t k = 0; k < Ja.size(); ++k)
                     if (!std::isfinite(Ja[k])) {
-                        if (std::getenv("BNGSIM_JAC_DEBUG"))
-                            std::fprintf(stderr,
-                                         "[jac] dense self-check probe %zu: non-finite analytical "
-                                         "entry at (row=%d, col=%d) value=%g\n",
-                                         pi, static_cast<int>(k % ns), static_cast<int>(k / ns),
-                                         Ja[k]);
-                        ok = false;
+                        const int row = static_cast<int>(k % ns), col = static_cast<int>(k / ns);
+                        if (n_nonfinite++ == 0) {
+                            if (std::getenv("BNGSIM_JAC_DEBUG"))
+                                std::fprintf(stderr,
+                                             "[jac] dense self-check probe %zu: non-finite "
+                                             "analytical entry at (row=%d, col=%d) value=%g\n",
+                                             pi, row, col, Ja[k]);
+                            verdict.kind = DeclineKind::NonfiniteEntry;
+                            verdict.probe = static_cast<int>(pi);
+                            verdict.row = row;
+                            verdict.col = col;
+                            verdict.analytical = Ja[k];
+                        }
                     }
+                if (n_nonfinite > 0) {
+                    verdict.n_nonfinite = n_nonfinite;
+                    ok = false;
+                }
                 for (int j = 0; j < ns && ok; ++j) {
                     // Scale-RELATIVE FD step (GH #168). A step floored at 1.0
                     // (the former max(|y[j]|,1.0)) is ~1e7× the value for
@@ -2026,12 +2099,19 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                         double an = Ja[static_cast<size_t>(j) * ns + i];
                         if (entry_is_mismatch(an, f0[i], fp0[i], fm0[i], fp1[i], fm1[i], fp2[i],
                                               fm2[i], h0, h1, h2)) {
+                            const double fd = (fp2[i] - fm2[i]) / (2.0 * h2);
                             if (std::getenv("BNGSIM_JAC_DEBUG")) {
                                 std::fprintf(stderr,
                                              "[jac] dense self-check probe %zu: FD mismatch at "
                                              "(row=%d, col=%d) analytical=%g fd=%g\n",
-                                             pi, i, j, an, (fp2[i] - fm2[i]) / (2.0 * h2));
+                                             pi, i, j, an, fd);
                             }
+                            verdict.kind = DeclineKind::FdMismatch;
+                            verdict.probe = static_cast<int>(pi);
+                            verdict.row = i;
+                            verdict.col = j;
+                            verdict.analytical = an;
+                            verdict.finite_difference = fd;
                             ok = false;
                             break;
                         }
@@ -2068,12 +2148,27 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                             first_bad = k;
                     }
                 if (nonfinite > 0) {
+                    // The column of the first bad entry is the one whose CSC
+                    // pointer range holds its data index.
+                    const int first_row = static_cast<int>(sp.row_indices[first_bad]);
+                    const int first_col =
+                        static_cast<int>(
+                            std::upper_bound(sp.col_ptrs.begin(), sp.col_ptrs.end(), first_bad) -
+                            sp.col_ptrs.begin()) -
+                        1;
                     if (std::getenv("BNGSIM_JAC_DEBUG"))
                         std::fprintf(stderr,
                                      "[jac] sparse self-check probe %zu: %lld non-finite "
-                                     "analytical entries (first at csc=%lld, row=%d, value=%g)\n",
-                                     pi, (long long)nonfinite, (long long)first_bad,
-                                     (int)sp.row_indices[first_bad], vals[first_bad]);
+                                     "analytical entries (first at csc=%lld, row=%d, col=%d, "
+                                     "value=%g)\n",
+                                     pi, (long long)nonfinite, (long long)first_bad, first_row,
+                                     first_col, vals[first_bad]);
+                    verdict.kind = DeclineKind::NonfiniteEntry;
+                    verdict.probe = static_cast<int>(pi);
+                    verdict.row = first_row;
+                    verdict.col = first_col;
+                    verdict.analytical = vals[first_bad];
+                    verdict.n_nonfinite = nonfinite;
                     ok = false;
                     break;
                 }
@@ -2119,13 +2214,19 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                     for (int i = 0; i < ns; ++i) {
                         if (entry_is_mismatch(acol[i], f0[i], fp0[i], fm0[i], fp1[i], fm1[i],
                                               fp2[i], fm2[i], h0, h1, h2)) {
+                            const double fd = (fp2[i] - fm2[i]) / (2.0 * h2);
                             if (std::getenv("BNGSIM_JAC_DEBUG")) {
-                                double fd2 = (fp2[i] - fm2[i]) / (2.0 * h2);
                                 std::fprintf(stderr,
                                              "[jac] sparse self-check probe %zu: FD mismatch at "
                                              "(row=%d, col=%d) analytical=%g fd=%g\n",
-                                             pi, i, j, acol[i], fd2);
+                                             pi, i, j, acol[i], fd);
                             }
+                            verdict.kind = DeclineKind::FdMismatch;
+                            verdict.probe = static_cast<int>(pi);
+                            verdict.row = i;
+                            verdict.col = j;
+                            verdict.analytical = acol[i];
+                            verdict.finite_difference = fd;
                             ok = false;
                             break;
                         }

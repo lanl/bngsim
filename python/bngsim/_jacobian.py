@@ -3004,6 +3004,93 @@ def eager_jacobian_requested(defer_jacobian: bool | None = None) -> bool:
 # ─── Post-build attach driver (Python drives C++; the engine never calls us) ──
 
 
+def attach_decline_reason(core, terms=()) -> str:
+    """The C++ attach gate's verdict on ``core``, in words and species names
+    (issue #534).
+
+    ``NetworkModel.set_functional_jacobian`` returns ``False`` on a dozen paths
+    and records which on the instance (``last_functional_jacobian_decline``);
+    the most informative of them — the finite-difference self-check's verdict:
+    which probe, which entry, both values — used to exist only as a stderr line
+    under ``BNGSIM_JAC_DEBUG=1``. ``terms`` is what the attach was handed, so a
+    term that did not compile can be quoted.
+    """
+    verdict = core.last_functional_jacobian_decline()
+    if verdict is None:
+        return (
+            "the C++ attach declined the derived terms without recording why; "
+            "BNGSIM_JAC_DEBUG=1 prints its trace"
+        )
+    species = list(core.species_names)
+
+    def name(i: int) -> str:
+        return species[i] if 0 <= i < len(species) else f"species {i}"
+
+    kind = verdict["kind"]
+    rxn = f"reaction {verdict['rxn_idx']}"
+    entry = f"∂f[{name(verdict['row'])}]/∂[{name(verdict['col'])}]"
+    probe = verdict["probe"]
+    at = f"at probe {probe} ({'the seed state' if probe == 0 else 'a spread-out state'})"
+    if kind == "fd_mismatch":
+        return (
+            f"the finite-difference self-check found a trustworthy mismatch {at} in "
+            f"{entry}: analytical {verdict['analytical']:g}, finite-difference "
+            f"{verdict['finite_difference']:g}"
+        )
+    if kind == "nonfinite_entry":
+        others = int(verdict["n_nonfinite"]) - 1
+        more = (
+            f" (and {others} more {'entry' if others == 1 else 'entries'})" if others > 0 else ""
+        )
+        return (
+            f"{entry} is non-finite ({verdict['analytical']:g}) {at} while the RHS is finite{more}"
+        )
+    if kind == "term_outside_pattern":
+        return (
+            f"the derivative of {rxn}'s rate law lands in {entry}, which has no slot in "
+            "the Jacobian sparsity pattern"
+        )
+    if kind == "compile_failed":
+        target_idx, per_observable = verdict["target_idx"], verdict["per_observable"]
+        if per_observable:
+            observables = list(core.observable_names)
+            in_range = 0 <= target_idx < len(observables)
+            target = observables[target_idx] if in_range else f"observable {target_idx}"
+        else:
+            target = name(target_idx)
+        expr = next(
+            (
+                e
+                for r, po, dl in terms
+                if r == verdict["rxn_idx"] and po == per_observable
+                for i, e in dl
+                if i == target_idx
+            ),
+            None,
+        )
+        quoted = f", {_short(expr)}," if expr is not None else ""
+        said = " ".join(str(verdict["detail"]).split())
+        return (
+            f"the derivative of {rxn}'s rate law with respect to {target}{quoted} did not "
+            f"compile: {said}"
+        )
+    if kind == "bad_reaction_index":
+        return f"a derived term names {rxn}, which the model does not have"
+    if kind == "bad_observable_index":
+        return (
+            f"a derived term of {rxn} names observable {verdict['target_idx']}, which the "
+            "model does not have"
+        )
+    if kind == "baked_volume":
+        return (
+            f"the per-observable derivative of {rxn} would bake the writable compartment "
+            f"size of {name(verdict['row'])} into the Jacobian (issue #170)"
+        )
+    if kind == "no_sparsity":
+        return "the model has no Jacobian sparsity pattern to attach the terms into"
+    return f"the C++ attach declined the derived terms ({kind})"
+
+
 def attach_functional_jacobian(core) -> bool:
     """Differentiate every Functional rate law of a freshly-built model and
     attach the analytical Jacobian terms.
@@ -3170,14 +3257,10 @@ def attach_functional_jacobian(core) -> bool:
         _declined(f"the C++ attach raised {type(exc).__name__}: {exc}")
         return False
     if not attached:
-        # Issues #506/#511: the C++ attach declined silently at every log level
-        # otherwise. It declines for a trustworthy analytical↔FD mismatch at a
-        # probe state, an analytical entry that is non-finite where the RHS is
-        # finite, or a derivative term outside the sparsity pattern.
-        _declined(
-            "the C++ attach declined the derived terms (the finite-difference "
-            "self-check found a trustworthy mismatch, an entry was non-finite at a "
-            "probe state, or a term fell outside the sparsity pattern); "
-            "BNGSIM_JAC_DEBUG=1 prints the entry"
-        )
+        # Issues #506/#511/#534: the C++ attach declines for a trustworthy
+        # analytical↔FD mismatch at a probe state, an analytical entry that is
+        # non-finite where the RHS is finite, a derivative term outside the
+        # sparsity pattern, or a term that did not compile — and records which,
+        # so the status names the entry instead of pointing at BNGSIM_JAC_DEBUG=1.
+        _declined(attach_decline_reason(core, all_terms))
     return attached

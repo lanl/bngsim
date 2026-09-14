@@ -143,7 +143,9 @@ def test_lorenz_attractor_derives_and_attaches_off_its_seed_surface():
     attaches and is exact, with the textbook 8 of 9 nonzeros."""
     m = bngsim.Model.from_net(_LORENZ[0])
     assert m.prepare_analytical_jacobian() is False
-    assert m.analytical_jacobian_status.startswith("declined: the C++ attach declined")
+    status = m.analytical_jacobian_status  # issue #534: the verdict names the entry
+    assert "trustworthy mismatch at probe 0 (the seed state)" in status, status
+    assert "analytical 0," in status, status  # the branch's slope, against the smooth one
 
     m = bngsim.Model.from_net(_LORENZ[0])
     m.set_concentration("LX()", 52.0)  # x = 2: no rate's switching argument is 0

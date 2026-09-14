@@ -675,6 +675,87 @@ struct FunctionalJacobianData {
     bool populated = false;
 };
 
+// ─── Why the last functional-Jacobian attach declined (issue #534) ───────────
+//
+// NetworkModel::set_functional_jacobian returns false on a dozen paths, and the
+// most informative of them — the finite-difference self-check's verdict: which
+// probe, which entry, both values — used to exist only as a stderr line under
+// BNGSIM_JAC_DEBUG=1. The gate now records its verdict here, on the instance,
+// for NetworkModel::last_functional_jacobian_decline(); the Python attach
+// driver folds it into Model.analytical_jacobian_status with species names.
+// Reset on entry to every attach, so it describes the LAST call only: after a
+// call that returned true, kind is None.
+struct FunctionalJacobianDecline {
+    enum class Kind {
+        None,               // the last attach succeeded, or none has run
+        NoSparsity,         // the model has no Jacobian sparsity pattern to attach into
+        BadReactionIndex,   // a term names a reaction the model does not have (rxn_idx)
+        BadObservableIndex, // a per-observable term names an observable the model does not have
+        BakedVolume,        // a per-observable term on a variable-volume reaction would bake a
+                            // writable compartment size into its coefficient (#170; row)
+        CompileFailed,      // a derivative expression did not compile (rxn_idx, target_idx, detail)
+        TermOutsidePattern, // a derivative entry (row, col) has no slot in the sparsity pattern
+        NonfiniteEntry,     // self-check: an analytical entry is non-finite where the RHS is finite
+        FdMismatch,         // self-check: a trustworthy analytical↔finite-difference mismatch
+    };
+    Kind kind = Kind::None;
+
+    // The term the decline came from, for the pre-self-check kinds; -1 otherwise.
+    int rxn_idx = -1;
+    // Whether that term was a per-observable (.net) one, which is the index
+    // space target_idx is in: an observable index when true, a species index
+    // when false.
+    bool per_observable = false;
+    // The term's differentiation target (CompileFailed, BadObservableIndex, and
+    // the per-species TermOutsidePattern); -1 otherwise.
+    int target_idx = -1;
+
+    // The Jacobian entry ∂f[row]/∂x[col], 0-based species indices, for
+    // TermOutsidePattern, NonfiniteEntry and FdMismatch (BakedVolume names the
+    // species whose volume is writable in `row`); -1 otherwise.
+    int row = -1;
+    int col = -1;
+
+    // The self-check kinds: which probe state (0 is the seed state, 1.. the
+    // spread-out states), the analytical entry there, and — FdMismatch only —
+    // the central difference converged across the three steps (finest step).
+    // NaN where not applicable.
+    int probe = -1;
+    double analytical = std::numeric_limits<double>::quiet_NaN();
+    double finite_difference = std::numeric_limits<double>::quiet_NaN();
+    // NonfiniteEntry: how many entries were non-finite at that probe; row, col
+    // and analytical describe the first.
+    int64_t n_nonfinite = 0;
+
+    // CompileFailed: what the expression compiler said.
+    std::string detail;
+
+    // The kind as the snake_case token the Python side keys on.
+    const char *kind_name() const {
+        switch (kind) {
+        case Kind::None:
+            return "none";
+        case Kind::NoSparsity:
+            return "no_sparsity";
+        case Kind::BadReactionIndex:
+            return "bad_reaction_index";
+        case Kind::BadObservableIndex:
+            return "bad_observable_index";
+        case Kind::BakedVolume:
+            return "baked_volume";
+        case Kind::CompileFailed:
+            return "compile_failed";
+        case Kind::TermOutsidePattern:
+            return "term_outside_pattern";
+        case Kind::NonfiniteEntry:
+            return "nonfinite_entry";
+        case Kind::FdMismatch:
+            return "fd_mismatch";
+        }
+        return "none";
+    }
+};
+
 // ─── Context handed to the Python differentiator (GH #76) ────────────────────
 //
 // Assembled by NetworkModel::functional_jacobian_context() from the built

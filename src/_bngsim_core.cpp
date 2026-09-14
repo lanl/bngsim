@@ -1371,7 +1371,44 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             py::arg("terms"),
             "Compile and attach symbolically-derived Functional Jacobian terms "
-            "(GH #76). Returns True if the analytical Jacobian was populated.")
+            "(GH #76). Returns True if the analytical Jacobian was populated; "
+            "last_functional_jacobian_decline() says why it was not.")
+
+        // Issue #534: the gate's verdict as data. None after a
+        // set_functional_jacobian that returned True (and before any call);
+        // otherwise the kind of refusal and what it names — for the self-check's
+        // verdicts the probe, the entry and both values, which used to exist
+        // only on stderr under BNGSIM_JAC_DEBUG=1. bngsim._jacobian folds it into
+        // Model.analytical_jacobian_status with species names.
+        .def(
+            "last_functional_jacobian_decline",
+            [](const bngsim::NetworkModel &self) -> py::object {
+                const auto &d = self.last_functional_jacobian_decline();
+                if (d.kind == bngsim::FunctionalJacobianDecline::Kind::None)
+                    return py::none();
+                py::dict out;
+                out["kind"] = d.kind_name();
+                out["rxn_idx"] = d.rxn_idx;
+                out["per_observable"] = d.per_observable;
+                out["target_idx"] = d.target_idx;
+                out["row"] = d.row;
+                out["col"] = d.col;
+                out["probe"] = d.probe;
+                out["analytical"] = d.analytical;
+                out["finite_difference"] = d.finite_difference;
+                out["n_nonfinite"] = d.n_nonfinite;
+                out["detail"] = d.detail;
+                return out;
+            },
+            "Why the last set_functional_jacobian call returned False, or None after "
+            "one that returned True (issue #534). A dict: 'kind' ('fd_mismatch', "
+            "'nonfinite_entry', 'term_outside_pattern', 'compile_failed', "
+            "'bad_reaction_index', 'bad_observable_index', 'baked_volume', "
+            "'no_sparsity'); 'rxn_idx', 'per_observable' and 'target_idx' for the "
+            "term the decline came from; 'row' and 'col' (0-based species indices) "
+            "for the entry; 'probe' (0 is the seed state), 'analytical' and "
+            "'finite_difference' for the self-check's verdicts; 'n_nonfinite' for "
+            "how many entries were non-finite; 'detail' for a compiler's message.")
 
         .def_property_readonly("analytical_jacobian_complete",
                                &bngsim::NetworkModel::analytical_jacobian_complete,

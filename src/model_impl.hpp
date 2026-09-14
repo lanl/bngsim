@@ -356,6 +356,12 @@ struct NetworkModel::Impl {
     // Jacobian for its Functional reactions, exactly as pre-#76.
     FunctionalJacobianData functional_jac;
 
+    // Why the last set_functional_jacobian call declined (issue #534): the
+    // kind of refusal and, for the self-check's verdicts, the probe, the entry
+    // and both values. Reset on entry to every attach, so kind is None after a
+    // success. Plain data: clone() copies it right after functional_jac.
+    FunctionalJacobianDecline functional_jac_decline;
+
     Impl()
         : shared(std::make_shared<SharedModelData>()),
           evaluator(std::make_unique<ExprTkEvaluator>()) {}

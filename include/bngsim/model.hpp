@@ -294,9 +294,18 @@ class NetworkModel {
     // Compile the supplied per-reaction derivative expressions into this
     // instance's evaluator and populate the functional Jacobian. Returns true
     // on success; false (leaving the model on the FD path) if any expression
-    // fails to compile or references a Jacobian entry outside the sparsity
-    // pattern. All-or-nothing: callers pass terms for every Functional reaction.
+    // fails to compile, references a Jacobian entry outside the sparsity
+    // pattern, or the finite-difference self-check rejects the assembled
+    // Jacobian — last_functional_jacobian_decline() says which. All-or-nothing:
+    // callers pass terms for every Functional reaction.
     bool set_functional_jacobian(const std::vector<FunctionalJacobianInput> &terms);
+
+    // Why the last set_functional_jacobian call declined, if it did (issue
+    // #534): the kind of refusal and — for the self-check's verdicts — the
+    // probe, the entry ∂f[row]/∂x[col] and both values, which used to exist
+    // only as a BNGSIM_JAC_DEBUG=1 stderr line. kind is None after a call that
+    // returned true, and before any call. clone() carries it.
+    const FunctionalJacobianDecline &last_functional_jacobian_decline() const;
 
     // Assemble the full dense analytical Jacobian at (t, conc) into a
     // column-major n×n buffer (jac[j*n + i] = ∂f_i/∂x_j): Elementary closed-form

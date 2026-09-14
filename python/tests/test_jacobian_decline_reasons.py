@@ -140,8 +140,12 @@ def test_status_is_pending_until_derived_then_declined_with_the_reason(tmp_path,
 def test_status_after_the_cpp_gate_declines(tmp_path, info):
     m = _model(tmp_path, _NET_SQRT_AT_ZERO)
     assert m.prepare_analytical_jacobian() is False
-    assert m.analytical_jacobian_status.startswith("declined: the C++ attach declined")
-    assert any("C++ attach declined" in line for line in _decline_lines(info))
+    status = m.analytical_jacobian_status  # issue #534: the verdict names the entry
+    assert status == (
+        "declined: ∂f[B()]/∂[A()] is non-finite (inf) at probe 0 (the seed state) while "
+        "the RHS is finite"
+    ), status
+    assert any(status[len("declined: ") :] in line for line in _decline_lines(info))
 
 
 def test_status_is_complete_once_attached(data_dir: Path):

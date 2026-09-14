@@ -858,7 +858,9 @@ class Model:
         them yet (an ODE solve, or that call, derives them); and
         ``"declined: <reason>"`` when it runs on the finite-difference Jacobian,
         with the reason the derivation gave — the rate law and what stopped it,
-        the derivation budget, the C++ attach gate, or the environment switch.
+        the derivation budget, the C++ attach gate's verdict (the entry it
+        refused, with the probe state and the analytical and finite-difference
+        values; issue #534), or the environment switch.
         The same reason goes to the ``bngsim`` logger at INFO when it happens;
         this is the readable form a harness can record instead of only the
         boolean :attr:`bngsim._bngsim_core.NetworkModel.analytical_jacobian_complete`
