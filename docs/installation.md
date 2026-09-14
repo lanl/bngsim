@@ -304,9 +304,11 @@ function of (build, model source). So it is read per run, off the Simulator:
 **Which build is this?** — `caps["build"]["commit"]` is the commit the compiled
 extension was built from (`None` if it was built outside a git checkout), and it
 is the only thing in the public API that separates two installs reporting the
-same `version`. `caps["build"]["stale"]` is `True` when that extension is older
-than the C++ source beside it, which can happen only in a source checkout, where
-the extension is built separately and does not rebuild on import. Every other
-check here passes on such an install, because nothing in the Python layer moved.
+same `version`. `caps["build"]["stale"]` is `True` when the C++ source beside
+that extension is newer than it, unless the rebuild script recorded those exact
+source bytes as the ones it was built from (issue #528). That can happen only in
+a source checkout, where the extension is built separately and does not rebuild
+on import. Every other check here passes on such an install, because nothing in
+the Python layer moved.
 bngsim also warns about it at import — read the key when your own logging is
 ready, and print the warning where someone will see it.

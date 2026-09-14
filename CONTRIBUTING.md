@@ -55,6 +55,15 @@ a transient isolated build env and never into `.venv`. On `--extra test` the
 script falls back to whatever pybind11 the system supplies, and tells you when it
 is doing that.
 
+It also leaves a source-digest record beside the installed extension: the
+extension's SHA-256 and a digest of the C++ and CMake sources, written only when
+those sources did not change while it built. The stale-binary guard reads the
+record when a source file is newer than the extension, so switching branches,
+stashing, rebasing, or pulling a squash merge that rewrites the C++ with
+identical bytes no longer demands a rebuild; the import banner says
+`fresh (digest)` instead (issue #528). An extension built any other way leaves
+no record and is judged by timestamps alone.
+
 ### One build directory per interpreter, not per configuration
 
 `build-dir = "build/{wheel_tag}"` — the wheel tag is the Python version and the

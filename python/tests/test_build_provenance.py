@@ -6,15 +6,17 @@ suite report on OLD C++ — a green run that gets committed as a correctness
 verdict about code that isn't running (the GH #118 near-miss). ``_build_provenance``
 turns that invisible failure into a loud one; these tests pin its behaviour.
 
-The verdict is mtime-only by design (pure passive check — it must never shell out
-to ninja/cmake, per #23). So the logic is exercised with real files on disk at
-controlled mtimes, not mocks of the filesystem.
+The verdict is decided by mtime, with a source-digest record as the tiebreaker
+when the mtime says stale (issue #528) — still a passive check that must never
+shell out to ninja/cmake, per #23. So the logic is exercised with real files on
+disk at controlled mtimes, not mocks of the filesystem.
 """
 
 from __future__ import annotations
 
 import os
 import warnings
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -381,3 +383,259 @@ def test_identity_line_is_single_line() -> None:
     line = bp.identity_line(_prov(core_mtime=2000.0, newest_mtime=1000.0))
     assert "\n" not in line
     assert "_bngsim_core" in line
+
+
+# ── The source-digest record (issue #528) ─────────────────────────────────────
+#
+# An mtime comparison calls a current binary STALE after anything rewrites a
+# watched file with the bytes it already had: `git checkout main && git pull`
+# after a squash merge, `git stash` / `stash pop`, a rebase. scripts/rebuild_editable.py
+# leaves a record beside the extension it installed (the extension's SHA-256 and a
+# digest of the watched sources), and gather() reads it only when the mtime says
+# stale. Real files at controlled mtimes again; only the lookups of the loaded
+# binary and its source root are pointed at the test tree. The writer's side is
+# pinned in test_rebuild_editable_source_digest.py.
+
+
+def _checkout(tmp_path: Path) -> tuple[Path, Path]:
+    """A two-file source tree and a stand-in extension built after both sources."""
+    root = tmp_path / "checkout"
+    (root / "src").mkdir(parents=True)
+    (root / "CMakeLists.txt").write_text("project(x)\n")
+    (root / "src" / "model.cpp").write_text("int rate() { return 1; }\n")
+    for path in (root / "CMakeLists.txt", root / "src" / "model.cpp"):
+        os.utime(path, (1000.0, 1000.0))
+    extension = tmp_path / "site-packages" / "bngsim" / "_bngsim_core.cpython-312-darwin.so"
+    extension.parent.mkdir(parents=True)
+    extension.write_bytes(b"compiled from int rate() { return 1; }")
+    os.utime(extension, (2000.0, 2000.0))
+    return root, extension
+
+
+def _rewrite(path: Path, data: bytes | None = None, *, mtime: float = 5000.0) -> None:
+    """Write ``data`` over ``path`` (its own bytes by default, as a checkout does) and
+    stamp it newer than the extension."""
+    path.write_bytes(path.read_bytes() if data is None else data)
+    os.utime(path, (mtime, mtime))
+
+
+@pytest.fixture
+def loaded(monkeypatch: pytest.MonkeyPatch):
+    """Point the guard's view of the loaded binary at a test tree and extension."""
+
+    def point(root: Path, extension: Path) -> None:
+        monkeypatch.setattr(bp, "_core_path", lambda: extension)
+        monkeypatch.setattr(bp, "_source_root", lambda: root)
+        monkeypatch.setattr(bp, "_build_commit", lambda: "0123456789ab")
+        monkeypatch.setattr(bp, "_head_commit", lambda _root: None)
+        monkeypatch.delenv("BNGSIM_NO_BUILD_CHECK", raising=False)
+        monkeypatch.delenv("BNGSIM_ALLOW_STALE_CORE", raising=False)
+
+    return point
+
+
+def test_an_identical_rewrite_is_fresh_once_a_rebuild_recorded_the_sources(
+    tmp_path: Path, loaded
+) -> None:
+    """The issue's reproducer: same bytes, newer mtime. Fresh, and the banner says why."""
+    root, extension = _checkout(tmp_path)
+    loaded(root, extension)
+    bp.write_source_record(extension, bp.source_digest(root))
+    _rewrite(root / "src" / "model.cpp")
+
+    prov = bp.gather()
+    assert prov.mtime_stale, "fixture is not what it claims: the timestamps say stale"
+    assert prov.digest_verified
+    assert not prov.is_stale
+    assert bp.identity_line(prov).endswith("| fresh (digest)")
+    # Every reader of the verdict agrees: the preflight, is_stale(), capabilities().
+    assert bp.blocking_report(prov) is None
+    assert bp.is_stale() is False
+    assert bp.summary() == {"commit": "0123456789ab", "stale": False}
+
+
+def test_a_changed_byte_is_stale_whatever_the_record_says(tmp_path: Path, loaded) -> None:
+    root, extension = _checkout(tmp_path)
+    loaded(root, extension)
+    bp.write_source_record(extension, bp.source_digest(root))
+    source = root / "src" / "model.cpp"
+    _rewrite(source, source.read_bytes() + b" ")
+
+    prov = bp.gather()
+    assert prov.is_stale and not prov.digest_verified
+    report = bp.format_report(prov)
+    assert "STALE" in report and "model.cpp" in report
+
+
+@pytest.mark.parametrize("change", ["add", "remove", "rename", "edit CMakeLists.txt"])
+def test_any_change_to_the_watched_files_defeats_the_record(
+    tmp_path: Path, loaded, change: str
+) -> None:
+    """Not only a byte: a file added, removed or renamed moves the digest too. Each
+    change is followed by an identical rewrite of another source, so the timestamps
+    say stale and the record is consulted."""
+    root, extension = _checkout(tmp_path)
+    extra = root / "src" / "extra.hpp"
+    extra.write_text("// extra\n")
+    os.utime(extra, (1000.0, 1000.0))
+    loaded(root, extension)
+    bp.write_source_record(extension, bp.source_digest(root))
+
+    if change == "add":
+        (root / "include").mkdir()
+        (root / "include" / "new.hpp").write_text("// new\n")
+    elif change == "remove":
+        extra.unlink()
+    elif change == "rename":
+        # Same length, same place in the sort order: only the name itself can move it.
+        extra.rename(root / "src" / "extrb.hpp")
+    else:
+        (root / "CMakeLists.txt").write_text("project(y)\n")
+    _rewrite(root / "src" / "model.cpp")
+
+    prov = bp.gather()
+    assert prov.is_stale and not prov.digest_verified
+
+
+def test_files_the_guard_does_not_watch_leave_the_record_standing(tmp_path: Path, loaded) -> None:
+    root, extension = _checkout(tmp_path)
+    loaded(root, extension)
+    bp.write_source_record(extension, bp.source_digest(root))
+    (root / "src" / "notes.txt").write_text("not a source\n")
+    (root / "python").mkdir()
+    (root / "python" / "shim.cpp").write_text("// outside the watched directories\n")
+    _rewrite(root / "src" / "model.cpp")
+
+    assert not bp.gather().is_stale
+
+
+def test_a_record_for_other_extension_bytes_vouches_for_nothing(tmp_path: Path, loaded) -> None:
+    """A different build put in place of the recorded one (the manual cmake recipe's
+    copy, say) is judged by timestamps alone, even when it keeps the old mtime."""
+    root, extension = _checkout(tmp_path)
+    loaded(root, extension)
+    bp.write_source_record(extension, bp.source_digest(root))
+    extension.write_bytes(b"compiled from something else")
+    os.utime(extension, (2000.0, 2000.0))
+    _rewrite(root / "src" / "model.cpp")
+
+    prov = bp.gather()
+    assert prov.is_stale and not prov.digest_verified
+
+
+def test_without_a_record_the_timestamp_verdict_stands(tmp_path: Path, loaded) -> None:
+    """Any binary this change never saw built: a pip install, a wheel build, an old tree."""
+    root, extension = _checkout(tmp_path)
+    loaded(root, extension)
+    _rewrite(root / "src" / "model.cpp")
+
+    prov = bp.gather()
+    assert prov.is_stale and not prov.digest_verified
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "not json",
+        "[]",
+        '{"schema": 2, "extension_sha256": "EXT", "source_digest": "SRC"}',
+        '{"schema": 1, "extension_sha256": "EXT"}',
+        '{"schema": 1, "extension_sha256": 7, "source_digest": "SRC"}',
+    ],
+    ids=["not-json", "not-an-object", "other-schema", "missing-digest", "non-string-hash"],
+)
+def test_a_malformed_record_is_no_record(tmp_path: Path, loaded, text: str) -> None:
+    """Right hashes under the wrong schema included: only a record this guard can read
+    in full vouches for anything, and none of these makes gather() raise."""
+    root, extension = _checkout(tmp_path)
+    loaded(root, extension)
+    record = text.replace("EXT", bp._file_sha256(extension))
+    record = record.replace("SRC", bp.source_digest(root) or "")
+    bp.source_record_path(extension).write_text(record)
+    _rewrite(root / "src" / "model.cpp")
+
+    prov = bp.gather()
+    assert prov.is_stale and not prov.digest_verified
+
+
+def test_a_fresh_binary_never_reads_the_record(
+    tmp_path: Path, loaded, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fast path stays a stat scan: the hashing runs only where a rebuild was
+    about to be demanded."""
+    root, extension = _checkout(tmp_path)
+    loaded(root, extension)
+
+    def must_not_run(*_a: object, **_k: object) -> bool:
+        raise AssertionError("the record was read on a fresh timestamp verdict")
+
+    monkeypatch.setattr(bp, "_record_vouches", must_not_run)
+    prov = bp.gather()
+    assert not prov.is_stale and not prov.digest_verified
+    assert bp.identity_line(prov).endswith("| fresh")
+
+
+def test_the_digest_can_only_clear_a_stale_timestamp_verdict() -> None:
+    stale = _prov(core_mtime=0.0, newest_mtime=1e9)
+    assert stale.is_stale and not replace(stale, digest_verified=True).is_stale
+    fresh = _prov(core_mtime=2000.0, newest_mtime=1000.0)
+    assert not fresh.is_stale and not replace(fresh, digest_verified=True).is_stale
+
+
+def test_the_digest_ignores_mtimes_and_where_the_checkout_lives(tmp_path: Path) -> None:
+    root, _extension = _checkout(tmp_path)
+    digest = bp.source_digest(root)
+    assert digest is not None and len(digest) == 64
+    _rewrite(root / "src" / "model.cpp")
+    assert bp.source_digest(root) == digest
+    moved = root.rename(tmp_path / "elsewhere")
+    assert bp.source_digest(moved) == digest
+
+
+def test_the_digest_of_an_empty_tree_is_none(tmp_path: Path) -> None:
+    assert bp.source_digest(tmp_path) is None
+
+
+def test_the_digest_watches_exactly_what_the_mtime_scan_watches(tmp_path: Path) -> None:
+    """One owner of the watched set: a file the mtime scan reports is a file whose
+    bytes move the digest, and a file it ignores is not."""
+    candidates = {
+        "src/model.cpp": True,
+        "include/bngsim/model.hpp": True,
+        "third_party/nfsim/patched.cpp": True,
+        "cmake/BngsimResolvePybind11.cmake": True,
+        "CMakeLists.txt": True,
+        "src/notes.txt": False,
+        "python/bngsim/shim.cpp": False,
+        "docs/example.cpp": False,
+    }
+    for rel in candidates:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"// {rel}\n")
+        os.utime(path, (1000.0, 1000.0))
+    for rel, watched in candidates.items():
+        path = tmp_path / rel
+        before = bp.source_digest(tmp_path)
+        os.utime(path, (9000.0, 9000.0))
+        scanned = bp._newest_source(tmp_path)[0] == path
+        path.write_text(f"// {rel}, edited\n")
+        os.utime(path, (1000.0, 1000.0))
+        moved = bp.source_digest(tmp_path) != before
+        assert (scanned, moved) == (watched, watched), rel
+
+
+def test_a_record_is_named_after_its_extension_and_replaced_whole(tmp_path: Path) -> None:
+    root, extension = _checkout(tmp_path)
+    other = extension.with_name("_bngsim_core.cpython-313-darwin.so")
+    assert bp.source_record_path(extension).name == extension.name + ".source-digest.json"
+    assert bp.source_record_path(extension) != bp.source_record_path(other)
+
+    assert bp.remove_source_record(extension) is False
+    path = bp.write_source_record(extension, "0" * 64)
+    path = bp.write_source_record(extension, bp.source_digest(root) or "")
+    assert path.is_file()
+    assert not list(path.parent.glob("*.tmp")), "the temporary file was left behind"
+    assert bp._record_vouches(extension, root)
+    assert bp.remove_source_record(extension) is True
+    assert not path.exists()

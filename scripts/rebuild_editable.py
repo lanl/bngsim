@@ -17,6 +17,14 @@ before reinstalling it. It then regenerates the ``_bngsim_core.pyi`` type stub
 from the freshly built module (via pybind11-stubgen) so the stub mypy checks
 against never drifts from the bindings.
 
+It also leaves a **source-digest record** beside the installed extension (issue
+#528): that extension's SHA-256 and a digest of the C++/CMake sources the
+stale-binary guard watches, taken under the rebuild lock before the configure and
+again after the install, and written only when the two agree. The guard reads it
+when a watched source is newer than the binary, so a checkout, stash or rebase
+that rewrites the C++ with identical bytes no longer demands a rebuild of a binary
+that is current. See :func:`_record_source_digest`.
+
 Two things differ under ``uv`` (the environment manager CONTRIBUTING.md
 documents), and both used to make this script unusable there:
 
@@ -79,6 +87,7 @@ import tempfile
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
+from types import ModuleType
 from typing import NamedTuple
 
 # Default upper bound on how long to wait for the editable_rebuild.lock.
@@ -967,6 +976,83 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
     print(f"stub_regenerated={stub_dest}", flush=True)
 
 
+#: The name the stale-binary guard's module is loaded under here (issue #528) —
+#: deliberately not ``bngsim._build_provenance``; see :func:`_load_build_provenance`.
+_PROVENANCE_MODULE_NAME = "_bngsim_build_provenance_for_rebuild"
+
+
+def _load_build_provenance(source_dir: Path) -> ModuleType:
+    """Load ``python/bngsim/_build_provenance.py`` by path, without importing bngsim.
+
+    The record this script leaves for the stale-binary guard has to be written
+    with the guard's own :func:`source_digest` — one definition of which files a
+    build depends on and how they are hashed, not a copy that can drift from it.
+    Importing that as ``bngsim._build_provenance`` would run the package
+    ``__init__``, which loads ``_bngsim_core`` into this process right before
+    ``cmake --install`` replaces the file, and runs the import-time guard against
+    a binary this script is already replacing. The module's top-level imports are
+    stdlib only; it reaches for ``_bngsim_core`` only inside the functions that
+    read the loaded binary, and this script calls none of them.
+    """
+    path = source_dir / "python" / "bngsim" / "_build_provenance.py"
+    cached = sys.modules.get(_PROVENANCE_MODULE_NAME)
+    if cached is not None and Path(getattr(cached, "__file__", "")) == path:
+        return cached
+    spec = importlib.util.spec_from_file_location(_PROVENANCE_MODULE_NAME, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load the stale-binary guard from {path}")
+    module = importlib.util.module_from_spec(spec)
+    # Registered before it runs: @dataclass resolves its module through sys.modules.
+    sys.modules[_PROVENANCE_MODULE_NAME] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[_PROVENANCE_MODULE_NAME]
+        raise
+    return module
+
+
+def _record_source_digest(
+    provenance: ModuleType, source_dir: Path, extension: Path, before: str | None
+) -> str:
+    """Leave, or withhold, the record that lets the stale-binary guard see through a rewrite.
+
+    Issue #528. The guard calls a binary STALE when a watched source is newer
+    than it, so a checkout, stash or rebase that rewrote the C++ with identical
+    bytes demanded a rebuild of a binary that was current. The record beside the
+    installed extension names that extension's SHA-256 and the digest of the
+    sources it was built from, and the guard consults it only when its mtime
+    comparison says stale.
+
+    ``before`` is the digest :func:`main` took under the rebuild lock ahead of the
+    configure; this takes the second one now, after the install. Only when the
+    two agree is the record true — the sources the build read are the sources
+    that were hashed. On a disagreement, or a digest that could not be taken, any
+    record already there is removed, so what sits beside the extension is only
+    ever one this script could stand behind. A record that cannot be written costs
+    the shortcut, never the rebuild. Returns the status it printed.
+    """
+    after = provenance.source_digest(source_dir)
+    try:
+        if not extension.is_file():
+            status = f"skipped (no installed extension at {extension})"
+        elif before is None or after is None:
+            provenance.remove_source_record(extension)
+            status = "skipped (the watched sources could not be hashed)"
+        elif before != after:
+            provenance.remove_source_record(extension)
+            status = (
+                "skipped (the watched sources changed during the rebuild, so the "
+                "stale-binary guard keeps its timestamp verdict until the next one)"
+            )
+        else:
+            status = f"written ({provenance.write_source_record(extension, before)})"
+    except OSError as exc:
+        status = f"skipped (the record could not be updated: {exc})"
+    print(f"source_digest_record={status}", flush=True)
+    return status
+
+
 def main() -> int:
     source_dir = Path(__file__).resolve().parents[1]
     cmake_env = _cmake_env()
@@ -1027,6 +1113,12 @@ def main() -> int:
         if conflicts:
             raise SystemExit(_configuration_conflict_message(build_dir, conflicts))
 
+        # Issue #528: the first of the two source digests that decide whether this
+        # rebuild may leave a record for the stale-binary guard — taken under the
+        # lock and ahead of the configure, so everything the build reads comes after.
+        provenance = _load_build_provenance(source_dir)
+        sources_before = provenance.source_digest(source_dir)
+
         configure_cmd = _configure_cmd(
             source_dir,
             build_dir,
@@ -1058,7 +1150,10 @@ def main() -> int:
             env=cmake_env,
         )
 
-    installed_extension = install_prefix / f"_bngsim_core{_ext_suffix()}"
+        installed_extension = install_prefix / f"_bngsim_core{_ext_suffix()}"
+        # ...and the second, after the install and still under the lock.
+        _record_source_digest(provenance, source_dir, installed_extension, sources_before)
+
     print(f"build_dir={build_dir}", flush=True)
     print(f"installed_extension={installed_extension}", flush=True)
 

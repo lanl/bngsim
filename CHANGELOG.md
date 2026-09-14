@@ -94,6 +94,28 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The stale-binary guard no longer calls a current extension STALE after a
+  checkout, stash or rebase rewrites the C++ with identical bytes (issue
+  #528).** The guard compares the loaded extension's mtime with the newest
+  C++/CMake source, so the routine end of a C++ pull request —
+  `git checkout main && git pull` after a squash merge, where checkout writes
+  the pre-merge bytes and pull writes the merged ones back — printed `The
+  binary does NOT reflect current C++`, failed the pytest preflight, and
+  demanded a rebuild of a binary that was current. `scripts/rebuild_editable.py`
+  now digests the sources the guard watches (`third_party/` included) under
+  its rebuild lock before the configure and again after the install, and when
+  the two agree leaves a record beside the installed extension: that digest
+  and the SHA-256 of the extension file. When the mtime comparison says stale,
+  the guard reads the record, and if it names the loaded extension's exact
+  bytes and the sources as they are now, the verdict is fresh and the banner
+  says `fresh (digest)`. The mtime path is unchanged; the hashing, about 25 ms,
+  runs only where the guard would otherwise demand a rebuild. Sources that
+  change during a rebuild leave no record, and an extension built or copied
+  any other way has none that names its bytes, so both keep the mtime verdict.
+  The digest is not baked into the extension at configure time the way
+  `__build_commit__` is: `cmake --build` recompiles an edited source without
+  reconfiguring, so a configure-time digest could vouch for a binary compiled
+  from sources it does not describe.
 - **The C++ attach gate's verdict reaches `Model.analytical_jacobian_status`
   as text — the mismatching or non-finite entry, the probe state and both
   values — instead of a pointer at `BNGSIM_JAC_DEBUG=1` (issue #534).**

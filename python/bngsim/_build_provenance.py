@@ -12,12 +12,42 @@ correct?" faithfully reports the **stale binary's** behaviour. That is not
 hypothetical: it produced a false "warm-start rounding bug" verdict on GH #118.
 
 This guard makes that failure mode loud. It is deliberately a **passive check**:
-a pure mtime/string comparison with no build invocation, so it coexists with
-``editable.rebuild = false`` (issue #23 — it must never shell out to ninja or
-cmake). The *verdict* (stale / fresh) is decided purely by comparing the loaded
-binary's mtime against the newest C++/CMake source file. The build-commit string
-baked into the extension (``__build_commit__``, set by CMake) is used only for
-the human-readable identity banner, never for the verdict.
+a comparison of timestamps and file contents with no build invocation, so it
+coexists with ``editable.rebuild = false`` (issue #23 — it must never shell out
+to ninja or cmake). The *verdict* (stale / fresh) is decided by comparing the
+loaded binary's mtime against the newest C++/CMake source file, with the
+source-digest record below as the tiebreaker when that comparison says stale.
+The build-commit string baked into the extension (``__build_commit__``, set by
+CMake) is used only for the human-readable identity banner, never for the verdict.
+
+Seeing through a rewrite (issue #528)
+-------------------------------------
+An mtime comparison errs in one direction only. Nothing makes it call an
+out-of-date binary fresh, but anything that *rewrites* a watched file without
+changing it makes it call a current binary STALE and demand a rebuild: the
+``git checkout main && git pull`` at the end of a squash-merged C++ pull request
+(checkout writes the pre-merge bytes, pull writes the merged ones back),
+``git stash`` / ``stash pop``, a rebase. So ``scripts/rebuild_editable.py`` leaves
+a record beside the extension it installed — the SHA-256 of that extension file
+and :func:`source_digest` of the watched sources — and writes it only when the
+sources hashed the same under its lock before the configure and after the
+install. When, and only when, the mtime comparison says stale, :func:`gather`
+reads the record: if it names the loaded extension's exact bytes and the sources
+as they are now, the verdict is fresh, and the banner says ``fresh (digest)``.
+The fast path stays a handful of stat calls; the hashing, tens of milliseconds,
+runs only where the guard would otherwise demand a rebuild. A binary built or
+copied any other way has no record naming its bytes and keeps the mtime verdict.
+Like ninja itself, the record trusts that a source's mtime moves forward when
+its bytes change: bytes restored with an *older* mtime (``cp -p``, an
+mtime-preserving sync) can leave ninja reusing an object compiled from other
+bytes, and neither the mtime check nor the record can see that; a clean rebuild can.
+
+The digest is deliberately not baked into the extension at configure time the
+way ``__build_commit__`` is. ``cmake --build`` recompiles an edited source without
+reconfiguring, so a configure-time digest can describe sources the binary was not
+compiled from — and after those sources were reverted to the configured bytes,
+the guard would call a binary fresh that holds the edit, which is the one error
+this module exists to prevent.
 
 Layered usage
 -------------
@@ -39,11 +69,15 @@ Environment gates
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
 import os
 import subprocess
 import sys
 import warnings
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -69,6 +103,16 @@ _SOURCE_FILES = ("CMakeLists.txt",)
 # was ~47 min, so this never masks a genuine staleness.
 _MTIME_SLACK = 2.0
 
+# Issue #528: the source-digest record ``scripts/rebuild_editable.py`` leaves beside
+# the extension it installed, named after that extension's own file name so two
+# extensions sharing a directory never share a record. The schema number is
+# checked on read; a record from any other schema vouches for nothing.
+_RECORD_SUFFIX = ".source-digest.json"
+_RECORD_SCHEMA = 1
+# Domain tag fed ahead of the files, so a later change to what is hashed or how
+# can never produce a digest that verifies against a record written under this one.
+_DIGEST_SCHEME = b"bngsim-source-digest-v1\0"
+
 
 class StaleBinaryError(RuntimeError):
     """Raised when the loaded ``_bngsim_core`` is older than its C++ source."""
@@ -85,6 +129,11 @@ class Provenance:
     newest_source: Path | None
     newest_source_mtime: float | None
     head_commit: str | None
+    # Issue #528: True when the mtime comparison said stale but the source-digest
+    # record beside the loaded extension names its exact bytes and the sources as
+    # they are now — a rewrite that left the C++ byte-identical. Set by gather(),
+    # which consults the record only on a stale mtime verdict.
+    digest_verified: bool = False
 
     @property
     def is_source_checkout(self) -> bool:
@@ -96,10 +145,16 @@ class Provenance:
         return self.source_root is not None
 
     @property
-    def is_stale(self) -> bool:
+    def mtime_stale(self) -> bool:
+        """True when a watched source is newer than the loaded binary, past the slack."""
         if self.core_mtime is None or self.newest_source_mtime is None:
             return False
         return self.newest_source_mtime > self.core_mtime + _MTIME_SLACK
+
+    @property
+    def is_stale(self) -> bool:
+        """The verdict: a newer source, unless the digest record shows the bytes unchanged."""
+        return self.mtime_stale and not self.digest_verified
 
 
 def _checks_disabled() -> bool:
@@ -155,22 +210,17 @@ def _source_root() -> Path | None:
     return None
 
 
-def _newest_source(root: Path) -> tuple[Path | None, float | None]:
-    """Newest C++/CMake source under ``root`` as ``(path, mtime)``.
+def _watched_sources(root: Path) -> Iterator[tuple[str, float]]:
+    """Every file the guard watches under ``root``, as ``(path, mtime)``.
 
-    Pure ``os.scandir`` walk — no git, no subprocess. The scanned set is small
-    (a few hundred files); the cost is a handful of stat calls.
+    The one definition of the watched set — :data:`_SOURCE_DIRS` filtered by
+    :data:`_SOURCE_SUFFIXES`, plus :data:`_SOURCE_FILES` — shared by the mtime scan
+    and :func:`source_digest`, so the two can never disagree about which files a
+    build depends on (issue #528). Pure ``os.scandir`` walk: no git, no
+    subprocess, symlinks not followed, an unreadable entry skipped.
     """
-    newest_path: Path | None = None
-    newest_mtime = -1.0
 
-    def _consider(p: str, mtime: float) -> None:
-        nonlocal newest_path, newest_mtime
-        if mtime > newest_mtime:
-            newest_mtime = mtime
-            newest_path = Path(p)
-
-    def _walk(directory: str) -> None:
+    def _walk(directory: str) -> Iterator[tuple[str, float]]:
         try:
             entries = list(os.scandir(directory))
         except OSError:
@@ -178,30 +228,150 @@ def _newest_source(root: Path) -> tuple[Path | None, float | None]:
         for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    _walk(entry.path)
+                    yield from _walk(entry.path)
                 elif (
                     entry.is_file(follow_symlinks=False)
                     and Path(entry.name).suffix.lower() in _SOURCE_SUFFIXES
                 ):
-                    _consider(entry.path, entry.stat().st_mtime)
+                    yield entry.path, entry.stat().st_mtime
             except OSError:
                 continue
 
     for rel in _SOURCE_DIRS:
         d = root / rel
         if d.is_dir():
-            _walk(str(d))
+            yield from _walk(str(d))
     for rel in _SOURCE_FILES:
         f = root / rel
         try:
-            if f.is_file():
-                _consider(str(f), f.stat().st_mtime)
+            if not f.is_file():
+                continue
+            mtime = f.stat().st_mtime
         except OSError:
             continue
+        yield str(f), mtime
 
+
+def _newest_source(root: Path) -> tuple[Path | None, float | None]:
+    """Newest C++/CMake source under ``root`` as ``(path, mtime)``.
+
+    The scanned set is small (a few hundred files); the cost is a handful of
+    stat calls.
+    """
+    newest_path: Path | None = None
+    newest_mtime = -1.0
+    for path, mtime in _watched_sources(root):
+        if mtime > newest_mtime:
+            newest_mtime = mtime
+            newest_path = Path(path)
     if newest_path is None:
         return None, None
     return newest_path, newest_mtime
+
+
+def source_digest(root: Path) -> str | None:
+    """SHA-256 over the watched sources under ``root``: their paths and their bytes.
+
+    Issue #528. Files go in sorted by relative POSIX path, each as that path and
+    its contents, both length-prefixed, after a scheme tag. So the digest moves
+    with any byte and any added, removed or renamed file, and with nothing else:
+    an mtime is not an input, which is the point, and relative paths keep it
+    independent of where the checkout lives. ``None`` when there is nothing to
+    hash or a file cannot be read (one removed mid-walk, say), which a caller
+    treats as "cannot attest". Never raises.
+    """
+    try:
+        files = sorted(
+            (Path(path).relative_to(root).as_posix(), path)
+            for path, _mtime in _watched_sources(root)
+        )
+        if not files:
+            return None
+        digest = hashlib.sha256(_DIGEST_SCHEME)
+        for rel, path in files:
+            name = rel.encode("utf-8")
+            data = Path(path).read_bytes()
+            digest.update(len(name).to_bytes(8, "little"))
+            digest.update(name)
+            digest.update(len(data).to_bytes(8, "little"))
+            digest.update(data)
+        return digest.hexdigest()
+    except Exception:
+        return None
+
+
+def source_record_path(extension: Path) -> Path:
+    """Where the source-digest record for ``extension`` lives: beside it, named after it."""
+    return extension.with_name(extension.name + _RECORD_SUFFIX)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_source_record(extension: Path, sources: str) -> Path:
+    """Record that ``extension``, byte for byte, was built from sources digesting to ``sources``.
+
+    Issue #528. ``scripts/rebuild_editable.py`` calls this after it installs the
+    extension, and only when the watched sources gave ``sources`` both before its
+    configure and after its install. The extension's own SHA-256 goes in beside
+    the digest, so the record vouches for that exact file and for nothing that
+    later replaces it. Written under a temporary name and renamed into place, so
+    a reader sees the previous record or this one, never half of either. Raises
+    ``OSError`` when it cannot write; the caller decides what that costs.
+    """
+    record = {
+        "schema": _RECORD_SCHEMA,
+        "extension_sha256": _file_sha256(extension),
+        "source_digest": sources,
+    }
+    path = source_record_path(extension)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+    return path
+
+
+def remove_source_record(extension: Path) -> bool:
+    """Delete the source-digest record for ``extension``. True if there was one."""
+    try:
+        source_record_path(extension).unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _record_vouches(core_path: Path, root: Path) -> bool:
+    """True iff the record beside ``core_path`` names its bytes and the sources now under ``root``.
+
+    The tiebreaker behind a stale mtime verdict (issue #528). Every way it can
+    fail — no record, an unreadable or malformed one, another schema, an
+    extension whose bytes are not the recorded ones, sources that no longer
+    digest to the recorded value — answers False, which leaves the mtime verdict
+    standing. The extension is hashed first: it is the cheaper of the two, and a
+    record for other bytes needs no look at the sources. Never raises.
+    """
+    try:
+        record = json.loads(source_record_path(core_path).read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or record.get("schema") != _RECORD_SCHEMA:
+            return False
+        extension_sha256 = record.get("extension_sha256")
+        sources = record.get("source_digest")
+        if not isinstance(extension_sha256, str) or not isinstance(sources, str):
+            return False
+        if _file_sha256(core_path) != extension_sha256:
+            return False
+        return source_digest(root) == sources
+    except Exception:
+        return False
 
 
 def _head_commit(root: Path) -> str | None:
@@ -244,7 +414,7 @@ def gather(*, include_head: bool = True) -> Provenance:
         if include_head:
             head = _head_commit(root)
 
-    return Provenance(
+    prov = Provenance(
         core_path=core_path,
         core_mtime=core_mtime,
         build_commit=_build_commit(),
@@ -253,6 +423,13 @@ def gather(*, include_head: bool = True) -> Provenance:
         newest_source_mtime=newest_mtime,
         head_commit=head,
     )
+    # Issue #528: the record is read only when the mtime comparison says stale,
+    # so the path every fresh import takes stays a handful of stat calls. Every
+    # reader of the verdict — the import warning, the pytest preflight,
+    # capabilities() — goes through here and gets the same answer.
+    if prov.mtime_stale and core_path is not None and root is not None:
+        prov = replace(prov, digest_verified=_record_vouches(core_path, root))
+    return prov
 
 
 def _fmt_time(mtime: float | None) -> str:
@@ -286,7 +463,15 @@ def identity_line(prov: Provenance | None = None) -> str:
         return "[bngsim] _bngsim_core: NOT LOADED"
     commit = prov.build_commit or "unknown"
     head = f" HEAD={prov.head_commit}" if prov.head_commit else ""
-    state = "STALE" if prov.is_stale else ("fresh" if prov.is_source_checkout else "installed")
+    if prov.is_stale:
+        state = "STALE"
+    elif not prov.is_source_checkout:
+        state = "installed"
+    elif prov.digest_verified:
+        # Issue #528: newer mtimes, but the bytes the binary was built from.
+        state = "fresh (digest)"
+    else:
+        state = "fresh"
     return (
         f"[bngsim] _bngsim_core: {prov.core_path} | "
         f"built={commit}{head} | mtime={_fmt_time(prov.core_mtime)} | {state}"
