@@ -94,6 +94,62 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **SIR_v5 keeps its analytical Jacobian and its analytic sensitivity RHS: a
+  power of an `if()` whose other branch is 0 differentiates to the step it is
+  (issue #541).** sympy distributes a power over the branches of a Piecewise,
+  so the seasonal pulse `if(c, u, 0)^(a()-1)` holds `0^(a()-1)` off-season, and
+  sympy's power rule, written for a nonzero base, turned every derivative
+  through that node into `nan`, although `0^e` is a step in `e` and constant on
+  each side. With `a()` an `if()` chain on the day counter, `∂/∂t` declined the
+  Jacobian and `∂/∂a_2021` the sensitivity RHS. Such a power now differentiates
+  to 0 wherever its exponent's values are run-constants; one whose exponent
+  reads the state in a value is a step nothing locates, and still declines.
+  Three defects behind it are fixed as well. The zero-base logarithm guard (#310)
+  builds `Eq(base, 0) & (exp > 0)`, which sympy folds into an `ITE` when the
+  base or the exponent is a Piecewise, and the emitters normalized booleans
+  only before the guard ran. So a Hill exponent selected by an `if()` under a
+  logarithm (`k*A^if(time()<5,n1,n2)*log(A+2)`) declined the Jacobian over an
+  ExprTk compile error, and a forward-sensitivity run **raised** on a C compile
+  error — BIOMD0000000276 and BIOMD0000000277 among them, which now run on the
+  analytic RHS and agree with CVODES' difference quotient to 2e-9. And GH #96's
+  removable-denominator rewrite cancelled `(u·r)^n/u` only for a bare-symbol
+  `u`, so at a season onset (`u = t − t_start`) the derivative was `0/0`: a run
+  whose counter started on an onset stopped at the first sensitivity RHS call
+  (`CV_FIRST_SRHSFUNC_ERR`), where the difference quotient ran. The rewrite now
+  accepts any factor of the base. Last, a rewrite can fold a non-finite atom of
+  its own: the guard's `Eq(base, 0)` over a season window whose bounds are `if()`
+  chains ending in 0 folds to `zoo*t` on the last branch, and the emitters looked
+  for non-finite atoms only before rewriting, so that build failed to compile.
+  They now look again afterwards and decline, and the sensitivity RHS names the
+  fold. On SIR_v5 the analytic columns match central differences of the
+  trajectory to 1.6e-5, and a sensitivity run at rtol 1e-11 takes 0.35 s where
+  the difference quotient took 409 s. `SIR_v4`, the issue's
+  other model, divides by its shape parameters after its last modelled year
+  (`if(t<=1461, a_2024, 0)`), so its rate law is non-finite there before
+  anything is differentiated. It still declines — sympy's unsigned `zoo` does
+  not follow IEEE arithmetic, so a derivative emitted as non-finite could stop a
+  solve that finite differences complete — but both reasons now name the
+  branch (`… which the rate law itself already has where (t >= 365) and … and
+  (t > 1461)`) instead of blaming the derivative, and the sensitivity RHS no
+  longer calls a non-finite atom a "non-differentiable or unsupported
+  function". Ending the model's four year-selection chains with their 2024
+  values restores both derivatives; that model-side fix is issue #543. Across
+  the 1,909-model rr_parity + ode_fullnet corpus with the
+  derivation budgets off, 64 models reach a changed path, and 40 sampled others
+  hand C++ and the C emitters byte-identical terms and source. No attach or
+  sensitivity verdict was lost: SIR_v5 gained both, and BIOMD0000000429 and
+  BIOMD0000000568 gained the analytic sensitivity RHS, which matches the
+  difference quotient to 8e-6. The widened rewrite changes the emitted text of
+  62 models; over 1,694 changed derivatives at 9,782 random points no value
+  turned non-finite, and where the two forms differ by more than 1e-9 relative
+  the derivative nearly cancels, and at 50 digits both equal the unrewritten
+  derivative. MODEL1006230090, whose unbudgeted derivation runs for minutes, was
+  not compared, and BIOMD0000000385 is not in the random-point count for the
+  same reason. Where the widened rewrite applies it costs about 0.2 ms per
+  derivative (BIOMD0000000628, measured in one process against main's); where it
+  does not, nothing measurable (BIOMD0000000469's 1,559 derivatives take 0.04 s
+  either way). The four affected models whose unbudgeted attach takes more than
+  20 s decline at the default derivation budget on main and here alike.
 - **The SSA/PSA rejection of a delayed event points at the issue that tracks
   delay support, not at a planning document that is no longer in the tree
   (issue #526).** The message named the event and the remedy, then sent the

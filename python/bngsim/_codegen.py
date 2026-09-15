@@ -8493,8 +8493,11 @@ def _functional_rate_law_partials(
         _IDENT_CALL_RE,
         _TIME_SYM,
         _exprtk_to_sympy,
+        _finish_zero_bases,
         _inline_functions,
+        _prepare_zero_bases,
         sympy_to_c,
+        unemitted_derivative_reason,
         unsupported_expr_construct,
     )
 
@@ -8569,18 +8572,25 @@ def _functional_rate_law_partials(
     if unknown:
         return None, "references unrecognized symbol(s): " + ", ".join(sorted(unknown))
 
+    # Issue #541: a power with a zero base — an ``if(c, u, 0)`` raised to a
+    # parameter-dependent exponent — differentiates to 0, not to sympy's nan.
+    sym_expr = _prepare_zero_bases(
+        sym_expr,
+        free & (set(scope.param_of_alias) | set(scope.obs_volume_weights)),
+        set(scope.param_of_alias) | set(_MATH_CONSTANT_C),
+    )
+
     terms: list[tuple[int, str]] = []
     for a in sorted(free & set(scope.param_of_alias)):
         pname = scope.param_of_alias[a]
         _check_derivation_deadline(scope.deadline)
-        deriv = sp.diff(sym_expr, sp.Symbol(a))
+        deriv = _finish_zero_bases(sp.diff(sym_expr, sp.Symbol(a)))
         if deriv == 0:
             continue
         c_expr = sympy_to_c(deriv, resolve_symbol)
         if c_expr is None:
             return None, (
-                f"the derivative w.r.t. {pname} is not representable in C "
-                "(non-differentiable or unsupported function)"
+                f"the derivative w.r.t. {pname} {unemitted_derivative_reason(deriv, sym_expr)}"
             )
         terms.append((scope.param_idx_by_name[pname], c_expr))
 
@@ -8627,7 +8637,7 @@ def _functional_rate_law_partials(
     # so this loop does not run and the emitted text is unchanged.
     for a in sorted(free & set(scope.obs_volume_weights)):
         _check_derivation_deadline(scope.deadline)
-        deriv = sp.diff(sym_expr, sp.Symbol(a))
+        deriv = _finish_zero_bases(sp.diff(sym_expr, sp.Symbol(a)))
         if deriv == 0:
             continue
         c_expr = sympy_to_c(deriv, resolve_symbol)

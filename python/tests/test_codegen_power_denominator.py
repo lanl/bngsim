@@ -47,6 +47,12 @@ The extraction returns ``q`` with ``q·x == base`` by construction, so the rewri
 is an identity whatever ``q`` contains, and refusing this one left ``0/0`` = NaN
 in the emitted ∂/∂IP3 of ``BIOMD0000000374`` / ``375`` at ``IP3 = 0`` where the
 derivative is an ordinary ``0``.
+
+Issue #541 dropped the last of the GH #96 bar, the bare-``Symbol`` denominator:
+the same extraction answers for a difference like ``t - t0`` sitting among the
+base's factors, which is what the power rule leaves for ``((t - t0)·r)^n``. The
+fourth section below is that, and the cost ceiling for a large non-symbol
+denominator now covers the ``has`` walk it meets as well.
 """
 
 from __future__ import annotations
@@ -317,6 +323,55 @@ class TestSameBaseCancels:
         assert np.isnan(_eval_c("pow(u - v, n) / (u - v)", u=1.0, v=1.0, n=2.0))
 
 
+# ─── issue #541: a difference among the base's FACTORS ─────────────────────
+#
+# `SIR_v5` maps each flu season onto [0, 1] with `(t - t_start)/duration`, and
+# its pulse raises that to `a - 1`. The power rule leaves
+# `(a-1)·((t - t_start)·r)^(a-1)/(t - t_start)`: a removable division by a
+# difference that is a factor of the base, which neither earlier branch reached —
+# the base is not the difference itself (#351), and the difference is not a
+# Symbol (GH #96). At the instant a season starts it was 0/0.
+
+
+class TestDifferenceFactorCancels:
+    def test_a_difference_among_the_factors_is_extracted(self):
+        assert _power_denominator_quotient((x - y) * K, x - y, sp) == K
+        assert _power_denominator_quotient((x - y) * K / a, x - y, sp) == K / a
+
+    def test_a_sum_that_only_mentions_the_difference_is_left_alone(self):
+        """``(x - y) + K`` contains ``x - y`` as text but not as a factor, and
+        dividing it out would not be an identity."""
+        assert _power_denominator_quotient(x - y + K, x - y, sp) is None
+        expr = (x - y + K) ** sp.Symbol("n_hill") / (x - y)
+        assert _remove_removable_power_denominators(expr) == expr
+
+    def test_the_shape_the_power_rule_leaves_is_cancelled(self):
+        n = sp.Symbol("n_hill")
+        deriv = sp.diff(((x - y) * K) ** n, x)
+        assert deriv.has(sp.Pow(x - y, -1)), "fixture no longer reproduces the shape"
+        out = _remove_removable_power_denominators(deriv)
+        assert not out.has(sp.Pow(x - y, -1))
+        subs = {x: 3.0, y: 1.25, K: 0.5, n: 2.5}
+        assert float(out.subs(subs)) == pytest.approx(float(deriv.subs(subs)), rel=1e-12)
+
+    @pytest.mark.parametrize(
+        ("n_val", "expected"),
+        [(3.0, 0.0), (2.0, 0.0), (1.0, 0.5), (0.5, float("inf"))],
+        ids=["n=3", "n=2", "n=1", "n=0.5"],
+    )
+    def test_emitted_c_is_the_true_derivative_at_the_zero(self, n_val, expected):
+        """``d/dx ((x - y)·K)^n = n·K·((x - y)·K)^(n-1)`` at ``x == y``, ``K = 0.5``,
+        in each exponent regime — the same IEEE argument as #351's."""
+        n = sp.Symbol("n_hill")
+        deriv = sp.diff(((x - y) * K) ** n, x)
+        names = {"x": "u", "y": "v", "K": "kk", "n_hill": "n"}
+        c = sympy_to_c(deriv, names.get)
+        assert c is not None
+        got = _eval_c(c, u=1.0, v=1.0, kk=0.5, n=n_val)
+        assert not np.isnan(got)
+        assert got == expected if np.isinf(expected) else got == pytest.approx(expected)
+
+
 # ─── ...and the whole solve, against an exact oracle ───────────────────────
 #
 #   dS/dt = 1,          S(0) = 0   =>  S(t) = t
@@ -465,8 +520,9 @@ class TestCostIsBounded:
         GH #96 fast-rejected any denominator that was not a bare ``Symbol``, so a
         big rational reciprocal never entered the inner loop at all. #351 has to let
         it in — that is the whole point — and the check it meets is a structural
-        ``base == denom``. This pins that the comparison stays a comparison: a
-        future ``sp.simplify(base - denom) == 0``, or anything else that normalises
+        ``base == denom``, and since issue #541 a structural factor match as
+        well. This pins that both stay structural: a future
+        ``sp.simplify(base - denom) == 0``, or anything else that normalises
         before answering, would be correct and would reintroduce exactly the cost
         GH #96 removed. Measured ~0.5 ms; the ceiling is four orders above it.
         """

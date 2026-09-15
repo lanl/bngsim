@@ -624,6 +624,140 @@ def _finish_kinks(deriv):
     return deriv.replace(lambda n: isinstance(n, absval), lambda n: sp.Abs(n.args[0]))
 
 
+# ─── Issue #541: a power whose base is exactly zero ────────────────────────
+#
+# sympy's power rule, d(b^e) = b^e·(e'·log(b) + b'·e/b), is written for b ≠ 0.
+# At a base of exactly zero it builds log(0) and e/0, both ``zoo``, and the sum
+# folds to ``nan`` — so every derivative that reaches such a node carries a
+# symbolic ``nan``, which no emitter prints, and the model declines. The truth is
+# much simpler: 0^e is a step in its exponent — 0 for e > 0, 1 at e = 0, +inf
+# for e < 0 — and constant on each side, so its derivative is 0 wherever it has
+# one.
+#
+# A model rarely writes a zero base, but sympy builds one from a construct models
+# write all the time: it distributes a power over the branches of a Piecewise, so
+# ``if(c, u, 0)^(a-1)`` parses as ``Piecewise((u^(a-1), c), (0^(a-1), True))``.
+# ``SIR_v5``'s seasonal pulse is that shape, with ``a`` itself an ``if()`` chain
+# selecting one parameter per year on the day counter ``t`` — so its exponent
+# reads both the clock and every ``a_20xx``, and ``∂/∂t`` and ``∂/∂a_2021`` both
+# came back ``nan`` on the off-season branch, where the value is a constant 0.
+#
+# Hence the twin, as for ``abs`` above: before ``sp.diff`` the node becomes
+# ``zeropow(b, e)``, whose ``fdiff`` is 0, and afterwards it goes back to the
+# ``Pow`` it stands for, so a derivative that carries the power as a value factor
+# prints exactly as it did.
+#
+# Only an exponent whose *values* are run-constants is twinned. Then e changes
+# only where one of its ``if()`` conditions crosses, and a crossing already has
+# its treatment on each consumer: a switching surface to the self-check (#511),
+# and the #68 gate plus the #48 / #150 jump — computed from the right-hand side on
+# either side, so it covers a step of 0^e there too — to the sensitivity RHS. An
+# exponent that reads the state or the clock in a value, ``0^(x-1)``, is a step
+# in the state that nothing locates, so it keeps the ``nan`` and keeps declining.
+# The one point left over is a parameter sitting exactly on the step, e = 0:
+# there the twin answers the derivative of the constant branch the run is on,
+# which is how every ``if()`` over run-constants is already differentiated
+# (issue #382's ground).
+_zero_base_sympy_cache: dict = {}
+
+
+def _zero_base_bindings(sp) -> dict:
+    """``{"zeropow": class}``: a power with an exactly-zero base whose derivative
+    is 0 (issue #541). Built once, for the reason :func:`engine_sympy_bindings`
+    gives."""
+    bindings = _zero_base_sympy_cache.get("bindings")
+    if bindings is None:
+
+        class zeropow(sp.Function):
+            nargs = 2
+
+            def fdiff(self, argindex=1):
+                return sp.S.Zero
+
+        bindings = {"zeropow": zeropow}
+        _zero_base_sympy_cache["bindings"] = bindings
+    return bindings
+
+
+def _is_zero_base_power(node, sp) -> bool:
+    # ``is_Number`` first, so a symbolic base never runs an assumptions query.
+    # ``is_zero`` rather than ``== 0``: sympy >= 1.13 no longer calls ``Float(0.0)``
+    # equal to ``Integer(0)``, and a model may write either.
+    return isinstance(node, sp.Pow) and node.base.is_Number and bool(node.base.is_zero)
+
+
+def _value_symbol_names(node, sp) -> set[str]:
+    """Names of the free symbols of ``node`` outside every ``Piecewise``
+    condition — the symbols its *value* is computed from."""
+    names: set[str] = set()
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, sp.Symbol):
+            names.add(n.name)
+        elif isinstance(n, sp.Piecewise):
+            stack.extend(value for value, _cond in n.args)
+        else:
+            stack.extend(n.args)
+    return names
+
+
+def _prepare_zero_bases(expr, targets: set[str], constants: set[str]):
+    """Before differentiation (issue #541): a power with an exactly-zero base
+    becomes the ``zeropow`` twin of :func:`_zero_base_bindings`, when its exponent
+    reads one of ``targets`` and its exponent's values read nothing but
+    ``constants`` (see the note above).
+
+    The ``targets`` test keeps this to the nodes whose derivative is ``nan``
+    today: ``sp.diff`` never reaches the power rule of a node free of the
+    differentiation variable, so a model that attaches today is left exactly as
+    it is. Piecewise conditions are not walked, for the reason
+    :func:`_nondifferentiable_over` gives. Returns ``expr`` itself when nothing
+    qualifies.
+    """
+    try:
+        import sympy as sp
+    except ImportError:
+        return expr
+    if not any(_is_zero_base_power(p, sp) for p in expr.atoms(sp.Pow)):
+        return expr
+    zeropow = _zero_base_bindings(sp)["zeropow"]
+
+    def walk(node):
+        if isinstance(node, sp.Piecewise):
+            pairs = [(walk(value), cond) for value, cond in node.args]
+            if all(new is old for (new, _), (old, _) in zip(pairs, node.args, strict=True)):
+                return node
+            return sp.Piecewise(*pairs)
+        if not node.args:
+            return node
+        new_args = [walk(arg) for arg in node.args]
+        if any(n is not o for n, o in zip(new_args, node.args, strict=True)):
+            node = node.func(*new_args)
+        if (
+            _is_zero_base_power(node, sp)
+            and {s.name for s in node.exp.free_symbols} & targets
+            and _value_symbol_names(node.exp, sp) <= constants
+        ):
+            return zeropow(node.base, node.exp)
+        return node
+
+    return walk(expr)
+
+
+def _finish_zero_bases(deriv):
+    """After differentiation (issue #541): ``zeropow`` goes back to the power it
+    stands for."""
+    try:
+        import sympy as sp
+    except ImportError:
+        return deriv
+    zeropow = _zero_base_bindings(sp)["zeropow"]
+    if not deriv.has(zeropow):
+        return deriv
+    return deriv.replace(lambda n: isinstance(n, zeropow), lambda n: sp.Pow(*n.args))
+
+
 # ─── Core: differentiate w.r.t. observables ────────────────────────────────
 
 
@@ -706,6 +840,8 @@ def differentiate_rate_law(
     # Issue #507: an Abs over a differentiation variable gets a derivative the
     # emitters print (sign(a)·a'); Max / Min get theirs spelled after the fact.
     sym_expr = _prepare_kinks(sym_expr, targets)
+    # Issue #541: a power with a zero base is a step in its exponent, not a nan.
+    sym_expr = _prepare_zero_bases(sym_expr, targets, allowed - set(obs_alias) - {_TIME_SYM})
 
     # GH #250: fall back *before* differentiating when the answer is already
     # decided. See _NONDIFFERENTIABLE_EMITTER_FUNCS — this is the same decline the
@@ -736,11 +872,13 @@ def differentiate_rate_law(
             # GH #95: bail out of an over-budget derivation mid-rate-law so a
             # single law coupling many observables cannot blow the budget.
             raise _DerivationBudgetExceeded
-        deriv = _finish_kinks(sp.diff(sym_expr, sp.Symbol(alias)))
+        deriv = _finish_zero_bases(_finish_kinks(sp.diff(sym_expr, sp.Symbol(alias))))
         if deriv == 0:
             continue
         reason = _non_emittable_reason(deriv)
         if reason is not None:
+            if reason == _NON_FINITE_REASON:
+                reason += _nonfinite_value_note(sym_expr)
             _declined(
                 f"the derivative of rate law {_short(rate_expr)} with respect to "
                 f"{obs_name} {reason}"
@@ -756,6 +894,95 @@ def differentiate_rate_law(
 #: Boolean node types at least one emitter can print. Everything else in the
 #: family is refused by :func:`_is_emittable` — see the note there (issue #460).
 _EMITTABLE_BOOLEAN_FUNCS = frozenset({"And", "Or", "Not", "ITE"})
+
+_NON_FINITE_REASON = "carries a symbolic zoo / oo / nan (an unresolved singularity)"
+
+
+def _nonfinite_value_note(value) -> str:
+    """The rest of a :data:`_NON_FINITE_REASON` decline when the rate law itself is
+    what is non-finite (issue #541), or ``""``.
+
+    ``value`` is the rate law as parsed, before any derivative. When it already
+    holds a symbolic non-finite atom, every derivative that carries the atom along
+    was going to decline, and "the derivative carries" names the wrong culprit: the
+    thing to fix is the rate law, and usually it is a division by zero on one
+    ``if()`` branch, which sympy folds to ``zoo`` while parsing. ``SIR_v4`` is the
+    case: its year-selected shape parameters end in ``if(t<=1461, a_2024, 0)``, and
+    its pulse divides by them. The note names the branch by the conditions that
+    lead to it, outermost first, printed the way the model spells them.
+
+    The model is still declined. sympy's ``zoo`` is unsigned and does not follow
+    the engine's IEEE arithmetic (``1**zoo`` is ``nan`` where ``pow(1, inf)`` is
+    ``1``), so a branch sympy reads as non-finite may be finite at run time, and a
+    derivative emitted as non-finite there would stop a solve the finite-difference
+    Jacobian and CVODES' difference quotient complete.
+    """
+    try:
+        import sympy as sp
+    except ImportError:
+        return ""
+    bad = (sp.zoo, sp.oo, -sp.oo, sp.nan)
+    if not value.has(*bad):
+        return ""
+    conditions: list = []
+    node = value
+    while node not in bad:
+        if isinstance(node, sp.Piecewise):
+            for i, (branch, cond) in enumerate(node.args):
+                if branch.has(*bad):
+                    conditions.extend(sp.Not(c) for _branch, c in node.args[:i])
+                    if cond is not sp.true:
+                        conditions.append(cond)
+                    node = branch
+                    break
+            else:
+                return ""  # only a condition holds it, and a condition is not the value
+        else:
+            node = next((arg for arg in node.args if arg.has(*bad)), None)
+            if node is None:
+                return ""
+    if not _printer_cache:
+        _printer_cache.append(_make_printer()())
+    try:
+        where = [_printer_cache[0].doprint(c) for c in conditions]
+    except Exception:
+        where = []
+    if not where:
+        return (
+            ", which the rate law itself already has: sympy reads a division by zero, or "
+            "another singularity, in it before any derivative is taken"
+        )
+    return (
+        ", which the rate law itself already has where "
+        + " and ".join(where)
+        + ": sympy reads a division by zero, or another singularity, on that branch before "
+        "any derivative is taken"
+    )
+
+
+def unemitted_derivative_reason(deriv, value) -> str:
+    """Why ``sympy_to_c`` refused ``deriv``, a derivative of the rate law ``value``,
+    as the rest of a sentence that starts with the derivative (issue #541).
+
+    The sensitivity RHS used to say "not representable in C (non-differentiable or
+    unsupported function)" for every refusal, which for a non-finite atom sent the
+    reader looking for a function that is not there — including one the emitters'
+    rewrites folded in themselves (:func:`_folds_nonfinite`)."""
+    reason = _non_emittable_reason(_normalize_booleans(deriv))
+    if reason == _NON_FINITE_REASON:
+        return reason + _nonfinite_value_note(value)
+    if reason is not None:
+        return reason
+    try:
+        folded = _folds_nonfinite(_emitter_rewrites(_normalize_booleans(deriv)))
+    except Exception:
+        folded = False
+    if folded:
+        return (
+            f"{_NON_FINITE_REASON} once the emitters' rewrites have run: a condition they "
+            "build over the rate law's if() branches folds a division by zero on one of them"
+        )
+    return "is not representable in C (non-differentiable or unsupported function)"
 
 
 def _non_emittable_reason(expr) -> str | None:
@@ -789,7 +1016,7 @@ def _non_emittable_reason(expr) -> str | None:
     # *literal* folded in while printing (e.g. a ``1.0/0.0``); this catches the
     # symbolic singletons that check's regex does not spell.
     if expr.has(sp.zoo, sp.oo, -sp.oo, sp.nan):
-        return "carries a symbolic zoo / oo / nan (an unresolved singularity)"
+        return _NON_FINITE_REASON
     for fn in expr.atoms(sp.Function):
         name = type(fn).__name__
         # Piecewise is a Function subclass in sympy but the printer emits it as
@@ -862,6 +1089,15 @@ def _normalize_booleans(expr):
     — leaving pure And/Or/Not/relationals every printer already handles. Guarded
     on ``has(ITE)`` so every ITE-free expression is returned untouched and its
     emitted text is byte-for-byte unchanged.
+
+    Both emitters run it twice (issue #541): on the derivative as it arrives, and
+    again after their rewrites, because :func:`_guard_exponent_log_at_zero` builds
+    a condition of its own, ``Eq(base, 0) & (exp > 0)``, and sympy folds that into
+    an ITE as soon as the base or the exponent is a Piecewise — a Hill exponent
+    selected by an ``if()``, or ``SIR_v5``'s year-selected pulse shape. The one
+    pass before the rewrites let that ITE reach the printers, so ExprTk refused
+    the derivative and the Jacobian declined, and the C compiler refused it and a
+    forward-sensitivity run raised instead of running.
     """
     try:
         import sympy as sp
@@ -921,6 +1157,11 @@ def _symbol_multiple_quotient(base, sym, sp):
     caller's rewrite loop pair the same symbol forever). No such quotient can be
     built from the shapes above — sympy folds ``sym·sym^-1`` on construction —
     so the check is a guard rail, not a live branch.
+
+    **``sym`` need not be a Symbol** (issue #541). Every test above is structural,
+    so it answers the same for a difference like ``t - t0``, and since #541
+    :func:`_power_denominator_quotient` asks it of any denominator. The name is
+    the one GH #96 gave it.
     """
     if base == sym:
         return sp.S.One
@@ -965,21 +1206,40 @@ def _power_denominator_quotient(base, denom, sp):
     branch cut it will not assume). ``as_powers_dict`` on the very same ``Mul``
     reports the combined exponent, so the information is there; nothing acts on it.
 
-    ``denom`` **is a symbol that divides the base** (GH #96). Then
-    ``q = base/denom``, computed structurally by
-    :func:`_symbol_multiple_quotient` — ``(c·x)^n / x`` → ``c·(c·x)^(n-1)``.
+    ``denom`` **is a factor of the base** (GH #96). Then ``q = base/denom``,
+    computed structurally by :func:`_symbol_multiple_quotient` —
+    ``(c·x)^n / x`` → ``c·(c·x)^(n-1)``.
+
+    GH #96 asked that second question only of a bare ``Symbol``, which is what
+    differentiating ``(c·x)^n`` w.r.t. ``x`` leaves in the denominator. Issue #541
+    dropped the restriction, because nothing in the argument needs it: the
+    extraction returns ``q`` with ``q·denom == base`` by construction, whatever
+    ``denom`` is. The power rule leaves a *sum* in the denominator whenever one sits
+    among the base's factors — ``((t − t0)·r)^n`` differentiated through ``t`` is
+    ``n·((t − t0)·r)^n/(t − t0)`` — and ``SIR_v5``'s seasonal pulse is that shape,
+    with ``t0`` the season's onset. Left alone it is ``0/0`` = NaN at the instant a
+    season starts, in ``∂/∂t`` and in the onset and shape columns of the
+    sensitivity RHS, where the true values are ordinary numbers; a run whose day
+    counter started on an onset stopped at the first sensitivity RHS call
+    (``CV_FIRST_SRHSFUNC_ERR``), where CVODES' difference quotient ran to the end.
 
     The first case is checked first and costs one structural comparison, which
-    matters: it is by far the more common of the two, and it is the one the
-    second case cannot reach. ``_symbol_multiple_quotient`` requires ``denom`` to
-    be a ``Symbol``, so a base like ``A4 - A4_star`` divided by *itself* fell
-    through the whole function untouched — which is issue #351.
+    matters: it is by far the more common of the two. Before issue #541 the
+    second could not reach it at all — ``A4 - A4_star`` divided by *itself* is not
+    a ``Symbol`` — which is why issue #351 is a case of its own.
+
+    A symbol keeps GH #96's ``has`` pre-filter. Any other denominator goes
+    straight to the extraction, which looks only at the base's factors and its
+    terms' factors, so a ``has`` search of the whole base could only say no to
+    something the extraction already rejects. What the widened match does cost is
+    the rewrite itself where it succeeds — each one rebuilds the Piecewise around
+    it — measured at 0.2 ms per derivative on BIOMD0000000628.
     """
     if base == denom:
         return sp.S.One
-    if denom.is_Symbol and base.has(denom):
-        return _symbol_multiple_quotient(base, denom, sp)
-    return None
+    if denom.is_Symbol and not base.has(denom):
+        return None
+    return _symbol_multiple_quotient(base, denom, sp)
 
 
 def _remove_removable_power_denominators(expr):
@@ -1832,6 +2092,37 @@ def _make_printer():
 _printer_cache: list = []
 
 
+def _emitter_rewrites(expr):
+    """The rewrites both emitters apply to an emittable derivative before printing
+    it, in their load-bearing order (see :func:`_rewrite_saturating_ratio`), with
+    booleans normalized again afterwards (see :func:`_normalize_booleans`). May
+    raise; the emitters treat that as a refusal."""
+    return _normalize_booleans(
+        _rewrite_saturating_ratio(
+            _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
+        )
+    )
+
+
+def _folds_nonfinite(rewritten) -> bool:
+    """Whether the rewrites left a symbolic non-finite atom in ``rewritten``.
+
+    Issue #541: a rewrite can put back what the check before it refused. The
+    zero-base logarithm guard builds ``Eq(base, 0)``, and sympy folds that
+    condition branch by branch when the base is built from Piecewise chains —
+    ``(t - t_start)/(t_end - t_start)`` on a branch where both chains end in 0 is
+    ``zoo*t`` there. Printed, that is an undeclared identifier to the C compiler
+    and an unknown symbol to ExprTk, so a forward-sensitivity build failed outright
+    instead of declining. Only the non-finite atoms are looked for: every rewrite
+    builds powers, products, sums, Piecewise and relationals out of nodes the
+    emittability check already accepted, so a folded singleton is the one new
+    thing one can hand the printer.
+    """
+    import sympy as sp
+
+    return bool(rewritten.has(sp.zoo, sp.oo, -sp.oo, sp.nan))
+
+
 def sympy_to_exprtk(expr) -> str | None:
     """Emit a sympy expression as an ExprTk string, or ``None`` if it contains
     a construct the emitter cannot represent."""
@@ -1843,10 +2134,10 @@ def sympy_to_exprtk(expr) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _rewrite_saturating_ratio(
-            _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
-        )
+        expr = _emitter_rewrites(expr)
     except Exception:
+        return None
+    if _folds_nonfinite(expr):
         return None
     if not _printer_cache:
         _printer_cache.append(_make_printer()())
@@ -2076,10 +2367,10 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _rewrite_saturating_ratio(
-            _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
-        )
+        expr = _emitter_rewrites(expr)
     except Exception:
+        return None
+    if _folds_nonfinite(expr):
         return None
     printer = _c_printer()
     printer._resolver = resolve_symbol
