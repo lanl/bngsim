@@ -106,6 +106,24 @@ using CodegenSensRhsFn = int (*)(int Ns, double t, double *y, double *ydot, int 
 using CodegenSensTermScaleFn = int (*)(int Ns, double t, double *y, int iS, double *scale_out,
                                        void *user_data);
 
+// Issue #545: comoving sensitivity columns. For a parameter p that moves a clock
+// crossing at c = ∂t*/∂p, the column V = S + c·f — clock rows left at zero — obeys
+// V' = J·V + β, where β is the derivative of f along p and every clock together.
+// Where f carries a power of a base that vanishes at that crossing, ∂f/∂p is
+// unbounded past it and β is not, so the solver integrates V from such a crossing
+// to the next restart and reads S = V − c·f wherever S is wanted.
+//
+// bngsim_codegen_sens_rhs_comoving and bngsim_codegen_sens_term_scale_comoving
+// have the two signatures above and take the same CodegenSensUserDataForSO, but
+// read plist[iS] as a comoving case index (>= N_PARAMS) instead of a parameter.
+// bngsim_codegen_comoving_case(iP, k, p, &c) returns parameter iP's k-th case and
+// its c, or -1 past the last; a case is entered only at a crossing whose ∂t*/∂p
+// matches that c. bngsim_codegen_comoving_clock(k) returns the k-th unit-rate
+// clock species, or -1 past the last. All four are resolved with try_symbol, and a
+// .so that lacks any of them keeps every column plain.
+using CodegenComovingCaseFn = int (*)(int iP, int k, const double *p, double *c_out);
+using CodegenComovingClockFn = int (*)(int k);
+
 // Dense analytical Jacobian into an n×n COLUMN-MAJOR buffer
 // (jac[j*n + i] = ∂f_i/∂x_j). The emitted C memsets the buffer itself.
 using CodegenJacFn = int (*)(double t, double *y, double *jac_colmajor, void *user_data);

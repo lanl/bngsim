@@ -785,6 +785,180 @@ def _clock_quadratic_thresholds(
     return clock_sym, texts
 
 
+def clock_guard_cells(expr, clock_names: AbstractSet[str], sp) -> list[tuple]:
+    """``[(expr_on_cell, guards, truth)]``: *expr* collapsed on each cell of the
+    clock axis its clock guards cut it into (issue #545).
+
+    A guard is a comparison of one clock with a number inside a ``Piecewise``
+    condition — the year selection ``if(t<365, d_2021, if(t<730, 365+d_2022, …))``.
+    ``guards`` is every one of them, in a fixed order, and ``truth`` says which
+    side of each the cell is on; ``expr_on_cell`` has every guard replaced by that
+    truth value, which is what collapses such a chain to the one branch the cell
+    takes. The cells are the distinct truth assignments the guards take along the
+    axis, probed at every guard value and between them, so an assignment that
+    holds only exactly at a threshold (``t<730`` beside ``t<=730``) is a cell of its
+    own. With no guards, or guards on more than one clock, *expr* is its own and
+    only cell, with no guards.
+
+    Read by the clock-threshold recognizer below and by the generator's comoving
+    columns (``bngsim._codegen._functional_comoving_plan``), which both need an
+    onset written through such a chain as the plain expression it is on the cell
+    where it crosses.
+    """
+    guards = set()
+    for pw in expr.atoms(sp.Piecewise):
+        for _value, cond in pw.args:
+            if isinstance(cond, bool) or cond in (sp.true, sp.false):
+                continue
+            for rel in cond.atoms(sp.core.relational.Relational):
+                if isinstance(rel, (sp.Eq, sp.Ne)):
+                    continue
+                syms = rel.free_symbols
+                if len(syms) != 1:
+                    continue
+                (sym,) = syms
+                if sym.name not in clock_names:
+                    continue
+                if (rel.lhs == sym and rel.rhs.is_Number) or (
+                    rel.rhs == sym and rel.lhs.is_Number
+                ):
+                    guards.add(rel)
+    if not guards:
+        return [(expr, (), ())]
+    clocks = {next(iter(rel.free_symbols)) for rel in guards}
+    if len(clocks) != 1:
+        return [(expr, (), ())]
+    (clock,) = clocks
+    ordered = tuple(sorted(guards, key=sp.srepr))
+    points = sorted({float(rel.rhs if rel.rhs.is_Number else rel.lhs) for rel in ordered})
+    probes = [points[0] - 1.0]
+    for lo, hi in zip(points, points[1:], strict=False):
+        probes += [lo, 0.5 * (lo + hi)]
+    probes += [points[-1], points[-1] + 1.0]
+    cells: dict[tuple[bool, ...], tuple] = {}
+    for x in probes:
+        truth = tuple(bool(rel.subs(clock, x)) for rel in ordered)
+        if truth in cells:
+            continue
+        on_cell = expr.xreplace(
+            {
+                rel: (sp.true if held else sp.false)
+                for rel, held in zip(ordered, truth, strict=False)
+            }
+        )
+        cells[truth] = (on_cell, ordered, truth)
+    return list(cells.values())
+
+
+class GuardedThreshold(NamedTuple):
+    """One crossing candidate of a clock threshold written through clock guards
+    (issue #545): the threshold on one cell of the guards, and that cell.
+
+    A cell's threshold is a crossing only where the clock value it names falls in
+    the cell itself — the else-branch of a year chain names a day in some other
+    year, and the condition does not flip there — which is a question about the
+    parameter point, so it is asked by the callers that hold one
+    (:meth:`holds_at`), not by the value-free recognizer.
+    """
+
+    threshold: str
+    clock: str
+    guards: tuple
+    truth: tuple
+
+    def holds_at(self, clock_value: float) -> bool:
+        import sympy as sp
+
+        clock = sp.Symbol(self.clock)
+        return all(
+            bool(rel.subs(clock, clock_value)) == held
+            for rel, held in zip(self.guards, self.truth, strict=True)
+        )
+
+
+_GUARDED_CACHE: dict[
+    tuple[str, frozenset[str]], tuple[str, tuple[GuardedThreshold, ...]] | None
+] = {}
+
+
+def _clock_guarded_thresholds(
+    atom: str, clock_symbols: AbstractSet[str]
+) -> tuple[str, tuple[GuardedThreshold, ...]] | None:
+    """``(clock_symbol, (GuardedThreshold, …))`` for an atom comparing a bare clock
+    against something that reads the clock only through guards — else ``None``.
+
+    Issue #545. A season's onset written as a year selection,
+    ``t > if(t<365, 0+d_2021, if(t<730, 365+d_2022, …))``, crosses at a time the
+    run knows in advance on every cell of its guards — ``d_2021``, ``365+d_2022``,
+    … — but reads the clock on both sides, so :func:`_clock_threshold_split_bare`
+    declines it and the issue #150 state path claims it as a switch over live state.
+    That path can only root on the crossing, and CVODE tests for a root on a step it
+    accepts: where the rate law past the onset is a power rising from zero, every
+    step spanning it fails the error test, and the run wedges just short of a root
+    it never reaches. Recognized here instead, each cell's threshold is a crossing
+    the solver stops on exactly, with the ``∂t*/∂p`` of that cell.
+
+    Deliberately narrow: exactly one side is a bare clock, the other side reads
+    that clock only inside ``Piecewise`` conditions comparing it with a number
+    (never in a value, never another clock), and every cell's threshold is free of
+    the clock. Anything else returns ``None``, which is the status quo. Tried after
+    every polynomial recognizer and before the schedules, so no atom recognized
+    today changes path.
+    """
+    key = (atom, frozenset(clock_symbols))
+    if key in _GUARDED_CACHE:
+        return _GUARDED_CACHE[key]
+    answer = None
+    split = _relational_split(atom)
+    if split is not None:
+        lhs_bare = _strip_redundant_parens(split[0])
+        rhs_bare = _strip_redundant_parens(split[1])
+        lhs_clock = lhs_bare in clock_symbols
+        rhs_clock = rhs_bare in clock_symbols
+        if lhs_clock != rhs_clock:
+            clock_sym, other = (lhs_bare, rhs_bare) if lhs_clock else (rhs_bare, lhs_bare)
+            others = {c for c in clock_symbols if c != clock_sym}
+            if not _clock_free(other, {clock_sym}) and _clock_free(other, others):
+                answer = _guarded_cells_of(clock_sym, other)
+    if len(_GUARDED_CACHE) >= _CROSSING_CACHE_MAX:
+        _GUARDED_CACHE.clear()
+    _GUARDED_CACHE[key] = answer
+    return answer
+
+
+def _guarded_cells_of(
+    clock_sym: str, other: str
+) -> tuple[str, tuple[GuardedThreshold, ...]] | None:
+    try:
+        import sympy as sp
+
+        from bngsim._jacobian import _TIME_SYM, _exprtk_to_sympy, _value_symbol_names
+
+        expr = _exprtk_to_sympy(other)
+        if expr is None:
+            return None
+        clock_name = _TIME_SYM if clock_sym in _TIME_SYMBOLS else clock_sym
+        if clock_name in _value_symbol_names(expr, sp):
+            return None  # the clock in a value: not a threshold at all
+        cells = clock_guard_cells(expr, {clock_name}, sp)
+        if not cells[0][1]:
+            return None  # read the clock, but not through a guard this can cut on
+        out = []
+        seen = set()
+        for on_cell, guards, truth in cells:
+            if clock_name in {s.name for s in on_cell.free_symbols}:
+                return None
+            text = str(on_cell).replace("**", "^")
+            if (text, truth) in seen:
+                continue
+            seen.add((text, truth))
+            out.append(GuardedThreshold(text, clock_name, guards, truth))
+    except Exception as exc:  # noqa: BLE001 - an unreadable atom is just declined
+        logger.debug("clock guarded threshold declined %r: %s", other, exc)
+        return None
+    return clock_sym, tuple(out)
+
+
 # The integer the recognizer below substitutes for ``floor(...)`` while it works
 # out whether the residual is a schedule. It is the period *index* — which whole
 # period the clock is in — and is eliminated again before anything is returned.
@@ -2220,6 +2394,11 @@ def fixed_clock_threshold(atom: str, scope: SwitchConditionScope) -> bool:
     """
     split = _clock_threshold_splits(atom, scope.clock_symbols)
     if split is None:
+        # A threshold written through clock guards (issue #545) is fixed when every
+        # cell's threshold is.
+        guarded = _clock_guarded_thresholds(atom, scope.clock_symbols)
+        if guarded is not None:
+            return all(_fixed_threshold_expr(g.threshold, scope) for g in guarded[1])
         # A repeating schedule (issue #436) whose period, offset and duty are all
         # literal has an edge at a fixed time in every period, so no parameter
         # moves any of them either. ``rem(time(), 24) >= 7`` — the light and dark
@@ -2441,6 +2620,12 @@ def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
         return True
     split = _clock_threshold_splits(atom, scope.clock_symbols)
     if split is None:
+        # A threshold written through clock guards (issue #545) has one crossing
+        # candidate per cell, and is compensated when each of them is — the ones
+        # that fall outside their own cell are read as crossings that do not happen.
+        guarded = _clock_guarded_thresholds(atom, scope.clock_symbols)
+        if guarded is not None:
+            return all(_threshold_compensated(g.threshold, scope) for g in guarded[1])
         # Asked last, so an atom any polynomial recognizer claims keeps the path
         # and the threshold text it had before issue #436.
         return _schedule_compensated(atom, scope)
@@ -3751,6 +3936,14 @@ def compute_switch_time_sens(
                 # well as the recognizer, and TestTheGateAndTheDetectorsAgree
                 # still checks the behaviour rather than the sharing.
                 split = _clock_threshold_splits(atom, clock_symbols)
+                # Issue #545: a threshold written through clock guards, one crossing
+                # candidate per cell, asked in the same order clock_crossing_compensated
+                # asks it.
+                guarded = None
+                if split is None:
+                    guarded = _clock_guarded_thresholds(atom, clock_symbols)
+                    if guarded is not None:
+                        split = (guarded[0], [g.threshold for g in guarded[1]])
                 if split is None:
                     _absorb_schedule_crossings(
                         found,
@@ -3782,7 +3975,9 @@ def compute_switch_time_sens(
                 terms = [_threshold_crossing_terms(e, scope, own_names) for e in threshold_exprs]
                 compensated = all(t is not None for t in terms)
 
-                for threshold_expr, term in zip(threshold_exprs, terms, strict=True):
+                for k, (threshold_expr, term) in enumerate(
+                    zip(threshold_exprs, terms, strict=True)
+                ):
                     if term is None or term.value is None:
                         # Unreadable, or a root off the real line — a crossing
                         # that does not happen at this parameter point. Neither
@@ -3794,6 +3989,11 @@ def compute_switch_time_sens(
                         continue
                     partials = term.partials if compensated else {}
                     threshold_value = term.value
+                    if guarded is not None and not guarded[1][k].holds_at(threshold_value):
+                        # A cell's threshold that names a clock value outside that
+                        # cell: the guards select another branch there, and the
+                        # condition does not flip (issue #545).
+                        continue
                     dtstar = [0.0] * len(names)
                     for prim_name, coeff in partials.items():
                         col = col_of.get(prim_name)

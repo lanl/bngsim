@@ -235,7 +235,12 @@ _compile_counter = itertools.count()
 # a class of silently wrong answers. Both change what a model calling mratio
 # computes, so a cached v28 .so would keep serving refusals and the old wrong
 # values. Invalidate v28.
-_CODEGEN_VERSION = "29"
+# v30: lanl/bngsim #545 — the sensitivity source may carry comoving columns for a
+# parameter that moves a clock crossing: bngsim_codegen_sens_rhs_comoving, its term
+# scale, and the case and clock tables the solver reads them through. A cached v29
+# .so has none of them, and a run on it would keep failing at the onset of a pulse
+# whose derivative is unbounded there. Invalidate v29.
+_CODEGEN_VERSION = "30"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -3911,6 +3916,8 @@ def _emit_sens_rhs_body(
     functional_dfdp: bool = False,
     functional_jacv_groups: list[list[str]] | None = None,
     emit_term_scale: bool = False,
+    comoving_cases: list[tuple[int, int, str]] | None = None,
+    comoving_clock_species: tuple[int, ...] = (),
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -3974,6 +3981,14 @@ def _emit_sens_rhs_body(
     also what decides whether ``bngsim_jac_vec`` takes ``obs``/``func``/``t``:
     Elementary bodies read none of the three, so an Elementary model's signature —
     and its whole emitted source — is unchanged.
+
+    ``comoving_cases`` (issue #545) adds the comoving columns of
+    :class:`_ComovingPlan`: ``bngsim_dfdp_comoving``, the same switch under each
+    case's virtual index with a clock-dependent law's ``comoving_terms`` in place of
+    its plain ones, the ``bngsim_codegen_sens_rhs_comoving`` driver and term scale
+    that read it through ``plist[iS]``, and the case and clock tables the solver
+    matches a crossing against. ``None`` (every model without a case, and a chunked
+    one) emits nothing new.
     """
     lines: list[str] = []
     _emit = lines.append
@@ -3984,6 +3999,9 @@ def _emit_sens_rhs_body(
     # alone. Same threshold as the RHS ⇒ a model that chunks one chunks both.
     chunk = _should_chunk(len(rxn_data))
     block_size = _chunk_block_size()
+    # Issue #545: a model large enough to chunk is not one this has been measured
+    # on, and its driver translation unit is the one place the tables would go.
+    comoving = bool(comoving_cases) and not chunk
 
     # ── Resolve the obs[]/func[] context the switch will need (GH #65) ──
     # Decided *before* anything is emitted, because it fixes bngsim_dfdp's
@@ -4006,6 +4024,10 @@ def _emit_sens_rhs_body(
     # is decided by what *it* reads — a model whose ∂f/∂p is parameter-free but
     # whose J·v is not (or the reverse) carries neither array where it is unused.
     _derived_exprs = [t[1] for rxn in rxn_data for t in rxn.get("derived_terms", ())]
+    if comoving:
+        _derived_exprs += [
+            e for rxn in rxn_data for e in (rxn.get("comoving_terms") or {}).values()
+        ]
     fjacv_groups = [list(g) for g in (functional_jacv_groups or ())]
     _fjacv_text = "\n".join("\n".join(g) for g in fjacv_groups)
     dfdp_need_obs = any("obs[" in e for e in _derived_exprs)
@@ -4211,20 +4233,22 @@ def _emit_sens_rhs_body(
             else:
                 _emit(f"        {out}[{sp_idx}] += ({coeff}) * v;")
 
-    def _emit_dfdp_switch(out: str, abs_terms: bool) -> None:
+    def _emit_dfdp_switch(out: str, abs_terms: bool, by_param: dict | None = None) -> None:
         """The ``switch (iP)`` shared by ``bngsim_dfdp`` and its term scale.
 
         One traversal of ``rxns_by_param`` drives both emissions, so the two
         functions cannot come to describe different reaction sets — the failure
         shape that has bitten every paired computation site in this emitter.
+        ``by_param`` is the comoving table (issue #545), traversed the same way.
         """
+        table = rxns_by_param if by_param is None else by_param
         _emit("    double v;")
         _emit("    switch (iP) {")
-        for pidx in sorted(rxns_by_param.keys()):
+        for pidx in sorted(table.keys()):
             if pidx < 0:
                 continue
             _emit(f"    case {pidx}:")
-            for entry in rxns_by_param[pidx]:
+            for entry in table[pidx]:
                 kind = entry[0]
                 rxn = entry[1]
                 if kind == "mm":
@@ -4336,6 +4360,56 @@ def _emit_sens_rhs_body(
                 _emit(f"    scale_out[{si}] = 0.0;")
         _emit("}")
         _emit("")
+
+    # ── Comoving df/dp (issue #545) ─────────────────────────────────
+    # The column a case integrates is V = S + c·f, forced by the derivative of f
+    # along a shift of its parameter together with every clock. Every reaction
+    # contributes what it does to the plain column, except a clock-dependent
+    # Functional law, whose comoving ∂func/∂p stands in for all of its plain terms.
+    if comoving:
+        rxns_by_case: dict[int, list[tuple]] = {}
+        for virtual, param, _c in comoving_cases or ():
+            entries: list[tuple] = []
+            for rxn in rxn_data:
+                if rxn["param_idx"] == param:
+                    entries.append(("direct", rxn))
+                replaced = "comoving_terms" in rxn
+                lo, hi = rxn.get("functional_terms_span", (0, 0))
+                for j, (primary_pidx, dpd_dprimary_c) in enumerate(rxn.get("derived_terms", [])):
+                    if primary_pidx != param or (replaced and lo <= j < hi):
+                        continue
+                    entries.append(("derived", rxn, dpd_dprimary_c))
+                if replaced and virtual in rxn["comoving_terms"]:
+                    entries.append(("derived", rxn, rxn["comoving_terms"][virtual]))
+                for primary_pidx, v_lines in rxn.get("mm_terms", []):
+                    if primary_pidx == param:
+                        entries.append(("mm", rxn, v_lines))
+            rxns_by_case[virtual] = entries
+
+        _emit("/* Comoving df/dp (issue #545). Case iP >= N_PARAMS is a column V = S + c*f for")
+        _emit(
+            "   a parameter that moves a clock crossing at c = d(t_star)/dp: the derivative of f"
+        )
+        _emit("   along that parameter and every clock together, whose singular terms at the")
+        _emit("   crossing cancel. bngsim_codegen_comoving_case lists the cases. */")
+        _emit_dfdp_signature("bngsim_dfdp_comoving", "dfdp_out")
+        _emit_dfdp_switch("dfdp_out", abs_terms=False, by_param=rxns_by_case)
+        if fixed_sp:
+            _emit("    /* Zero fixed species */")
+            for si in sorted(fixed_sp):
+                _emit(f"    dfdp_out[{si}] = 0.0;")
+        _emit("}")
+        _emit("")
+        if emit_term_scale:
+            _emit("/* Term scale of the comoving df/dp (issues #177, #545). */")
+            _emit_dfdp_signature("bngsim_dfdp_term_scale_comoving", "scale_out")
+            _emit_dfdp_switch("scale_out", abs_terms=True, by_param=rxns_by_case)
+            if fixed_sp:
+                _emit("    /* Zero fixed species */")
+                for si in sorted(fixed_sp):
+                    _emit(f"    scale_out[{si}] = 0.0;")
+            _emit("}")
+            _emit("")
 
     # ── Jacobian-vector product: J * v ──────────────────────────────
     # Build one line-group per contributing reaction (those with a scalar rate
@@ -4550,8 +4624,92 @@ def _emit_sens_rhs_body(
     _emit("}")
     _emit("")
 
+    def _emit_comoving_exports() -> None:
+        """Issue #545: the comoving driver, its term scale, and the two tables the
+        solver reads the cases through. Nothing for a model without a case."""
+        if not comoving:
+            return
+        _emit("")
+        _emit("/* Comoving CVODES sensitivity RHS (issue #545). Same signature and user data as")
+        _emit("   bngsim_codegen_sens_rhs, but plist[iS] names the comoving case the column")
+        _emit("   integrates (a bngsim_codegen_comoving_case index, >= N_PARAMS), and the")
+        _emit("   column is V = S + c*f with the clock rows left at zero. */")
+        _emit("BNGSIM_EXPORT int bngsim_codegen_sens_rhs_comoving(int Ns, double t,")
+        _emit("                            double* y, double* ydot,")
+        _emit("                            int iS, double* yS, double* ySdot,")
+        _emit("                            void* user_data,")
+        _emit("                            double* tmp1, double* tmp2) {")
+        _emit("    CodegenSensUserData* data = (CodegenSensUserData*)user_data;")
+        _emit("    double* p = data->param_values;")
+        _emit("    int iP = data->plist[iS];  /* comoving case */")
+        _emit("")
+        if obs_in or func_in:
+            _emit("    /* Observables / functions (needed by Functional df/dp) */")
+            for ln in (*obs_in, *func_in):
+                _emit(ln)
+            _emit("")
+        _emit("    double dfdp[N_SPECIES];")
+        _emit(f"    bngsim_dfdp_comoving(iP, t, y, p{_dfdp_ctx}, dfdp);")
+        _emit("    double Jv[N_SPECIES];")
+        _emit(f"    bngsim_jac_vec(t, y, p, yS{_jacv_ctx}, Jv);")
+        _emit("    for (int i = 0; i < N_SPECIES; ++i) {")
+        _emit("        ySdot[i] = Jv[i] + dfdp[i];")
+        _emit("    }")
+        _emit("")
+        _emit("    return 0;")
+        _emit("}")
+        _emit("")
+        if emit_term_scale:
+            _emit("BNGSIM_EXPORT int bngsim_codegen_sens_term_scale_comoving(int Ns, double t,")
+            _emit("                            double* y, int iS, double* scale_out,")
+            _emit("                            void* user_data) {")
+            _emit("    CodegenSensUserData* data = (CodegenSensUserData*)user_data;")
+            _emit("    double* p = data->param_values;")
+            _emit("    int iP = data->plist[iS];  /* comoving case */")
+            _emit("    (void)Ns;")
+            _emit("")
+            if obs_in or func_in:
+                _emit("    /* Observables / functions (needed by Functional df/dp) */")
+                for ln in (*obs_in, *func_in):
+                    _emit(ln)
+                _emit("")
+            _emit(f"    bngsim_dfdp_term_scale_comoving(iP, t, y, p{_dfdp_ctx}, scale_out);")
+            _emit("    return 0;")
+            _emit("}")
+            _emit("")
+        _emit("/* The k-th comoving case of parameter iP: its index for the comoving RHS")
+        _emit("   (returned), and in *c_out the shift c = d(t_star)/dp of the crossings it is")
+        _emit("   for. -1 past the last case. The solver enters a case only at a crossing whose")
+        _emit("   d(t_star)/dp matches *c_out. (Issue #545) */")
+        _emit("BNGSIM_EXPORT int bngsim_codegen_comoving_case(int iP, int k, const double* p,")
+        _emit("                            double* c_out) {")
+        _emit("    (void)p;")
+        _emit("    switch (iP) {")
+        by_param_cases: dict[int, list[tuple[int, str]]] = {}
+        for virtual, param, c_c in comoving_cases or ():
+            by_param_cases.setdefault(param, []).append((virtual, c_c))
+        for param in sorted(by_param_cases):
+            _emit(f"    case {param}:")
+            for k, (virtual, c_c) in enumerate(by_param_cases[param]):
+                _emit(f"        if (k == {k}) {{ *c_out = {c_c}; return {virtual}; }}")
+            _emit("        return -1;")
+        _emit("    default:")
+        _emit("        return -1;")
+        _emit("    }")
+        _emit("}")
+        _emit("")
+        _emit("/* The k-th unit-rate clock species, whose rows a comoving column keeps at zero;")
+        _emit("   -1 past the last. (Issue #545) */")
+        _emit("BNGSIM_EXPORT int bngsim_codegen_comoving_clock(int k) {")
+        for k, species_idx in enumerate(comoving_clock_species):
+            _emit(f"    if (k == {k}) return {int(species_idx)};")
+        _emit("    (void)k;")
+        _emit("    return -1;")
+        _emit("}")
+
     # ── Term scale of the sensitivity RHS (issue #177) ──────────────────────
     if not emit_term_scale:
+        _emit_comoving_exports()
         return "\n".join(lines) + "\n"
 
     # A separate entry point rather than an extra output on the RHS above: the
@@ -4588,6 +4746,7 @@ def _emit_sens_rhs_body(
     _emit(f"    bngsim_dfdp_term_scale(iP, t, y, p{_dfdp_ctx}, scale_out);")
     _emit("    return 0;")
     _emit("}")
+    _emit_comoving_exports()
 
     return "\n".join(lines) + "\n"
 
@@ -8653,6 +8812,399 @@ def _functional_rate_law_partials(
     return terms, None
 
 
+# ─── Comoving sensitivity columns at a moving onset (issue #545) ─────────────
+#
+# A pulse ``k1·s^(a-1)·(1-s)`` over a window ``s = (t - on)/D`` is continuous for
+# ``a > 1``, but ``∂f/∂on`` goes as ``s^(a-2)``: for ``1 < a < 2`` it is infinite at
+# the onset and unbounded just past it, while the sensitivity it forces goes as
+# ``s^(a-1)``. No polynomial step resolves that forcing, and for ``a`` near 1 most of
+# its integral lies within a few ulp of the onset, where a float time cannot even
+# place a step boundary. Declining it (a finite value at the onset) was ruled out
+# on #545: it removes the failure at the onset and leaves the one just past it.
+#
+# What is resolvable is a different column. If a crossing moves at ``c = ∂t*/∂p``,
+# ``V = S + c·f`` obeys ``V' = J·V + β`` with ``β = ∂f/∂p + c·(∂f/∂t + Σ ∂f/∂clock)``
+# — the derivative of ``f`` along a shift of ``p`` together with every clock. A base
+# that vanishes at the crossing vanishes there for every ``p``, so the shift leaves
+# it unchanged, and the singular terms of ``∂f/∂p`` and ``c·∂f/∂t`` cancel term by
+# term. Taken as ``d/dε f(t + c·ε, p + ε)`` they cancel in sympy's own
+# simplification, before a power rule runs. ``V`` is then as smooth as the state,
+# and ``S = V − c·f`` wherever ``S`` is read. The clock rows of ``V`` stay those of
+# ``S`` (zero): their share of ``J·V`` is already inside ``β``.
+#
+# A column integrates in this frame from a crossing whose ``∂t*/∂p`` matches an
+# emitted case until the next restart of any kind (the solver owns that); the
+# generator's job is the cases. They are read off the singular powers themselves
+# (:func:`_singular_power`): for each, ``c = -∂N/∂p ÷ ∂N/∂clock`` over the base's
+# numerator ``N``, kept where it does not read the clock. A case is emitted only
+# when shifting removes a singular power the plain derivative has, so a model
+# without one emits exactly what it did before.
+_COMOVING_EPS = "_bngsim_comoving_eps"
+
+
+class _ComovingPlan(NamedTuple):
+    """The comoving columns :func:`_functional_comoving_plan` found for a model.
+
+    ``cases`` is ``[(virtual_index, param_idx, c_expr)]``: the switch index the
+    comoving ``∂f/∂p`` is emitted under (past every real parameter), the column's
+    parameter, and ``c = ∂t*/∂p`` as C over ``p[]``. ``terms`` maps a Functional
+    reaction to ``{virtual_index: C}``, its comoving ``∂func/∂p``; a reaction whose
+    law reads no clock has no entry and keeps its plain terms in every case.
+    ``clock_species`` are the unit-rate clocks, whose rows a comoving column leaves
+    at zero.
+    """
+
+    cases: list[tuple[int, int, str]]
+    terms: dict[int, dict[int, str]]
+    clock_species: tuple[int, ...]
+
+
+def _pow_nodes_in_values(expr, sp):
+    """Every power reachable through values — never through a Piecewise condition,
+    which is not differentiated."""
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, sp.Piecewise):
+            stack.extend(value for value, _cond in node.args)
+            continue
+        if isinstance(node, sp.Pow):
+            yield node
+        stack.extend(node.args)
+
+
+def _singular_power(node, clock_names: set[str], sp, *, derivative: bool = False) -> bool:
+    """Whether the power ``node`` can be singular where its base vanishes at a crossing.
+
+    Its base has to read a clock and be able to reach 0. In a rate law its exponent
+    is strictly between 0 and 1, or not a number: ``s^e`` is then finite at ``s = 0``
+    and its derivative ``e·s^(e-1)`` is not. In a derivative the exponent is negative,
+    or not a number. So an onset written as a logistic ``1/(1 + exp(-k·(t - on)))``
+    has no singular power (its base is never 0), nor does a Gaussian's
+    ``(t - r)^2.0`` or an ``s^1.5``, whose derivatives stay bounded — none of them
+    needs a comoving column.
+    """
+    from bngsim._jacobian import _value_symbol_names
+
+    exponent = node.exp
+    if exponent.is_number:
+        if exponent.is_real is not True:
+            return False
+        if derivative:
+            if not bool(exponent < 0):
+                return False
+        elif not (bool(exponent > 0) and bool(exponent < 1)):
+            return False
+    if not _value_symbol_names(node.base, sp) & clock_names:
+        return False
+    return _base_can_vanish(node.base, sp)
+
+
+# By base: a plan asks about the same few bases once per cell, parameter and shift,
+# which without this was a third of SIR_v4's plan.
+_BASE_CAN_VANISH_CACHE: dict = {}
+_BASE_CAN_VANISH_CACHE_MAX = 4096
+
+
+def _base_can_vanish(base, sp) -> bool:
+    """False when ``base`` is provably nonzero for every real clock, parameter and
+    state (``1 + exp(...)``, ``t^2 + 1``); True when it may reach 0."""
+    answer = _BASE_CAN_VANISH_CACHE.get(base)
+    if answer is None:
+        numerator = sp.numer(sp.together(base))
+        real = {symbol: sp.Dummy(real=True) for symbol in numerator.free_symbols}
+        answer = numerator.xreplace(real).is_zero is not False
+        if len(_BASE_CAN_VANISH_CACHE) >= _BASE_CAN_VANISH_CACHE_MAX:
+            _BASE_CAN_VANISH_CACHE.clear()
+        _BASE_CAN_VANISH_CACHE[base] = answer
+    return answer
+
+
+def _piecewise_value_leaves(expr, sp) -> list:
+    """The values of a top-level ``Piecewise``, recursively, or ``[expr]``. Never
+    folds: ``piecewise_fold`` simplifies every condition it combines, which on a
+    year chain is most of the cost of a build (issue #545)."""
+    if isinstance(expr, sp.Piecewise):
+        return [leaf for value, _cond in expr.args for leaf in _piecewise_value_leaves(value, sp)]
+    return [expr]
+
+
+def _clock_guard_cells(expr, clock_names: set[str], sp) -> list[tuple]:
+    """``[(expr_on_cell, cell_condition)]`` over the clock axis, from
+    :func:`bngsim._switch_sensitivity.clock_guard_cells`.
+
+    An onset written through a year selection ``if(t<365, d_2021, if(t<730,
+    365+d_2022, …))`` is a plain ``730 + d_2023`` on its cell, where the shift can
+    cancel it. Shifting ``d_2023`` inside the unresolved chain moves one branch
+    only, and sympy would keep the singular power multiplied by a branch that is
+    zero at run time — right in value, and ``inf·0`` at the onset itself.
+    """
+    from bngsim._switch_sensitivity import clock_guard_cells
+
+    out = []
+    for on_cell, guards, truth in clock_guard_cells(expr, clock_names, sp):
+        cond = sp.And(
+            *[rel if held else sp.Not(rel) for rel, held in zip(guards, truth, strict=False)]
+        )
+        out.append((on_cell, cond))
+    return out
+
+
+def _comoving_coefficients(
+    expr, clock_names: set[str], param_aliases: set[str], derived_inline: dict, sp
+) -> dict[str, set]:
+    """``{param_alias: {c}}``: the shifts ``c = ∂t*/∂p`` at which a singular power
+    of ``expr`` has its base vanish, read off that base's numerator ``N`` as
+    ``-∂N/∂p ÷ ∂N/∂clock``. A value that still reads the clock is not a fixed
+    crossing and is dropped, as is 0 (``p`` does not move this base).
+
+    Cheap on purpose, because most candidates come to nothing: the ratio is only
+    ``cancel``-ed, and one still carrying a ``Piecewise`` is dropped rather than
+    folded. Once :func:`_clock_guard_cells` has collapsed a year chain, the ratio
+    at a real onset is a plain rational — 1 for every onset in the corpus — and a
+    ``Piecewise`` left over is a guard the cells did not resolve, where the shift
+    could not cancel anyway."""
+    from bngsim._jacobian import _value_symbol_names
+
+    out: dict[str, set] = {}
+    allowed = param_aliases | set(_MATH_CONSTANT_C)
+    for node in _pow_nodes_in_values(expr, sp):
+        if not _singular_power(node, clock_names, sp):
+            continue
+        numerator = sp.numer(sp.together(node.base))
+        if derived_inline:
+            numerator = numerator.xreplace(derived_inline)
+        value_names = _value_symbol_names(numerator, sp)
+        for clock_name in sorted(value_names & clock_names):
+            d_clock = sp.diff(numerator, sp.Symbol(clock_name))
+            if d_clock == 0:
+                continue
+            for p_alias in sorted(value_names & param_aliases):
+                d_p = sp.diff(numerator, sp.Symbol(p_alias))
+                if d_p == 0:
+                    continue
+                for leaf in _piecewise_value_leaves(-d_p / d_clock, sp):
+                    if leaf.has(sp.Piecewise):
+                        continue
+                    leaf = sp.cancel(leaf)
+                    if leaf == 0 or leaf.has(sp.nan, sp.zoo, sp.oo, -sp.oo):
+                        continue
+                    if not {s.name for s in leaf.free_symbols} <= allowed:
+                        continue
+                    out.setdefault(p_alias, set()).add(leaf)
+    return out
+
+
+def _singular_clock_exponents(expr, clock_names: set[str], sp) -> set[str]:
+    """The exponents, as ``srepr``, of every singular power in the derivative
+    ``expr`` (:func:`_singular_power`) — read after the rewrites the C emitter
+    applies, so a removable denominator (``x^(a-2)·x`` is ``x^(a-1)``) does not count."""
+    from bngsim._jacobian import _emitter_rewrites
+
+    try:
+        rewritten = _emitter_rewrites(expr)
+    except Exception:  # noqa: BLE001 - the emitter would refuse it too
+        rewritten = expr
+    return {
+        sp.srepr(node.exp)
+        for node in _pow_nodes_in_values(rewritten, sp)
+        if _singular_power(node, clock_names, sp, derivative=True)
+    }
+
+
+def _comoving_shifted_partial(
+    expr, p_alias: str, c, clock_names: set[str], derived_shift: dict, constants: set[str], sp
+):
+    """``d/dε expr(clock + c·ε, p + ε, p_d + (∂p_d/∂p)·ε)`` at ``ε = 0``.
+
+    ``c = 0`` is the plain column (derived parameters still follow ``p``), which is
+    what the removed-exponent test compares against. The zero-base twin of issue
+    #541 runs over ``ε`` as it runs over a parameter on the plain path.
+    """
+    from bngsim._jacobian import _finish_zero_bases, _prepare_zero_bases
+
+    eps = sp.Symbol(_COMOVING_EPS)
+    sub = {}
+    if c != 0:
+        for name in clock_names:
+            sub[sp.Symbol(name)] = sp.Symbol(name) + c * eps
+    sub[sp.Symbol(p_alias)] = sp.Symbol(p_alias) + eps
+    for d_sym, d_rate in derived_shift.items():
+        sub[d_sym] = d_sym + d_rate * eps
+    shifted = expr.subs(sub, simultaneous=True)
+    prepared = _prepare_zero_bases(shifted, {_COMOVING_EPS}, constants | {_COMOVING_EPS})
+    return _finish_zero_bases(sp.diff(prepared, eps)).subs(eps, 0)
+
+
+def _functional_comoving_plan(
+    reactions, frxn_by_idx: dict, scope: _FunctionalDfdpScope, clock_names: set[str], n_params: int
+) -> _ComovingPlan | None:
+    """The comoving cases of a model whose plain ``∂f/∂p`` has already derived
+    (see the note above), or ``None`` when it has none. Never declines the model:
+    anything that goes wrong here leaves the plain column, which is what the model
+    had before issue #545."""
+    import sympy as sp
+
+    from bngsim._jacobian import (
+        _TIME_SYM,
+        _exprtk_to_sympy,
+        _inline_functions,
+        sympy_to_c,
+    )
+
+    sw = scope.switch_scope
+    if sw is None:
+        return None
+    clock_names = set(clock_names) | {_TIME_SYM}
+
+    def resolve_symbol(name: str) -> str | None:
+        if name == _TIME_SYM:
+            return "t"
+        mapped = scope.c_ref.get(name)
+        return mapped if mapped is not None else _MATH_CONSTANT_C.get(name)
+
+    alias_of_name = {name: alias for alias, name in scope.param_of_alias.items()}
+    param_aliases = set(scope.param_of_alias)
+    constants = param_aliases | set(_MATH_CONSTANT_C)
+
+    # Derived parameters as expressions over the primaries, so both the shift
+    # coefficient and the shift of a derived parameter a law reads follow the
+    # primary through them.
+    derived_expr: dict[str, object] = {}
+
+    def inline_derived(name: str, stack: tuple[str, ...] = ()):
+        if name in derived_expr:
+            return derived_expr[name]
+        if name in stack or len(stack) > 64:
+            return None
+        text = scope.derived_exprs.get(name, "")
+        parsed = _exprtk_to_sympy(text) if text else None
+        if parsed is not None:
+            sub = {}
+            for sym in parsed.free_symbols:
+                if sym.name in scope.derived_exprs:
+                    inner = inline_derived(sym.name, (*stack, name))
+                    if inner is None:
+                        parsed = None
+                        break
+                    sub[sym] = inner
+            if parsed is not None and sub:
+                parsed = parsed.xreplace(sub)
+        derived_expr[name] = parsed
+        return parsed
+
+    derived_inline = {}
+    for name in scope.derived_exprs:
+        alias = alias_of_name.get(name)
+        inlined = inline_derived(name)
+        if alias is not None and inlined is not None:
+            derived_inline[sp.Symbol(alias)] = inlined
+
+    parsed_laws: dict[str, object | None] = {}  # rate-law text -> sympy, clock-dependent only
+    rxns_of_law: dict[str, list[int]] = {}
+    for rxn_idx, rxn in enumerate(reactions):
+        if rxn["type"] != "functional":
+            continue
+        frxn = frxn_by_idx.get(rxn_idx)
+        if frxn is None:
+            continue
+        text = frxn["rate_expr"]
+        if text not in parsed_laws:
+            _check_derivation_deadline(scope.deadline)
+            inlined = _inline_functions(text, scope.func_map)
+            parsed = _exprtk_to_sympy(inlined) if inlined is not None else None
+            if parsed is None:
+                return None
+            clocked = {s.name for s in parsed.free_symbols} & clock_names
+            parsed_laws[text] = parsed if clocked else None
+        if parsed_laws[text] is not None:
+            rxns_of_law.setdefault(text, []).append(rxn_idx)
+    if not rxns_of_law:
+        return None
+    # Cheap before anything costly: with no singular power in any law, there is no
+    # singular term for a case to cancel, and the model has none.
+    if not any(
+        _singular_power(node, clock_names, sp)
+        for text in rxns_of_law
+        for node in _pow_nodes_in_values(parsed_laws[text], sp)
+    ):
+        return None
+    laws: dict[str, list[tuple]] = {
+        text: _clock_guard_cells(parsed_laws[text], clock_names, sp) for text in rxns_of_law
+    }
+
+    coefficients: dict[str, set] = {}
+    for text in rxns_of_law:
+        for on_cell, _cond in laws[text]:
+            _check_derivation_deadline(scope.deadline)
+            for p_alias, cs in _comoving_coefficients(
+                on_cell, clock_names, param_aliases, derived_inline, sp
+            ).items():
+                coefficients.setdefault(p_alias, set()).update(cs)
+
+    cases: list[tuple[int, int, str]] = []
+    terms: dict[int, dict[int, str]] = {}
+    primary = scope.primary_param_names
+    for p_alias in sorted(
+        coefficients, key=lambda a: scope.param_idx_by_name[scope.param_of_alias[a]]
+    ):
+        p_name = scope.param_of_alias[p_alias]
+        if p_name not in primary:
+            continue  # a derived column's crossing moves through its primaries
+        p_sym = sp.Symbol(p_name)
+        derived_shift = {}
+        for d_sym, inlined in derived_inline.items():
+            rate = sp.diff(inlined, p_sym)
+            if rate != 0:
+                derived_shift[d_sym] = rate
+        for c in sorted(coefficients[p_alias], key=sp.srepr):
+            c_c = sympy_to_c(c, resolve_symbol)
+            if c_c is None:
+                continue
+            eligible = False
+            law_c: dict[str, str | None] = {}
+            for text in rxns_of_law:
+                pieces = []
+                for on_cell, cond in laws[text]:
+                    _check_derivation_deadline(scope.deadline)
+                    plain = _comoving_shifted_partial(
+                        on_cell, p_alias, 0, clock_names, derived_shift, constants, sp
+                    )
+                    moved = _comoving_shifted_partial(
+                        on_cell, p_alias, c, clock_names, derived_shift, constants, sp
+                    )
+                    if _singular_clock_exponents(
+                        plain, clock_names, sp
+                    ) - _singular_clock_exponents(moved, clock_names, sp):
+                        eligible = True
+                    pieces.append((moved, cond))
+                if len(pieces) == 1:
+                    whole = pieces[0][0]
+                else:
+                    whole = sp.Piecewise(*pieces[:-1], (pieces[-1][0], True))
+                law_c[text] = None if whole == 0 else sympy_to_c(whole, resolve_symbol)
+                if whole != 0 and law_c[text] is None:
+                    eligible = False
+                    break
+            if not eligible:
+                continue
+            virtual = n_params + len(cases)
+            cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
+            for text, c_text in law_c.items():
+                for rxn_idx in rxns_of_law[text]:
+                    slot = terms.setdefault(rxn_idx, {})
+                    if c_text is not None:
+                        slot[virtual] = c_text
+    if not cases:
+        return None
+    # A clock-dependent law with no term in a case is a zero comoving ∂func/∂p there,
+    # which is different from "keeps its plain terms", so every one of them is listed.
+    for rxn_ids in rxns_of_law.values():
+        for rxn_idx in rxn_ids:
+            terms.setdefault(rxn_idx, {})
+    return _ComovingPlan(cases, terms, tuple(sorted(set(sw.clocks.values()))))
+
+
 def _observable_volume_weights(species, observables, alias) -> dict[str, dict[int, str]]:
     """``∂obs_k/∂V_c`` as C, per (aliased observable name, compartment-size param).
 
@@ -8690,7 +9242,7 @@ def _observable_volume_weights(species, observables, alias) -> dict[str, dict[in
 
 
 def _functional_dfdp_terms(
-    core, data, deadline: float | None = None
+    core, data, deadline: float | None = None, comoving_out: list | None = None
 ) -> tuple[dict[int, list[tuple[int, str]]], str | None]:
     """Differentiate every Functional rate law w.r.t. every parameter it reads.
 
@@ -8902,6 +9454,18 @@ def _functional_dfdp_terms(
             # fallback for the one class where the fallback is wrong too (#146).
             return _decline(_carry_reason_class(why, wrapped))
         out[rxn_idx] = terms
+
+    # Issue #545: the comoving columns, for a caller that can emit them. Only a model
+    # whose conditions were gated has a clock to shift. Handed back as a thunk rather
+    # than derived here, so the caller runs it after every derivation the plain column
+    # needs and it can only ever spend the budget those leave.
+    if comoving_out is not None and switch_scope is not None:
+        clock_names = {_alias(name) for name in switch_scope.clocks}
+        comoving_out.append(
+            lambda: _functional_comoving_plan(
+                reactions, frxn_by_idx, scope, clock_names, len(params)
+            )
+        )
     return out, None
 
 
@@ -8917,6 +9481,28 @@ def _jacv_add(col: int, row: int, value_c: str, prefix: str) -> str:
     Never declines — every entry has a home in a dense vector.
     """
     return f"{prefix}Jv_out[{row}] += ({value_c}) * v[{col}];"
+
+
+_JACV_SCATTER_LINE = re.compile(r"^(\s*)Jv_out\[(\d+)\] \+= \((.*)\) \* v\[(\d+)\];$")
+
+
+def _guard_clock_columns(group: list[str], clock_cols: set[int]) -> list[str]:
+    """Issue #545: the J·v product skips a clock's column when its entry is zero.
+
+    A clock's sensitivity is structurally zero in a parameter column, and a
+    comoving column keeps its clock rows at zero too, but ``∂f/∂clock`` can be
+    infinite exactly on a crossing (a pulse ``s^(a-1)`` opening on a counter), and
+    ``inf * 0`` is NaN. Applied to the lines :func:`_jacv_add` wrote, only for a
+    model with comoving cases, so every other model's J·v is the text it was.
+    """
+    out = []
+    for line in group:
+        m = _JACV_SCATTER_LINE.match(line)
+        if m is not None and int(m.group(4)) in clock_cols:
+            indent, row, value_c, col = m.groups()
+            line = f"{indent}if (v[{col}] != 0.0) Jv_out[{row}] += ({value_c}) * v[{col}];"
+        out.append(line)
+    return out
 
 
 def generate_sens_from_model(
@@ -9035,8 +9621,11 @@ def generate_sens_from_model(
     # Elementary models never enter here (and the gate above already returned).
     functional_terms: dict[int, list[tuple[int, str]]] = {}
     functional_jacv_groups: list[list[str]] = []
+    comoving_thunks: list[Callable[[], _ComovingPlan | None]] = []
     if functional:
-        functional_terms, decline = _functional_dfdp_terms(core, data, deadline)
+        functional_terms, decline = _functional_dfdp_terms(
+            core, data, deadline, comoving_out=comoving_thunks
+        )
         if decline is not None:
             return None
         if functional_terms:
@@ -9156,6 +9745,24 @@ def generate_sens_from_model(
         if jac is not None:
             derived_expansion[p["name"]] = jac
 
+    # Issue #545: the comoving columns, derived last — after everything the plain
+    # column needs — so they spend only the budget that is left, and a model that
+    # runs out keeps the plain column it has always had instead of declining.
+    comoving_plan: _ComovingPlan | None = None
+    if comoving_thunks:
+        try:
+            comoving_plan = comoving_thunks[0]()
+        except _DerivationBudgetExceeded:
+            comoving_plan = None
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("issue #545: comoving columns unavailable (%s)", exc)
+            comoving_plan = None
+    if comoving_plan is not None:
+        clock_cols = set(comoving_plan.clock_species)
+        functional_jacv_groups = [
+            _guard_clock_columns(group, clock_cols) for group in functional_jacv_groups
+        ]
+
     # Build the normalized rxn_data shape consumed by _emit_sens_rhs_body.
     # Reactant/product indices from codegen_data() are already 0-based, unlike
     # the .net path which carries 1-based indices and shifts them here.
@@ -9234,7 +9841,9 @@ def generate_sens_from_model(
         # ∂func_r/∂p rides the same channel: _emit_sens_rhs_body multiplies each
         # entry's C expression by the geometry above and scatters it by net
         # stoichiometry, which is exactly Σ_r stat_r·netstoich_ir·(∂func_r/∂p)·∏R_r.
+        functional_span = (len(derived_terms), len(derived_terms))
         derived_terms.extend(functional_terms.get(rxn_idx, ()))
+        functional_span = (functional_span[0], len(derived_terms))
 
         # ── (#170 stage 3) the STORAGE half of ∂f/∂V ───────────────────────
         #
@@ -9287,6 +9896,11 @@ def generate_sens_from_model(
             "derived_terms": derived_terms,
             "amount_factor_c": amount_factor_c,
         }
+        # Issue #545: a clock-dependent Functional law's comoving ∂func/∂p replaces
+        # its plain terms in a comoving case; the span says which terms those are.
+        if comoving_plan is not None and rxn_idx in comoving_plan.terms:
+            entry["functional_terms_span"] = functional_span
+            entry["comoving_terms"] = comoving_plan.terms[rxn_idx]
         # GH #160: a cross-compartment reaction's law evaluates to amount/time
         # while each affected species stores amount/V_c, so every accumulation
         # row divides by its own compartment volume — the same divide the RHS
@@ -9347,6 +9961,8 @@ def generate_sens_from_model(
         functional_dfdp=bool(functional_terms) or bool(mm_terms_by_rxn),
         emit_term_scale=emit_term_scale,
         functional_jacv_groups=functional_jacv_groups,
+        comoving_cases=comoving_plan.cases if comoving_plan is not None else None,
+        comoving_clock_species=comoving_plan.clock_species if comoving_plan is not None else (),
     )
     if src is None and functional_terms:
         # Every Functional rate law differentiated, but the emitter could not give

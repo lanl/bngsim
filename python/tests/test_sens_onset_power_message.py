@@ -18,10 +18,14 @@ Now the first names the sensitivity column and says ``∂f/∂on`` is the non-fi
 and the second says the step gave out where the run had just restarted. Both end with
 the shape and its remedies.
 
-The first failure stays a failure: the sensitivity RHS evaluates the true derivative at
-the onset. A finite value there would remove it but not the second, and on some models
-would turn a run that fails into one that finishes with a wrong column and no warning,
-so #545 declined it.
+On this model neither failure happens any more: from the onset on, the solver
+integrates the comoving column ``V = S + c·f`` in place of ``S`` (issue #545;
+``test_sens_comoving_onset.py``), and its forcing is bounded. The messages are for the
+runs that cannot take that column — one with an event, or a crossing moved at a shift
+no case was emitted for — so these tests reach them with ``BNGSIM_SENS_COMOVING=0``,
+which keeps every column plain. The sensitivity RHS itself still evaluates the true
+derivative at the onset; #545 declined a finite value there, and the comoving column
+never needs one.
 """
 
 from __future__ import annotations
@@ -53,7 +57,10 @@ end reactions
 RESTART_HINT = "the step gave out where it had just restarted, at t=10"
 
 
-def _failure(tmp_path, *, onset, a, rtol, atol, params=("k0", "on")):
+def _failure(tmp_path, *, onset, a, rtol, atol, params=("k0", "on"), monkeypatch=None):
+    if monkeypatch is not None:
+        # The plain column: see the module docstring.
+        monkeypatch.setenv("BNGSIM_SENS_COMOVING", "0")
     path = tmp_path / f"pulse_{'ge' if onset == '>=' else 'gt'}_{a}.net"
     path.write_text(PULSE_NET.format(onset=onset, a=a))
     sim = bngsim.Simulator(
@@ -64,10 +71,10 @@ def _failure(tmp_path, *, onset, a, rtol, atol, params=("k0", "on")):
     return " ".join(str(exc.value).split())
 
 
-def test_the_onset_derivative_names_its_column_not_a_species(tmp_path):
+def test_the_onset_derivative_names_its_column_not_a_species(tmp_path, monkeypatch):
     """``on`` is the second column, so the name has to come from the column that
     went non-finite rather than from the first one."""
-    msg = _failure(tmp_path, onset=">=", a=1.5, rtol=1e-8, atol=1e-8)
+    msg = _failure(tmp_path, onset=">=", a=1.5, rtol=1e-8, atol=1e-8, monkeypatch=monkeypatch)
     assert "The compiled sensitivity RHS returned a non-finite value at t=10" in msg, msg
     assert "Every rate law and every species is finite there" in msg, msg
     assert "the sensitivity column for parameter 'on' (row X())" in msg, msg
@@ -83,13 +90,13 @@ def test_the_onset_derivative_names_its_column_not_a_species(tmp_path):
     ids=["a=1.1 (stalls)", "a=1.2 (fails the error test)"],
 )
 def test_a_step_that_gives_out_past_a_strict_onset_says_it_had_just_restarted(
-    tmp_path, a, rtol, atol
+    tmp_path, monkeypatch, a, rtol, atol
 ):
     """No value goes non-finite on this side of the onset, so no witness is left to
     explain it; the restart is. Asserted whichever way the step gives out — the
     stall and the error-test failure both carry the note — because which of the two
     a given platform hits is not what the issue is about."""
-    msg = _failure(tmp_path, onset=">", a=a, rtol=rtol, atol=atol)
+    msg = _failure(tmp_path, onset=">", a=a, rtol=rtol, atol=atol, monkeypatch=monkeypatch)
     assert "made no progress" in msg or "CV_ERR_FAILURE" in msg, msg
     assert RESTART_HINT in msg, msg
     assert "(issue #545)" in msg, msg

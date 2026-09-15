@@ -118,6 +118,40 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **Forward sensitivity to the onset of a pulse that rises as `s^(a-1)` runs, and
+  is accurate, for `1 < a < 2` (issue #545).** Such a pulse is continuous, but its
+  `∂f/∂on` goes as `s^(a-2)`: unbounded past the onset, with most of its integral
+  within a few ulp of it when `a` is near 1. No polynomial step resolves that
+  forcing, so the onset column failed at the onset, stalled just past it, or
+  finished wrong — 2.2% on `SIR_v4` at `a_2023 = 1.2`, with no warning. Past a
+  crossing that its parameter moves at `c = ∂t*/∂p`, the column is now integrated
+  as `V = S + c·f`, which obeys `V' = J·V + β` with `β` the derivative of `f` along
+  the parameter and every clock together: the shift leaves the vanishing base
+  unchanged, so the singular terms cancel in `β`, and `V` is as smooth as the
+  state. The generator emits `β` as `bngsim_codegen_sens_rhs_comoving` for each
+  parameter whose crossing makes a power singular — a clock-dependent base that
+  can reach 0, raised to an exponent between 0 and 1 or to one that is not a
+  number — with `c` read off that base (`_CODEGEN_VERSION` 30). Every other model
+  emits the source it did, including one whose onset is a logistic or a Gaussian.
+  The solver switches a column to `V` at a #48 crossing or a #150 state switch
+  whose `∂t*/∂p` matches, back to `S` at the next restart, and reports
+  `S = V − c·f` at every output, in the error floor, and in the carry-over seed. A
+  run with events keeps plain columns, and `BNGSIM_SENS_COMOVING=0` restores them
+  for an A/B. Separately, a threshold written through clock guards — `SIR_v4`'s
+  `t > if(t<365, d_2021, if(t<730, 365+d_2022, …))` — is now a clock crossing per
+  branch, stopped on exactly. It used to be a state switch that CVODE roots on, and
+  CVODE tests for a root only on a step it accepts: where every step spanning the
+  onset failed the error test, the run wedged one ulp short of a root it never
+  reached, with the comoving column or without it. On the issue's pulse —
+  `time()` and counter clocks, `>=` and `>` windows, two pulse heights, `a` from
+  1.05 to 1.9, four tolerances — 134 of 160 cells failed and none do, every column
+  within the tolerance the smooth pulse gets of the closed form. On `SIR_v4`'s
+  `d_2023` column against a Richardson central difference (on rows more than two
+  days from the onset and the end, where the difference itself is not accurate),
+  `a_2023 = 1.2` goes from 2.2% at rtol/atol 1e-8/1e-8 and a stall at every tighter
+  setting to 1.9e-4, 1.9e-6 and 2.0e-6 at 1e-8/1e-8, 1e-10/1e-12 and 1e-12/1e-14,
+  the last two the reference's own agreement; the vendored `a_2023 = 1.5` goes from
+  a 2e-6 plateau to 7.7e-9 at 1e-12/1e-14.
 - **A forward-sensitivity run that fails on a derivative says so, instead of
   blaming a species or a rate jump (issue #545).** A pulse such as
   `k0 + k1*s^(a-1)*(1-s)` over a window opening at an onset is finite and
@@ -140,7 +174,8 @@ in `CMakeLists.txt`) is derived from it.
   derivative at the onset itself: a finite value there would remove the failure
   at the onset but not the unbounded forcing just past it, and on some models
   would turn a run that fails into one that finishes with a wrong column and no
-  warning. How to integrate the forcing just past the onset stays open in #545.
+  warning. The comoving column in the entry above integrates past the onset
+  instead, so these messages are now for the runs it does not reach.
 - **SIR_v5 keeps its analytical Jacobian and its analytic sensitivity RHS: a
   power of an `if()` whose other branch is 0 differentiates to the step it is
   (issue #541).** sympy distributes a power over the branches of a Piecewise,

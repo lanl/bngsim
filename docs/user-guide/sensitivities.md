@@ -139,6 +139,7 @@ The crossing has to be solved for from the condition. These forms are handled:
 | Repeating schedule | `rem(t, P) >= d` | A `floor()`-periodic dosing schedule (issue #436). |
 | libSBML's `rem()` expansion | `if(sign(a)!=sign(b), …)` | libSBML does not emit `rem()`; it expands it into a sign test over two remainders. Read back to the same schedule (issue #465), so a model gets the same gradient whichever tool wrote its SBML. |
 | A guard spelled as a comparison | `(t < 0) == 0` | Resolved the way the equivalent boolean is (issue #473). |
+| A threshold selected by clock guards | `t > if(t<365, d_2021, if(t<730, 365+d_2022, …))` | A season written through a year selection. Each branch is a crossing where its threshold falls inside its own branch's range of the clock, so `730+d_2023` crosses at day 862 and nowhere else (issue #545). |
 
 A crossing time that comes out non-real is treated as a crossing that never
 happens, rather than crashing the run.
@@ -180,23 +181,39 @@ outside it, is finite and continuous for any `a > 1`, so there is no jump to
 apply. Its derivative with respect to the onset is another matter. It goes as
 `s^(a-2)`, which for `1 < a < 2` is infinite at the onset and unbounded just
 past it. The sensitivity itself stays finite, because that singularity is
-integrable, but CVODES has to integrate the forcing, and it cannot always do so
-(issue #545):
+integrable, but no polynomial step resolves the forcing, and most of its
+integral lies within a few ulp of the onset when `a` is close to 1. Integrated
+as it stands, the onset column fails at the onset, stalls just past it, or
+finishes measurably wrong (issue #545; 2% at `a = 1.2` on one model).
 
-- **Window opening on `t >= on`.** BNGsim stops on the crossing and restarts
-  there, so the first sensitivity RHS call after the restart evaluates the onset
-  itself. The run fails at that call. The message names the sensitivity column
-  and says the non-finite half is `∂f/∂on`.
-- **Window opening strictly, on `t > on`.** This keeps that instant off the
-  pulse, but the forcing just past it is still unbounded. At a tight tolerance
-  the step can give out there, and the message says so: the step gave out where
-  the run had just restarted. With `a` close to 1, a run at a loose tolerance
-  can instead finish with an onset column that is measurably wrong, and nothing
-  warns. On one model it was 2% wrong at `a = 1.2`.
+So past such a crossing BNGsim integrates a different column. If the crossing
+moves at `c = ∂t*/∂on`, then `V = S + c·f` obeys `V' = J·V + β`, where `β` is the
+derivative of `f` along `on` and the clock *together*. That shift leaves `s`
+unchanged, so the singular terms of `∂f/∂on` and `c·∂f/∂t` cancel in `β`, and
+`V` is as smooth as the state. The code generator emits `β` for each parameter
+whose crossing makes such a power singular: a base that can reach 0, raised to an
+exponent between 0 and 1 or to one that is not a number, such as `a-1`. At that
+crossing the solver switches the column to `V`, and at the next restart it
+switches back to `S`. `S = V − c·f` is what every output reports. A parameter
+that moves no such crossing keeps its plain column. A model with no such power
+emits the code it always did, and that includes a logistic onset
+`1/(1+exp(-k*(t-on)))`, whose base is never 0.
 
-An exponent of 2 or more (`a >= 2`) keeps the derivative finite and avoids both
-failures, so a fit that frees `a` is safest bounded there. Leaving the onset
-parameter out of `sensitivity_params` also avoids them.
+The comoving column is used when:
+
+- the run has the analytic sensitivity RHS (`sim.has_analytic_sens_rhs`);
+- the model has no events (a state-dependent switch or an SBML discontinuity
+  trigger is fine);
+- the crossing moves at the shift the generator derived from the power's own
+  base. `t - on` shifts at `c = 1`, and so does a season's `t - (730 + d_2023)`
+  written through a year selection.
+
+Elsewhere the plain column meets the singular forcing as before, and the
+failure says so. It names the sensitivity column and `∂f/∂on` when the RHS goes
+non-finite at the onset, or the restart where the step gave out. An exponent of
+2 or more (`a >= 2`) keeps the derivative finite, and leaving the onset
+parameter out of `sensitivity_params` avoids it. `BNGSIM_SENS_COMOVING=0` keeps
+every column plain, for comparison.
 
 ### What is declined
 
