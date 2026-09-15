@@ -172,6 +172,32 @@ the restart reads the after-branch.
 These stops are added for any model carrying such a switch, sensitivities or
 not, because stepping over the discontinuity was never correct.
 
+### A rate that rises from zero at the crossing
+
+A switch does not have to jump. A pulse that rises continuously from its onset,
+such as `k0 + k1*s^(a-1)*(1-s)` over a window `s = (t - on)/D` that is 0
+outside it, is finite and continuous for any `a > 1`, so there is no jump to
+apply. Its derivative with respect to the onset is another matter. It goes as
+`s^(a-2)`, which for `1 < a < 2` is infinite at the onset and unbounded just
+past it. The sensitivity itself stays finite, because that singularity is
+integrable, but CVODES has to integrate the forcing, and it cannot always do so
+(issue #545):
+
+- **Window opening on `t >= on`.** BNGsim stops on the crossing and restarts
+  there, so the first sensitivity RHS call after the restart evaluates the onset
+  itself. The run fails at that call. The message names the sensitivity column
+  and says the non-finite half is `∂f/∂on`.
+- **Window opening strictly, on `t > on`.** This keeps that instant off the
+  pulse, but the forcing just past it is still unbounded. At a tight tolerance
+  the step can give out there, and the message says so: the step gave out where
+  the run had just restarted. With `a` close to 1, a run at a loose tolerance
+  can instead finish with an onset column that is measurably wrong, and nothing
+  warns. On one model it was 2% wrong at `a = 1.2`.
+
+An exponent of 2 or more (`a >= 2`) keeps the derivative finite and avoids both
+failures, so a fit that frees `a` is safest bounded there. Leaving the onset
+parameter out of `sensitivity_params` also avoids them.
+
 ### What is declined
 
 A condition whose crossing time moves with the *state* rather than with a

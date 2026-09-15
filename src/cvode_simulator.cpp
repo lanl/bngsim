@@ -95,6 +95,7 @@ namespace bngsim {
 // looking for an `if()` that is not there.
 struct CvodeUserData;
 static std::string nonfinite_witness_suffix(CvodeUserData &data); // defined below
+static std::string sensitivity_restart_hint(double t_now, const CvodeUserData &data); // likewise
 
 static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vector y,
                                   sunrealtype *t_ret, int &flag, const char *context,
@@ -131,7 +132,8 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
             << "leaves the right-hand side smooth in t and applies the jump at the root, which "
             << "an output point does NOT do (CV_NORMAL interpolates output points, so a sample "
             << "time at the crossing does not bound the step that spans it).";
-        throw std::runtime_error(msg.str() + nonfinite_witness_suffix(data));
+        throw std::runtime_error(msg.str() + sensitivity_restart_hint(t_after, data) +
+                                 nonfinite_witness_suffix(data));
     }
 }
 
@@ -179,6 +181,15 @@ struct NonFiniteWitness {
     const char *source = nullptr; // "The compiled RHS", "The Jacobian", ...
     double t = 0.0;
     std::vector<double> y;
+
+    // What a sensitivity-RHS witness adds (issue #545), so the description can
+    // name the column rather than advise constraining a species that is fine.
+    // Left at these defaults by every other callback; see capture_sens_witness.
+    int sens_column = -1;         // iS
+    int sens_param = -1;          // plist[iS]; one past the last parameter for an IC column
+    int sens_ic_index = -1;       // which initial-condition column, when it is one
+    std::vector<int> sens_rows;   // species rows of that column that were non-finite
+    int sens_dfdp_nonfinite = -1; // 1 the ∂f/∂p half is non-finite, 0 it is finite, -1 unknown
 
     // First one wins: the earliest excursion is the one that explains the rest,
     // and re-capturing would keep overwriting it with the collapsed steps that
@@ -373,6 +384,12 @@ struct CvodeUserData {
     // NonFiniteWitness above.
     NonFiniteWitness nonfinite_witness;
 
+    // The time CVODE was last re-initialised at: a crossing the run stopped on,
+    // a switch jump, a root, an event (issue #545). Written by
+    // Impl::reinit_cvode, read only on a failure path, to tell a step that
+    // collapsed where the run had just restarted — see sensitivity_restart_hint.
+    double last_restart_t = std::numeric_limits<double>::quiet_NaN();
+
     // GH #395: hand CVODES the recoverable code when the sensitivity RHS goes
     // non-finite, instead of passing the value through. Resolved once per run
     // (not per callback, and not once per process — a function-local static
@@ -533,6 +550,62 @@ static std::string diag_number(double v) {
     return os.str();
 }
 
+// The shape issue #545 found, said once for both messages that meet it: a
+// derivative that is infinite, or unbounded, where the rate law itself is finite.
+static const char *const kOnsetPowerNote =
+    " A derivative can be infinite where the rate law is finite: a power of a quantity that is"
+    " 0 at a threshold has one there whenever its exponent is below 1. A pulse s^(a-1) opening"
+    " on t >= onset is the common case. It is 0 at the onset for any a > 1, but its derivative"
+    " with respect to the onset goes as s^(a-2), infinite at the onset for 1 < a < 2 and"
+    " unbounded just past it, and a run that stops on the crossing evaluates it exactly there."
+    " An exponent of 2 or more keeps the derivative finite. Opening on t > onset keeps the onset"
+    " instant off the pulse, but the derivative just past it stays unbounded: the step can still"
+    " collapse there at a tight tolerance, and with an exponent near 1 a run can finish with an"
+    " inaccurate column. Leaving that parameter out of sensitivity_params avoids both"
+    " (issue #545).";
+
+// Issue #545: a sensitivity-RHS witness at a state where every rate law and every
+// species is finite. The domain advice below would send the reader to constrain a
+// species that is fine. What is non-finite is a derivative, so this names the
+// column, says which half of it went non-finite, and describes the shape that
+// does that.
+static std::string describe_sensitivity_witness(NetworkModel &model, const NonFiniteWitness &w) {
+    constexpr int kMaxNamed = 3;
+    const auto &params = model.parameters();
+    const auto species = model.species_names();
+    const bool param_column = w.sens_param >= 0 && w.sens_param < static_cast<int>(params.size());
+    std::ostringstream os;
+    os << " Every rate law and every species is finite there, so what is not is a derivative, in "
+       << "the sensitivity column for ";
+    if (param_column) {
+        os << "parameter '" << params[static_cast<std::size_t>(w.sens_param)].name << "'";
+    } else if (w.sens_ic_index >= 0) {
+        os << "initial condition " << w.sens_ic_index;
+    } else {
+        os << "column " << w.sens_column;
+    }
+    int n_rows = 0;
+    for (int row : w.sens_rows) {
+        if (++n_rows > kMaxNamed) {
+            os << ", ...";
+            break;
+        }
+        os << (n_rows == 1 ? " (row " : ", ")
+           << (row >= 0 && row < static_cast<int>(species.size()) ? species[row]
+                                                                  : std::to_string(row + 1));
+    }
+    os << (n_rows > 0 ? ")." : ".");
+    if (param_column && w.sens_dfdp_nonfinite == 1) {
+        os << " The non-finite half is ∂f/∂" << params[static_cast<std::size_t>(w.sens_param)].name
+           << " itself, not the Jacobian times the sensitivity.";
+    } else if (w.sens_dfdp_nonfinite == 0) {
+        os << " Its ∂f/∂p half is finite there, so the non-finite half is the Jacobian times the "
+              "sensitivity.";
+    }
+    os << kOnsetPowerNote;
+    return os.str();
+}
+
 // Turn a captured witness (see NonFiniteWitness) into something the user can act
 // on, or "" when there is nothing to say. Two things get named, most direct
 // first: the rate laws that answer non-finite at the witness state, and the
@@ -635,6 +708,8 @@ static std::string describe_nonfinite_witness(NetworkModel &model, const NonFini
                   " are the symptom, not the cause — check the initial condition"
                   " (an under-specified species, or a compartment size that is not"
                   " finite and positive).";
+        } else if (w.sens_column >= 0 && n_laws == 0 && n_negative == 0) {
+            os << describe_sensitivity_witness(model, w);
         } else {
             os << " bngsim evaluates a rate law literally, so a state outside its"
                   " domain — a logarithm, a sqrt or a fractional power of a negative"
@@ -666,17 +741,59 @@ static std::string nonfinite_witness_suffix(CvodeUserData &data) {
     return describe_nonfinite_witness(*data.model, data.nonfinite_witness);
 }
 
+// Issue #545: a forward-sensitivity run whose step gave out where the run had just
+// restarted. The stall and failure messages were written for a discontinuity in
+// the model, and send the reader looking for an if() or at the tolerances. A
+// sensitivity column does the same to the step while every rate law stays smooth,
+// when its forcing is unbounded just past the crossing — the case #545 measured,
+// where no value ever goes non-finite and so no witness is left to say anything.
+// "" unless the analytic sensitivity RHS is in use and `t_now` is within a hair of
+// the last restart, or when a sensitivity-RHS witness is about to say it anyway.
+static std::string sensitivity_restart_hint(double t_now, const CvodeUserData &data) {
+    if (data.codegen_sens_fn == nullptr || !std::isfinite(t_now) ||
+        !std::isfinite(data.last_restart_t)) {
+        return "";
+    }
+    // A collapsed step stands still, so "just restarted" is a few ulps; the slack
+    // covers the handful of ~1e-16 steps that can be accepted before it gives out.
+    const double slack = 1e-9 * std::max(1.0, std::fabs(data.last_restart_t));
+    if (std::fabs(t_now - data.last_restart_t) > slack) {
+        return "";
+    }
+    if (data.nonfinite_witness.captured && data.nonfinite_witness.sens_column >= 0) {
+        return "";
+    }
+    std::ostringstream os;
+    os << " This run integrates forward sensitivities, and the step gave out where it had just "
+          "restarted, at t="
+       << diag_number(data.last_restart_t)
+       << " (a crossing it stopped on, an event or a root). A sensitivity column can do that "
+          "while every rate law stays smooth and finite, when its forcing is unbounded just past "
+          "the crossing."
+       << kOnsetPowerNote;
+    return os.str();
+}
+
 // The message a CVODE hard failure raises with. `flag` gains SUNDIALS' own name
 // for it (CVodeGetReturnFlagName mallocs the string), and the witness — if this
-// run left one — gains the species and the rate law behind it.
-static std::string cvode_failure_message(double t, int flag, CvodeUserData &data) {
+// run left one — gains the species and the rate law behind it. `t_internal` is
+// where the integrator itself stood, which `t` (the output time it was asked
+// for) is not; it lets an error-test or convergence failure say it came right
+// after a restart (issue #545).
+static std::string
+cvode_failure_message(double t, int flag, CvodeUserData &data,
+                      double t_internal = std::numeric_limits<double>::quiet_NaN()) {
     std::string msg =
         "CVODE integration failed at t=" + std::to_string(t) + " with flag=" + std::to_string(flag);
     if (char *name = CVodeGetReturnFlagName(static_cast<long int>(flag))) {
         msg += " (" + std::string(name) + ")";
         std::free(name);
     }
-    return msg + "." + nonfinite_witness_suffix(data);
+    msg += ".";
+    if (flag == CV_ERR_FAILURE || flag == CV_CONV_FAILURE) {
+        msg += sensitivity_restart_hint(t_internal, data);
+    }
+    return msg + nonfinite_witness_suffix(data);
 }
 
 static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
@@ -819,6 +936,54 @@ static int cvode_codegen_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *use
 
 // CodegenSensUserDataForSO — bngsim/codegen_abi.hpp
 
+// The sensitivity RHS's witness capture (GH #336), with the column context issue
+// #545's description needs: which column, which parameter it differentiates, the
+// rows that went non-finite, and whether ∂f/∂p itself did. That last one is asked
+// of the #177 term scale — Σ|term| over the ∂f/∂p contributions, so a non-finite
+// row there is a non-finite term — which the same generator emits beside the RHS.
+// First capture only, like every witness, so the probe costs one call per run.
+static void capture_sens_witness(CvodeUserData *data, sunrealtype t, double *y_ptr, int Ns, int iS,
+                                 const double *ySdot_ptr, CodegenSensUserDataForSO &so_data) {
+    NonFiniteWitness &w = data->nonfinite_witness;
+    if (w.captured) {
+        return;
+    }
+    const int ns = data->model->n_species();
+    const int n_params = static_cast<int>(data->model->parameters().size());
+    w.capture("The compiled sensitivity RHS", static_cast<double>(t), y_ptr, ns);
+    w.sens_column = iS;
+    if (data->codegen_plist != nullptr && iS >= 0 && iS < data->codegen_n_sens) {
+        w.sens_param = data->codegen_plist[iS];
+        if (w.sens_param >= n_params) {
+            // Parameter columns come first, so this is the IC column's position
+            // among the columns past them.
+            int n_param_columns = 0;
+            for (int c = 0; c < data->codegen_n_sens; ++c) {
+                n_param_columns += data->codegen_plist[c] < n_params ? 1 : 0;
+            }
+            w.sens_ic_index = iS - n_param_columns;
+        }
+    }
+    for (int i = 0; i < ns; ++i) {
+        if (!std::isfinite(ySdot_ptr[i])) {
+            w.sens_rows.push_back(i);
+        }
+    }
+    if (data->codegen_sens_term_scale_fn != nullptr) {
+        std::vector<double> scale(static_cast<std::size_t>(ns), 0.0);
+        if (data->codegen_sens_term_scale_fn(Ns, static_cast<double>(t), y_ptr, iS, scale.data(),
+                                             &so_data) == 0) {
+            w.sens_dfdp_nonfinite = 0;
+            for (double v : scale) {
+                if (!std::isfinite(v)) {
+                    w.sens_dfdp_nonfinite = 1;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector ydot, int iS,
                                   N_Vector yS, N_Vector ySdot, void *user_data, N_Vector tmp1,
                                   N_Vector tmp2) {
@@ -883,8 +1048,7 @@ static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector yd
     }
     if (!data->sens_recover_nonfinite) {
         if (!data->nonfinite_witness.captured && rhs_has_nonfinite(data, ySdot_ptr)) {
-            data->nonfinite_witness.capture("The compiled sensitivity RHS", static_cast<double>(t),
-                                            y_ptr, data->model->n_species());
+            capture_sens_witness(data, t, y_ptr, Ns, iS, ySdot_ptr, so_data);
         }
         return 0;
     }
@@ -915,10 +1079,7 @@ static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector yd
                 return 0;
             }
         }
-        if (!data->nonfinite_witness.captured) {
-            data->nonfinite_witness.capture("The compiled sensitivity RHS", static_cast<double>(t),
-                                            y_ptr, data->model->n_species());
-        }
+        capture_sens_witness(data, t, y_ptr, Ns, iS, ySdot_ptr, so_data);
         return 1; // recoverable -> CVODES cuts h and retries
     }
     return 0;
@@ -3639,7 +3800,16 @@ int CvodeSimulator::Impl::reinit_cvode(void *cvode_mem, sunrealtype t, N_Vector 
     // (cvodes.c "Initialize all the counters"), so the run's totals survive the
     // restart — issue #182.
     closed_segments += read_segment_counters(cvode_mem);
-    return CVodeReInit(cvode_mem, t, y);
+    const int flag = CVodeReInit(cvode_mem, t, y);
+    // Every restart inside an integration comes through here, so this is where
+    // the time of the last one is kept for sensitivity_restart_hint (issue #545).
+    // Every CVodeSetUserData in this file registers a CvodeUserData.
+    void *user_data = nullptr;
+    if (flag == CV_SUCCESS && CVodeGetUserData(cvode_mem, &user_data) == CV_SUCCESS &&
+        user_data != nullptr) {
+        static_cast<CvodeUserData *>(user_data)->last_restart_t = static_cast<double>(t);
+    }
+    return flag;
 }
 
 void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver ls,
@@ -6439,7 +6609,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                   });
 
             if (flag < 0) {
-                throw std::runtime_error(cvode_failure_message(t_target, flag, user_data));
+                sunrealtype t_internal = t_now;
+                CVodeGetCurrentTime(cvode_mem, &t_internal);
+                throw std::runtime_error(cvode_failure_message(t_target, flag, user_data,
+                                                               static_cast<double>(t_internal)));
             }
             t_now = t_ret;
 

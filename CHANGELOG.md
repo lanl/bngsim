@@ -118,6 +118,29 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A forward-sensitivity run that fails on a derivative says so, instead of
+  blaming a species or a rate jump (issue #545).** A pulse such as
+  `k0 + k1*s^(a-1)*(1-s)` over a window opening at an onset is finite and
+  continuous, but for `1 < a < 2` its derivative with respect to the onset goes
+  as `s^(a-2)`: infinite at the onset, and unbounded just past it. When the
+  sensitivity RHS came back non-finite at the onset, the message advised
+  constraining a species, though every species and every rate law was finite.
+  When the step gave out just past a strict onset, it blamed an `if()` rate jump,
+  or, as `CV_ERR_FAILURE`, gave no reason at all. The non-finite witness now
+  records which sensitivity column went non-finite, in which rows, and — from the
+  #177 term scale — whether `∂f/∂p` itself is the non-finite half; where every
+  rate law and species is finite, the message names that column and describes the
+  shape and its remedies. With the analytic sensitivity RHS in use, a stall, or an
+  error-test or convergence failure, at the time the run last restarted (a
+  crossing it stopped on, an event, a root) now says the step gave out where the
+  run had just restarted, unless such a witness already explains it. The domain
+  advice is unchanged wherever a rate law or a species really is non-finite or
+  negative. The sensitivities guide describes the shape under "A rate that rises
+  from zero at the crossing". The sensitivity RHS keeps evaluating the true
+  derivative at the onset itself: a finite value there would remove the failure
+  at the onset but not the unbounded forcing just past it, and on some models
+  would turn a run that fails into one that finishes with a wrong column and no
+  warning. How to integrate the forcing just past the onset stays open in #545.
 - **SIR_v5 keeps its analytical Jacobian and its analytic sensitivity RHS: a
   power of an `if()` whose other branch is 0 differentiates to the step it is
   (issue #541).** sympy distributes a power over the branches of a Piecewise,
