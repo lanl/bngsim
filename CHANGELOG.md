@@ -75,6 +75,30 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Changed
 
+- **`SIR_v4` is re-sourced from wshlavacek/BNGL-Models after its model fix, so
+  the corpus model keeps its analytical Jacobian and analytic sensitivity RHS
+  (issue #543).** Its four year-selection `if()` chains fell back to 0 after its
+  last modelled year, so its rate law divided by zero past day 1461
+  (wshlavacek/BNGL-Models#55 ends them with the 2024 values), and each season
+  opened on `t>=t_start()`, the one instant where the pulse's derivative with
+  respect to the onset is infinite for its `a_2023 = 1.5`
+  (wshlavacek/BNGL-Models#56 opens them on `t>t_start()`, the model-side stand-in
+  issue #545 describes). `vendor_corpus.py` takes the model from a dedicated
+  `bngl_fixes` pin at `9ab070d`, keyed in a new `UPSTREAM_FIXES` table the way
+  `CURATED_SIX` is, so every other `bngl_models` model stays at `81c90d8`: moving
+  that pin would bring 181 upstream commits with it. `manifest.json`,
+  `manifest.csv` and `jobs.json` change only in `SIR_v4`'s record, and
+  `parity_checks/tests/test_upstream_fixes.py` locks the re-source. On the
+  regenerated network the analytical Jacobian is complete; a 19-parameter
+  forward sensitivity over [0, 1460] runs on the analytic RHS at rtol / atol
+  1e-8 / 1e-8, 1e-10 / 1e-12 and 1e-12 / 1e-14, with its `d_2023` column within
+  1.8e-5 of a central difference of the trajectory; and the bng_parity job still
+  passes against BNG2.pl, at `max_rel_err` 0. The golden record for `SIR_v4` is
+  stale until the next golden regeneration, as the `CURATED_SIX` records were.
+  `gen_networks.py` skips a model whose `.net` is already cached, so a checkout
+  with an `ode_fullnet` cache regenerates this one by removing
+  `nets/original__bngl_models__my_models__ode__SIR_v4.bngl.net` and running
+  `gen_networks.py --models SIR_v4`.
 - **The TotalRate symmetry carry is gone: RuleWorld/nfsim#92 merged and the
   vendored tree now takes the fix from upstream (issue #428).** The carry queue
   is 13 topics, down from 14, and `third_party/nfsim` is rebuilt on upstream
@@ -133,7 +157,8 @@ in `CMakeLists.txt`) is derived from it.
   (t > 1461)`) instead of blaming the derivative, and the sensitivity RHS no
   longer calls a non-finite atom a "non-differentiable or unsupported
   function". Ending the model's four year-selection chains with their 2024
-  values restores both derivatives; that model-side fix is issue #543. Across
+  values restores both derivatives; that model-side fix is issue #543, whose
+  re-source is under Changed. Across
   the 1,909-model rr_parity + ode_fullnet corpus with the
   derivation budgets off, 64 models reach a changed path, and 40 sampled others
   hand C++ and the C emitters byte-identical terms and source. No attach or

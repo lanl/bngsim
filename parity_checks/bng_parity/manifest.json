@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "corpus": "bng_parity",
-  "generated": "2026-07-17",
+  "generated": "2026-09-15",
   "upstream_pin": {
     "sources": {
       "rulehub": {
@@ -19,6 +19,10 @@
       "bngl_curated": {
         "repo": "wshlavacek/BNGL-Models",
         "commit": "14ed1b0fafb358a65d327c8da98f1d9743998142"
+      },
+      "bngl_fixes": {
+        "repo": "wshlavacek/BNGL-Models",
+        "commit": "9ab070db47faf63853c7376cb715c3ff4f9c67bd"
       }
     }
   },
@@ -10784,7 +10788,7 @@
       "source": "bngl_models",
       "relpath": "my_models/ode/SIR_v4.bngl",
       "vendored": "original/bngl_models/my_models/ode/SIR_v4.bngl",
-      "sha256": "25536a6f458a40f59b9176180635729e71c5c4eedb89917962a88294df12c4d7",
+      "sha256": "a0d0d69fd5bf09378d1cb3583b29383a42750008b8a2d6a23fe7f9d5acb8a8c9",
       "methods": [
         "ode"
       ],
@@ -10794,7 +10798,7 @@
       "origin": {
         "kind": "git",
         "repo": "wshlavacek/BNGL-Models",
-        "commit": "81c90d8f58354a925651859c94142149afefc4b1",
+        "commit": "9ab070db47faf63853c7376cb715c3ff4f9c67bd",
         "path": "my_models/ode/SIR_v4.bngl"
       },
       "license": {
@@ -10802,7 +10806,12 @@
         "notice": null
       },
       "patched": false,
-      "curated": false
+      "curated": false,
+      "upstream_fix": {
+        "repo": "wshlavacek/BNGL-Models",
+        "issue": "lanl/bngsim#543",
+        "reason": "its four year-selection if() chains end in the 2024 values instead of 0, so the model stays finite after day 1461 (wshlavacek/BNGL-Models#55), and each season opens on t>t_start(), off the onset where the pulse's derivative with respect to the onset is infinite for 1<a<2 (wshlavacek/BNGL-Models#56, lanl/bngsim#545)"
+      }
     },
     {
       "id": "original/bngl_models/my_models/ode/SIR_v5.bngl",

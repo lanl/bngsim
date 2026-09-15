@@ -95,6 +95,17 @@ PINS = {
         "https://github.com/wshlavacek/BNGL-Models.git",
         "14ed1b0fafb358a65d327c8da98f1d9743998142",
     ),
+    # A THIRD pin of BNGL-Models, used ONLY for the individual `bngl_models` models whose
+    # model-side fix landed upstream after the `bngl_models` pin — see UPSTREAM_FIXES /
+    # resolve(). Kept apart from both pins above for the same zero-collateral reason:
+    # moving `bngl_models` to this commit would also move every other model that changed
+    # upstream since 81c90d8 (181 commits by then). Advance it when the next fix lands; a
+    # model already listed keeps its bytes unless its own file changed in between.
+    "bngl_fixes": Pin(
+        "wshlavacek/BNGL-Models",
+        "https://github.com/wshlavacek/BNGL-Models.git",
+        "9ab070db47faf63853c7376cb715c3ff4f9c67bd",
+    ),
 }
 
 # SPDX license per source repo (keyed by the resolved pin repo key, so the four
@@ -108,6 +119,7 @@ REPO_LICENSE = {
     "rulemonkey": {"spdx": "MIT", "notice": None},
     "bngl_models": {"spdx": "CC-BY-4.0", "notice": None},
     "bngl_curated": {"spdx": "CC-BY-4.0", "notice": None},  # same repo as bngl_models
+    "bngl_fixes": {"spdx": "CC-BY-4.0", "notice": None},  # same repo as bngl_models
 }
 
 # manifest `source` -> (pin repo key, path prefix within that repo). Several
@@ -164,12 +176,34 @@ CURATED_SIX: dict[tuple[str, str], dict] = {
 }
 
 
+# Individual `bngl_models` models re-sourced from the `bngl_fixes` pin because their
+# model-side fix landed upstream after the `bngl_models` pin. Keyed by the membership
+# ``(source, relpath)``; the model resolves at the SAME path in that commit, so its corpus
+# ID and vendored path do not move. Unlike CORPUS_REPAIRS nothing is patched at import: the
+# fix is upstream's, the bytes are used verbatim, and ``sha256`` is the on-disk hash.
+# ``test_upstream_fixes`` checks these keys stay live and resolve to the pin.
+UPSTREAM_FIXES: dict[tuple[str, str], dict] = {
+    ("bngl_models", "my_models/ode/SIR_v4.bngl"): {
+        "issue": "lanl/bngsim#543",
+        "reason": (
+            "its four year-selection if() chains end in the 2024 values instead of 0, so the "
+            "model stays finite after day 1461 (wshlavacek/BNGL-Models#55), and each season "
+            "opens on t>t_start(), off the onset where the pulse's derivative with respect to "
+            "the onset is infinite for 1<a<2 (wshlavacek/BNGL-Models#56, lanl/bngsim#545)"
+        ),
+    },
+}
+
+
 def resolve(source: str, relpath: str) -> tuple[str, str]:
     """Return (pin repo key, path within that repo) for a membership entry.
 
     The six CURATED_SIX models are house-curated, bug-fixed re-sources of RuleHub
     ``Published/`` models: they keep their rulehub membership IDs but resolve their
     (corrected) bytes from BNGL-Models at the ``bngl_curated`` pin.
+
+    An UPSTREAM_FIXES model resolves at its own path in BNGL-Models, at the
+    ``bngl_fixes`` pin instead of the ``bngl_models`` one.
 
     The four ``rulehub``-sourced ``bench_rulehub/`` models are runtime-tuned
     derived fixtures (equilibration/ligand-add t_end shortened so the NFsim
@@ -180,6 +214,9 @@ def resolve(source: str, relpath: str) -> tuple[str, str]:
     cur = CURATED_SIX.get((source, relpath))
     if cur is not None:
         return "bngl_curated", cur["src"]
+    if (source, relpath) in UPSTREAM_FIXES:
+        _repo_key, prefix = SOURCE_TO_REPO[source]
+        return "bngl_fixes", f"{prefix}{relpath}"
     if source == "rulehub" and relpath.startswith("bench_rulehub/"):
         return "bngl_models", relpath
     repo_key, prefix = SOURCE_TO_REPO[source]
@@ -196,6 +233,7 @@ ENV_OVERRIDE = {
     # against a local checkout uses its own var (point it at a checkout @ the bngl_curated
     # pin; a wrong-commit checkout surfaces as sha256 drift for the six in the summary).
     "bngl_curated": "BNGL_CURATED_DIR",
+    "bngl_fixes": "BNGL_FIXES_DIR",  # likewise, a checkout @ the bngl_fixes pin
 }
 
 DET_METHODS = {"ode", "cvode"}
@@ -549,6 +587,11 @@ def main() -> int:
         entry["curated"] = curated is not None
         if curated is not None:
             entry["curated_source"] = {"repo": PINS[repo_key].slug, "reason": curated["reason"]}
+        # Upstream-fix re-source provenance: same membership ID and path, newer upstream
+        # commit (``origin`` above), for the reason and issue recorded here.
+        fix = UPSTREAM_FIXES.get((source, relpath))
+        if fix is not None:
+            entry["upstream_fix"] = {"repo": PINS[repo_key].slug, **fix}
         manifest.append(entry)
 
     if not args.dry_run:

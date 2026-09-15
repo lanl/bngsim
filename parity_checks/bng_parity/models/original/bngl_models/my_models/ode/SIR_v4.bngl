@@ -83,23 +83,23 @@ begin functions
 a()=if(t<365,a_2021,\
     if(t<730,a_2022,\
     if(t<1096,a_2023,\
-    if(t<=1461,a_2024,0))))
+    if(t<=1461,a_2024,a_2024))))
 b()=if(t<365,b_2021,\
     if(t<730,b_2022,\
     if(t<1096,b_2023,\
-    if(t<=1461,b_2024,0))))
+    if(t<=1461,b_2024,b_2024))))
 xmax() = ((1-a())/(1-a()*b()))^(1/a())
 fmax() = a()*b()*(xmax()^(a()-1))*(1-xmax()^a())^(b()-1)
 t_start()=if(t<365,0+d_2021,\
           if(t<730,365+d_2022,\
           if(t<1096,730+d_2023,\
-          if(t<=1461,1096+d_2024,0))))
+          if(t<=1461,1096+d_2024,1096+d_2024))))
 t_end()=if(t<365,fD_2021*(365-d_2021-0)+0+d_2021,\
         if(t<730,fD_2022*(730-d_2022-365)+365+d_2022,\
         if(t<1096,fD_2023*(1096-d_2023-730)+730+d_2023,\
-        if(t<=1461,fD_2024*(1461-d_2024-1096)+1096+d_2024,0))))
+        if(t<=1461,fD_2024*(1461-d_2024-1096)+1096+d_2024,fD_2024*(1461-d_2024-1096)+1096+d_2024))))
 duration()=(t_end()-t_start())/7 # weeks
-scaled_time()=if(t>=t_start() && t<=t_end(),(t-t_start())/(t_end()-t_start()),0)
+scaled_time()=if(t>t_start() && t<=t_end(),(t-t_start())/(t_end()-t_start()),0) # opens on t>t_start(), not t>=t_start(): lanl/bngsim#545
 # Kumaraswamy distribution for a,b>=1
 f()=(1/fmax())*a()*b()*((scaled_time())^(a()-1))*(1-(scaled_time())^a())^(b()-1)
 beta_K()=(beta_min+(beta_max-beta_min)*f())

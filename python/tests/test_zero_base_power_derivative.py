@@ -26,15 +26,18 @@ cancelled it only for a bare-symbol denominator, so at ``t == t_start`` it was
 NaN — and a run whose counter started on an onset stopped at the first
 sensitivity RHS call, where CVODES' difference quotient had run to the end.
 
-``SIR_v4``, the issue's other model, divides by its shape parameters after its last
-modelled year (``if(t<=1461, a_2024, 0)``), so its rate law is non-finite there
-before anything is differentiated. It still declines; what changed is that both
-reasons now say where the rate law itself is non-finite.
+``SIR_v4``, the issue's other model, divided by its shape parameters after its last
+modelled year (``if(t<=1461, a_2024, 0)``), so its rate law was non-finite there
+before anything was differentiated. It kept declining, with both reasons now saying
+where the rate law itself is non-finite, until its model was fixed upstream and
+re-sourced (issue #543); the decline itself is pinned below on a rate law of that
+shape.
 """
 
 from __future__ import annotations
 
 import glob
+from pathlib import Path
 
 import bngsim
 import numpy as np
@@ -384,8 +387,13 @@ def test_a_derivative_that_introduces_the_singularity_keeps_the_plain_reason():
 # ─── The corpus models the issue names ───────────────────────────────────────
 
 _NETS = "benchmarks/suites/ode_fullnet/nets/original__bngl_models__my_models__ode__{}.bngl.net"
-_SIR_V4 = glob.glob(_NETS.format("SIR_v4"))
 _SIR_V5 = glob.glob(_NETS.format("SIR_v5"))
+# The vendored model, not its ode_fullnet .net: that cache is gitignored and regenerated
+# by hand, so a checkout that has not regenerated it since #543 still holds the old model.
+_SIR_V4_BNGL = (
+    Path(__file__).resolve().parents[2]
+    / "parity_checks/bng_parity/models/original/bngl_models/my_models/ode/SIR_v4.bngl"
+)
 
 
 @pytest.mark.skipif(not _SIR_V5, reason="benchmark ode_fullnet corpus not present")
@@ -398,10 +406,24 @@ def test_sir_v5_keeps_both_derivatives():
     assert np.all(np.isfinite(np.asarray(result.sensitivities)))
 
 
-@pytest.mark.skipif(not _SIR_V4, reason="benchmark ode_fullnet corpus not present")
-def test_sir_v4_declines_naming_its_last_year():
-    m = bngsim.Model.from_net(_SIR_V4[0])
-    assert m.prepare_analytical_jacobian() is False
-    status = m.analytical_jacobian_status
-    assert "which the rate law itself already has where" in status, status
-    assert "(t > 1461)" in status, status
+@pytest.mark.skipif(not _SIR_V4_BNGL.exists(), reason="bng_parity corpus not present")
+def test_sir_v4_keeps_both_derivatives_now_its_model_is_fixed():
+    """Issue #543: re-sourced from BNGL-Models after its year-selection chains stopped
+    ending in 0 and each season began opening on ``t>t_start()``. The onset column
+    ``d_2023`` at rtol 1e-10 / atol 1e-12 is the case #545 found failing before the
+    strict onset, with ``a_2023 = 1.5``."""
+    from bngsim._bngpath import resolve_bng
+
+    bng = resolve_bng()
+    if not bng.ok:
+        pytest.skip(f"BNG2.pl unavailable: {bng.why_not()}")
+    m = bngsim.Model.from_bngl(str(_SIR_V4_BNGL))
+    assert m.prepare_analytical_jacobian() is True, m.analytical_jacobian_status
+    sim = bngsim.Simulator(
+        bngsim.Model.from_bngl(str(_SIR_V4_BNGL)),
+        method="ode",
+        sensitivity_params=["d_2023", "a_2023"],
+    )
+    result = sim.run(t_span=(0.0, 1460.0), n_points=74, rtol=1e-10, atol=1e-12)
+    assert sim.has_analytic_sens_rhs, sim.sens_rhs_decline_reason
+    assert np.all(np.isfinite(np.asarray(result.sensitivities)))
