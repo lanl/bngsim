@@ -81,6 +81,11 @@ then one record per line. Read it with `_core.read_golden(path)`.
    against a tolerance. NOTE a single `seed=1` *stochastic* trajectory is chaotic
    — its fingerprint is **not** cross-platform-stable; the byte checksum is the
    meaningful stochastic check, and it certifies same-platform reproduction.
+5. **A blow-up fails both, unconditionally** (issue #572). A regenerated
+   variable that went `NaN`/`inf` where the golden is finite — or that blew up a
+   *different* way than the golden did — mismatches the checksum at step 3 and
+   scores `inf` from `fingerprint_max_rel` at step 4, so no tolerance you pick
+   can pass it. Only the *same* blow-up on both sides is a reproduction.
 
 ## BNG2.pl is required to generate
 

@@ -118,6 +118,39 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A golden regeneration whose variable blew up now fails the gate instead of
+  scoring a perfect match (issue #572).** `_core.fingerprint` is what a consumer
+  regenerating our golden corpus checks itself against: `checksum` must match
+  byte-for-byte on the same platform, and `fingerprint_max_rel` is the
+  cross-platform fallback when a different BLAS or rounding legitimately moves
+  the last digits. Both forgave a blow-up, in the one direction a gate must
+  never fail:
+
+  - **`fingerprint_max_rel` returned `0.0` — perfect agreement — for a variable
+    that went NaN.** It scored each stat as `abs(x - y) / max(abs(y), abs_floor)`
+    and kept the running worst with `max(worst, …)`, both of them Python's
+    builtin `max`, which keeps its first argument when the comparison is False.
+    A NaN stat makes `nan > 1e-9` False, so the denominator is NaN, the ratio is
+    NaN, and `max(0.0, nan)` is `0.0`. No argument order helped, and the
+    structural guard could not catch it either: a blown-up column has the same
+    variable set and the same `n_time` as a healthy one — only the values went
+    NaN. Since the fingerprint is consulted *only after* a checksum mismatch,
+    which a blow-up always produces, this was the entire cross-platform verdict.
+    A stat that is non-finite on exactly one side, or a *different* non-finite on
+    each side (`+inf` vs `-inf`, `inf` vs NaN), now returns `inf` — above any
+    tolerance a caller can pick, the way `differ.deterministic_verdict` makes a
+    one-side-non-finite cell an unconditional hard fail. The same blow-up on both
+    sides is agreement and still scores `0.0`.
+  - **The checksum could not tell the three blow-up modes apart.** `_round_sig`
+    canonicalized every non-finite cell to NaN, so
+    `checksum(+inf) == checksum(-inf) == checksum(NaN)`. A run that blew up one
+    way byte-matched a golden that blew up another and was certified an exact
+    reproduction by the *strongest* check, which ends the comparison on a match.
+    Each mode now keeps its own value, canonical rather than the input's own
+    bits (a NaN payload is not portable). Finite data is untouched: every
+    committed golden reproduces its recorded checksum unchanged, and a test
+    re-hashes the committed trajectories to keep it that way.
+
 - **Forward sensitivity to the onset of a logistic in time runs, instead of
   handing back NaN at the first sensitivity RHS call (issue #549).**
   `BIOMD0000000554` and `BIOMD0000000627` write their schedules as

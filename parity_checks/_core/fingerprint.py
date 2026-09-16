@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import numpy as np
 
@@ -35,7 +36,17 @@ def _round_sig(x: np.ndarray, sig: int) -> np.ndarray:
         factor = 10.0 ** (sig - 1 - mag)
         out = np.round(x * factor) / factor
     out[x == 0] = 0.0
-    out[~np.isfinite(x)] = np.nan
+    # The arithmetic above turns every non-finite input into NaN (``10.0**-inf``
+    # is 0, and ``inf * 0`` is NaN), so each blow-up mode is restored here from
+    # the input. Restored as a *canonical* value rather than the input's own
+    # bits, because a NaN payload is not portable and this is a byte hash.
+    # Collapsing all three to NaN, as this did before issue #572, made
+    # ``checksum(+inf) == checksum(-inf) == checksum(NaN)``: a run that blew up
+    # one way byte-matched a golden that blew up another, and the strongest
+    # same-platform check passed it.
+    out[np.isnan(x)] = np.nan
+    out[np.isposinf(x)] = np.inf
+    out[np.isneginf(x)] = -np.inf
     return out
 
 
@@ -81,6 +92,23 @@ def fingerprint_max_rel(a: dict, b: dict, abs_floor: float = 1e-9) -> float:
     Used to judge a golden regeneration when checksums differ across platforms.
     Compares only the variables present in both; a shape/var-set mismatch is a
     structural difference the caller should treat as a hard fail (returns inf).
+
+    A non-finite stat is decided *before* the ratio, never through it (issue
+    #572). Two stats that are the same blow-up -- both NaN, both +inf, both
+    -inf -- agree and contribute 0. Anything else touching a non-finite is an
+    unambiguous divergence and returns inf: one side NaN/inf while the other is
+    a finite number (one engine or platform blew up where the other produced a
+    value), or two *different* blow-ups (+inf vs -inf, inf vs NaN). That is the
+    treatment ``differ.deterministic_verdict`` gives a one-side-non-finite cell,
+    which it makes an unconditional hard fail.
+
+    Left to the ratio, every one of those scored 0.0 -- a perfect match. ``max``
+    here is Python's builtin, which keeps its first argument when the comparison
+    is False: a NaN stat makes ``denom`` NaN (``nan > 1e-9`` is False), hence the
+    ratio NaN, hence ``max(0.0, nan)`` 0.0. The direction of the arguments does
+    not help, and this function is reached only *after* a checksum mismatch --
+    which a blow-up always produces -- so the fallback scored the worst possible
+    divergence as the best possible agreement.
     """
     av, bv = a.get("vars", {}), b.get("vars", {})
     if set(av) != set(bv) or a.get("n_time") != b.get("n_time"):
@@ -89,6 +117,10 @@ def fingerprint_max_rel(a: dict, b: dict, abs_floor: float = 1e-9) -> float:
     for name in av:
         for stat in ("last", "min", "max", "mean"):
             x, y = av[name][stat], bv[name][stat]
+            if not (math.isfinite(x) and math.isfinite(y)):
+                if (math.isnan(x) and math.isnan(y)) or x == y:
+                    continue  # the same blow-up on both sides: they agree
+                return float("inf")
             denom = max(abs(y), abs_floor)
             worst = max(worst, abs(x - y) / denom)
     return worst

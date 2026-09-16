@@ -31,3 +31,11 @@ regenerates our golden references imports from here so reports stay comparable.
 - **Consumer regeneration**: byte-identical `checksum` within a pinned
   `(version, platform, seed)` cell; `fingerprint_max_rel` is the cross-platform
   fallback when checksums legitimately differ (BLAS/rounding).
+
+Both are asked about a run that already disagrees, so a **blow-up** gets the
+same treatment `differ` gives a one-side-non-finite cell — never forgiven
+(issue #572). The three modes hash to three different `checksum`s (`+inf`,
+`-inf` and `NaN` are three different outcomes, not one), and a stat that is
+non-finite on exactly one side, or a *different* non-finite on each side,
+scores `inf` from `fingerprint_max_rel` — above any tolerance a caller could
+pick. Only the same blow-up on both sides is agreement.
