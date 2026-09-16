@@ -26,6 +26,8 @@ refactor is most likely to break — that computing the key generates no source.
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 from pathlib import Path
 
 import bngsim
@@ -34,7 +36,15 @@ from bngsim import _codegen as cg
 from bngsim._bngsim_core import ModelBuilder
 from bngsim._switch_sensitivity import switch_gate_cache_digest
 
-_MODELS_DIR = Path(__file__).resolve().parents[2] / "parity_checks" / "rr_parity" / "models"
+# Not a __file__ walk-up: run_tests.sh copies this file to a temp dir, where the
+# walk-up lands outside the repo, every glob below comes back empty, and this
+# module silently shrank from 37 parametrized cases to 24 (issue #578).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+_REPO = bngsim_source_root() or Path(__file__).resolve().parents[2]
+_MODELS_DIR = _REPO / "parity_checks" / "rr_parity" / "models"
 # Gate on a model FILE, never on `is_dir()`: `models/` self-ignores through its
 # own tracked .gitignore, so the directory exists — empty — in every worktree and
 # in CI. #192 shipped a 77-model regression behind exactly that mistake.
@@ -384,9 +394,7 @@ def test_the_net_cache_key_separates_the_chunking_hatch(monkeypatch, tmp_path):
     """
     # A TRACKED .net, so this runs in CI too — the gitignored ode_fullnet suite
     # would make it a silent no-op everywhere but the author's checkout.
-    nets = sorted(
-        (Path(__file__).resolve().parents[2] / "benchmarks/models/net/ode").glob("*.net")
-    )
+    nets = sorted((_REPO / "benchmarks/models/net/ode").glob("*.net"))
     net = next((p for p in nets if len(cg._parse_net_file(str(p))["reactions"]) >= 30), None)
     assert net is not None, "no tracked .net is large enough to chunk"
 

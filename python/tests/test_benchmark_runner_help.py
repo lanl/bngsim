@@ -68,7 +68,14 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Not a __file__ walk-up: run_tests.sh copies this file to a temp dir, where the
+# walk-up lands outside the repo, SUITES_DIR globs nothing, and this module
+# silently shrank from 127 parametrized cases to 11 (issue #578).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+REPO_ROOT = bngsim_source_root() or Path(__file__).resolve().parents[2]
 BENCH_ROOT = REPO_ROOT / "benchmarks"
 SUITES_DIR = BENCH_ROOT / "suites"
 RUN_ALL = BENCH_ROOT / "run_all.py"

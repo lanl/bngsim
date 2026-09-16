@@ -1,12 +1,30 @@
 from __future__ import annotations
 
+import os
 import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-_SUITE_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "suites" / "sbml_test_suite"
+# Sibling helper import, as test_ci_run_list_coverage.py does it. The source root
+# must come from the rig's env vars, not a __file__ walk-up: run_tests.sh copies
+# this file to a temp dir, where the walk-up used to land outside the repo and
+# this module raised ModuleNotFoundError: _grading at collection time, aborting
+# the script's entire run (issue #578).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+_ROOT = bngsim_source_root()
+_SUITE_DIR = None if _ROOT is None else _ROOT / "benchmarks" / "suites" / "sbml_test_suite"
+if _SUITE_DIR is None or not (_SUITE_DIR / "_grading.py").is_file():
+    # A wheel/subtree checkout carries no benchmark corpus. Skip rather than
+    # raise: a collection error takes the entire session down with it, which is
+    # never the right answer to an absent optional tree.
+    pytest.skip(
+        "benchmarks/suites/sbml_test_suite/_grading.py not in this checkout",
+        allow_module_level=True,
+    )
 if str(_SUITE_DIR) not in sys.path:
     sys.path.insert(0, str(_SUITE_DIR))
 

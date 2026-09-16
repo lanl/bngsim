@@ -14,7 +14,9 @@ exclusion list is expressed in them) and about the shell continuation lines of a
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from pathlib import Path
 
 try:  # 3.10 is still supported and has no tomllib
@@ -22,7 +24,16 @@ try:  # 3.10 is still supported and has no tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.10
     tomllib = None  # type: ignore[assignment]
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+# Not a __file__ walk-up: run_tests.sh copies this file to a temp dir, where the
+# walk-up lands outside the repo, WORKFLOWS globs nothing, and the parametrized
+# coverage tests silently shrink from 21 cases to 6 (issue #578). The fallback
+# keeps the type Path for a checkout with no pyproject at all; the consuming
+# tests already skip on a missing workflows directory.
+REPO_ROOT = bngsim_source_root() or Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 TESTS_DIR = Path(__file__).resolve().parent
 

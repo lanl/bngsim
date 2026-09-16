@@ -118,6 +118,52 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`run_tests.sh` runs the suite it collects, instead of aborting on six import
+  errors having executed nothing (issue #578).** The script copies the tests to a
+  temp directory so the source tree's `python/bngsim/` cannot shadow the
+  *installed* package it exists to exercise — but the copy was `test_*.py` plus
+  `conftest.py`, which is not what `python/tests/` holds. Left behind:
+  `__init__.py`, without which `test_sbml_psa.py`'s
+  `from .test_ssa_psa_volume import …` has no parent package to resolve against;
+  and the sibling helpers `_ci_workflow.py` and `_extrande_reference.py`, which
+  four more modules import at module scope. All six raised at collection time,
+  and pytest aborts the run on a collection error — so the script exited 2 having
+  executed none of the 5775 tests it had just counted.
+
+  It now copies every `.py`, into a directory named `tests`. The name is
+  load-bearing: with `__init__.py` present pytest derives the package name from
+  the directory and puts its *parent* on `sys.path`, and a `mktemp` name like
+  `tmp.AbC123` is not a legal identifier. `tests` reproduces the source layout,
+  and the parent it adds is the temp root rather than the repo's `python/` —
+  which is the shadowing the whole exercise exists for.
+
+  Fixing only the copy would have left the worse half in place, 168 tests' worth.
+  Five more modules did not raise: they resolved a repo path by walking up from
+  `__file__`, which under the copy lands outside the repo, so their globs came
+  back empty. Two skipped themselves whole (`test_ssa_baseline_regression.py`,
+  `test_ssa_biomodels_parity_zgate.py` — 24 tests) and three quietly collected
+  *fewer* parametrized cases: `test_benchmark_runner_help.py` 127 down to 11,
+  `test_ci_run_list_coverage.py` 21 to 6, `test_codegen_structural_key.py` 37 to
+  24. A green run that had dropped a fifth of what it should have checked, saying
+  so nowhere. The script now also exports `BNGSIM_SOURCE_ROOT`, and those modules
+  resolve the repo through the new `python/tests/_source_root.py`:
+  `$BNGSIM_TEST_DATA`'s parents, then `$BNGSIM_SOURCE_ROOT`, then the walk-up,
+  each candidate confirmed by finding bngsim's own `pyproject.toml` there so a
+  wrong guess cannot be returned as a right one — the search four other modules
+  already carried inline. A copied run now collects exactly what an in-place run
+  collects, 6029 either way, and `test_run_tests_sh.py` asserts that *equality*
+  rather than merely that nothing errored.
+
+  The script is not green yet, and this does not claim it is. Collection is
+  clean and 5371 tests now execute where none could before, but 64 fail, 181
+  error and 421 skip (against 62 skips and no failures for the same suite run in
+  place). Every one of those is the same defect in a different file: 69 modules
+  resolve `tests/data`, `benchmarks/` or `scripts/` by walking up from
+  `__file__`, which the copy invalidates — the assert-based ones fail, the
+  `.exists()`-guarded ones skip as "not in this checkout (installed package)"
+  when the source tree is in fact right there. The sweep to move all 69 onto
+  `_source_root` is tracked in issue #590; the numbers above are its baseline.
+
 - **A golden regeneration whose variable blew up now fails the gate instead of
   scoring a perfect match (issue #572).** `_core.fingerprint` is what a consumer
   regenerating our golden corpus checks itself against: `checksum` must match

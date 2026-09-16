@@ -27,14 +27,22 @@ from pathlib import Path
 
 import pytest
 
-_BNGSIM = Path(__file__).resolve().parents[2]
-_RR = _BNGSIM / "parity_checks" / "rr_parity"
-_PC = _RR.parent
-for _p in (_PC, _RR):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+# The source root must come from the rig's env vars, not a __file__ walk-up:
+# run_tests.sh copies this file to a temp dir, where the walk-up landed outside
+# the repo and this whole module skipped itself as "baseline not found" -- 7
+# tests silently not running against the installed wheel (issue #578).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-if not (_RR / "ssa_baseline.json").exists():  # pragma: no cover - layout guard
+from _source_root import bngsim_source_root  # noqa: E402
+
+_BNGSIM = bngsim_source_root()
+_RR = None if _BNGSIM is None else _BNGSIM / "parity_checks" / "rr_parity"
+if _RR is not None:
+    for _p in (_RR.parent, _RR):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
+
+if _RR is None or not (_RR / "ssa_baseline.json").exists():  # pragma: no cover - layout guard
     pytest.skip("rr_parity SSA baseline not found", allow_module_level=True)
 
 import diff_ssa_baseline as dsb  # noqa: E402

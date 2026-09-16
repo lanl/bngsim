@@ -18,7 +18,8 @@ directly (no SBML, no engines), so they run anywhere the package tests do.
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
+import os
+import sys
 
 import numpy as np
 import pytest
@@ -27,8 +28,17 @@ import pytest
 # self-bootstraps its own imports (it inserts parity_checks/ and its own dir on
 # sys.path before ``from _core import ...`` / ``import _rr_common``), so loading
 # the file is enough.
-_HARNESS = Path(__file__).resolve().parents[2] / "parity_checks" / "rr_parity" / "ssa_screen.py"
-if not _HARNESS.exists():  # pragma: no cover - layout guard
+# The source root must come from the rig's env vars, not a __file__ walk-up:
+# run_tests.sh copies this file to a temp dir, where the walk-up landed outside
+# the repo and this whole module skipped itself as "screen not found" -- 17
+# tests silently not running against the installed wheel (issue #578).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+_ROOT = bngsim_source_root()
+_HARNESS = None if _ROOT is None else _ROOT / "parity_checks" / "rr_parity" / "ssa_screen.py"
+if _HARNESS is None or not _HARNESS.exists():  # pragma: no cover - layout guard
     pytest.skip(f"screen not found at {_HARNESS}", allow_module_level=True)
 _spec = importlib.util.spec_from_file_location("_ssa_biomodels_parity_screen", _HARNESS)
 _mod = importlib.util.module_from_spec(_spec)
