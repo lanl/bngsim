@@ -295,9 +295,25 @@ def test_standin_collects_exactly_what_an_in_place_run_collects(tmp_path):
 
 #: Modules that the #590 layout broke by *execution*, not collection: each
 #: reaches the repo by walking up from ``__file__``, and each is cheap (text and
-#: file-existence checks, no solves). Under the old layout all 17 of these tests
+#: file-existence checks, no solves). Under the old layout all 17 of those tests
 #: failed or errored; a -k probe over them is the whole defect in ~11s.
-WALK_UP_PROBE = "changelog_structure or vendoring or ship_wheel_build_deps"
+#:
+#: The second group reads ``python/bngsim/`` — the committed stub, the provenance
+#: module — as FILES rather than importing it, which the stand-in must not
+#: prevent: what shadows the installed package is that directory being on
+#: ``sys.path``, not its bytes being readable. They skipped themselves as "not in
+#: this checkout" until they resolved the root through the rig instead of a
+#: walk-up (issue #594), which is the quiet half of the same failure.
+WALK_UP_PROBE = (
+    "changelog_structure or vendoring or ship_wheel_build_deps"
+    " or core_stub_covers_bindings or rebuild_editable_source_digest"
+    " or rebuild_editable_feature_options or version_consistency"
+)
+
+#: Skip reasons that mean a module could not see the source tree. Legitimate
+#: against a real wheel checkout; against the stand-in they are a false negative,
+#: because the tree is right there and the script was run from inside it.
+SOURCE_TREE_ABSENT = ("not in this checkout", "no committed stub")
 
 
 def test_the_script_itself_runs_walk_up_dependent_tests_green():
@@ -333,14 +349,17 @@ def test_the_script_itself_runs_walk_up_dependent_tests_green():
     assert "failed" not in summary and "error" not in summary, summary
 
     passed = re.search(r"(\d+) passed", summary)
-    assert passed and int(passed.group(1)) >= 15, (
+    assert passed and int(passed.group(1)) >= 60, (
         f"the -k probe has gone blind — only {summary!r}; it must actually run these modules"
     )
-    # The tell-tale of the #590 layout: a source-tree guard reporting the tree
+    assert "skipped" not in summary, f"the stand-in cost these modules a skip: {summary}"
+    # The tell-tale of both failures: a source-tree guard reporting the tree
     # absent while the script is being run from inside it.
-    assert "not in this checkout" not in out, (
-        f"a module still cannot see the source tree from the stand-in:\n{out[-3000:]}"
-    )
+    for phrase in SOURCE_TREE_ABSENT:
+        assert phrase not in out, (
+            f"a module still cannot see the source tree from the stand-in ({phrase!r}):"
+            f"\n{out[-3000:]}"
+        )
 
 
 # --------------------------------------------------------------------------- #

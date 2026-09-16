@@ -29,12 +29,24 @@ a binding and not regenerating, and a name-level check catches that with a
 regex, in milliseconds, on every leg, with no build.
 """
 
+import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
-_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+# The source tree is READ here, never imported: the stub is text and the bindings
+# are C++. run_tests.sh keeps python/bngsim/ off sys.path, which is what stops it
+# shadowing the installed package — it does not, and need not, put the files out
+# of reach. Resolving through the rig's env vars rather than a __file__ walk-up
+# is what tells the two apart; the walk-up lands in the stand-in, where
+# python/ holds tests/ and nothing else, and skipped these tests (issue #594).
+_REPO = bngsim_source_root() or Path(__file__).resolve().parents[2]
 _BINDINGS = _REPO / "src" / "_bngsim_core.cpp"
 _STUB = _REPO / "python" / "bngsim" / "_bngsim_core.pyi"
 
@@ -72,10 +84,9 @@ def _declared_in_stub(name: str, stub: str) -> bool:
 
 
 # Guarded on BOTH files, because this one reads both (issue #590). The guard
-# used to name only the bindings, so a tree with src/ but no python/bngsim/ --
-# exactly what run_tests.sh hands the suite -- passed the guard and then died on
-# a FileNotFoundError for the stub. Its siblings in test_version_consistency.py
-# and test_rebuild_editable_feature_options.py already skip on this file.
+# named only the bindings, so a tree carrying src/ but not the stub passed it and
+# then died on a FileNotFoundError. That is a real wheel/subtree checkout, which
+# is the case these reasons describe; it is no longer what run_tests.sh produces.
 @pytest.mark.skipif(
     not _BINDINGS.is_file(),
     reason="src/_bngsim_core.cpp is not in this checkout (installed package)",

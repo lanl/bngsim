@@ -32,6 +32,7 @@ what ``scripts/MIR_VENDORING.md`` documents.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import sys
 import types
@@ -39,7 +40,15 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+# Reads scripts/ and the committed stub as FILES; nothing here imports bngsim
+# from the source tree, so the rig's env vars are the right way to reach it and a
+# __file__ walk-up is not — under run_tests.sh the walk-up lands in the stand-in
+# and skipped the stub check (issue #594).
+REPO_ROOT = bngsim_source_root() or Path(__file__).resolve().parents[2]
 REBUILD_EDITABLE = REPO_ROOT / "scripts" / "rebuild_editable.py"
 CMAKELISTS = REPO_ROOT / "CMakeLists.txt"
 

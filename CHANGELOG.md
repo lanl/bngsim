@@ -174,11 +174,24 @@ in `CMakeLists.txt`) is derived from it.
   suite runs on ubuntu and macOS; `test_run_tests_sh.py` skips on Windows,
   because what it tests is a bash script that builds a symlink farm.
 
-  Measured, `BNGPATH` unset both ways: **5970 passed, 73 skipped, 0 failed,
-  exit 0** under the script, against 5979 passed / 62 skipped / 0 failed in
-  place (plus the two tests added after that run — 6043 collected either way).
-  The 11 extra skips are `python/bngsim/` being deliberately absent, which is the
-  point of the exercise. Before: 5371 passed, 64 failed, 181 errors, 421 skipped.
+  One thing the stand-in must *not* do is make `python/bngsim/` unreadable
+  (issue #594). What shadows the installed package is that directory being on
+  `sys.path`; its bytes being readable shadows nothing. Eleven tests read it as
+  files — the committed `_bngsim_core.pyi`, and `_build_provenance.py`, which is
+  loaded by path and asserts that doing so imports no bngsim — and they resolved
+  it by walking up from `__file__`, so under the stand-in they skipped themselves
+  as "not in this checkout" while the script was running from inside the
+  checkout. `test_core_stub_covers_bindings.py`,
+  `test_rebuild_editable_source_digest.py` and
+  `test_rebuild_editable_feature_options.py` take the source root from the rig
+  now, as `test_version_consistency.py` already did — which is why that one read
+  the same stub and never skipped. Their `.exists()` guards stay: those are right
+  against a real wheel checkout, which is what their reasons describe.
+
+  Measured, `BNGPATH` unset both ways: **5981 passed, 62 skipped, 0 failed,
+  exit 0** under the script, and the same 5981 / 62 / 0 in place — every test the
+  suite has, executed either way. Before #590: 5371 passed, 64 failed, 181
+  errors, 421 skipped, exit 1.
 
 - **`run_tests.sh` runs the suite it collects, instead of aborting on six import
   errors having executed nothing (issue #578).** The script copies the tests to a

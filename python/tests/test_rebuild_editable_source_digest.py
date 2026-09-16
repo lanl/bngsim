@@ -16,6 +16,7 @@ takes the two digests around the build and nowhere else.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import types
@@ -23,13 +24,22 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
+
+# The provenance module is loaded BY PATH, never imported as bngsim._build_
+# provenance -- test_the_guard_loads_without_importing_bngsim asserts exactly
+# that. So reaching the real source tree here cannot shadow anything, and the
+# rig's env vars are how to reach it: a __file__ walk-up lands in run_tests.sh's
+# stand-in, where python/ holds tests/ and nothing else, and skipped all nine of
+# these tests (issue #594).
+REPO_ROOT = bngsim_source_root() or Path(__file__).resolve().parents[2]
 REBUILD_EDITABLE = REPO_ROOT / "scripts" / "rebuild_editable.py"
 #: What every test here ultimately loads: ``_load_build_provenance`` reads it out
 #: of the source tree by path. The guard named only the script until issue #590,
-#: so a tree with scripts/ but no python/bngsim/ -- exactly what run_tests.sh
-#: hands the suite -- passed the guard and then died on a FileNotFoundError,
-#: eight times.
+#: so a tree carrying scripts/ but not the package -- a wheel or subtree checkout
+#: -- passed it and then died on a FileNotFoundError, eight times.
 PROVENANCE = REPO_ROOT / "python" / "bngsim" / "_build_provenance.py"
 
 pytestmark = pytest.mark.skipif(
