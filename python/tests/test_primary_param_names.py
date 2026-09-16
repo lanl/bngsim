@@ -60,10 +60,16 @@ _NET_TREE = Path(__file__).resolve().parents[2]
 #: why a tracked fixture was needed: the defect lives in SBML `<assignmentRule>`
 #: models (107 of 327 tracked), and zero tracked `.net` files carried it.
 _SHADOWED = _NET_TREE / "tests" / "data" / "shadowed_function_param.net"
-_NETS = (
-    sorted(p for p in _NET_TREE.rglob("*.net") if "build" not in p.parts)
-    if _NET_TREE.is_dir()
-    else []
+#: The roots holding committed ``.net`` fixtures, named rather than reached by
+#: rglob-ing the repo root. Two reasons, both issue #590: a whole-tree rglob also
+#: swept up ``.pytest_cache``, so "every .net in the tree" was partly a claim
+#: about the developer's own cache; and ``Path.rglob`` does not descend into
+#: symlinked directories, so under ``run_tests.sh`` -- whose stand-in repo is a
+#: link farm -- it matched nothing and these tests skipped themselves. A symlink
+#: AT the root of the walk *is* followed, so naming the roots works either way.
+_NET_ROOTS = ("benchmarks", "parity_checks", "tests")
+_NETS = sorted(
+    p for root in _NET_ROOTS for p in (_NET_TREE / root).rglob("*.net") if "build" not in p.parts
 )
 
 

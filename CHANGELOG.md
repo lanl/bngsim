@@ -118,6 +118,68 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`run_tests.sh` now stands the repo up instead of hiding it, so the suite
+  passes there as it does in place (issue #590).** The script relocates the tests
+  so the source tree's `python/bngsim/` cannot shadow the *installed* package it
+  exists to exercise. It did that by copying them into a bare temp directory —
+  which hid far more than `python/bngsim/`. Sixty-nine modules resolve
+  `tests/data`, `benchmarks/` or `scripts/` by walking up from `__file__`, and
+  from a bare temp directory that walk-up leaves the repo entirely: 64 failures,
+  181 errors, and 359 skips reported as *"not in this checkout (installed
+  package)"* while the source tree sat right there. None was a defect in bngsim.
+
+  The temp directory is now a stand-in for the repo: `python/tests/` copied to
+  `<tmp>/python/tests/`, and every other top-level entry symlinked in. A walk-up
+  then lands on something that *is* the repo, while `<tmp>/python/` still holds
+  `tests` and nothing else — so the one directory the script exists to hide is
+  still hidden, and nothing else is. Linking costs nothing however large the tree
+  is, and `pyproject.toml` comes along with it, so pytest finds the project
+  config there too: `[tool.pytest.ini_options]` applies and the run is configured
+  exactly as an in-place one rather than silently diverging.
+
+  Four modules needed fixing, each a defect the old layout had masked rather than
+  a concession to the new one:
+
+  - `test_core_stub_covers_bindings.py` guarded on `src/_bngsim_core.cpp` but
+    *read* `python/bngsim/_bngsim_core.pyi`. Two different files, one guard; a
+    tree with one and not the other passed the guard and died on a
+    `FileNotFoundError`. Its siblings already skip on the stub.
+  - `test_rebuild_editable_source_digest.py`, the same shape: guarded on
+    `scripts/rebuild_editable.py`, loads `python/bngsim/_build_provenance.py`.
+  - `test_primary_param_names.py` rglob-ed the whole repo root for `.net`
+    fixtures, which also swept in `.pytest_cache` — so "every `.net` in the tree"
+    was partly an assertion about the developer's own cache. It names the three
+    roots that hold fixtures now, which is also what makes it work through a
+    symlink: `Path.rglob` will not descend *into* one, though it follows one at
+    the root of the walk.
+  - `test_sbml_reversible_split.py` counted `parents[3]` to find a sibling
+    `PyBNF` checkout. Its own docstring records that count having been off by one
+    before, which made the skip unconditional and the test had never run
+    anywhere; relocation would have done it again.
+
+  And the script no longer names its working directory `TMPDIR`. Where that
+  variable is already exported — launchd exports it on macOS, and many Linux CI
+  images set it — assigning to it redirects every *child's* temp files into the
+  stand-in, because Python's `tempfile` reads it. pytest's `tmp_path` then lands
+  inside a tree whose root carries bngsim's `pyproject.toml`, so a walk-up out of
+  any temp directory "finds" a source root that is a link farm, and the per-run
+  artifact cache lands inside `rootdir`, which `test_artifact_cache_isolation.py`
+  asserts against. The script had done this since it was written; it surfaced
+  only once the stand-in became the rootdir.
+
+  The link farm needs real symlinks, which Windows grants only under Developer
+  Mode or an elevated token — `ln -s` under Git Bash/MSYS copies instead. A
+  silent deep copy would duplicate `build/`, `third_party/`, `.git` and `.venv`,
+  so the script checks one entry and exits non-zero naming the fix. The full
+  suite runs on ubuntu and macOS; `test_run_tests_sh.py` skips on Windows,
+  because what it tests is a bash script that builds a symlink farm.
+
+  Measured, `BNGPATH` unset both ways: **5970 passed, 73 skipped, 0 failed,
+  exit 0** under the script, against 5979 passed / 62 skipped / 0 failed in
+  place (plus the two tests added after that run — 6043 collected either way).
+  The 11 extra skips are `python/bngsim/` being deliberately absent, which is the
+  point of the exercise. Before: 5371 passed, 64 failed, 181 errors, 421 skipped.
+
 - **`run_tests.sh` runs the suite it collects, instead of aborting on six import
   errors having executed nothing (issue #578).** The script copies the tests to a
   temp directory so the source tree's `python/bngsim/` cannot shadow the
@@ -154,15 +216,11 @@ in `CMakeLists.txt`) is derived from it.
   collects, 6029 either way, and `test_run_tests_sh.py` asserts that *equality*
   rather than merely that nothing errored.
 
-  The script is not green yet, and this does not claim it is. Collection is
-  clean and 5371 tests now execute where none could before, but 64 fail, 181
-  error and 421 skip (against 62 skips and no failures for the same suite run in
-  place). Every one of those is the same defect in a different file: 69 modules
-  resolve `tests/data`, `benchmarks/` or `scripts/` by walking up from
-  `__file__`, which the copy invalidates — the assert-based ones fail, the
-  `.exists()`-guarded ones skip as "not in this checkout (installed package)"
-  when the source tree is in fact right there. The sweep to move all 69 onto
-  `_source_root` is tracked in issue #590; the numbers above are its baseline.
+  That still left the run red — 64 failures, 181 errors and 359 spurious skips,
+  every one of them a module resolving `tests/data`, `benchmarks/` or `scripts/`
+  by a walk-up the copy invalidated. Closed by the entry above (issue #590),
+  which stopped hiding those directories rather than teaching 69 modules to find
+  them.
 
 - **A golden regeneration whose variable blew up now fails the gate instead of
   scoring a perfect match (issue #572).** `_core.fingerprint` is what a consumer

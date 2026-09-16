@@ -10,6 +10,8 @@ emits two Elementary reactions; non-splittable reversible kineticLaws
 falling through to the Phase 6 ``reversible_non_mass_action`` gate.
 """
 
+import os
+import sys
 from pathlib import Path
 
 import bngsim
@@ -17,6 +19,10 @@ import libsbml
 import numpy as np
 import pytest
 from bngsim._sbml_loader import _factor_minus_subtree
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _source_root import bngsim_source_root  # noqa: E402
 
 # ── Unit tests for the AST walker ─────────────────────────────────────
 #
@@ -253,16 +259,19 @@ def test_copasi_abc_xml_loads():
     under SSA after Phase 7. Fixture lives in a sibling PyBNF checkout; skip if
     not present.
 
-    parents[3] is the directory *containing* this checkout, so a sibling PyBNF
-    resolves as <dev root>/PyBNF. It read parents[4] until the skip audit
-    surfaced it, which resolved one level too high and made the skip
-    unconditional: the test had never run anywhere.
+    The parent of the checkout is where a sibling PyBNF lives. Reached through
+    the source root rather than by counting ``parents`` from this file, because
+    the count is only right when the file is where it was written: it read
+    parents[4] until the skip audit surfaced it, one level too high, which made
+    the skip unconditional and the test had never run anywhere. ``run_tests.sh``
+    relocates this file and would have done the same thing again (issue #590).
 
     This is the last test in the suite that reaches into a sibling PyBNF
     checkout; the method=>protocol tests that shared the pattern now live in
     PyBNF itself (lanl/bngsim#45). It stays because the abc.xml fixture is not
     vendored here and duplicating it buys nothing."""
-    abc_path = Path(__file__).resolve().parents[3] / "PyBNF" / "tests" / "bngl_files" / "abc.xml"
+    root = bngsim_source_root() or Path(__file__).resolve().parents[2]
+    abc_path = root.parent / "PyBNF" / "tests" / "bngl_files" / "abc.xml"
     if not abc_path.exists():
         pytest.skip(f"abc.xml not at {abc_path}")
     model = bngsim.Model.from_sbml(str(abc_path))

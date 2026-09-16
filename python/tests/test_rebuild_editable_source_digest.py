@@ -25,10 +25,17 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REBUILD_EDITABLE = REPO_ROOT / "scripts" / "rebuild_editable.py"
+#: What every test here ultimately loads: ``_load_build_provenance`` reads it out
+#: of the source tree by path. The guard named only the script until issue #590,
+#: so a tree with scripts/ but no python/bngsim/ -- exactly what run_tests.sh
+#: hands the suite -- passed the guard and then died on a FileNotFoundError,
+#: eight times.
+PROVENANCE = REPO_ROOT / "python" / "bngsim" / "_build_provenance.py"
 
 pytestmark = pytest.mark.skipif(
-    not REBUILD_EDITABLE.exists(),
-    reason="scripts/rebuild_editable.py is not in this checkout (installed package)",
+    not (REBUILD_EDITABLE.exists() and PROVENANCE.exists()),
+    reason="scripts/rebuild_editable.py or python/bngsim/_build_provenance.py "
+    "is not in this checkout (installed package)",
 )
 
 

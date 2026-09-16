@@ -71,9 +71,18 @@ def _declared_in_stub(name: str, stub: str) -> bool:
     )
 
 
+# Guarded on BOTH files, because this one reads both (issue #590). The guard
+# used to name only the bindings, so a tree with src/ but no python/bngsim/ --
+# exactly what run_tests.sh hands the suite -- passed the guard and then died on
+# a FileNotFoundError for the stub. Its siblings in test_version_consistency.py
+# and test_rebuild_editable_feature_options.py already skip on this file.
 @pytest.mark.skipif(
     not _BINDINGS.is_file(),
     reason="src/_bngsim_core.cpp is not in this checkout (installed package)",
+)
+@pytest.mark.skipif(
+    not _STUB.is_file(),
+    reason=f"no committed stub at {_STUB}",
 )
 def test_every_binding_is_declared_in_the_committed_stub():
     """A binding the stub does not declare is a mypy error waiting for a caller.
