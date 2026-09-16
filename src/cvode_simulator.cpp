@@ -570,6 +570,27 @@ static const char *const kOnsetPowerNote =
     " exponent of 2 or more keeps the derivative finite, and leaving that parameter out of"
     " sensitivity_params avoids it (issue #545).";
 
+// The OTHER way a finite rate law hands back a non-finite derivative, and the one
+// the note above sends the reader away from (issue #549). A logistic in time is
+// finite everywhere and so is every derivative of it, but the emitted `dF/dp` is
+// `A*exp(x)/(B*exp(x) + 1)^2`, which is inf/inf the moment `x` passes 709.8 --
+// `BIOMD0000000627` reaches `4.59186*199` at t=0 without trying, for a term whose
+// true value is 1e-397. The reader of the #545 note went looking for a pulse that
+// was not there.
+//
+// Said only where a value actually went non-finite. An overflow leaves a NaN, so
+// it always leaves a witness: `sensitivity_restart_hint` is the case where every
+// value stayed finite and the step gave out anyway, which this cannot be, and
+// appending it there would be the same misdirection one note over.
+static const char *const kOverflowNote =
+    " The other way is a value that is perfectly ordinary and arithmetic that could not reach it:"
+    " exp overflows to inf past an argument of 709.8, so a term like A*exp(x)/(B*exp(x) + 1)^2 --"
+    " what a logistic in time differentiates to -- reads inf/inf = NaN where the number it stands"
+    " for is merely too small to represent. bngsim divides the shapes it recognises through so"
+    " they underflow to 0 instead. A column that goes non-finite at the very first call, with no"
+    " threshold the run has reached yet, is the likelier half here, and is worth reporting"
+    " (issue #549).";
+
 // Issue #545: a sensitivity-RHS witness at a state where every rate law and every
 // species is finite. The domain advice below would send the reader to constrain a
 // species that is fine. What is non-finite is a derivative, so this names the
@@ -608,7 +629,7 @@ static std::string describe_sensitivity_witness(NetworkModel &model, const NonFi
         os << " Its ∂f/∂p half is finite there, so the non-finite half is the Jacobian times the "
               "sensitivity.";
     }
-    os << kOnsetPowerNote;
+    os << kOnsetPowerNote << kOverflowNote;
     return os.str();
 }
 

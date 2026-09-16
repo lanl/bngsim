@@ -572,6 +572,29 @@ def _reciprocal_without_overflow(node):
     return None
 
 
+def _numeric_coefficient(node):
+    """``(c, f)`` for a summand written ``c·f`` with ``c`` a nonzero numeric node,
+    or ``(1, node)`` when it carries none (issue #549).
+
+    A denominator summand can be spelled with a constant on it — ``1 + 5·exp(w)``
+    — and that constant hides the ``exp`` from
+    :func:`_reciprocal_without_overflow`, which is what the whole rewrite turns
+    on. The sympy twin reaches the same shape by a different road: there sympy
+    *folds* a numeric part of the exponent into a factor out front, so it arrives
+    even for a law that wrote no coefficient at all.
+
+    Only a number is peeled off. A symbolic coefficient is a value the original
+    expression is perfectly happy at, zero included, and dividing through by it
+    would trade a NaN at one argument for a division by zero at another.
+    """
+    if node[0] == "*":
+        if _is_num(node[1]) and node[1][1] != 0.0:
+            return node[1], node[2]
+        if _is_num(node[2]) and node[2][1] != 0.0:
+            return node[2], node[1]
+    return _ONE, node
+
+
 def rewrite_saturating_ratio(node):
     """Divide ``f·M / (a + f)`` through by ``f``, for ``f`` an ``exp(w)`` or a
     power ``x^n`` (GH #388, GH #393).
@@ -597,6 +620,12 @@ def rewrite_saturating_ratio(node):
     is a much bigger hammer: an exponential or a power of a state variable is
     what this module exists for, where a *logarithm* of one is 2.1% of corpus
     rate laws.
+
+    The summand may carry a numeric coefficient — ``1 + 5·exp(w)`` — which hid
+    the ``exp`` from the match until issue #549. See :func:`_numeric_coefficient`
+    for what is peeled off and the loop below for what pays for it. The sympy
+    twin reaches that shape far more often, because sympy folds a constant in the
+    exponent into one; here it takes a law that wrote the coefficient itself.
     """
     tag = node[0]
     if tag == "neg":
@@ -611,15 +640,23 @@ def rewrite_saturating_ratio(node):
     if tag != "/" or right[0] != "+":
         return (tag, left, right)
 
-    for saturating, rest in ((right[1], right[2]), (right[2], right[1])):
+    for summand, rest in ((right[1], right[2]), (right[2], right[1])):
+        # ``c·f`` divides through exactly as ``f`` does, against ``rest/c`` and
+        # with the quotient scaled by ``1/c``, because ``rest + c·f`` is
+        # ``c·(rest/c + f)`` — an identity for any nonzero ``c`` (issue #549). It
+        # moves no pole: the denominator still vanishes where it did. The smart
+        # constructors fold ``c = 1`` away, so a summand with no coefficient
+        # emits the text it always did, character for character.
+        coeff, saturating = _numeric_coefficient(summand)
         recip = _reciprocal_without_overflow(saturating)
         if recip is None:
             continue
         if _contains(rest, saturating):
             continue  # dividing through would trade one overflow for another
+        rest = _mk_div(rest, coeff)
         numer = _without_factor(left, saturating)
         if numer is not None:
-            return _mk_div(numer, _mk_add(_mk_mul(rest, recip), _ONE))
+            return _mk_div(_mk_div(numer, coeff), _mk_add(_mk_mul(rest, recip), _ONE))
         if saturating[0] != "^":
             continue
         shaved = _shaved_power_factor(left, saturating[1], saturating[2])
@@ -635,7 +672,7 @@ def rewrite_saturating_ratio(node):
         # beside a ``0`` (GH #402).
         base = saturating[1]
         return _mk_div(
-            numer,
+            _mk_div(numer, coeff),
             _mk_add(
                 _mk_pow(base, _num(shift)),
                 _mk_mul(rest, _mk_pow(base, _mk_sub(_num(shift), saturating[2]))),

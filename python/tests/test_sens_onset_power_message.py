@@ -18,6 +18,14 @@ Now the first names the sensitivity column and says ``∂f/∂on`` is the non-fi
 and the second says the step gave out where the run had just restarted. Both end with
 the shape and its remedies.
 
+Issue #549 added the *other* way a finite rate law hands back a non-finite derivative:
+a value that is an ordinary number the emitted arithmetic could not reach, because an
+``exp`` in it overflowed. The pulse note alone asserted the singularity as the
+explanation, and two corpus models that had overflowed instead sent their readers
+looking for a pulse that was not there. It is said only where a value actually went
+non-finite — an overflow leaves a NaN, and so always leaves a witness, which is
+exactly what the restart hint is the absence of.
+
 On this model neither failure happens any more: from the onset on, the solver
 integrates the comoving column ``V = S + c·f`` in place of ``S`` (issue #545;
 ``test_sens_comoving_onset.py``), and its forcing is bounded. The messages are for the
@@ -82,6 +90,10 @@ def test_the_onset_derivative_names_its_column_not_a_species(tmp_path, monkeypat
     assert "(issue #545)" in msg, msg
     assert "Constrain the species" not in msg, msg
     assert "'k0'" not in msg, msg  # only the column that went non-finite
+    # ...and the other way a derivative goes non-finite, so the note above reads as
+    # one of two explanations rather than as the diagnosis (issue #549).
+    assert "The other way is a value that is perfectly ordinary" in msg, msg
+    assert "(issue #549)" in msg, msg
 
 
 @pytest.mark.parametrize(
@@ -100,6 +112,10 @@ def test_a_step_that_gives_out_past_a_strict_onset_says_it_had_just_restarted(
     assert "made no progress" in msg or "CV_ERR_FAILURE" in msg, msg
     assert RESTART_HINT in msg, msg
     assert "(issue #545)" in msg, msg
+    # Every value stayed finite here, so an overflow — which would have left a NaN
+    # and a witness — is not on the table, and saying so would be the same
+    # misdirection #549 removed, one note over.
+    assert "(issue #549)" not in msg, msg
 
 
 def test_a_rate_law_that_is_itself_infinite_keeps_the_domain_advice(tmp_path):

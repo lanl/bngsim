@@ -1595,6 +1595,12 @@ def _rewrite_saturating_ratio(expr):
     :func:`_divided_through` places the leftover; the two rewrites needed nothing
     reordered to compose, only a numerator matched a shift wider.
 
+    Either summand may carry a numeric coefficient — ``B·exp(u) + 1`` is what a
+    schedule with a constant shift in its exponent comes to, and it is the shape
+    that kept two corpus models failing after GH #388 (issue #549). See
+    :func:`_saturating_summand`, which splits it off, and the caller above, which
+    divides it back out.
+
     ``a`` must be free of ``f``: ``exp(u)/(x·exp(u) + exp(u))^2`` would otherwise
     trade one overflow for another. Nothing else is required of it, and nothing
     is required of ``f`` beyond being an exponential or a power — the shapes that
@@ -1667,9 +1673,24 @@ def _rewrite_saturating_ratio(expr):
                     continue
                 f, m, offset = match
                 rest = sp.Add(*(term for term in total.args if term != f))
+                # ``f`` is the whole summand, which may carry a numeric
+                # coefficient (issue #549). ``c·f`` divides through as ``f``
+                # would against ``rest/c``, the quotient scaled by ``c^-m``:
+                #
+                #     f^m·base^offset/(rest + c·f)^m
+                #         == c^-m · f^m·base^offset/(rest/c + f)^m
+                #
+                # since ``(rest + c·f) == c·(rest/c + f)``. An identity for any
+                # nonzero ``c``, and a numeric one is known nonzero here — a
+                # ``Mul`` holding a zero coefficient is ``0``, not a summand. It
+                # moves no pole either: the denominator vanishes at the same
+                # place it did. ``c == 1`` reproduces the plain form exactly,
+                # object for object, so every expression without a coefficient
+                # keeps the text it had.
+                coeff, f = f.as_coeff_Mul()
                 if rest.has(f):
                     continue
-                factors[num_i] = _divided_through(f, m, offset, rest, sp)
+                factors[num_i] = _divided_through(f, m, offset, rest / coeff, sp) / coeff**m
                 factors[den_i] = sp.Pow(total, den.exp + m)
                 # This numerator is spent, but the denominator is not: a Mul can
                 # hold two distinct bases over one sum — ``x^n·y^m/(x^n + y^m)^2``
@@ -1686,10 +1707,23 @@ def _rewrite_saturating_ratio(expr):
 
 
 def _saturating_summand(num_base, num_exp, total, sp):
-    """The summand ``f`` of ``total`` that the numerator is a whole power of up to
-    a small integer shift, as ``(f, m, offset)`` with ``num == f^m·base^offset``,
-    ``m`` a positive integer and ``offset`` an integer in ``{-1, 0, 1}`` — or
-    ``None``.
+    """The summand of ``total`` that the numerator is a whole power of up to a
+    small integer shift, as ``(summand, m, offset)`` with ``summand == c·f`` for
+    a number ``c`` and ``num == f^m·base^offset``, ``m`` a positive integer and
+    ``offset`` an integer in ``{-1, 0, 1}`` — or ``None``.
+
+    **The coefficient is why the shape kept reaching a corpus model** (issue
+    #549). A schedule that shifts its onset by a constant — ``BIOMD0000000627``
+    writes ``exp(-4.59186·(t - (t_0 + t_1 - 3)))``, ``BIOMD0000000554`` the same
+    around ``to`` — has that constant multiplied out into the exponent, and sympy
+    folds the numeric part of an ``exp`` sum into a factor out front:
+    ``exp(u + 13.78)`` is ``960856.16·exp(u)``. So the denominator summand is a
+    ``Mul``, not the bare ``exp`` this matched, and the sigmoid derivative
+    GH #388 exists to divide through went out as the ``inf/inf`` it was named
+    for. Both models failed at the first sensitivity RHS call, ``t = 0`` with
+    ``4.59186·199 ≈ 914`` already past ``ln(DBL_MAX) ≈ 709.8``, for a term whose
+    true value is ``1e-397``. The coefficient is split off here rather than
+    matched away, because the caller needs it to keep the identity exact.
 
     Matching by base and exponent ratio rather than by identity is what lets
     ``x^(2n)`` pair with the ``x^n`` in ``K^n + x^n``: sympy folds the quotient
@@ -1719,9 +1753,10 @@ def _saturating_summand(num_base, num_exp, total, sp):
     add an unforced division.
     """
     for term in total.args:
-        if not isinstance(term, (sp.exp, sp.Pow)):
+        _, f = term.as_coeff_Mul()
+        if not isinstance(f, (sp.exp, sp.Pow)):
             continue
-        term_base, term_exp = term.as_base_exp()
+        term_base, term_exp = f.as_base_exp()
         if term_base != num_base:
             continue
         split = _whole_power_offset(num_exp, term_exp, sp)
@@ -1734,12 +1769,42 @@ def _integer_at_least(value, minimum):
     """``value`` as a Python ``int`` when it is an integer ``≥ minimum``, else
     ``None``. Written against the *value* rather than ``is_integer`` so a
     ``Float(2.0)`` exponent — what a rate law spelled ``x^2.0`` parses to — counts
-    as the integer it is."""
+    as the integer it is.
+
+    **In a double, not in sympy** (issue #549). ``sp.Float(2.0) == 2`` is *False*:
+    sympy holds a Float and an Integer to be different numbers however equal their
+    values, so the test this function was written to make — the one its first
+    paragraph describes — was answering ``None`` for every Float it was handed, and
+    had been since GH #393 introduced it. Nothing looked wrong, because the whole
+    contract is "or ``None``" and a refused match simply leaves the expression as
+    it was.
+
+    What that cost is one whole spelling of the sigmoid. ``BIOMD0000000554`` writes
+    its schedule with libSBML's ``1.0`` literals, so the exponent parses to
+    ``-1.0*sr_GLY*(t - to - to_GLY)`` and the ratio of it against itself is
+    ``Float(1.0)``, not ``Integer(1)`` — so ``exp(u)/(1 + exp(u))^2`` failed to
+    match the ``exp(u)`` standing in its own denominator, and the GH #388 rewrite
+    that exists for exactly this sigmoid never ran on it. The model kept handing
+    back a NaN sensitivity column at ``t = 0``, where ``sr_GLY·(to + to_GLY)`` is
+    far past ``ln(DBL_MAX) ≈ 709.8``, and an SBML-sourced model is where those
+    ``1.0`` coefficients come from — which is most of the corpus.
+
+    ``float()`` rather than ``==`` puts both sides on the one scale that settles it.
+    It refuses what it should: ``Rational(3, 2)`` and ``Float(2.5)`` are not
+    integers on either reading. A magnitude no double holds is refused too rather
+    than raising — an exception here aborts the whole codegen build, and no rate
+    law carries an exponent of that size.
+    """
     try:
         n = int(value)
     except TypeError:
         return None  # complex, or otherwise not a count
-    return n if n >= minimum and value == n else None
+    if n < minimum:
+        return None
+    try:
+        return n if float(value) == n else None
+    except (TypeError, OverflowError):
+        return None
 
 
 def _whole_power_offset(num_exp, term_exp, sp):

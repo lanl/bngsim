@@ -118,6 +118,62 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **Forward sensitivity to the onset of a logistic in time runs, instead of
+  handing back NaN at the first sensitivity RHS call (issue #549).**
+  `BIOMD0000000554` and `BIOMD0000000627` write their schedules as
+  `1/(1 + exp(-k·(t - (onset + …))))`, and `∂/∂onset` of one comes out
+  `A·exp(x)/(B·exp(x) + 1)^2` — bounded by `A/4B²` for every real `x`, and
+  `inf/inf` = NaN the moment `x` passes `ln(DBL_MAX) ≈ 709.8`, which `4.59186·199`
+  at `t = 0` does without trying. Both models failed at `t = 0` for a term whose
+  true value is `1e-397`, while their trajectories matched the reference, since
+  `1/(1 + inf)` is a clean `0` and only the differentiated form fails. The GH #388
+  rewrite that divides such a ratio through by its `exp` exists for this exact
+  shape — it names `BIOMD0000000554` — and had never fired on either model, for two
+  independent reasons, each sufficient on its own:
+
+  - **A constant shift in the exponent folds into a coefficient.**
+    `exp(-4.59186·(t - (t_0 + t_1 - 3)))` multiplies out to an exponent with a
+    number in it, and sympy folds that number into a factor out front, so the
+    denominator summand is `960856.16·exp(u)` — a product, where the match wanted a
+    bare `exp`. A summand may now carry a numeric coefficient `c`: it divides
+    through as `f` does against `rest/c`, with the quotient scaled by `c^-m`, which
+    is exact for any nonzero `c` and moves no pole, the denominator vanishing where
+    it always did. A *symbolic* coefficient is still refused — it is a zero the
+    original expression is perfectly happy at.
+  - **`sp.Float(2.0) == 2` is `False`.** The helper deciding whether one exponent
+    is a whole multiple of another compared a sympy number against a Python `int`,
+    so it answered "not an integer" for every `Float` it was ever handed, and had
+    since GH #393 introduced it. libSBML writes its coefficients `1.0`, so an
+    SBML-sourced exponent is `-1.0·sr_GLY·(t - to - to_GLY)` and the ratio that
+    decides the match is `Float(1.0)`: the rewrite declined every SBML-sourced
+    sigmoid there is. Compared as doubles now, which is what the helper's docstring
+    always claimed; `3/2` and `2.5` are refused exactly as before.
+
+  Both misses were also in the native saturable differentiator
+  (`bngsim._saturable_jacobian`), which emits the analytical Jacobian and the
+  `J·yS` half of the analytic sensitivity RHS without sympy and so cannot inherit
+  the fix — narrower there, since it parses text and folds nothing, so it takes a
+  law that writes the coefficient itself (`1 + 5·exp(w)`), but the same NaN one
+  term later. Fixed alongside, as GH #336 and GH #388 both had to. An expression
+  whose summand carries no coefficient emits the text it always did, character for
+  character, through either emitter. The two models now return finite sensitivity
+  tensors that agree with a central difference of the trajectory to the
+  difference's own accuracy at every output point except the one landing exactly on
+  a discontinuity the parameter moves, which is issue #545's territory and
+  unchanged here.
+
+- **A forward-sensitivity failure no longer sends the reader after a pulse that is
+  not there (issue #549).** The note issue #547 appends whenever the non-finite
+  half is `∂f/∂p` described a power `s^(a-1)` rising from an onset, and the comoving
+  column of issue #545 — the only shape it knew, asserted as the diagnosis. An
+  overflow is the other way a finite rate law hands back a non-finite derivative,
+  and a reader who had hit one was sent looking for a threshold the run had not
+  reached. The message now names both routes and says which is the likelier when
+  the column goes non-finite at the very first call. It is said only where a value
+  actually went non-finite: an overflow leaves a NaN, and so always leaves a
+  witness, which is precisely what the "step gave out just after a restart" hint is
+  the absence of — that message is unchanged.
+
 - **Forward sensitivity to the onset of a pulse that rises as `s^(a-1)` runs, and
   is accurate, for `1 < a < 2` (issue #545).** Such a pulse is continuous, but its
   `∂f/∂on` goes as `s^(a-2)`: unbounded past the onset, with most of its integral

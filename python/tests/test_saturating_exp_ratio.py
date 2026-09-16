@@ -36,6 +36,21 @@ GH #393 generalised the same rewrite to a *power* — ``x^n/(K^n + x^n)``, which
 overflows the identical way and is every Hill function there is. This file keeps
 the sigmoid half; ``test_saturating_power_ratio.py`` is the other, and between
 them they hold the two shapes of the one ``f`` the rewrite divides through by.
+
+Issue #549 found that ``BIOMD0000000554`` had never actually been fixed, and
+``BIOMD0000000627`` alongside it. Two spellings of the same sigmoid reached the
+match and were refused by it, and the tests above missed both because they write
+the sigmoid the way a person would rather than the way a loader does:
+
+* **A constant shift in the exponent.** ``exp(-4.59186·(t - (t_0 + t_1 - 3)))``
+  multiplies out to an exponent with a number in it, and sympy folds that number
+  into a factor out front — ``960856.16·exp(u)``. The denominator summand is then
+  a ``Mul`` and not the bare ``exp`` the match looked for.
+* **A ``Float`` where an ``Integer`` was expected.** libSBML writes ``1.0``, so an
+  SBML-sourced exponent is ``-1.0·sr·(t - to)``; the exponent ratio that decides
+  the match comes out ``Float(1.0)``, and ``sp.Float(1.0) == 1`` is False.
+
+Either one alone was enough to hand back a NaN sensitivity column at ``t = 0``.
 """
 
 from __future__ import annotations
@@ -47,6 +62,7 @@ pytest.importorskip("sympy")
 import sympy as sp  # noqa: E402
 from bngsim import _saturable_jacobian as _sat  # noqa: E402
 from bngsim._jacobian import (  # noqa: E402
+    _integer_at_least,
     _rewrite_saturating_ratio,
     sympy_to_c,
     sympy_to_exprtk,
@@ -123,6 +139,122 @@ class TestTheDerivativeThatUsedToOverflow:
         assert np.isnan(_at(expr, u=800.0, a=3.0))
         assert _at(rewritten, u=800.0, a=3.0) == 0.0
         assert _at(rewritten, u=1.25, a=3.0) == pytest.approx(_at(expr, u=1.25, a=3.0), rel=1e-15)
+
+
+class TestASummandWithANumericCoefficient:
+    """``B·exp(u) + 1`` rather than ``exp(u) + 1`` (issue #549).
+
+    ``BIOMD0000000627`` shifts its schedule by a constant —
+    ``exp(-4.59186·(t - (t_0 + t_1 - 3)))`` — and that constant multiplies out
+    into the exponent, where sympy folds it into a factor out front:
+    ``exp(u + 13.78)`` is ``960856.16·exp(u)``. So the summand standing under the
+    numerator is a ``Mul``, the match skipped it, and the derivative went out in
+    the very ``inf/inf`` form this rewrite exists to remove.
+    """
+
+    # exp(4.59186·3) — BIOMD0000000627's own shift, folded.
+    B = 960856.1606434912
+
+    def test_the_coefficient_form_used_to_be_nan_and_is_now_the_limit(self):
+        expr = sp.exp(u) / (self.B * sp.exp(u) + 1) ** 2
+        rewritten = _rewrite_saturating_ratio(expr)
+
+        assert np.isnan(_at(expr, u=800.0))
+        assert _at(rewritten, u=800.0) == 0.0
+        assert _at(rewritten, u=-800.0) == 0.0
+
+    def test_it_is_the_same_function_where_the_raw_form_was_finite(self):
+        """Exact, not merely well-behaved: ``c^-m`` against ``rest/c`` is an
+        identity for any nonzero ``c``, so away from the overflow the two forms
+        agree to the last ulp the reassociation allows."""
+        expr = sp.exp(u) / (self.B * sp.exp(u) + 1) ** 2
+        rewritten = _rewrite_saturating_ratio(expr)
+
+        for uv in (-9.0, -1.0, 0.0, 0.25, 4.0, 11.0):
+            raw = _at(expr, u=uv)
+            assert raw != 0.0  # the interesting comparison, not 0 == 0
+            assert _at(rewritten, u=uv) == pytest.approx(raw, rel=1e-14)
+
+    def test_the_model_law_itself_at_the_argument_the_run_starts_on(self):
+        """The whole chain rather than the shape alone: one sigmoid of
+        ``BIOMD0000000627``'s ``f_CBF_dyn``, differentiated w.r.t. the onset it
+        shifts, at ``t = 0``. ``4.59186·199`` is past ``ln(DBL_MAX) ≈ 709.8``, and
+        the term that used to be NaN there stands for ``1e-397``."""
+        law = 1 / (1 + sp.exp(-sp.Float(4.59186) * (t - (t0 + 3))))
+        deriv = sp.diff(law, t0)
+        point = {"t": 0.0, "t0": 200.0}
+
+        assert np.isnan(_at(deriv, **point))
+        assert _at(_rewrite_saturating_ratio(deriv), **point) == 0.0
+
+    def test_a_negative_coefficient_is_carried_the_same_way(self):
+        """``c^-m`` is a sign as much as a scale. It moves no pole either: the
+        denominator vanishes where it always did, since both sides of
+        ``rest + c·f`` are divided by the same ``c``."""
+        expr = sp.exp(u) / (1 - 3 * sp.exp(u)) ** 2
+        rewritten = _rewrite_saturating_ratio(expr)
+
+        assert np.isnan(_at(expr, u=800.0))
+        assert _at(rewritten, u=800.0) == 0.0
+        for uv in (-5.0, 0.0, 2.0):  # clear of the pole at u = -ln 3
+            assert _at(rewritten, u=uv) == pytest.approx(_at(expr, u=uv), rel=1e-14)
+
+    def test_a_symbolic_coefficient_is_refused(self):
+        """``a·exp(u) + 1`` is left alone. The rewrite would divide by ``a``,
+        which is a value the original expression is perfectly happy at, so the
+        coefficient has to be one that is known nonzero when the C is emitted — a
+        number, which a ``Mul`` cannot hold as a zero."""
+        expr = sp.Mul(sp.exp(u), sp.Pow(a * sp.exp(u) + 1, -2), evaluate=False)
+        assert _rewrite_saturating_ratio(expr) == expr
+
+
+class TestAFloatWhereAnIntegerWasExpected:
+    """``-1.0·k·(t - t0)`` rather than ``-k·(t - t0)`` (issue #549).
+
+    libSBML spells its coefficients ``1.0``, so the same law carries a ``Float``
+    when it is loaded from SBML and an ``Integer`` when it is hand-written in a
+    ``.net``. The exponent ratio that decides the match is then ``Float(1.0)``,
+    and ``sp.Float(1.0) == 1`` is **False** — sympy holds a Float and an Integer
+    to be different numbers however equal their values. So
+    :func:`~bngsim._jacobian._integer_at_least` answered ``None`` for every Float
+    it was ever handed, the rewrite declined every SBML-sourced sigmoid there is,
+    and nothing looked wrong because a refused match simply leaves the expression
+    as it was.
+    """
+
+    @pytest.mark.parametrize("one", [sp.Integer(1), sp.Float(1.0)])
+    def test_the_sigmoid_is_matched_however_its_coefficient_is_spelled(self, one):
+        exponent = -one * k * (t - t0)
+        expr = sp.exp(exponent) / (one + sp.exp(exponent)) ** 2
+        rewritten = _rewrite_saturating_ratio(expr)
+        # BIOMD0000000554's sr_GLY · (to + to_GLY) = 4 · 283, at the run's start.
+        point = {"k": 4.0, "t": 0.0, "t0": 283.0}
+
+        assert np.isnan(_at(expr, **point))
+        assert _at(rewritten, **point) == 0.0
+        assert _at(rewritten, k=4.0, t=283.5, t0=283.0) == pytest.approx(
+            _at(expr, k=4.0, t=283.5, t0=283.0), rel=1e-14
+        )
+
+    def test_the_helper_counts_a_float_as_the_integer_it_is(self):
+        """The contract its docstring has always stated, which ``==`` never
+        delivered."""
+        assert _integer_at_least(sp.Float(2.0), 1) == 2
+        assert _integer_at_least(sp.Float(1.0), 1) == 1
+        assert _integer_at_least(sp.Integer(2), 1) == 2
+        assert _integer_at_least(sp.Integer(-1), -1) == -1
+
+    def test_it_still_refuses_everything_that_is_not_a_count(self):
+        """Widening the equality must not widen the acceptance: a half-integer is
+        no more an exponent multiple than it was, a magnitude no double holds is
+        refused rather than raised on, and anything without a value at all is
+        still declined — an exception here aborts the whole codegen build."""
+        assert _integer_at_least(sp.Rational(3, 2), 1) is None
+        assert _integer_at_least(sp.Float(2.5), 1) is None
+        assert _integer_at_least(sp.Float(2.0), 3) is None  # below the minimum
+        assert _integer_at_least(sp.Symbol("n"), 1) is None
+        assert _integer_at_least(2 * sp.I, 1) is None
+        assert _integer_at_least(sp.Integer(10) ** 400, 1) is None
 
 
 class TestWhatIsLeftAlone:
@@ -206,6 +338,69 @@ class TestTheNativeMirror:
         node = derivs["S"]
         assert _sat.emit_exprtk(node) == _sat._emit_exprtk(node)
 
+    # ── a summand with a coefficient, on this side of the pair (issue #549) ──
+    #
+    # Here it takes a law that writes the coefficient itself. The sympy twin
+    # reaches the same shape from a plain sigmoid, because sympy folds a constant
+    # in the exponent into one; this module parses the text and folds nothing.
+    COEFF_LAW = "vmax/(1 + 5*exp(-kswitch*(S - tswitch)))"
+
+    def _coeff_dS(self):
+        return _sat.differentiate_rate_law_native(self.COEFF_LAW, {}, {"S"}, self.CONSTS)["S"]
+
+    def test_a_coefficient_on_the_summand_is_divided_through_too(self):
+        node = self._coeff_dS()
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            raw = eval(  # noqa: S307 - this module's own emitted text
+                _sat._emit_exprtk(node).replace("^", "**"), {"exp": np.exp}, dict(self.POINT)
+            )
+            fixed = eval(  # noqa: S307
+                _sat.emit_exprtk(node).replace("^", "**"), {"exp": np.exp}, dict(self.POINT)
+            )
+        assert np.isnan(raw)
+        assert fixed == 0.0
+
+    def test_the_coefficient_form_is_the_same_function_away_from_the_overflow(self):
+        node = self._coeff_dS()
+        near = dict(self.POINT, S=10.02)
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            raw = eval(  # noqa: S307
+                _sat._emit_exprtk(node).replace("^", "**"), {"exp": np.exp}, near
+            )
+            fixed = eval(  # noqa: S307
+                _sat.emit_exprtk(node).replace("^", "**"), {"exp": np.exp}, near
+            )
+        assert np.isfinite(raw) and raw != 0.0
+        assert fixed == pytest.approx(raw, rel=1e-14)
+
+    def test_what_the_coefficient_peeler_will_and_will_not_take(self):
+        """Either side of the product, and a number only. A symbolic coefficient
+        is a value the expression is happy at — zero included — so dividing
+        through by it would trade a NaN at one argument for a division by zero at
+        another; a literal ``0`` cannot be divided by at all. Both are handed back
+        whole, which leaves the summand looking like the ``Mul`` it is and stops
+        the rewrite there."""
+        f = _sat._mk_call("exp", ("var", "w"))
+        five = _sat._num(5.0)
+
+        assert _sat._numeric_coefficient(f) == (_sat._ONE, f)
+        assert _sat._numeric_coefficient(("*", five, f)) == (five, f)
+        assert _sat._numeric_coefficient(("*", f, five)) == (five, f)
+        for refused in (("*", ("var", "a"), f), ("*", _sat._num(0.0), f)):
+            assert _sat._numeric_coefficient(refused) == (_sat._ONE, refused)
+
+    def test_a_summand_without_a_coefficient_costs_nothing(self):
+        """``1`` is what the peeler hands back for a bare summand, and the smart
+        constructors fold a division by it away — so every expression the rewrite
+        already handled keeps the text it had, not merely the value."""
+        f = _sat._mk_call("exp", ("var", "w"))
+        coeff, peeled = _sat._numeric_coefficient(f)
+        assert peeled is f
+        assert _sat._mk_div(f, coeff) is f
+        assert _sat._mk_div(("var", "rest"), coeff) == ("var", "rest")
+
 
 class TestThroughTheEmitters:
     """The rewrite is applied on the way out of both printers, so what the
@@ -275,6 +470,42 @@ end groups
 """
 
 
+# The same dose, spelled the way the two corpus models of issue #549 spell theirs:
+# a literal steepness and a constant shift inside the exponent. Both come out of
+# sympy changed — `-100.0*(Stot - tswitch + 3)` multiplies out to an exponent with
+# a `Float` coefficient AND a number in it, and the number folds into a factor:
+#
+#     exp(-100.0*Stot + 100.0*tswitch - 300.0) == 5.148e-131 * exp(-100.0*Stot + 100.0*tswitch)
+#
+# so the denominator summand is `5.148e-131*exp(u)`, a `Mul` with a `Float` in its
+# exponent, and neither the summand nor the exponent ratio matched before. At the
+# run's start `100*(20 - 1)` = 1900 is far past 709.8, so `exp` is `inf` in the
+# numerator and in the denominator alike.
+SHIFTED_SIGMOID_DOSE = """\
+begin parameters
+    1 tswitch 20.0   # Constant
+    2 vmax    1.5    # Constant
+    3 ks      1.0    # Constant
+end parameters
+begin functions
+    1 dose()  vmax/(1 + exp(-100.0*(Stot - tswitch + 3)))
+    2 grow()  ks
+end functions
+begin species
+    1 A() 0.0
+    2 S() 1.0
+end species
+begin reactions
+    1 0 2 grow #_R1
+    2 0 1 dose #_R2
+end reactions
+begin groups
+    1 Atot 1
+    2 Stot 2
+end groups
+"""
+
+
 class TestTheShapeThroughASolve:
     @pytest.fixture
     def dose_net(self, tmp_path):
@@ -304,3 +535,24 @@ class TestTheShapeThroughASolve:
         assert np.all(np.isfinite(sens))
         # ...and the columns are not trivially zero: the switch moves the dose.
         assert np.max(np.abs(sens)) > 1e-6
+
+    @pytest.fixture
+    def shifted_dose_net(self, tmp_path):
+        net = tmp_path / "shifted_sigmoid_dose.net"
+        net.write_text(SHIFTED_SIGMOID_DOSE)
+        return net
+
+    def test_a_shifted_dose_with_a_literal_steepness_is_finite_too(self, shifted_dose_net):
+        """Issue #549's own spelling, end to end. This is the pair of misses the
+        corpus models hit — a folded constant on the denominator summand and a
+        ``Float`` in the exponent — and either one alone puts the NaN back."""
+        import bngsim
+
+        model = bngsim.Model.from_net(shifted_dose_net)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tswitch", "vmax"])
+        result = sim.run(t_span=(0, 25), n_points=26, rtol=1e-9, atol=1e-12)
+
+        assert np.all(np.isfinite(np.asarray(result.species)))
+        sens = np.asarray(result.sensitivities)
+        assert np.all(np.isfinite(sens))
+        assert np.max(np.abs(sens[:, :, 0])) > 1e-6  # the onset column actually moves
