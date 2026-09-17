@@ -140,6 +140,36 @@ def _kind_of_format(uri: str) -> str:
     return "other"
 
 
+# ─── Manifest locations ─────────────────────────────────────────────────────
+# A COMBINE `location` is a path relative to the archive root, conventionally
+# written "./x/y". The whole module used to normalize one with
+# `location.lstrip("./")`, which strips a leading *character set* {'.', '/'}:
+# it ate the leading dot of a hidden name ("./.hidden/m.xml" -> "hidden/m.xml")
+# and left interior ".." segments untouched, so a hostile manifest could name a
+# file outside the extraction root (GH #562).
+
+
+def _archive_relpath(location: str) -> str | None:
+    """Normalize a manifest ``location`` to a path relative to the archive root.
+
+    Returns the normalized relative path (posix separators, no ``.``/``..``
+    segments), or ``None`` when the location climbs above the root. A leading
+    ``/`` is read as root-anchored *inside* the archive, not as a host absolute
+    path, which is how every location that worked before was read.
+    """
+    parts: list[str] = []
+    for part in location.replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(part)
+    return "/".join(parts)
+
+
 # ─── Entry / archive records ────────────────────────────────────────────────
 
 
@@ -197,9 +227,33 @@ class OmexArchive:
         return self._master(self.sedml_entries())
 
     def path_of(self, entry: OmexEntry) -> Path:
-        """Resolve an entry's manifest location to its extracted file path."""
-        rel = entry.location.lstrip("./")
-        return self.root / rel
+        """Resolve an entry's manifest location to its extracted file path.
+
+        The manifest is attacker-controlled input in the documented workflow
+        (untrusted BioModels-style archives), so this applies the containment
+        check :func:`_safe_extractall` already applies to the zip members: a
+        location that names a file outside the extraction root is refused here
+        rather than opened by :meth:`load_model` / :meth:`load_protocol`
+        (GH #562).
+
+        Raises
+        ------
+        ConversionError
+            If the location escapes the extraction root.
+        """
+        rel = _archive_relpath(entry.location)
+        if rel is not None:
+            path = self.root / rel if rel else self.root
+            root = self.root.resolve()
+            # Belt and braces: this also refuses an escape through a symlink
+            # already sitting in a caller-supplied extract_dir.
+            dest = path.resolve()
+            if dest == root or root in dest.parents:
+                return path
+        raise ConversionError(
+            f"refusing to read {entry.location!r}: manifest location escapes "
+            f"the archive root {self.root}"
+        )
 
     # ── dispatch to the content readers ────────────────────────────────────
     def load_model(self) -> Model:
@@ -333,7 +387,15 @@ def _parse_manifest(text: str) -> list[OmexEntry]:
         kind = _kind_of_format(fmt)
         # The archive-root (".") and the manifest self-reference are structural,
         # not content to dispatch.
-        norm = location.lstrip("./")
+        norm = _archive_relpath(location)
+        if norm is None:
+            # One row naming a host file makes the whole manifest untrustworthy,
+            # the way one escaping zip member condemns the archive in
+            # _safe_extractall. Refuse here rather than drop the row silently.
+            raise ConversionError(
+                f"manifest location {location!r} escapes the archive root; a "
+                "COMBINE location is a path relative to the archive"
+            )
         if (
             kind in ("archive", "manifest")
             or location in (".", "")
@@ -391,20 +453,19 @@ def read_omex(source: str | Path, *, extract_dir: str | Path | None = None) -> O
             if manifest_member is None:
                 raise ConversionError(f"{src} has no manifest.xml — not a valid COMBINE archive")
             manifest_text = zf.read(manifest_member).decode("utf-8")
+        entries = _parse_manifest(manifest_text)
     except ConversionError:
         if tempdir is not None:
             tempdir.cleanup()
         raise
 
-    entries = _parse_manifest(manifest_text)
     return OmexArchive(root=root, entries=entries, _tempdir=tempdir)
 
 
 def _find_manifest_member(zf: zipfile.ZipFile) -> str | None:
     """Locate the ``manifest.xml`` member (top-level, any leading ``./``)."""
     for name in zf.namelist():
-        norm = name.lstrip("./")
-        if norm == "manifest.xml":
+        if _archive_relpath(name) == "manifest.xml":
             return name
     return None
 
@@ -446,7 +507,14 @@ def _coerce_content(
         data = payload
     else:
         data = str(payload).encode("utf-8")
-    loc = location if location.startswith("./") else "./" + location.lstrip("/")
+    rel = _archive_relpath(location)
+    if not rel:
+        raise ConversionError(
+            f"invalid archive location {location!r}: a COMBINE location is a "
+            "path relative to the archive root, and this one is empty or "
+            "climbs above it"
+        )
+    loc = "./" + rel
     resolved_fmt = fmt if fmt is not None else _format_for_suffix(Path(loc).suffix)
     return _Content(location=loc, data=data, format=resolved_fmt, master=master)
 
@@ -598,7 +666,7 @@ def write_omex(
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(_zip_entry("manifest.xml", stamp), manifest_text)
         for c in contents:
-            zf.writestr(_zip_entry(c.location.lstrip("./"), stamp), c.data)
+            zf.writestr(_zip_entry(_archive_relpath(c.location) or "", stamp), c.data)
     return out
 
 

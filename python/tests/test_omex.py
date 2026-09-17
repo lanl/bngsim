@@ -23,6 +23,7 @@ import bngsim
 import pytest
 from bngsim.convert import (
     OmexArchive,
+    OmexEntry,
     net_to_omex,
     read_omex,
     write_omex,
@@ -281,6 +282,81 @@ def test_read_omex_rejects_zip_slip(tmp_path: Path) -> None:
         zf.writestr("../escape.txt", "pwned")
     with pytest.raises(bngsim.ConversionError, match="escapes the archive root"):
         read_omex(out, extract_dir=tmp_path / "ex")
+
+
+def test_read_omex_rejects_manifest_location_escaping_root(tmp_path: Path) -> None:
+    """A manifest row naming a host file is refused (GH #562).
+
+    The zip-slip guard above covers the *members*; this is the same escape
+    through the *manifest*, which is the half the reader used to resolve with
+    ``location.lstrip("./")`` — leading-character stripping that leaves interior
+    ``..`` segments in place. The archive here is otherwise well-formed and ships
+    the ``a/`` directory the traversal starts from, which is what made the
+    ``is_file()`` check downstream pass.
+    """
+    outside = tmp_path / "outside_secret.xml"
+    outside.write_text("<not-sbml/>\n")
+
+    evil = tmp_path / "traversal.omex"
+    with zipfile.ZipFile(evil, "w") as zf:
+        zf.writestr(
+            "manifest.xml",
+            '<omexManifest xmlns="http://identifiers.org/combine.specifications/omex-manifest">'
+            f'<content location="." format="{_FMT_MANIFEST}"/>'
+            f'<content location="./a/../..{outside}" format="{_FMT_SBML}" master="true"/>'
+            "</omexManifest>",
+        )
+        zf.writestr("a/keep.txt", "hi")
+
+    with pytest.raises(bngsim.ConversionError, match="escapes the archive root"):
+        read_omex(evil, extract_dir=tmp_path / "ex")
+
+
+def test_path_of_refuses_escaping_location(tmp_path: Path) -> None:
+    """``path_of`` guards too, not only the manifest parser (GH #562).
+
+    ``OmexArchive`` / ``OmexEntry`` are public, so an archive can be assembled
+    entry by entry without going through ``read_omex``.
+    """
+    root = tmp_path / "ex"
+    root.mkdir()
+    outside = tmp_path / "outside_secret.xml"
+    outside.write_text("<not-sbml/>\n")
+
+    entry = OmexEntry(location=f"./a/../..{outside}", format=_FMT_SBML, master=True)
+    arch = OmexArchive(root=root, entries=[entry])
+    with pytest.raises(bngsim.ConversionError, match="escapes the archive root"):
+        arch.path_of(entry)
+    with pytest.raises(bngsim.ConversionError, match="escapes the archive root"):
+        arch.load_model()
+
+
+def test_location_normalization_keeps_a_leading_dot(tmp_path: Path) -> None:
+    """``./.hidden/model.xml`` is a hidden directory, not ``hidden/`` (GH #562).
+
+    ``lstrip("./")`` strips a character *set*, so it ate the dot of a hidden
+    name on both the write and the read side; the two happened to agree, so the
+    archive round-tripped under the wrong name.
+    """
+    out = tmp_path / "hidden.omex"
+    write_omex(out, sbml="<sbml/>", sbml_location="./.hidden/model.xml")
+    with zipfile.ZipFile(out) as zf:
+        assert ".hidden/model.xml" in set(zf.namelist())
+
+    with read_omex(out, extract_dir=tmp_path / "ex") as arch:
+        entry = arch.master_model_entry()
+        assert entry is not None and entry.location == "./.hidden/model.xml"
+        path = arch.path_of(entry)
+        assert path == arch.root / ".hidden" / "model.xml"
+        assert path.is_file()
+
+
+def test_write_omex_rejects_escaping_location(tmp_path: Path) -> None:
+    """The writer cannot mint a manifest location the reader must refuse (GH #562)."""
+    with pytest.raises(bngsim.ConversionError, match="climbs above it"):
+        write_omex(tmp_path / "e.omex", sbml="<sbml/>", sbml_location="../evil.xml")
+    with pytest.raises(bngsim.ConversionError, match="empty or"):
+        write_omex(tmp_path / "e.omex", sbml="<sbml/>", sbml_location="./")
 
 
 def test_load_model_errors_when_no_model(tmp_path: Path) -> None:

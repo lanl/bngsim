@@ -118,6 +118,38 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A manifest location can no longer name a file outside the extracted
+  archive (issue #562).** `read_omex()` refuses a zip member whose path escapes
+  the extraction root, but the *manifest* half of the same guard was
+  `entry.location.lstrip("./")` — which strips a leading character set
+  `{'.', '/'}` and leaves interior `..` segments in place. A `<content
+  location="./a/../../../../etc/passwd">` therefore resolved to
+  `root/a/../../../../etc/passwd`, and `load_model()` / `load_protocol()` /
+  `load_full_protocol()` opened that host file and fed it to `Model.from_sbml`,
+  `Model.from_net` or the SED-ML reader. The only brake was the `is_file()`
+  check, which stats the un-normalized path and so passes as long as the first
+  component exists in the archive — which any archive guarantees by shipping
+  that directory. Reading an untrusted `.omex` is this module's documented
+  workflow (BioModels distributes archives this way), and the attacker controls
+  both the manifest and the layout.
+
+  Locations now go through one normalizer that drops `.` segments, resolves
+  `..` against what it has already consumed, and reports an escape.
+  `_parse_manifest` refuses the archive outright, naming the location — one row
+  pointing at a host file condemns the manifest the way one escaping member
+  condemns the zip — and `OmexArchive.path_of` keeps its own containment check,
+  resolved, since `OmexArchive` and `OmexEntry` are public and an archive can be
+  assembled entry by entry without `read_omex`.
+
+  Two things fixed in passing, both from the same `lstrip`: a location under a
+  **hidden directory** lost the dot (`./.hidden/model.xml` was written into the
+  zip as `hidden/model.xml`, on both the write and the read side, so it
+  round-tripped under a name that was not the one in the manifest); and
+  `write_omex` now refuses an escaping or empty `*_location`, so the writer
+  cannot mint a manifest the reader must refuse. A `ConversionError` raised
+  while parsing the manifest also cleans up the temporary extraction directory
+  now, as every other `read_omex` refusal already did.
+
 - **`build_model_from_parsed` builds the eight `.net` files whose table
   functions and `MM` rate laws used to reach ExprTk unregistered, and names the
   two it will not build (issue #597).** `Model.from_net` ran two post-parse
