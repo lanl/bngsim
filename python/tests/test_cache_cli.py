@@ -97,6 +97,16 @@ def partial_name(model_hash: str, pid: int, *, counter: int = 0, suffix: str = "
     return f"{cg._artifact_stem(model_hash)}.{pid}_{counter}{suffix}"
 
 
+def shard_name(pid: int, *, tail: str = "a1b2c3d4") -> str:
+    """The scratch-dir name ``_compile_sharded`` gives ``pid``'s compile.
+
+    Off the real prefix helper, for the reason ``artifact_name`` is: the whole of
+    issue #557 was ``_codegen`` and ``bngsim.cache`` disagreeing about this name
+    with nothing to notice it, and a fixture that spells the scheme out here would
+    let them disagree again. ``tail`` stands in for ``mkdtemp``'s random suffix."""
+    return f"{cg._shard_dir_prefix(pid)}{tail}"
+
+
 def orphan_name(model_hash: str, key: str = "1+0000000000000000", suffix: str = SUFFIX) -> str:
     """An artifact name under some *other* install's codegen key.
 
@@ -262,6 +272,46 @@ class TestNamesComeFromCodegen:
         assert work_dirs, "the sharded compile ran no commands"
         assert ch.classify(work_dirs[0], is_dir=True) == ch.KIND_SHARD
 
+    def test_a_sweep_landing_mid_shard_compile_holds_the_scratch_dir(
+        self, cache: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Issue #557, end to end and through the real naming on both sides.
+
+        ``clear`` runs with ``min_age=0``, so the liveness check is the *only* thing
+        standing between a sibling worker reclaiming disk and the ``cc -c`` pool of a
+        compile in flight — and the scratch dir used to carry no PID for it to read,
+        so it was deleted out from under that pool ("Codegen shard compilation
+        failed"). The sweep here runs from inside the first compile, which is the
+        race, not a simulation of it."""
+        if os.name != "posix":  # pragma: no cover - the probe is POSIX-only by design
+            pytest.skip("POSIX-specific: os.kill(pid, 0) terminates the process on Windows")
+        sweeps: list[ch.CacheSweep] = []
+        work_dirs: list[Path] = []
+
+        def fake_run(cmd, *, cwd=None, timeout=None):
+            # Every object compile sweeps: each one runs with the compile in
+            # flight, and they run concurrently, which is the race itself.
+            work_dirs.append(Path(cwd))
+            sweeps.append(ch.clear_codegen_cache(cache))
+            (Path(cwd) / cmd[cmd.index("-o") + 1]).write_bytes(b"\0" * 16)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(cg, "_run_compile", fake_run)
+        cg._compile_sharded(
+            "int driver(void) { return 0; }\n",
+            ["int unit0(void) { return 0; }\n"],
+            cache / f"out{SUFFIX}",
+            "-O2",
+            2,
+            None,
+            ["cc"],
+        )
+        assert sweeps, "the sharded compile ran no commands"
+        assert set(work_dirs) == {work_dirs[0]}
+        for sweep in sweeps:
+            assert [e.path for e in sweep.held] == [work_dirs[0]]
+            assert sweep.removed == ()
+
 
 class TestClassify:
     @pytest.mark.parametrize(
@@ -286,6 +336,8 @@ class TestClassify:
             # compile leaves now.
             ("rhs_28+0123456789abcdef_fedcba9876543210.4711_0.lib", False, ch.KIND_PARTIAL_LIB),
             ("rhs_28+0123456789abcdef_fedcba9876543210.4711_0.exp", False, ch.KIND_PARTIAL_LIB),
+            ("bngsim_shard_p4711_a1b2c3", True, ch.KIND_SHARD),
+            # Pre-#557, before the PID was in the name. Still bngsim's scratch.
             ("bngsim_shard_a1b2c3", True, ch.KIND_SHARD),
             # Pre-#363 names, from before the key was in the filename. Still bngsim's
             # files and still classified as such, or `clear` would refuse to remove
@@ -854,6 +906,21 @@ class TestClear:
         assert [e.path for e in sweep.held] == [live]
         assert live.exists()
 
+    def test_still_holds_a_live_sharded_compiles_scratch_dir(self, cache: Path) -> None:
+        """Same promise, for the other in-flight shape (issue #557). The sharded path
+        is the many-core/HPC case of GH #160, which is exactly where a sibling worker
+        running ``bngsim-cache clear`` to reclaim disk is most likely."""
+        if os.name != "posix":  # pragma: no cover - the probe is POSIX-only by design
+            pytest.skip("POSIX-specific: os.kill(pid, 0) terminates the process on Windows")
+        live = write_shard(cache, shard_name(os.getpid()), age_days=0)
+        gone = write_shard(cache, shard_name(DEAD_PID), age_days=0)
+
+        sweep = ch.clear_codegen_cache()
+
+        assert [e.path for e in sweep.removed] == [gone]
+        assert [e.path for e in sweep.held] == [live]
+        assert live.exists() and not gone.exists()
+
 
 # ─── Safety invariants, per verb ─────────────────────────────────────────────
 
@@ -943,6 +1010,25 @@ def test_a_live_compile_holds_its_own_partial(cache: Path) -> None:
 
     assert [e.path for e in sweep.held] == [mine]
     assert mine.exists() and not dead.exists()
+
+
+def test_a_live_sharded_compile_holds_its_own_scratch_dir(cache: Path) -> None:
+    """The same backstop for the sharded path's scratch directory (issue #557).
+
+    A directory from a bngsim that predates the PID in the name carries none to
+    read, so it is still collected — which is right for what it is: debris of a
+    process that is gone, and the leak ``clean`` exists to sweep.
+    """
+    if os.name != "posix":  # pragma: no cover - the probe is POSIX-only by design
+        pytest.skip("POSIX-specific: os.kill(pid, 0) terminates the process on Windows")
+    mine = write_shard(cache, shard_name(os.getpid()), age_days=365)
+    dead = write_shard(cache, shard_name(DEAD_PID), age_days=365)
+    legacy = write_shard(cache, "bngsim_shard_zz", age_days=365)
+
+    sweep = ch.clean_codegen_cache(min_age=0)
+
+    assert [e.path for e in sweep.held] == [mine]
+    assert mine.exists() and not dead.exists() and not legacy.exists()
 
 
 def test_a_failed_removal_is_reported_rather_than_raised(

@@ -196,7 +196,14 @@ _SIDECAR_SUFFIXES = frozenset({".lib", ".exp", ".pdb", ".ilk", ".obj"})
 #: temp file from an installed artifact — the installed name has no such component.
 _TEMP_TOKEN = re.compile(r"\.(\d+)_(\d+)$")
 
-_SHARD_PREFIX = "bngsim_shard_"
+#: What a sharded compile names its scratch directory, and the PID field inside
+#: that name. Read from ``_codegen`` rather than spelled here, for the reason
+#: :data:`_KEY_FIELD_MARKER` is: the two must agree, and when they silently did
+#: not, every shard directory read as dead and ``clear`` deleted live ones
+#: (issue #557).
+_SHARD_PREFIX = _codegen._SHARD_DIR_PREFIX
+_SHARD_PID = re.compile(rf"^{re.escape(_SHARD_PREFIX)}p(\d+)_")
+
 _ARTIFACT_PREFIX = "rhs_"
 
 #: What tells a key field from the first underscore-separated piece of a pre-#363
@@ -676,15 +683,35 @@ def codegen_cache_info(cache_dir: str | os.PathLike[str] | None = None) -> Cache
 # ─── Removal ─────────────────────────────────────────────────────────────────
 
 
+def _writer_pid(entry: CacheEntry) -> int | None:
+    """The PID ``entry``'s *name* says wrote it, or ``None`` if it carries none.
+
+    Name-only, like :func:`classify`, and for the same reason — the answer gates a
+    deletion, so it must not depend on reading a file another process is writing.
+    The two in-flight shapes spell the PID differently: a partial appends
+    ``.<pid>_<n>`` (:data:`_TEMP_TOKEN`), a shard directory leads with
+    ``bngsim_shard_p<pid>_`` (:data:`_SHARD_PID`), since ``mkdtemp`` owns the tail
+    of that name.
+    """
+    name = PurePath(entry.path).name
+    m = (
+        _SHARD_PID.match(name)
+        if entry.kind == KIND_SHARD
+        else _TEMP_TOKEN.search(PurePath(name).stem)
+    )
+    return int(m.group(1)) if m else None
+
+
 def _compile_may_be_running(entry: CacheEntry) -> bool:
     """Whether ``entry`` looks like it belongs to a compile that is still alive.
 
-    A partial's name carries the PID that wrote it (``rhs_<key>_<hash>.<pid>_<n>.c``),
-    so
-    the ``min_age`` floor can be backed up with a direct liveness check — which
-    matters because the floor is calibrated against the *default* 600 s compile
-    budget, and ``BNGSIM_CODEGEN_TIMEOUT=0`` with a genome-scale model is a
-    documented configuration where one compile legitimately runs for tens of minutes.
+    Every in-flight name carries the PID that wrote it — ``.<pid>_<n>`` in a
+    partial (``rhs_<key>_<hash>.<pid>_<n>.c``), ``bngsim_shard_p<pid>_`` in a
+    sharded compile's scratch directory — so the ``min_age`` floor can be backed
+    up with a direct liveness check. That matters because the floor is calibrated
+    against the *default* 600 s compile budget, and ``BNGSIM_CODEGEN_TIMEOUT=0``
+    with a genome-scale model is a documented configuration where one compile
+    legitimately runs for tens of minutes.
 
     POSIX only, and that restriction is not incidental: on Windows ``os.kill(pid, 0)``
     does not probe, it calls ``TerminateProcess`` — so the "is it alive?" question
@@ -693,14 +720,18 @@ def _compile_may_be_running(entry: CacheEntry) -> bool:
     A recycled PID can hold a genuinely dead partial indefinitely. That is the
     conservative direction (a file we decline to delete, which ``clear`` still gets),
     so it is left as is.
+
+    A shard directory written before issue #557 put the PID in the name has none
+    to read, so it answers False — the old behavior, and right for what it is:
+    debris of a process that is gone.
     """
     if os.name != "posix":
         return False
-    m = _TEMP_TOKEN.search(PurePath(entry.path).stem)
-    if m is None:
+    pid = _writer_pid(entry)
+    if pid is None:
         return False
     try:
-        os.kill(int(m.group(1)), 0)
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:

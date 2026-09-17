@@ -118,6 +118,31 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`clear_codegen_cache()` no longer deletes a *running* sharded compile's
+  scratch directory (issue #557).** Every sweep in `bngsim.cache` holds back an
+  entry whose compile is still alive, by reading the PID out of the name and
+  probing it with `os.kill(pid, 0)` — and `clear` documents that its zero
+  `min_age` floor switches everything off *except* that check, "because emptying
+  a cache is a reason to reclaim disk and not a reason to break a build that is
+  in progress". For the sharded path the promise could never fire:
+  `_compile_sharded` created its scratch directory with
+  `tempfile.mkdtemp(prefix="bngsim_shard_")`, whose name carries no PID, so the
+  check answered "not running" for every shard directory while `is_removable`
+  said yes. `clear_codegen_cache()`, `bngsim-cache clear` and
+  `bngsim-cache clean --min-age 0` deleted the `driver.c` / `unit_*.c` / `*.o`
+  out from under a live `cc -c` pool, and the concurrent compile died with
+  "Codegen shard compilation failed" or "Codegen shard link failed". The sharded
+  path is the many-core/HPC case of GH #160, which is exactly where a sibling
+  worker reclaiming disk is most likely.
+
+  The directory is now named `bngsim_shard_p<pid>_<random>`, the same way a
+  serial partial carries `.<pid>_<n>`, and the liveness check reads either shape.
+  The prefix is a `_codegen` constant `bngsim.cache` imports rather than a
+  literal spelled in both: the two disagreeing with nothing to notice is the
+  whole of this bug. A shard directory from a bngsim that predates this carries
+  no PID and so is still collected, which is right for what it is — debris of a
+  process that is gone.
+
 - **A manifest location can no longer name a file outside the extracted
   archive (issue #562).** `read_omex()` refuses a zip member whose path escapes
   the extraction root, but the *manifest* half of the same guard was

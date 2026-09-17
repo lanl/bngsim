@@ -113,8 +113,10 @@ Every mutating verb takes `--dry-run`, and two guarantees hold across all of the
 - **Nothing recently touched is removed.** A compile in flight writes its `.c` and
   its shard directory into this very directory, so every verb holds off on entries
   used or written within `--min-age` (default `1h`, comfortably over the 600 s default
-  `BNGSIM_CODEGEN_TIMEOUT`), and on POSIX also holds a partial whose compile is
-  still running. Raise it if you build genome-scale models with the timeout lifted.
+  `BNGSIM_CODEGEN_TIMEOUT`), and on POSIX also holds anything a *running* compile is
+  writing — both its partials and its shard directory carry the PID in their names,
+  which is what that check reads. Raise it if you build genome-scale models with the
+  timeout lifted.
 
 "Least-recently-used" is the newer of a file's access and modification time.
 Whether access times move at all is a property of the mount — a `noatime` Linux

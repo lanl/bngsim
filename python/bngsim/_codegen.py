@@ -5454,6 +5454,30 @@ def _split_sharded_source(c_source: str) -> tuple[str, list[str]] | None:
 # some tools reject a zero epoch.
 _SHARD_REPRO_EPOCH = 315532800
 
+#: What a sharded compile's scratch directory is named. ``bngsim.cache`` matches
+#: this to classify one (``KIND_SHARD``), so it is that module's shape contract
+#: and is read from here rather than spelled there.
+_SHARD_DIR_PREFIX = "bngsim_shard_"
+
+
+def _shard_dir_prefix(pid: int | None = None) -> str:
+    """The scratch-dir prefix for a process: ``bngsim_shard_p<pid>_``.
+
+    The PID is in the name for the same reason ``compile_rhs`` puts it in a
+    partial's ``.<pid>_<n>`` token: it is how ``bngsim.cache`` tells a live
+    compile's scratch from the debris of a dead one, and a scratch directory
+    without it was deleted out from under a running ``cc -c`` pool by
+    ``clear_codegen_cache`` (issue #557). Read at call time, not at import: a
+    forked child must write its own PID, not its parent's.
+
+    The ``p`` marks the field. ``mkdtemp`` draws its own suffix from
+    ``[a-z0-9_]``, so a directory left behind by a bngsim that predates this
+    could otherwise begin with digits and read as a PID that some unrelated
+    live process now owns — a stale directory ``clean``/``clear`` could then
+    never reclaim.
+    """
+    return f"{_SHARD_DIR_PREFIX}p{os.getpid() if pid is None else pid}_"
+
 
 def _repro_link_flags() -> list[str]:
     """Linker flags that drop per-build non-determinism so the sharded .so is
@@ -5592,7 +5616,7 @@ def _compile_sharded(
     import shutil
     import tempfile
 
-    work = Path(tempfile.mkdtemp(prefix="bngsim_shard_", dir=CACHE_DIR))
+    work = Path(tempfile.mkdtemp(prefix=_shard_dir_prefix(), dir=CACHE_DIR))
     try:
         names: list[tuple[str, str]] = []  # (c_name, o_name), link order
         # Always UTF-8: the generated source carries non-ASCII comment glyphs
