@@ -275,7 +275,7 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 
 ## Universal `.net` reader
 
-- **`bngsim.parse_net_file(path)`** → `dict` — Parse a `.net` file into an engine-agnostic Python dict with keys: `parameters`, `species`, `observables`, `functions`, `reactions`. Pure Python — no C++ extension needed for parsing.
+- **`bngsim.parse_net_file(path)`** → `dict` — Parse a `.net` file into an engine-agnostic Python dict with keys: `parameters`, `species`, `species_ic_params`, `observables`, `functions`, `reactions`. Pure Python — no C++ extension needed for parsing. Parameter *expressions* are evaluated by the engine's own evaluator when the extension is importable, so the values are the ones `Model.from_net` puts in the same slots; without it the reader evaluates ordinary arithmetic (`^` is exponentiation, as in BNGL) and raises on BNGL syntax such as `if()` or `&&` rather than guessing a number.
 - **`bngsim.build_model_from_parsed(parsed)`** → `Model` — Build a BNGsim `Model` from the dict returned by `parse_net_file()`. Routes through `ModelBuilder` for full optimization (analytical Jacobian, conservation laws, etc.).
 
 ## Absolute tolerance (issues #196, #212, #213)

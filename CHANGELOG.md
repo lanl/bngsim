@@ -118,6 +118,59 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`parse_net_file` evaluates a `.net` parameter expression with the engine's
+  own evaluator, so the reader and `Model.from_net` seed a model from the same
+  numbers (issue #554).** The reader evaluated each expression with Python's
+  `eval`. BNGL spells exponentiation `^`, which Python reads as bitwise XOR, so
+  `A0 10^2` came back as 8 — and `rad_cell^3` on float operands was a
+  `TypeError` that a bare `except Exception` turned into `0.0`, as were BNGL's
+  `if(c,t,f)` and `&&`, and a parameter named `lambda`. The wrong number did not
+  stay in the parameter slot: `_parse_species` resolves a species initial
+  condition written as a parameter name through it, so `build_model_from_parsed`
+  seeded the state from it while `get_param` reported the value the engine
+  computes — the model integrating from one initial state and reporting another,
+  with no warning, through two functions `bngsim.__all__` exports and documents
+  as the way to load a `.net` for inspection. Eleven of the 133 `.net` files in
+  this tree were affected, eight of them in the initial state:
+  `energy_example1.net` started every species at 0 instead of 2522.5 and up,
+  `prion_aggregation.net` at 0 instead of 7500.
+
+  Evaluation now runs through a parameters-only `ModelBuilder`, whose `build()`
+  compiles and evaluates every expression exactly as the C++ `.net` loader's
+  does. There is no second BNGL dialect to keep in step: the one evaluator
+  answers both readers, and across all 133 files every parameter value and every
+  initial state is now identical to `Model.from_net`'s. The extra build is a
+  parameters-only one and does not show up in the parse: 133 files still parse in
+  339 ms, as they did before.
+
+  A species initial condition that names a parameter is handed to the builder as
+  that reference — `add_species_param_ref`, the call `net_file_loader.cpp`
+  makes — instead of as a number resolved beforehand, so `build()` re-resolves it
+  from the compiled parameter. That also records the `(species, parameter)` pair
+  forward sensitivity seeds `∂y(0)/∂p` from, which a model built this way never
+  carried. `parse_net_file` reports the pairs under a new `species_ic_params`
+  key; `build_model_from_parsed` treats it as optional, so a hand-built dict
+  still builds.
+
+  An expression the evaluator cannot compile — one naming a symbol the model
+  never declares, or malformed — is still reported as `0.0`, because
+  `Model.from_net` loads the same file with the same zeros and the two readers
+  should not disagree in the other direction. It is no longer silent: the reader
+  names the parameter and its expression in a `UserWarning`, having re-tested
+  each zero-valued expression against a NaN seed to tell "compiled, and the
+  answer is zero" from "never compiled". Only the root cause is named, not the
+  parameters downstream of it. No `.net` file in this tree trips it.
+
+  `parse_net_file` is documented as working with no compiled extension present —
+  its dict is the interchange format for handing a `.net` model to scipy,
+  gillespy2 or a hand-written RHS — and still does. That path cannot reach the
+  engine's evaluator, so it evaluates ordinary arithmetic, reads `^` as
+  exponentiation (the one operator Python spells the same and means differently),
+  and *raises* on BNGL syntax it cannot do rather than substituting a number: a
+  `ValueError` naming the parameter, its expression and the reason. Refusing is
+  the change there — a file with `if()` in a parameter used to parse to a
+  plausible-looking `0.0`.
+
 - **`run_tests.sh` now stands the repo up instead of hiding it, so the suite
   passes there as it does in place (issue #590).** The script relocates the tests
   so the source tree's `python/bngsim/` cannot shadow the *installed* package it

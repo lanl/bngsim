@@ -150,12 +150,22 @@ parsed = bngsim.parse_net_file("model.net")
 # Inspect the parsed data
 print(parsed["parameters"])   # [(name, value, expr, is_expr), ...]
 print(parsed["species"])      # [(name, init_conc, is_fixed), ...]
+print(parsed["species_ic_params"])  # [(sp_idx, param_name), ...] — ICs written
+                              #   as a parameter name rather than a number
 print(parsed["observables"])  # [(name, [(sp_idx, factor), ...]), ...]
 print(parsed["functions"])    # [(name, expression), ...]
 print(parsed["reactions"])    # [{"reactants": [...], "products": [...],
                               #   "type": "elementary"|"functional",
                               #   "rate_law": "k1", "stat_factor": 1.0}, ...]
 ```
+
+`parsed["parameters"]` carries each parameter's *evaluated* value alongside its
+expression. Evaluating BNGL is the engine's job, so when `bngsim._bngsim_core` is
+importable the reader evaluates through it and reports exactly what
+`Model.from_net` would — including `^` as exponentiation, `if(c,t,f)`, `&&`/`||`
+and parameters named for Python keywords. Without the extension the reader falls
+back to ordinary arithmetic (still reading `^` as exponentiation) and raises on
+anything further rather than substituting a number.
 
 **Use with BNGsim** (fastest path — C++ CVODE/SSA):
 

@@ -24,13 +24,15 @@ Example
 
 Or use the convenience function:
 
->>> from bngsim import Model
->>> model = Model.from_net_via_builder("model.net")
+>>> from bngsim import build_model_from_parsed, parse_net_file
+>>> model = build_model_from_parsed(parse_net_file("model.net"))
 """
 
 from __future__ import annotations
 
+import math
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +72,8 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
 
             parameters   : list of (name, value, expression, is_expression)
             species      : list of (name, init_conc, is_fixed)
+            species_ic_params : list of (species_idx0, param_name) for each
+                           species whose IC column names a parameter
             observables  : list of (name, entries), entries = [(sp_idx0, factor), ...]
             functions    : list of (name, expression)
             reactions    : list of dict with keys reactants, products (0-based
@@ -81,7 +85,7 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
 
     # Parse each block
     parameters = _parse_parameters(text)
-    species = _parse_species(text, parameters)
+    species, species_ic_params = _parse_species(text, parameters)
     observables = _parse_observables(text)
     functions = _parse_functions(text)
     reactions = _parse_reactions(text, functions)
@@ -89,6 +93,7 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
     return {
         "parameters": parameters,
         "species": species,
+        "species_ic_params": species_ic_params,
         "observables": observables,
         "functions": functions,
         "reactions": reactions,
@@ -122,6 +127,14 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     # Species
     for name, init_conc, is_fixed in parsed["species"]:
         builder.add_species(name, init_conc, is_fixed)
+
+    # A species IC written as a parameter name is handed to the builder as a
+    # reference rather than as the number resolved above, so build() re-resolves
+    # it from the compiled parameter — the step that makes this model's initial
+    # state the one Model.from_net produces (issue #554) — and records the
+    # (species, parameter) pair the forward-sensitivity seeding reads.
+    for species_idx0, param_name in parsed.get("species_ic_params", ()):
+        builder.add_species_param_ref(species_idx0, param_name)
 
     # Observables
     for name, entries in parsed["observables"]:
@@ -184,7 +197,6 @@ def _parse_parameters(text: str) -> list[tuple[str, float, str, bool]]:
     Returns list of (name, value, expression, is_expression).
     """
     block = _extract_block(text, "parameters")
-    params = []
     # Two-pass: first collect all, then evaluate expressions
     raw_params = []
     for line in block.strip().splitlines():
@@ -199,56 +211,190 @@ def _parse_parameters(text: str) -> list[tuple[str, float, str, bool]]:
         expr = " ".join(parts[2:])
         raw_params.append((name, expr))
 
-    # Evaluate parameters in order (later ones can reference earlier ones)
-    ns: dict[str, Any] = {"__builtins__": {}}
-    import math
-
-    ns.update(
-        {
-            "pi": math.pi,
-            "e": math.e,
-            "exp": math.exp,
-            "log": math.log,
-            "log10": math.log10,
-            "sqrt": math.sqrt,
-            "pow": pow,
-            "abs": abs,
-            "sin": math.sin,
-            "cos": math.cos,
-            "tan": math.tan,
-            "asin": math.asin,
-            "acos": math.acos,
-            "atan": math.atan,
-        }
-    )
-
+    # Split literals from expressions the same way net_file_loader.cpp does:
+    # a value the numeric parse consumes whole is a constant, anything else is
+    # an expression. `1/7` and `10^2` land on the expression side in both.
+    decls: list[tuple[str, str, float, bool]] = []
     for name, expr in raw_params:
         try:
-            value = float(eval(expr, ns))
-        except Exception:
-            value = 0.0
-        ns[name] = value
-        # Check if it's a pure number or an expression
-        try:
-            float(expr)
-            is_expr = False
+            decls.append((name, expr, float(expr), False))
         except ValueError:
-            is_expr = True
-        params.append((name, value, expr, is_expr))
+            decls.append((name, expr, 0.0, True))
 
-    return params
+    values = _evaluate_parameter_exprs(decls)
+    return [
+        (name, values[i], expr, is_expr) for i, (name, expr, _literal, is_expr) in enumerate(decls)
+    ]
+
+
+def _evaluate_parameter_exprs(decls: list[tuple[str, str, float, bool]]) -> list[float]:
+    """Evaluate declared .net parameters with the engine's own expression evaluator.
+
+    ``decls`` is ``(name, expression, literal_value, is_expression)`` in
+    declaration order; the return is the value of each, positionally.
+
+    The evaluation runs through a parameters-only ``ModelBuilder``, whose
+    ``build()`` compiles and evaluates every expression exactly as the C++ .net
+    loader's does — so ``parse_net_file`` reports the number
+    ``Model.from_net`` would put in the same slot. Evaluating these in Python
+    instead cannot be made to agree: BNGL spells exponentiation ``^``, which
+    Python reads as bitwise XOR (``10^2`` → 8, ``1e-4^3`` → ``TypeError``), and
+    BNGL's ``if(c,t,f)``, ``&&``/``||`` and names like ``lambda`` are not Python
+    at all. Issue #554 — every one of those used to be swallowed into a silent
+    0.0 that then seeded species initial conditions.
+
+    An install with no compiled extension falls through to
+    ``_evaluate_parameter_exprs_without_engine``, which keeps this function's
+    contract as far as arithmetic goes and refuses the rest.
+    """
+    if not decls:
+        return []
+
+    try:
+        from bngsim._bngsim_core import ModelBuilder
+    except ImportError:
+        return _evaluate_parameter_exprs_without_engine(decls)
+
+    builder = ModelBuilder()
+    for name, expr, literal, is_expr in decls:
+        # 0.0 is the pre-evaluation seed net_file_loader.cpp uses, so an
+        # expression the engine cannot compile keeps the same value it has
+        # under Model.from_net rather than diverging from it.
+        builder.add_parameter(name, 0.0 if is_expr else literal, expr, is_expr)
+    model = builder.build()
+    values = [model.get_param(name) for name, _, _, _ in decls]
+
+    _warn_unevaluable_parameters(decls, values)
+    return values
+
+
+# Namespace for the engine-free fallback below — the one the reader has always
+# had, kept as it was so nothing that evaluated before stops evaluating.
+_FALLBACK_NS: dict[str, Any] = {
+    "__builtins__": {},
+    "pi": math.pi,
+    "e": math.e,
+    "exp": math.exp,
+    "log": math.log,
+    "log10": math.log10,
+    "sqrt": math.sqrt,
+    "pow": pow,
+    "abs": abs,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+}
+
+
+def _evaluate_parameter_exprs_without_engine(
+    decls: list[tuple[str, str, float, bool]],
+) -> list[float]:
+    """Evaluate parameter expressions with no compiled extension available.
+
+    ``parse_net_file`` is documented as working without one — its dict is the
+    interchange format for handing a ``.net`` model to scipy, gillespy2 or a
+    hand-written RHS — so this path keeps that promise. What it cannot keep is
+    BNGL: it evaluates ordinary arithmetic, reading ``^`` as exponentiation
+    (the one operator Python spells the same and means differently), and
+    *refuses* anything beyond that instead of substituting a number.
+    ``if(c,t,f)``, ``&&``/``||`` and a parameter named for a Python keyword need
+    the engine's evaluator. Silence is what made the old fallback dangerous
+    (issue #554): 0.0 is a perfectly plausible rate constant.
+    """
+    ns = dict(_FALLBACK_NS)
+    values = []
+    for name, expr, literal, is_expr in decls:
+        if not is_expr:
+            value = literal
+        else:
+            try:
+                value = float(eval(expr.replace("^", "**"), ns))  # noqa: S307
+            except Exception as exc:
+                raise ValueError(
+                    f"cannot evaluate .net parameter {name} = {expr!r}: {exc}. "
+                    f"bngsim._bngsim_core is unavailable, so parse_net_file is "
+                    f"evaluating plain arithmetic only; BNGL's if(), && / || and "
+                    f"names Python reserves need the engine's expression "
+                    f"evaluator, which a built bngsim provides."
+                ) from exc
+        ns[name] = value
+        values.append(value)
+    return values
+
+
+def _warn_unevaluable_parameters(
+    decls: list[tuple[str, str, float, bool]],
+    values: list[float],
+) -> None:
+    """Warn about expressions the engine left sitting on the 0.0 seed.
+
+    A parameter whose expression fails to compile keeps its seed, and 0.0 is a
+    perfectly plausible-looking rate constant or initial amount — the silence is
+    what makes it dangerous (issue #554). Only a parameter that came back at
+    exactly 0.0 is re-tested, and one costs one further parameters-only build:
+    across the 133 ``.net`` files in this tree no file has more than one, and
+    130 have none, so the usual price is nothing beyond the build above.
+
+    The re-test gives the suspect a NaN seed while pinning every other parameter
+    to the value just computed, which separates "compiled, and the answer is
+    zero" from "never compiled". Pinning the others (rather than dropping them)
+    keeps a forward reference resolvable, the way the single whole-block build
+    resolves it.
+    """
+    suspects = [i for i, (_, _, _, is_expr) in enumerate(decls) if is_expr and values[i] == 0.0]
+    if not suspects:
+        return
+
+    from bngsim._bngsim_core import ModelBuilder
+
+    unevaluable = []
+    for i in suspects:
+        name, expr, _literal, _is_expr = decls[i]
+        builder = ModelBuilder()
+        for j, (other, other_expr, _lit, _ie) in enumerate(decls):
+            if j == i:
+                builder.add_parameter(name, float("nan"), expr, True)
+            else:
+                builder.add_parameter(other, values[j], other_expr, False)
+        try:
+            probed = builder.build().get_param(name)
+        except (RuntimeError, ValueError):
+            probed = float("nan")
+        if probed != probed:  # still NaN: the expression never compiled
+            unevaluable.append((name, expr))
+
+    if unevaluable:
+        listed = ", ".join(f"{name} = {expr!r}" for name, expr in unevaluable)
+        warnings.warn(
+            f"parse_net_file: the expression evaluator could not compile "
+            f"{len(unevaluable)} parameter expression(s), which are reported as "
+            f"0.0 and will seed any species initial condition that names them: "
+            f"{listed}. Check these for a symbol the model never declares or for "
+            f"a syntax the evaluator does not accept; Model.from_net loads the "
+            f"same file with the same zeros.",
+            stacklevel=5,
+        )
 
 
 def _parse_species(
     text: str,
     parameters: list[tuple[str, float, str, bool]],
-) -> list[tuple[str, float, bool]]:
+) -> tuple[list[tuple[str, float, bool]], list[tuple[int, str]]]:
     """Parse species block.
 
-    Returns list of (name, init_conc, is_fixed).
+    Returns ``(species, ic_param_refs)``, where ``species`` is a list of
+    (name, init_conc, is_fixed) and ``ic_param_refs`` pairs the 0-based index of
+    each species whose IC column names a parameter with that parameter's name.
+    The names are what lets ``build_model_from_parsed`` hand the reference to
+    ``ModelBuilder.add_species_param_ref``, which is where the .net loader gets
+    both its re-resolved IC and its forward-sensitivity seed.
     """
     block = _extract_block(text, "species")
-    species = []
+    species: list[tuple[str, float, bool]] = []
+    ic_param_refs: list[tuple[int, str]] = []
     param_map = {name: val for name, val, _, _ in parameters}
 
     for line in block.strip().splitlines():
@@ -266,11 +412,12 @@ def _parse_species(
         try:
             init_conc = float(ic_str)
         except ValueError:
-            # May be a parameter name
+            # A parameter name — unknown ones stay 0.0, as in net_file_loader.cpp.
+            ic_param_refs.append((len(species), ic_str))
             init_conc = param_map.get(ic_str, 0.0)
         species.append((name, init_conc, is_fixed))
 
-    return species
+    return species, ic_param_refs
 
 
 def _parse_observables(text: str) -> list[tuple[str, list[tuple[int, float]]]]:
