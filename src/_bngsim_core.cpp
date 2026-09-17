@@ -2482,6 +2482,31 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             py::arg("name"), py::arg("entries"),
             "Add an observable. entries = [(sp_idx_0based, factor), ...]. Returns 0-based index.")
+        // Issue #597 — the three .net-specific steps `Model.from_net` took and
+        // `bngsim._net_reader` could not, so a `.net` carrying a tfun(...)
+        // loaded under one documented loader and died on an ExprTk "Undefined
+        // symbol" under the other.
+        .def("set_net_file_dir", &bngsim::ModelBuilder::set_net_file_dir, py::arg("dir"),
+             "Set the directory a relative table-function path resolves against — the "
+             "source .net file's own directory, which is where BNG writes the .tfun "
+             "beside it. Empty leaves a relative path to resolve against the process's "
+             "working directory.")
+        .def("add_table_function_spec", &bngsim::ModelBuilder::add_table_function_spec,
+             py::arg("func_name"), py::arg("filepath"), py::arg("index_name") = "time",
+             py::arg("method") = "linear", py::arg("header_name") = "",
+             "Register a file-backed table function to load during build(), before the "
+             "function expressions that call it are compiled. func_name is the runtime "
+             "identifier ExprTk calls as 'tfun_<func_name>()'; header_name is the .tfun "
+             "column-2 header to accept and defaults to func_name. Take both, and the "
+             "filepath, index_name and method, from net_function_tables() rather than "
+             "reading tfun(...) syntax yourself.")
+        .def("add_inline_table_function_spec",
+             &bngsim::ModelBuilder::add_inline_table_function_spec, py::arg("func_name"),
+             py::arg("xs"), py::arg("ys"), py::arg("index_name") = "time",
+             py::arg("method") = "linear",
+             "Register a table function whose data is inline in the model rather than in "
+             "a file — BNG's tfun([xs],[ys],index) form. xs must be monotonically "
+             "increasing and the same length as ys.")
         .def("add_function", &bngsim::ModelBuilder::add_function, py::arg("name"),
              py::arg("expression"), "Add a function (named expression). Returns 0-based index.")
         .def(
@@ -2612,6 +2637,40 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "Finalize and build the NetworkModel. Builder is consumed.");
 
     // ─── Module-level functions ──────────────────────────────────────────────
+
+    // Issue #597 — the .net loader's own reading of one functions line's
+    // tfun(...) calls, exposed so `bngsim._net_reader` registers the same
+    // tables from the same spec parse instead of growing a second reading of
+    // tfun(...) syntax in Python to disagree with this one.
+    m.def(
+        "net_function_tables",
+        [](const std::string &func_name, const std::string &expression) {
+            auto result = bngsim::net_function_tables(func_name, expression);
+            py::list tables;
+            for (const auto &table : result.tables) {
+                py::dict d;
+                d["name"] = table.name;
+                d["header_name"] = table.header_name;
+                d["filepath"] = table.filepath;
+                d["xs"] = table.xs;
+                d["ys"] = table.ys;
+                d["index_name"] = table.index_name;
+                d["method"] = table.method;
+                d["is_inline"] = table.is_inline;
+                tables.append(std::move(d));
+            }
+            py::dict out;
+            out["expression"] = result.expression;
+            out["tables"] = std::move(tables);
+            return out;
+        },
+        py::arg("func_name"), py::arg("expression"),
+        "Read the tfun(...) calls out of one .net functions line. Returns "
+        "{'expression': the expression to hand ModelBuilder.add_function, 'tables': "
+        "[{name, header_name, filepath, xs, ys, index_name, method, is_inline}, ...]} — "
+        "each entry an argument pack for add_table_function_spec (is_inline False) or "
+        "add_inline_table_function_spec (True). A line naming no table comes back with "
+        "its expression unchanged and no tables.");
 
     m.def(
         "reserved_names",

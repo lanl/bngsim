@@ -815,6 +815,74 @@ static bool is_whole_body_tfun(const std::string &expr) {
     return close_paren == last;
 }
 
+// The loader's own reading of one functions line's tfun(...) calls, as a step
+// on its own so `bngsim._net_reader` — which parses the .net in Python and
+// builds through the same ModelBuilder — can take the same answer from the same
+// spec parse instead of growing a second one (issue #597).
+//
+// Two shapes, and the naming convention distinguishes them:
+// (a) Whole-body tfun (legacy): the expression IS a tfun(...) call, and the
+//     table adopts the BNG function's name. The expression is returned
+//     unchanged; ModelBuilder::build() rewrites it to "tfun_<name>()" once the
+//     table is loaded.
+// (b) Embedded tfun (wrapper-form or multi-tfun): the expression CONTAINS one
+//     or more tfun(...) calls inside arithmetic. Each becomes a synthetic
+//     anonymous table named "<func>__tfun<k>", and the expression comes back
+//     with each call replaced by "tfun_<func>__tfun<k>()" so ExprTk sees a
+//     zero-arg call with the wrapping arithmetic preserved.
+NetFunctionTables net_function_tables(const std::string &func_name, const std::string &expression) {
+    NetFunctionTables out;
+    out.expression = expression;
+
+    auto emit = [&out](const std::string &name, const std::string &header_name,
+                       const TfunSpec &spec) {
+        NetTableFunction table;
+        table.name = name;
+        table.header_name = header_name;
+        table.index_name = spec.index_name;
+        table.method = spec.method;
+        table.is_inline = spec.is_inline;
+        if (spec.is_inline) {
+            table.xs = spec.xs;
+            table.ys = spec.ys;
+        } else {
+            table.filepath = spec.filename;
+        }
+        out.tables.push_back(std::move(table));
+    };
+
+    if (is_whole_body_tfun(expression)) {
+        TfunSpec spec;
+        if (parse_tfun_expression(expression, spec)) {
+            emit(func_name, /*header_name=*/"", spec);
+            return out;
+        }
+    }
+
+    auto calls = find_all_tfun_calls(expression);
+    if (calls.empty())
+        return out;
+
+    std::string rewritten;
+    rewritten.reserve(expression.size());
+    size_t cursor = 0;
+    for (size_t k = 0; k < calls.size(); ++k) {
+        const auto &call = calls[k];
+        rewritten.append(expression, cursor, call.start - cursor);
+        std::string synth_name = func_name + "__tfun" + std::to_string(k);
+        rewritten += "tfun_";
+        rewritten += synth_name;
+        rewritten += "()";
+        cursor = call.end;
+        // The .tfun file still labels its value column by the name the modeller
+        // wrote, so a synthetic table validates its header against that.
+        emit(synth_name, /*header_name=*/call.spec.is_inline ? "" : func_name, call.spec);
+    }
+    rewritten.append(expression, cursor, std::string::npos);
+    out.expression = std::move(rewritten);
+    return out;
+}
+
 // ─── Legacy Sat/Hill .net canonicalization ──────────────────────────────────
 
 static std::string unique_name(const std::string &base, std::unordered_set<std::string> &used) {
@@ -1094,62 +1162,22 @@ NetworkModel NetFileLoader::load(const std::string &path) {
         }
     }
 
-    // 2c. Functions — detect tfuns and register them.
-    //
-    // Two paths:
-    // (a) Whole-body tfun (legacy): function expression IS a tfun(...) call.
-    //     The table function adopts the BNG function name; ModelBuilder
-    //     rewrites the function body to "tfun_<name>()" during build().
-    // (b) Embedded tfun (wrapper-form or multi-tfun): function expression
-    //     CONTAINS one or more tfun(...) calls inside arithmetic. Each call
-    //     is registered as a synthetic anonymous table function named
-    //     "<func>__tfun<k>"; the function expression is rewritten in-place
-    //     so ExprTk sees "tfun_<func>__tfun<k>()" with wrapping arithmetic
-    //     preserved.
+    // 2c. Functions — lift out each line's tfun(...) calls and register the
+    // tables before build() compiles the expressions that call them.
+    // `net_function_tables` is the shared step; see its comment for the two
+    // shapes and their naming convention.
     for (const auto &func : parsed_functions) {
-        if (is_whole_body_tfun(func.expression)) {
-            TfunSpec tfun_spec;
-            if (parse_tfun_expression(func.expression, tfun_spec)) {
-                builder.add_function(func.name, func.expression);
-                if (tfun_spec.is_inline) {
-                    builder.add_inline_table_function_spec(func.name, tfun_spec.xs, tfun_spec.ys,
-                                                           tfun_spec.index_name, tfun_spec.method);
-                } else {
-                    builder.add_table_function_spec(func.name, tfun_spec.filename,
-                                                    tfun_spec.index_name, tfun_spec.method);
-                }
-                continue;
-            }
-        }
-
-        auto calls = find_all_tfun_calls(func.expression);
-        if (calls.empty()) {
-            builder.add_function(func.name, func.expression);
-            continue;
-        }
-
-        std::string rewritten;
-        rewritten.reserve(func.expression.size());
-        size_t cursor = 0;
-        for (size_t k = 0; k < calls.size(); ++k) {
-            const auto &call = calls[k];
-            rewritten.append(func.expression, cursor, call.start - cursor);
-            std::string synth_name = func.name + "__tfun" + std::to_string(k);
-            rewritten += "tfun_";
-            rewritten += synth_name;
-            rewritten += "()";
-            cursor = call.end;
-            if (call.spec.is_inline) {
-                builder.add_inline_table_function_spec(synth_name, call.spec.xs, call.spec.ys,
-                                                       call.spec.index_name, call.spec.method);
+        NetFunctionTables tables = net_function_tables(func.name, func.expression);
+        builder.add_function(func.name, tables.expression);
+        for (const auto &table : tables.tables) {
+            if (table.is_inline) {
+                builder.add_inline_table_function_spec(table.name, table.xs, table.ys,
+                                                       table.index_name, table.method);
             } else {
-                builder.add_table_function_spec(synth_name, call.spec.filename,
-                                                call.spec.index_name, call.spec.method,
-                                                /*header_name=*/func.name);
+                builder.add_table_function_spec(table.name, table.filepath, table.index_name,
+                                                table.method, table.header_name);
             }
         }
-        rewritten.append(func.expression, cursor, std::string::npos);
-        builder.add_function(func.name, rewritten);
     }
 
     // 2d. Observables (groups)

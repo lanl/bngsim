@@ -155,9 +155,18 @@ print(parsed["species_ic_params"])  # [(sp_idx, param_name), ...] — ICs writte
 print(parsed["observables"])  # [(name, [(sp_idx, factor), ...]), ...]
 print(parsed["functions"])    # [(name, expression), ...]
 print(parsed["reactions"])    # [{"reactants": [...], "products": [...],
-                              #   "type": "elementary"|"functional",
-                              #   "rate_law": "k1", "stat_factor": 1.0}, ...]
+                              #   "type": "elementary"|"functional"|"mm"|"legacy",
+                              #   "rate_law": "k1", "legacy_constants": [],
+                              #   "stat_factor": 1.0}, ...]
+print(parsed["net_file_dir"]) # the file's own directory — what a relative
+                              #   tfun('...') path resolves against
 ```
+
+A reaction's `"type"` says how to read its `"rate_law"`: a parameter name for
+`"elementary"`, a name from the `functions` block for `"functional"`, and
+`"<kcat>,<Km>"` for `"mm"` (a `MM kcat Km` rate column). `"legacy"` is one of
+BioNetGen's deprecated `Sat` / `Hill` tokens, with the token in `"rate_law"` and
+its rate constants in `"legacy_constants"`.
 
 `parsed["parameters"]` carries each parameter's *evaluated* value alongside its
 expression. Evaluating BNGL is the engine's job, so when `bngsim._bngsim_core` is
@@ -174,6 +183,19 @@ model = bngsim.build_model_from_parsed(parsed)
 sim = bngsim.Simulator(model, method="ode")
 result = sim.run(t_span=(0, 100), n_points=101)
 ```
+
+This builds the same model `Model.from_net` does, table functions included: a
+`functions` line calling `tfun('drive.tfun', time)` — or calling one inside
+arithmetic, `(tfun('drive.tfun',time)+5)/k_scale` — is read by the .net loader's
+own code, and a relative path resolves against the `.net` file's directory
+rather than the working directory (issue #597).
+
+The one exception is the deprecated `Sat` and `Hill` rate-law tokens.
+`Model.from_net` rewrites those into explicit functions and observables and warns
+that it did; `build_model_from_parsed` refuses them instead of growing a second
+copy of that rewrite to drift from the first, and its message names the reaction
+and the explicit rate law to write. `MM kcat Km` needs no rewrite and builds
+here.
 
 **Use with scipy** (pure Python, no C++ extension needed):
 

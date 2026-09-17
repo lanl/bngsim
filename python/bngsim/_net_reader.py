@@ -61,6 +61,35 @@ def _check_synthetic_rate_expr(expr: str) -> None:
         raise ValueError(f"invalid rate expression {expr!r}: unmatched '('")
 
 
+#: The explicit rewrite to write by hand, per legacy rate-law token. These are
+#: the equivalences net_file_loader.cpp's own deprecation warning quotes — note
+#: that a BNGL functional rate multiplies its reactants in separately, which is
+#: why `Sat k K` is `k/(K+S)` and not `k*S/(K+S)`.
+_LEGACY_RATE_LAW_REWRITES = {
+    "Sat": "'Sat k K' on a unit-stoichiometry reaction is f() = k/(K+S)",
+    "Hill": "'Hill Vmax Kh h' is f() = Vmax*S^(h-1)/(Kh^h+S^h)",
+}
+
+
+def _legacy_rate_law_message(reaction_index: int, token: str, rxn: dict[str, Any]) -> str:
+    """Say what a deprecated Sat/Hill rate-law token needs, and who reads one.
+
+    ``Model.from_net`` rewrites these into explicit functions and observables
+    and raises a ``UserWarning`` saying it did. This path does not, so it says so
+    here rather than handing ``ModelBuilder`` a bare ``Hill`` to fail on with an
+    ExprTk ``Undefined symbol`` (issue #597).
+    """
+    operands = " ".join(rxn.get("legacy_constants") or ())
+    return (
+        f"reaction {reaction_index} uses the deprecated .net rate law "
+        f"{' '.join(filter(None, (token, operands)))!r}, which this reader does not "
+        f"rewrite. Load the file with bngsim.Model.from_net(), which rewrites "
+        f"{token} into an explicit function and observables; or rewrite the reaction "
+        f"in the source BNGL as an explicit Functional rate law — "
+        f"{_LEGACY_RATE_LAW_REWRITES[token]}."
+    )
+
+
 def parse_net_file(path: str | Path) -> dict[str, Any]:
     """Parse a BNG .net file into a structured dictionary.
 
@@ -81,8 +110,26 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
             observables  : list of (name, entries), entries = [(sp_idx0, factor), ...]
             functions    : list of (name, expression)
             reactions    : list of dict with keys reactants, products (0-based
-                           species indices), type ("elementary"/"functional"),
-                           rate_law (parameter or function name), stat_factor
+                           species indices), type, rate_law, legacy_constants,
+                           stat_factor
+            net_file_dir : the file's own directory, which is what a relative
+                           ``tfun('...')`` path resolves against
+
+        A reaction's ``type`` is one of:
+
+        ``"elementary"``
+            ``rate_law`` is a parameter name (or, for a rate column that is
+            neither a parameter nor a declared function,
+            ``build_model_from_parsed`` wraps it as a synthetic function).
+        ``"functional"``
+            ``rate_law`` names a function in the ``functions`` block.
+        ``"mm"``
+            Michaelis-Menten (``MM kcat Km``); ``rate_law`` is
+            ``"<kcat>,<Km>"``, the form ``ModelBuilder`` takes.
+        ``"legacy"``
+            A deprecated ``Sat`` or ``Hill`` rate-law token. ``rate_law`` is the
+            token and ``legacy_constants`` its operands.
+            ``build_model_from_parsed`` refuses these — see there (issue #597).
     """
     path = Path(path)
     text = path.read_text(encoding="utf-8")
@@ -105,6 +152,11 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
         "observables": observables,
         "functions": functions,
         "reactions": reactions,
+        # A `tfun('drive.tfun')` path is relative to the .net file, not to the
+        # process's working directory — BNG writes the table beside the network
+        # it belongs to. net_file_loader.cpp passes the same directory to
+        # `ModelBuilder::set_net_file_dir` (issue #597).
+        "net_file_dir": str(path.parent),
     }
 
 
@@ -120,11 +172,24 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     -------
     bngsim.Model
         The constructed model.
+
+    Raises
+    ------
+    ValueError
+        If a reaction carries a deprecated ``Sat`` or ``Hill`` rate-law token.
+        Those two are the one thing ``Model.from_net`` reads that this path does
+        not: the loader rewrites them into explicit functions and observables,
+        and reimplementing that rewrite here would be a second dialect to drift
+        from the first (issue #597, and #554 for what that costs). The message
+        names the reaction and the rewrite to write by hand.
     """
-    from bngsim._bngsim_core import ModelBuilder
+    from bngsim._bngsim_core import ModelBuilder, net_function_tables
     from bngsim._model import Model
 
     builder = ModelBuilder()
+    # Where a relative `tfun('...')` path resolves from, set before the tables
+    # below are registered against it.
+    builder.set_net_file_dir(parsed.get("net_file_dir", ""))
 
     # Parameters
     param_map = {}  # name -> value (for resolving species ICs)
@@ -148,16 +213,42 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     for name, entries in parsed["observables"]:
         builder.add_observable(name, entries)
 
-    # Functions (track names for reaction rate resolution)
+    # Functions (track names for reaction rate resolution). A function whose
+    # expression calls `tfun(...)` needs its table registered before build()
+    # compiles the expression, and the spec read out of the call — which is what
+    # `net_function_tables` does, in the .net loader's own C++, so this reader
+    # does not grow a second reading of tfun(...) syntax to disagree with the
+    # loader's (issue #597). A function that names no table comes back with its
+    # expression unchanged and no tables.
     func_names: set[str] = set()
     for name, expression in parsed["functions"]:
-        builder.add_function(name, expression)
+        analyzed = net_function_tables(name, expression)
+        builder.add_function(name, analyzed["expression"])
+        for table in analyzed["tables"]:
+            if table["is_inline"]:
+                builder.add_inline_table_function_spec(
+                    table["name"],
+                    table["xs"],
+                    table["ys"],
+                    table["index_name"],
+                    table["method"],
+                )
+            else:
+                builder.add_table_function_spec(
+                    table["name"],
+                    table["filepath"],
+                    table["index_name"],
+                    table["method"],
+                    table["header_name"],
+                )
         func_names.add(name)
 
     # Reactions
     for i, rxn in enumerate(parsed["reactions"]):
         rtype = rxn["type"]
         rate_law = rxn["rate_law"]
+        if rtype == "legacy":
+            raise ValueError(_legacy_rate_law_message(i + 1, rate_law, rxn))
         if rtype == "elementary" and rate_law not in param_map:
             if not rate_law.strip():
                 raise ValueError(
@@ -582,10 +673,8 @@ def _parse_reactions(
             raise ValueError(
                 f"reaction line {line!r} needs an index, reactants, products and a rate law"
             )
-        # Find the rate law — it's the last token before any comment
-        # Format: idx reactants products rate_law [stat_factor]
+        # Format: idx reactants products rate_law [rate law operands]
         # reactants and products are comma-separated species indices
-        # We need to parse: idx r1,r2 p1,p2 rate_law
 
         # The reactant and product fields are 1-based species indices
         reactant_str = parts[1]
@@ -609,8 +698,28 @@ def _parse_reactions(
             if tok and tok != "0":
                 products.append(int(tok) - 1)
 
-        # Determine type: if rate_law is a function name → functional
-        rtype = "functional" if rate_law in func_names else "elementary"
+        # A rate column of `MM`, `Sat` or `Hill` is one of BioNetGen's legacy
+        # rate-law tokens, and the operands that follow it on the line belong to
+        # it: `MM kcat Km`, `Sat k K...`, `Hill Vmax Kh h`. Reading only
+        # `parts[3]` threw those operands away and left the bare token behind as
+        # if it were an expression, which build_model_from_parsed then wrapped in
+        # a synthetic function for ExprTk to fail on with "Undefined symbol:
+        # 'Hill'" (issue #597). net_file_loader.cpp reads them the same way,
+        # including the `tokens.size() >= 6` on MM — a shorter MM line falls
+        # through to the elementary branch there, so it does here too.
+        legacy_constants: list[str] = []
+        if rate_law == "MM" and len(parts) >= 6:
+            # Michaelis-Menten needs no rewrite: ModelBuilder has the rate law,
+            # and takes its two parameters as one "kcat,Km" string.
+            rtype = "mm"
+            legacy_constants = parts[4:6]
+            rate_law = ",".join(legacy_constants)
+        elif rate_law in ("Sat", "Hill"):
+            rtype = "legacy"
+            legacy_constants = parts[4:]
+        else:
+            # Determine type: if rate_law is a function name → functional
+            rtype = "functional" if rate_law in func_names else "elementary"
 
         reactions.append(
             {
@@ -618,6 +727,7 @@ def _parse_reactions(
                 "products": products,
                 "type": rtype,
                 "rate_law": rate_law,
+                "legacy_constants": legacy_constants,
                 "stat_factor": stat_factor,
             }
         )

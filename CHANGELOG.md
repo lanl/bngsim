@@ -118,6 +118,55 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`build_model_from_parsed` builds the eight `.net` files whose table
+  functions and `MM` rate laws used to reach ExprTk unregistered, and names the
+  two it will not build (issue #597).** `Model.from_net` ran two post-parse
+  steps that lived only in `net_file_loader.cpp`, so ten `.net` files in
+  `tests/data` loaded under one documented loader and raised under the other —
+  `bngsim._net_reader`, the reader `bngsim.__all__` exports and
+  `docs/user-guide/loading-models.md` documents. The failure was
+  `ModelBuilder: failed to compile function '__net_reader_func_0': Hill — ...
+  ERR239 - Undefined symbol: 'Hill'`, which named neither the file, the
+  reaction, nor the loader that does read it. The same two-loaders-disagree
+  shape as issue #554, in its loud form.
+
+  Two causes, and the reader had been *losing data* on both: it read only the
+  rate column, so the operands after a legacy token — `Sat k3 K4`, `MM kcat Km`
+  — were discarded and the bare token was left behind to be wrapped as if it
+  were an expression.
+
+  - **`tfun(...)` table functions.** The loader reads the spec out of the
+    `functions` line and registers the table *before* build() compiles the
+    expression that calls it, and points relative `.tfun` paths at the `.net`
+    file's own directory — where BNG writes the table. That step is now
+    `bngsim::net_function_tables()`, called by the loader and bound for the
+    reader, rather than a second reading of `tfun(...)` syntax in Python to
+    drift from the first (`ModelBuilder.set_net_file_dir`,
+    `add_table_function_spec` and `add_inline_table_function_spec` are bound
+    too). Whole-body and embedded forms both, so `wrap_single.net`'s
+    `(tfun('drive.tfun',time)+5)/k_scale` keeps its wrapper arithmetic.
+  - **`MM kcat Km` needed no rewrite at all, only parsing.** `ModelBuilder` has
+    the Michaelis-Menten rate law and takes its two parameters as one
+    `"kcat,Km"` string; the reader now hands it that, and a short `MM` line
+    falls through to the elementary branch exactly as it does in C++.
+
+  All eight build a model **identical** to `Model.from_net`'s — same
+  `codegen_data()`, same table-function names, same trajectory — because loading
+  was never the bar (#554 was two loaders that both loaded and disagreed by a
+  factor).
+
+  The deprecated `Sat` and `Hill` tokens are **refused** by name instead.
+  Their rewrite is ~150 lines of C++ that also allocates non-colliding function
+  and observable names and emits the deprecation warning `Model.from_net` raises
+  as a `UserWarning`; reimplementing it in the reader would be the second dialect
+  #554 was about. `build_model_from_parsed` now raises `ValueError` naming the
+  reaction, the token and its operands, `Model.from_net` as the loader that
+  rewrites them, and the explicit rate law to write by hand. `parse_net_file`
+  still reports them faithfully — `type="legacy"` with the operands in
+  `legacy_constants`, so the interchange dict stays inspectable — and its
+  reaction dicts gain `legacy_constants`, the dict gains `net_file_dir`, and
+  `type` gains `"mm"` and `"legacy"`.
+
 - **A `.net` functions line that is unindexed, or written `name() = expression`,
   is refused instead of dropped or read with `=` as the function name (issue
   #606).** The functions block was the last of the five `.net` block parsers

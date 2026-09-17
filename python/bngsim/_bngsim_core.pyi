@@ -6,7 +6,7 @@ import collections.abc
 import numpy
 import numpy.typing
 import typing
-__all__: list[str] = ['CvodeSimulator', 'HAS_KLU', 'HAS_LAPACK_DENSE', 'HAS_MIR', 'HAS_NFSIM', 'HAS_RULEMONKEY', 'ModelBuilder', 'NetworkModel', 'NfsimSimulator', 'ResultCore', 'RuleMonkeySimulator', 'SolverOptions', 'SolverStats', 'SsaDiagnostics', 'SsaSimulator', 'SteadyStateOptions', 'SteadyStateResultCore', 'TimeSpec', 'bench_ssa_propensity_jit', 'emit_ssa_propensity_source_structure', 'find_steady_state', 'reserved_names']
+__all__: list[str] = ['CvodeSimulator', 'HAS_KLU', 'HAS_LAPACK_DENSE', 'HAS_MIR', 'HAS_NFSIM', 'HAS_RULEMONKEY', 'ModelBuilder', 'NetworkModel', 'NfsimSimulator', 'ResultCore', 'RuleMonkeySimulator', 'SolverOptions', 'SolverStats', 'SsaDiagnostics', 'SsaSimulator', 'SteadyStateOptions', 'SteadyStateResultCore', 'TimeSpec', 'bench_ssa_propensity_jit', 'emit_ssa_propensity_source_structure', 'find_steady_state', 'net_function_tables', 'reserved_names']
 class CvodeSimulator:
     def __init__(self, model: NetworkModel) -> None:
         """
@@ -39,6 +39,10 @@ class ModelBuilder:
         """
         Add a function (named expression). Returns 0-based index.
         """
+    def add_inline_table_function_spec(self, func_name: str, xs: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], ys: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], index_name: str = 'time', method: str = 'linear') -> None:
+        """
+        Register a table function whose data is inline in the model rather than in a file — BNG's tfun([xs],[ys],index) form. xs must be monotonically increasing and the same length as ys.
+        """
     def add_observable(self, name: str, entries: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> int:
         """
         Add an observable. entries = [(sp_idx_0based, factor), ...]. Returns 0-based index.
@@ -63,6 +67,10 @@ class ModelBuilder:
         """
         Record that species[species_idx0]'s initial concentration is controlled by the parameter named param_name. Used by CVODES forward sensitivity analysis to seed dY_i(0)/dp_k = 1 when p_k is requested via sensitivity_params.
         """
+    def add_table_function_spec(self, func_name: str, filepath: str, index_name: str = 'time', method: str = 'linear', header_name: str = '') -> None:
+        """
+        Register a file-backed table function to load during build(), before the function expressions that call it are compiled. func_name is the runtime identifier ExprTk calls as 'tfun_<func_name>()'; header_name is the .tfun column-2 header to accept and defaults to func_name. Take both, and the filepath, index_name and method, from net_function_tables() rather than reading tfun(...) syntax yourself.
+        """
     def build(self) -> NetworkModel:
         """
         Finalize and build the NetworkModel. Builder is consumed.
@@ -74,6 +82,10 @@ class ModelBuilder:
     def set_compute_conservation_laws(self, enabled: bool) -> None:
         """
         Enable/disable conservation-law detection in build() (GH #102). The detector is dense O(n_species^3) Gaussian elimination consumed only by the steady-state solver; disable it to keep setup O(reactions) for very large ODE-only networks (~100K species). Default True preserves existing behavior.
+        """
+    def set_net_file_dir(self, dir: str) -> None:
+        """
+        Set the directory a relative table-function path resolves against — the source .net file's own directory, which is where BNG writes the .tfun beside it. Empty leaves a relative path to resolve against the process's working directory.
         """
     def set_param_volume_write_refused(self, name: str) -> None:
         """
@@ -1228,6 +1240,10 @@ def emit_ssa_propensity_source_structure(model: NetworkModel) -> tuple[str, int]
 def find_steady_state(model: NetworkModel, opts: SteadyStateOptions = ...) -> SteadyStateResultCore:
     """
     Find steady state of the ODE system (releases GIL)
+    """
+def net_function_tables(func_name: str, expression: str) -> dict:
+    """
+    Read the tfun(...) calls out of one .net functions line. Returns {'expression': the expression to hand ModelBuilder.add_function, 'tables': [{name, header_name, filepath, xs, ys, index_name, method, is_inline}, ...]} — each entry an argument pack for add_table_function_spec (is_inline False) or add_inline_table_function_spec (True). A line naming no table comes back with its expression unchanged and no tables.
     """
 def reserved_names() -> dict:
     """
