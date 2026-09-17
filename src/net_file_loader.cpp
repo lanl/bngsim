@@ -55,6 +55,14 @@ static std::vector<std::string> split_ws(const std::string &s) {
     return tokens;
 }
 
+// Whether a whitespace-delimited token is a leading line index. BNG2.pl strips
+// one with `s/^\s*\d+\s+//` — a run of digits delimited by whitespace — so a
+// token is an index exactly when it is all digits (issue #600).
+static bool is_line_index_token(const std::string &tok) {
+    return !tok.empty() && std::all_of(tok.begin(), tok.end(),
+                                       [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
 // Strip trailing #comment. Returns trimmed content, optionally extracts comment.
 static std::string strip_comment(const std::string &line, std::string *comment = nullptr) {
     int depth = 0;
@@ -145,19 +153,34 @@ static std::vector<ParsedParam> parse_parameters(std::ifstream &file) {
 
         std::string stripped = strip_comment(line);
         auto tokens = split_ws(stripped);
-        if (tokens.size() < 3)
+        if (tokens.empty())
             continue;
 
+        // `[<index>] <name> <value>`, with the leading index optional for the
+        // same reason as in the species block: `generate_network` writes
+        // `1 A0 100` while `writeFile({format=>"net"})` writes `A0 100`.
+        // Requiring the index discarded the whole parameters block of an
+        // unindexed file silently, so every species IC and rate law that named a
+        // parameter then failed to resolve against a block that had simply been
+        // thrown away (issue #600).
+        size_t field = 0;
+        if (is_line_index_token(tokens[0]))
+            ++field;
+        if (field + 1 >= tokens.size()) {
+            throw std::runtime_error("parameter line '" + stripped +
+                                     "' has no name and value to read");
+        }
+
         ParsedParam p;
-        p.name = tokens[1];
+        p.name = tokens[field];
 
         // Value/expression: join remaining tokens with a space, the way the
         // functions block does. Concatenating them instead deletes whitespace
         // that separates two word characters, so `if(k > 0.1 and thr > 0.5, ...)`
         // reads back as `if(k>0.1andthr>0.5, ...)` and ExprTk evaluates a
         // different, finite value without warning (issue #498).
-        std::string value_str = tokens[2];
-        for (size_t i = 3; i < tokens.size(); ++i)
+        std::string value_str = tokens[field + 1];
+        for (size_t i = field + 2; i < tokens.size(); ++i)
             value_str += " " + tokens[i];
 
         p.expression = value_str;
@@ -193,11 +216,32 @@ parse_species(std::ifstream &file, const std::unordered_map<std::string, int> &p
 
         std::string stripped = strip_comment(line);
         auto tokens = split_ws(stripped);
-        if (tokens.size() < 3)
+        if (tokens.empty())
             continue;
 
+        // A species line is `[<index>] <species> [<concentration>]`: the leading
+        // index is OPTIONAL. BNG2.pl strips one only when present
+        // (Perl2/SpeciesList.pm, `s/^\s*\d+\s+//`, kept with the comment "Can't
+        // deprecate this because indices used in NET files"), and BNG2.pl writes
+        // both shapes into a .net — `generate_network` emits the indexed form,
+        // `writeFile({format=>"net"})` the bare one, and run_network reads
+        // either. Requiring three tokens dropped every line of an unindexed
+        // block *silently*: with reactions present the model then failed against
+        // the wrong block ("reactant species index out of range"), and with none
+        // it loaded clean as a zero-species model (issue #600).
+        size_t field = 0;
+        if (is_line_index_token(tokens[0]))
+            ++field;
+        if (field >= tokens.size()) {
+            // A line carrying only an index has no species pattern to parse. It
+            // used to be skipped; a species block must never lose an entry
+            // quietly, so say so instead.
+            throw std::runtime_error("species line '" + stripped +
+                                     "' has an index but no species pattern");
+        }
+
         ParsedSpecies s;
-        s.name = tokens[1];
+        s.name = tokens[field++];
         s.fixed = false;
         s.is_param_ref = false;
 
@@ -215,8 +259,24 @@ parse_species(std::ifstream &file, const std::unordered_map<std::string, int> &p
             }
         }
 
-        // Concentration: number or parameter name
-        std::string conc_str = tokens[2];
+        // Concentration: number or parameter name. It is the remainder of the
+        // line, joined with single spaces the way the parameters block joins its
+        // value tokens (issue #498), so a spaced expression stays one string
+        // rather than having everything past the first token dropped.
+        std::string conc_str;
+        for (size_t i = field; i < tokens.size(); ++i) {
+            if (!conc_str.empty())
+                conc_str += " ";
+            conc_str += tokens[i];
+        }
+        if (conc_str.empty()) {
+            // `<species>` with no concentration column. BNG2.pl reads a
+            // concentration only when text remains on the line, so an omitted
+            // one is zero rather than an error.
+            s.concentration = 0.0;
+            species.push_back(std::move(s));
+            continue;
+        }
         try {
             size_t pos;
             s.concentration = std::stod(conc_str, &pos);

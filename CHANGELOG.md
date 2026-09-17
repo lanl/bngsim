@@ -118,6 +118,29 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A `.net` species or parameter line without a leading index is read instead of
+  silently dropped (issue #600).** `parse_species()` and `parse_parameters()`
+  required three whitespace fields, which made the leading index mandatory.
+  BNG2.pl treats it as optional — `Perl2/SpeciesList.pm` strips one with
+  `s/^\s*\d+\s+//`, kept with the comment "Can't deprecate this because indices
+  used in NET files" — and BNG2.pl writes *both* shapes into a file named `.net`:
+  `generate_network` emits `1 A() A0`, while `writeFile({format=>"net"})` emits a
+  bare `A() A0`, and likewise `A0 100` in the parameters block. `run_network`
+  reads either. bngsim skipped the unindexed form line by line, with no error and
+  no warning. A discarded species block left a model that either failed against
+  the wrong block (`reaction 0 has reactant species index 1 out of range [1, 0]`)
+  or, with no reactions, loaded clean as a zero-species model; a discarded
+  parameters block left every species IC and rate law naming a parameter unable
+  to resolve against declarations that had simply been thrown away.
+
+  Both blocks now take the index when it is present and read the line without it
+  when it is not, in both documented `.net` loaders (#554), and a line that
+  cannot be parsed raises rather than disappearing. A
+  `writeFile({format=>"net"})` network loads to the same initial state
+  `run_network` reports for it. The value column is also joined from the whole
+  remainder of the line, so a spaced `2 * A0` is no longer truncated to its first
+  token and silently seeded as `2`.
+
 - **A `.net` species whose initial concentration names an unknown parameter now
   fails loudly instead of loading as a silent `0.0` (issue #571).**
   `parse_species()` reads the IC column as a number or a parameter name; on a

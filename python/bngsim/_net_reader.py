@@ -203,12 +203,18 @@ def _parse_parameters(text: str) -> list[tuple[str, float, str, bool]]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Format: index name value_or_expr  # comment
+        # Format: [index] name value_or_expr  # comment. The leading index is
+        # optional, as in the species block: `generate_network` writes
+        # `1 A0 100`, `writeFile({format=>"net"})` writes `A0 100`. Requiring it
+        # discarded an unindexed parameters block silently (issue #600).
         parts = line.split("#")[0].strip().split()
-        if len(parts) < 3:
+        if not parts:
             continue
-        _idx_str, name = parts[0], parts[1]
-        expr = " ".join(parts[2:])
+        field = 1 if (parts[0].isascii() and parts[0].isdigit()) else 0
+        if field + 1 >= len(parts):
+            raise ValueError(f"parameter line {line!r} has no name and value to read")
+        name = parts[field]
+        expr = " ".join(parts[field + 1 :])
         raw_params.append((name, expr))
 
     # Split literals from expressions the same way net_file_loader.cpp does:
@@ -402,13 +408,30 @@ def _parse_species(
         if not line or line.startswith("#"):
             continue
         parts = line.split("#")[0].strip().split()
-        if len(parts) < 3:
+        if not parts:
             continue
-        parts[0]
+
+        # A species line is `[<index>] <species> [<concentration>]`: the leading
+        # index is OPTIONAL. BNG2.pl strips one only when present
+        # (Perl2/SpeciesList.pm, `s/^\s*\d+\s+//`), and writes both shapes into a
+        # .net — `generate_network` indexed, `writeFile({format=>"net"})` bare.
+        # Requiring three fields dropped every line of an unindexed block
+        # silently, leaving a model with no species at all (issue #600).
+        # `isascii()` keeps this identical to the C++ `std::isdigit` check: bare
+        # `isdigit()` also accepts characters like "²", which is not an index.
+        field = 1 if (parts[0].isascii() and parts[0].isdigit()) else 0
+        if field >= len(parts):
+            raise ValueError(f"species line {line!r} has an index but no species pattern")
+
         # `$` clamp marker may sit at index 0 or after a `@<compartment>::`
         # prefix (BNG2.pl emits the latter for cBNGL models).
-        name, is_fixed = _strip_fixed_marker(parts[1])
-        ic_str = parts[2]
+        name, is_fixed = _strip_fixed_marker(parts[field])
+        # The concentration is the rest of the line, joined so a spaced
+        # expression survives; omitted means zero, as in BNG2.pl's reader.
+        ic_str = " ".join(parts[field + 1 :])
+        if not ic_str:
+            species.append((name, 0.0, is_fixed))
+            continue
         try:
             init_conc = float(ic_str)
         except ValueError:
