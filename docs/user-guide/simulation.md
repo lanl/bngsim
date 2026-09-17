@@ -120,3 +120,20 @@ except bngsim.StopConditionMet as e:
     print(f"Stopped at t={e.result.time[-1]}: {e.condition}")
     partial = e.result  # truncated result up to stop point
 ```
+
+A condition is checked against the *completed* result, so it does not interrupt
+the solve. The backend integrates the whole interval and leaves the model at its
+end; `e.result` is that trajectory truncated at the first row where the
+condition held, and `sim.current_time` reads the end of the interval rather than
+the trigger time. The clock is the one that names the state the model holds, so
+a following `run_until` continues from there correctly.
+
+To continue from the trigger point instead, snapshot first:
+
+```python
+snap = sim.snapshot()
+try:
+    sim.run_until(t=1000)
+except bngsim.StopConditionMet as e:
+    sim.restore(snap)   # back to where the leg started
+```

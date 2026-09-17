@@ -221,10 +221,22 @@ class StopConditionMet(BngsimError):
 
     The partial result up to the trigger point is attached as ``self.result``.
 
+    Conditions are checked against a *completed* result, so this does not
+    interrupt the solve: the backend integrates the whole requested interval and
+    leaves the model at its end, and ``self.result`` is that trajectory
+    truncated at the first row where the condition held. ``Simulator``'s
+    :attr:`~bngsim.Simulator.current_time` therefore reads the end of the
+    interval, not the trigger time — the two differ on purpose, and the clock is
+    the one that names the state the model holds (issue #553). Take a
+    :meth:`~bngsim.Simulator.snapshot` beforehand to continue from the trigger
+    point instead.
+
     Attributes
     ----------
     result : Result
-        Partial simulation result truncated at the stop point.
+        Simulation result truncated at the stop point. The *reported* species
+        block only: ``Result.state`` is not available on it, so it cannot be
+        used to restore the model's integrator state.
     condition : str
         Description of the condition that triggered.
     """

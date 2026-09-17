@@ -3259,6 +3259,25 @@ class Simulator:
             ic_seed=ic_seed,
         )
 
+        # Issue #553 — the interactive clock moves with the state, here, rather
+        # than in the caller after run() returns. The backend has written the
+        # end-of-span concentrations into the model by this point, so from here
+        # on ``current_time`` names the state the model actually holds. Both
+        # steps below can raise *after* that write — _check_stop_conditions
+        # always does when a condition triggers, and _warn_ssa_boundary does
+        # under `-W error` — and a caller-side assignment is skipped when they
+        # do, leaving the clock behind an advanced model: the next run_until
+        # then labels its Result from the stale time while integrating the
+        # already-advanced state, a trajectory whose time axis does not match
+        # its own first row.
+        #
+        # ``result.time[-1]`` rather than ``t_span[1]``: it is where the solve
+        # actually left off, which is the same number for an ordinary run and
+        # the right one when ``sample_times`` or ``steady_state=True`` decides
+        # the final output time instead.
+        if result.n_times:
+            self._current_time = float(result.time[-1])
+
         # GH #198 — attach the expression output-sensitivity support map so a
         # selector for an unsupported global function raises the specific reason
         # (unsupported construct / deferred table function) rather than a bare
@@ -4275,6 +4294,10 @@ class Simulator:
         # post-scan restore point). Captured even for reset_conc=False so the
         # model can be rewound afterward.
         invocation_state = self._model.get_state()
+        # run() now advances the interactive clock with the state (issue #553),
+        # so the clock is part of what the finally: below puts back — otherwise a
+        # scan would leave it at the last point's end time over a rewound model.
+        invocation_time = self._current_time
 
         # Issue #196 — freeze the absolute tolerance at the invocation state,
         # before the first point moves the model. Passing the resolved value to
@@ -4380,6 +4403,7 @@ class Simulator:
             # Leave the persistent model + simulator as we found them.
             self._model.set_param(parameter, original_value)
             self._model.set_state(invocation_state)
+            self._current_time = invocation_time
             self._restore_carryover_state(invocation_sens)
             self._recreate_interactive_sim()
 
@@ -6304,6 +6328,18 @@ class Simulator:
         >>> sim.run_until(t=50)        # simulate to t=50
         >>> sim.intervene({"k1": 0.0}) # knock out a reaction
         >>> result = sim.run_until(t=100)  # continue to t=100
+
+        Notes
+        -----
+        A stop condition does not stop this leg early. Conditions are evaluated
+        against the completed result, so the backend integrates the whole
+        ``[current_time, t]`` interval and leaves the model at ``t``; the
+        ``StopConditionMet`` carries the trajectory *truncated* at the trigger
+        point, and :attr:`current_time` reads ``t`` rather than the trigger time
+        (issue #553). To continue from the trigger point instead, take a
+        :meth:`snapshot` first and :meth:`restore` it — the partial result cannot
+        be used to rewind the model, because on a model with a promoted state
+        entry it carries only the reported species block.
         """
         self._require_interactive_backend_support()
 
@@ -6321,7 +6357,12 @@ class Simulator:
             n_points,
         )
 
-        result = self.run(
+        # run() advances _current_time itself, the moment the backend writes the
+        # end-of-span state back into the model (issue #553). Assigning it here
+        # instead would be skipped by the StopConditionMet that run() raises when
+        # a condition triggers, and by any other post-solve raise, leaving the
+        # clock behind the state.
+        return self.run(
             t_span=(self._current_time, t),
             n_points=n_points,
             seed=seed,
@@ -6329,13 +6370,6 @@ class Simulator:
             atol=atol,
             max_steps=max_steps,
         )
-
-        # Update current time
-        self._current_time = t
-
-        # The model already holds the final state from the
-        # simulation (CVODE/SSA write back final concentrations)
-        return result
 
     def intervene(self, params: dict[str, float]) -> None:
         """Apply a perturbation (parameter change) mid-simulation.
@@ -6811,7 +6845,18 @@ class Simulator:
 
     @property
     def current_time(self) -> float:
-        """Current time in interactive simulation."""
+        """The time the model's stored state is at.
+
+        Every solve advances it to where that solve left off, ``run`` and
+        ``run_until`` alike, because the backend writes the end-of-span
+        concentrations back into the model and this names the state the model
+        then holds (issue #553). It is the point a following ``run_until``
+        integrates from, so it moves even when the solve ends by raising —
+        notably the ``StopConditionMet`` raised *after* the interval was
+        integrated, which truncates the reported result without rewinding the
+        model. ``parameter_scan`` rewinds the model when it finishes and puts
+        this back with it.
+        """
         return self._current_time
 
     def __repr__(self) -> str:

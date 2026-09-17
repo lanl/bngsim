@@ -118,6 +118,46 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The interactive clock moves with the model's state, so a leg after a stop
+  condition stops mislabelling its own time axis (issue #553).** `run_until`
+  assigned `self._current_time = t` *after* `run()` returned. Stop conditions are
+  evaluated against a completed result, so `run()` raises `StopConditionMet`
+  once the backend has integrated the whole interval and written the
+  end-of-span concentrations back into the model — and that assignment was
+  skipped. The simulator was left holding the t=100 state with its clock still
+  reading 0.0, and the next `run_until(t=50)` then built `t_span=(0.0, 50.0)`
+  over that advanced state and returned a `Result` whose time axis claimed to
+  start at 0 while `species[0]` held the t=100 values. A silently wrong
+  trajectory from two documented features used together, with no error or
+  warning. `StopConditionMet` was the reliable way in; any post-solve raise did
+  it, including `SsaBoundaryWarning` under `-W error`.
+
+  `run()` now advances `_current_time` itself, the moment the backend writes the
+  state back and before either post-solve step that can raise. The clock is no
+  longer maintained by the caller, so there is no assignment left for an
+  exception to skip, and `current_time` means what its name says on every path:
+  the time the model's stored state is at. It is read off `result.time[-1]`
+  rather than `t_span[1]`, which is the same number for an ordinary run and the
+  right one when `sample_times` or `steady_state=True` picks the final output
+  time. `parameter_scan` rewinds the model when it finishes, so it now puts the
+  clock back with it. The original repro's second leg reports
+  `t_span=(100.0, 150.0)` over the t=100 state; its `run_until(t=50)` raises
+  `ValueError: Target time (50) must be > current time (100.0)` instead of
+  relabelling.
+
+  Rolling the model back to the trigger point — the issue's other suggestion —
+  is not implementable from what `StopConditionMet` carries. `_truncate_result`
+  builds the partial `Result` with no core, so `Result.state` refuses on it, and
+  its species block is the *reported* projection: on a model whose SBML event
+  assigns a parameter, the promoted entry is missing and the row is narrower
+  than the model's state vector (verified: `species` is `(n, 1)` against a state
+  of width 2). A rollback would write a short or wrong state. The semantics are
+  documented instead — on `StopConditionMet`, `Simulator.current_time`,
+  `run_until`, and in `docs/user-guide/simulation.md`: a stop condition truncates
+  the reported result and does not rewind the model, the clock names the end of
+  the integrated span, and `snapshot()` / `restore()` is the way to continue from
+  before the stop.
+
 - **`parse_net_file` evaluates a `.net` parameter expression with the engine's
   own evaluator, so the reader and `Model.from_net` seed a model from the same
   numbers (issue #554).** The reader evaluated each expression with Python's
