@@ -412,9 +412,19 @@ def _parse_species(
         try:
             init_conc = float(ic_str)
         except ValueError:
-            # A parameter name — unknown ones stay 0.0, as in net_file_loader.cpp.
+            # A non-numeric IC token must name a declared parameter. An
+            # unresolvable one — a typo, a parameter declared after the species
+            # block, or an arithmetic IC such as `2*A0` — would otherwise seed a
+            # silently wrong 0.0, so refuse it the way net_file_loader.cpp now
+            # does (issue #571). The two loaders must stay in agreement here
+            # (issue #554), so this mirrors the C++ message.
+            if ic_str not in param_map:
+                raise ValueError(
+                    f"species {name!r} initial concentration {ic_str!r} "
+                    "is neither a number nor a declared parameter"
+                ) from None
             ic_param_refs.append((len(species), ic_str))
-            init_conc = param_map.get(ic_str, 0.0)
+            init_conc = param_map[ic_str]
         species.append((name, init_conc, is_fixed))
 
     return species, ic_param_refs

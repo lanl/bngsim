@@ -231,11 +231,20 @@ parse_species(std::ifstream &file, const std::unordered_map<std::string, int> &p
 
         if (s.is_param_ref) {
             auto it = param_name_to_idx.find(conc_str);
-            if (it != param_name_to_idx.end()) {
-                s.concentration = params[it->second].value;
-            } else {
-                s.concentration = 0.0;
+            if (it == param_name_to_idx.end()) {
+                // A non-numeric IC token that names no declared parameter is
+                // unresolvable: a typo, a parameter declared after the species
+                // block, or an arithmetic IC such as `2*A0` (std::stod above
+                // stops at `2`, so the whole token becomes the lookup key and
+                // misses). Defaulting to 0.0 turns a real initial condition
+                // into a silently wrong trajectory, so refuse it here the way
+                // an unknown rate-law parameter and an out-of-range observable
+                // index already fail loudly (issue #571).
+                throw std::runtime_error("species '" + s.name + "' initial concentration '" +
+                                         conc_str +
+                                         "' is neither a number nor a declared parameter");
             }
+            s.concentration = params[it->second].value;
         }
 
         species.push_back(std::move(s));

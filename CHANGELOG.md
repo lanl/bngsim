@@ -118,6 +118,29 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A `.net` species whose initial concentration names an unknown parameter now
+  fails loudly instead of loading as a silent `0.0` (issue #571).**
+  `parse_species()` reads the IC column as a number or a parameter name; on a
+  lookup miss it took the default `s.concentration = 0.0` and loaded anyway. A
+  typo, a parameter declared after the species block, or an arithmetic IC such
+  as `2*A0` (`std::stod` stops at the `2`, so the whole token is looked up as a
+  parameter name and misses) each turned a real initial condition into zero. The
+  species then started at 0, every observable and downstream flux built on it
+  was wrong, and the run reported success — while the same loader already failed
+  loudly for an unknown rate-law parameter and an out-of-range observable index.
+  The loader now raises `species '<name>' initial concentration '<token>' is
+  neither a number nor a declared parameter`, surfaced as `ModelError` through
+  `Model.from_net` and as `ValueError` through the core loader. The Python `.net`
+  reader (`bngsim._net_reader._parse_species`), which #554 had deliberately made
+  agree with the C++ loader on the `0.0` default, is changed in step so the two
+  still agree — now on the error rather than on the wrong number. BNGL
+  expression-valued seed species stay supported: BNG2.pl lifts each expression
+  into a synthetic `_InitialConcN` parameter and writes that parameter's *name*
+  — a single token — into the species block, so it arrives as a declared
+  reference and still resolves through the expression evaluator. Only raw
+  arithmetic written straight into the IC column — a form no producer emits — is
+  rejected rather than given a second expression path.
+
 - **The interactive clock moves with the model's state, so a leg after a stop
   condition stops mislabelling its own time axis (issue #553).** `run_until`
   assigned `self._current_time = t` *after* `run()` returned. Stop conditions are

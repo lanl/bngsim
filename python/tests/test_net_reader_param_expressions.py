@@ -133,8 +133,14 @@ class TestSpeciesInitialConditions:
         core = build_model_from_parsed(parse_net_file(net))._core
         assert core.species_ic_param_refs == [(0, 0)]
 
-    def test_unknown_ic_parameter_stays_zero(self, tmp_path: Path) -> None:
-        """net_file_loader.cpp leaves an unresolvable IC reference at 0.0; so does this."""
+    def test_unknown_ic_parameter_is_refused(self, tmp_path: Path) -> None:
+        """An IC token naming no declared parameter fails loudly (issue #571).
+
+        Defaulting it to 0.0 seeded a silently wrong trajectory that still ran to
+        completion. ``net_file_loader.cpp`` now raises, and this reader — kept in
+        step with it (issue #554) — must raise the same way rather than agree on
+        the wrong number.
+        """
         net = _write_net(
             tmp_path,
             """
@@ -153,10 +159,41 @@ class TestSpeciesInitialConditions:
             end groups
             """,
         )
-        parsed = parse_net_file(net)
-        assert parsed["species"][0] == ("A()", 0.0, False)
-        assert parsed["species_ic_params"] == [(0, "nosuch")]
-        assert list(build_model_from_parsed(parsed).get_state()) == [0.0, 0.0]
+        with pytest.raises(ValueError, match="neither a number nor a declared parameter"):
+            parse_net_file(net)
+
+    def test_arithmetic_ic_is_refused(self, tmp_path: Path) -> None:
+        """An arithmetic IC (``2*A0``) is the same unresolvable-token path as a typo.
+
+        ``float()`` rejects it and no parameter is named ``2*A0``, so it is refused
+        rather than silently truncated to its numeric prefix or defaulted to 0.0
+        (issue #571). A BNGL expression seed species does not reach a ``.net`` as
+        raw arithmetic: BNG2.pl lifts it into a synthetic ``_InitialConc<N>``
+        parameter and writes that name here, which resolves. Raw ``2*A0`` is a
+        hand-authored token no producer emits, so rejecting it costs no supported
+        input.
+        """
+        net = _write_net(
+            tmp_path,
+            """
+            begin parameters
+              1 k  0.1
+              2 A0 100
+            end parameters
+            begin species
+              1 A() 2*A0
+              2 B() 0
+            end species
+            begin reactions
+              1 1 2 k
+            end reactions
+            begin groups
+              1 Atot 1
+            end groups
+            """,
+        )
+        with pytest.raises(ValueError, match="neither a number nor a declared parameter"):
+            parse_net_file(net)
 
 
 class TestAgreementWithFromNet:
