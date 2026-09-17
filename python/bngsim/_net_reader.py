@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import math
 import re
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -263,15 +262,13 @@ def _evaluate_parameter_exprs(decls: list[tuple[str, str, float, bool]]) -> list
 
     builder = ModelBuilder()
     for name, expr, literal, is_expr in decls:
-        # 0.0 is the pre-evaluation seed net_file_loader.cpp uses, so an
-        # expression the engine cannot compile keeps the same value it has
-        # under Model.from_net rather than diverging from it.
+        # 0.0 is the pre-evaluation seed net_file_loader.cpp uses. Nothing is
+        # left holding it any more: since #602 `build()` refuses an expression
+        # it cannot compile rather than leaving the seed in place, so a value
+        # that comes back is one the evaluator actually produced.
         builder.add_parameter(name, 0.0 if is_expr else literal, expr, is_expr)
     model = builder.build()
-    values = [model.get_param(name) for name, _, _, _ in decls]
-
-    _warn_unevaluable_parameters(decls, values)
-    return values
+    return [model.get_param(name) for name, _, _, _ in decls]
 
 
 # Namespace for the engine-free fallback below — the one the reader has always
@@ -329,60 +326,6 @@ def _evaluate_parameter_exprs_without_engine(
         ns[name] = value
         values.append(value)
     return values
-
-
-def _warn_unevaluable_parameters(
-    decls: list[tuple[str, str, float, bool]],
-    values: list[float],
-) -> None:
-    """Warn about expressions the engine left sitting on the 0.0 seed.
-
-    A parameter whose expression fails to compile keeps its seed, and 0.0 is a
-    perfectly plausible-looking rate constant or initial amount — the silence is
-    what makes it dangerous (issue #554). Only a parameter that came back at
-    exactly 0.0 is re-tested, and one costs one further parameters-only build:
-    across the 133 ``.net`` files in this tree no file has more than one, and
-    130 have none, so the usual price is nothing beyond the build above.
-
-    The re-test gives the suspect a NaN seed while pinning every other parameter
-    to the value just computed, which separates "compiled, and the answer is
-    zero" from "never compiled". Pinning the others (rather than dropping them)
-    keeps a forward reference resolvable, the way the single whole-block build
-    resolves it.
-    """
-    suspects = [i for i, (_, _, _, is_expr) in enumerate(decls) if is_expr and values[i] == 0.0]
-    if not suspects:
-        return
-
-    from bngsim._bngsim_core import ModelBuilder
-
-    unevaluable = []
-    for i in suspects:
-        name, expr, _literal, _is_expr = decls[i]
-        builder = ModelBuilder()
-        for j, (other, other_expr, _lit, _ie) in enumerate(decls):
-            if j == i:
-                builder.add_parameter(name, float("nan"), expr, True)
-            else:
-                builder.add_parameter(other, values[j], other_expr, False)
-        try:
-            probed = builder.build().get_param(name)
-        except (RuntimeError, ValueError):
-            probed = float("nan")
-        if probed != probed:  # still NaN: the expression never compiled
-            unevaluable.append((name, expr))
-
-    if unevaluable:
-        listed = ", ".join(f"{name} = {expr!r}" for name, expr in unevaluable)
-        warnings.warn(
-            f"parse_net_file: the expression evaluator could not compile "
-            f"{len(unevaluable)} parameter expression(s), which are reported as "
-            f"0.0 and will seed any species initial condition that names them: "
-            f"{listed}. Check these for a symbol the model never declares or for "
-            f"a syntax the evaluator does not accept; Model.from_net loads the "
-            f"same file with the same zeros.",
-            stacklevel=5,
-        )
 
 
 def _parse_species(

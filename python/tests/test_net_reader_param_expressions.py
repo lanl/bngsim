@@ -14,7 +14,6 @@ from __future__ import annotations
 import math
 import sys
 import textwrap
-import warnings
 from pathlib import Path
 
 import bngsim
@@ -223,32 +222,49 @@ class TestAgreementWithFromNet:
         assert list(build_model_from_parsed(parsed).get_state()) == list(reference.get_state())
 
 
-class TestUnevaluableExpressionWarning:
-    def test_unknown_symbol_warns(self, tmp_path: Path) -> None:
-        with pytest.warns(UserWarning, match=r"could not compile.*bad = 'nosuch\*2'"):
-            vals = _values(tmp_path, [("k", "0.1"), ("bad", "nosuch*2")])
-        assert vals["bad"] == 0.0
+class TestUnevaluableExpressionIsRefused:
+    """An expression the evaluator cannot compile refuses the model (issue #602).
 
-    def test_syntax_error_warns(self, tmp_path: Path) -> None:
-        with pytest.warns(UserWarning, match=r"could not compile"):
+    These cases used to warn and report 0.0. The value was not even reliably
+    zero: `ModelBuilder` left the parameter holding whatever partial number the
+    front end's `std::stod` had scraped off the front, so `2*kbse` stayed 2.0 and
+    a model integrated at twice the intended rate while reporting success.
+    `run_network` refuses the same file ("Could not find parameter kbse.
+    Exiting."), and so does this now.
+    """
+
+    def test_unknown_symbol_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises((RuntimeError, ValueError), match=r"nosuch\*2"):
+            _values(tmp_path, [("k", "0.1"), ("bad", "nosuch*2")])
+
+    def test_syntax_error_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises((RuntimeError, ValueError), match=r"foo\+"):
             _values(tmp_path, [("k", "0.1"), ("bad", "foo+")])
 
-    def test_expression_that_is_legitimately_zero_is_quiet(self, tmp_path: Path) -> None:
-        """0.0 is only suspicious when the evaluator never produced it."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            assert _values(tmp_path, [("z", "1-1"), ("k", "0.1")])["z"] == 0.0
+    def test_numeric_prefix_is_not_kept_as_the_value(self, tmp_path: Path) -> None:
+        """The shape that made this dangerous: a plausible number, not an obvious 0.
 
-    def test_only_the_root_cause_is_named(self, tmp_path: Path) -> None:
-        """A parameter reading a zeroed one compiled fine; naming it too is noise."""
-        with pytest.warns(UserWarning) as record:
+        `2*kbse` is a typo for `2*kbase`. It used to come back as 2.0 — the
+        numeric prefix — so a rate constant was wrong by a factor of two with no
+        diagnostic at all on the C++ path.
+        """
+        with pytest.raises((RuntimeError, ValueError), match=r"2\*kbse"):
+            _values(tmp_path, [("kbase", "0.5"), ("k1", "2*kbse")])
+
+    def test_expression_that_is_legitimately_zero_still_loads(self, tmp_path: Path) -> None:
+        """0.0 is only a problem when the evaluator never produced it."""
+        assert _values(tmp_path, [("z", "1-1"), ("k", "0.1")])["z"] == 0.0
+
+    def test_the_offending_parameter_is_named(self, tmp_path: Path) -> None:
+        """The error points at the root cause, not at what reads it."""
+        with pytest.raises((RuntimeError, ValueError)) as exc:
             _values(tmp_path, [("bad", "nosuch*2"), ("dep", "bad")])
-        message = str(record[0].message)
-        assert "bad = 'nosuch*2'" in message
-        assert "dep = " not in message
+        message = str(exc.value)
+        assert "bad" in message and "nosuch*2" in message
+        assert "'dep'" not in message
 
-    def test_corpus_parses_without_warnings(self) -> None:
-        """No .net file shipped in this tree trips the warning."""
+    def test_corpus_still_parses(self) -> None:
+        """No .net file shipped in this tree trips the new refusal."""
         root = Path(__file__).resolve().parents[2]
         files = sorted(
             set((root / "tests/data").rglob("*.net"))
@@ -258,14 +274,10 @@ class TestUnevaluableExpressionWarning:
             pytest.skip(".net model corpus not present in this checkout")
         offenders = []
         for path in files:
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
+            try:
                 parse_net_file(path)
-            offenders += [
-                (path.name, str(w.message))
-                for w in caught
-                if "could not compile" in str(w.message)
-            ]
+            except (RuntimeError, ValueError) as e:  # pragma: no cover - corpus is clean
+                offenders.append((path.name, str(e)[:120]))
         assert offenders == []
 
 

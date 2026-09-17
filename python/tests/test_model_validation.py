@@ -91,6 +91,44 @@ class TestRateLawResolution:
             b.build()
 
 
+class TestParameterExpressionResolution:
+    """A parameter expression must compile, the way a function body must (issue #602).
+
+    `build()` used to swallow a failed parameter compile with `continue`, leaving
+    the slot holding whatever partial number the front end had scraped off the
+    front of the text. `run_network` refuses such a file outright ("Could not
+    find parameter ... Exiting."), and a function body that will not compile
+    already threw a few lines further down — only the parameter was silent.
+    """
+
+    def _model(self, expr):
+        b = _builder()
+        b.add_parameter("kbase", 0.5)
+        b.add_parameter("k", 0.0, expr, True)
+        b.add_species("A", 10.0)
+        b.add_species("B", 0.0)
+        b.add_reaction([0], [1], "elementary", "k")
+        return b
+
+    def test_unknown_symbol_is_refused(self):
+        with pytest.raises(RuntimeError, match="failed to compile parameter 'k'"):
+            self._model("2*kbse").build()
+
+    def test_numeric_prefix_is_not_kept_as_the_value(self):
+        """`2*kbse` used to survive as 2.0 — a plausible rate, not an obvious zero."""
+        with pytest.raises(RuntimeError, match=r"2\*kbse"):
+            self._model("2*kbse").build()
+
+    def test_syntax_error_is_refused(self):
+        with pytest.raises(RuntimeError, match="failed to compile parameter 'k'"):
+            self._model("kbase +").build()
+
+    def test_valid_expression_still_compiles(self):
+        """The refusal must not catch an expression that resolves."""
+        m = self._model("2*kbase").build()
+        assert m.get_param("k") == 1.0
+
+
 class TestValidModelOK:
     """Well-formed models build and simulate."""
 

@@ -118,6 +118,39 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A `.net` parameter whose expression names an unknown symbol now refuses the
+  model instead of silently keeping the numeric prefix of the malformed text
+  (issue #602).** `ModelBuilder::build()` compiled expression-valued parameters
+  inside a `try` whose `catch` swallowed every failure with `continue`, annotated
+  "May reference functions — handle below". There is no below: nothing
+  re-compiles a parameter skipped there, and there is nothing to re-compile for,
+  since every function already owns a parameter slot and all parameters are
+  registered as evaluator variables *before* the loop — a function name is a
+  symbol the compile can already see. What the swallow actually caught was an
+  expression naming something that exists nowhere, and it left the parameter
+  holding whatever the front end's partial `std::stod` had scraped off the front.
+
+  So the value was not merely zero, which is the shape that made this dangerous:
+  `k1 = 2*kbse` (a typo for `2*kbase`) came back as **`2.0`**, and the model
+  integrated to completion at twice the intended rate with no error and no
+  warning — a plausible-looking rate constant rather than an obvious zero, on a
+  parameter that feeds rate laws and not just initial conditions. The two
+  documented `.net` loaders also disagreed about it, `0.0` from
+  `bngsim._net_reader` against `2.0` from the C++ loader, which is the split
+  #554 exists to prevent. `run_network` refuses the same file outright ("Could
+  not find parameter kbse. Exiting."), and a *function* body that will not
+  compile already threw a hundred lines further down; only the parameter was
+  silent.
+
+  A failed parameter compile now throws, naming the parameter and its
+  expression, in the same shape as the function-compile error. The Python reader
+  evaluates through a parameters-only `ModelBuilder.build()`, so it inherits the
+  refusal and the two loaders agree again. `parse_net_file`'s
+  warn-and-report-0.0 path is removed with the defect it was compensating for —
+  including the extra probe build it ran per suspect parameter — and the
+  engine-free fallback already refused rather than substituting, so it is
+  unchanged.
+
 - **A `.net` species or parameter line without a leading index is read instead of
   silently dropped (issue #600).** `parse_species()` and `parse_parameters()`
   required three whitespace fields, which made the leading index mandatory.

@@ -1460,9 +1460,24 @@ NetworkModel ModelBuilder::build() {
         try {
             p.evaluator_id = eval.compile(p.expression);
             p.value = eval.evaluate(p.evaluator_id);
-        } catch (...) {
-            // May reference functions — handle below
-            continue;
+        } catch (const std::exception &e) {
+            // Previously swallowed with `continue` and the note "May reference
+            // functions — handle below". There is no below: nothing re-compiles
+            // a parameter skipped here, and there is nothing to re-compile for,
+            // since every function already owns a parameter slot (func_param_idx
+            // above creates one when the names do not already meet) and all
+            // parameters are registered as variables before this loop — so a
+            // function name is a symbol the compile can already see. What the
+            // swallow actually caught was an expression naming something that
+            // exists nowhere, and it left the parameter holding whatever the
+            // front end's partial `std::stod` had scraped off the front: `k1 =
+            // 2*kbse` (a typo for `kbase`) stayed 2.0 and the model integrated
+            // at twice the intended rate, reporting success. run_network refuses
+            // the same file ("Could not find parameter kbse. Exiting."), and a
+            // function body that will not compile already throws a few lines
+            // below; a parameter now says so too (issue #602).
+            throw std::runtime_error("ModelBuilder: failed to compile parameter '" + p.name +
+                                     "': " + p.expression + " — " + e.what());
         }
         if (function_bound.count(pi) || !references_model_symbol(p.expression, p.name, *sd)) {
             p.is_expression = false;
