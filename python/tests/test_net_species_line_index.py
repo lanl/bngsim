@@ -419,9 +419,10 @@ class TestSpacedConcentration:
 
     `1 A() 2 * A0` used to read only the token after the species field, so the
     initial condition became 2.0 and `* A0` was discarded silently. The remainder
-    is now joined the way the parameters block joins its value tokens (#498), so
-    the whole text is what gets resolved — today that is refused as an
-    unresolvable token (#571); evaluating it is tracked in #600.
+    is joined the way the parameters block joins its value tokens (#498), so the
+    whole text is what gets evaluated. With A0 = 100 the answer is 200 — which is
+    what distinguishes a working join from the old truncation, since a truncated
+    read gives exactly the plausible-looking 2.0.
     """
 
     def test_spaced_expression_is_not_truncated_to_its_first_token(self, tmp_path: Path) -> None:
@@ -444,9 +445,7 @@ class TestSpacedConcentration:
             end groups
             """,
         )
-        # The point is that 2.0 is NOT silently accepted; the whole text is what
-        # gets resolved, and it appears in the error.
-        with pytest.raises(ModelError, match=r"2 \* A0"):
-            Model.from_net(net)
-        with pytest.raises(ValueError, match=r"2 \* A0"):
-            parse_net_file(net)
+        # 2.0 would mean the join dropped `* A0`; 200.0 means the whole text was
+        # evaluated. run_network reports 200 for this file.
+        assert list(Model.from_net(net)._core.get_initial_state()) == [200.0, 0.0]
+        assert parse_net_file(net)["species"][0] == ("A()", 200.0, False)

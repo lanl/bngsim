@@ -118,6 +118,28 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **An expression-valued `.net` species initial concentration is evaluated
+  instead of refused (issue #600).** `parse_species()` read the IC column as a
+  number *or* a bare parameter name, so `1 A() 2*A0` — which `run_network`
+  evaluates to 200 — was rejected. It is now lifted into a synthetic
+  `_InitialConc<N>` parameter and the species points at that, which is exactly
+  what BNG2.pl's own `generate_network` does with a BNGL seed-species
+  expression: it writes `_InitialConc1  2*A0` into the parameters block and the
+  name into the species column. Reusing that shape means the lift rides
+  machinery that already exists — the parameters block compiles expressions
+  through ExprTk, `build()` re-resolves the species IC from the evaluated value
+  (issue #79) and seeds forward sensitivities from the reference, and since
+  issue #602 it refuses an expression naming a symbol the model never declares.
+
+  A token that is a *name and nothing else* is still refused with the message
+  that names the species (issue #571), rather than being lifted: `B0_typo` is a
+  reference that should have resolved, not arithmetic to evaluate, and the
+  clearer error is worth keeping for by far the likelier mistake. A typo inside
+  an expression — `2*B0_typo` — cannot be told apart by that rule, so it reaches
+  the parameter compile and is refused there. Both documented `.net` loaders do
+  this identically, down to the synthetic parameter's name, so `parse_net_file`
+  and `Model.from_net` still report the same numbers (issue #554).
+
 - **A `.net` parameter whose expression names an unknown symbol now refuses the
   model instead of silently keeping the numeric prefix of the malformed text
   (issue #602).** `ModelBuilder::build()` compiled expression-valued parameters

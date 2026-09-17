@@ -63,6 +63,20 @@ static bool is_line_index_token(const std::string &tok) {
                                        [](unsigned char c) { return std::isdigit(c) != 0; });
 }
 
+// Whether a token is a plain identifier — a name and nothing else. Used to tell
+// a misspelled parameter reference apart from an arithmetic initial condition:
+// `B0_typo` is a name that should have resolved, `2*A0` is an expression to
+// evaluate (issue #600).
+static bool is_bare_identifier(const std::string &tok) {
+    if (tok.empty())
+        return false;
+    const unsigned char first = static_cast<unsigned char>(tok[0]);
+    if (!(std::isalpha(first) || tok[0] == '_'))
+        return false;
+    return std::all_of(tok.begin(), tok.end(),
+                       [](unsigned char c) { return std::isalnum(c) != 0 || c == '_'; });
+}
+
 // Strip trailing #comment. Returns trimmed content, optionally extracts comment.
 static std::string strip_comment(const std::string &line, std::string *comment = nullptr) {
     int depth = 0;
@@ -202,9 +216,12 @@ static std::vector<ParsedParam> parse_parameters(std::ifstream &file) {
     return params;
 }
 
+// `param_name_to_idx` and `params` are mutable: an expression-valued initial
+// concentration is lifted into a synthetic `_InitialConc<N>` parameter appended
+// here, which the caller then feeds to ModelBuilder with the rest (issue #600).
 static std::vector<ParsedSpecies>
-parse_species(std::ifstream &file, const std::unordered_map<std::string, int> &param_name_to_idx,
-              const std::vector<ParsedParam> &params) {
+parse_species(std::ifstream &file, std::unordered_map<std::string, int> &param_name_to_idx,
+              std::vector<ParsedParam> &params) {
     std::vector<ParsedSpecies> species;
     std::string line;
     while (std::getline(file, line)) {
@@ -291,6 +308,38 @@ parse_species(std::ifstream &file, const std::unordered_map<std::string, int> &p
 
         if (s.is_param_ref) {
             auto it = param_name_to_idx.find(conc_str);
+            if (it == param_name_to_idx.end() && !is_bare_identifier(conc_str)) {
+                // An IC that is neither a number nor a name is an expression,
+                // and run_network evaluates one: `1 A() 2*A0` seeds 200. Lift it
+                // into a synthetic parameter exactly the way BNG2.pl's own
+                // generate_network lifts a BNGL seed-species expression — it
+                // writes `_InitialConc<N>` into the parameters block and the
+                // name into the species column — and point the species at that.
+                // The parameters block already compiles expressions through
+                // ExprTk, re-resolves the species IC from the evaluated value
+                // (issue #79), seeds forward sensitivities from the reference,
+                // and since issue #602 refuses an expression naming a symbol the
+                // model never declares, so a typo inside one stays loud rather
+                // than seeding a silent zero (issue #571).
+                int n = 1;
+                std::string synthetic;
+                do {
+                    synthetic = "_InitialConc" + std::to_string(n++);
+                } while (param_name_to_idx.count(synthetic) != 0);
+
+                ParsedParam lifted;
+                lifted.name = synthetic;
+                lifted.expression = conc_str;
+                lifted.is_expression = true;
+                lifted.value = 0.0; // seed; build() evaluates and re-resolves
+                param_name_to_idx[synthetic] = static_cast<int>(params.size());
+                params.push_back(std::move(lifted));
+
+                s.param_ref_name = synthetic;
+                s.concentration = 0.0;
+                species.push_back(std::move(s));
+                continue;
+            }
             if (it == param_name_to_idx.end()) {
                 // A non-numeric IC token that names no declared parameter is
                 // unresolvable: a typo, a parameter declared after the species

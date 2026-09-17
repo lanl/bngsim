@@ -161,16 +161,13 @@ class TestSpeciesInitialConditions:
         with pytest.raises(ValueError, match="neither a number nor a declared parameter"):
             parse_net_file(net)
 
-    def test_arithmetic_ic_is_refused(self, tmp_path: Path) -> None:
-        """An arithmetic IC (``2*A0``) is the same unresolvable-token path as a typo.
+    def test_arithmetic_ic_is_evaluated(self, tmp_path: Path) -> None:
+        """An arithmetic IC (``2*A0``) is evaluated, not refused (issue #600).
 
-        ``float()`` rejects it and no parameter is named ``2*A0``, so it is refused
-        rather than silently truncated to its numeric prefix or defaulted to 0.0
-        (issue #571). A BNGL expression seed species does not reach a ``.net`` as
-        raw arithmetic: BNG2.pl lifts it into a synthetic ``_InitialConc<N>``
-        parameter and writes that name here, which resolves. Raw ``2*A0`` is a
-        hand-authored token no producer emits, so rejecting it costs no supported
-        input.
+        ``run_network`` reports 200 for it. The reader lifts the expression into a
+        synthetic ``_InitialConc<N>`` parameter — the same thing BNG2.pl's
+        ``generate_network`` writes for a BNGL seed-species expression — so both
+        loaders agree on the number and on how they got there (#554).
         """
         net = _write_net(
             tmp_path,
@@ -191,8 +188,11 @@ class TestSpeciesInitialConditions:
             end groups
             """,
         )
-        with pytest.raises(ValueError, match="neither a number nor a declared parameter"):
-            parse_net_file(net)
+        parsed = parse_net_file(net)
+        assert parsed["species"] == [("A()", 200.0, False), ("B()", 0.0, False)]
+        assert parsed["species_ic_params"] == [(0, "_InitialConc1")]
+        assert ("_InitialConc1", 200.0, "2*A0", True) in parsed["parameters"]
+        assert list(build_model_from_parsed(parsed).get_state()) == [200.0, 0.0]
 
 
 class TestAgreementWithFromNet:

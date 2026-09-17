@@ -37,6 +37,11 @@ from typing import Any
 
 from bngsim._codegen import _strip_fixed_marker
 
+#: A name and nothing else. Tells a misspelled parameter reference in a species
+#: IC column apart from an arithmetic one: `B0_typo` should have resolved,
+#: `2*A0` is an expression to evaluate (issue #600).
+_BARE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
 
 def _check_synthetic_rate_expr(expr: str) -> None:
     t = expr.strip()
@@ -84,7 +89,11 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
 
     # Parse each block
     parameters = _parse_parameters(text)
-    species, species_ic_params = _parse_species(text, parameters)
+    species, species_ic_params, lifted_params = _parse_species(text, parameters)
+    # An expression-valued IC is carried as a synthetic `_InitialConc<N>`
+    # parameter, exactly as BNG2.pl writes one, so it reaches ModelBuilder with
+    # the declared parameters and the species resolves against it (issue #600).
+    parameters = parameters + lifted_params
     observables = _parse_observables(text)
     functions = _parse_functions(text)
     reactions = _parse_reactions(text, functions)
@@ -331,20 +340,31 @@ def _evaluate_parameter_exprs_without_engine(
 def _parse_species(
     text: str,
     parameters: list[tuple[str, float, str, bool]],
-) -> tuple[list[tuple[str, float, bool]], list[tuple[int, str]]]:
+) -> tuple[
+    list[tuple[str, float, bool]],
+    list[tuple[int, str]],
+    list[tuple[str, float, str, bool]],
+]:
     """Parse species block.
 
-    Returns ``(species, ic_param_refs)``, where ``species`` is a list of
+    Returns ``(species, ic_param_refs, lifted_params)``. ``species`` is a list of
     (name, init_conc, is_fixed) and ``ic_param_refs`` pairs the 0-based index of
     each species whose IC column names a parameter with that parameter's name.
     The names are what lets ``build_model_from_parsed`` hand the reference to
     ``ModelBuilder.add_species_param_ref``, which is where the .net loader gets
     both its re-resolved IC and its forward-sensitivity seed.
+
+    ``lifted_params`` carries the synthetic ``_InitialConc<N>`` parameters minted
+    for expression-valued initial concentrations, in the same shape as the
+    parameters block, for the caller to append (issue #600).
     """
     block = _extract_block(text, "species")
     species: list[tuple[str, float, bool]] = []
     ic_param_refs: list[tuple[int, str]] = []
     param_map = {name: val for name, val, _, _ in parameters}
+    taken = set(param_map)
+    lifted: list[tuple[str, str]] = []  # (synthetic name, expression)
+    lifted_slots: list[int] = []  # species rows whose IC the lift will fill
 
     for line in block.strip().splitlines():
         line = line.strip()
@@ -378,22 +398,58 @@ def _parse_species(
         try:
             init_conc = float(ic_str)
         except ValueError:
-            # A non-numeric IC token must name a declared parameter. An
-            # unresolvable one — a typo, a parameter declared after the species
-            # block, or an arithmetic IC such as `2*A0` — would otherwise seed a
-            # silently wrong 0.0, so refuse it the way net_file_loader.cpp now
-            # does (issue #571). The two loaders must stay in agreement here
-            # (issue #554), so this mirrors the C++ message.
-            if ic_str not in param_map:
+            if ic_str in param_map:
+                ic_param_refs.append((len(species), ic_str))
+                init_conc = param_map[ic_str]
+            elif _BARE_IDENTIFIER.fullmatch(ic_str):
+                # A name and nothing else, naming no declared parameter: a typo,
+                # or a parameter declared after the species block. Seeding 0.0
+                # made that a silently wrong trajectory (issue #571), and
+                # net_file_loader.cpp refuses it with this same message (#554).
                 raise ValueError(
                     f"species {name!r} initial concentration {ic_str!r} "
                     "is neither a number nor a declared parameter"
                 ) from None
-            ic_param_refs.append((len(species), ic_str))
-            init_conc = param_map[ic_str]
+            else:
+                # Not a number and not a name, so an expression — and
+                # run_network evaluates one. Lift it into a synthetic parameter
+                # the way BNG2.pl's generate_network lifts a BNGL seed-species
+                # expression, and point the species at that (issue #600). A
+                # symbol the model never declares still fails loudly, because
+                # the parameter compile refuses it (issue #602).
+                n = 1
+                while f"_InitialConc{n}" in taken:
+                    n += 1
+                synthetic = f"_InitialConc{n}"
+                taken.add(synthetic)
+                lifted.append((synthetic, ic_str))
+                lifted_slots.append(len(species))
+                ic_param_refs.append((len(species), synthetic))
+                init_conc = 0.0  # replaced below, once the lift is evaluated
         species.append((name, init_conc, is_fixed))
 
-    return species, ic_param_refs
+    if not lifted:
+        return species, ic_param_refs, []
+
+    # Evaluate the lifted expressions alongside the declared parameters, in the
+    # one place that can: the engine's evaluator, through the same
+    # parameters-only build the parameters block uses. Doing it here rather than
+    # in `_parse_parameters` is what lets a lift reference any declared
+    # parameter regardless of where the species block sits in the file.
+    decls = [(name, expr, value, is_expr) for name, value, expr, is_expr in parameters]
+    decls += [(name, expr, 0.0, True) for name, expr in lifted]
+    values = _evaluate_parameter_exprs(decls)
+
+    lifted_params = [
+        (name, values[len(parameters) + i], expr, True) for i, (name, expr) in enumerate(lifted)
+    ]
+    lifted_value = {name: value for name, value, _, _ in lifted_params}
+    for row in lifted_slots:
+        sp_name, _seed, sp_fixed = species[row]
+        ref = dict(ic_param_refs)[row]
+        species[row] = (sp_name, lifted_value[ref], sp_fixed)
+
+    return species, ic_param_refs, lifted_params
 
 
 def _parse_observables(text: str) -> list[tuple[str, list[tuple[int, float]]]]:

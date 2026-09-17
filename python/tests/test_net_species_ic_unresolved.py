@@ -57,18 +57,29 @@ class TestUnresolvedSpeciesIC:
         with pytest.raises(ModelError, match="neither a number nor a declared parameter"):
             Model.from_net(net)
 
-    def test_arithmetic_ic_is_refused(self, tmp_path: Path) -> None:
-        """Raw arithmetic in the IC column is the same unresolvable-token path —
-        refused, not silently truncated to its numeric prefix or defaulted to 0.0.
+    def test_arithmetic_ic_is_evaluated(self, tmp_path: Path) -> None:
+        """Raw arithmetic in the IC column is evaluated, as ``run_network`` does.
 
-        This is not how a BNGL expression seed species reaches a ``.net``: BNG2.pl
-        lifts the expression into a synthetic ``_InitialConc<N>`` parameter and
-        writes that name here instead (see
-        ``test_expression_seed_species_via_initialconc_param_loads``). Raw ``2*A0``
-        is therefore a hand-authored token no producer emits, so rejecting it
-        costs no supported input."""
+        ``run_network`` reports 200 for ``2*A0`` with ``A0 = 100``. The loader
+        lifts the expression into a synthetic ``_InitialConc<N>`` parameter —
+        exactly what BNG2.pl's ``generate_network`` writes for a BNGL
+        seed-species expression — so it rides the parameters block's existing
+        ExprTk path (issue #600).
+        """
         net = _write_net(tmp_path, "2*A0")
-        with pytest.raises(ModelError, match="neither a number nor a declared parameter"):
+        model = Model.from_net(net)
+        assert list(model._core.get_initial_state()) == [100.0, 200.0]
+        assert "_InitialConc1" in list(model.param_names)
+
+    def test_lifted_expression_naming_an_unknown_symbol_still_fails(self, tmp_path: Path) -> None:
+        """Evaluating expressions must not reopen the silent-zero hole of #571.
+
+        A typo *inside* an expression cannot be caught by the bare-name check, so
+        it reaches the parameter compile — which refuses it since issue #602
+        rather than leaving a seed behind.
+        """
+        net = _write_net(tmp_path, "2*B0_typo")
+        with pytest.raises(ModelError, match="failed to compile parameter"):
             Model.from_net(net)
 
     def test_expression_seed_species_via_initialconc_param_loads(self, tmp_path: Path) -> None:
