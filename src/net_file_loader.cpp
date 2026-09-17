@@ -77,6 +77,18 @@ static bool is_bare_identifier(const std::string &tok) {
                        [](unsigned char c) { return std::isalnum(c) != 0 || c == '_'; });
 }
 
+// Whether a token is a `.net` functions-block name field: an identifier, with or
+// without the empty argument list BNG2.pl writes (`rate_fn()`). `=` is not one,
+// and neither is `rate_fn()=expr` written without spaces around the separator,
+// nor a function taking arguments — which run_network refuses too ("Functions
+// cannot contain arguments") — issue #606.
+static bool is_function_name_token(const std::string &tok) {
+    std::string bare = tok;
+    if (bare.size() >= 2 && bare.compare(bare.size() - 2, 2, "()") == 0)
+        bare.erase(bare.size() - 2);
+    return is_bare_identifier(bare);
+}
+
 // Strip trailing #comment. Returns trimmed content, optionally extracts comment.
 static std::string strip_comment(const std::string &line, std::string *comment = nullptr) {
     int depth = 0;
@@ -373,8 +385,48 @@ static std::vector<ParsedFunction> parse_functions(std::ifstream &file) {
 
         std::string stripped = strip_comment(line);
         auto tokens = split_ws(stripped);
-        if (tokens.size() < 3)
+        if (tokens.empty())
             continue;
+
+        // `<index> <name>() <expression>`, and unlike the species, parameters
+        // and groups blocks the leading index is NOT optional here: run_network
+        // refuses a functions line written without one (`ERROR: Found invalid
+        // line "rate_fn()" while reading functions block`). That refusal covers
+        // the `name() = expression` form `writeFile({format=>"net"})` writes, so
+        // BNG's own writer emits a functions block no BNG reader accepts.
+        // Requiring three tokens dropped the unindexed line silently, and taking
+        // the name from a fixed second field read the `=` as the name — a
+        // function literally called `=`, carrying the right expression under the
+        // wrong name. Either way the load then died against the *wrong* block
+        // ("reaction 0 (Elementary) references unknown parameter 'rate_fn'"),
+        // blaming a reaction that was never at fault (issue #606).
+        if (!is_line_index_token(tokens[0])) {
+            throw std::runtime_error("functions line '" + stripped +
+                                     "' needs a leading index: a .net functions line is "
+                                     "'<index> <name>() <expression>'");
+        }
+        if (tokens.size() < 2) {
+            throw std::runtime_error("functions line '" + stripped +
+                                     "' has an index but no function name");
+        }
+        if (!is_function_name_token(tokens[1])) {
+            throw std::runtime_error("functions line '" + stripped + "' has '" + tokens[1] +
+                                     "' where a function name belongs");
+        }
+        if (tokens.size() < 3) {
+            throw std::runtime_error("functions line '" + stripped +
+                                     "' has an index and a name but no expression");
+        }
+        if (tokens[2][0] == '=') {
+            // An index in front of the `writeFile` shape. run_network reads the
+            // `=` as the whole expression and refuses it (muParser: "Unexpected
+            // operator \"=\" found at position 0"); here it survived as the
+            // expression's first character and reached ExprTk, which failed with
+            // ERR248 rather than naming the line it came from (issue #606).
+            throw std::runtime_error("functions line '" + stripped +
+                                     "' separates its name and expression with '=', "
+                                     "which is BNGL's form and not a .net's");
+        }
 
         ParsedFunction func;
         func.name = tokens[1];

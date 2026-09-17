@@ -173,8 +173,15 @@ class TestElementaryUnchanged:
             "begin parameters\n 1 k 0.3\nend parameters\n"
             "begin species\n 1 A() 10.0\n 2 B() 0.0\nend species\n"
             "begin reactions\n 1 1 2 k\nend reactions\n"
-            "begin observables\n 1 Molecules Atot 1\nend observables\n"
-            "begin functions\n 1 fA()=Atot*2\nend functions\n"
+            # `groups` is the .net observables block (`observables` is BNGL's
+            # and the loader skips it), and a .net function is written
+            # `<index> <name>() <expression>`. Written as `observables` and
+            # `1 fA()=Atot*2`, neither reached the model — the loader skipped
+            # the one block and silently dropped the one functions line
+            # (issue #606) — so this test ran on a model with no obs and no
+            # func at all, which is the one thing it must not do.
+            "begin groups\n 1 Atot 1\nend groups\n"
+            "begin functions\n 1 fA() Atot*2\nend functions\n"
         )
         src = cg.generate_sens_from_model(bngsim.Model.from_net(net))
         assert src is not None

@@ -118,6 +118,35 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A `.net` functions line that is unindexed, or written `name() = expression`,
+  is refused instead of dropped or read with `=` as the function name (issue
+  #606).** The functions block was the last of the five `.net` block parsers
+  still discarding or mis-reading a line it did not recognise, and it did both.
+  `rate_fn() (kcat*Atot)/(10+Atot)` has two fields, so it fell through the
+  three-field gate and vanished; `rate_fn() = (kcat*Atot)/(10+Atot)` — what
+  `writeFile({format=>"net"})` writes — has three, so it passed the gate and the
+  name was read from the fixed second field, which is the `=`. bngsim invented a
+  function literally called `=`, carrying the right expression under the wrong
+  name. Either way the C++ loader then failed against the *wrong* block
+  (`reaction 0 (Elementary) references unknown parameter 'rate_fn'` — the
+  reaction was fine), and `parse_net_file` did not fail at all: it handed the
+  caller the wrong `functions` list with no error and no warning.
+
+  `run_network` refuses both shapes (`ERROR: Found invalid line "rate_fn()"
+  while reading functions block`), so there is nothing new to *support* here:
+  the functions block is the one block where BNG2.pl's two writers differ in the
+  **separator** and not just in the leading index, and `writeFile`'s functions
+  block is not a network any BNG reader loads. A functions line must now be
+  `<index> <name>() <expression>` — the index is mandatory here, as in the
+  reactions block (issue #603) and unlike species, parameters and groups (issue
+  #601); the name field must be an identifier, so `=` is refused as a name; and
+  an expression that *starts* with `=` is refused too, since that is the same
+  `writeFile` shape with an index added by hand, which was silently wrong in the
+  Python reader and an unattributed ExprTk `ERR248` in the C++ one. Both
+  documented loaders raise the same message for the same file (issue #554). The
+  corpus is unaffected: all 13,690 functions lines across the 2,773 `.net` files
+  in the tree are `generate_network`'s indexed, `=`-free shape.
+
 - **An expression-valued `.net` species initial concentration is evaluated
   instead of refused (issue #600).** `parse_species()` read the IC column as a
   number *or* a bare parameter name, so `1 A() 2*A0` — which `run_network`

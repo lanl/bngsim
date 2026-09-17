@@ -503,17 +503,52 @@ def _parse_functions(text: str) -> list[tuple[str, str]]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Format: index name() expression
-        # or: index name() expression  #comment
         line = line.split("#")[0].strip()
         parts = line.split(None, 2)
-        if len(parts) < 3:
+        if not parts:
             continue
-        parts[0]
-        name_with_parens = parts[1]
+
+        # `<index> <name>() <expression>`, and unlike the species, parameters
+        # and groups blocks the leading index is NOT optional: run_network
+        # refuses a functions line written without one (`ERROR: Found invalid
+        # line "rate_fn()" while reading functions block`). That refusal covers
+        # the `name() = expression` form `writeFile({format=>"net"})` writes, so
+        # BNG's own writer emits a functions block no BNG reader accepts.
+        # Requiring three fields dropped the unindexed line silently, and taking
+        # the name from a fixed second field read the `=` as the name — a
+        # function literally called `=`, carrying the right expression under the
+        # wrong name, with no error and no warning (issue #606).
+        if not (parts[0].isascii() and parts[0].isdigit()):
+            raise ValueError(
+                f"functions line {line!r} needs a leading index: a .net "
+                "functions line is '<index> <name>() <expression>'"
+            )
+        if len(parts) < 2:
+            raise ValueError(f"functions line {line!r} has an index but no function name")
+
+        # The name field is an identifier, with or without the empty argument
+        # list BNG2.pl writes. `=` is not one, and neither is `rate_fn()=expr`
+        # written without spaces or a function taking arguments — which
+        # run_network refuses too ("Functions cannot contain arguments").
+        name = parts[1][:-2] if parts[1].endswith("()") else parts[1]
+        if not _BARE_IDENTIFIER.fullmatch(name):
+            raise ValueError(
+                f"functions line {line!r} has {parts[1]!r} where a function name belongs"
+            )
+
+        if len(parts) < 3:
+            raise ValueError(f"functions line {line!r} has an index and a name but no expression")
         expression = parts[2]
-        # Strip trailing () from name
-        name = name_with_parens.rstrip("()")
+        if expression.startswith("="):
+            # An index in front of the `writeFile` shape. run_network reads the
+            # `=` as the whole expression and refuses it (muParser: "Unexpected
+            # operator \"=\" found at position 0"); this reader used to keep it
+            # as the expression's first character and hand `= k*Atot` back to
+            # the caller as if it were a function body (issue #606).
+            raise ValueError(
+                f"functions line {line!r} separates its name and expression with '=', "
+                "which is BNGL's form and not a .net's"
+            )
         functions.append((name, expression))
 
     return functions
