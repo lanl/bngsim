@@ -355,8 +355,20 @@ static std::vector<ParsedReaction> parse_reactions(std::ifstream &file) {
         std::string comment;
         std::string stripped = strip_comment(line, &comment);
         auto tokens = split_ws(stripped);
-        if (tokens.size() < 4)
+        if (tokens.empty())
             continue;
+        if (tokens.size() < 4) {
+            // Unlike the other blocks, a reaction line's index is NOT optional:
+            // the line is `<index> <reactants> <products> <rate law>`, and
+            // run_network refuses a reactions block written without it
+            // ("Reaction list not read because of errors. ERROR: No reactions
+            // in the network."). So a short line is malformed rather than
+            // something to pass over — and passing over it built a model with
+            // no reactions at all, which loaded clean and integrated a flat
+            // trajectory while reporting success (issue #600).
+            throw std::runtime_error("reaction line '" + stripped +
+                                     "' needs an index, reactants, products and a rate law");
+        }
 
         ParsedReaction rxn;
         rxn.comment = comment;
@@ -430,16 +442,32 @@ static std::vector<ParsedObservable> parse_groups(std::ifstream &file) {
 
         std::string stripped = strip_comment(line);
         auto tokens = split_ws(stripped);
-        if (tokens.size() < 2)
-            continue; // need at least index and name
+        if (tokens.empty())
+            continue;
+
+        // `[<index>] <name> [<entries>]` — the leading index is optional here
+        // too, and run_network reads an unindexed groups block ("Read 1
+        // group(s)"). Taking the name from a fixed second field read the
+        // *entry* as the name, so `Atot 1` became an observable called "1" with
+        // no entries, and the load died on a duplicate-symbol error that blamed
+        // the .net for names it did not contain (issue #600).
+        size_t field = 0;
+        if (is_line_index_token(tokens[0]))
+            ++field;
+        if (field >= tokens.size()) {
+            throw std::runtime_error("group line '" + stripped +
+                                     "' has an index but no observable name");
+        }
 
         ParsedObservable obs;
-        obs.name = tokens[1];
+        obs.name = tokens[field++];
 
-        // Entries: comma-separated, possibly spread across tokens.
-        if (tokens.size() >= 3) {
-            std::string entries_str = tokens[2];
-            for (size_t i = 3; i < tokens.size(); ++i)
+        // Entries: comma-separated, possibly spread across tokens. They are
+        // optional — BNG2.pl writes a bare `<index> <name>` for an observable
+        // whose pattern matches no species in the network.
+        if (field < tokens.size()) {
+            std::string entries_str = tokens[field];
+            for (size_t i = field + 1; i < tokens.size(); ++i)
                 entries_str += tokens[i];
 
             for (const auto &es : split(entries_str, ',')) {

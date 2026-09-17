@@ -288,6 +288,132 @@ class TestWriteFileNetFormat:
         assert [conc for _name, conc, _fixed in parsed["species"]] == [200.0, 50.0, 35.0]
 
 
+class TestGroupsBlockOptionalIndex:
+    """`run_network` reads an unindexed groups block; bngsim refused the file.
+
+    Taking the name from a fixed second field read the *entry* as the name, so
+    `Atot 1` became an observable called "1" with no entries. The load then died
+    on a duplicate-symbol error that blamed the `.net` for names it did not
+    contain — loud, but pointing at the wrong thing entirely.
+    """
+
+    def test_unindexed_group_keeps_its_name_and_entries(self, tmp_path: Path) -> None:
+        net = _write(
+            tmp_path,
+            """
+            begin parameters
+              1 k1 0.5
+            end parameters
+            begin species
+              1 A() 100
+              2 B() 0
+            end species
+            begin reactions
+              1 1 2 k1
+            end reactions
+            begin groups
+              Atot 1
+              Btot 2
+            end groups
+            """,
+        )
+        # run_network on this file reports Atot = 100, Btot = 0.
+        model = Model.from_net(net)
+        assert model.observable_names == ["Atot", "Btot"]
+        assert parse_net_file(net)["observables"] == [("Atot", [(0, 1.0)]), ("Btot", [(1, 1.0)])]
+
+    def test_observable_matching_no_species_still_has_no_entries(self, tmp_path: Path) -> None:
+        """BNG2.pl writes a bare `<index> <name>` when a pattern matches nothing.
+
+        55 such lines exist in the repo's `.net` corpus, so the entries column
+        must stay optional in both the indexed and unindexed forms.
+        """
+        for groups in ("  1 Atot 1\n  2 Ghost", "  Atot 1\n  Ghost"):
+            net = _write(
+                tmp_path,
+                f"""
+                begin parameters
+                  1 k1 0.5
+                end parameters
+                begin species
+                  1 A() 100
+                  2 B() 0
+                end species
+                begin reactions
+                  1 1 2 k1
+                end reactions
+                begin groups
+                {groups}
+                end groups
+                """,
+                name=f"m{len(groups)}.net",
+            )
+            assert parse_net_file(net)["observables"] == [("Atot", [(0, 1.0)]), ("Ghost", [])]
+
+    def test_index_with_no_observable_name_is_refused(self, tmp_path: Path) -> None:
+        net = _write(
+            tmp_path,
+            """
+            begin parameters
+              1 k1 0.5
+            end parameters
+            begin species
+              1 A() 100
+              2 B() 0
+            end species
+            begin reactions
+              1 1 2 k1
+            end reactions
+            begin groups
+              1
+            end groups
+            """,
+        )
+        with pytest.raises(ModelError, match="index but no observable name"):
+            Model.from_net(net)
+        with pytest.raises(ValueError, match="index but no observable name"):
+            parse_net_file(net)
+
+
+class TestReactionsBlockRefusesShortLines:
+    """A reaction line's index is NOT optional — and a short line must not vanish.
+
+    `run_network` refuses a reactions block written without indices ("Reaction
+    list not read because of errors. ERROR: No reactions in the network."), so
+    bngsim should refuse too. It instead skipped each such line and built a model
+    with *zero reactions*, which loaded clean and integrated a flat trajectory
+    while reporting success.
+    """
+
+    _UNINDEXED_REACTIONS = """
+        begin parameters
+          1 k1 0.5
+        end parameters
+        begin species
+          1 A() 100
+          2 B() 0
+        end species
+        begin reactions
+          1 2 k1
+        end reactions
+        begin groups
+          1 Atot 1
+        end groups
+    """
+
+    def test_unindexed_reaction_line_is_refused_not_dropped(self, tmp_path: Path) -> None:
+        net = _write(tmp_path, self._UNINDEXED_REACTIONS)
+        with pytest.raises(ModelError, match="needs an index, reactants, products"):
+            Model.from_net(net)
+        with pytest.raises(ValueError, match="needs an index, reactants, products"):
+            parse_net_file(net)
+
+    def test_indexed_reactions_still_load(self, tmp_path: Path) -> None:
+        """The corpus is entirely indexed; that path must be untouched."""
+        model = Model.from_net(_write(tmp_path, _INDEXED))
+        assert model.n_reactions == 1
+
+
 class TestSpacedConcentration:
     """A concentration spread over several tokens is kept whole, not truncated.
 

@@ -141,6 +141,21 @@ in `CMakeLists.txt`) is derived from it.
   remainder of the line, so a spaced `2 * A0` is no longer truncated to its first
   token and silently seeded as `2`.
 
+  The `groups` and `reactions` parsers carried the same assumption, and an audit
+  of both found it broken in opposite directions. `run_network` *reads* an
+  unindexed groups block, but bngsim took the observable name from a fixed second
+  field, so `Atot 1` became an observable named `1` with no entries and the load
+  died on a duplicate-symbol error that blamed the file for names it did not
+  contain — refusing a `.net` BNG2.pl accepts, with a diagnostic pointing at the
+  wrong thing. The groups index is now optional too, and the entries column stays
+  optional so an observable whose pattern matches no species keeps loading with
+  none (BNG2.pl writes a bare `<index> <name>` for those; 55 such lines exist in
+  the parity corpus). A reaction line's index, by contrast, is genuinely
+  mandatory — `run_network` refuses a reactions block written without it — but a
+  short line was skipped rather than refused, so the loader built a model with no
+  reactions at all that loaded clean and integrated a flat trajectory while
+  reporting success. It now raises and names the line.
+
 - **A `.net` species whose initial concentration names an unknown parameter now
   fails loudly instead of loading as a silent `0.0` (issue #571).**
   `parse_species()` reads the IC column as a number or a parameter name; on a

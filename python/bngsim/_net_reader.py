@@ -466,12 +466,18 @@ def _parse_observables(text: str) -> list[tuple[str, list[tuple[int, float]]]]:
         if not line or line.startswith("#"):
             continue
         parts = line.split("#")[0].strip().split()
-        if len(parts) < 2:
+        if not parts:
             continue
-        parts[0]
-        name = parts[1]
+        # `[<index>] <name> [<entries>]` — the index is optional, and
+        # run_network reads an unindexed groups block. Taking the name from a
+        # fixed second field read the *entry* as the name (issue #600).
+        field = 1 if (parts[0].isascii() and parts[0].isdigit()) else 0
+        if field >= len(parts):
+            raise ValueError(f"group line {line!r} has an index but no observable name")
+        name = parts[field]
+        # Entries are optional: an observable matching no species has none.
         entries = []
-        for token in parts[2:]:
+        for token in parts[field + 1 :]:
             for sub in token.split(","):
                 sub = sub.strip()
                 if not sub:
@@ -532,10 +538,16 @@ def _parse_reactions(
             continue
         line = line.split("#")[0].strip()
         parts = line.split()
-        if len(parts) < 4:
+        if not parts:
             continue
-
-        parts[0]
+        if len(parts) < 4:
+            # A reaction line's index is NOT optional: run_network refuses a
+            # reactions block written without it. Skipping a short line built a
+            # model with no reactions at all, which loaded clean and integrated
+            # a flat trajectory while reporting success (issue #600).
+            raise ValueError(
+                f"reaction line {line!r} needs an index, reactants, products and a rate law"
+            )
         # Find the rate law — it's the last token before any comment
         # Format: idx reactants products rate_law [stat_factor]
         # reactants and products are comma-separated species indices
