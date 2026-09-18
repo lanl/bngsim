@@ -118,6 +118,45 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **An SBML document that declares a `required="true"` package bngsim does not
+  interpret is refused by name, instead of loading as its bare core layer
+  (issue #592).** SBML Level 3 `multi` is the package rule-based models are
+  encoded in — species types, feature values, binding sites, reactions whose
+  meaning comes from component maps. `Model.from_sbml` accepted a `multi`
+  document, dropped the entire `multi` layer, and built a model out of whatever
+  the core layer happened to contain: no exception, no warning, and a
+  simulation of something that is not the model on disk. The loader consulted
+  exactly one package (`doc.getPlugin("comp")`, for the GH #230 flattening) and
+  read past every other one as if it were not there.
+
+  The guard keys on `required`, not on a list of package names, which is what
+  makes it general and correct: SBML defines `required="true"` to mean the
+  package changes the model's *mathematical meaning*, so the same check covers
+  `qual`, `spatial` and any future package, while the presentation-only ones
+  (`layout`, `render`, `fbc`) declare `required="false"` and pass through
+  untouched. `comp` and `distrib` are the handled list —
+  `bngsim._sbml_unsupported.HANDLED_PACKAGES`, with the reason each is on it —
+  and a package this libSBML has no extension for is checked too, from the
+  document's unknown-package list. The refusal is a `ModelError` naming each
+  package and its namespace URI, with the same
+  `BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1` opt-out the `delay` / `AlgebraicRule`
+  refusals have; under the opt-out it warns per package and loads the core
+  layer.
+
+  Nothing that loaded before stops loading: across the 14,885 XML documents in
+  the tree and the full 1,824-case SBML semantic suite, the only ones the guard
+  refuses are three cached BioModels `qual` documents (BIOMD0000000562 / 592 /
+  593), each of whose core layer is *empty* — 0 species and 0 reactions against
+  10–28 qualitative species and their transitions — and each of which bngsim
+  had been loading as a model with zero species. The suite declares only
+  `comp:required="true"` and
+  `fbc:required="false"`, so its grading is unchanged. Two libSBML behaviors
+  would have made this refuse whole corpora and are handled explicitly: on a
+  Level 2 document it reports its annotation-based `layout` / `render` plugins
+  as required (there is no `required` attribute before Level 3), and on any
+  L3V2 document it reports the `l3v2extendedmath` plugin — which carries the
+  core namespace — as required.
+
 - **`clear_codegen_cache()` no longer deletes a *running* sharded compile's
   scratch directory (issue #557).** Every sweep in `bngsim.cache` holds back an
   entry whose compile is still alive, by reading the PID out of the name and

@@ -2149,6 +2149,129 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
 # ── SBML → ModelBuilder ──────────────────────────────────────────────────
 
 
+#: Every SBML Level 3 package namespace starts here — ``<prefix>/<package>/<version>``.
+_L3_PACKAGE_URI_PREFIX = "http://www.sbml.org/sbml/level3/"
+
+
+def _package_name_from_uri(uri: str) -> str:
+    """The package name in an SBML L3 package namespace URI, else the URI itself.
+
+    ``…/sbml/level3/version1/arrays/version1`` → ``arrays``. Only needed for a
+    package libSBML has no extension for: a registered one is asked its name
+    directly (``SBMLDocumentPlugin.getPackageName``). Anything not shaped like
+    an SBML L3 package URI is reported as itself rather than guessed at.
+    """
+    parts = uri.rstrip("/").split("/")
+    if not uri.startswith(_L3_PACKAGE_URI_PREFIX) or len(parts) < 2 or not parts[-2]:
+        return uri
+    return parts[-2]
+
+
+def _unhandled_required_packages(doc) -> list[tuple[str, str]]:
+    """``(name, namespace URI)`` for every ``required="true"`` package bngsim
+    does not account for, sorted by name (issue #592).
+
+    Two sources, because libSBML splits them: a package it implements is a
+    *plugin* on the document, and one it does not (``arrays`` in 5.21, anything
+    newer than the installed libSBML) is an *unknown package*, which it still
+    records with its ``required`` flag. A namespace outside
+    ``http://www.sbml.org/sbml/level3/…`` is neither — libSBML drops it without
+    a word, and there is nothing here to read.
+
+    Only ``required="true"`` is collected. That is the whole design: SBML
+    defines it to mean the package changes the model's mathematical meaning, so
+    it is exactly the set whose content cannot be read past, while ``layout`` /
+    ``render`` / ``fbc`` declare ``required="false"`` and go through untouched.
+
+    Two things libSBML reports as required packages that are not, and the guard
+    would refuse half the corpus without them:
+
+    * **Level 2 and below.** ``required`` is an SBML *Level 3* attribute. On an
+      L2 document libSBML still attaches its annotation-based ``layout`` and
+      ``render`` plugins and answers ``getPackageRequired`` with ``True`` for
+      both — for every L2 model, BIOMD0000000003 included. L2 packages are
+      annotations and carry no mathematical meaning, so there is nothing to
+      refuse.
+    * **``l3v2extendedmath``.** libSBML models the extended math L3V2 folded
+      into core as a plugin, under the *core* namespace itself, and reports it
+      required. Every plain L3V2 document carries it. A plugin whose URI is the
+      document's own core namespace is core, not a package.
+    """
+    if doc.getLevel() < 3:
+        return []
+    handled = _sbml_unsupported.handled_package_names()
+    core_uri = doc.getSBMLNamespaces().getURI()
+    found: dict[str, str] = {}
+    for i in range(doc.getNumPlugins()):
+        plugin = doc.getPlugin(i)
+        name = plugin.getPackageName()
+        uri = plugin.getURI()
+        if uri == core_uri or name in handled:
+            continue
+        if doc.getPackageRequired(uri):
+            found[name] = uri
+    for i in range(doc.getNumUnknownPackages()):
+        uri = doc.getUnknownPackageURI(i)
+        name = _package_name_from_uri(uri)
+        if name not in handled and doc.getPackageRequired(uri):
+            found[name] = uri
+    return sorted(found.items())
+
+
+def _check_required_packages(doc, source: str) -> None:
+    """Refuse a document whose declared ``required="true"`` package bngsim does
+    not interpret, instead of silently building a model from the core layer
+    (issue #592).
+
+    The motivating case is ``multi``, the package rule-based models are encoded
+    in: its species are templates carrying feature values and its reactions are
+    parameterized by component maps, so reading only the core
+    ``<listOfSpecies>`` / ``<listOfReactions>`` gives a model with the wrong
+    species count, the wrong stoichiometry and no combinatorial expansion — or
+    an empty one. The loader consulted exactly one package (``comp``) and read
+    past every other as if it were not there, with no exception and no warning.
+
+    Same posture as :func:`_check_unsupported_constructs`: a hard
+    :class:`ModelError` unless ``BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1``, which
+    logs one warning per package and loads the core layer anyway.
+    """
+    import os
+
+    offenders = _unhandled_required_packages(doc)
+    if not offenders:
+        return
+
+    from bngsim._exceptions import ModelError
+
+    if os.environ.get(_ALLOW_UNSUPPORTED_ENV) == "1":
+        for name, uri in offenders:
+            logger.warning(
+                'SBML package %s [%s] is declared required="true" and bngsim does '
+                "not interpret it; loading the core layer anyway (%s=1). The model "
+                "being integrated is not the one in %s.",
+                name,
+                uri,
+                _ALLOW_UNSUPPORTED_ENV,
+                source,
+            )
+        return
+
+    bullets = "\n".join(f"  - {name} [{uri}]" for name, uri in offenders)
+    raise ModelError(
+        "Model declares SBML Level 3 package(s) bngsim does not interpret, "
+        'with required="true":\n'
+        f"{bullets}\n"
+        'SBML defines required="true" to mean the package changes the mathematical '
+        "meaning of the model, so the core <listOfSpecies>/<listOfReactions> is not "
+        "the model: reading past the package would integrate a different system and "
+        "report it as this one. Packages bngsim does account for:\n"
+        f"{_sbml_unsupported.handled_packages_note()}\n"
+        "A presentation-only package (layout, render, fbc) declares "
+        'required="false" and loads untouched. To read the core layer anyway — '
+        f"knowing the result is not the model on disk — set {_ALLOW_UNSUPPORTED_ENV}=1."
+    )
+
+
 def _doc_uses_comp(doc) -> bool:
     """Whether *doc* actually composes models via the SBML ``comp`` package
     (hierarchical model composition, GH #230).
@@ -2300,6 +2423,7 @@ def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromFile(str(path))
     _check_sbml_errors(doc, str(path))
+    _check_required_packages(doc, str(path))
     if _doc_uses_comp(doc):
         _flatten_comp(doc, base_path=str(path.parent))
     if compartment_sizes:
@@ -2318,6 +2442,7 @@ def load_sbml_string(text: str, compartment_sizes: dict | None = None):
     t0 = time.perf_counter()
     doc = libsbml.readSBMLFromString(text)
     _check_sbml_errors(doc, "<string>")
+    _check_required_packages(doc, "<string>")
     if _doc_uses_comp(doc):
         # No file context for a string load, so ExternalModelDefinitions cannot
         # be resolved; in-document ModelDefinitions/Submodels flatten fine.

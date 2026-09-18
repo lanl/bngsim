@@ -134,6 +134,17 @@ result = sim.run(t_span=(0, 100), n_points=101)
 Antimony loading requires `bngsim[antimony]`. Direct SBML loading requires
 `python-libsbml>=5.20` (installed automatically with the base package).
 
+**SBML Level 3 packages.** A document that declares a package `required="true"`
+— SBML's way of saying the package changes the mathematical meaning of the model
+— is refused by name unless bngsim accounts for that package. `comp` does load
+(the composition is flattened first); so does `distrib`, whose random draws the
+math translator refuses individually. `multi`, `qual`, `spatial` and the rest are
+refused, because reading only the core `<listOfSpecies>` / `<listOfReactions>` of
+such a document builds a *different* model — a `multi` document's core species are
+rule templates, and a `qual` document's core layer is typically empty. A
+presentation-only package (`layout`, `render`, `fbc`) declares `required="false"`
+and loads untouched.
+
 ## Universal `.net` reader (`parse_net_file`)
 
 BNGsim includes a pure-Python `.net` file parser that produces engine-agnostic

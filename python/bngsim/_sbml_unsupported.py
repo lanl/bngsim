@@ -21,6 +21,13 @@ The manifest is a *committed* artifact
 :func:`manifest_text` is its byte-stable generator and a unit test asserts the
 two are equal, so the declared boundary is reviewed like code.
 
+:data:`HANDLED_PACKAGES` is the same boundary one level up, at the *package*
+rather than the construct (issue #592): which SBML Level 3 packages a document
+may declare ``required="true"`` and still load, and how bngsim accounts for each.
+It carries no suite tags — the semantic suite declares only
+``comp:required="true"`` and ``fbc:required="false"``, so no case turns on it —
+and its consumer is the loader's refusal, not the manifest.
+
 Deliberate NON-declarations (documented, not gamed — see the boundary notes in
 ``README.md`` and GH #231 / GH #242):
 
@@ -88,6 +95,55 @@ CONSTRUCTS: tuple[UnsupportedConstruct, ...] = (
 DELAY = CONSTRUCTS[0].label
 ALGEBRAIC_RULE = CONSTRUCTS[1].label
 FAST = CONSTRUCTS[2].label
+
+
+class HandledPackage(NamedTuple):
+    """One SBML Level 3 package a ``required="true"`` document may declare and
+    still load, with how bngsim accounts for it."""
+
+    name: str
+    how: str
+
+
+# Every other package declared ``required="true"`` is refused at load time
+# (issue #592). SBML defines ``required="true"`` to mean the package changes the
+# *mathematical meaning* of the model, so reading past it builds a different
+# model than the one on disk — for ``multi``, the package rule-based models are
+# encoded in, the core ``<listOfSpecies>`` is a set of templates and reading it
+# as a species pool yields wrong species counts, wrong stoichiometry, and no
+# combinatorial expansion, silently. Keying on ``required`` rather than on a
+# hardcoded package name is what makes the guard general: it covers ``qual``,
+# ``spatial``, ``multi`` and any future package, while the presentation-only
+# packages (``layout``, ``render``, ``fbc``) declare ``required="false"`` and
+# pass through untouched, as they should.
+HANDLED_PACKAGES: tuple[HandledPackage, ...] = (
+    HandledPackage(
+        name="comp",
+        how=(
+            "hierarchical composition is flattened by libSBML's "
+            "CompFlatteningConverter before the model is built (GH #230)"
+        ),
+    ),
+    HandledPackage(
+        name="distrib",
+        how=(
+            "its random-draw csymbols reach the MathML translator, which refuses "
+            "each one by name (GH #97); the rest of distrib is uncertainty "
+            "annotation, which does not enter the integrated system"
+        ),
+    ),
+)
+
+
+def handled_package_names() -> frozenset[str]:
+    """The package names :data:`HANDLED_PACKAGES` covers."""
+    return frozenset(p.name for p in HANDLED_PACKAGES)
+
+
+def handled_packages_note() -> str:
+    """One line per handled package, for the tail of a refusal message."""
+    return "\n".join(f"  - {p.name}: {p.how}" for p in HANDLED_PACKAGES)
+
 
 # Component tags for test types bngsim does not attempt at all as a time-course
 # ODE engine. ``fbc`` (flux-balance-constraints) cases are ``FluxBalanceSteadyState``

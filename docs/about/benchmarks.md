@@ -117,6 +117,15 @@ silent approximation with `BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1`):
 | `csymbol delay` / `delay(x, τ≠0)` | delay-differential equation — no DDE solver | `delay(x, 0)` = identity |
 | `FastReaction` (`fast="true"`) under ODE | fast-equilibrium constraint — no constraint solver | — |
 
+A whole **SBML Level 3 package** declared `required="true"` is refused the same way
+and for the same reason: `required="true"` means the package changes the model's
+mathematical meaning, so reading only the core layer of a `multi`, `qual` or `spatial`
+document integrates a different system than the one on disk. `comp` (flattened) and
+`distrib` (random draws refused individually by the math translator) are the two
+bngsim accounts for; a presentation-only package declares `required="false"` and loads
+untouched. No SBML Test Suite case is affected — the suite declares only
+`comp:required="true"` and `fbc:required="false"`.
+
 The suite's flux-balance test type (`fbc` / `FluxBalanceSteadyState`, 34 cases) is
 likewise declared unsupported — it is a steady-state constraint problem, not a
 time-course, and bngsim is a time-course ODE/SSA engine. All of the above are recorded in
