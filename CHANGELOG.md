@@ -14,6 +14,8 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-21
+
 ### Added
 
 - **Per-reaction firing counts and propensity integrals from an exact SSA
