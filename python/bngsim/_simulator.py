@@ -6299,21 +6299,81 @@ class Simulator:
 
     @staticmethod
     def _truncate_result(result: Result, n: int) -> Result:
-        """Return a result truncated to the first n time points."""
-        return Result(
+        """Return a result truncated to the first n time points.
+
+        Everything the run produced survives the cut (GH #559): every per-time
+        block is sliced, and every scalar or metadata field is carried over
+        verbatim. This used to forward eight fields and drop the rest, so a
+        stop condition silently cost the caller the sensitivity blocks, the
+        seed, the reaction statistics and the SSA/PSA diagnostics — and,
+        because the truncated result is built with ``core=None``, the dropped
+        diagnostics came back as ``Result.__init__``'s inert defaults rather
+        than as nothing, so an SSA run on the ``cc`` propensity backend
+        reported ``propensity_backend == "interpreted"``. A sensitivity run
+        stopped early then raised "no parameter sensitivities were computed"
+        from an empty (0, 0, 0) block, naming the one thing the caller had
+        asked for.
+
+        The blocks below all carry time on their leading axis, so a block whose
+        leading axis is not the original time axis (a squeezed batch, say) is
+        carried whole rather than cut in the wrong place.
+        """
+        n_times = result._time.shape[0] if result._time.ndim else 0
+
+        def cut(arr):
+            """Slice a per-time array, or pass it through if it is not one."""
+            if arr is None or getattr(arr, "ndim", 0) == 0 or arr.size == 0:
+                return arr
+            if arr.shape[0] != n_times:
+                return arr
+            return arr[:n].copy()
+
+        def cut_map(m):
+            """Same, for the {species_idx: per-sample array} varvol maps."""
+            if not m:
+                return m
+            return {k: cut(v) for k, v in m.items()}
+
+        out = Result(
             core=None,
-            _time=result._time[:n].copy(),
-            _species=result._species[:n].copy(),
-            _observables=result._observables[:n].copy(),
-            _expressions=result._expressions[:n].copy()
-            if result._expressions.size > 0
-            else result._expressions,
+            custom_attrs=dict(result.custom_attrs),
+            _time=cut(result._time),
+            _species=cut(result._species),
+            _observables=cut(result._observables),
+            _expressions=cut(result._expressions),
             _species_names=result._species_names,
             _observable_names=result._observable_names,
             _expression_names=result._expression_names,
             _solver_stats=result._solver_stats,
             _species_volume_factors=result._species_volume_factors,
+            _seed=result._seed,
+            _ic_sensitivity_seed=result._ic_sensitivity_seed,
+            _sensitivities=cut(result._sensitivities),
+            _sensitivity_params=result._sensitivity_params,
+            _sensitivities_ic=cut(result._sensitivities_ic),
+            _sensitivity_ic_species=result._sensitivity_ic_species,
+            _observable_sensitivities=cut(result._observable_sensitivities),
+            _expression_sensitivities=cut(result._expression_sensitivities),
+            _observable_sensitivities_ic=cut(result._observable_sensitivities_ic),
+            _expression_sensitivities_ic=cut(result._expression_sensitivities_ic),
+            _reaction_firing_counts=cut(result._reaction_firing_counts),
+            _reaction_propensity_integrals=cut(result._reaction_propensity_integrals),
+            _reaction_labels=result._reaction_labels,
+            _ssa_diagnostics=dict(result._ssa_diagnostics),
         )
+        # Fields the constructor does not take: the Simulator stamps them onto
+        # the result after building it, so the copy does the same.
+        out._psa_diagnostics = dict(result._psa_diagnostics)
+        out._expression_sens_support = dict(result._expression_sens_support)
+        out._ar_sens_map = dict(result._ar_sens_map)
+        out._ar_sens_blocked = result._ar_sens_blocked
+        out._ar_sens_refused = result._ar_sens_refused
+        out._varvol_live_vol = (
+            dict(result._varvol_live_vol) if result._varvol_live_vol is not None else None
+        )
+        out._varvol_conc_factor = cut_map(result._varvol_conc_factor)
+        out._varvol_amount_factor = cut_map(result._varvol_amount_factor)
+        return out
 
     # ─── Interactive simulation ─────────────────────────────────────
 
