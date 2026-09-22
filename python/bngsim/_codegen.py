@@ -5946,9 +5946,12 @@ _BUILTIN_IDENT_MAP: dict[str, tuple[str, bool]] = {
     "rint": ("round", False),
     "abs": ("fabs", False),
     # ExprTk max/min have no C equivalent under those names; <math.h> spells
-    # them fmax/fmin. The loader emits nested binary max()/min() for n-ary forms,
-    # so the binary C builtins suffice. (Both are ExprTk-reserved, so they can
-    # never be user-defined model symbols that would need to win the lookup.)
+    # them fmax/fmin, which are strictly binary. ExprTk's are variadic, and a
+    # .net (or any expression that skips the loader's sympy round trip) keeps
+    # an n-ary call as written, so _replace_engine_calls first folds
+    # max(a,b,c) into max(max(a,b),c) (GH #556) and this rename then applies to
+    # each binary call. (Both are ExprTk-reserved, so they can never be
+    # user-defined model symbols that would need to win the lookup.)
     "max": ("fmax", False),
     "min": ("fmin", False),
     # A loop, not an expression, so it is a helper the generated source carries
@@ -6129,7 +6132,11 @@ def _split_if_args(expr: str, paren_pos: int) -> list[str] | None:
 # The name cannot belong to the model instead: all five are reserved, so a model
 # symbol that collides is renamed at load. A .net function call is written with
 # empty parens (``sum()``), which is the zero-argument case this leaves alone.
-_ENGINE_CALL_NAMES = ("sign", "sgn", "clamp", "avg", "sum")
+#
+# ``max``/``min`` join them for their n-ary form only (GH #556): C's fmax/fmin
+# take exactly two arguments, so a three-or-more-argument call is folded into
+# nested binary calls here and left for _BUILTIN_IDENT_MAP to rename.
+_ENGINE_CALL_NAMES = ("sign", "sgn", "clamp", "avg", "sum", "max", "min")
 _ENGINE_CALL_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(_ENGINE_CALL_NAMES) + r")\s*\(")
 
 
@@ -6171,11 +6178,24 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
             return None
         total = " + ".join(f"({a})" for a in args)
         return f"({total})" if name == "sum" else f"(({total}) / {n}.0)"
+    if name in ("max", "min"):
+        # ExprTk reduces a variadic max/min left to right, so fold the same way:
+        # max(a,b,c,d) -> max(max(max(a,b),c),d). The result is still spelled
+        # max/min, and the identifier pass renames each binary call to
+        # fmax/fmin. A binary call (the only form that ever compiled) is left
+        # exactly as written, so its emitted source does not change.
+        if n <= 2:
+            return None
+        folded = args[0]
+        for a in args[1:]:
+            folded = f"{name}({folded},{a})"
+        return folded
     return None
 
 
 def _replace_engine_calls(expr: str) -> str:
-    """Rewrite every ``sign``/``sgn``/``clamp``/``avg``/``sum`` call to C.
+    """Rewrite every ``sign``/``sgn``/``clamp``/``avg``/``sum`` call to C, and
+    fold an n-ary ``max``/``min`` into nested binary calls (GH #556).
 
     Runs after ``_replace_if_calls`` and before identifier substitution, in both
     translation pipelines, so the arguments are still the model's own text and
@@ -6202,7 +6222,14 @@ def _replace_engine_calls(expr: str) -> str:
         if len(args) == 1 and not args[0]:
             args = []  # `name()`, which is how a .net calls a model function
         c_form = _c_engine_call(m.group(1), args)
-        out.append(expr[m.start() : close_paren + 1] if c_form is None else c_form)
+        if c_form is None:
+            # Left as written, but its arguments still get this pass: a binary
+            # max() can hold an n-ary one (GH #556). Rebuilt from the unstripped
+            # parts, so a call with nothing inside to rewrite comes back
+            # byte-for-byte.
+            rebuilt = ",".join(_replace_engine_calls(r) for r in raw)
+            c_form = f"{expr[m.start() : open_paren + 1]}{rebuilt})"
+        out.append(c_form)
         cursor = close_paren + 1
     return "".join(out)
 
