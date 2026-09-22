@@ -1103,44 +1103,41 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // t_start value — and if every t_start propensity is zero (Mpl(0)=0 here),
     // the loop wedges in the a0==0 fast-forward and the trajectory flat-lines.
     //
-    // Detect this by checking whether any function value moves when only time
-    // advances (concentrations held fixed across the probes). If so, switch the
-    // main loop to piecewise-constant sub-stepping: cap each step at dt_max and
-    // re-evaluate all functions + propensities at the new time, the same way the
-    // ODE RHS refreshes assignment rules on every call. For piecewise-constant
-    // propensities the discard-and-resample at the cap is exact (exponential
-    // memorylessness); the only approximation is holding the rate constant over
-    // dt_max, which vanishes as dt_max → 0.
-    bool time_dependent_rates = false;
-    if (model.n_functions() > 0) {
-        const double span = times.t_end - times.t_start;
-        const double h = (span > 0.0) ? span : 1.0;
-        const double probe_times[3] = {times.t_start, times.t_start + 0.5 * h, times.t_start + h};
-        std::vector<double> base;
-        for (int pi = 0; pi < 3 && !time_dependent_rates; ++pi) {
-            model.evaluate_functions(probe_times[pi]);
-            auto vals = model.function_values();
-            if (pi == 0) {
-                base = std::move(vals);
-            } else {
-                for (size_t fi = 0; fi < vals.size() && fi < base.size(); ++fi) {
-                    if (std::fabs(vals[fi] - base[fi]) > 1e-12 * (1.0 + std::fabs(base[fi]))) {
-                        time_dependent_rates = true;
-                        break;
-                    }
-                }
-            }
-        }
-        // Restore function-driven parameters to their t_start values; the
-        // initial-state record below re-evaluates at t_start regardless.
+    // When the model has one, switch the main loop to piecewise-constant
+    // sub-stepping: cap each step at dt_max and re-evaluate all functions +
+    // propensities at the new time, the same way the ODE RHS refreshes
+    // assignment rules on every call. For piecewise-constant propensities the
+    // discard-and-resample at the cap is exact (exponential memorylessness);
+    // the only approximation is holding the rate constant over dt_max, which
+    // vanishes as dt_max → 0.
+    //
+    // `functions_use_time()` answers this from the function expressions, which
+    // is the only way to answer it. This gate used to evaluate every function
+    // at t_start, the midpoint and t_end and conclude "time-invariant" when the
+    // three values agreed — but a function is not pinned down by three of its
+    // values, and the failure is not exotic: a rate of period 5 run over [0,10]
+    // is probed at 0, 5 and 10, one whole period apart each time, so it reads
+    // as constant, sub-stepping never engages, and the run reports a trajectory
+    // computed against a rate that is not the model's (issue #654 — the aliased
+    // horizon returned a mean 6.8× the analytic answer, silently). A syntactic
+    // check cannot alias. It can over-report — a function that names `time` but
+    // is constant over this window now sub-steps — and that direction costs
+    // only time.
+    bool time_dependent_rates = model.functions_use_time();
+
+    // Leave the function-bound parameters holding their t_start values, which is
+    // where the probe this replaced left them. Nothing above has necessarily
+    // evaluated them (the t=0 event batch does, but only when there are events),
+    // and the propensity-backend setup below snapshots the live rate parameters.
+    if (model.n_functions() > 0)
         model.evaluate_functions(times.t_start);
-    }
+
     // GH #81 — a rate-rule ODE makes every propensity that reads its target a
     // continuously-varying function of time (the target moves between fires),
-    // so the piecewise-constant sub-stepping MUST engage even when the time-only
-    // probe above found no moving function value (a rate rule whose RHS reads
-    // only species has none). This is also where the deterministic Euler
-    // integration of the targets is driven (one Euler step per sub-step).
+    // so the piecewise-constant sub-stepping MUST engage even when no function
+    // names the clock (a rate rule whose RHS reads only species does not). This
+    // is also where the deterministic Euler integration of the targets is
+    // driven (one Euler step per sub-step).
     if (has_rate_rules)
         time_dependent_rates = true;
     // Sub-step cap for time-dependent rates: resolve the rate variation over
@@ -1435,13 +1432,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             double tau = -std::log(r1) / a0;
             double t_proposed = t + tau;
 
-            // Record output points strictly before the fire time. (Evaluated per
-            // sample. `time_dependent_rates` having gated this branch off is NOT
-            // a guarantee that the functions are time-invariant: the probe that
-            // sets it samples three points and aliases any function whose values
-            // coincide there, issue #654 — so a moving function can reach here.
-            // Recording per sample matches the main loop byte-for-byte either
-            // way.)
+            // Record output points strictly before the fire time. Evaluated per
+            // sample, matching the main loop byte-for-byte. `time_dependent_rates`
+            // gates this branch off, and since #654 that gate is the syntactic
+            // `functions_use_time()` — so the functions reaching here really are
+            // time-invariant and a single pre-loop evaluation would do. Per
+            // sample anyway: it is the same answer at a cost this branch does not
+            // notice (it runs once per output row, not once per fire), and it is
+            // the one form that stays correct if the gate ever widens again.
             while (next_output < n_out && t_proposed >= t_out[next_output]) {
                 model.update_observables(conc.data());
                 for (int j = 0; j < n_obs; ++j)
@@ -1638,13 +1636,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     rs_record(next_output, t_out[next_output]);
                 // Issue #569 — same pairing as every other recording site above.
                 // Evaluated per sample rather than once before the loop, because
-                // arriving here does NOT mean the functions are constant. The
-                // probe that sets `time_dependent_rates` samples each function at
-                // three points and reads "no movement" as "time-invariant", so a
-                // function whose values coincide there — a period dividing h/2 is
-                // the easy case — lands in this branch still moving with t
-                // (issue #654). A single pre-loop evaluation would flatline the
-                // whole fast-forwarded tail at one value.
+                // arriving here does NOT mean the functions are constant: the
+                // fast-forward is entered on a0 == 0 with no live reaction left,
+                // which says nothing about a function that reads time() — an
+                // output-only function, or one whose reaction is exhausted. Its
+                // recorded column must keep tracking t across the frozen tail; a
+                // single pre-loop evaluation would flatline it at one value.
                 if (n_func > 0) {
                     model.evaluate_functions(t_out[next_output]);
                     auto fvals = model.function_values();

@@ -1944,6 +1944,39 @@ NetworkModel ModelBuilder::build() {
         }
     }
 
+    // ── Time dependence of the function block (issue #654) ───────────────
+    //
+    // Whether any function value can move with the clock alone. The SSA gates
+    // its piecewise-constant sub-stepping on this: a rate law that reads a
+    // purely time-dependent function has no species to trigger a propensity
+    // refresh, so without sub-stepping it is held at its t_start value for the
+    // whole run.
+    //
+    // Answered from the expression text, not by evaluating anything. The
+    // previous owner of this decision sampled every function at three times and
+    // called it constant when the values agreed, which is not a property three
+    // samples can establish: a rate of period 5 over [0, 10] is probed at 0, 5
+    // and 10 — one whole period apart each time — reads as constant, and the
+    // trajectory is then computed against a rate that is not the model's, with
+    // no warning (issue #654). `time` is the only clock symbol in the grammar
+    // (`t` is deliberately left free as an ordinary identifier, see
+    // src/expression.cpp), and a time-indexed table function is the other way
+    // in — that one is flagged by register_table_function_() when the tfun is
+    // registered, above and post-build alike.
+    //
+    // No transitive closure is needed: the flag is about the function block as
+    // a whole, so a function that reads a time-dependent one is already covered
+    // by the one it reads. Over-reporting is safe (sub-stepping a model that
+    // did not need it costs time, not correctness); under-reporting is the bug.
+    for (const auto &func : impl.functions) {
+        if (impl.functions_use_time)
+            break;
+        for_each_identifier(func.expression, [&](const std::string &token) {
+            if (token == "time")
+                impl.functions_use_time = true;
+        });
+    }
+
     // ── 5. Resolve Functional reaction param indices ─────────────────────
     for (auto &rxn : sd->reactions) {
         if (!rxn.function_name.empty()) {

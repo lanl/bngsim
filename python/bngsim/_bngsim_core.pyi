@@ -302,6 +302,11 @@ class NetworkModel:
         Names of the model's functions, in declaration order. Each also names a parameter slot holding its evaluated value, which ``param_is_internal`` flags and ``primary_param_names`` omits (issue #227).
         """
     @property
+    def functions_use_time(self) -> bool:
+        """
+        Whether any function's value can move with simulation time alone (issue #654). Gates the SSA's time-dependent sub-stepping.
+        """
+    @property
     def has_baseline_sensitivity_seed(self) -> bool:
         """
         True iff the IC baseline itself carries a dx/dθ — i.e. save_concentrations() redefined the baseline to a pre-equilibrated state, so reset() returns to a θ-dependent initial condition and restores its derivative with it (GH #81).

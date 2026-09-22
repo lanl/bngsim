@@ -16,6 +16,36 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The SSA decides time dependence from the function expressions, not by
+  sampling them (issue #654).** `SsaSimulator::run_internal` gates its
+  piecewise-constant sub-stepping on whether the model's rates move with the
+  clock, and answered that by evaluating every function at three times —
+  `t_start`, the midpoint and `t_end` — and calling the model time-invariant
+  when the three values agreed. Three values do not pin down a function. Any
+  function whose values happen to coincide at those points was classified
+  constant; a periodic rate whose period divides half the horizon is the easy
+  way in, because the probes then sit an exact whole number of periods apart,
+  but nothing about the defect is specific to sinusoids.
+
+  The consequence is not a missed optimisation. A purely time-dependent rate
+  has no species to trigger a propensity refresh, so with sub-stepping gated
+  off the rate is not tracked and the run reports a trajectory computed against
+  a rate that is not the model's — silently, with no warning and no error. For
+  `A -> B` at `kf(t) = 0.5·(1 + sin(2πt/5))` from `A(0) = 200`, `∫₀¹⁰ kf = 5`
+  exactly, so `A(10) = 200·e⁻⁵ = 1.348`; over `[0, 10]` the simulator returned
+  a mean of 9.135, 6.8× too high, while the same model over `[0, 11]` — same
+  seeds, same reported `t = 10`, only the probe spacing different — returned
+  1.385.
+
+  The gate is now syntactic and cannot alias: `NetworkModel::functions_use_time`
+  is true iff some function expression names `time` (the only clock symbol in the
+  grammar — `t` is deliberately left free as an ordinary identifier) or reads a
+  time-indexed table function. It is established at build time from the
+  compiled expression text, set by `register_table_function_()` for a tfun
+  indexed on the clock, and carried by `clone()`. It can over-report — a
+  function that names `time` but is constant over the window now sub-steps —
+  and that direction costs time, not correctness.
+
 - **A chained power `a^b^c` translated to `pow(a, b)pow(, c)`, so codegen
   refused a model the interpreter ran (issue #555).** `_replace_power_op`
   rewrote each `^` as it reached it and pushed the whole `pow(...)` string into
@@ -85,9 +115,10 @@ in `CMakeLists.txt`) is derived from it.
   common SSA end state, reported 0.0 for every function across the whole tail
   of the trajectory, through `Result.expressions` and into the `.gdat` writer
   alike. Both branches now evaluate and record alongside the observables, per
-  sample rather than once before the loop: `time_dependent_rates` being false
-  only rules out a rate that moves with t, and a function may still read
-  `time()` without feeding any rate law.
+  sample rather than once before the loop: the fast-forward is entered on
+  `a0 == 0`, which says nothing about a function that reads `time()` — an
+  output-only one, or one whose reaction is exhausted — so its column has to
+  keep tracking t across the frozen tail.
 
 ## [0.16.0] - 2026-09-21
 

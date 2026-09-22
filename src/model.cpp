@@ -175,6 +175,12 @@ NetworkModel NetworkModel::clone() const {
     // rate_of__<species> variable is bound to the COPY's buffer — mirrors the
     // time-pointer rebinding above and the build()-time registration.
     copy.impl_->uses_rateof = impl_->uses_rateof;
+    // Issue #654 — a syntactic property of the function expressions, which the
+    // clone re-compiles verbatim, so it carries over as plain data. (The
+    // time-indexed-tfun half is re-established by the register_table_function_
+    // calls below, but only for models that have one; this copy is what covers
+    // a function that names `time` directly.)
+    copy.impl_->functions_use_time = impl_->functions_use_time;
     if (copy.impl_->uses_rateof) {
         copy.impl_->current_derivs.assign(copy.impl_->species.size(), 0.0);
         copy.impl_->rateof_scratch.assign(copy.impl_->species.size(), 0.0);
@@ -3164,6 +3170,8 @@ void NetworkModel::compute_derivs(double t, const double *conc, double *derivs) 
 
 bool NetworkModel::uses_rateof() const { return impl_->uses_rateof; }
 
+bool NetworkModel::functions_use_time() const { return impl_->functions_use_time; }
+
 void NetworkModel::refresh_rateof_derivs(double t, const double *conc) {
     if (!impl_->uses_rateof) {
         return;
@@ -3501,6 +3509,12 @@ void NetworkModel::register_table_function_(TableFunction &tf) {
     if (is_time_index(idx_name)) {
         // Time-indexed: point to model's current_time
         tf.set_index_ptr(&impl_->current_time);
+        // Issue #654 — this tfun reads the clock, so every function that calls
+        // it moves with time. Set unconditionally rather than checking which
+        // functions reference `tfun_<name>()`: the table is registered here
+        // before (and, post-build, possibly without) the expressions that read
+        // it, and over-reporting only costs the SSA its sub-stepping gate.
+        impl_->functions_use_time = true;
     } else {
         const std::string lookup = strip_paren_suffix(idx_name);
         // Try parameter

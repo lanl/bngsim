@@ -477,6 +477,21 @@ class NetworkModel {
     // (CVODE root fn) and to reject rateOf under SSA.
     bool uses_rateof() const;
 
+    // True iff some function's value can move with simulation time alone: a
+    // function expression names `time`, or reads a time-indexed table function
+    // (issue #654). Decided syntactically at build time, so it is exact for
+    // "no function mentions time" and conservative the other way — a function
+    // that names `time` but happens to be constant over the run reports true.
+    //
+    // The SSA reads this to decide whether the direct method needs
+    // piecewise-constant sub-stepping: a purely time-dependent rate has no
+    // species trigger to refresh it, so without sub-stepping it freezes at its
+    // t_start value. The question cannot be answered by evaluating the
+    // functions at a few times — three samples that agree say nothing about a
+    // function between and beyond them, and a periodic rate whose period
+    // divides the probe spacing reads as constant (issue #654).
+    bool functions_use_time() const;
+
     // Refresh the live rateOf derivative buffer (current_derivs) from a probe at
     // (t, conc) without returning the RHS. No-op when !uses_rateof(). Used by the
     // CVODE root function before evaluating event triggers that read rateOf.

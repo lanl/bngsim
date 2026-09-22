@@ -226,6 +226,17 @@ struct NetworkModel::Impl {
     // Mutable because register_table_function_() can set it post-build.
     bool has_functions = false;
 
+    // Whether any function's value can move with simulation time alone, i.e.
+    // whether some function expression names `time` or reads a time-indexed
+    // table function (issue #654). Established SYNTACTICALLY: build() scans the
+    // compiled function expressions for the `time` token, and
+    // register_table_function_() sets it for a time-indexed tfun (hence mutable
+    // post-build, like has_functions). The SSA reads it to decide whether the
+    // direct method needs piecewise-constant sub-stepping — a decision that
+    // cannot be made by sampling the functions, because three (or any finite
+    // number of) probe values do not determine that a function is constant.
+    bool functions_use_time = false;
+
     // Cache of the most recent function values, indexed by function
     // *declaration* index (parallel to `functions`). Populated as a side effect
     // of evaluate_functions() so the output-recording path can read function

@@ -964,6 +964,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly("uses_rateof", &bngsim::NetworkModel::uses_rateof,
                                "Whether the model uses the SBML rateOf csymbol (GH #106).")
 
+        // Issue #654: the SSA's piecewise-constant sub-stepping gate. Decided
+        // syntactically (does a function name `time`, or read a time-indexed
+        // table function) because no finite set of probe values can establish
+        // that a function is constant.
+        .def_property_readonly("functions_use_time", &bngsim::NetworkModel::functions_use_time,
+                               "Whether any function's value can move with simulation time alone "
+                               "(issue #654). Gates the SSA's time-dependent sub-stepping.")
+
         // T1: RHS observable/function-eval gate instrumentation. For a pure
         // mass-action model the RHS skips update_observables + evaluate_functions
         // (dead work); these expose that gate so tests/benchmarks can prove it.

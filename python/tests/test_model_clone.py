@@ -14,6 +14,7 @@ class of regression this file is meant to catch.
   * `parameters` (expression)— `test_clone_expression_parameter`
   * `functions`             — `test_clone_with_function`
   * `has_functions`         — implied by `test_clone_with_function`
+  * `functions_use_time`    — `test_clone_carries_functions_use_time`
   * `current_time`          — `test_clone_current_time_independent`
   * `evaluator` (rebinding) — every test compiles expressions in clones
   * `table_functions`       — `test_clone_with_table_function`
@@ -281,6 +282,39 @@ def test_clone_with_table_function():
     r_orig = CvodeSimulator(model._core).run(_ts(1.0, 2))
     r_clone = CvodeSimulator(clone._core).run(_ts(1.0, 2))
     np.testing.assert_allclose(r_orig.species_data, r_clone.species_data, rtol=1e-12)
+
+
+def test_clone_carries_functions_use_time():
+    """The SSA's time-dependence gate survives `clone()` (issue #654).
+
+    `functions_use_time` is decided from the expression text at build time, and
+    clones are what `run_replicates` hands each worker — a flag that did not
+    carry would leave every replicate running the unsub-stepped loop while the
+    original reported the gate as set. Both ways in are checked: a function that
+    names `time` (plain data on the clone) and a time-indexed table function
+    (re-established by the clone's own `register_table_function_` call).
+    """
+    import bngsim
+
+    def _decay(func_expr):
+        b = ModelBuilder()
+        s_idx = b.add_species("S", 100.0)
+        b.add_species("P", 0.0)
+        b.add_function("kf", func_expr)
+        b.add_reaction([s_idx], [], "functional", "kf")
+        return b.build()
+
+    assert _decay("0.1*time()").clone().functions_use_time
+    assert not _decay("0.1").clone().functions_use_time
+
+    # A tfun added post-build (index defaults to `time`) flips the flag through
+    # register_table_function_, and the clone re-runs that same registration.
+    core = _decay("0.1")
+    assert not core.functions_use_time
+    model = bngsim.Model(_core=core)
+    model.add_table_function("scale", times=[0, 100], values=[2.0, 2.0])
+    assert model._core.functions_use_time
+    assert model.clone()._core.functions_use_time
 
 
 # ─── Events ──────────────────────────────────────────────────────────────────
