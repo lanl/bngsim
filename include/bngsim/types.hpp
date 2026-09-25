@@ -109,6 +109,15 @@ struct Species {
     // (rate-rule targets ARE reported — RoadRunner reports them too).
     bool reported = true;
 
+    // Declared with a negative initial value (issue #706): a quantity that is
+    // negative by design, which the GH #135 non-finite-RHS retry must not clamp
+    // to 0. Set wherever the DECLARED initial value is set (the builder, and the
+    // parameter / compartment-size re-resolves of it), never by
+    // save_concentrations(): a saved baseline can hold a depleted concentration
+    // a hair below 0, which is exactly what that retry exists to rescue, and
+    // reading initial_conc < 0 would take the rescue away from it.
+    bool declared_negative = false;
+
     // Issue #170 — 0-based index of the compartment-size PARAMETER that
     // `volume_factor` IS. The two are the same number at load; recording which
     // parameter it came from is what lets `set_param` re-derive the storage

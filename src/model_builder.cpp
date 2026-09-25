@@ -389,6 +389,7 @@ int ModelBuilder::add_species(const std::string &name, double init_conc, bool fi
     s.name = name;
     s.concentration = init_conc;
     s.initial_conc = init_conc;
+    s.declared_negative = init_conc < 0.0; // issue #706
     s.fixed = fixed;
     s.volume_factor = volume_factor;
     s.amount_valued = amount_valued;
@@ -1902,6 +1903,7 @@ NetworkModel ModelBuilder::build() {
             const double val = resolve_ic_from_param(sp, impl.parameters[pit->second].value);
             sp.concentration = val;
             sp.initial_conc = val;
+            sp.declared_negative = val < 0.0; // issue #706
             sd->species_ic_param_refs.emplace_back(ref.species_idx0, pit->second);
         }
     }

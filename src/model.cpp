@@ -588,6 +588,7 @@ void NetworkModel::refresh_param_ref_ics() {
             sp, impl_->parameters[static_cast<std::size_t>(ref.second)].value);
         const bool at_baseline = (sp.concentration == sp.initial_conc) && !impl_->ic_state_dirty;
         sp.initial_conc = val;
+        sp.declared_negative = val < 0.0; // issue #706
         if (at_baseline)
             sp.concentration = val;
     }
@@ -629,6 +630,7 @@ void NetworkModel::refresh_compartment_volume_state() {
         const double ic = (v != 0.0) ? sp.initial_amount / v : sp.initial_amount;
         const bool at_baseline = (sp.concentration == sp.initial_conc) && !impl_->ic_state_dirty;
         sp.initial_conc = ic;
+        sp.declared_negative = ic < 0.0; // issue #706
         if (at_baseline)
             sp.concentration = ic;
     }

@@ -403,6 +403,11 @@ struct CvodeUserData {
     // finite there. A no-op (numerically identical) wherever the state is already
     // nonnegative.
     std::vector<double> rhs_nonneg_scratch;
+    // Which state slots that clamp may touch (issue #706): 1 for a component
+    // that is a concentration by construction, 0 for one that may be negative
+    // by design. Built on first use from the model, which a run does not
+    // restructure; see clamp_state_nonneg.
+    std::vector<char> rhs_nonneg_mask;
 
     // Colored finite-difference Jacobian scratch (T4). cvode_colored_jac is
     // called once per Jacobian evaluation and otherwise heap-allocated three
@@ -494,13 +499,51 @@ static double codegen_tfun_eval_thunk(int tf_id, double x, void *ctx) {
 // mass-action law like -k·conc is finite and self-corrects toward 0, and an
 // unconditional clamp would instead freeze the species slightly negative and make
 // the solve chatter (mxstep). Returns a pointer to the (lazily sized) scratch.
+//
+// Only components that are concentrations by construction are clamped (issue
+// #706). The state vector also holds things that are negative by design, and
+// zeroing them made them follow the wrong ODE for the rest of the run, with no
+// warning, once any concentration tipped the RHS non-finite: an SBML rate-rule
+// parameter (a membrane potential V = -61 relaxing toward -70 ran away past
+// -287), a species declared with a negative initial value, a boundary species
+// held at -5. The clamp now leaves alone every slot that is fixed, that is the
+// target of a rate rule, that is a promoted parameter or compartment (not
+// reported as a species), or that was declared with a negative initial value.
+// The declared value, not initial_conc: save_concentrations() moves that to a
+// captured state, where a depleted concentration a hair below 0 still needs the
+// clamp (Species::declared_negative).
+static const std::vector<char> &nonneg_clamp_mask(CvodeUserData *data) {
+    const NetworkModel &model = *data->model;
+    const int ns = model.n_species();
+    if (data->rhs_nonneg_mask.size() == static_cast<std::size_t>(ns))
+        return data->rhs_nonneg_mask;
+    std::vector<char> mask(ns, 1);
+    const auto &species = model.species();
+    for (int i = 0; i < ns; ++i) {
+        const Species &sp = species[i];
+        if (sp.fixed || !sp.reported || sp.declared_negative)
+            mask[i] = 0;
+    }
+    for (const Reaction &rxn : model.reactions()) {
+        if (!rxn.is_rate_rule_ode)
+            continue;
+        for (int si : rxn.product_indices) {
+            if (si >= 1 && si <= ns)
+                mask[si - 1] = 0;
+        }
+    }
+    data->rhs_nonneg_mask = std::move(mask);
+    return data->rhs_nonneg_mask;
+}
+
 static inline double *clamp_state_nonneg(CvodeUserData *data, const double *y_ptr) {
     const int ns = data->model->n_species();
     if (data->rhs_nonneg_scratch.size() != static_cast<std::size_t>(ns))
         data->rhs_nonneg_scratch.assign(ns, 0.0);
     double *s = data->rhs_nonneg_scratch.data();
+    const std::vector<char> &mask = nonneg_clamp_mask(data);
     for (int i = 0; i < ns; ++i)
-        s[i] = y_ptr[i] > 0.0 ? y_ptr[i] : 0.0;
+        s[i] = (y_ptr[i] > 0.0 || !mask[i]) ? y_ptr[i] : 0.0;
     return s;
 }
 
