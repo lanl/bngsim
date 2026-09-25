@@ -266,6 +266,21 @@ def _rateof_call(node: libsbml.ASTNode, local_params: dict | None = None) -> str
     return "0"
 
 
+def _ast_at_time_zero(node: libsbml.ASTNode) -> libsbml.ASTNode:
+    """A copy of *node* with every ``time`` csymbol replaced by the number 0.
+
+    An initialAssignment is evaluated at the initial time, so this is its exact
+    meaning there. Used when the load-time fold could not evaluate one that
+    reads ``time`` (issue #732), so the engine can evaluate it instead.
+    """
+    copy = node.deepCopy()
+    for n in _iter_ast_subtree(copy):
+        if n.getType() == libsbml.AST_NAME_TIME:
+            n.setType(libsbml.AST_REAL)
+            n.setValue(0.0)
+    return copy
+
+
 def _iter_ast_subtree(node: libsbml.ASTNode):
     """Yield every node in the AST subtree rooted at ``node``, pre-order,
     iteratively (O(1) Python stack depth regardless of subtree shape).
@@ -4491,6 +4506,19 @@ def _build_model_from_sbml_doc(doc):
                 f"({_real_literal(float(_sp_ic.getInitialAmount()))}/{_vol_sym})"
             )
 
+    # Issue #732: an initialAssignment the section-0 fold could not evaluate was
+    # dropped silently, and its target kept its declared value. `ia_values` does
+    # not show it: the fold's context is seeded with every declared value, so a
+    # failed IA still "collects" one. Asked directly instead.
+    def _ia_folds(m) -> bool:
+        return (
+            _eval_ast_numeric(m, eval_ctx, func_defs, rateof_resolver=rateof_resolver) is not None
+        )
+
+    # What the translator refused for an IA the fold could not evaluate either
+    # (a distrib draw, GH #97). Raised after both lowering passes below.
+    _ia_refusals: dict[str, str] = {}
+
     _lift_expr: dict[str, str] = {}
     _lift_deps: dict[str, set[str]] = {}
     for _pid, _m in _ia_math.items():
@@ -4498,7 +4526,12 @@ def _build_model_from_sbml_doc(doc):
             continue
         _names = _ast_name_set(_m)
         if not _names or _ast_references_time(_m):
-            continue
+            # Folded at load: that value is the answer. Otherwise the engine
+            # evaluates it, with IEEE semantics (1/0 -> inf, 0/0 -> nan, as SBML
+            # suite 00950 expects), at the initial time (issue #732).
+            if _ia_folds(_m):
+                continue
+            _m = _ast_at_time_zero(_m)
         # A constant assignment rule is substituted by its body (GH #385), so it
         # counts as whatever pool symbols that body reaches — never as itself.
         _ar_subs = {_n: _ar_const_expr[_n] for _n in _names & _ar_const_expr.keys()}
@@ -4516,6 +4549,8 @@ def _build_model_from_sbml_doc(doc):
             )
         except Exception as e:  # noqa: BLE001 - fall through to the refusal
             logger.debug("initialAssignment for %s not lifted: %s", _pid, e)
+            if not _ia_folds(_m):
+                _ia_refusals[_pid] = str(e)
             continue
         # Species are substituted, not referenced, so they are not lift deps; nor
         # are the assignment-rule targets the substitution just erased.
@@ -4780,7 +4815,11 @@ def _build_model_from_sbml_doc(doc):
             continue
         names = _ast_name_set(math)
         if not names or _ast_references_time(math):
-            continue
+            # As the parameter lift above (issue #732): a fold that answered
+            # stands; one that did not is evaluated by the engine at t = 0.
+            if _ia_folds(math):
+                continue
+            math = _ast_at_time_zero(math)
         if not names <= (_ic_expr_symbols | _ic_seed_symbols | _ic_const_ar.keys()):
             continue
         if (names & _ic_seed_symbols) and _ast_has_rateof(math, _ic_rateof_names):
@@ -4845,10 +4884,24 @@ def _build_model_from_sbml_doc(doc):
                     ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(
                         _ic_cand[sym], func_defs, local_params=subs or None
                     )
-                except Exception as e:  # pragma: no cover - defensive
+                except Exception as e:  # noqa: BLE001 - refused below if nothing else set it
                     logger.debug(
                         "initialAssignment for %s not lowered for IC sensitivity: %s", sym, e
                     )
+                    if not _ia_folds(_ic_cand[sym]):
+                        _ia_refusals[sym] = str(e)
+
+    # An initialAssignment neither the fold nor the engine can evaluate is
+    # refused, as the same construct is in any other rule (GH #97), instead of
+    # leaving its target at the declared value (issue #732).
+    if _ia_refusals:
+        from bngsim._exceptions import ModelError
+
+        _sym, _why = next(iter(_ia_refusals.items()))
+        raise ModelError(
+            f"initialAssignment for '{_sym}' cannot be evaluated: {_why}. bngsim will not "
+            "use the declared value in its place, since an initialAssignment overrides it."
+        )
 
     # (#170) The residue: a section-0 fold of a live size that neither §2 nor the
     # loop above put back on the size. An initial condition still folded, a named
