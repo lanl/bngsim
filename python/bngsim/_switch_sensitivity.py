@@ -2501,8 +2501,56 @@ def _fixed_threshold_expr(threshold_expr: str, scope: SwitchConditionScope) -> b
     )
 
 
+# Builtins whose value jumps, where their argument crosses an integer (the
+# rounding family) or zero (``sign``), or at a modulus boundary. The analytic
+# sensitivity RHS declines every one of them, so a model that calls one on a
+# moving argument is on CVODES' difference quotient with that jump in it.
+# ``abs``/``min``/``max`` are not here: they bend ``f`` without breaking it, and
+# the difference quotient integrates through a kink correctly.
+_STEP_CALL = re.compile(
+    r"(?<![A-Za-z0-9_.])"
+    r"(?:floor|ceil|round|roundn|rint|nint|trunc|frac|sign|sgn|mod|fmod|rem|iclamp|inrange)"
+    r"\s*\("
+)
+
+
+def _iter_step_calls(expr: str):
+    """``(call, argument)`` for every :data:`_STEP_CALL` outside an ``if()`` condition.
+
+    One inside a condition is that condition's business: its atom is scanned
+    whole, floor and all, so reporting the call again would only repeat it.
+    """
+    spans = _condition_spans(expr)
+    for m in _STEP_CALL.finditer(expr):
+        if any(lo <= m.start() < hi for lo, hi in spans):
+            continue
+        open_paren = m.end() - 1
+        close_paren = _find_close_paren_strict(expr, open_paren)
+        if close_paren < 0:
+            continue
+        yield expr[m.start() : close_paren + 1], expr[open_paren + 1 : close_paren]
+
+
+def _fixed_clock_step(arg_flat: str, scope: SwitchConditionScope) -> bool:
+    """True when a step call's argument reads a clock and nothing else that moves.
+
+    ``floor(time()/24)`` steps at the same instants in every run, so each step's
+    ``∂t*/∂p`` is 0 and the difference quotient misses nothing there, which is
+    :func:`fixed_clock_threshold`'s ground for a comparison. A parameter beside
+    the clock (``floor(time()/P)``) moves the steps, and so does state.
+    """
+    for m in _IDENTIFIER.finditer(arg_flat):
+        name = m.group(0)
+        if name in scope.clock_symbols:
+            continue
+        if arg_flat[m.end() :].lstrip().startswith("(") and name not in scope.function_names:
+            continue
+        return False
+    return True
+
+
 def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
-    """Every rate-law branch condition in the model whose crossing *time* moves.
+    """Every rate-law branch condition, and every step call, whose crossing *time* moves.
 
     The question the decline warning has to ask (issue #232). A model carrying
     one of these is a model for which declining the analytic sensitivity RHS is
@@ -2519,16 +2567,28 @@ def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
 
     Deliberately coarse, in the safe direction: it asks only whether an atom
     *can* cross at a moving time, never whether anything compensates the
-    crossing. Two grounds exclude an atom, both borrowed from
+    crossing. Three grounds exclude an atom, all borrowed from
     :func:`uncompensated_condition_reason` so the two agree about what is not a
     crossing at all — a comparison naming no symbol (``0>0``, decided at load),
-    and a :func:`fixed_clock_threshold` (``t<14``, whose ``∂t*/∂p`` is exactly
-    0). Everything else reads live state or a parameter, so some θ moves it.
+    a :func:`fixed_clock_threshold` (``t<14``, whose ``∂t*/∂p`` is exactly 0),
+    and a :func:`condition_cannot_cross` atom (``a<b`` over run-constants, which
+    picks its branch before the first step and holds it; issue #824). Everything
+    else reads live state, so some θ moves it.
 
     It follows that an atom here may be one the analytic path *would* have
     compensated — issue #48's clock jump, issue #150's saltation jump. That is
     the point: this is about what happens once the model is on the fallback,
     where neither jump is applied.
+
+    A condition is not the only way ``f`` jumps. ``floor(Atot)`` steps every time
+    ``Atot`` crosses an integer, at a time every rate constant moves, and the
+    analytic RHS declines it ("unsupported construct: floor()"), so a model that
+    calls one on its state is on the difference quotient with those steps in it.
+    Without this scan the decline warning called that fallback correct: on
+    ``k1*floor(Atot)`` it is 57 % wrong at ``t = 0.5``. Every :data:`_STEP_CALL`
+    outside a condition is reported the same way, unless its argument names no
+    symbol, only run-constants (:func:`condition_cannot_cross`), or only a clock
+    and literals (:func:`_fixed_clock_step`).
 
     The scan mirrors :func:`switch_gate_cache_digest` — same ``has_condition_construct``
     pre-gate over the same function bodies and functional rate expressions, and
@@ -2547,7 +2607,8 @@ def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
         *(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]),
     ]
     conditional = [t for t in texts if has_condition_construct(t)]
-    if not conditional:
+    stepped = [t for t in texts if _STEP_CALL.search(t)]
+    if not conditional and not stepped:
         return ()
     try:
         scope = switch_condition_scope(core, ctx)
@@ -2568,7 +2629,24 @@ def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
                 continue
             if fixed_clock_threshold(atom, scope):
                 continue
+            # A condition over run-constants alone holds one truth value for the
+            # whole run, so it has no crossing time to move (issue #824). The
+            # warning used to name `a<b` or `(a==b)<1` as a moving crossing
+            # whenever something else declined the analytic RHS.
+            if condition_cannot_cross(atom_flat, scope):
+                continue
             found.append(atom)
+    for text in stepped:
+        flat = _inline_functions(text, func_map) or text
+        for call, arg in _iter_step_calls(flat):
+            if call in found:
+                continue
+            arg_flat = _inline_derived_param_refs(arg, scope.derived_exprs) or arg
+            if not _IDENTIFIER.search(arg_flat):
+                continue
+            if condition_cannot_cross(arg_flat, scope) or _fixed_clock_step(arg_flat, scope):
+                continue
+            found.append(call)
     return tuple(found)
 
 
