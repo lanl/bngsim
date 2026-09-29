@@ -65,4 +65,5 @@ about/architecture
 about/benchmarks
 development/building
 development/extending
+development/sensitivity-terms
 ```

@@ -290,6 +290,68 @@ def test_the_retry_is_for_a_cvode_failure_only(
         assert core.jacobians == ["auto"]
 
 
+class _FailsAfterAdvancing(_FailsFirst):
+    """The first run integrates for real and only then raises ``message``.
+
+    A real failure leaves the model where the attempt stopped: every stop on the
+    way (an event, a switch crossing) writes x(t) back to the model, and the
+    attempt spends the carry-over sensitivity seed. This stand-in leaves the
+    model at the end of the window, which is the same hazard made deterministic.
+    """
+
+    def run(self, times, opts, *args):
+        self.jacobians.append(opts.jacobian)
+        result = self._inner.run(times, opts, *args)
+        if len(self.jacobians) == 1:
+            raise RuntimeError(self._message)
+        return result
+
+
+_FAILED = "CVODE integration failed at t=1.000000 with flag=-3 (CV_ERR_FAILURE)."
+
+
+def test_the_retry_starts_where_the_failed_attempt_started(data_dir: Path) -> None:
+    # Seen on a derived pulse onset with sensitivities: the analytical attempt
+    # stalled at t=3 with x(3) written back, and the FD retry integrated from
+    # x(3) as if it were t=0, returning a trajectory with X(0) = X(3) and a
+    # sensitivity of -641 two time units before the pulse — beside only the
+    # warning above, while explicit jacobian="fd" raised.
+    net = _net(data_dir)
+    window = dict(t_span=(0.0, 1.0), n_points=3, rtol=TOL, atol=TOL)
+    reference = bngsim.Simulator(bngsim.Model.from_net(net), method="ode", jacobian="fd")
+    expected = np.asarray(reference.run(**window).species)
+
+    sim = bngsim.Simulator(bngsim.Model.from_net(net), method="ode")
+    core = sim._sim = _FailsAfterAdvancing(sim._sim, _FAILED)
+    result = sim.run(**window)
+    assert core.jacobians == ["auto", "fd"]
+    assert np.array_equal(np.asarray(result.species), expected)
+
+
+def test_the_retry_keeps_the_carried_sensitivity_seed(data_dir: Path) -> None:
+    # A measurement phase seeded from a pre-equilibration (GH #210): the failed
+    # attempt spends the seed, and a retry without it has nothing to start from.
+    def measure(fail: bool) -> np.ndarray:
+        m = bngsim.Model.from_net(str(data_dir / "preequil_prod_deg.net"))
+        m.set_param("k_prod", 5.0)
+        m.set_param("k_deg", 0.5)
+        m.set_param("extra_deg", 0.0)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k_prod", "k_deg"])
+        sim.run(t_span=(0, 200), n_points=3, steady_state=True, steady_state_tol=1e-12)
+        m.set_param("extra_deg", 2.0)
+        if fail:
+            sim._sim = _FailsAfterAdvancing(sim._sim, _FAILED)
+        r = sim.run(t_span=(0.0, 3.0), n_points=4, carry_sensitivities=True)
+        return np.asarray(r.sensitivities)[:, m.species_names.index("A()"), :]
+
+    carried = measure(fail=False)
+    # Seeded from dA_ss/dθ = (1/k_deg, -k_prod/k_deg²), not from zero.
+    assert carried[0] == pytest.approx([2.0, -20.0], rel=1e-5)
+    # Close rather than equal: the retry's measurement phase runs on the FD
+    # Jacobian and the reference's on the analytical one.
+    np.testing.assert_allclose(measure(fail=True), carried, rtol=1e-6)
+
+
 def test_the_retry_matches_the_messages_the_core_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

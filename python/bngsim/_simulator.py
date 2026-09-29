@@ -2973,6 +2973,16 @@ class Simulator:
             # is doomed for this model — go straight to FD, no wasted attempt.
             opts.jacobian = "fd"
             return self._sim.run(times, opts)
+        # A run continues from the model's live state, and a failed attempt does
+        # not leave that state where it found it: every stop on the way (an event,
+        # a switch crossing) writes x(t) back, so after a failure at t=3 the model
+        # holds x(3). The retry has to start from what the first attempt started
+        # from, or it integrates from x(3) relabelled as t_start and returns that
+        # as the answer, with only the warning below to show for it. The carry-over
+        # sensitivity state goes back too, as in run_batch and parameter_scan.
+        core = self._model._core
+        start_state = core.get_state()
+        start_carry = self._capture_carryover_state()
         try:
             return self._sim.run(times, opts)
         except RuntimeError as e:
@@ -2994,6 +3004,8 @@ class Simulator:
                 "jacobian='analytical' to surface the failure.",
                 e,
             )
+            core.set_state(start_state)
+            self._restore_carryover_state(start_carry)
             opts.jacobian = "fd"
             result = self._sim.run(times, opts)
             # Only memoize once FD has actually succeeded — a model that fails on

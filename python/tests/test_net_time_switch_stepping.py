@@ -402,6 +402,31 @@ def test_a_derived_threshold_is_inlined(tmp_path):
     assert _final_A(path) == pytest.approx(14.0, rel=1e-6)
 
 
+@pytest.mark.parametrize("order", [("2*a", "3*a"), ("3*a", "2*a")], ids=["2-then-3", "3-then-2"])
+def test_two_models_spelling_one_condition_over_different_derived_names(tmp_path, order):
+    """The crossing cache outlives a model (issue #729). Both models write
+    ``time()>=onset`` and read ``a = 1``, so the condition as written and the
+    leaf values agree, and only ``onset``'s definition tells the crossings apart.
+    Keyed on the text as written, the second model was served the first one's
+    stop and its 0.01-wide window was stepped over, silently: 0 instead of 0.1."""
+    for i, onset in enumerate(order):
+        (tmp_path / str(i)).mkdir()
+        path = _net(
+            tmp_path / str(i),
+            "if((time()>=onset)&&(time()<(onset+w)),k,0)",
+            params=(
+                "1 k       10.0  # Constant",
+                "2 a       1.0  # Constant",
+                "3 w       0.01  # Constant",
+                f"4 onset   {onset}  # ConstantExpression",
+            ),
+        )
+        crossing = 2.0 if onset == "2*a" else 3.0
+        _conds, stops = _conditions_and_stops(path)
+        assert stops == pytest.approx([crossing, crossing + 0.01])
+        assert _final_A(path) == pytest.approx(0.1, rel=1e-6)
+
+
 def test_a_threshold_behind_a_function_call_is_found(tmp_path):
     """The scan inlines function references before it splits the condition, so a
     threshold written as a call is found under its call site."""

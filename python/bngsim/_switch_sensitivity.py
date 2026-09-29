@@ -1820,9 +1820,13 @@ _TIME_REF = re.compile(r"(?<![A-Za-z0-9_])time(?:\s*\(\s*\))?(?![A-Za-z0-9_(])")
 # in time, whose crossing this cannot claim to know.
 _CROSSING_RESIDUAL_TOL = 1e-9
 
-# Resolved crossing times, keyed on the condition text, the run window and the
-# values of every parameter the condition reads once derived names are inlined —
-# which is everything the answer depends on. Two sympy round trips per condition
+# Resolved crossing times, keyed on the text actually solved (time aliases and
+# derived names inlined), the run window and the values of every parameter that
+# text reads — which is everything the answer depends on. The inlined text, not
+# the condition as written: the cache outlives a model, and two models can spell
+# `time()>=on` over an `on` defined as 2*a in one and 3*a in the other, which
+# read the same leaf values and cross at different times (issue #729, the half
+# #883 left when it fixed the schedule key). Two sympy round trips per condition
 # is ~2 ms, and a scan or a fit calls run() thousands of times while the
 # parameters a *schedule* reads (an experimental-condition dose time) change
 # once per experiment, so the hit rate is close to 1. Bounded and cleared whole
@@ -1940,7 +1944,7 @@ def _crossing_time_of_condition(
         read.append(m.group(0))
 
     key = (
-        cond,
+        flat,
         t_start,
         t_end,
         tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in set(read))),
