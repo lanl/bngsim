@@ -137,6 +137,22 @@ A `TotalRate` model therefore has no BNG2 result to check a network-free run
 against. It is also rejected by BNG2.pl on saturable, Michaelis-Menten, Hill and
 Arrhenius laws, and on local functions.
 
+### Rate laws that read `time()`
+
+Neither backend can run a function that reads `time()` (or a bare `time`), so
+both refuse one when the simulator or session is built, naming the function
+(issue #862). RuleMonkey treats a total propensity of 0 as final: a rate such as
+`if(time()>=6, k, 0)`, which is 0 at the start, never fires, and the run would
+return the initial state on every row (richardposner/RuleMonkey#86). NFsim cannot
+prepare such a function at all. Simulate the generated network with
+`method="ode"` or `method="ssa"` instead, which read `time()` as the model time.
+
+A table function indexed by time (`tfun(..., time)`) falls into the same trap on
+RuleMonkey, which refuses it too. NFsim runs one, but refreshes its value only
+when a reaction fires. So a rate that is 0 at the start, or that changes while
+nothing fires, is not seen until something does, and until then the run is flat
+(issue #892).
+
 ### Stateful network-free sessions
 
 For advanced workflows that mutate parameters or live particle counts between
