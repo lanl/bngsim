@@ -480,13 +480,12 @@ jobs:
       #   BIOMD0000000496/497 (~3 MB SBML): both engines' sensitivity runs hit the wall
       #     cap even on a 10-core workstation (TIMEOUT at 900 s); here that is 40
       #     runner-minutes of guaranteed TIMEOUT.
-      #   BIOMD0000000608: bngsim now generates a 66.7 MB C sensitivity RHS for it,
-      #     whose compile outlasts the 600 s codegen budget even on a workstation (an
-      #     older build declined the model in 0.9 s). Both methods compiling it at
-      #     once killed this job's runner.
+      # (BIOMD0000000608 was skipped here until issue #801: codegen wrote one ydot
+      # update per unit of its x1,000,000 coefficients, 66.7 MB of C that could not
+      # compile in budget. It now emits one update per species.)
       # BNGSIM_CODEGEN_JOBS=2 bounds the compiler processes per model (3 workers).
       - name: Select the models the corpus holds
-        run: python3 parity_checks/nightly/present_models.py parity_checks/amici_parity/amici_ode_jobs.json --skip BIOMD0000000496,BIOMD0000000497,BIOMD0000000608 > "$RUNNER_TEMP/models.txt"
+        run: python3 parity_checks/nightly/present_models.py parity_checks/amici_parity/amici_ode_jobs.json --skip BIOMD0000000496,BIOMD0000000497 > "$RUNNER_TEMP/models.txt"
       - name: Run amici_sens_run.py
         env:
           BNGSIM_CODEGEN_CACHE_DIR: ${{ runner.temp }}/codegen
