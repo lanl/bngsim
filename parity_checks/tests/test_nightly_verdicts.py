@@ -214,9 +214,9 @@ def _on(obj, cpu):
 def test_wall_on_the_same_cpu_alerts_past_the_coarse_ratio():
     base = _on(BASE, "EPYC 7763")
     slower = fresh_with(A_ode=rec("PASS", work=W, sec=1.9), B_ode=rec("PASS", work=W, sec=1.9))
-    assert V.diff(base, _on(slower, "EPYC 7763"))["alerts"]["wall"] == 0
+    assert V.diff(base, _on(slower, "EPYC 7763"), wall_min_delta=0)["alerts"]["wall"] == 0
     much = fresh_with(A_ode=rec("PASS", work=W, sec=2.5), B_ode=rec("PASS", work=W, sec=2.5))
-    r = V.diff(base, _on(much, "EPYC 7763"))
+    r = V.diff(base, _on(much, "EPYC 7763"), wall_min_delta=0)
     assert r["alerts"]["wall"] == 1 and r["wall"]["ratio"] == 2.5 and r["wall"]["same_cpu"]
 
 
@@ -224,12 +224,37 @@ def test_wall_across_cpu_models_alerts_only_on_a_blowup():
     # Measured: the compiled arm ran 1.8x slower on an EPYC 7763 than on a 9V45.
     base = _on(BASE, "EPYC 9V45")
     much = fresh_with(A_ode=rec("PASS", work=W, sec=2.5), B_ode=rec("PASS", work=W, sec=2.5))
-    r = V.diff(base, _on(much, "EPYC 7763"))
+    r = V.diff(base, _on(much, "EPYC 7763"), wall_min_delta=0)
     assert r["alerts"]["wall"] == 0 and not r["wall"]["same_cpu"] and r["wall"]["limit"] == 4.0
     huge = fresh_with(A_ode=rec("PASS", work=W, sec=5.0), B_ode=rec("PASS", work=W, sec=5.0))
-    assert V.diff(base, _on(huge, "EPYC 7763"))["alerts"]["wall"] == 1
+    assert V.diff(base, _on(huge, "EPYC 7763"), wall_min_delta=0)["alerts"]["wall"] == 1
     # an unknown CPU on either side counts as "not the same"
-    assert V.diff(BASE, much)["alerts"]["wall"] == 0
+    assert V.diff(BASE, much, wall_min_delta=0)["alerts"]["wall"] == 0
+
+
+def test_wall_growth_under_the_absolute_floor_does_not_alert():
+    # bng_nf, 2026-09-29: its bngsim_sec is only the model load, and #885 added a
+    # millisecond XML scan to it. 0.011 s -> 0.67 s over 231 cases is x61 and
+    # 0.66 s of wall, on a leg whose runs take minutes.
+    base = _on(core({f"m{i}|stochastic": rec("PASS", sec=0.00005) for i in range(200)}), "Intel")
+    fresh = _on(core({f"m{i}|stochastic": rec("PASS", sec=0.003) for i in range(200)}), "AMD")
+    r = V.diff(base, fresh)
+    assert r["wall"]["ratio"] > 50 and r["wall"]["min_delta"] == V.WALL_MIN_DELTA_SEC
+    assert r["alerts"]["wall"] == 0 and r["n_alerts"] == 0
+    assert "+30.0 s" in V.render_md(r, "")
+
+
+def test_wall_blowup_past_the_floor_still_alerts():
+    # A real blowup on an ODE leg's scale: 80 s -> 400 s across CPU models.
+    base = _on(core({f"m{i}|ode": rec("PASS", sec=0.8) for i in range(100)}), "Intel")
+    fresh = _on(core({f"m{i}|ode": rec("PASS", sec=4.0) for i in range(100)}), "AMD")
+    r = V.diff(base, fresh)
+    assert r["alerts"]["wall"] == 1
+    # the same ratio on a total too small to clear the floor does not
+    tiny_b = _on(core({"m|ode": rec("PASS", sec=1.0)}), "Intel")
+    tiny_f = _on(core({"m|ode": rec("PASS", sec=5.0)}), "AMD")
+    assert V.diff(tiny_b, tiny_f)["alerts"]["wall"] == 0
+    assert V.diff(tiny_b, tiny_f, wall_min_delta=2.0)["alerts"]["wall"] == 1
 
 
 def test_incomplete_run_alerts():

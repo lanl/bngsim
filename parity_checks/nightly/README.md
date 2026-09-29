@@ -46,7 +46,10 @@ A night alerts on:
 - **efficiency**: on a case good both times, bngsim's solver work (steps, RHS
   evaluations, Jacobian evaluations, from `Result.solver_stats`) grew past x1.25
   (with an absolute floor), or a counter's corpus total grew past x1.05, or bngsim's
-  total wall time grew past x2 on the same runner CPU model (x4 across models). The
+  total wall time grew past x2 on the same runner CPU model (x4 across models) and
+  by more than 30 s. The floor is for the stochastic legs, whose bngsim time is only
+  the model load and totals well under a second, so a fixed cost of a few
+  milliseconds per model reads there as a x50 blowup. The
   counters are deterministic for a given model, build and platform -- two runs on
   different runner hardware matched exactly -- so they catch the algorithmic
   slowdowns (a Jacobian falling back to finite differences, step-size control, an
