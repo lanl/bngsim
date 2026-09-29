@@ -163,9 +163,9 @@ no jump.
 - Oracle: `time-switch`, `state-switch`.
 - **Open:** a switch that lies within that window after an output time or other
   stop is jumped at the wrong instant (#737,
-  `time-switch-just-after-an-output`). The branches-meet test divides by
-  `max|f|` over *every* species, so one large, unrelated flux makes a real jump
-  read as continuous (#763, `state-switch-beside-a-large-pool`).
+  `time-switch-just-after-an-output`). The branches-meet test compares the jump
+  with `1e-6·max|f|` over *every* species, so one large, unrelated flux makes a
+  real jump read as continuous (#763, `state-switch-beside-a-large-pool`).
 
 **An event and a switch at the same instant.** `f⁻` is the before-branch at
 `x⁻`, and `f⁺` is the after-branch at `x⁺`:

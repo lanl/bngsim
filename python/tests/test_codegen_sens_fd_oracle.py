@@ -28,6 +28,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -90,15 +91,13 @@ class Term:
         return _net_model(text)
 
 
-_NET_DIR: list[str] = []
+# Removed when the interpreter exits. One file per distinct text, so no two
+# models in a run are ever loaded from the same path.
+_NET_DIR = tempfile.TemporaryDirectory(prefix="sens_fd_oracle_")
 
 
 def _net_model(text: str) -> bngsim.Model:
-    import tempfile
-
-    if not _NET_DIR:
-        _NET_DIR.append(tempfile.mkdtemp(prefix="sens_fd_oracle_"))
-    path = os.path.join(_NET_DIR[0], f"m{abs(hash(text)):x}.net")
+    path = os.path.join(_NET_DIR.name, f"m{abs(hash(text)):x}.net")
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return bngsim.Model.from_net(path)
