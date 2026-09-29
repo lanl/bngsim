@@ -3416,33 +3416,35 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
                 }
                 return species_list[si].volume_factor;
             };
-            for (int ri : rxn.reactant_indices) {
-                int si = ri - 1;
-                if (si >= 0 && si < ns) {
-                    derivs[si] -= rate / species_divisor(si);
+            // One update per species, `multiplicity * term` (issue #801); a
+            // multiplicity of 1 is the pre-#801 statement, byte for byte.
+            for (const auto &[si, m] : rxn.reactant_multiplicity) {
+                if (si < ns) {
+                    const double term = rate / species_divisor(si);
+                    derivs[si] -= m == 1.0 ? term : m * term;
                 }
             }
-            for (int pi : rxn.product_indices) {
-                int si = pi - 1;
-                if (si >= 0 && si < ns) {
-                    derivs[si] += rate / species_divisor(si);
+            for (const auto &[si, m] : rxn.product_multiplicity) {
+                if (si < ns) {
+                    const double term = rate / species_divisor(si);
+                    derivs[si] += m == 1.0 ? term : m * term;
                 }
             }
             continue;
         }
 
-        // Subtract from reactants
-        for (int ri : rxn.reactant_indices) {
-            int si = ri - 1;
-            if (si >= 0 && si < ns) {
-                derivs[si] -= rate;
+        // Subtract from reactants, add to products: one update per species of
+        // `multiplicity * rate`, not one per unit of stoichiometry (issue #801).
+        // An SBML coefficient of 1e6 was a million updates per evaluation, and
+        // their rounding drift; a multiplicity of 1 is the pre-#801 statement.
+        for (const auto &[si, m] : rxn.reactant_multiplicity) {
+            if (si < ns) {
+                derivs[si] -= m == 1.0 ? rate : m * rate;
             }
         }
-        // Add to products
-        for (int pi : rxn.product_indices) {
-            int si = pi - 1;
-            if (si >= 0 && si < ns) {
-                derivs[si] += rate;
+        for (const auto &[si, m] : rxn.product_multiplicity) {
+            if (si < ns) {
+                derivs[si] += m == 1.0 ? rate : m * rate;
             }
         }
     }

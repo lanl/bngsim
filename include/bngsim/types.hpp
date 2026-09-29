@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace bngsim {
@@ -230,6 +231,13 @@ struct Reaction {
     int index;                         // 1-based index
     std::vector<int> reactant_indices; // 1-based species indices
     std::vector<int> product_indices;  // 1-based species indices
+    // The two lists above folded to (0-based species, multiplicity), in order of
+    // first appearance, by ModelBuilder::build (issue #801). A coefficient is one
+    // index entry per unit, so an SBML stoichiometry of 1e6 is a million entries;
+    // the ODE right-hand side applies one `multiplicity * rate` per species from
+    // these instead of one update per entry.
+    std::vector<std::pair<int, double>> reactant_multiplicity;
+    std::vector<std::pair<int, double>> product_multiplicity;
     RateLawType rate_law_type;
     std::string comment; // trailing #comment from .net
 

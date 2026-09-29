@@ -2152,7 +2152,7 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     # handed over as its own entry, which :func:`_step_edge_stop_times` reads.
     for text in stepped:
         flat = _inline_functions(text, func_map) or text
-        for call, _arg in _iter_step_calls(flat):
+        for call, _arg in _iter_step_calls(flat, outermost=True):
             inlined = _inline_derived_param_refs(call, scope.derived_exprs) or call
             if call not in found and _reads_clock_and_run_constants(inlined, scope):
                 found.append(call)
@@ -2384,11 +2384,35 @@ def _resolve_step_edge_stop_times(
     steps = [e for e in expr.atoms(sp.floor) | expr.atoms(trunc) if t in e.free_symbols]
     if not steps:
         return None
-    lines: list[tuple[float, float, bool]] = []  # (slope, intercept, is_trunc)
+
+    def nested_in(e) -> set:
+        return {
+            s for s in e.args[0].atoms(sp.floor) | e.args[0].atoms(trunc) if t in s.free_symbols
+        }
+
+    # One level of nesting, as in `floor(floor(time()+phase)/P)`, a day count
+    # over an hour count (the light cycle of BIOMD0000000412/445/476). The outer
+    # step's argument then holds still wherever the inner steps do, so it can
+    # only jump at one of their jumps, and is judged there like any other value
+    # this reads. Its argument is evaluated in doubles, as the engine evaluates
+    # it, so an edge lands where the rate law actually jumps. Before, the inner
+    # call was read as a bare step of its own and every hour became a stop.
+    inner = [e for e in steps if not nested_in(e)]
+    inner_marks = [sp.Symbol(f"_bng_inner_{i}") for i in range(len(inner))]
+    outer_args = {}  # outer step -> its argument as a function of the inner steps
     for e in steps:
+        nested = nested_in(e)
+        if not nested:
+            continue
+        if not nested <= set(inner):
+            return None  # a step two levels down
+        arg = e.args[0].xreplace(dict(zip(inner, inner_marks, strict=True)))
+        if t in arg.free_symbols:
+            return None  # it also moves between the inner jumps
+        outer_args[e] = sp.lambdify(inner_marks, arg, modules="math")
+    lines: list[tuple[float, float, bool]] = []  # (slope, intercept, is_trunc), per inner step
+    for e in inner:
         u = sp.expand(e.args[0])
-        if u.atoms(sp.floor) or u.atoms(trunc):
-            return None  # a step inside a step's argument
         alpha = sp.diff(u, t)
         beta = sp.expand(u - alpha * t)
         if not (alpha.is_number and beta.is_number):
@@ -2441,10 +2465,23 @@ def _resolve_step_edge_stop_times(
 
     def piece(lo: float, hi: float) -> tuple[float, float]:
         mid = 0.5 * (lo + hi)
-        held = [
-            float(math.trunc(a * mid + b) if is_t else math.floor(a * mid + b))
-            for a, b, is_t in lines
-        ]
+        held_inner = dict(
+            zip(
+                inner,
+                (
+                    float(math.trunc(a * mid + b) if is_t else math.floor(a * mid + b))
+                    for a, b, is_t in lines
+                ),
+                strict=True,
+            )
+        )
+        held = []
+        for e in steps:
+            if e in held_inner:
+                held.append(held_inner[e])
+            else:
+                v = float(outer_args[e](*held_inner.values()))
+                held.append(float(math.trunc(v) if e.func is trunc else math.floor(v)))
         return float(slope_f(*held)), float(intercept_f(*held))
 
     bounds = [t_start, *edges]
@@ -2756,20 +2793,26 @@ _STEP_CALL = re.compile(
 )
 
 
-def _iter_step_calls(expr: str):
+def _iter_step_calls(expr: str, outermost: bool = False):
     """``(call, argument)`` for every :data:`_STEP_CALL` outside an ``if()`` condition.
 
     One inside a condition is that condition's business: its atom is scanned
     whole, floor and all, so reporting the call again would only repeat it.
+    With ``outermost``, a call inside another call's argument is that call's
+    business the same way: ``floor(time()+phase)`` in ``floor(floor(time()+
+    phase)/24)`` jumps every hour, but the day count it feeds does not.
     """
     spans = _condition_spans(expr)
+    covered = -1  # end of the last call yielded, when outermost
     for m in _STEP_CALL.finditer(expr):
-        if any(lo <= m.start() < hi for lo, hi in spans):
+        if any(lo <= m.start() < hi for lo, hi in spans) or m.start() < covered:
             continue
         open_paren = m.end() - 1
         close_paren = _find_close_paren_strict(expr, open_paren)
         if close_paren < 0:
             continue
+        if outermost:
+            covered = close_paren
         yield expr[m.start() : close_paren + 1], expr[open_paren + 1 : close_paren]
 
 
