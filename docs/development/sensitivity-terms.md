@@ -97,7 +97,7 @@ unbounded, so the run is refused.
 - The jump: `apply_event_sensitivity_jump`, which reads `s⁻` through
   `capture_event_sens`.
 - Oracle: `event-fixed-time`, `event-time-trigger`, `event-state-trigger`,
-  `event-assignment-reads-state`, `event-initial-value-true`.
+  `event-assignment-reads-state`, `event-fires-after-t-start`.
 
 **`h_t` and `rateOf`.** `h_t` is the assignment's explicit time dependence:
 `Tlast = time`, `B = time + 1`, or a rule or function that reads `time`. An
@@ -118,18 +118,27 @@ in `yS`. There is nothing to interpolate from, because CVODES has not taken a st
 ## 4. A batch of events at one instant
 
 Events that fire together run one at a time: highest priority first, with random
-tie-breaking. Each fire's assignment reads either the pre-batch state
-(`useValuesFromTriggerTime=true`) or the state that the earlier fires left
-(`false`). A non-persistent instance whose trigger an earlier fire made false is
-cancelled. The jump composes in *execution* order:
+tie-breaking. A fire can arm another event at the same instant (a cascade), which
+joins the batch. Each instance's assignment reads the state at its own trigger
+time when `useValuesFromTriggerTime=true`: that is the pre-batch state for an
+instance armed before the batch, and the state after the arming fire for a
+cascaded one. With `false`, it reads the state the earlier fires left. A
+non-persistent instance whose trigger an earlier fire made false is cancelled.
+The jump composes in *execution* order:
 
 ```
 D₀ = s⁻ + f⁻·τ
 D_k = D_{k−1}, except on the rows fire k assigns:
-      D_k = h_{k,y}·D_read + h_{k,p} + h_{k,t}·τ     D_read = D₀ (UVFTT=true) or D_{k−1} (false)
+      D_k = h_{k,y}·D_read + h_{k,p} + h_{k,t}·τ
+      D_read = D₀       UVFTT=true, armed before the batch
+             = D_j      UVFTT=true, armed by fire j of this batch
+             = D_{k−1}  UVFTT=false
       (a cancelled instance contributes nothing)
 s⁺ = D_n − f⁺·τ                                     f⁺ after the whole batch
 ```
+
+Sensitivities refuse a batch with a cascaded instance today, so only the first
+and third cases of `D_read` are reachable.
 
 - `process_firing_batch` (the run loop in `cvode_simulator.cpp`) executes the
   batch, and `apply_event_sensitivity_jump` differentiates it.

@@ -68,7 +68,19 @@ DEFAULT_REL_STEPS: tuple[float, ...] = tuple(0.1 * 0.5**k for k in range(14))
 #: the tight run is bounded by the difference between the two — the loose run's
 #: own error — which overstates it by about this factor. That errs toward a
 #: larger step, never toward reading noise as signal.
+#:
+#: The estimate assumes the error shrinks as the tolerance does. A run whose
+#: error does not (both probes wrong by the same amount) would understate the
+#: bound. The failure that produces is a reported mismatch, not a silent pass, but
+#: under a strict xfail it could keep the case failing after its defect is fixed.
+#: So the neighbouring-step gaps are part of every bound, and a mismatch is worth
+#: re-checking at another tolerance before it is filed.
 NOISE_PROBE_FACTOR = 10.0
+
+#: The most an analytic column is ever allowed to be off, relative to itself,
+#: whatever tolerance it ran at. ``100·rtol`` alone would pass a column twice the
+#: true value at rtol 1e-2.
+MAX_ANALYTIC_RELATIVE = 1e-2
 
 
 class ReferenceRefused(Exception):
@@ -134,6 +146,8 @@ def central_difference(
         scale = abs(p0)
     if len(rel_steps) < 3:
         raise ValueError("at least three steps are needed to bound each quotient")
+    if any(b >= a or b <= 0.0 for a, b in zip(rel_steps, rel_steps[1:], strict=False)):
+        raise ValueError("rel_steps must be positive and strictly decreasing")
 
     x0 = np.asarray(observe(p0, rtol), dtype=float)
     x_loose = np.asarray(observe(p0, rtol * NOISE_PROBE_FACTOR), dtype=float)
@@ -143,23 +157,26 @@ def central_difference(
 
     hs = np.asarray(rel_steps, dtype=float) * scale
     central, forward_r, backward_r = [], [], []
-    prev_fwd = prev_bwd = None
+    prev = None
     for h in hs:
         xp = np.asarray(observe(p0 + h, rtol), dtype=float)
         xm = np.asarray(observe(p0 - h, rtol), dtype=float)
         central.append((xp - xm) / (2.0 * h))
         fwd, bwd = (xp - x0) / h, (x0 - xm) / h
         # One-sided quotients carry an O(h) error; one Richardson step against
-        # the previous (twice larger) step removes it, leaving each side's own
-        # derivative to O(h²). Where x is smooth the two sides then agree to the
-        # central quotient's accuracy; at a kink they converge to different limits.
-        if prev_fwd is None:
+        # the previous, larger step H removes it, leaving each side's own
+        # derivative to O(h·H): (H·q(h) − h·q(H)) / (H − h), which is 2q(h) − q(2h)
+        # on the default halving ladder. Where x is smooth the two sides then
+        # agree to the central quotient's accuracy; at a kink they converge to
+        # different limits.
+        if prev is None:
             forward_r.append(fwd)
             backward_r.append(bwd)
         else:
-            forward_r.append(2.0 * fwd - prev_fwd)
-            backward_r.append(2.0 * bwd - prev_bwd)
-        prev_fwd, prev_bwd = fwd, bwd
+            H, prev_fwd, prev_bwd = prev
+            forward_r.append((H * fwd - h * prev_fwd) / (H - h))
+            backward_r.append((H * bwd - h * prev_bwd) / (H - h))
+        prev = (h, fwd, bwd)
 
     D = np.stack(central)  # (n_steps, *shape)
     n = len(hs)
@@ -196,11 +213,12 @@ def analytic_tolerance(S: np.ndarray, p0: float, *, rtol: float, atol: float) ->
 
     ``100·rtol·|S|`` for the relative part — local error control does not bound
     global error, and 100x is the headroom the parity suite's noise mask uses for
-    the same reason — plus ``sens_resolution_floors`` for the absolute part,
-    CVODES' ``atol/|p|`` on ``s = ∂x/∂p`` at that same factor.
+    the same reason — capped at :data:`MAX_ANALYTIC_RELATIVE`, plus
+    ``sens_resolution_floors`` for the absolute part, CVODES' ``atol/|p|`` on
+    ``s = ∂x/∂p`` at that same factor.
     """
     floor = sens_resolution_floors([p0], atol)[0]
-    return 100.0 * rtol * np.abs(S) + floor
+    return min(100.0 * rtol, MAX_ANALYTIC_RELATIVE) * np.abs(S) + floor
 
 
 def mismatches(

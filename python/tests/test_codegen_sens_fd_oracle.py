@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Callable
@@ -65,6 +66,9 @@ class Term:
     analytic run and ``value`` is what it evaluates to there; each difference
     run writes a literal instead. ``compare`` picks the sample rows to judge,
     for a model whose defect lives next to a sample that sits on a crossing.
+    ``refused`` is for a defect that shows as a refusal rather than a number:
+    an analytic run failing with a message it matches raises
+    :class:`AnalyticRunRefused`, and nothing else does.
     """
 
     id: str
@@ -81,6 +85,7 @@ class Term:
     rtol: float = 1e-10
     atol: float = 1e-12
     compare: tuple[int, ...] | None = None
+    refused: str | None = None
     note: str = ""
     analytic: Callable[[Term, str], np.ndarray] | None = field(default=None, compare=False)
 
@@ -101,6 +106,15 @@ def _net_model(text: str) -> bngsim.Model:
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return bngsim.Model.from_net(path)
+
+
+class AnalyticRunRefused(Exception):
+    """The analytic run failed with the message its Term's ``refused`` names.
+
+    Its own class, so a strict xfail for a refusal is satisfied by that run's
+    failure and not by any other: a reference run's error, or a Simulator that
+    could not be built, is a different exception and fails the test.
+    """
 
 
 def _rows(term: Term, names: list[str]) -> list[int]:
@@ -136,7 +150,10 @@ def _simulator(term: Term, model: bngsim.Model, method: str) -> bngsim.Simulator
         sensitivity_method=method,
         codegen=True,
     )
-    assert sim.codegen_backend == _BACKEND
+    if sim.codegen_backend != _BACKEND:
+        # Not an assert: a strict xfail names raises=AssertionError, and a wrong
+        # backend must fail it rather than pass for the defect it names.
+        pytest.fail(f"{term.id}: built on {sim.codegen_backend!r}, expected {_BACKEND!r}")
     return sim
 
 
@@ -149,20 +166,28 @@ def _analytic(term: Term, method: str) -> np.ndarray:
     if term.analytic is not None:
         return term.analytic(term, method)
     sim = _simulator(term, term.model(term.spelling), method)
-    r = sim.run(
-        sample_times=list(term.sample_times), rtol=term.rtol, atol=term.atol, max_steps=_MAX_STEPS
-    )
+    try:
+        r = sim.run(
+            sample_times=list(term.sample_times),
+            rtol=term.rtol,
+            atol=term.atol,
+            max_steps=_MAX_STEPS,
+        )
+    except SimulationError as e:
+        if term.refused and re.search(term.refused, str(e)):
+            raise AnalyticRunRefused(str(e)) from e
+        raise
     return _column(term, r)
 
 
 def _check(term: Term, method: str) -> None:
     fd = _reference(term)
     S = _analytic(term, method)
-    rows = list(term.compare) if term.compare is not None else slice(None)
+    rows = list(term.compare) if term.compare is not None else list(range(len(term.sample_times)))
     sub = CentralDifference(
         fd.value[rows], fd.err[rows], fd.step[rows], fd.kink[rows], fd.noise[rows], fd.typical
     )
-    times = [term.sample_times[i] for i in (term.compare or range(len(term.sample_times)))]
+    times = [term.sample_times[i] for i in rows]
 
     def label(cell: tuple) -> str:
         return f"{term.species[int(cell[1])]} at t={times[int(cell[0])]}"
@@ -277,7 +302,7 @@ _T0_FIRE = """
 species A = 10, B = 0
 k1 = {k1}
 R1: A -> B; k1*A
-E1: at (time >= 0), t0={t0}: A = 8
+E1: at (time >= {fire}), t0=false: A = 8
 """
 
 _COINCIDENT = """
@@ -694,32 +719,35 @@ TERMS: list = [
         marks=_xfail(722, "the batch jump walks declaration order, the state priority order"),
     ),
     Term(
-        "event-initial-value-true",
+        "event-fires-after-t-start",
         "antimony",
-        _fill(_T0_FIRE, "k1", t0="true"),
+        _fill(_T0_FIRE, "k1", fire="0.25"),
         "k1",
         "0.5",
         0.5,
         (0.0, 1.0, 2.0),
         ("A", "B"),
         param="k1",
-        note="the same event, not fired at t_start",
+        note="the same reset, fired a quarter of a time unit after t_start",
     ),
     pytest.param(
         Term(
             "event-fires-at-t-start",
             "antimony",
-            _fill(_T0_FIRE, "k1", t0="false"),
+            _fill(_T0_FIRE, "k1", fire="0"),
             "k1",
             "0.5",
             0.5,
             (0.0, 1.0, 2.0),
             ("A", "B"),
             param="k1",
+            refused="CV_CONV_FAILURE|CV_FIRST_SRHSFUNC_ERR",
             note="refused with CV_CONV_FAILURE: s⁻ read before CVODES's first step is NaN",
         ),
         marks=_xfail(
-            717, "capture_event_sens reads s⁻ before CVODES has stepped", raises=SimulationError
+            717,
+            "capture_event_sens reads s⁻ before CVODES has stepped",
+            raises=AnalyticRunRefused,
         ),
     ),
     Term(
@@ -1067,6 +1095,31 @@ class TestTheOracle:
         fd = central_difference(_decay, 0.5, rtol=1e-4)
         with pytest.raises(ReferenceRefused, match="too coarse"):
             mismatches(fd.value, fd, 0.5, rtol=1e-10, atol=1e-12, resolution=1e-9)
+
+    def test_a_ladder_of_any_ratio_extrapolates(self):
+        # The one-sided extrapolation uses each pair of steps' own ratio, so a
+        # ladder dividing by 3 keeps an honest bound and still finds the kink.
+        ladder = tuple(0.1 / 3.0**k for k in range(9))
+        fd = central_difference(_decay, 0.5, rtol=1e-12, rel_steps=ladder)
+        exact = -10.0 * _TS * np.exp(-0.5 * _TS)
+        assert np.all(np.abs(fd.value - exact) <= fd.err) and not fd.kink.any()
+
+        def ramp(v, rtol):
+            return _noisy(2.0 * np.maximum(_TS - v, 0.0), v, rtol)
+
+        kinked = central_difference(ramp, 1.0, rtol=1e-12, rel_steps=ladder)
+        assert kinked.kink.sum() == 1 and kinked.kink[list(_TS).index(1.0)]
+
+    def test_a_ladder_must_decrease(self):
+        with pytest.raises(ValueError, match="strictly decreasing"):
+            central_difference(_decay, 0.5, rel_steps=(0.1, 0.2, 0.05))
+
+    def test_a_loose_column_is_still_held_to_one_percent(self):
+        # 100·rtol alone would pass a column twice the true value at rtol 1e-2.
+        fd = central_difference(_decay, 0.5, rtol=1e-12)
+        exact = -10.0 * _TS * np.exp(-0.5 * _TS)
+        assert mismatches(2.0 * exact, fd, 0.5, rtol=1e-2, atol=1e-12)
+        assert mismatches(1.005 * exact, fd, 0.5, rtol=1e-2, atol=1e-12) == []
 
     def test_a_refusal_cannot_satisfy_a_known_defect_xfail(self):
         # The xfails above name raises=AssertionError; a reference that could not

@@ -1,9 +1,9 @@
-- **The finite-difference Jacobian retry now starts where the failed attempt
-  started (GH #176).** When the analytical Jacobian failed part-way through a
-  run, the model still held the state at the failure, because every event or
-  switch stop writes the state back. The retry integrated from that state,
-  labelled it `t_start`, and returned it, with only the retry warning to show for
-  it. On a derived pulse onset under sensitivities, this gave `X(0) = X(3)` and a
-  sensitivity of -641 before the pulse opened, where explicit `jacobian="fd"`
-  raised. The retry now restores the starting state and any carried-over
-  sensitivity seed first.
+- **A failed ODE run now leaves the model where it found it, and the GH #176
+  retry starts where the failed attempt did.** A run continues from the model's
+  live state, and every event or switch stop writes that state back. So a run
+  that failed part-way left the model at the failure, and the next run on it
+  started there, labelled `t_start`, with no warning. The finite-difference
+  retry did the same within one call: on a derived pulse onset under
+  sensitivities it reported `X(0) = X(3)` and a sensitivity of -641 before the
+  pulse, where explicit `jacobian="fd"` raised. Both now restore the starting
+  state and any carried-over sensitivity seed.

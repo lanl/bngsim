@@ -352,6 +352,38 @@ def test_the_retry_keeps_the_carried_sensitivity_seed(data_dir: Path) -> None:
     np.testing.assert_allclose(measure(fail=True), carried, rtol=1e-6)
 
 
+# A switch that turns on a cubic blow-up at t=0.5, after an event at t=0.25 whose
+# stop writes the state back: every attempt fails well past t_start.
+_BLOWS_UP = """
+species X = 1, Y = 1
+k = 1
+J: -> X; piecewise(k*X*X*X, time >= 0.5, 0)
+J2: -> Y; 1
+E: at (time >= 0.25): Y = Y + 10
+"""
+
+
+@pytest.mark.parametrize("sensitivity_params", [None, ["k"]], ids=["plain", "sens"])
+@pytest.mark.parametrize("jacobian", ["auto", "fd", "analytical"])
+def test_a_failed_run_leaves_the_model_where_it_found_it(jacobian, sensitivity_params) -> None:
+    # The retry restoring the start is not enough on its own: when the error
+    # propagates (the retry fails too, or there was no retry to make) the model
+    # was left at the failure, X ~ 1e73, with the carried-state flag still clear.
+    # The next run on it reported that state as its t=0 row, and nothing warned.
+    pytest.importorskip("antimony")
+    m = bngsim.Model.from_antimony_string(_BLOWS_UP)
+    start = m.get_state().copy()
+    sim = bngsim.Simulator(
+        m, method="ode", jacobian=jacobian, sensitivity_params=sensitivity_params
+    )
+    with pytest.raises(SimulationError):
+        sim.run(t_span=(0.0, 5.0), n_points=11)
+    assert np.array_equal(m.get_state(), start)
+    assert m._core.ic_state_dirty is False
+    rerun = bngsim.Simulator(m, method="ode").run(t_span=(0.0, 0.2), n_points=2)
+    assert np.array_equal(np.asarray(rerun.species)[0], start)
+
+
 def test_the_retry_matches_the_messages_the_core_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
