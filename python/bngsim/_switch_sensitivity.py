@@ -1820,9 +1820,13 @@ _TIME_REF = re.compile(r"(?<![A-Za-z0-9_])time(?:\s*\(\s*\))?(?![A-Za-z0-9_(])")
 # in time, whose crossing this cannot claim to know.
 _CROSSING_RESIDUAL_TOL = 1e-9
 
-# Resolved crossing times, keyed on the condition text, the run window and the
-# values of every parameter the condition reads once derived names are inlined —
-# which is everything the answer depends on. Two sympy round trips per condition
+# Resolved crossing times, keyed on the text actually solved (function slots and
+# derived names inlined), the run window and the values of every parameter that
+# text reads — which is everything the answer depends on. The inlined text, not
+# the condition as written: the cache outlives a model, and two models can spell
+# `time()>=on` over an `on` defined as 2*a in one and 3*a in the other, which
+# read the same leaf values and cross at different times (issue #729, the half
+# #883 left when it fixed the schedule key). Two sympy round trips per condition
 # is ~2 ms, and a scan or a fit calls run() thousands of times while the
 # parameters a *schedule* reads (an experimental-condition dose time) change
 # once per experiment, so the hit rate is close to 1. Bounded and cleared whole
@@ -1832,48 +1836,39 @@ _CROSSING_CACHE: dict[tuple, float | None] = {}
 _CROSSING_CACHE_MAX = 4096
 
 
-def _time_alias_bodies(ctx) -> dict[str, str]:
-    """Every function/assignment-rule name whose value is a function of time.
+def _function_slot_bodies(ctx) -> dict[str, str]:
+    """Every function a condition can name bare, mapped to its body.
 
-    ``model_time := time`` is the shape (GH #259): a condition may threshold the
-    *alias* rather than the csymbol, and the alias is also a plain model
-    parameter carrying a stale number. Reading that number is how a residual
-    that is genuinely time-dependent comes back looking constant, so this map
-    is needed twice over — to inline the aliases that resolve, and to refuse the
-    ones that do not.
-
-    Transitive: an alias of an alias reads time too.
+    An SBML assignment rule such as ``model_time := time`` (GH #259) or
+    ``g := 4*S`` is a function whose value the evaluator also writes into a
+    parameter slot of the same name, and a condition can threshold that name.
+    Read as the parameter its address is, the slot is a stale number:
+    - a residual that moves with time comes back looking constant (#259);
+    - one that moves with the state comes back as a crossing at a time nothing
+      crosses (``time >= g`` stopped at 4 while the crossing was at 1.7).
+    So the resolver inlines every one of them, and what the bodies read decides:
+    time resolves, a parameter is read at its live value, and a species declines.
     """
-    bodies = dict(ctx["function_map"])
-    aliases: dict[str, str] = {}
-    changed = True
-    while changed:
-        changed = False
-        for name, body in bodies.items():
-            if name in aliases or not isinstance(body, str):
-                continue
-            if _TIME_REF.search(body) or any(
-                re.search(rf"(?<![A-Za-z0-9_]){re.escape(a)}(?![A-Za-z0-9_])", body)
-                for a in aliases
-            ):
-                aliases[name] = body
-                changed = True
-    return aliases
+    return {n: b for n, b in dict(ctx["function_map"]).items() if isinstance(b, str)}
 
 
-def _inline_time_aliases(expr: str, aliases: dict[str, str]) -> str:
-    """Substitute every *bare* reference to a time alias by its body.
+def _inline_function_slots(expr: str, bodies: dict[str, str]) -> str:
+    """Substitute every *bare* reference to a function by its body, transitively.
 
     Bare only: ``f(x)`` is a call whose body takes an argument, and pasting the
-    body over the call site would drop the argument. A call to a time-dependent
-    function therefore survives the substitution and is caught by the caller's
-    identifier check, which is the conservative direction.
+    body over the call site would drop the argument. A call therefore survives
+    the substitution and is caught by the caller's identifier check, which is the
+    conservative direction. Only the names present are substituted, so a model
+    with hundreds of functions pays for the few a condition reads.
     """
-    for _ in range(len(aliases) + 1):
+    for _ in range(len(bodies) + 1):
+        present = set(_IDENTIFIER.findall(expr)) & bodies.keys()
+        if not present:
+            break
         before = expr
-        for name, body in aliases.items():
+        for name in present:
             expr = re.sub(
-                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])", f"({body})", expr
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])", f"({bodies[name]})", expr
             )
         if expr == before:
             break
@@ -1885,7 +1880,7 @@ def _crossing_time_of_condition(
     scope: SwitchConditionScope,
     t_start: float,
     t_end: float,
-    aliases: dict[str, str] | None = None,
+    bodies: dict[str, str] | None = None,
 ) -> float | None:
     """The model time at which *cond* flips, or ``None`` when it is not a fixed
     time crossing this function can resolve exactly.
@@ -1919,28 +1914,29 @@ def _crossing_time_of_condition(
     if split is None:
         return None
     lhs, rhs = split
-    aliases = aliases or {}
-    # An alias of `time` is a plain parameter as far as the tables below are
+    bodies = bodies or {}
+    # A function's slot is a plain parameter as far as the tables below are
     # concerned, and carries a stale number, so it has to be substituted BEFORE
-    # anything reads a value — otherwise `model_time >= 0.7` looks constant.
+    # anything reads a value — otherwise `model_time >= 0.7` looks constant, and
+    # `time >= g` with `g := 4*S` looks like a crossing at a fixed time.
     # Substituting also keeps the #259 property that the alias spelling and the
     # csymbol spelling are the same run to the last bit.
-    residual = _inline_time_aliases(f"({lhs})-({rhs})", aliases)
+    residual = _inline_function_slots(f"({lhs})-({rhs})", bodies)
     flat = _inline_derived_param_refs(residual, scope.derived_exprs) or residual
     if not _TIME_REF.search(flat):
         return None
-    # Every other identifier must be a model parameter, and must not be one of
-    # the time-dependent names — a surviving alias is one this could only read
-    # as a constant, and a species or observable name means the crossing moves
-    # with the trajectory (issue #150's business, not a fixed stop time).
+    # Every other identifier must be a model parameter, and must not be a
+    # function — one that survives inlining is a call this could only read as a
+    # constant — and a species or observable name means the crossing moves with
+    # the trajectory (issue #150's business, not a fixed stop time).
     read: list[str] = []
     for m in _IDENTIFIER.finditer(_TIME_REF.sub(" 0 ", flat)):
-        if m.group(0) not in scope.param_idx or m.group(0) in aliases:
+        if m.group(0) not in scope.param_idx or m.group(0) in bodies:
             return None
         read.append(m.group(0))
 
     key = (
-        cond,
+        flat,
         t_start,
         t_end,
         tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in set(read))),
@@ -2666,14 +2662,14 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
         return []
     ctx = core.functional_jacobian_context()
     scope = switch_condition_scope(core, ctx)
-    aliases = _time_alias_bodies(ctx)
+    bodies = _function_slot_bodies(ctx)
     found: list[CrossingStop] = []
     for cond in conditions:
         rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
         if rewrite is None:
             continue
         text, clock_idx, offset = rewrite
-        t_star = _crossing_time_of_condition(text, scope, t_start, t_end, aliases)
+        t_star = _crossing_time_of_condition(text, scope, t_start, t_end, bodies)
         times: list[float] | None = None
         if t_star is not None:
             times = [t_star]

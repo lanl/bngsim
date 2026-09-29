@@ -41,6 +41,7 @@ What this locks:
 import math
 
 import bngsim
+import numpy as np
 import pytest
 
 # ── Model ───────────────────────────────────────────────────────────────────
@@ -233,6 +234,30 @@ def test_a_state_threshold_resolves_to_no_stop(tmp_path):
     assert fixed_time_crossings(model._core, 0.0, 30.0, ("(X<1)",)) == []
     # …and a condition in which `time` cancels has no crossing either.
     assert fixed_time_crossings(model._core, 0.0, 30.0, ("((time()-time())<1)",)) == []
+
+
+def test_a_threshold_an_assignment_rule_computes_from_state_is_not_a_stop():
+    """`time >= g` with `g := 4*S` crosses where the trajectory puts it.
+
+    The rule's slot is a parameter address holding a stale number, 4 at load, and
+    read as a parameter it placed a stop at t=4 while the crossing is at 1.705.
+    The registered root still caught the real one, so Y came out right, but the
+    stop was a step clamp at a time nothing happened. Inlined, the rule reads a
+    species and the condition is left to the root.
+    """
+    pytest.importorskip("antimony")
+    from bngsim._switch_sensitivity import fixed_crossing_stops
+
+    model = bngsim.Model.from_antimony_string(
+        "species S = 1, Y = 0\ng := 4*S\nJ1: S -> ; 0.5*S\nJ2: -> Y; piecewise(1, time >= g, 0)\n"
+    )
+    conds = model.time_discontinuity_conditions()
+    assert conds
+    assert fixed_crossing_stops(model._core, 0.0, 10.0, conds) == []
+    # The crossing solves t = 4·exp(-t/2).
+    t_star = 1.7052110040274508
+    r = bngsim.Simulator(model, method="ode").run(sample_times=[0.0, 10.0], rtol=1e-10, atol=1e-12)
+    assert np.asarray(r.species)[-1, 1] == pytest.approx(10.0 - t_star, rel=1e-8)
 
 
 def test_a_model_with_no_time_piecewise_gets_no_stops(tmp_path):

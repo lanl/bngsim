@@ -2963,6 +2963,35 @@ class Simulator:
         An explicit ``codegen=True`` asks for a compiled RHS, not for the
         analytical Jacobian, so it is retried too.
         """
+        # A run continues from the model's live state, and a failed attempt does
+        # not leave that state where it found it: every stop on the way (an event,
+        # a switch crossing) writes x(t) back, so after a failure at t=3 the model
+        # holds x(3). The FD retry has to start from what the first attempt started
+        # from, or it integrates from x(3) relabelled as t_start and returns that
+        # as the answer. The carry-over sensitivity state goes back too, as in
+        # run_batch and parameter_scan.
+        core = self._model._core
+        start_state = core.get_state()
+        start_carry = self._capture_carryover_state()
+
+        def restore() -> None:
+            core.set_state(start_state)
+            self._restore_carryover_state(start_carry)
+
+        try:
+            return self._ode_attempts(times, opts, restore)
+        except BaseException:
+            # A run that raises leaves the model as it found it, whatever raised:
+            # a retry that failed too, a refusal, a timeout, an explicit jacobian
+            # that is not second-guessed. Left at the failure, the next run on this
+            # Model started from x(t_fail) labelled t_start, with the dirty flag
+            # still clear, so nothing refused or warned.
+            restore()
+            raise
+
+    def _ode_attempts(self, times, opts, restore):
+        """The attempts :meth:`_run_ode_with_jacobian_fallback` makes, with
+        ``restore`` putting the model back between them."""
         eligible = self._jacobian == "auto" and bool(
             getattr(self._model._core, "analytical_jacobian_complete", False)
         )
@@ -2994,6 +3023,7 @@ class Simulator:
                 "jacobian='analytical' to surface the failure.",
                 e,
             )
+            restore()
             opts.jacobian = "fd"
             result = self._sim.run(times, opts)
             # Only memoize once FD has actually succeeded — a model that fails on
