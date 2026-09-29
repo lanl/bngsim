@@ -251,7 +251,12 @@ _compile_counter = itertools.count()
 # non-NaN argument where the engine returns the first. That changes what a
 # model computes when an argument goes NaN (and max(-0.0, 0.0)), so a cached
 # v31 .so would keep serving fmax's answer. Invalidate v31.
-_CODEGEN_VERSION = "32"
+# v33: lanl/bngsim #801 — a reaction's ydot updates are one per species,
+# `m * rate`, instead of one per unit of stoichiometry, matching the C++
+# right-hand side, which folds the same way now. A cached v32 .so for a model
+# with a coefficient above 1 would keep serving the repeated updates and their
+# rounding. Invalidate v32.
+_CODEGEN_VERSION = "33"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -5740,6 +5745,28 @@ def _amount_factor_c(terms: list[tuple[int, float]], fmt=repr) -> str | None:
     return fmt(fold) if fold != 1.0 else None
 
 
+def _multiplicity(indices) -> list[tuple[int, int]]:
+    """A reactant or product index list, one entry per unit of stoichiometry, as
+    ``(species, multiplicity)`` in order of first appearance, negatives dropped.
+
+    Issue #801: an SBML coefficient of 1e6 arrives as a million entries, and one
+    ``ydot`` update per entry made 66.7 MB of C for BIOMD0000000608. The C++
+    right-hand side folds the same way (``Reaction::reactant_multiplicity``).
+    """
+    counts: dict[int, int] = {}
+    for i in indices:
+        if i >= 0:
+            counts[i] = counts.get(i, 0) + 1
+    return list(counts.items())
+
+
+def _times_multiplicity(m: int, term: str) -> str:
+    """``term`` scaled by a multiplicity, as the C++ right-hand side scales it:
+    unchanged at 1, so every unit-stoichiometry reaction emits what it did before
+    issue #801, else ``m * (term)``."""
+    return term if m == 1 else f"{m}.0 * ({term})"
+
+
 def _psvs_row_divisor(species: list[dict], si: int) -> tuple[int, float, int]:
     """The compartment-volume divisor of one cross-compartment accumulation row,
     as ``(live_volume_idx0, static_divisor, static_divisor_param_idx0)``.
@@ -6020,19 +6047,15 @@ def generate_rhs_from_model(model) -> str:
                     return f"rate * (1.0 / p[{kvol}])"
                 return f"rate * inv_vf[{si}]"
 
-            for ri in reactants:
-                if ri >= 0:
-                    g(f"    ydot[{ri}] -= {_psvs_divide(ri)};")
-            for pi in products:
-                if pi >= 0:
-                    g(f"    ydot[{pi}] += {_psvs_divide(pi)};")
+            for ri, m in _multiplicity(reactants):
+                g(f"    ydot[{ri}] -= {_times_multiplicity(m, _psvs_divide(ri))};")
+            for pi, m in _multiplicity(products):
+                g(f"    ydot[{pi}] += {_times_multiplicity(m, _psvs_divide(pi))};")
         else:
-            for ri in reactants:
-                if ri >= 0:
-                    g(f"    ydot[{ri}] -= rate;")
-            for pi in products:
-                if pi >= 0:
-                    g(f"    ydot[{pi}] += rate;")
+            for ri, m in _multiplicity(reactants):
+                g(f"    ydot[{ri}] -= {_times_multiplicity(m, 'rate')};")
+            for pi, m in _multiplicity(products):
+                g(f"    ydot[{pi}] += {_times_multiplicity(m, 'rate')};")
         g("")
         rxn_groups.append(grp)
 
