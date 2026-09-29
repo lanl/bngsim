@@ -37,6 +37,7 @@ from bngsim._codegen import (
     _RATEOF_PREFIX,
     CodegenDeclined,
     _find_close_paren_strict,
+    _multiplicity,
     _normalize_exprtk_operators,
     _split_top_level_commas,
     _topological_function_order,
@@ -887,10 +888,13 @@ def generate_jax_rhs(model: Any) -> Any:
                 live = kps > 0.0
                 rate = jnp.where(live, sf * kcat * s_free * e / jnp.where(live, kps, 1.0), 0.0)
 
-            for ri in reactants:
-                dydt = dydt.at[ri].add(-rate)
-            for pi in products:
-                dydt = dydt.at[pi].add(rate)
+            # One update per species of multiplicity * rate, as the C++ right-hand
+            # side and the C emitter do (issue #801): a coefficient is one index
+            # entry per unit, and a million entries is a million traced ops.
+            for ri, m in _multiplicity(reactants):
+                dydt = dydt.at[ri].add(-rate if m == 1 else -(m * rate))
+            for pi, m in _multiplicity(products):
+                dydt = dydt.at[pi].add(rate if m == 1 else m * rate)
 
         for si in fixed_sp:
             dydt = dydt.at[si].set(0.0)

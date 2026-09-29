@@ -295,3 +295,39 @@ def test_a_large_offset_keeps_its_fraction(tmp_path):
     m = _model(tmp_path, "floor((floor(time())+t0)/P)", 24, 1, 2e9)
     stops = fixed_time_crossings(m._core, 0.0, 100.0, m.time_discontinuity_conditions())
     assert stops == pytest.approx([16.0, 40.0, 64.0, 88.0])
+
+
+# A step inside a step's argument: `floor(floor(time()+phase)/P)` counts days
+# over an hour count, the light cycle of BIOMD0000000412/445/476. The inner call
+# was read as a bare step of its own, so every hour became a stop, and each stop
+# restarted CVODE for a rate law continuous there: 1.5x the steps and 4x the
+# Jacobian evaluations on those models, for the same trajectory. Only the outer
+# jumps are edges; before the nesting was read, a comparison over it placed none.
+OUTER_JUMPS = {
+    "day_count": ("floor(floor(time()+t0)/P)", [19.0, 43.0]),
+    "light_cycle_phase": ("P*((time()+t0)/P - floor(floor(time()+t0)/P))", [19.0, 43.0]),
+    "pulse": (
+        "floor(floor(time())/P) - floor((floor(time())-w)/P)",
+        [3.0, 24.0, 27.0, 48.0, 51.0],
+    ),
+}
+
+
+@pytest.mark.parametrize("dose, expected", OUTER_JUMPS.values(), ids=OUTER_JUMPS.keys())
+def test_a_step_inside_a_step_stops_only_where_the_outer_one_jumps(tmp_path, dose, expected):
+    m = _model(tmp_path, dose, 24, 3, 5)
+    stops = fixed_time_crossings(m._core, 0.0, 60.0, m.time_discontinuity_conditions())
+    assert stops == pytest.approx(expected, abs=1e-9)
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreter", "codegen"])
+@pytest.mark.parametrize(
+    "dose",
+    [OUTER_JUMPS["pulse"][0], f"if({OUTER_JUMPS['pulse'][0]} > 0.5, 1, 0)"],
+    ids=["bare", "compared"],
+)
+def test_every_pulse_of_nested_floors_is_integrated(tmp_path, dose, codegen):
+    # A 3-hour pulse at the start of every day: 11 of them begin by t = 252.
+    sim = bngsim.Simulator(_model(tmp_path, dose, 24, 3, 0), method="ode", codegen=codegen)
+    r = sim.run(t_span=(0.0, T_END), n_points=int(T_END) + 1)
+    assert float(np.asarray(r.species)[-1, 0]) == pytest.approx(3 * 11, rel=1e-6)

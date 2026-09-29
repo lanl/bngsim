@@ -173,17 +173,75 @@ class NetModel:
         return self
 
 
-# Cost gates for a pure-Python SSA. A model exceeding any of these is treated as
-# UNSUPPORTED (net_gillespie_ensemble returns None → the row stays unscored) rather
-# than hanging the worker. The reaction cap bounds the O(n_rxn) direct-method
-# selection; the event cap and wall budget bound trajectory/ensemble cost.
+# Cost gates for a pure-Python SSA. The reaction cap bounds the O(n_rxn)
+# direct-method selection; the two event caps bound trajectory and ensemble cost.
+# All three are deterministic: the seeds are fixed, so whether an ensemble fits is
+# the same on every machine, and so is which oracle scores the row (issue #881).
 MAX_REACTIONS = 1_500
 MAX_EVENTS = 5_000_000
-DEFAULT_WALL_BUDGET_SEC = 90.0
+# The ensemble cap for a 10-reaction network. A larger network gets fewer events,
+# because an event costs a fixed overhead plus a linear scan over the reactions:
+# measured 3.8 us at 10 reactions and 51.5 us at 1,500 on an Apple M-series, which
+# is (110 + n_reactions) scan-steps of about 0.032 us each. Capping events alone
+# admitted 20 M events on a 1,500-reaction network, ~1,000 s there, which a fast
+# runner finishes and a slow one stops, so the verdict would follow runner speed
+# again. See ensemble_event_cap().
+MAX_ENSEMBLE_EVENTS = 20_000_000
+_EVENT_FIXED_COST = 110  # the fixed part of one event, in reaction-scan steps
+# A SAFETY STOP only, never the thing that decides support. It used to be 90 s and
+# also chose the oracle: v08's 10-replicate ensemble (5.2 M events, ~30 s on an
+# Apple M-series) ran out of it on the slower nightly runners, which then scored the
+# row against RoadRunner instead, so the verdict followed runner speed (issue #881).
+# An ensemble the caps admit runs ~75 s at most on an Apple M-series, at any network
+# size; this leaves several-fold headroom for a slow, loaded runner. Hitting it is
+# reported as such.
+DEFAULT_WALL_BUDGET_SEC = 900.0
+
+
+def ensemble_event_cap(n_reactions: int) -> int:
+    """The most events an ensemble on an *n_reactions* network may fire: the same
+    cost as ``MAX_ENSEMBLE_EVENTS`` events on a 10-reaction network. It depends on
+    the network alone, so whether an ensemble fits is the same on every machine."""
+    return MAX_ENSEMBLE_EVENTS * (_EVENT_FIXED_COST + 10) // (_EVENT_FIXED_COST + n_reactions)
 
 
 class _TooCostly(Exception):
-    pass
+    def __init__(self, reason: str, detail: str):
+        super().__init__(detail)
+        self.reason = reason
+
+
+@dataclass
+class NetGillespieOutcome:
+    """What :func:`run_net_gillespie` produced, and if nothing, why.
+
+    ``reason`` is ``"ok"`` (``values`` holds the ensemble), ``"unsupported"`` (the
+    ``.net`` is outside the supported gate), ``"event_cap"`` (a deterministic event cap
+    was exceeded), ``"wall_budget"`` (the safety stop fired) or ``"error"`` (the oracle
+    raised). The first three are the same on every machine; ``"wall_budget"`` is not,
+    which is why a caller must not let it pick a different oracle.
+    """
+
+    values: tuple | None
+    reason: str
+    detail: str = ""
+    elapsed_sec: float = 0.0
+    events: int = 0
+
+    def describe(self) -> str:
+        """A clause for a row comment: why this oracle produced nothing."""
+        if self.reason == "unsupported":
+            return f"does not support this .net ({self.detail})"
+        if self.reason == "event_cap":
+            return f"exceeded its deterministic event cap ({self.detail})"
+        if self.reason == "wall_budget":
+            return (
+                f"hit its {self.detail} safety stop after {self.elapsed_sec:.0f} s and "
+                f"{self.events} events"
+            )
+        if self.reason == "error":
+            return f"raised {self.detail}"
+        return "ran"
 
 
 _SECTION = re.compile(r"begin\s+(\w+)|end\s+(\w+)")
@@ -192,6 +250,11 @@ _SECTION = re.compile(r"begin\s+(\w+)|end\s+(\w+)")
 def parse_net(path: str | Path) -> NetModel | None:
     """Parse a BNG ``.net`` into a ``NetModel``; return ``None`` if UNSUPPORTED
     (functional/time-dependent rate, or non-integer seed counts). Never guesses."""
+    return parse_net_with_reason(path)[0]
+
+
+def parse_net_with_reason(path: str | Path) -> tuple[NetModel | None, str]:
+    """:func:`parse_net`, plus why a ``None`` is unsupported (``""`` when supported)."""
     text = Path(path).read_text()
     params: dict[str, float] = {}
     raw_params: list[tuple[str, str]] = []
@@ -242,29 +305,31 @@ def parse_net(path: str | Path) -> NetModel | None:
     for amt in species_amt:
         try:
             v = _eval_expr(amt, params)
-        except _UnsupportedExpr:
-            return None
+        except _UnsupportedExpr as e:
+            return None, f"seed amount {amt!r} is not a constant: {e}"
         if not float(v).is_integer() or v < 0:
-            return None  # concentration units / non-count → refuse
+            # concentration units / non-count → refuse
+            return None, f"seed amount {amt!r} = {v:g} is not a non-negative integer count"
         x0.append(int(round(v)))
 
     # Reactions:  idx  reactant_idxs  product_idxs  rate_expr
     if len(rxn_lines) > MAX_REACTIONS:
-        return None  # network too large for a pure-Python SSA
+        return None, f"{len(rxn_lines)} reactions > MAX_REACTIONS ({MAX_REACTIONS})"
     reactions = []
     for rl in rxn_lines:
         parts = rl.split()
         if len(parts) < 4:
-            return None
+            return None, f"malformed reaction line {rl!r}"
         reac = [] if parts[1] == "0" else [int(i) - 1 for i in parts[1].split(",")]
         prod = [] if parts[2] == "0" else [int(i) - 1 for i in parts[2].split(",")]
         rate_expr = parts[3]
         try:
             k = _eval_expr(rate_expr, params)  # folds in the statistical factor
-        except _UnsupportedExpr:
-            return None  # functional / time-dependent rate → refuse
+        except _UnsupportedExpr as e:
+            # functional / time-dependent rate → refuse
+            return None, f"rate {rate_expr!r} is not a constant: {e}"
         if not math.isfinite(k) or k < 0:
-            return None
+            return None, f"rate {rate_expr!r} = {k:g} is not a finite non-negative constant"
         reactions.append((reac, prod, k))
 
     # Groups (observables): name  [w*]idx,[w*]idx,...
@@ -272,7 +337,7 @@ def parse_net(path: str | Path) -> NetModel | None:
     for gl in grp_lines:
         parts = gl.split(None, 2)  # idx name terms
         if len(parts) < 2:
-            return None
+            return None, f"malformed group line {gl!r}"
         name = parts[1]
         terms = []
         if len(parts) == 3:
@@ -288,7 +353,7 @@ def parse_net(path: str | Path) -> NetModel | None:
         obs_names.append(name)
         obs_terms.append(terms)
 
-    return NetModel(np.array(x0, dtype=np.int64), reactions, obs_names, obs_terms)
+    return NetModel(np.array(x0, dtype=np.int64), reactions, obs_names, obs_terms), ""
 
 
 # ── Direct-method Gillespie ──────────────────────────────────────────────────
@@ -305,13 +370,22 @@ def _prop(k, mult, x):
 
 
 def _simulate_one(
-    net: NetModel, t_grid: np.ndarray, rng: np.random.Generator, deadline: float | None = None
+    net: NetModel,
+    t_grid: np.ndarray,
+    rng: np.random.Generator,
+    deadline: float | None = None,
+    tally: list[int] | None = None,
 ) -> np.ndarray:
     """One exact SSA trajectory; returns observables sampled at ``t_grid`` — shape
     (n_time, n_obs). Uses a species→reaction dependency graph so only the propensities
-    touched by the fired reaction are recomputed (O(degree) per step, not O(nr))."""
+    touched by the fired reaction are recomputed (O(degree) per step, not O(nr)).
+
+    ``tally``, when given, is a one-element list holding the events the ensemble has
+    fired so far; it is advanced here and checked against :func:`ensemble_event_cap`
+    for this network."""
     x = net.x0.copy().astype(np.int64)
     rxns = net.reactions
+    ensemble_cap = ensemble_event_cap(len(rxns))
     mults = net.mults
     dep = net.dep_rxns
     nr = len(rxns)
@@ -365,37 +439,59 @@ def _simulate_one(
         a0 = math.fsum(a)  # re-sum (kept exact; nr small)
         events += 1
         if events > MAX_EVENTS:
-            raise _TooCostly(f"{events} events > MAX_EVENTS")
+            raise _TooCostly("event_cap", f"one trajectory passed MAX_EVENTS = {MAX_EVENTS}")
+        if tally is not None:
+            tally[0] += 1
+            if tally[0] > ensemble_cap:
+                raise _TooCostly(
+                    "event_cap",
+                    f"the ensemble passed {ensemble_cap} events, MAX_ENSEMBLE_EVENTS = "
+                    f"{MAX_ENSEMBLE_EVENTS} scaled to {nr} reactions",
+                )
         if deadline is not None and (events & 0xFFFF) == 0 and _now() > deadline:
-            raise _TooCostly("wall budget exceeded")
+            raise _TooCostly("wall_budget", "wall budget exceeded")
     return out
+
+
+def run_net_gillespie(
+    net_path, t_grid, n_rep: int, seed_base: int, wall_budget_sec: float = DEFAULT_WALL_BUDGET_SEC
+) -> NetGillespieOutcome:
+    """Independent SSA ensemble on ``net_path`` sampled at ``t_grid``, never raising.
+
+    On success ``values`` is ``(t_grid, values, obs_names)`` with ``values`` shape
+    (n_rep, n_time, n_obs), the same layout the harness's bngsim ensemble uses. On
+    failure ``values`` is ``None`` and ``reason`` says why (see
+    :class:`NetGillespieOutcome`), so a report can tell "unsupported" from "too
+    costly" from "ran out of time" from "raised" (issue #881).
+    """
+    start = _now()
+    tally = [0]
+    try:
+        net, why = parse_net_with_reason(net_path)
+        if net is None:
+            return NetGillespieOutcome(None, "unsupported", why, _now() - start)
+        net.precompute()
+        t_grid = np.asarray(t_grid, dtype=np.float64)
+        vals = np.empty((n_rep, len(t_grid), len(net.obs_names)), dtype=np.float64)
+        deadline = start + wall_budget_sec
+        for rep in range(n_rep):
+            rng = np.random.default_rng(seed_base + rep)  # independent PCG64 stream
+            vals[rep] = _simulate_one(net, t_grid, rng, deadline=deadline, tally=tally)
+    except _TooCostly as e:
+        detail = f"{wall_budget_sec:g} s" if e.reason == "wall_budget" else str(e)
+        return NetGillespieOutcome(None, e.reason, detail, _now() - start, tally[0])
+    except Exception as e:  # noqa: BLE001 - reported on the row, never raised
+        return NetGillespieOutcome(
+            None, "error", f"{type(e).__name__}: {e}", _now() - start, tally[0]
+        )
+    return NetGillespieOutcome((t_grid, vals, net.obs_names), "ok", "", _now() - start, tally[0])
 
 
 def net_gillespie_ensemble(
     net_path, t_grid, n_rep: int, seed_base: int, wall_budget_sec: float = DEFAULT_WALL_BUDGET_SEC
 ):
-    """Independent SSA ensemble on ``net_path`` sampled at ``t_grid``.
-
-    Returns ``(t_grid, values, obs_names)`` with ``values`` shape
-    (n_rep, n_time, n_obs) — the same layout the harness's bngsim ensemble uses — or
-    ``None`` if the ``.net`` is unsupported (functional/time-dependent/concentration/
-    too-large network) or the ensemble exceeds ``wall_budget_sec`` (too costly for a
-    pure-Python SSA — the caller then keeps the honest REFERENCE_FAILED).
-    """
-    net = parse_net(net_path)
-    if net is None:
-        return None
-    net.precompute()
-    t_grid = np.asarray(t_grid, dtype=np.float64)
-    vals = np.empty((n_rep, len(t_grid), len(net.obs_names)), dtype=np.float64)
-    deadline = _now() + wall_budget_sec
-    try:
-        for rep in range(n_rep):
-            rng = np.random.default_rng(seed_base + rep)  # independent PCG64 stream
-            vals[rep] = _simulate_one(net, t_grid, rng, deadline=deadline)
-    except _TooCostly:
-        return None  # too costly → stay unscored
-    return t_grid, vals, net.obs_names
+    """:func:`run_net_gillespie`'s ensemble, or ``None`` for any reason it has none."""
+    return run_net_gillespie(net_path, t_grid, n_rep, seed_base, wall_budget_sec).values
 
 
 if __name__ == "__main__":

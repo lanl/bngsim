@@ -1,7 +1,6 @@
 {
   "_comment": "Cases whose verdict measurably depends on runner timing, per suite. A change of one of these is reported under 'changed' and never alerts, in both the baseline and the previous-night comparison. Add a case only with the measurement that shows it flips on identical code; remove it once it is stable.",
   "bng_ssa": {
-    "glacial/rulehub/Published/Lin2019/prion_model.bngl|stochastic": "TIMEOUT (bngsim per-replicate wall cap, 88.5 s) on runs 35946475284 and 35954625712, PASS (925 s, scored against libRoadRunner after run_network failed) on 35962708844, all on identical code",
-    "original/bngl_models/my_models/ssa/v08.bngl|stochastic": "run_network's SSA crashes on it (edgepop) on every runner, so a fallback oracle scores it, and which one depends on runner speed: net_gillespie (pure Python, 90 s ensemble budget; 19.4 s on an Apple M4 Max) scores PASS on EPYC 9V45 and Xeon 6973P (runs 35972775777, 36244288962); on EPYC 7763 and 9V74 it yields nothing and libRoadRunner's Gillespie scores DIFF (runs 35962708844, 36006727558, 36143905836, 36293653643). 35962708844 (DIFF) and 35972775777 (PASS) differ only in nightly comparison files"
+    "glacial/rulehub/Published/Lin2019/prion_model.bngl|stochastic": "TIMEOUT (bngsim per-replicate wall cap, 88.5 s) on runs 35946475284 and 35954625712, PASS (925 s, scored against libRoadRunner after run_network failed) on 35962708844, all on identical code"
   }
 }
