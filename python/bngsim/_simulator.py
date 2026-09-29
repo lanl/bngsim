@@ -159,9 +159,11 @@ _IC_SENS_PROBE_TOL = 1e-4
 # unwritable compartment sizes — spell themselves out in full and do not use this.
 _SKIP_WARN_NAME_LIMIT = 8
 
-# The engine's refusal of an event delay that is NaN, infinite or negative
-# (issue #762). Matched in the jacobian="auto" retry, which must not retry it.
-_EVENT_DELAY_REFUSAL = "an event delay must be a finite, non-negative number"
+# How the core's CVODE hard failures start, in src/cvode_simulator.cpp: an error
+# flag (`cvode_failure_message`) and a step that collapsed to no progress
+# (`retry_while_advancing`), the second being the parked-on-a-discontinuity case
+# the FD Jacobian most often rescues. The jacobian="auto" retry is for these only.
+_CVODE_FAILURES = ("CVODE integration failed at t=", "CVODE made no progress ")
 
 
 def _abbreviate(names: list[str], limit: int = _SKIP_WARN_NAME_LIMIT) -> str:
@@ -2945,13 +2947,20 @@ class Simulator:
         are attached to the model). An explicit ``jacobian="analytical"`` is the
         user's deliberate choice and is *not* second-guessed — it surfaces the
         failure. ``"fd"`` / ``"jax"`` never had analytical terms to fall back
-        from. The compiled-codegen Jacobian path is excluded: its derivative is
-        baked into the ``.so`` and is not re-selectable at run time.
+        from.
+
+        A compiled RHS gets the same retry (issue #874). The compiled Jacobian is
+        chosen per run like the interpreted one: the core installs it only when
+        ``opts.jacobian`` is ``"auto"`` or ``"analytical"``, so ``"fd"`` runs the
+        same compiled RHS under CVODE's difference quotient. Excluding it once
+        cost only ``codegen=True`` users, but since #825 a ``.net`` model at or
+        above ``BNGSIM_CODEGEN_THRESHOLD`` species compiles by default, and the
+        exclusion removed the retry from the default path of every such model.
+        An explicit ``codegen=True`` asks for a compiled RHS, not for the
+        analytical Jacobian, so it is retried too.
         """
-        eligible = (
-            self._jacobian == "auto"
-            and not self._codegen_so_path
-            and bool(getattr(self._model._core, "analytical_jacobian_complete", False))
+        eligible = self._jacobian == "auto" and bool(
+            getattr(self._model._core, "analytical_jacobian_complete", False)
         )
         if not eligible:
             return self._sim.run(times, opts)
@@ -2963,11 +2972,14 @@ class Simulator:
         try:
             return self._sim.run(times, opts)
         except RuntimeError as e:
-            # A model error the Jacobian has nothing to do with fails the same way
-            # on the FD retry, so retrying only adds a warning that blames the
-            # Jacobian and a second full run. An invalid event delay is one
-            # (issue #762).
-            if _EVENT_DELAY_REFUSAL in str(e):
+            # Only a CVODE failure is the Jacobian's to rescue. Anything else is
+            # bngsim refusing the model or the run, such as an invalid event delay
+            # (issue #762) or a sensitivity jump it cannot compose (GH #205, issue
+            # #150), and a refusal is not always repeated on the FD retry, which
+            # would then return the result the refusal exists to withhold. Those
+            # refusals first reached the retry when it was opened to a compiled
+            # RHS (issue #874), which is what sensitivity runs mostly use.
+            if not any(prefix in str(e) for prefix in _CVODE_FAILURES):
                 raise
             logger.warning(
                 "GH#176 analytical Jacobian: CVODE integration failed (%s); "

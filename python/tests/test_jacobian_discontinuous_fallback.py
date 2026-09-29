@@ -191,6 +191,121 @@ def test_repeated_runs_skip_the_doomed_attempt(
     assert len(fallbacks) == 1
 
 
+# ── The compiled RHS (issue #874) ────────────────────────────────────────────
+#
+# The retry used to skip a compiled RHS. Since #825 a .net model at or above
+# BNGSIM_CODEGEN_THRESHOLD species compiles by default, so that skip removed the
+# retry from the default path of every large model. A threshold of 1 stands in
+# for a 256-species model here, so this 10-species fixture takes the same
+# auto-compile branch. The reference is explicit FD on the same compiled RHS.
+
+
+def _compiled(net: str, **kwargs) -> bngsim.Simulator:
+    sim = bngsim.Simulator(bngsim.Model.from_net(net), method="ode", **kwargs)
+    assert sim.codegen_backend in ("cc", "mir")
+    return sim
+
+
+def _require_compiled_fd_reference(net: str) -> np.ndarray:
+    try:
+        result = _compiled(net, jacobian="fd").run(
+            t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL
+        )
+    except SimulationError:
+        pytest.skip(
+            "the finite-difference Jacobian does not carry this fixture on this "
+            "build, so there is no rescue to assert — see the module docstring"
+        )
+    return np.asarray(result.observables)
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{}, {"codegen": True}], ids=["auto-compiled", "explicit-codegen"]
+)
+def test_a_compiled_rhs_falls_back_to_fd(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch, kwargs: dict
+) -> None:
+    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    net = _net(data_dir)
+    fd_obs = _require_compiled_fd_reference(net)
+    sim = _compiled(net, **kwargs)
+    result = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
+    assert sim.jacobian_strategy == "fd"
+    assert np.array_equal(np.asarray(result.observables), fd_obs)
+
+
+def test_a_compiled_explicit_analytical_is_not_second_guessed(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    sim = _compiled(_net(data_dir), codegen=True, jacobian="analytical")
+    with pytest.raises(SimulationError):
+        sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
+
+
+# ── Which errors the retry is for ────────────────────────────────────────────
+#
+# Only a CVODE failure: anything else is bngsim refusing the model or the run,
+# and an FD rerun could return what the refusal withholds. Both of the core's
+# CVODE failure reports count, including the collapsed step (`retry_while_advancing`),
+# which is the parked-on-a-step case this whole module is about.
+
+
+class _FailsFirst:
+    """Stands in for the core simulator: the first run raises ``message``."""
+
+    def __init__(self, inner, message: str) -> None:
+        self._inner, self._message, self.jacobians = inner, message, []
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def run(self, times, opts, *args):
+        self.jacobians.append(opts.jacobian)
+        if len(self.jacobians) == 1:
+            raise RuntimeError(self._message)
+        return self._inner.run(times, opts, *args)
+
+
+@pytest.mark.parametrize(
+    ("message", "retried"),
+    [
+        ("CVODE integration failed at t=25.000000 with flag=-3 (CV_ERR_FAILURE).", True),
+        ("CVODE made no progress while integrating to the next output point: ...", True),
+        ("an event delay must be a finite, non-negative number", False),
+    ],
+    ids=["error-flag", "collapsed-step", "refusal"],
+)
+def test_the_retry_is_for_a_cvode_failure_only(
+    data_dir: Path, message: str, retried: bool
+) -> None:
+    sim = bngsim.Simulator(bngsim.Model.from_net(_net(data_dir)), method="ode")
+    core = sim._sim = _FailsFirst(sim._sim, message)
+    if retried:
+        sim.run(t_span=(0.0, 1.0), n_points=3)
+        assert core.jacobians == ["auto", "fd"]
+    else:
+        with pytest.raises(SimulationError, match="event delay"):
+            sim.run(t_span=(0.0, 1.0), n_points=3)
+        assert core.jacobians == ["auto"]
+
+
+def test_the_retry_matches_the_messages_the_core_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A reworded report in the core would silently turn the retry off.
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
+    from _source_root import bngsim_source_root
+    from bngsim._simulator import _CVODE_FAILURES
+
+    root = bngsim_source_root()
+    if root is None or not (root / "src" / "cvode_simulator.cpp").exists():
+        pytest.skip("src/cvode_simulator.cpp is not in this checkout")
+    src = (root / "src" / "cvode_simulator.cpp").read_text()
+    for prefix in _CVODE_FAILURES:
+        assert f'"{prefix}' in src, prefix
+
+
 # ── The steady-state half of the same policy (issue #127) ────────────────────
 #
 # Since #127 the march installs the closed-form Jacobian, so it meets this
