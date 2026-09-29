@@ -71,6 +71,7 @@ def _run(tmp_path, body: str, a0: float = 5.0, codegen: bool = False, t_end: flo
         ("clamp(1,A,4)", "(((A) < (1)) ? (1) : (((A) > (4)) ? (4) : (A)))"),
         ("sum(A,2,3)", "((A) + (2) + (3))"),
         ("avg(A,2,3)", "(((A) + (2) + (3)) / 3.0)"),
+        ("mod(A-7,3)", "fmod((A-7), (3))"),
     ],
 )
 def test_each_engine_call_becomes_c(expr, expect):
@@ -87,6 +88,8 @@ def test_each_engine_call_becomes_c(expr, expect):
         "k*signal",  # a bare identifier, no call at all
         "sign(A,2)",  # an argument count the engine would have rejected
         "clamp(1,A)",
+        "mod()",  # a model function named mod, called as a .net calls one
+        "mod(A)",
     ],
 )
 def test_what_the_rewriter_must_leave_alone(expr):
@@ -121,6 +124,11 @@ CASES = [
     ("k*sum(A,2,3,4)", 5.0, False),
     ("k*sgn(clamp(1,A,4)-2)*avg(A,sum(A,1))", 5.0, False),
     ("k*if(sum(A,2)>4, sgn(A-3), avg(A,1))", 5.0, False),
+    # Issue #869: C has no `mod`, so these failed to compile. ExprTk's is fmod,
+    # which keeps the first argument's sign: fmod(-2, 3) is -2 and A grows,
+    # where a floored mod's 1 would shrink it.
+    ("k*mod(A,3)", 5.0, False),
+    ("k*mod(A-7,3)", 5.0, True),
 ]
 
 

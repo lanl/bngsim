@@ -5276,7 +5276,12 @@ def _split_if_args(expr: str, paren_pos: int) -> list[str] | None:
 # renamed to C's ``round``, which rounds a half away from zero; BNG's rint is
 # floor(x + 0.5), so the two disagreed at every negative half. It is reserved
 # like the others (an alias in ``reserved_names()``), so the same rule applies.
-_ENGINE_CALL_NAMES = ("sign", "sgn", "rint", "clamp", "avg", "sum", "max", "min")
+#
+# ``mod`` joins them because C has no function by that name, so a model calling
+# it failed to compile (issue #869). ExprTk's ``mod`` is ``std::fmod``, which C
+# spells ``fmod``. It is not reserved, but a model's own ``mod`` is a function
+# called with empty parens or a scalar, and neither is a two-argument call.
+_ENGINE_CALL_NAMES = ("sign", "sgn", "rint", "clamp", "avg", "sum", "max", "min", "mod")
 _ENGINE_CALL_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(_ENGINE_CALL_NAMES) + r")\s*\(")
 
 
@@ -5314,6 +5319,12 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
         if n != 1:
             return None
         return f"floor(({args[0]}) + 0.5)"
+    if name == "mod":
+        # ExprTk's e_mod is std::fmod: truncated, so the sign follows the first
+        # argument, unlike Python's %.
+        if n != 2:
+            return None
+        return f"fmod(({args[0]}), ({args[1]}))"
     if name == "clamp":
         if n != 3:
             return None
@@ -5348,8 +5359,8 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
 
 
 def _replace_engine_calls(expr: str) -> str:
-    """Rewrite every ``sign``/``sgn``/``rint``/``clamp``/``avg``/``sum`` call to C, and
-    fold an n-ary ``max``/``min`` into nested binary calls (GH #556).
+    """Rewrite every ``sign``/``sgn``/``rint``/``clamp``/``avg``/``sum``/``mod`` call to
+    C, and fold an n-ary ``max``/``min`` into nested binary calls (GH #556).
 
     Runs after ``_replace_if_calls`` and before identifier substitution, in both
     translation pipelines, so the arguments are still the model's own text and

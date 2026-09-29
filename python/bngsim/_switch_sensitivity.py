@@ -44,6 +44,7 @@ from typing import NamedTuple
 from bngsim._codegen import (
     _BUILTIN_CONSTANT_VALUES,
     _DERIVED_BARE_NAME,
+    _ORDERING_OPS,
     _derived_expr_partials_numeric,
     _find_close_paren_strict,
     _inline_derived_param_refs,
@@ -2026,6 +2027,17 @@ def _switches_on_clock_alone(atom: str, scope: SwitchConditionScope) -> bool:
         # orderings for the same reason.
         return False
     flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+    return _reads_clock_and_run_constants(flat, scope)
+
+
+def _reads_clock_and_run_constants(flat: str, scope: SwitchConditionScope) -> bool:
+    """True when *flat* reads a clock, and otherwise only run constants.
+
+    The body of :func:`_switches_on_clock_alone`, shared with the step terms
+    :func:`time_discontinuity_conditions` admits outside any condition (issue
+    #869), which answer the same question about a ``floor()`` argument that
+    this answers about a comparison. *flat* has its derived names inlined.
+    """
     if _clock_free(flat, scope.clock_symbols):
         return False
     blanked = _blank_clock_refs(flat, scope)
@@ -2073,6 +2085,12 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     :func:`_switches_on_clock_alone`, which is the set whose crossing times are
     knowable before the run rather than the set whose crossing times move.
 
+    Since issue #869 it also returns each step call (``floor``, ``ceil``,
+    ``mod``, ...) that reads a clock outside every condition, such as the
+    ``floor(...)`` terms of a pulse written as a difference of floors. That is
+    not a condition, but it is a jump at a knowable time, and the one consumer,
+    :func:`fixed_crossing_stops`, places a stop at each of its jumps.
+
     Empty for a model with no functions, and for the far more common model whose
     conditions read state rather than a clock, so nothing about its stepping
     changes.
@@ -2103,7 +2121,7 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
         # guarding, and the answer is reused by ``switch_condition_scope``
         # below.
         texts_raw = (*core.function_expressions, *core.param_expressions)
-        if not any(has_condition_construct(t) for t in texts_raw):
+        if not any(has_condition_construct(t) or _STEP_CALL.search(t) for t in texts_raw):
             return ()
         if not any(_TIME_REF.search(t) for t in texts_raw) and not _unit_rate_clock_indices(core):
             return ()
@@ -2114,7 +2132,8 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
         *(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]),
     ]
     conditional = [t for t in texts if has_condition_construct(t)]
-    if not conditional:
+    stepped = [t for t in texts if _STEP_CALL.search(t)]
+    if not conditional and not stepped:
         return ()
     try:
         scope = switch_condition_scope(core, ctx)
@@ -2130,12 +2149,23 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
         for atom in _iter_condition_atoms(flat):
             if atom not in found and _switches_on_clock_alone(atom, scope):
                 found.append(atom)
+    # A step call outside every condition jumps the rate law itself (issue
+    # #869): `floor((time()-t0)/P) - floor((time()-t0-w)/P)` is a unit pulse
+    # written with no comparison at all. Between its jumps the rate is flat, so
+    # nothing stops CVODE's step from growing across a whole pulse. The call is
+    # handed over as its own entry, which :func:`_step_edge_stop_times` reads.
+    for text in stepped:
+        flat = _inline_functions(text, func_map) or text
+        for call, _arg in _iter_step_calls(flat):
+            inlined = _inline_derived_param_refs(call, scope.derived_exprs) or call
+            if call not in found and _reads_clock_and_run_constants(inlined, scope):
+                found.append(call)
     return tuple(found)
 
 
-# Resolved schedule edge lists, keyed the same way :data:`_CROSSING_CACHE` is:
-# on the condition text, the run window, and the value of every parameter the
-# condition reads once derived names are inlined. Recognizing a schedule and
+# Resolved schedule and step-edge lists, keyed by :func:`_stop_memo_key`: the
+# condition text with derived names inlined, the run window, and the value of
+# every parameter that text reads. Recognizing a schedule and
 # then checking it against the model's own residual is seven sympy round trips,
 # which is 7 ms on a model spelling 38 conditions and is paid on every ``run()``
 # — so a fit paid it on every evaluation. Everything a schedule's answer depends
@@ -2190,21 +2220,7 @@ def _schedule_stop_times(
     # rather than about the schedule. Done before the memo key is built, so two
     # spellings of one condition share a cache entry.
     atom = _strip_redundant_parens(cond.strip())
-    read = sorted(
-        {
-            m.group(0)
-            for m in _IDENTIFIER.finditer(
-                _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-            )
-            if m.group(0) in scope.param_idx
-        }
-    )
-    key = (
-        atom,
-        t_start,
-        t_end,
-        tuple((n, scope.values[scope.param_idx[n]]) for n in read),
-    )
+    key = _stop_memo_key(atom, scope, t_start, t_end)
     if key in _SCHEDULE_CACHE:
         return _SCHEDULE_CACHE[key]
     answer = _resolve_schedule_stop_times(atom, scope, t_start, t_end)
@@ -2265,6 +2281,231 @@ def _resolve_schedule_stop_times(
         )
         return None
     return [value for value, _partials in edges]
+
+
+def _step_edge_stop_times(
+    cond: str, scope: SwitchConditionScope, t_start: float, t_end: float
+) -> list[float] | None:
+    """Every instant in ``(t_start, t_end]`` where *cond* changes value because a
+    step function of time in it jumps or its residual crosses zero between two
+    jumps, or ``None`` when *cond* is not one this can read (issue #869).
+
+    :func:`_schedule_stop_times` places a repeating schedule from its period,
+    offset and duty, and so only reads a condition with exactly one ``floor``.
+    A pulse is also written with two, as ``floor((time()-t0)/P) -
+    floor((time()-t0-w)/P) > 0.5``, with ``mod``, as ``mod(time()-t0, P) < w``,
+    or as the difference of floors bare, with no comparison at all. None of
+    those was stopped at, so CVODE stepped over every pulse.
+
+    This reads them all the same way. Every ``floor``, ``ceil``, ``rint`` and
+    ``mod`` in *cond* must take an argument affine in time, so its jumps can be
+    listed. Between two consecutive jumps each of them is a constant, and a
+    comparison's residual must then be affine in time too, which gives its one
+    crossing in that interval exactly. A jump is kept only where the value it
+    feeds changes, the comparison's truth or the bare step term itself.
+
+    *cond* is a comparison atom or a bare step call as
+    :func:`time_discontinuity_conditions` returns it, with any counter clock
+    already rewritten onto ``time()``. Memoized on the same key as
+    :func:`_schedule_stop_times`.
+    """
+    atom = _strip_redundant_parens(cond.strip())
+    key = ("step-edges", *_stop_memo_key(atom, scope, t_start, t_end))
+    if key in _SCHEDULE_CACHE:
+        return _SCHEDULE_CACHE[key]
+    try:
+        answer = _resolve_step_edge_stop_times(atom, scope, t_start, t_end)
+    except Exception as exc:  # noqa: BLE001 - an unreadable atom is just declined
+        logger.debug("step-edge stops declined %r: %s", atom, exc)
+        answer = None
+    if len(_SCHEDULE_CACHE) >= _SCHEDULE_CACHE_MAX:
+        _SCHEDULE_CACHE.clear()
+    _SCHEDULE_CACHE[key] = answer
+    return answer
+
+
+def _resolve_step_edge_stop_times(
+    atom: str, scope: SwitchConditionScope, t_start: float, t_end: float
+) -> list[float] | None:
+    """:func:`_step_edge_stop_times` without the memo, on an unwrapped atom."""
+    import sympy as sp
+    from sympy.core.function import AppliedUndef
+
+    split = _relational_split_op(atom)
+    if split is not None:
+        lhs, op, rhs = split
+        # The truth of the comparison, read off the sign of ``lhs - rhs``.
+        compare = _ORDERING_OPS.get(op)
+        if compare is None:
+            return None  # an equality; see _switches_on_clock_alone
+        text = f"({lhs})-({rhs})"
+    else:
+        compare = None
+        text = atom
+    text = _inline_derived_param_refs(text, scope.derived_exprs) or text
+    for sym in sorted(_TIME_SYMBOLS, key=len, reverse=True):
+        text = _clock_symbol_sub(text, sym, _CLOCK_SOLVE_SYMBOL)
+    if not _clock_free(text, scope.clock_symbols):
+        return None  # a counter clock the caller did not rewrite
+
+    expr, dealias = _parse_clock_expr(_CEIL_CALL.sub("ceiling(", text))
+    t = sp.Symbol(_CLOCK_SOLVE_SYMBOL)
+    values = {}
+    for sym in expr.free_symbols - {t}:
+        name = dealias(str(sym))
+        if name in scope.run_constants:
+            values[sym] = float(scope.values[scope.param_idx[name]])
+        elif name in _BUILTIN_CONSTANT_VALUES:
+            values[sym] = float(_BUILTIN_CONSTANT_VALUES[name])
+        else:
+            return None  # reads something that moves during the run
+    expr = expr.subs(values)
+
+    # One step function per kind of jump. `rint` is BNG's floor(x + 0.5) and
+    # `ceil(x)` is -floor(-x), both exactly; ExprTk's `mod` is C's fmod,
+    # a - b*trunc(a/b), whose trunc jumps at every nonzero integer and not at 0.
+    trunc = sp.Function("_bng_trunc")
+    expr = expr.replace(sp.ceiling, lambda x: -sp.floor(-x))
+    while True:
+        calls = [
+            e
+            for e in expr.atoms(AppliedUndef)
+            if e.func.__name__ in ("rint", "mod") and not e.atoms(AppliedUndef) - {e}
+        ]
+        if not calls:
+            break
+        for e in calls:
+            if e.func.__name__ == "rint" and len(e.args) == 1:
+                expr = expr.xreplace({e: sp.floor(e.args[0] + sp.Rational(1, 2))})
+            elif e.func.__name__ == "mod" and len(e.args) == 2:
+                a, b = e.args
+                expr = expr.xreplace({e: a - b * trunc(a / b)})
+            else:
+                return None
+    if expr.has(sp.Piecewise) or any(e.func is not trunc for e in expr.atoms(AppliedUndef)):
+        return None  # a nested if(), or a call this does not know the jumps of
+
+    steps = [e for e in expr.atoms(sp.floor) | expr.atoms(trunc) if t in e.free_symbols]
+    if not steps:
+        return None
+    lines: list[tuple[float, float, bool]] = []  # (slope, intercept, is_trunc)
+    for e in steps:
+        u = sp.expand(e.args[0])
+        if u.atoms(sp.floor) or u.atoms(trunc):
+            return None  # a step inside a step's argument
+        alpha = sp.diff(u, t)
+        beta = sp.expand(u - alpha * t)
+        if not (alpha.is_number and beta.is_number):
+            return None  # the argument is not affine in time
+        alpha_f, beta_f = float(alpha), float(beta)
+        if alpha_f == 0.0 or not (math.isfinite(alpha_f) and math.isfinite(beta_f)):
+            return None
+        lines.append((alpha_f, beta_f, e.func is trunc))
+
+    # The jumps: each argument's integer crossings in (t_start, t_end].
+    jumps: list[float] = []
+    for alpha_f, beta_f, is_trunc in lines:
+        u0, u1 = alpha_f * t_start + beta_f, alpha_f * t_end + beta_f
+        n_lo, n_hi = math.ceil(min(u0, u1)), math.floor(max(u0, u1))
+        if n_hi - n_lo + 1 > _SCHEDULE_EDGE_BUDGET - len(jumps):
+            logger.warning(
+                "%r jumps more than %d times between t=%r and t=%r; the integrator "
+                "will step over them unclamped and may miss whole pulses (issue "
+                "#869). Pass max_step to bound the step instead.",
+                atom,
+                _SCHEDULE_EDGE_BUDGET,
+                t_start,
+                t_end,
+            )
+            return None
+        for n in range(n_lo, n_hi + 1):
+            if is_trunc and n == 0:
+                continue
+            tn = (n - beta_f) / alpha_f
+            if t_start < tn <= t_end:
+                jumps.append(tn)
+    jumps.sort()
+    edges: list[float] = []
+    for tn in jumps:
+        if not edges or tn - edges[-1] > 1e-12 * max(abs(tn), 1.0):
+            edges.append(tn)
+
+    # Between two edges every step is a constant. Read each interval at its
+    # midpoint, never on an edge, so a step's value there is unambiguous.
+    marks = [sp.Symbol(f"_bng_step_{i}") for i in range(len(steps))]
+    flat = sp.expand(expr.xreplace(dict(zip(steps, marks, strict=True))))
+    slope = sp.diff(flat, t)
+    if t in slope.free_symbols:
+        return None  # not affine in time between jumps: nothing here solves it
+    intercept = sp.expand(flat - slope * t)
+    if t in intercept.free_symbols:
+        return None
+    slope_f = sp.lambdify(marks, slope, modules="math")
+    intercept_f = sp.lambdify(marks, intercept, modules="math")
+
+    def piece(lo: float, hi: float) -> tuple[float, float]:
+        mid = 0.5 * (lo + hi)
+        held = [
+            float(math.trunc(a * mid + b) if is_t else math.floor(a * mid + b))
+            for a, b, is_t in lines
+        ]
+        return float(slope_f(*held)), float(intercept_f(*held))
+
+    bounds = [t_start, *edges]
+    if edges[-1:] != [t_end]:
+        bounds.append(t_end)
+    out: list[float] = []
+    before: float | None = None  # the limit just before the current edge
+    for i in range(len(bounds) - 1):
+        lo, hi = bounds[i], bounds[i + 1]
+        if hi <= lo:
+            continue
+        a, b = piece(lo, hi)
+        at_lo, at_hi = a * lo + b, a * hi + b
+        if not (math.isfinite(at_lo) and math.isfinite(at_hi)):
+            return None
+        if compare is not None:
+            # A comparison is judged on its one-sided limits inside the piece,
+            # not on its value at a bound. A residual that is exactly 0 at an
+            # edge holds that value for one instant, and the side it is on is
+            # the side its slope comes from: `mod(time(), 24) < 24` reaches 0
+            # only at each jump and is true everywhere else, so nothing changes.
+            if at_lo == 0.0:
+                at_lo = a
+            if at_hi == 0.0:
+                at_hi = -a
+        if before is not None:
+            if compare is not None:
+                changed = compare(before, 0.0) != compare(at_lo, 0.0)
+            else:
+                changed = before != at_lo
+            if changed:
+                out.append(lo)
+        if compare is not None and a != 0.0 and compare(at_lo, 0.0) != compare(at_hi, 0.0):
+            root = -b / a
+            if lo < root <= hi:
+                out.append(root)
+        before = at_hi
+    return sorted(set(out))
+
+
+def _stop_memo_key(atom: str, scope: SwitchConditionScope, t_start: float, t_end: float):
+    """The memo key the stop resolvers share: the text with derived names
+    inlined, the run window, and the value of every parameter that text reads,
+    with whether it is a run constant.
+
+    The inlined text, not the atom as written. The cache outlives a model, and
+    two models can spell one atom over a derived name defined differently in
+    each (``onset = t0 + 1`` in one, ``t0 * 5`` in the other), which read the
+    same leaf values and still have different edges."""
+    flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+    read = sorted({m.group(0) for m in _IDENTIFIER.finditer(flat)} & scope.param_idx.keys())
+    return (
+        flat,
+        t_start,
+        t_end,
+        tuple((n, scope.values[scope.param_idx[n]], n in scope.run_constants) for n in read),
+    )
 
 
 class CrossingStop(NamedTuple):
@@ -2389,7 +2630,7 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
     ctx = core.functional_jacobian_context()
     scope = switch_condition_scope(core, ctx)
     aliases = _time_alias_bodies(ctx)
-    out: list[CrossingStop] = []
+    found: list[CrossingStop] = []
     for cond in conditions:
         rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
         if rewrite is None:
@@ -2401,6 +2642,8 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
             times = [t_star]
         else:
             times = _schedule_stop_times(text, scope, t_start, t_end)
+            if times is None:
+                times = _step_edge_stop_times(text, scope, t_start, t_end)
         for t_cross in times or ():
             if not (t_start < t_cross <= t_end):
                 continue
@@ -2408,22 +2651,25 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
             # rewrite rather than off the recognized threshold text is what keeps
             # the two in step whichever resolver placed the stop, and for a
             # schedule there is no single threshold text to read.
-            stop = CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
-            near = [
-                i
-                for i, seen in enumerate(out)
-                if abs(t_cross - seen.time) <= 1e-12 * max(abs(t_cross), 1.0)
-            ]
-            if not near:
-                out.append(stop)
-            elif clock_idx >= 0 and out[near[0]].clock_species_idx < 0:
-                # Two conditions crossing at one instant, one on a counter and
-                # one on literal time. Keep the counter record: it does
-                # everything the plain one does and also lands the counter on
-                # its threshold, which the plain one would leave a couple of ulp
-                # short and the counter's own condition reading false.
-                out[near[0]] = stop
-    out.sort()
+            found.append(
+                CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
+            )
+    # Merge the stops that land on one instant. In time order each needs only
+    # the last one kept: comparing each against every one kept was quadratic,
+    # and a step of time can put thousands of stops in a window (issue #869).
+    # The sort is stable, so among equal times the first condition's stop wins.
+    found.sort(key=lambda stop: stop.time)
+    out: list[CrossingStop] = []
+    for stop in found:
+        if not out or abs(stop.time - out[-1].time) > 1e-12 * max(abs(stop.time), 1.0):
+            out.append(stop)
+        elif stop.clock_species_idx >= 0 and out[-1].clock_species_idx < 0:
+            # Two conditions crossing at one instant, one on a counter and
+            # one on literal time. Keep the counter record: it does
+            # everything the plain one does and also lands the counter on
+            # its threshold, which the plain one would leave a couple of ulp
+            # short and the counter's own condition reading false.
+            out[-1] = stop
     return out
 
 

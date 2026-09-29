@@ -230,6 +230,7 @@ jobs:
             python/tests/test_codegen_engine_functions.py \
             python/tests/test_codegen_nary_minmax.py \
             python/tests/test_codegen_minmax_nan.py \
+            python/tests/test_periodic_step_stops.py \
             python/tests/test_codegen_mratio.py \
             python/tests/test_codegen_determinism.py \
             python/tests/test_codegen_jit_prelude.py \

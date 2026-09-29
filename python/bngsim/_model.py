@@ -794,6 +794,11 @@ class Model:
         are recovered from the built model's own function bodies instead, once,
         and cached. The recovery is the expensive half, so it runs only for a
         model that registered nothing, and only when something asks.
+
+        A recovered entry is not always a condition. Since issue #869 it can
+        also be a bare step call of a clock, such as ``floor((time()-t0)/P)``,
+        with no comparison in it. Such a call jumps the rate law itself, and
+        every jump is a stop.
         """
         if self._time_disc_conditions:
             return self._time_disc_conditions
