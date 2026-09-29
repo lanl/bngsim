@@ -33,6 +33,7 @@ bit-for-bit identical to the pre-#48 path.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import re
@@ -2421,6 +2422,27 @@ def _resolve_step_edge_stop_times(
     n_leaves = sum(1 for e in steps if n_inner(e) == 0)
     marks = [sp.Symbol(f"_bng_step_{i}") for i in range(len(steps))]
     to_mark = dict(zip(steps, marks, strict=True))
+
+    # Every coefficient below is read off an expanded sympy form, which is not
+    # the model's arithmetic: `floor(t)/24` is `0.041666666666666664*m` there,
+    # and `x/49` is `(1/49)*x`, so a value the model computes as exactly 1 or 0
+    # comes out an ulp or two away, and `1/49*49` floors to 0. Each is therefore
+    # read with the sum of its terms' magnitudes, and a value within
+    # :data:`_ROUNDING` of that scale from the integer (or zero) it stands for
+    # is that integer. A decision to the exact bit, `a == 0.0` or `floor(v)`,
+    # would otherwise take the rounding's side.
+    def affine(expr):
+        """*expr* and the size of its terms, as functions of the steps' values."""
+        size = sp.Add(*(sp.Abs(term) for term in sp.Add.make_args(expr)))
+        return _lambdify_doubles(marks, expr), _lambdify_doubles(marks, size)
+
+    def read(part, held: list[float], to_integer: bool) -> float:
+        """*part* at *held*, snapped to the integer (or zero) it is rounding away from."""
+        value_of, size_of = part
+        v = float(value_of(*held))
+        r = float(round(v)) if to_integer else 0.0
+        return r if abs(v - r) <= _ROUNDING * float(size_of(*held)) else v
+
     args = []  # (slope, intercept) of each step's argument, over the inner steps' values
     for e in steps:
         u = sp.expand(e.args[0].xreplace(to_mark))
@@ -2429,34 +2451,23 @@ def _resolve_step_edge_stop_times(
         if t in alpha.free_symbols or t in beta.free_symbols:
             return None  # the argument is not affine in time
         if not (alpha.free_symbols or beta.free_symbols):
-            # A step of time itself. Its constants are kept as the doubles they
-            # are: lambdify prints a Float to 15 digits, which would move each
-            # of its edges by an ulp or so.
             alpha_f, beta_f = float(alpha), float(beta)
             if alpha_f == 0.0 or not (math.isfinite(alpha_f) and math.isfinite(beta_f)):
                 return None
-            args.append((lambda *_, v=alpha_f: v, lambda *_, v=beta_f: v))
-            continue
-        args.append(
-            (sp.lambdify(marks, alpha, modules="math"), sp.lambdify(marks, beta, modules="math"))
-        )
+        args.append((affine(alpha), affine(beta)))
     is_trunc = [e.func is trunc for e in steps]
 
     def held_at(x: float) -> list[float]:
         """Every step's value at *x*, which is never on an edge."""
         held = [0.0] * len(steps)
-        for i, (slope_of, intercept_of) in enumerate(args):
-            a, b = float(slope_of(*held)), float(intercept_of(*held))
-            v = a * x + b
+        for i, (slope, intercept) in enumerate(args):
+            a = read(slope, held, to_integer=False)
             if a == 0.0:
                 # Flat between the inner steps' jumps, where it can sit on an
-                # integer for a whole piece. sympy has turned `m/24` into
-                # `0.0416...*m`, which reads 24/24 as 0.99...9, so a value that
-                # close to an integer is the integer the model's own division
-                # gives.
-                r = round(v)
-                if abs(v - r) <= 1e-9 * max(abs(v), 1.0):
-                    v = float(r)
+                # integer for a whole piece: `floor(t)/24` is 1 on [24, 25).
+                v = read(intercept, held, to_integer=True)
+            else:
+                v = a * x + float(intercept[0](*held))
             held[i] = float(math.trunc(v) if is_trunc[i] else math.floor(v))
         return held
 
@@ -2464,16 +2475,17 @@ def _resolve_step_edge_stop_times(
     # time itself is read over the whole window at once, and a step holding
     # others piece by piece between the edges already found, theirs among them.
     edges: list[float] = []
-    for i, (slope_of, intercept_of) in enumerate(args):
+    for i, (slope, intercept) in enumerate(args):
         bounds = [t_start, t_end] if i < n_leaves else [t_start, *edges, t_end]
         jumps: list[float] = []
         for lo, hi in zip(bounds, bounds[1:], strict=False):
             if hi <= lo:
                 continue
             held = held_at(0.5 * (lo + hi))
-            a, b = float(slope_of(*held)), float(intercept_of(*held))
+            a = read(slope, held, to_integer=False)
             if a == 0.0:
                 continue  # flat here: it can only jump where an inner step does
+            b = float(intercept[0](*held))
             u0, u1 = a * lo + b, a * hi + b
             n_lo, n_hi = math.ceil(min(u0, u1)), math.floor(max(u0, u1))
             if n_hi - n_lo + 1 > _SCHEDULE_EDGE_BUDGET - len(edges) - len(jumps):
@@ -2508,12 +2520,21 @@ def _resolve_step_edge_stop_times(
     intercept = sp.expand(flat - slope * t)
     if t in intercept.free_symbols:
         return None
-    slope_f = sp.lambdify(marks, slope, modules="math")
-    intercept_f = sp.lambdify(marks, intercept, modules="math")
+    residual_slope, residual_intercept = affine(slope), affine(intercept)
 
-    def piece(lo: float, hi: float) -> tuple[float, float]:
+    def piece(lo: float, hi: float) -> tuple[float, float, float]:
+        """The residual's slope and intercept on the piece, and the size of the
+        intercept's terms."""
         held = held_at(0.5 * (lo + hi))
-        return float(slope_f(*held)), float(intercept_f(*held))
+        a = read(residual_slope, held, to_integer=False)
+        if a == 0.0:
+            return 0.0, read(residual_intercept, held, to_integer=False), 0.0
+        return a, float(residual_intercept[0](*held)), float(residual_intercept[1](*held))
+
+    def at(a: float, b: float, size: float, x: float) -> float:
+        """The residual at the bound *x*, 0 where it is rounding away from 0."""
+        v = a * x + b
+        return 0.0 if abs(v) <= _ROUNDING * (abs(a * x) + size) else v
 
     bounds = [t_start, *edges]
     if edges[-1:] != [t_end]:
@@ -2524,8 +2545,8 @@ def _resolve_step_edge_stop_times(
         lo, hi = bounds[i], bounds[i + 1]
         if hi <= lo:
             continue
-        a, b = piece(lo, hi)
-        at_lo, at_hi = a * lo + b, a * hi + b
+        a, b, size = piece(lo, hi)
+        at_lo, at_hi = at(a, b, size, lo), at(a, b, size, hi)
         if not (math.isfinite(at_lo) and math.isfinite(at_hi)):
             return None
         if compare is not None:
@@ -2561,11 +2582,13 @@ def _inner_step_stop_times(
 
     :func:`time_discontinuity_conditions` hands over a step inside another
     step's argument as the outer call. When the outer one is a call nothing
-    here knows the jumps of, its jumps are still among the inner calls', so
-    those are stopped at instead, each read the same way. That is a superset of
-    the rate law's jumps, which costs a restart where nothing changes but never
-    steps over one. A comparison is not looked inside: its truth is the
-    condition, and a jump of a step within it need not move that.
+    here knows the jumps of, the inner calls are stopped at instead, each read
+    the same way, which is what main placed for such a model. That covers every
+    jump the outer call makes where an inner one does, at the cost of a restart
+    where it does not change, and not a jump it makes between them:
+    `sign(mod(time(), P) - 12)` jumps at 12 as well as at each period. A
+    comparison is not looked inside: its truth is the condition, and a jump of
+    a step within it need not move that.
     """
     text = _strip_redundant_parens(cond.strip())
     m = _STEP_CALL.match(text)
@@ -3431,6 +3454,35 @@ def _schedule_compensated(atom: str, scope: SwitchConditionScope) -> bool:
 # right at the start of the run and wrong at the end, which is the silent-zero
 # failure this whole module exists to avoid.
 _SCHEDULE_EDGE_BUDGET = 8192
+
+# How far a value read off an expanded sympy form may sit from the integer or
+# zero it stands for, relative to the sum of its terms' magnitudes, and still be
+# that integer (:func:`_resolve_step_edge_stop_times`). Each constant is off the
+# model's own arithmetic by an ulp or two (a reciprocal where the model divides),
+# and a few terms add a few more; 64 ulps covers that with room. A non-integer
+# is never read as one unless it is within 1.4e-14 of the scale, so a large
+# offset keeps its fraction: (15 + 2e9)/24 is 83333333.958, not 83333334.
+_ROUNDING = 64 * sys.float_info.epsilon
+
+
+def _lambdify_doubles(args, expr):
+    """``sp.lambdify`` over the math module, printing each Float as the double it
+    holds. The default printer writes 15 significant digits, so ``1/24`` came
+    back ``0.0416666666666667`` and moved every value read through it."""
+    import sympy as sp
+
+    return sp.lambdify(args, expr, modules="math", printer=_double_printer()())
+
+
+@functools.cache
+def _double_printer():
+    from sympy.printing.pycode import PythonCodePrinter
+
+    class _DoublePrinter(PythonCodePrinter):
+        def _print_Float(self, expr):
+            return repr(float(expr))
+
+    return _DoublePrinter
 
 
 def _schedule_index_window(

@@ -228,8 +228,70 @@ def test_a_pulse_through_a_remainder_of_a_remainder_is_integrated(tmp_path):
     ],
 )
 def test_an_outer_step_that_cannot_be_read_keeps_the_inner_ones_stops(tmp_path, dose):
-    # Its jumps are among the inner step's, so those are still stopped at: a
-    # restart where nothing changes, but never a jump stepped over.
+    # The inner step's stops are kept, as on main: a restart where nothing
+    # changes, and every jump the outer one makes at an inner one covered.
     m = _model(tmp_path, dose, 24, 1, 5)
     stops = fixed_time_crossings(m._core, 0.0, 6.0, m.time_discontinuity_conditions())
     assert stops == pytest.approx([1.0, 2.0, 3.0, 4.0, 5.0])
+
+
+# A value read off sympy's expanded coefficients is an ulp or two off the model's
+# arithmetic: `floor(time())/P` is `0.041666666666666664*m` there, which reads
+# 24/24 as a hair over 1. Deciding a piece to the exact bit took the rounding's
+# side, so a residual that is exactly 0 on a whole plateau, or a slope that
+# cancels to 0, read the wrong way and the stop list came back short.
+ROUNDING = {
+    "residual_is_zero_on_a_plateau": (
+        "if(floor(time())/P - floor(floor(time())/P) <= 0, 1, 0)",
+        60.0,
+        [1.0, 24.0, 25.0, 48.0, 49.0],
+    ),
+    "remainder_is_zero_on_a_plateau": (
+        "if(mod((floor(time())+t0)/P, 1) <= 0, 1, 0)",
+        60.0,
+        [19.0, 20.0, 43.0, 44.0],
+    ),
+    "remainder_meets_its_threshold_on_a_plateau": (
+        "if(mod((floor(time())+t0)/P, 1) < 0.5, 1, 0)",
+        60.0,
+        [7.0, 19.0, 31.0, 43.0, 55.0],
+    ),
+    # sympy writes floor(3-t) as floor(-t)+3, and the outer slope m/5 + 3/5 is
+    # -1.1e-16 at m = -3 rather than 0.
+    "slope_cancels_to_zero": (
+        "floor(time()*floor(3-time())/5)",
+        7.5,
+        [3.0, 4.0, 5.0, 6.0, 6.25, 7.0],
+    ),
+}
+
+
+@pytest.mark.parametrize("dose, t_end, edges", ROUNDING.values(), ids=ROUNDING.keys())
+def test_a_nested_step_is_read_through_the_rounding(tmp_path, dose, t_end, edges):
+    m = _model(tmp_path, dose, 24, 1, 5)
+    stops = fixed_time_crossings(m._core, 0.0, t_end, m.time_discontinuity_conditions())
+    assert stops == pytest.approx(edges, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    "dose, pulses",
+    [
+        ("if(floor(time())/P - floor(floor(time())/P) <= 0, 1, 0)", 3.0),
+        ("if(mod((floor(time())+t0)/P, 1) <= 0, 1, 0)", 2.0),
+    ],
+)
+def test_a_pulse_on_a_plateau_is_integrated(tmp_path, dose, pulses):
+    # X = 1 and 0 before, the pulses after the first stepped over.
+    r = bngsim.Simulator(_model(tmp_path, dose, 24, 1, 5), method="ode").run(
+        t_span=(0.0, 60.0), n_points=61
+    )
+    assert float(np.asarray(r.species)[-1, 0]) == pytest.approx(pulses, rel=1e-6)
+
+
+def test_a_large_offset_keeps_its_fraction(tmp_path):
+    # (15 + 2e9)/24 is 83333333.958. Snapping to an integer within a tolerance
+    # relative to the value itself (1e-9) read it as 83333334 and put each stop
+    # an hour early.
+    m = _model(tmp_path, "floor((floor(time())+t0)/P)", 24, 1, 2e9)
+    stops = fixed_time_crossings(m._core, 0.0, 100.0, m.time_discontinuity_conditions())
+    assert stops == pytest.approx([16.0, 40.0, 64.0, 88.0])
