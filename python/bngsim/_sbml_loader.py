@@ -1647,7 +1647,13 @@ def _eval_ast_numeric(
         i = 0
         while i < nc - 1:
             cond = _c(i + 1)
-            if cond is not None and cond != 0:
+            if cond is None:
+                # Undecided, so no branch is known to be taken. Reading it as
+                # false returned a later branch's finite value for a condition
+                # the engine decides (`1/0 > 0` is true), and a caller trusts a
+                # fold that answered (issue #871).
+                return None
+            if cond != 0:
                 return _c(i)
             i += 2
         if nc % 2 == 1:
@@ -3716,6 +3722,11 @@ def _build_model_from_sbml_doc(doc):
     # parameters shadow eval_ctx for the law evaluation, mirroring the rateOf
     # initial resolver. Guard ``not in eval_ctx`` — reaction ids are a disjoint
     # namespace, so this never clobbers a species/param/compartment.
+    #
+    # The seed reads the DECLARED values, so the loops below refold it as the
+    # initialAssignments and rules resolve (`_refresh_reaction_ids`): `p1 = J0`
+    # with J0's law `k*S` and `S = 10` over a declared 5 folded 5, not 10.
+    _rid_laws: list[tuple[str, object, dict]] = []
     for j in range(sbml_model.getNumReactions()):
         _rxn = sbml_model.getReaction(j)
         _rid = _rxn.getId()
@@ -3724,17 +3735,32 @@ def _build_model_from_sbml_doc(doc):
         _kl = _rxn.getKineticLaw()
         if _kl is None or not _kl.isSetMath():
             continue
-        _law_ctx = eval_ctx
+        _lps: dict[str, float] = {}
         _n_lp = _kl.getNumLocalParameters() if hasattr(_kl, "getNumLocalParameters") else 0
-        if _n_lp:
-            _law_ctx = dict(eval_ctx)
-            for k in range(_n_lp):
-                _lp = _kl.getLocalParameter(k)
-                if _lp.isSetValue():
-                    _law_ctx[_lp.getId()] = _lp.getValue()
-        _rv = _eval_ast_numeric(_kl.getMath(), _law_ctx, func_defs)
+        for k in range(_n_lp):
+            _lp = _kl.getLocalParameter(k)
+            if _lp.isSetValue():
+                _lps[_lp.getId()] = _lp.getValue()
+        _rid_laws.append((_rid, _kl.getMath(), _lps))
+        _rv = _eval_ast_numeric(_kl.getMath(), {**eval_ctx, **_lps}, func_defs)
         if _rv is not None and _math.isfinite(_rv):
             eval_ctx[_rid] = _rv
+
+    def _refresh_reaction_ids() -> bool:
+        """Refold each reaction id at the current initial values; True if one moved.
+        One that no longer folds to a finite rate leaves the context, so a fold
+        that reads it fails (and is lifted or refused) rather than reading a
+        stale number."""
+        moved = False
+        for _rid, _law, _lps in _rid_laws:
+            _rv = _eval_ast_numeric(_law, {**eval_ctx, **_lps} if _lps else eval_ctx, func_defs)
+            if _rv is not None and _math.isfinite(_rv):
+                if _ia_value_changed(_rv, eval_ctx.get(_rid)):
+                    eval_ctx[_rid] = _rv
+                    moved = True
+            elif eval_ctx.pop(_rid, None) is not None:
+                moved = True
+        return moved
 
     if sbml_model.getNumInitialAssignments() > 0:
         # Evaluate SBML assignment rules AND initialAssignments together
@@ -3783,6 +3809,8 @@ def _build_model_from_sbml_doc(doc):
                     if _ia_value_changed(val, old):
                         eval_ctx[sym] = val
                         changed = True
+            if _refresh_reaction_ids():
+                changed = True
             if not changed:
                 break
 
@@ -3856,6 +3884,8 @@ def _build_model_from_sbml_doc(doc):
                     eval_ctx[var] = val
                     ia_values[var] = val
                     changed = True
+            if _refresh_reaction_ids():
+                changed = True
             if not changed:
                 break
 
@@ -4903,6 +4933,150 @@ def _build_model_from_sbml_doc(doc):
         raise ModelError(
             f"initialAssignment for '{_sym}' cannot be evaluated: {_why}. bngsim will not "
             "use the declared value in its place, since an initialAssignment overrides it."
+        )
+
+    # Issue #871: the two passes above put a failed fold back on the engine only
+    # for a parameter or a species. Every other §0 fold read `eval_ctx`, where a
+    # failed target still holds its declared value: an initialAssignment or
+    # assignment rule over it (`Q = S + 1` answered 6 for `S = 1/0`), a reaction
+    # id §0 bound to its kinetic law's initial value, a constant
+    # stoichiometryMath. An assignment rule whose own fold fails leaves its
+    # target's declared value there the same way, and so does the piecewise
+    # fold now that it declines an undecidable condition. So take every failed
+    # target out of the context and fold again: whatever no longer answers read
+    # one, however indirectly (a rateOf reads through the kinetic laws). Then
+    # refuse each such value that a load-time number stands for: an
+    # initialAssignment target the engine does not evaluate, a compartment an
+    # assignment rule sizes (the load converts its species by the folded size),
+    # a constant stoichiometry. A target the engine evaluates reads its inputs
+    # live, and each of those is evaluated too or refused here.
+    import os
+
+    def _escape_hatch_drops(m) -> bool:
+        # GH #119's escape hatch drops an expression that reads an undefined
+        # symbol and keeps the declared value, having warned about it. That is
+        # the documented behaviour, not a fold failure to refuse.
+        return os.environ.get(_ALLOW_UNDEFINED_SYMBOLS_ENV) == "1" and not all(
+            _model_declares_symbol(sbml_model, _n) for _n in _ast_name_set(m)
+        )
+
+    # (kind, the eval_ctx key it defines or None, what a message calls it, math,
+    # local parameters)
+    _folds: list[tuple[str, str | None, str, object, dict | None]] = []
+    for _sym, _m in _ia_math.items():
+        _folds.append(("initialAssignment", _sym, _sym, _m, None))
+    for _sym, _m in _ar_math.items():
+        _folds.append(("assignment rule", _sym, _sym, _m, None))
+    _rule_driven = rate_rule_targets | assignment_targets | event_promoted_params
+    for _j in range(sbml_model.getNumReactions() if sbml_model.getLevel() < 3 else 0):
+        _rx = sbml_model.getReaction(_j)
+        for _get, _n in (
+            (_rx.getReactant, _rx.getNumReactants()),
+            (_rx.getProduct, _rx.getNumProducts()),
+        ):
+            for _k in range(_n):
+                _sr = _get(_k)
+                _sm = _sr.getStoichiometryMath()  # Level 2 only
+                if _sm is None or _sm.getMath() is None:
+                    continue
+                _srid = _sr.getId()
+                _smm = _sm.getMath()
+                # A varying one stays symbolic (§6c) and is evaluated live.
+                if (
+                    _srid in _rule_driven
+                    or _ast_references_time(_smm)
+                    or _ast_name_set(_smm) & (_species_ids_set | _rule_driven)
+                ):
+                    continue
+                _folds.append(
+                    (
+                        "stoichiometryMath",
+                        _srid or None,
+                        f"{_sr.getSpecies()}' in reaction '{_rx.getId()}",
+                        _smm,
+                        None,
+                    )
+                )
+
+    _engine_evaluated = (
+        lifted_ia_param_expr.keys()
+        | ia_param_expr.keys()
+        | {_s for _s, _p in ia_single_param_ref.items() if _p in _declared_param_ids}
+    )
+    _refusable = {
+        _i
+        for _i, (_kind, _key, _name, _m, _loc) in enumerate(_folds)
+        if (_kind == "initialAssignment" and _key not in _engine_evaluated)
+        or (_kind == "assignment rule" and _key in _comp_id_set)
+        or _kind == "stoichiometryMath"
+    }
+
+    def _refold(i: int, ctx: dict):
+        _kind, _key, _name, _m, _loc = _folds[i]
+        return _eval_ast_numeric(
+            _m,
+            ctx if _loc is None else {**ctx, **_loc},
+            func_defs,
+            rateof_resolver=rateof_resolver,
+        )
+
+    _cause: dict[int, int] = {}  # fold -> the failed fold it traces to
+    _via: dict[int, str] = {}  # fold -> the symbol it reads that carries the failure
+    for _i, (_kind, _key, _name, _m, _loc) in enumerate(_folds):
+        if not _refusable:
+            break
+        _v = _refold(_i, eval_ctx)
+        # A stoichiometry is baked in as a number, so a non-finite one fails too;
+        # _resolve_stoich would fall back to the declared attribute.
+        if (_v is None or (_kind == "stoichiometryMath" and not _math.isfinite(_v))) and not (
+            _escape_hatch_drops(_m)
+        ):
+            _cause[_i] = _i
+    if _cause:
+        # A reaction id is in eval_ctx only if its kinetic law folded, so it is
+        # never a failure of its own; it only carries one.
+        for _j in range(sbml_model.getNumReactions()):
+            _rx = sbml_model.getReaction(_j)
+            _kl = _rx.getKineticLaw()
+            if _rx.getId() in eval_ctx and _kl is not None and _kl.isSetMath():
+                _lps = [_kl.getLocalParameter(_k) for _k in range(_kl.getNumLocalParameters())]
+                _loc = {_lp.getId(): _lp.getValue() for _lp in _lps if _lp.isSetValue()}
+                _folds.append(("reaction", _rx.getId(), _rx.getId(), _kl.getMath(), _loc or None))
+    _grew = bool(_cause)
+    while _grew:
+        _grew = False
+        _gone = {_folds[_i][1] for _i in _cause} - {None}
+        _ctx = {_k: _v for _k, _v in eval_ctx.items() if _k not in _gone}
+        for _i in range(len(_folds)):
+            if _i not in _cause and _refold(_i, _ctx) is None:
+                _names = _ast_name_set(_folds[_i][3])
+                _src = next((_j for _j in sorted(_cause) if _folds[_j][1] in _names), None)
+                if _src is None:  # read through a rateOf
+                    _src = min(_cause)
+                else:
+                    _via[_i] = _folds[_src][1]
+                _cause[_i] = _cause[_src]
+                _grew = True
+        _grew = _grew and not (_refusable & _cause.keys())
+    if _refusable & _cause.keys():
+        from bngsim._exceptions import ModelError
+
+        _i = min(_refusable & _cause.keys())
+        _kind, _key, _name, _m, _loc = _folds[_i]
+
+        _rkind, _rkey, _rname, _rm, _rloc = _folds[_cause[_i]]
+        if _cause[_i] == _i:
+            _why = "it cannot be evaluated at load"
+        elif _via.get(_i) == _rkey:
+            _why = f"it reads '{_rname}', whose {_rkind} cannot be evaluated at load"
+        else:
+            _through = f" through '{_via[_i]}'" if _i in _via else ""
+            _why = (
+                f"it depends{_through} on '{_rname}', whose {_rkind} cannot be evaluated at load"
+            )
+        raise ModelError(
+            f"{_kind} for '{_name}' cannot be evaluated: {_why}, and bngsim does not "
+            "evaluate it in the engine. bngsim will not use a declared value in its place."
         )
 
     # (#170) The residue: a section-0 fold of a live size that neither §2 nor the
