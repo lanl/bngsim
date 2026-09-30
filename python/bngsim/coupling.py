@@ -949,6 +949,15 @@ def make_subset_model(
                 "make_subset_model cannot reconstruct amount_valued species "
                 f"({s['name']!r}, GH #75); build the subset with ModelBuilder"
             )
+    if getattr(core, "has_baseline_sensitivity_seed", False):
+        # reset() on the model restores that dx/dθ with the state; the subset
+        # would reset to the state with dx/dθ = 0, a fresh start it is not.
+        raise NotImplementedError(
+            "make_subset_model cannot carry the forward-sensitivity seed saved with "
+            "this model's baseline (save_concentrations() after a sensitivity "
+            "pre-equilibration, issue #81); build the subset before saving, or with "
+            "ModelBuilder"
+        )
 
     params = cgd["parameters"]
     species = cgd["species"]
@@ -1090,4 +1099,27 @@ def make_subset_model(
     for o in observables:
         b.add_observable(o["name"], [(int(i), float(f)) for i, f in o["entries"]])
 
-    return Model(_core=b.build())
+    new_core = b.build()
+    if getattr(core, "ic_baseline_saved", False):
+        # save_concentrations() made the current state what reset() returns to,
+        # and stopped a parameter or compartment write re-deriving the initial
+        # values from their declarations. The builder resolves each declaration
+        # afresh (A() A0 back to A0), so save the model's baseline over it.
+        new_core.set_state(np.asarray(init, dtype=np.float64))
+        new_core.save_concentrations()
+    sub = Model(_core=new_core)
+    # What the loader recorded about the model that the engine does not hold:
+    # the SSA/ODE refusals (SsaIssue; a reaction the subset drops still refuses,
+    # which errs loudly), and the report maps, which are keyed by species and
+    # every species is kept.
+    sub._ssa_issues = list(getattr(m, "_ssa_issues", []) or [])
+    for attr in (
+        "_ar_report_map",
+        "_varvol_conc_map",
+        "_varvol_amount_map",
+        "_varvol_ar_conc_map",
+        "_varvol_ar_amount_map",
+        "_varvol_event_resize_map",
+    ):
+        setattr(sub, attr, dict(getattr(m, attr, {}) or {}))
+    return sub

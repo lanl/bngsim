@@ -9,5 +9,5 @@
   integer powers (`B^3`, `(B*C)^2`), or a `piecewise` whose non-zero branches
   are the same product. A law that writes its own combinatorics
   (`k*X*(X-1)/2`), and a species a rule sets, are left as written. ODE is
-  unchanged. An infinite or NaN exponent in a kinetic law no longer fails the
-  load with `OverflowError`.
+  unchanged. An infinite, NaN or very large exponent in a kinetic law no
+  longer fails or hangs the load.

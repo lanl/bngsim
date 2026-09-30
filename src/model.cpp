@@ -3292,7 +3292,9 @@ compute_rxn_rate(const Reaction &rxn, const std::vector<Parameter> &params, cons
                 if (c == 0.0)
                     continue;
                 const double vf = species_list[si].volume_factor;
-                for (int j = 1; j < m; ++j)
+                // Stops at the first zero factor (j = n): past it every term
+                // would only repeat the 0, m − n times over.
+                for (int j = 1; j < m && rate != 0.0; ++j)
                     rate *= (c - static_cast<double>(j) / vf) / c;
             }
         }

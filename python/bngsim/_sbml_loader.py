@@ -2646,6 +2646,13 @@ def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = No
     return load_sbml_string(sbml_str, compartment_sizes)
 
 
+# The largest species power the SSA falling factorial takes (Reaction stores m
+# as a C int); the mass-action classifier expands a power into that many
+# factors, so it stops far sooner, at a power no stoichiometry reaches.
+_SSA_FF_MAX_POWER = 2**31 - 1
+_MASS_ACTION_MAX_POWER = 1000
+
+
 def _ssa_falling_factorial_terms(rxn, species_idx, continuous_ids) -> list[tuple[int, int]]:
     """The SSA falling factorial a kinetic law evaluated as written needs.
 
@@ -2757,6 +2764,8 @@ def _ssa_falling_factorial_terms(rxn, species_idx, continuous_ids) -> list[tuple
     mult: Counter = Counter()
     if not walk(math, True, 1, mult):
         return []
+    if any(m > _SSA_FF_MAX_POWER for m in mult.values()):
+        return []  # B^3e9: evaluated as written (the engine stores m as an int)
     return sorted(
         (species_idx[sid], m) for sid, m in mult.items() if m >= 2 and sid not in continuous_ids
     )
@@ -2790,7 +2799,7 @@ def _flatten_product_for_mass_action(node, out):
             r = exp.getReal()
             if _math.isfinite(r) and r == int(r):  # inf/nan: not an integer
                 n_exp = int(r)
-        if n_exp is None or n_exp < 1:
+        if n_exp is None or n_exp < 1 or n_exp > _MASS_ACTION_MAX_POWER:
             return False
         for _ in range(n_exp):
             out.append(base)
@@ -2844,7 +2853,7 @@ def _factor_minus_subtree(node):
                 r = exp.getReal()
                 if _math.isfinite(r) and r == int(r):  # inf/nan: not an integer
                     n_exp = int(r)
-            if n_exp is None or n_exp < 1:
+            if n_exp is None or n_exp < 1 or n_exp > _MASS_ACTION_MAX_POWER:
                 return False
             for _ in range(n_exp):
                 wrapper.append(base)

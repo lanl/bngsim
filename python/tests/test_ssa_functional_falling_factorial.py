@@ -566,3 +566,93 @@ def test_a_subset_follows_an_initial_value_parameter(tmp_path):
         mm.set_param("A0", 80.0)
         mm.reset()
     np.testing.assert_array_equal(sub.get_state(), [80.0, 0.0])
+
+
+def test_a_subset_keeps_a_saved_baseline(tmp_path):
+    """After ``save_concentrations()`` the model resets to the saved state and a
+    write no longer re-derives initial values. The subset re-resolved ``A0``."""
+    from bngsim.coupling import make_subset_model
+
+    net = tmp_path / "ic.net"
+    net.write_text(
+        "begin parameters\n    1 k 0.1\n    2 A0 50\nend parameters\n"
+        "begin species\n    1 A() A0\n    2 B() 0\nend species\n"
+        "begin reactions\n    1 1 2 k\nend reactions\n"
+    )
+    full = bngsim.Model.from_net(str(net))
+    bngsim.Simulator(full, method="ode").run(t_span=(0, 5), n_points=2)
+    full.save_concentrations()
+    sub = make_subset_model(full)
+    for mm in (full, sub):
+        mm.set_param("A0", 80.0)
+        mm.reset()
+    np.testing.assert_array_equal(sub.get_state(), full.get_state())
+    assert sub.get_state().sum() == pytest.approx(50.0, rel=1e-12)
+
+
+def test_a_subset_keeps_the_loaders_refusals():
+    """A ``fast="true"`` reaction is refused under ODE; the subset ran it as an
+    ordinary reaction."""
+    from bngsim.coupling import make_subset_model
+
+    s = _sbml(
+        comps=[("C", 1.0, True)],
+        species=[("A", "C", 10, False, False), ("B", "C", 0, False, False)],
+        reactants=[("A", 1)],
+        products=[("B", 1)],
+        law=_times("k", "A"),
+        params=[("k", 0.5)],
+    )
+    s = s.replace(
+        'level3/version2/core" level="3" version="2"',
+        'level3/version1/core" level="3" version="1"',
+    )
+    s = s.replace(
+        '<reaction id="J" reversible="false"', '<reaction id="J" reversible="false" fast="true"'
+    )
+    sub = make_subset_model(bngsim.Model.from_sbml_string(s))
+    with pytest.raises(bngsim.ModelError, match="fast"):
+        bngsim.Simulator(sub, method="ode").run(t_span=(0, 1), n_points=2)
+
+
+def test_the_codegen_key_ignores_a_declared_amount():
+    """``initial_amount`` is exported for make_subset_model. As a value it
+    would give every initial condition its own compiled kernel."""
+    from bngsim._codegen import compute_model_codegen_hash
+
+    def mk(n0):
+        return bngsim.Model.from_sbml_string(
+            _sbml(
+                comps=[("C", 5.0, True)],
+                species=[("A", "C", n0, False, False), ("P", "C", 0, False, False)],
+                reactants=[("A", 1)],
+                products=[("P", 1)],
+                law=_times("k", "A", "C"),
+                params=[("k", 0.1)],
+            )
+        )
+
+    a, b = mk(10), mk(20)
+    assert a._core.codegen_data()["species"][0]["initial_amount"] == 10.0
+    assert compute_model_codegen_hash(a) == compute_model_codegen_hash(b)
+
+
+@pytest.mark.parametrize(
+    "exp", ['<cn type="integer">1000000</cn>', "<cn>3e9</cn>"], ids=["1e6", "3e9"]
+)
+@pytest.mark.parametrize("boundary", [True, False], ids=["boundary", "floating"])
+def test_a_huge_power_loads_and_evaluates(exp, boundary):
+    """``B^3e9`` failed the load (an int the engine cannot hold) or hung it
+    (the mass-action classifier expanded the power into that many factors);
+    ``B^1e6`` loaded but one propensity took a million multiplications."""
+    m = bngsim.Model.from_sbml_string(
+        _sbml(
+            comps=[("C", 10.0, True)],
+            species=[("B", "C", 3, False, boundary), ("P", "C", 0, False, False)],
+            reactants=[("B", 2)],
+            products=[("P", 1)],
+            law=_times("k", _pow("B", exp), "C"),
+            params=[("k", 0.01)],
+        )
+    )
+    assert m.propensities([0.3, 0.0])[0] == 0.0
