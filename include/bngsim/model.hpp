@@ -499,8 +499,8 @@ class NetworkModel {
     // The flux of a subset of reactions, split two ways: `net` is their signed
     // contribution to each species' dx/dt, exactly as compute_derivs sums it,
     // and `gross` the same terms with their absolute values summed, the size of
-    // what the net rate is rounded from (issue #763). `rxns` null means every
-    // reaction, so `net` is dx/dt itself. Zero for a fixed species. Refreshes
+    // what the net rate is rounded from (issue #763); `gross` may be null. `rxns`
+    // null means every reaction, so `net` is dx/dt itself. Zero for a fixed species. Refreshes
     // observables and functions at (t, conc) as compute_derivs does, and reads
     // the rateOf buffer as it stands.
     void compute_flux_split(double t, const double *conc, const std::vector<int> *rxns, double *net,

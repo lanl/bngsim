@@ -3499,7 +3499,9 @@ void NetworkModel::compute_flux_split(double t, const double *conc, const std::v
     const int nr = n_reactions();
 
     std::memset(net, 0, ns * sizeof(double));
-    std::memset(gross, 0, ns * sizeof(double));
+    if (gross != nullptr) {
+        std::memset(gross, 0, ns * sizeof(double));
+    }
 
     if (impl_->has_functions) {
         update_observables(conc);
@@ -3536,14 +3538,18 @@ void NetworkModel::compute_flux_split(double t, const double *conc, const std::v
             if (si < ns) {
                 const double term = m * rate / divisor(si);
                 net[si] -= term;
-                gross[si] += std::fabs(term);
+                if (gross != nullptr) {
+                    gross[si] += std::fabs(term);
+                }
             }
         }
         for (const auto &[si, m] : rxn.product_multiplicity) {
             if (si < ns) {
                 const double term = m * rate / divisor(si);
                 net[si] += term;
-                gross[si] += std::fabs(term);
+                if (gross != nullptr) {
+                    gross[si] += std::fabs(term);
+                }
             }
         }
     }
@@ -3551,7 +3557,9 @@ void NetworkModel::compute_flux_split(double t, const double *conc, const std::v
     for (const auto &s : impl_->species) {
         if (s.fixed) {
             net[s.index - 1] = 0.0;
-            gross[s.index - 1] = 0.0;
+            if (gross != nullptr) {
+                gross[s.index - 1] = 0.0;
+            }
         }
     }
 }

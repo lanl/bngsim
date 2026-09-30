@@ -800,14 +800,17 @@ end groups
         dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
         np.testing.assert_allclose(got, -kb * np.exp(-kdeg * (T - t_star)) * dtstar, rtol=1e-4)
 
-    @pytest.mark.parametrize(("kb", "X0"), [(3.0, 1e14), (3.0, 1e15), (1.0, 5e13), (1.0, 1e15)])
+    @pytest.mark.parametrize(
+        ("kb", "X0"),
+        [(3.0, 1e14), (3.0, 1e15), (3.0, 4e15), (1.0, 5e13), (1.0, 1e15), (1.0, 2e15)],
+    )
     def test_a_jump_beside_a_large_cancelling_exchange_is_not_roundoff(self, tmp_path, kb, X0):
         """X swaps with P at kx·clamp both ways, so X's switched flux is ~2·X0 and
         cancels to kb. A floor of 64 ulps of the cancelling part read the jump of
         kb as roundoff from X0 = 5e13 (kb = 1) and 1e14 (kb = 3), where main reads
-        it; 4 ulps of the gross flux still did at 1e15. The rounding of a sum
-        does not grow because its terms cancel. X + P gains kb until t*, so
-        d(X+P)/dθ = -kb·dt*/dθ at any T past t*."""
+        it; 2 ulps of the gross flux still did at 2e15 and 4e15. Any floor drops
+        the jumps below it, so the transversal path has none. X + P gains kb until
+        t*, so d(X+P)/dθ = -kb·dt*/dθ at any T past t*."""
         text = f"""begin parameters
     1 A0 10
     2 a 0.5
@@ -845,6 +848,54 @@ end groups
         A0, a, thr = 10.0, 0.5, 2.0
         dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
         np.testing.assert_allclose(got, -kb * dtstar, rtol=1e-6)
+
+    @pytest.mark.parametrize(
+        ("kind", "size"), [("decay", 3e6), ("decay", 1e7), ("exchange", 1e5), ("exchange", 1e6)]
+    )
+    def test_a_continuous_clamp_crossing_just_after_a_jump_is_not_refused(
+        self, tmp_path, kind, size
+    ):
+        """Aobs < thr1 switches kb into Y, and a clamp kx·if(Aobs<thr2, Aobs/thr2, 1)
+        on a large flux crosses 1000 ulps of thr1 later: inside the probe window,
+        outside CVODE's root bracket. The clamp is continuous, but across the
+        probe it varies by its slope times up to dt, which passed 1e-6 of the
+        drive, so it was read as a jump, joined the dt*/dθ agreement check, and
+        was refused ("the right-hand side jumps there"). Main runs these and is
+        right. The co-crossing test now has the primary path's growth test.
+        `decay` is B -> C through the clamp; `exchange` is X <-> P through it
+        with a steady net flux `size` (refused only once the floor was lowered)."""
+        eps = np.finfo(float).eps
+        A0, a, thr1, kb, T = 10.0, 0.5, 0.02, 3.0, 16.0
+        thr2 = float(thr1 * (1 - 1000 * eps))
+        if kind == "decay":
+            extra_params = f"    6 kx 0.1\n    7 B0 {size!r}\n"
+            species = "    3 B() B0\n    4 C() 0\n"
+            reactions = "    3 3 4 fc\n"
+        else:
+            P0 = size / 0.01
+            extra_params = (
+                f"    6 kx 1\n    7 ks {size!r}\n    8 kd 0.01\n"
+                f"    9 X0 {P0 + size!r}\n   10 P0 {P0!r}\n"
+            )
+            species = "    3 X() X0\n    4 P() P0\n"
+            reactions = "    3 3 4 fc\n    4 4 3 fc\n    5 0 3 ks\n    6 4 0 kd\n"
+        text = (
+            "begin parameters\n    1 A0 10\n    2 a 0.5\n    3 thr1 0.02\n"
+            f"    4 thr2 {thr2!r}\n    5 kb 3\n{extra_params}end parameters\n"
+            "begin functions\n    1 fY() if(Aobs<thr1,kb,0)\n"
+            "    2 fc() kx*if(Aobs<thr2,Aobs/thr2,1)\nend functions\n"
+            f"begin species\n    1 A() A0\n    2 Y() 0\n{species}end species\n"
+            f"begin reactions\n    1 1 0 a\n    2 0 2 fY\n{reactions}end reactions\n"
+            "begin groups\n    1 Aobs 1\nend groups\n"
+        )
+        model = _model(tmp_path, text, name=f"clamp_{kind}.net")
+        run = bngsim.Simulator(
+            model, method="ode", sensitivity_params=["a", "thr1", "thr2", "kb"]
+        ).run(t_span=(0.0, T), n_points=3, rtol=1e-10, atol=1e-12)
+        got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()")]
+        t1 = np.log(A0 / thr1) / a
+        exact = np.array([kb * np.log(A0 / thr1) / a**2, kb / (a * thr1), 0.0, T - t1])
+        np.testing.assert_allclose(got, exact, rtol=1e-6, atol=1e-6)
 
     def test_two_independent_thresholds_a_hair_apart_are_refused_not_mixed(self, tmp_path):
         """Aobs < thr1 drives Y and Aobs < thr2 drives Z, with thr2 a few hundred
