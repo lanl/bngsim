@@ -7063,11 +7063,28 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
         auto eval_pri = [&](const ExecInstance &inst) -> double {
             const auto &ev = events_outer[inst.event_idx];
-            return (ev.priority_expr_idx >= 0) ? eval_ref_outer.evaluate(ev.priority_expr_idx)
-                                               : static_cast<double>(ev.priority);
+            const double p = (ev.priority_expr_idx >= 0)
+                                 ? eval_ref_outer.evaluate(ev.priority_expr_idx)
+                                 : static_cast<double>(ev.priority);
+            // NaN compares false with everything, so the execution order
+            // silently fell back to declaration order. Refuse it, as the SSA
+            // drain does.
+            if (std::isnan(p))
+                throw std::runtime_error("event '" + ev.id +
+                                         "' has a priority that is NaN at t=" + diag_number(t_now) +
+                                         "; an event priority must be a number");
+            return p;
         };
 
         while (true) {
+            // Drop executed and cancelled instances once they pile up, so a
+            // long cascade (an algebraic loop runs to CASCADE_LIMIT) costs
+            // O(fires) rather than O(fires²). Order is kept, so `ties` below
+            // is still index-ordered.
+            if (queue.size() > 256)
+                queue.erase(std::remove_if(queue.begin(), queue.end(),
+                                           [](const ExecInstance &x) { return x.done; }),
+                            queue.end());
             // Collect the not-done instances sharing the MAXIMUM priority.
             // Iterating in increasing index keeps `ties` index-ordered, so the
             // single-candidate case reproduces the old lowest-index pick without
