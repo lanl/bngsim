@@ -1,6 +1,6 @@
 # Benchmarks & validation
 
-BNGsim's SSA (Gillespie direct method with dependency graph + pairwise sum tree) and
+BNGsim's SSA (Gillespie direct method with dependency graph + 4-ary sum tree) and
 PSA (partial-scaling approximation) were benchmarked against `run_network` 3.0
 (BioNetGen 2.9.3) across 10 SSA models and 3 PSA models (6 configurations).
 BNGsim timing covers `sim.run()` only; run_network timing includes full subprocess

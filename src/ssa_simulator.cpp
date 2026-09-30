@@ -1,13 +1,13 @@
 // bngsim/src/ssa_simulator.cpp — SSA and PSA stochastic simulators
 //
-// SSA: Gillespie's direct method with dependency graph + pairwise sum tree.
+// SSA: Gillespie's direct method with dependency graph + 4-ary sum tree.
 // PSA: Partial Scaling Algorithm (Lin, Feng, Hlavacek, J. Chem. Phys. 150, 244101, 2019).
 //
 // Optimizations:
 //   1. Dependency graph: After reaction fires, only recompute propensities
 //      for reactions whose propensity is affected by the changed species.
 //      O(k) where k ≈ 5–20, instead of O(N) over all reactions.
-//   2. Pairwise sum tree: O(log N) reaction selection
+//   2. 4-ary sum tree: O(log N) reaction selection
 //      and O(log N) propensity updates, replacing O(N) linear scan.
 //
 // Per-instance RNG (std::mt19937_64). Deterministic seeding.
@@ -590,7 +590,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     }();
 
     // GH #190 — reaction-selection structure (opt-in; default sum tree). bngsim
-    // selects with a pairwise sum tree (issue #713; it was a Fenwick tree): O(1)
+    // selects with a 4-ary sum tree (issue #713; it was a Fenwick tree): O(1)
     // total, O(log n) find, plus an O(log n) update
     // per affected reaction. For SMALL reaction counts a flat cumulative array
     // (O(n) total + O(n) linear scan, but a single contiguous, branch-predictable,

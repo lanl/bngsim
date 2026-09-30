@@ -57,7 +57,7 @@ class CvodeSimulator {
 
 // ─── SSA Simulator ───────────────────────────────────────────────────────────
 //
-// Gillespie's direct method with dependency graph + pairwise sum tree.
+// Gillespie's direct method with dependency graph + 4-ary sum tree.
 // Dependency graph: O(k) propensity updates per step (k ≈ 5–20).
 // Sum tree: O(log N) reaction selection, drift-free (issue #713).
 // Per-instance RNG (std::mt19937_64). Deterministic seeding.
