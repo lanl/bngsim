@@ -55,6 +55,7 @@ from bngsim._exceptions import (
     SimulationError,
     SimulationTimeout,
     SsaBoundaryWarning,
+    SsaRoundingWarning,
     SsaValidationError,
     StopConditionMet,
 )
@@ -6478,6 +6479,18 @@ class Simulator:
                 "non-negativity in the rate law itself, e.g. piecewise(X<=0, 0, k). "
                 "See result.ssa_diagnostics.",
                 SsaBoundaryWarning,
+                stacklevel=3,
+            )
+        n_rounded = int(diag.get("n_rounded_populations", 0))
+        if n_rounded > 0:
+            sp = diag.get("first_rounded_species", "")
+            sp_txt = f" (first: {sp})" if sp else ""
+            warnings.warn(
+                f"SSA: {n_rounded} molecule count(s) were not whole numbers when the "
+                f"run started and were rounded to the nearest one{sp_txt}. The SSA "
+                "fires whole molecules; set whole-number counts to silence this. See "
+                "result.ssa_diagnostics.",
+                SsaRoundingWarning,
                 stacklevel=3,
             )
         if diag["n_reverse_fires"] > 0:

@@ -538,10 +538,47 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     const int n_out = static_cast<int>(t_out.size());
 
     // Working arrays: species populations (0-based)
+    //
+    // Only a molecule count is rounded to a whole number (issue #718). The SBML
+    // loader also gives a state slot to quantities that are not counts: a
+    // parameter, compartment or stoichiometry symbol that an event assigns
+    // (GH #71, promoted with reported=false), and the target of a rate rule
+    // (GH #81), which the SSA integrates as a continuous quantity. Rounding
+    // every slot ran a rate constant of 0.5 as 1 and 0.4 as 0, a volume of 0.4
+    // as 0, and put a rate-rule variable back on a whole number at the start of
+    // every run_until leg. A fixed (boundary) species is a count and is rounded,
+    // as run_network rounds every species before an SSA. Each count this moves
+    // is reported (ssa_diagnostics.n_rounded_populations), on every leg: the
+    // Python validator only sees the state at Simulator construction.
+    std::vector<char> is_count(ns, 1);
+    for (int i = 0; i < ns; ++i)
+        if (!model.species()[i].reported)
+            is_count[i] = 0;
+    for (const auto &rxn : model.reactions())
+        if (rxn.is_rate_rule_ode)
+            for (int pi : rxn.product_indices)
+                if (pi >= 1 && pi <= ns)
+                    is_count[pi - 1] = 0;
+    long n_rounded = 0;
+    int first_rounded = -1;
     std::vector<double> conc(ns);
     for (int i = 0; i < ns; ++i) {
         const auto &sp = model.species()[i];
+        if (!is_count[i]) {
+            conc[i] = sp.concentration;
+            continue;
+        }
         conc[i] = round_initial_population_to_storage(sp.concentration, sp.volume_factor);
+        // The same test _ssa_validation applies: a count that moved by more
+        // than conversion noise was fractional.
+        const double amount = sp.concentration * sp.volume_factor;
+        const double whole = conc[i] * sp.volume_factor;
+        if (std::isfinite(amount) &&
+            std::fabs(amount - whole) > 1e-9 * std::max(1.0, std::fabs(amount))) {
+            ++n_rounded;
+            if (first_rounded < 0)
+                first_rounded = i;
+        }
     }
 
     // Propensity arrays
@@ -1905,6 +1942,19 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     }
 
     // ─── Write final state back to model ─────────────────────────────────────
+    //
+    // The loop ends at the last event it took, somewhere before t_end: no
+    // reaction fires in (t, t_end], so every count is already its t_end value,
+    // but a rate-rule target keeps moving. The last recorded row carries it to
+    // t_end (sample_conc), and so must the state a run_until leg hands to the
+    // next one. It used to be written back as of t, so each leg started its
+    // continuous targets up to one sub-step behind where the previous leg had
+    // reported them: X' = 1 in 0.3-long legs reached 3.898 at t = 3.9
+    // (issue #718). rr_deriv was snapshotted at t, as sample_conc used it.
+    if (t < times.t_end) {
+        integrate_rr(times.t_end - t);
+        t = times.t_end;
+    }
     {
         auto &species = const_cast<std::vector<Species> &>(model.species());
         for (int i = 0; i < ns; ++i) {
@@ -1932,6 +1982,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         diag.n_reverse_fires = reverse_fire_count;
         if (first_reverse_rxn >= 0)
             diag.first_reverse_reaction = reaction_label(model, reactions[first_reverse_rxn]);
+        diag.n_rounded_populations = n_rounded; // issue #718
+        if (first_rounded >= 0) {
+            const auto &names = model.species_names();
+            if (first_rounded < static_cast<int>(names.size()))
+                diag.first_rounded_species = names[first_rounded];
+        }
     }
 
     // GH #15 — PSA partial-scaling diagnostics. Close every reaction's dwell over

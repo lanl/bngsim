@@ -273,6 +273,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("first_negative_species", &bngsim::SsaDiagnostics::first_negative_species)
         .def_readwrite("n_reverse_fires", &bngsim::SsaDiagnostics::n_reverse_fires)
         .def_readwrite("first_reverse_reaction", &bngsim::SsaDiagnostics::first_reverse_reaction)
+        .def_readwrite("n_rounded_populations", &bngsim::SsaDiagnostics::n_rounded_populations)
+        .def_readwrite("first_rounded_species", &bngsim::SsaDiagnostics::first_rounded_species)
         .def_readwrite("propensity_backend", &bngsim::SsaDiagnostics::propensity_backend)
         // GH #15 — PSA partial-scaling diagnostics.
         .def_readwrite("psa_active", &bngsim::SsaDiagnostics::psa_active)
@@ -302,6 +304,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             out["first_negative_species"] = d.first_negative_species;
             out["n_reverse_fires"] = d.n_reverse_fires;
             out["first_reverse_reaction"] = d.first_reverse_reaction;
+            out["n_rounded_populations"] = d.n_rounded_populations;
+            out["first_rounded_species"] = d.first_rounded_species;
             out["propensity_backend"] = d.propensity_backend;
             out["psa_active"] = d.psa_active;
             out["psa_reaction_index"] = d.psa_reaction_index;

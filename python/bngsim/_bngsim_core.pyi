@@ -967,6 +967,7 @@ class SolverStats:
 class SsaDiagnostics:
     first_negative_species: str
     first_reverse_reaction: str
+    first_rounded_species: str
     propensity_backend: str
     psa_activation_crossed: bool
     psa_active: bool
@@ -987,6 +988,12 @@ class SsaDiagnostics:
         ...
     @n_reverse_fires.setter
     def n_reverse_fires(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def n_rounded_populations(self) -> int:
+        ...
+    @n_rounded_populations.setter
+    def n_rounded_populations(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def psa_exact_event_integral(self) -> float:

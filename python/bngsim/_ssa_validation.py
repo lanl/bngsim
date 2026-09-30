@@ -60,11 +60,25 @@ def validate_for_ssa(model: Model) -> list[SsaIssue]:
     issues = list(getattr(model, "_ssa_issues", None) or [])
 
     try:
-        species_meta = list(model._core.codegen_data()["species"])
+        data = model._core.codegen_data()
+        species_meta = list(data["species"])
+        reactions_meta = list(data["reactions"])
     except Exception:
-        species_meta = []
+        species_meta, reactions_meta = [], []
 
-    for sp in species_meta:
+    # Only a molecule count is rounded (issue #718), by the same rule the SSA
+    # applies in ssa_simulator.cpp: a slot the SBML loader promoted for an
+    # event-assigned parameter, compartment or stoichiometry (reported=False),
+    # and a rate-rule target, hold continuous values and are left as they are.
+    # Warning about them called a rate constant an "initial SSA population".
+    continuous = {i for i, sp in enumerate(species_meta) if not sp.get("reported", True)}
+    for rxn in reactions_meta:
+        if rxn.get("is_rate_rule_ode"):
+            continuous.update(int(i) for i in rxn.get("products", ()))
+
+    for idx, sp in enumerate(species_meta):
+        if idx in continuous:
+            continue
         name = str(sp.get("name", ""))
         volume_factor = float(sp.get("volume_factor", 1.0))
         if not name or not math.isfinite(volume_factor) or volume_factor <= 0.0:
