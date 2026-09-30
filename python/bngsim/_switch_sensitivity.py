@@ -3518,6 +3518,139 @@ def state_switch_conditions(core, ctx=None) -> list[str]:
     return conditions
 
 
+def state_switch_root_conditions(core, covered: Sequence[str] = (), ctx=None) -> tuple[str, ...]:
+    """Rate-law conditions over model state that a run without sensitivities roots on (#897).
+
+    Inside each branch of ``if((time() >= onset) && (time() < onset + w), k, 0)``
+    with ``onset = 4*S`` the rate is constant, so a step that spans the whole
+    window reads the branch as off at both ends and CVODE's error estimate over
+    it is near zero. The window is lost, with no warning at any tolerance. A
+    fixed crossing stop cannot help, because the crossing time moves with ``S``.
+    Registering the atom's residual as a root is what stops the step inside the
+    window. A sensitivity run gets that root from :func:`state_switch_conditions`
+    (issue #150); this is the set for every other run, and it gets no jump.
+
+    It differs from :func:`state_switch_conditions` in three ways, all because
+    no jump rides on it:
+
+    * It never asks :func:`clock_crossing_compensated`, which differentiates
+      every threshold with sympy to decide whether issue #48 can jump it. That
+      costs up to ~0.3 s a call on the ``.net`` corpus, and nothing here needs
+      a derivative. What stands in for it is ``covered``: the conditions the run
+      already stops on or roots, which are
+      :meth:`bngsim.Model.time_discontinuity_conditions`. A counter-clock
+      threshold reads a species, so its residual resolves too, and rooting it
+      as well as stopping on it would put a second restart at the instant the
+      issue #443 landing has already handled. For an SBML model, ``covered`` is
+      the set its loader registered as roots, state thresholds included
+      (GH #194), so a crossing is not rooted twice.
+    * It scans the functional rate laws and the functions they reach, rather
+      than every function body. A condition in a function that no rate law
+      reads changes an output, not the trajectory, so a root on it would buy a
+      restart and nothing else.
+    * It reads no parameter value, so the answer depends on the model's
+      structure alone and :meth:`bngsim.Model.state_switch_root_conditions`
+      caches it. A fit pays for it once, not once per evaluation.
+
+    Equalities are skipped for the reason :func:`state_switch_conditions` gives.
+    Deduplicated by residual, read through :func:`_surface_key`, so one crossing
+    written two ways is one root. Empty for a model with no conditional rate
+    law, before the model is probed.
+    """
+    from bngsim._jacobian import _IDENT_RE, _inline_functions
+
+    if core.n_functions == 0:
+        return ()
+    # The raw texts gate first, as in time_discontinuity_conditions: inlining
+    # cannot introduce an `if(` that none of them spells, and the context this
+    # skips runs to tens of thousands of entries on a genome-scale model.
+    if not any(_IF_CALL.search(t) for t in (*core.function_expressions, *core.param_expressions)):
+        return ()
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    memo: dict[str, str] = {}
+
+    def inline(text: str) -> str:
+        return _inline_functions(text, func_map, memo=memo) or text
+
+    # A covered condition is inlined before it is compared. The SBML loader
+    # registers `time() >= onset` for an assignment rule `onset := 4*S`, and
+    # `onset` is a parameter slot, so that text reads no state and has no
+    # residual; the rate law's own atom arrives inlined, as `time() >= 4*S`.
+    seen: set[str] = set()
+    for cond in covered:
+        residual = state_switch_residual(core, inline(cond))
+        if residual:
+            seen.add(_surface_key(residual))
+
+    # Every `if()` a rate law reads, visited once: in the rate law's own text or
+    # in a function it reaches. Flattening each rate law whole would visit a
+    # shared function's conditions once per rate law that reaches it.
+    rate_laws = dict.fromkeys(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"])
+    reached: dict[str, None] = {}
+    pending = [n for text in rate_laws for n in _IDENT_RE.findall(text) if n in func_map]
+    while pending:
+        name = pending.pop()
+        if name not in reached:
+            reached[name] = None
+            pending.extend(n for n in _IDENT_RE.findall(func_map[name]) if n in func_map)
+
+    conditions: list[str] = []
+    for text in (*rate_laws, *(func_map[name] for name in reached)):
+        if not _IF_CALL.search(text):
+            continue
+        for written in _iter_condition_atoms(text):
+            # Inlining can expose more logic than the text spelled — a condition
+            # `flag` over `flag() = (A>1)||(B<2)` — so the atoms are split again.
+            for atom in _split_logical_atoms(inline(written)):
+                if is_equality_atom(atom):
+                    continue
+                residual = state_switch_residual(core, atom)
+                if not residual:
+                    continue
+                key = _surface_key(residual)
+                if key not in seen:
+                    seen.add(key)
+                    conditions.append(atom)
+    return tuple(conditions)
+
+
+# ExprTk spellings Python's parser reads differently or not at all. `if` is a
+# keyword there, so the call is renamed; the rest map to their Python twins.
+_SURFACE_KEY_SUBS = (
+    (_IF_CALL, "_if_("),
+    (re.compile(r"&&"), " and "),
+    (re.compile(r"\|\|"), " or "),
+)
+
+
+def _surface_key(residual: str) -> str:
+    """One spelling per crossing surface, for :func:`state_switch_root_conditions`.
+
+    ``NetworkModel.state_switch_residual`` writes ``(lhs)-(rhs)`` from the text it
+    is given, so one surface reached by two routes can come back as two strings:
+    ``(time())-(((4*S)))`` against ``(time())-((4*S))``, or with the sides
+    swapped when one route wrote ``b < a`` and the other ``a > b``. Python's
+    parser drops redundant parentheses, and the smaller of the two operand
+    orders is kept. Text it cannot parse is its own key, which only costs a
+    duplicate root.
+    """
+    import ast
+
+    text = residual.replace("^", "**")
+    for pattern, repl in _SURFACE_KEY_SUBS:
+        text = pattern.sub(repl, text)
+    try:
+        tree = ast.parse(text, mode="eval").body
+    except (SyntaxError, ValueError, RecursionError):
+        return residual
+    key = ast.unparse(tree)
+    if isinstance(tree, ast.BinOp) and isinstance(tree.op, ast.Sub):
+        key = min(key, ast.unparse(ast.BinOp(tree.right, ast.Sub(), tree.left)))
+    return key
+
+
 def switch_gate_cache_digest(core, ctx=None) -> tuple:
     """The part of the issue #68 codegen gate's verdict that parameter VALUES decide.
 

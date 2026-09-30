@@ -171,7 +171,10 @@ species (issue #443), where the counter is landed exactly on its threshold so
 the restart reads the after-branch.
 
 These stops are added for any model carrying such a switch, sensitivities or
-not, because stepping over the discontinuity was never correct.
+not, because stepping over the discontinuity was never correct. The same holds
+for a crossing whose time the state decides, such as `time() >= 4*S`, which no
+stop can be placed at before the run. Its residual is a CVODE root in every run,
+and a run without sensitivities stops there and applies no jump (issue #897).
 
 ### A rate that rises from zero at the crossing
 
@@ -217,12 +220,16 @@ every column plain, for comparison.
 
 ### What is declined
 
-A condition whose crossing time moves with the *state* rather than with a
-parameter is a different problem, and the analytic path declines it rather than
-returning a gradient that silently omits the saltation term. So does a
-conjunction, a negation, and a comparison whose sides are themselves
-comparisons. A parameter that both sets a switch time and acts inside a branch
-is rejected rather than answered with the jump alone.
+A condition whose crossing time moves with the *state*, such as `if(X < 1, …)`
+or a window `(X > lo) && (X < hi)`, is not declined. Each comparison's residual
+is registered as a root, and the saltation jump `(f⁻ − f⁺)·dt*/dθ` is applied
+where it crosses (issue #150). A conjunction or a negation is split into its
+comparisons first. What the analytic path declines is a crossing nothing can
+locate: a comparison outside any `if()`, such as `k*(X > 1)`, and one whose sides
+are themselves comparisons, such as `(X > 1) == (Y > 1)`. A parameter that both
+sets a switch time and acts inside a branch is answered on the analytic path,
+which adds the in-branch term to the jump (issue #358), and rejected on the
+fallback, which cannot.
 
 A decline is never silent. Ask the Simulator directly:
 

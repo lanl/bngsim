@@ -1924,6 +1924,31 @@ class Simulator:
             )
             opts.set_state_switch_conditions(conditions)
 
+    def _apply_state_switch_roots(self, opts, model) -> None:
+        """Root the rate-law conditions over model state for a plain run (issue #897).
+
+        The plain-run half of :meth:`_apply_state_switch_sens`. A rate law gated
+        by ``if((time() >= 4*S) && (time() < 4*S + w), k, 0)`` is constant on
+        each side of the window, so a step spanning the window reads it as off
+        at both ends, the error estimate sees nothing, and the window is lost
+        at every tolerance. Its crossings move with the state, so the fixed
+        stops of :meth:`_apply_crossing_stops` cannot be placed on them. A root
+        on each residual is what stops the step there. The core applies no
+        jump on a run without sensitivity columns, so this changes stepping
+        and nothing else.
+
+        The conditions are :meth:`Model.state_switch_root_conditions`, cached
+        on the model, so a fit pays for the scan once. A no-op for a model with
+        no such condition, which leaves its root set and stepping untouched.
+        """
+        conditions = model.state_switch_root_conditions()
+        if conditions:
+            logger.debug(
+                "State-switch roots for a plain run (issue #897): %s",
+                ", ".join(repr(c) for c in conditions),
+            )
+            opts.set_state_switch_conditions(list(conditions))
+
     def _auto_codegen_for_sensitivity(
         self, *, jit_backend: str, n_sens_dirs: int | None = None
     ) -> None:
@@ -3382,6 +3407,8 @@ class Simulator:
                     # moves every column, initial conditions included (issue
                     # #150 / #144), so an IC-only request needs the jump too.
                     self._apply_state_switch_sens(opts, self._model._core)
+                else:
+                    self._apply_state_switch_roots(opts, self._model)
 
                 # Install the Python callback used for the JAX Jacobian path.
                 if self._jacobian == "jax" and self._jax_jac_evaluator is not None:
@@ -4767,6 +4794,8 @@ class Simulator:
                     # See the note at the single-shot site: keyed on "any
                     # sensitivity at all", not on a parameter request.
                     self._apply_state_switch_sens(opts, clone._core)
+                else:
+                    self._apply_state_switch_roots(opts, clone)
                 core_result = sim.run(times, opts)
 
             elif self._method in ("ssa", "psa"):

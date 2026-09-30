@@ -454,7 +454,11 @@ def _exprtk_to_sympy(expr: str):
 
 
 def _inline_functions(
-    expr: str, func_map: dict[str, str], _depth: int = 0, _seen: frozenset | None = None
+    expr: str,
+    func_map: dict[str, str],
+    _depth: int = 0,
+    _seen: frozenset | None = None,
+    memo: dict[str, str] | None = None,
 ) -> str | None:
     """Recursively substitute ``name`` → ``(expression)`` for every user
     function ``name`` referenced in ``expr``. Assignment rules and SBML
@@ -462,7 +466,15 @@ def _inline_functions(
     references a derived quantity is flattened until only observables,
     parameters and ``time()`` remain. Returns ``None`` on cycle / excessive
     depth (algebraic rules are acyclic per SBML, so this guards malformed
-    input only)."""
+    input only).
+
+    ``memo``, when given, keeps each function's flattened body across calls.
+    Without it a function shared by many callers is flattened again under every
+    one of them, which is exponential in the depth of the sharing (issue #897:
+    1.5 s on one SBML model's 77 rate laws). A body is stored only once it has
+    flattened without a cycle, so nothing it reaches leads back to it, and
+    reusing it under another caller cannot hide a cycle through that caller.
+    """
     if _seen is None:
         _seen = frozenset()
     if _depth > 64:
@@ -480,9 +492,13 @@ def _inline_functions(
     for name in referenced:
         if name in _seen:
             return None  # cycle
-        body = _inline_functions(func_map[name], func_map, _depth + 1, _seen | {name})
+        body = memo.get(name) if memo is not None else None
         if body is None:
-            return None
+            body = _inline_functions(func_map[name], func_map, _depth + 1, _seen | {name}, memo)
+            if body is None:
+                return None
+            if memo is not None:
+                memo[name] = body
         # Replace the bare identifier (the engine already resolved ``name()`` →
         # ``name`` for inter-function references at build time).
         out = re.sub(rf"\b{re.escape(name)}\b", f"({body})", out)

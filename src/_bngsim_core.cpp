@@ -518,9 +518,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "analytic sensitivity RHS nor CVODES' difference quotient carries. "
             "run() resolves each through NetworkModel.state_switch_residual, "
             "registers that residual as a CVODE root so the crossing is located, "
-            "and applies the jump there. Honoured only when the run requests "
-            "sensitivities; empty (the default) leaves the root set — and every "
-            "plain trajectory — untouched.")
+            "and applies the jump there. A run without sensitivities roots the "
+            "same residuals and applies no jump, so a narrow state-gated window "
+            "cannot be stepped over (issue #897); empty (the default) leaves the "
+            "root set untouched.")
         .def(
             "set_switch_pinned_params",
             [](bngsim::SolverOptions &self, const std::vector<int> &param_idx0) {

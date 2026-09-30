@@ -102,6 +102,7 @@ class Model:
         "_periodic_disc_max_step",
         "_time_disc_conditions",
         "_derived_time_disc_conditions",
+        "_state_switch_root_conditions",
         "_want_output_sens",
         "_output_sens_analysis",
         "_named_conc_states",
@@ -244,6 +245,10 @@ class Model:
         # None means "not looked yet"; a tuple (often empty) means the scan has
         # run. See time_discontinuity_conditions().
         self._derived_time_disc_conditions: tuple[str, ...] | None = None
+        # Issue #897: the rate-law conditions over model state that a run without
+        # sensitivities roots on, derived on first ask and cached like the line
+        # above. See state_switch_root_conditions().
+        self._state_switch_root_conditions: tuple[str, ...] | None = None
         # Issue #11: named saved concentration states. Maps a user label to a
         # snapshot of the full live species-concentration vector (a copy of
         # get_state(), ordered like species_names). This is the multi-slot
@@ -815,6 +820,41 @@ class Model:
                 self._derived_time_disc_conditions = ()
         return self._derived_time_disc_conditions
 
+    def state_switch_root_conditions(self) -> tuple[str, ...]:
+        """The rate-law conditions over model state a plain run roots on (issue #897).
+
+        A rate law switched by a comparison that reads the state, such as
+        ``if((time() >= 4*S) && (time() < 4*S + w), k, 0)``, has crossings at
+        times the state decides, so no stop can be placed at them before the
+        run. :meth:`Simulator.run` registers each one as a CVODE root instead,
+        which stops the step at the crossing rather than letting it span a
+        narrow window and miss it.
+
+        The crossings :meth:`time_discontinuity_conditions` already covers are
+        left out, and so is every condition in a function that no rate law
+        reads. The answer depends on the model's structure alone, so it is
+        derived once and cached, and a clone inherits it.
+        """
+        if self._state_switch_root_conditions is None:
+            try:
+                from bngsim._switch_sensitivity import state_switch_root_conditions
+
+                self._state_switch_root_conditions = state_switch_root_conditions(
+                    self._core, covered=self.time_discontinuity_conditions()
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                # Detection is best-effort: without it a model keeps the stepping
+                # it had before issue #897, which is correct wherever no step
+                # spans a whole state-gated window.
+                logger.warning(
+                    "State-switch root detection failed (%s); a rate law switched by "
+                    "a condition over model state will be integrated without a root "
+                    "at its crossings (issue #897).",
+                    e,
+                )
+                self._state_switch_root_conditions = ()
+        return self._state_switch_root_conditions
+
     # ─── Lazy analytical Jacobian (GH #145) ───────────────────────────────
 
     def prepare_analytical_jacobian(self) -> bool:
@@ -971,6 +1011,7 @@ class Model:
         m._periodic_disc_max_step = self._periodic_disc_max_step
         m._time_disc_conditions = self._time_disc_conditions
         m._derived_time_disc_conditions = self._derived_time_disc_conditions
+        m._state_switch_root_conditions = self._state_switch_root_conditions
         # Issue #11: carry named concentration snapshots to the clone, each a
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)
