@@ -528,7 +528,6 @@ TERMS: list = [
             param="Rt",
             note="column all 0 against exp(-kd t)",
         ),
-        marks=_xfail(715, "a derived IC parameter's own column is never seeded"),
     ),
     Term(
         "rhs-derived-chain",

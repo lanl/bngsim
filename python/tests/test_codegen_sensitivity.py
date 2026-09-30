@@ -473,9 +473,11 @@ class TestDerivedICParamSens:
 
     def test_seed_helper_coefficients(self):
         """compute_ic_param_sens_seed maps each parameter-referenced species IC
-        to (species_idx0, PRIMARY_idx0, coeff): coefficient 1 for the direct IC
-        and — the fix — for the derived ``Rtot = R0``, keyed on R0 (the primary),
-        never on the derived Rtot index."""
+        to (species_idx0, param_idx0, coeff): coefficient 1 for the direct IC
+        and — the #43 fix — for the derived ``Rtot = R0`` on R0 (the primary).
+        Issue #715 adds the identity row on Rtot itself, the column a
+        force_override pin of Rtot makes real; it only takes effect when Rtot is
+        requested, so R0's column is unaffected."""
         import bngsim
         from bngsim._codegen import compute_ic_param_sens_seed
 
@@ -491,8 +493,8 @@ class TestDerivedICParamSens:
             "derived IC Rtot = R0 must seed R0 with coefficient 1 (issue #43)"
         )
         rtot_idx = names.index("Rtot")
-        assert all(prim != rtot_idx for _, prim, _ in seeds), (
-            "seed must key on the primary R0, never on the derived Rtot index"
+        assert (0, rtot_idx, 1.0) in seeds, (
+            "derived IC Rtot must also seed its own column with coefficient 1 (issue #715)"
         )
 
     def test_direct_ic_matches_rebuild_fd(self, tmp_path):
