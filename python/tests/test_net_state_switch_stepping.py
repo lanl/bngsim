@@ -27,13 +27,12 @@ What this locks:
      alone;
   5. the scan runs once per model, a clone inherits it, and a batch scans once
      for all of its rows;
-  6. a root restarts the run only where the flow clearly carries the residual
-     across, or where the residual lies exactly on its surface: GH #176's
-     parked trajectory, and two twins whose flow near the park cannot be
-     resolved, keep their exact answers; a residual parked at exactly 0.0 is
-     not read as a second root; one moving along its surface does not chatter,
-     and one resting on it at a fixed point is not restarted onto it; and a
-     real crossing on a curved residual still restarts;
+  6. a root restarts the run only at a genuine crossing, where the flow on the
+     near side stays finite at the surface and carries the state across: GH
+     #176's parked trajectory and three twins, a state relaxing onto its
+     threshold, and one on an unstable surface all keep main's answers; a
+     residual parked at exactly 0.0 is not read as a second root; and a real
+     crossing on a curved residual still restarts;
   7. a residual too deep for ``ast.unparse`` keeps every root, and one that
      starts at exactly zero does not print a SUNDIALS warning.
 """
@@ -336,17 +335,19 @@ _LTYPE = "ltype_calcium_discontinuous_jacobian.net"
 
 _V_STEP = "if(((-70+Voltage_Level)<-20),0.5,0.05)"
 _V_STEP_RAMP = "if(((-70+Voltage_Level)<(-20+rr*time())),0.5,0.05)"
+_V_LATCH = "if(((-70+Voltage_Level)<-20),0,kup)"
 
 
 def _ltype_variant(text, kind):
-    """GH #176's fixture, or one of two twins that park the same way but whose
-    residual's flow near the park is a near-cancel no difference can resolve.
+    """GH #176's fixture, or a twin that parks the same way, 1e-11 on the exact
+    trajectory's side of the threshold, while defeating one earlier rule.
 
     ``split`` carries Voltage_Level as V + V2 exchanging at kx*time() and kx, so
     dg/dt is f_V + f_V2, two terms of about 0.3 that cancel to 1e-11. ``ramp``
     moves the threshold at rr = 1e-8 per unit time and feeds V the same ramp, so
     dg/dt = f_V - rr, and the rounding in d/dt of rr*time() is 1e-10 whatever
-    rr is. Each still parks 1e-11 on the exact trajectory's side.
+    rr is. ``latch`` adds 0 -> Voltage at 1e-6 on the far branch only, so once
+    across, the far-side flow carries V further across.
     """
 
     def swap(old, new):
@@ -370,10 +371,15 @@ def _ltype_variant(text, kind):
             f"    4 v_rec() {_V_STEP_RAMP}\n    5 stim() k_v_stim+rr*(time()+1)\n",
         )
         swap("    4 0 3 k_v_stim #_R9\n", "    4 0 3 stim #_R9\n")
+    elif kind == "latch":
+        swap(last_param, last_param + "   20 kup 1e-06\n")
+        swap(f"    4 v_rec() {_V_STEP}\n", f"    4 v_rec() {_V_STEP}\n    5 vup() {_V_LATCH}\n")
+        last_rxn = "   25 10 8 _rateLaw2 #_R8\n"
+        swap(last_rxn, last_rxn + "   26 0 3 vup\n")
     return text
 
 
-@pytest.mark.parametrize("kind", ["fixture", "split", "ramp"])
+@pytest.mark.parametrize("kind", ["fixture", "split", "ramp", "latch"])
 def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
     """GH #176's fixture parks Voltage 1e-11 below the step at 50, far inside
     the solver's own error at rtol 1e-8, so the interpolant can cross the step
@@ -382,13 +388,16 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
     never takes. The observables came out 63% off after 2,019,910 steps, with no
     error.
 
-    The core now restarts at a lone state-switch root only where the flow
-    clearly carries the residual across, so a parked root steps on as it did
+    The core now restarts at a lone state-switch root only at a genuine
+    crossing: the flow on the near side, where the arriving branch is live,
+    must stay finite as the surface is approached and carry the state across.
+    A parked trajectory's flow vanishes there, so its root steps on as it did
     before the root existed: the analytical attempt fails loudly and ``auto``
-    retries with FD. "Clearly" is the point of the two twins. With a restart
-    whenever the flow could not be read as opposed, their near-cancelling flows
-    restarted on the surface and came out 9.4e-3 (split) and 0.62 (ramp) off,
-    worse at tighter tolerances, while main was right (review of PR #903).
+    retries with FD. The twins each defeated an earlier rule (review of PR
+    #903). Restarting unless the flow read as opposed sent split and ramp 9.4e-3
+    and 0.62 off, worse at tighter tolerances. Restarting whenever the flow at
+    the located state carried sent latch 0.633 off at every tolerance, because
+    there the far side does carry. main is right on all four.
 
     The oracle is the same network with each step replaced by the branch the
     exact trajectory takes throughout: V < 50 always, so 0.5, and
@@ -413,10 +422,10 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
 
     exact_text = text
     step = _V_STEP_RAMP if kind == "ramp" else _V_STEP
-    for condition, branch in (
-        (step, "0.5"),
-        ("if((Phospho_LTCC>0),k_pka_shift,0)", "k_pka_shift"),
-    ):
+    branches = [(step, "0.5"), ("if((Phospho_LTCC>0),k_pka_shift,0)", "k_pka_shift")]
+    if kind == "latch":
+        branches.append((_V_LATCH, "0"))
+    for condition, branch in branches:
         assert exact_text.count(condition) == 1, condition
         exact_text = exact_text.replace(condition, branch)
     exact = bngsim.Simulator(_write(tmp_path, exact_text, f"{kind}_exact.net")).run(
@@ -432,11 +441,11 @@ def test_a_state_resting_on_its_surface_steps_on(data_dir, tmp_path):
     """The rulehub model the #176 fixture was edited from: k_v_stim is 50.0, so
     Voltage relaxes to exactly the threshold. The exact trajectory never reaches
     it (V = 50 - 49 e^-t), and main converges to that at rtol 1e-10 (9.8e-10).
-    The root finder, though, interpolates V onto 50.0 itself, where every term
-    of the residual's flow is zero. Restarting there, as a residual lying on
-    its surface does, held V on 50.0 and on the far branch for the rest of the
-    run: 0.633 off at every tolerance (review of PR #903). Nothing the residual
-    reads is moving, so this is a state resting on the surface, and it steps on.
+    The root finder, though, interpolates V onto 50.0 itself, where dV/dt = 0.
+    A rule that restarted on a residual lying on its surface held V on 50.0 and
+    on the far branch for the rest of the run: 0.633 off at every tolerance
+    (review of PR #903). V relaxes onto the threshold, so its near-side flow
+    vanishes there, and the root steps on.
     """
     text = (data_dir / _LTYPE).read_text()
     old = "   16 k_v_stim        49.99999999999  # Constant\n"
@@ -583,22 +592,40 @@ def test_a_batch_scans_once_for_all_its_rows(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_a_residual_lying_on_its_surface_restarts(data_dir):
+# td_right() written as a mathematically identical sum. On main the model gives
+# the same answer; for a rule that restarted on each carried wobble across the
+# symmetric surface, it did not.
+_QL_REORDERED = (
+    "    8 td_right() (reward()+(gamma*max_q()))-qr()\n",
+    "    8 td_right() (reward()-qr())+(gamma*max_q())\n",
+)
+
+
+@pytest.mark.parametrize("spelling", ["as written", "reordered"])
+def test_a_residual_on_an_unstable_surface_steps_on(data_dir, tmp_path, spelling):
     """ml_q_learning's Q_Right and Q_Left meet exactly with identical
     derivatives, so roots of its argmax switch land where the residual is
-    exactly zero and neither difference moves it. That state lies on the
-    surface, not beside it, and needs the restart that lets CVODE set the root
-    aside. Stepping on under the zero hold kept it armed, so each ~6e-11 wobble
-    across the surface was another root: about 140,000 of them, 119,478 steps,
-    and a trajectory 4.9 off at rtol 1e-11. The reference is the same model with
-    no state-switch roots at all, which is how main integrates it."""
-    path = str(data_dir / "qlearning_flat_residual.net")
-    model = bngsim.Model.from_net(path)
+    exactly zero. The symmetric state is unstable: near it the residual grows
+    only in proportion to itself, so its near-side flow vanishes on the
+    surface, no crossing there is genuine, and the run steps on as main does.
+
+    Earlier rules got this wrong both ways (review of PR #903). Stepping on while
+    restarting on every ~6e-11 wobble the flow carried gave about 140,000 root
+    returns and 4.9 off at rtol 1e-11. Restarting on the surface instead was
+    right as written, but 20x off once ``td_right`` was reordered, because each
+    restart let rounding-level asymmetry grow. The reference is the same model
+    with no state-switch roots at all, which is how main integrates it."""
+    text = (data_dir / "qlearning_flat_residual.net").read_text()
+    if spelling == "reordered":
+        old, new = _QL_REORDERED
+        assert text.count(old) == 1
+        text = text.replace(old, new)
+    model = _write(tmp_path, text, "ql.net")
     assert "(Q_Right-off)>(Q_Left-off)" in model.state_switch_root_conditions()
     window = dict(t_span=(0.0, 100.0), n_points=1001, rtol=1e-11, atol=1e-11)
     result = bngsim.Simulator(model).run(**window)
     assert result.solver_stats["n_steps"] < 5_000
-    unrooted = bngsim.Model.from_net(path)
+    unrooted = _write(tmp_path, text, "ql_unrooted.net")
     unrooted._state_switch_root_conditions = ()
     reference = bngsim.Simulator(unrooted).run(**window)
     got = np.asarray(result.species)

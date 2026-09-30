@@ -4,11 +4,11 @@
 #
 # Q_Right and Q_Left meet exactly, with identical derivatives, so roots of the
 # argmax switch (Q_Right-off)>(Q_Left-off) and of the policy residuals built on
-# it land where the residual is exactly zero with no flow at all: the state lies
-# ON those surfaces. A plain run must restart at such a root, so CVODE sets it
-# aside until the residual leaves zero. Stepping on under the zero hold kept it
-# armed instead, and every ~6e-11 wobble across the surface became another root:
-# about 140,000 root returns, and a trajectory 4.9 off at rtol 1e-11.
+# it land where the residual is exactly zero. The symmetric state is unstable:
+# near it the residual grows only in proportion to itself, so no crossing there
+# is genuine, and a plain run steps on past them as main does. A rule that
+# restarted on each small wobble across the surface came out 4.9 off at rtol
+# 1e-11 after about 140,000 root returns.
 #
 # Created by BioNetGen 2.9.3
 begin parameters

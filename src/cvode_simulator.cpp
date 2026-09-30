@@ -2362,11 +2362,9 @@ struct CvodeSimulator::Impl {
     // for whether a trajectory LEAVES a threshold it starts on (issue #340).
     // Fills `gx_out` (∂g/∂x, sized ns, zero off `support`) and `scale_out`
     // (Σ|term|), and leaves the model synced at (t, x).
-    // `step_scale` multiplies every difference step (1 everywhere but the
-    // issue #897 resolution check, which compares two).
     double residual_flow(int gidx, const std::vector<int> &support, double t, int ns,
                          const std::vector<double> &x, const std::vector<double> &f,
-                         std::vector<double> &gx_out, double &scale_out, double step_scale = 1.0);
+                         std::vector<double> &gx_out, double &scale_out);
 
     // ∂t*/∂θ at a located crossing of the surface g = 0, by the implicit
     // function theorem (issue #144, reused for the rate-law switches of issue
@@ -2407,12 +2405,11 @@ struct CvodeSimulator::Impl {
                                         SensitivityState &sens);
 
     // Issue #897: whether a plain run should restart at state switch `sw`'s
-    // root: true when the flow at x(t) clearly carries the residual across zero
-    // in the direction `dir` (+1 rising, -1 falling) the root finder reported
-    // (dg/dt from residual_flow, taken at two steps that must agree), and when
-    // the residual lies exactly on the surface with no flow at all. False when
-    // the flow opposes that direction, and when the differences cannot resolve
-    // it. Leaves the model synced at (t, x).
+    // root: true when the flow on the near side of the surface stays finite as
+    // the surface is approached and carries the residual across it in the
+    // direction `dir` (+1 rising, -1 falling) the root finder reported, and when
+    // no near-side point can be built. False when that flow vanishes at the
+    // surface or opposes the crossing. Leaves the model synced at (t, x).
     bool flow_carries_state_switch(double t, const double *x, int ns,
                                    const NetworkModel::StateSwitch &sw, int dir);
 };
@@ -4975,8 +4972,7 @@ void CvodeSimulator::Impl::sync_model_at(double t, const double *x, int ns) {
 double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &support, double t,
                                            int ns, const std::vector<double> &x,
                                            const std::vector<double> &f,
-                                           std::vector<double> &gx_out, double &scale_out,
-                                           double step_scale) {
+                                           std::vector<double> &gx_out, double &scale_out) {
     auto &eval = model.evaluator();
     std::vector<double> xwork(x.begin(), x.end());
 
@@ -4988,7 +4984,6 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
         if (h == 0.0) {
             h = 1e-9;
         }
-        h *= step_scale;
         xwork[j] = xj + h;
         sync_model_at(t, xwork.data(), ns);
         const double g_hi = eval.evaluate(gidx);
@@ -5000,7 +4995,7 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
     }
 
     // ∂g/∂t — the trigger's own explicit time dependence, held at x.
-    const double h_t = 1e-6 * std::max(std::fabs(t), 1.0) * step_scale;
+    const double h_t = 1e-6 * std::max(std::fabs(t), 1.0);
     sync_model_at(t + h_t, xwork.data(), ns);
     const double g_t_hi = eval.evaluate(gidx);
     sync_model_at(t - h_t, xwork.data(), ns);
@@ -5801,52 +5796,90 @@ static constexpr double kStateSwitchTauAgreeTol = 1e-4;
 
 bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, int ns,
                                                      const NetworkModel::StateSwitch &sw, int dir) {
-    // dg/dt at x(t) itself, by the local differences the #340 start-on-
-    // threshold test and the saltation jump use. A secant along x ± h·f over a
-    // whole step is not a derivative: a residual that curves along the flow
-    // (3u − u³ near u = 0.9) reads backwards once h is large.
+    // A trajectory that CROSSES the surface arrives at it with a flow that stays
+    // finite as the surface is approached. One that only approaches it, parked
+    // beside it or relaxing onto it, arrives with a flow that vanishes there, so
+    // any crossing the root finder reports for it is the solver's own error.
+    // Restarting on the far side of such a crossing commits the run to a branch
+    // the exact trajectory never takes: GH #176's Voltage, parked 1e-11 below
+    // 50, came out 63% off, as did the same model with a latch that holds the
+    // far branch once entered, with V relaxing to exactly 50, and with the
+    // threshold reached through V1 + V2 or moving as V tracks it. The unstable
+    // symmetric manifold of ml_q_learning is the same case seen from the other
+    // side: its residual grows only in proportion to itself.
     //
-    // Taken twice, at the base step and at four times it, and believed only
-    // when the two agree. Rounding in a difference grows as the step shrinks and
-    // truncation as it grows, so two steps that agree have neither in them. A
-    // term scale cannot stand in for that test: when the flow is a near-cancel
-    // of large terms (a threshold approached through V1 + V2, or one that moves
-    // with time as the state tracks it), it is small against the scale while
-    // being exact, and when the residual reads `time()` the rounding in ∂g/∂t
-    // is set by the size of time's operands, not by ∂g/∂t.
+    // So dg/dt is read on the NEAR side, where the arriving branch is live, at
+    // two distances from the surface, η and 2η, along the coordinate that moves
+    // the residual most (the same Newton step onto the surface the saltation
+    // jump uses). A flow that is the same at both is finite at the surface; one
+    // that scales with the distance vanishes there. The run restarts only on a
+    // finite flow that carries the residual the way the root finder reported.
+    //
+    // Where no near-side point can be built (a residual flat in every
+    // coordinate, or one that does not move to the side the Newton step aims
+    // for), the run restarts, which is what lets CVODE set a zero root aside.
+    auto &eval = model.evaluator();
     const std::vector<double> xv(x, x + ns);
-    std::vector<double> f(static_cast<std::size_t>(ns), 0.0);
-    std::vector<double> gx;
+    std::vector<double> xw(xv);
     sync_model_at(t, x, ns);
-    model.compute_derivs(t, x, f.data());
-    double scale = 0.0;
-    const double flow = residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale);
-    const double flow4 =
-        residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale, 4.0);
-    // A residual that is exactly zero here, whose flow is exactly zero while its
-    // terms are not, is moving ALONG the surface: a symmetric state (Q_Right −
-    // Q_Left in ml_q_learning, whose two sides evolve identically). That is a
-    // restart, which is what lets CVODE set the zero root aside until the
-    // residual leaves zero. Stepping on instead kept it armed under the zero
-    // hold, so every 6e-11 wobble across the surface was another root: about
-    // 140,000 of them and 4.9 off at rtol 1e-11.
-    //
-    // Terms that are all zero are different: nothing the residual reads is
-    // moving, so the state is resting on the surface at a fixed point of its
-    // support. The l-type model's Voltage relaxes to exactly the threshold 50,
-    // and the root finder interpolates it onto 50.0 itself, where dV/dt = 0.
-    // Restarting there held V on 50.0, and on the far branch, for the rest of
-    // the run at every tolerance, where main's own steps never land on it.
-    // That steps on, like any other root the flow does not carry.
-    if (flow == 0.0 && flow4 == 0.0 && scale > 0.0 &&
-        model.evaluator().evaluate(sw.residual_expr_idx) == 0.0) {
+    const double g_star = eval.evaluate(sw.residual_expr_idx);
+    int best = -1;
+    double best_gj = 0.0;
+    double best_weight = 0.0;
+    for (int j : sw.species) {
+        const double xj = xv[static_cast<std::size_t>(j)];
+        const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+        xw[static_cast<std::size_t>(j)] = xj + h;
+        sync_model_at(t, xw.data(), ns);
+        const double g_hi = eval.evaluate(sw.residual_expr_idx);
+        xw[static_cast<std::size_t>(j)] = xj - h;
+        sync_model_at(t, xw.data(), ns);
+        const double g_lo = eval.evaluate(sw.residual_expr_idx);
+        xw[static_cast<std::size_t>(j)] = xj;
+        const double gj = (g_hi - g_lo) / (2.0 * h);
+        const double weight = std::fabs(gj) * std::max(std::fabs(xj), 1.0);
+        if (std::isfinite(gj) && gj != 0.0 && weight > best_weight) {
+            best_weight = weight;
+            best_gj = gj;
+            best = j;
+        }
+    }
+    sync_model_at(t, x, ns);
+    if (best < 0 || !std::isfinite(g_star)) {
         return true;
     }
-    if (!std::isfinite(flow) || !std::isfinite(flow4) || flow == 0.0 ||
-        (flow < 0.0) != (flow4 < 0.0) || std::fabs(flow - flow4) > 0.25 * std::fabs(flow)) {
-        return false;
+    const double xj = xv[static_cast<std::size_t>(best)];
+    const double near = -static_cast<double>(dir); // the sign g has before the crossing
+    std::vector<double> f(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> gx;
+    // dg/dt at the point whose residual the Newton step aims at near·m·η, or NaN
+    // when that point is not on the near side.
+    auto flow_at = [&](double eta, double m) {
+        xw.assign(xv.begin(), xv.end());
+        xw[static_cast<std::size_t>(best)] = xj + (near * m * eta - g_star) / best_gj;
+        sync_model_at(t, xw.data(), ns);
+        const double g = eval.evaluate(sw.residual_expr_idx);
+        if (!std::isfinite(g) || g == 0.0 || (g < 0.0) != (near < 0.0)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        model.compute_derivs(t, xw.data(), f.data());
+        double scale = 0.0;
+        return residual_flow(sw.residual_expr_idx, sw.species, t, ns, xw, f, gx, scale);
+    };
+    double eta = std::fabs(g_star) + 1e-9 * best_weight;
+    for (int attempt = 0; attempt < 4; ++attempt, eta *= 8.0) {
+        const double flow1 = flow_at(eta, 1.0);
+        const double flow2 = flow_at(eta, 2.0);
+        if (std::isnan(flow1) || std::isnan(flow2)) {
+            continue;
+        }
+        sync_model_at(t, x, ns);
+        const bool finite = std::fabs(flow2 - flow1) <= 0.25 * std::fabs(flow1);
+        return finite && flow1 * static_cast<double>(dir) > 0.0 &&
+               flow2 * static_cast<double>(dir) > 0.0;
     }
-    return flow * static_cast<double>(dir) > 0.0;
+    sync_model_at(t, x, ns);
+    return true;
 }
 
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
@@ -7947,20 +7980,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
                 // Issue #897: in a run without sensitivities, a batch of
                 // state-switch roots and nothing else restarts the integrator
-                // only when the flow at the located state clearly carries one of
-                // them across in the reported direction. A residual that the
-                // trajectory approaches and parks beside, within the solver's own
-                // error of zero, can still change sign on the interpolant: the
-                // GH #176 fixture parks Voltage 1e-11 below 50 at rtol 1e-8, and
-                // its root fires with V rising while dV/dt < 0 there. Restarting
-                // ON that surface put the run on the branch the exact trajectory
-                // never takes, for good: 63% off, over 2e6 steps, and no error.
-                // The same happens where the flow is too small to read at all (a
-                // parked V1 + V2, a threshold V tracks 1e-11 below), so "cannot
-                // tell" steps on too: that is the stepping the run had before
-                // these roots existed, and never worse than it. A batch that also
-                // stops at a crossing time restarts regardless, its own restart
-                // folded into this one.
+                // only when one of them is a genuine crossing: the flow on the
+                // near side stays finite as the surface is approached and
+                // carries the state across it (flow_carries_state_switch). A
+                // trajectory parked beside a threshold, or relaxing onto it,
+                // can cross it on the solver's interpolant alone, and restarting
+                // on the far side of that crossing commits the run to a branch
+                // the exact trajectory never takes: the GH #176 fixture came out
+                // 63% off, over 2e6 steps, and with no error. Stepping on is the
+                // stepping the run had before these roots existed. A batch that
+                // also stops at a crossing time restarts regardless, its own
+                // restart folded into this one.
                 bool restart = true;
                 if (!any_event_fired && sens.n_total == 0 && !switched.empty()) {
                     bool other_root = false;

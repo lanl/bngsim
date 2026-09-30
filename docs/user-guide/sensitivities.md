@@ -175,14 +175,12 @@ not, because stepping over the discontinuity was never correct. A crossing whose
 time the state decides, such as `time() >= 4*S`, has no stop that can be placed
 before the run. Instead, each comparison over the state in a rate law's `if()`
 condition is a CVODE root in every run (issue #897). A run without sensitivities
-applies no jump there, and it restarts only where the flow at the located
-crossing clearly carries the state across. A trajectory parked on the threshold
-can cross it on the solver's interpolant alone, so where the flow points back,
-or is too small to read, the run steps on as it did before these roots existed.
-A state moving exactly along the threshold, as two species evolving identically
-do, restarts, which lets the solver set that root aside until the state leaves
-the threshold. One resting on it, with nothing the threshold reads moving, steps
-on.
+applies no jump there, and it restarts only at a genuine crossing: the flow
+arriving at the threshold, read on the near side, must stay finite as the
+threshold is approached and carry the state across it. A trajectory that only
+approaches the threshold, parked beside it or relaxing onto it, can cross it on
+the solver's interpolant alone, and its arriving flow vanishes at the threshold,
+so the run steps on as it did before these roots existed.
 
 Issue #904 lists what this does not yet cover:
 - a comparison used as a number outside `if()`, such as `k*(X > 1)`;
