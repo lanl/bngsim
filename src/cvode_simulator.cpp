@@ -2406,11 +2406,13 @@ struct CvodeSimulator::Impl {
                                         std::vector<std::vector<double>> &s,
                                         SensitivityState &sens);
 
-    // Issue #897: whether the flow at x(t) clearly carries state switch `sw`'s
-    // residual across zero in the direction `dir` (+1 rising, -1 falling) the
-    // root finder reported: dg/dt from residual_flow, taken at two steps that
-    // must agree. False when it opposes that direction, and when the
-    // differences cannot resolve it. Leaves the model synced at (t, x).
+    // Issue #897: whether a plain run should restart at state switch `sw`'s
+    // root: true when the flow at x(t) clearly carries the residual across zero
+    // in the direction `dir` (+1 rising, -1 falling) the root finder reported
+    // (dg/dt from residual_flow, taken at two steps that must agree), and when
+    // the residual lies exactly on the surface with no flow at all. False when
+    // the flow opposes that direction, and when the differences cannot resolve
+    // it. Leaves the model synced at (t, x).
     bool flow_carries_state_switch(double t, const double *x, int ns,
                                    const NetworkModel::StateSwitch &sw, int dir);
 };
@@ -5821,6 +5823,16 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, 
     const double flow = residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale);
     const double flow4 =
         residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale, 4.0);
+    // A residual that is exactly zero here and that neither difference can move
+    // is not parked beside the surface but lying ON it: a symmetric state
+    // (Q_Right − Q_Left in ml_q_learning, whose two sides evolve identically) or
+    // a floating-point plateau. That is a restart, which is what lets CVODE set
+    // the zero root aside until the residual leaves zero. Stepping on instead
+    // kept it armed under the zero hold, so every 6e-11 wobble across the
+    // surface was another root: 140,000 restarts and 4.9 off at rtol 1e-11.
+    if (flow == 0.0 && flow4 == 0.0 && model.evaluator().evaluate(sw.residual_expr_idx) == 0.0) {
+        return true;
+    }
     if (!std::isfinite(flow) || !std::isfinite(flow4) || flow == 0.0 ||
         (flow < 0.0) != (flow4 < 0.0) || std::fabs(flow - flow4) > 0.25 * std::fabs(flow)) {
         return false;

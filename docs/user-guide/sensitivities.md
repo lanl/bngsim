@@ -179,6 +179,8 @@ applies no jump there, and it restarts only where the flow at the located
 crossing clearly carries the state across. A trajectory parked on the threshold
 can cross it on the solver's interpolant alone, so where the flow points back,
 or is too small to read, the run steps on as it did before these roots existed.
+A state lying exactly on the threshold, with no flow at all, does restart, which
+lets the solver set that root aside until the state leaves the threshold.
 
 Issue #904 lists what this does not yet cover:
 - a comparison used as a number outside `if()`, such as `k*(X > 1)`;

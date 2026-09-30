@@ -28,10 +28,11 @@ What this locks:
   5. the scan runs once per model, a clone inherits it, and a batch scans once
      for all of its rows;
   6. a root restarts the run only where the flow clearly carries the residual
-     across: GH #176's parked trajectory, and two twins whose flow near the
-     park cannot be resolved, keep their exact answers; a residual parked at
-     exactly 0.0 is not read as a second root; and a real crossing on a curved
-     residual still restarts;
+     across, or where the residual lies exactly on its surface: GH #176's
+     parked trajectory, and two twins whose flow near the park cannot be
+     resolved, keep their exact answers; a residual parked at exactly 0.0 is
+     not read as a second root; one lying on its surface does not chatter; and
+     a real crossing on a curved residual still restarts;
   7. a residual too deep for ``ast.unparse`` keeps every root, and one that
      starts at exactly zero does not print a SUNDIALS warning.
 """
@@ -547,6 +548,30 @@ def test_a_batch_scans_once_for_all_its_rows(tmp_path, monkeypatch):
     for _ in range(2):
         sim.run_batch(t_span=(0.0, 10.0), n_points=3, params=[{"w": 0.01}] * 5)
     assert len(calls) == 1
+
+
+def test_a_residual_lying_on_its_surface_restarts(data_dir):
+    """ml_q_learning's Q_Right and Q_Left meet exactly with identical
+    derivatives, so roots of its argmax switch land where the residual is
+    exactly zero and neither difference moves it. That state lies on the
+    surface, not beside it, and needs the restart that lets CVODE set the root
+    aside. Stepping on under the zero hold kept it armed, so each ~6e-11 wobble
+    across the surface was another root: about 140,000 of them, 119,478 steps,
+    and a trajectory 4.9 off at rtol 1e-11. The reference is the same model with
+    no state-switch roots at all, which is how main integrates it."""
+    path = str(data_dir / "qlearning_flat_residual.net")
+    model = bngsim.Model.from_net(path)
+    assert "(Q_Right-off)>(Q_Left-off)" in model.state_switch_root_conditions()
+    window = dict(t_span=(0.0, 100.0), n_points=1001, rtol=1e-11, atol=1e-11)
+    result = bngsim.Simulator(model).run(**window)
+    assert result.solver_stats["n_steps"] < 5_000
+    unrooted = bngsim.Model.from_net(path)
+    unrooted._state_switch_root_conditions = ()
+    reference = bngsim.Simulator(unrooted).run(**window)
+    got = np.asarray(result.species)
+    want = np.asarray(reference.species)
+    scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
+    assert float((np.abs(got - want) / scale).max()) < 1e-6
 
 
 # ── 7. Output ───────────────────────────────────────────────────────────────
