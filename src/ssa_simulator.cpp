@@ -1159,10 +1159,13 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     // that a propensity reads is refused there (issue #809);
                     // one that nothing reads was carried into the trajectory,
                     // where the ODE path refuses it.
+                    // "nan"/"inf" spelled out: std::to_string prints a NaN
+                    // with its sign bit set as "-nan" on glibc.
                     if (!std::isfinite(nv[a]))
                         throw std::runtime_error(
                             std::string(use_psa ? "PSA" : "SSA") + ": event '" + ev.id +
-                            "' assigns " + std::to_string(nv[a]) + " to " +
+                            "' assigns " +
+                            (std::isnan(nv[a]) ? "nan" : (nv[a] > 0 ? "inf" : "-inf")) + " to " +
                             model.species()[sp_idx0].name + " at t=" + std::to_string(t_now) +
                             "; an event assignment must be a finite number");
                     store_value(sp_idx0, nv[a]);
