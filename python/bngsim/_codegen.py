@@ -3271,6 +3271,10 @@ def _mm_rate_lines(
         f"{indent}{{",
         *_mm_sfree_c_lines(km_c, e_idx, s_idx, indent + "    "),
         f"{indent}    rate = KpsF > 0.0 ? {sf_c}{kcat_c} * sFree * E / KpsF : 0.0;",
+        # A NaN or infinite input fails both guards and read as a rate of 0;
+        # x - x is 0 for a finite x and NaN otherwise, so this adds exactly 0.0
+        # and hands a non-finite input to the solver's refusal (issue #809).
+        f"{indent}    rate += (({kcat_c}) - ({kcat_c})) + (Km - Km) + (E - E) + (S - S);",
         f"{indent}}}",
     ]
 
