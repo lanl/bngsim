@@ -1155,6 +1155,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     continue;
                 int sp_idx0 = assigns[a].first;
                 if (sp_idx0 >= 0 && sp_idx0 < ns) {
+                    // A NaN or infinite value has no stochastic meaning. One
+                    // that a propensity reads is refused there (issue #809);
+                    // one that nothing reads was carried into the trajectory,
+                    // where the ODE path refuses it.
+                    if (!std::isfinite(nv[a]))
+                        throw std::runtime_error(
+                            std::string(use_psa ? "PSA" : "SSA") + ": event '" + ev.id +
+                            "' assigns " + std::to_string(nv[a]) + " to " +
+                            model.species()[sp_idx0].name + " at t=" + std::to_string(t_now) +
+                            "; an event assignment must be a finite number");
                     store_value(sp_idx0, nv[a]);
                     sp_vec_ref[sp_idx0].concentration = conc[sp_idx0];
                 }

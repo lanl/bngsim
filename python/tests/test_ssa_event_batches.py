@@ -238,3 +238,13 @@ def test_a_nan_priority_is_refused(method, kw):
     m = bngsim.Model.from_antimony_string(ant)
     with pytest.raises(bngsim.SimulationError, match="priority that is NaN"):
         bngsim.Simulator(m, method=method, **kw).run(t_span=(0, 3.0), n_points=4, seed=1)
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS)
+def test_a_non_finite_assignment_is_refused(method, kw):
+    """An event that assigns NaN to a species no propensity reads left NaN in
+    the trajectory; the ODE path refuses it."""
+    ant = WITH_REACTION + "species B = 0; q = 0;\nE: at (time >= 1): B = q/q;\n"
+    m = bngsim.Model.from_antimony_string(ant)
+    with pytest.raises(bngsim.SimulationError, match="assigns nan to B"):
+        bngsim.Simulator(m, method=method, **kw).run(t_span=(0, 3.0), n_points=4, seed=1)
