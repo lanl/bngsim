@@ -100,7 +100,7 @@ def test_a_trigger_reading_rateof_through_a_rule():
     column came out −4 (−2×), read one sync behind like the assignment above.
 
     Requested in this order on purpose: with thr first, every column comes back
-    0 on main and here alike — a separate defect, filed on its own."""
+    0 on main and here alike — a separate defect, issue #910."""
     model = bngsim.Model.from_antimony_string(
         "species A, Y, B; A = A0; Y = 0; B = 0; A0 = 10; a = 0.5; thr = 1\n"
         "J0: A -> ; a*A\nJ1: -> B; Y\nr := rateOf(A)\n"
