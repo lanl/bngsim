@@ -2057,10 +2057,12 @@ class Model:
         propensity a stochastic step samples from, **in the SSA volume
         convention** rather than the ODE one. Two things differ from the ODE
         rate of the same reaction. A repeated reactant takes the falling
-        factorial over its molecule count ``n`` — ``A + A -> B`` fires at
-        ``k·n(n−1)/2``, where the ODE rate is ``k·n²/2``, with ``n = x·V`` for a
-        species stored as a concentration in a compartment of size ``V`` (issue
-        #692) — and a reaction in a compartment of volume ``V`` is
+        factorial over its molecule count ``n`` when bngsim reads the reaction as
+        mass action — ``A + A -> B`` fires at ``k·n(n−1)/2``, where the ODE rate
+        is ``k·n²/2``, with ``n = x·V`` for a species stored as a concentration
+        in a compartment of size ``V`` (issue #692); an SBML law it does not read
+        as mass action is evaluated as written — and a reaction in a compartment
+        of volume ``V`` is
         multiplied by ``V`` (``Reaction::ssa_volume_factor``, or the live value
         of the compartment-size parameter it names), converting the ODE's
         storage-units rate to a per-event rate. For a ``.net`` model with

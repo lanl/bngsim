@@ -46,7 +46,7 @@ BACKENDS = [
 ]
 
 
-def _sbml(*, v, species, law, reactants, products, params):
+def _sbml(*, v, species, law, reactants, products, params, events="", rules="", constant=True):
     """A one-compartment L3v2 model with a single irreversible reaction."""
     sp = "".join(
         f'<species id="{sid}" compartment="C" initialAmount="{n0}" '
@@ -66,15 +66,17 @@ def _sbml(*, v, species, law, reactants, products, params):
 <sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">
 <model id="m">
 <listOfCompartments>
-<compartment id="C" spatialDimensions="3" size="{v}" constant="true"/>
+<compartment id="C" spatialDimensions="3" size="{v}" constant="{str(constant).lower()}"/>
 </listOfCompartments>
 <listOfSpecies>{sp}</listOfSpecies>
 <listOfParameters>{pr}</listOfParameters>
+{rules}
 <listOfReactions><reaction id="J1" reversible="false">
 <listOfReactants>{refs(reactants)}</listOfReactants>
 <listOfProducts>{refs(products)}</listOfProducts>
 <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">{law}</math></kineticLaw>
 </reaction></listOfReactions>
+{events}
 </model>
 </sbml>"""
 
@@ -82,21 +84,22 @@ def _sbml(*, v, species, law, reactants, products, params):
 _TIMES = "<times/>"
 
 
-def _dimer(v, n0, k, *, hosu=False):
+def _dimer(v, n0, k, *, hosu=False, stoich=2):
     """``2A -> B``. hOSU=false: the concentration law ``k·[A]²·C``; hOSU=true:
     the amount law ``k·A²``. Either way the SSA propensity is ``k·n(n−1)/V``
     and ``k·n(n−1)`` respectively, n the count of A."""
+    a = "<ci>A</ci>" * stoich
     law = (
-        f"<apply>{_TIMES}<ci>k</ci><ci>A</ci><ci>A</ci></apply>"
+        f"<apply>{_TIMES}<ci>k</ci>{a}</apply>"
         if hosu
-        else f"<apply>{_TIMES}<ci>k</ci><ci>A</ci><ci>A</ci><ci>C</ci></apply>"
+        else f"<apply>{_TIMES}<ci>k</ci>{a}<ci>C</ci></apply>"
     )
     return bngsim.Model.from_sbml_string(
         _sbml(
             v=v,
             species=[("A", n0, hosu), ("B", 0, hosu)],
             law=law,
-            reactants=[("A", 2)],
+            reactants=[("A", stoich)],
             products=[("B", 1)],
             params=[("k", k)],
         )
@@ -352,3 +355,148 @@ def test_existing_simulator_follows_a_compartment_write():
     want = 1000 * np.exp(-1.0)
     se = n.std(ddof=1) / np.sqrt(reps)
     assert abs(n.mean() - want) <= 4.5 * se, (n.mean(), want, se)
+
+
+# ── Review additions ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("hosu", [False, True], ids=["hosu_false", "hosu_true"])
+def test_three_copies_of_a_reactant(hosu):
+    """``3A -> B`` fires at ``k·n(n−1)(n−2)/V²`` (hOSU=false) or
+    ``k·n(n−1)(n−2)`` (amounts), exactly 0 at one and two molecules."""
+    k, v = 1e-4, 10.0
+    m = _dimer(v, 30, k, hosu=hosu, stoich=3)
+    scale = 1.0 if hosu else 1 / v**2
+    for n in (30, 5, 3, 2, 1, 0):
+        got = m.propensities([n / v, 0.0])[0]
+        want = k * n * (n - 1) * (n - 2) * scale
+        assert got == pytest.approx(want, rel=1e-14, abs=0.0), (n, got, want)
+    assert m.propensities([2 / v, 0.0])[0] == 0.0
+    assert m.propensities([1 / v, 0.0])[0] == 0.0
+
+
+@needs_cc
+def test_a_literal_volume_in_the_kernel_is_a_float_division():
+    """A compartment set by an assignment rule has no volume parameter, so the
+    kernel keeps its size as a literal. ``1 / 10`` would be integer 0 in C; the
+    offset must be emitted as ``1.0 / 10`` and agree with the interpreted path."""
+    mathml = 'xmlns="http://www.w3.org/1998/Math/MathML"'
+    rules = (
+        f'<listOfRules><assignmentRule variable="C"><math {mathml}><ci>Vp</ci></math>'
+        "</assignmentRule></listOfRules>"
+    )
+    m = bngsim.Model.from_sbml_string(
+        _sbml(
+            v=1.0,
+            species=[("A", 20, True), ("B", 0, True)],
+            law=f"<apply>{_TIMES}<ci>k</ci><ci>A</ci><ci>A</ci></apply>",
+            reactants=[("A", 2)],
+            products=[("B", 1)],
+            params=[("k", 0.01), ("Vp", 10.0)],
+            rules=rules,
+            constant=False,
+        )
+    )
+    src, n_unsupported = emit(m._core)
+    assert n_unsupported == 0, src
+    assert "(x[0] - 1.0 / 10)" in src, src
+    kernel = _kernel(m)
+    for n in (20, 2, 1):
+        x = [n / 10.0, 0.0]
+        assert kernel(x)[0] == pytest.approx(m.propensities(x)[0], rel=1e-14, abs=0.0)
+        assert m.propensities(x)[0] == pytest.approx(0.01 * n * (n - 1), rel=1e-14, abs=0.0)
+    assert kernel([1 / 10.0, 0.0])[0] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("v", "n0", "poplevel"),
+    [(10.0, 99, 1.01), (1.0, 98, 2.0), (10.0, 98, 2.0)],
+)
+def test_psa_leaps_keep_counts_whole(v, n0, poplevel):
+    """A PSA leap moved a count by 1/(1/m), which is not m for many m
+    (1/(1/98) = 98.00000000000001), so a species leapt to extinction ended at
+    -1e-14 and tripped the negative-count warning. The leap is m itself."""
+    m = _decay(v, n0, hosu=True)
+    for seed in range(5):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            r = bngsim.Simulator(m, method="psa", poplevel=poplevel).run(
+                t_span=(0, 40), n_points=9, seed=seed
+            )
+        n = _counts(r, v)
+        assert np.array_equal(n, np.round(n)), (seed, n)
+        assert n[-1, 0] == 0.0, (seed, n[-1])
+        m.reset()
+
+
+def test_psa_leap_to_extinction_in_a_net_model(tmp_path):
+    """The `.net` form of the same defect: ``A -> 0`` from 98 at poplevel 2
+    leapt by 49.00000000000001 and ended at -7.1e-15."""
+    net = tmp_path / "decay.net"
+    net.write_text(
+        "begin parameters\n 1 k 1\nend parameters\nbegin species\n 1 A() 98\nend species\n"
+        "begin reactions\n 1 1 0 k\nend reactions\nbegin groups\n 1 Atot 1\nend groups\n"
+    )
+    m = bngsim.Model.from_net(str(net))
+    for seed in range(5):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            r = bngsim.Simulator(m, method="psa", poplevel=2).run(
+                t_span=(0, 60), n_points=7, seed=seed
+            )
+        a = np.asarray(r.species)[:, 0]
+        assert np.array_equal(a, np.round(a)) and a[-1] == 0.0, (seed, a)
+        m.reset()
+
+
+def test_a_fractional_count_an_event_assigns_is_carried():
+    """A count kept on whole numbers must not round one an event set to a
+    fraction: 2.5 molecules decay through 1.5 and 0.5."""
+    mathml = 'xmlns="http://www.w3.org/1998/Math/MathML"'
+    events = (
+        '<listOfEvents><event id="E" useValuesFromTriggerTime="true"><trigger '
+        f'initialValue="false" persistent="true"><math {mathml}><apply><geq/><csymbol '
+        'encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
+        "<cn>1</cn></apply></math></trigger><listOfEventAssignments><eventAssignment "
+        f'variable="A"><math {mathml}><cn>0.25</cn></math></eventAssignment>'
+        "</listOfEventAssignments></event></listOfEvents>"
+    )
+    m = bngsim.Model.from_sbml_string(
+        _sbml(
+            v=10.0,
+            species=[("A", 0, False), ("B", 0, False)],
+            law=f"<apply>{_TIMES}<ci>k</ci><ci>A</ci><ci>C</ci></apply>",
+            reactants=[("A", 1)],
+            products=[("B", 1)],
+            params=[("k", 1.0)],
+            events=events,
+        )
+    )
+    seen = set()
+    for seed in range(20):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", bngsim.SsaBoundaryWarning)
+            r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 3), n_points=31, seed=seed)
+        a = _counts(r, 10.0)[:, 0]
+        after = a[np.asarray(r.time) >= 1.0]
+        seen.update(after.tolist())
+        m.reset()
+    assert 2.5 in seen and 1.5 in seen, seen
+    assert all(x - np.floor(x) == 0.5 for x in seen), seen
+
+
+@needs_cc
+def test_existing_simulator_dimerisation_follows_a_compartment_write():
+    """The second-order case of the write test: built at V = 10, run at V = 4,
+    against the master equation at V = 4."""
+    k, n0, t_end, reps = 0.01, 20, 20.0, 2000
+    m = _dimer(10.0, n0, k)
+    sim = bngsim.Simulator(m, method="ssa")
+    m.set_param("C", 4.0)
+    m.reset()
+    r = sim.run_replicates(reps, t_span=(0, t_end), n_points=2, seed=13, squeeze=True)
+    assert r.ssa_diagnostics["propensity_backend"] == "cc"
+    n_a = np.asarray(r.species)[:, -1, 0] * 4.0
+    want = _cme_mean(lambda n: k / 4.0 * n * (n - 1), n0, t_end)
+    se = n_a.std(ddof=1) / np.sqrt(reps)
+    assert abs(n_a.mean() - want) <= 4.5 * se, (n_a.mean(), want, se)

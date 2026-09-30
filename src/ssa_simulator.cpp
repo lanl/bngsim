@@ -353,6 +353,19 @@ struct SsaSimulator::Impl {
     }
 };
 
+// The molecule count a stored value stands for (issue #692): storage is n/V, so
+// n = c·V, which lands within rounding of a whole number when n is one. Such a
+// count is put back on the whole number; a fractional one (an event can assign
+// it) is returned as it is. `+ 0.0` turns a -0.0 into 0.
+static double storage_to_count(double storage_value, double volume_factor) {
+    const double n = storage_value * volume_factor;
+    const double whole = std::round(n);
+    if (std::fabs(n - whole) <=
+        8.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::fabs(whole)))
+        return whole + 0.0;
+    return n;
+}
+
 static double round_initial_population_to_storage(double storage_value, double volume_factor) {
     if (!std::isfinite(storage_value) || !std::isfinite(volume_factor) || volume_factor <= 0.0) {
         return storage_value;
@@ -537,11 +550,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<double> t_out = times.output_times();
     const int n_out = static_cast<int>(t_out.size());
 
-    // Working arrays: species populations (0-based)
+    // Working arrays: species populations (0-based). conc[] holds each species
+    // in its storage units, n/V, which is what rate laws, observables and the
+    // recorded trajectory read. counts[] holds the molecule count n itself, which
+    // is what a firing changes (issue #692, see fire_species).
     std::vector<double> conc(ns);
+    std::vector<double> counts(ns);
     for (int i = 0; i < ns; ++i) {
         const auto &sp = model.species()[i];
         conc[i] = round_initial_population_to_storage(sp.concentration, sp.volume_factor);
+        counts[i] = storage_to_count(conc[i], sp.volume_factor);
     }
 
     // Propensity arrays
@@ -603,37 +621,34 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Apply a firing's change of `dn` molecules to species si (issue #692).
     //
     // A species is stored as n/V (V = its volume_factor), so a firing moves the
-    // stored value by dn/V. Adding that to the stored value directly lets every
-    // firing round, and the rounding walks: after 1e5 firings at V = 10 an
+    // stored value by dn/V. It used to add dn/V to the stored value, and every
+    // such add rounded, and the rounding walked: after 1e5 firings at V = 10 an
     // extinct species sat at -1.9e-7 molecules, which the negative-count
     // diagnostic reported as a crossing, and a residue of the other sign left it
-    // a propensity it could fire on. So the update is taken on the count, n + dn,
-    // and a count within rounding of a whole number is put back on it before it
-    // is stored as n/V. A stored count is then always the same double that
-    // round_initial_population_to_storage and the propensity's falling factorial
-    // (c − j/V in model.cpp) form for that whole number, which is what makes the
-    // j-th factor exactly 0 at n = j. A count that is legitimately fractional
-    // (an event assigned it one) is far from a whole number and is carried as it
-    // is. At V = 1 (every `.net` model) this is the plain add it always was.
-    constexpr double COUNT_SNAP_EPS = 8.0 * std::numeric_limits<double>::epsilon();
+    // a propensity it could fire on. The firing now moves the count, which is a
+    // whole number held exactly, and the stored value is derived from it with
+    // the one division the old update also made. So a count n is always stored
+    // as the same double n/V, the one round_initial_population_to_storage and
+    // the falling factorial's j/V (model.cpp) form, which makes the j-th factor
+    // exactly 0 at n = j. At V = 1 (every `.net` model) the stored value is the
+    // count, and the arithmetic is the old add, bit for bit.
     auto fire_species = [&](int si, double dn) {
         const double before = conc[si];
-        const double vf = species_list[si].volume_factor;
-        if (vf == 1.0) {
-            conc[si] += dn;
-        } else {
-            double n = before * vf + dn;
-            const double whole = std::round(n);
-            // `+ 0.0` turns the -0.0 that a residue of -1e-17 rounds to into 0.
-            if (std::fabs(n - whole) <= COUNT_SNAP_EPS * std::max(1.0, std::fabs(whole)))
-                n = whole + 0.0;
-            conc[si] = n / vf;
-        }
+        counts[si] += dn;
+        conc[si] = counts[si] / species_list[si].volume_factor;
         if (before >= 0.0 && conc[si] < 0.0) {
             ++neg_cross_count;
             if (first_neg_species < 0)
                 first_neg_species = si;
         }
+    };
+    // An event assignment writes a stored value through here, so the count
+    // stays the count of the stored value. A value within rounding of a whole
+    // count is stored as exactly n/V; a fractional one is kept as written.
+    auto store_value = [&](int si, double value) {
+        const double n = storage_to_count(value, species_list[si].volume_factor);
+        counts[si] = n;
+        conc[si] = n == std::round(n) ? n / species_list[si].volume_factor : value;
     };
 
     // ─── Build (or reuse) dependency graph ───────────────────────────────────
@@ -982,8 +997,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     auto integrate_rr = [&](double dt) {
         if (dt <= 0.0)
             return;
-        for (std::size_t i = 0; i < rate_rule_odes.size(); ++i)
-            conc[rate_rule_odes[i].target0] += rr_deriv[i] * dt;
+        for (std::size_t i = 0; i < rate_rule_odes.size(); ++i) {
+            const int x = rate_rule_odes[i].target0;
+            conc[x] += rr_deriv[i] * dt;
+            counts[x] = conc[x] * rate_rule_odes[i].vf; // a continuous value, not snapped
+        }
     };
 
     // process_firing_batch — adapted from cvode_simulator.cpp:1067-1186.
@@ -1058,8 +1076,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     continue;
                 int sp_idx0 = assigns[a].first;
                 if (sp_idx0 >= 0 && sp_idx0 < ns) {
-                    conc[sp_idx0] = nv[a];
-                    sp_vec_ref[sp_idx0].concentration = nv[a];
+                    store_value(sp_idx0, nv[a]);
+                    sp_vec_ref[sp_idx0].concentration = conc[sp_idx0];
                 }
             }
             any_fired = true;
@@ -1835,7 +1853,10 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         const auto &rxn = reactions[selected];
         double stoich_scale = 1.0;
         if (use_psa) {
-            stoich_scale = 1.0 / scaling_factors[selected];
+            // The leap size m_r itself: 1/(1/m) is not m for 11,867 of the
+            // integers below 1e5 (1/(1/98) = 98.00000000000001), which left a
+            // count off a whole number after a leap.
+            stoich_scale = psa_m_at[selected];
         }
 
         // GH #110 — sign-split firing, no non-negativity floor.
