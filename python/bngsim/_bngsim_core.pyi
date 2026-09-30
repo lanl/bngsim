@@ -287,6 +287,11 @@ class NetworkModel:
         Conservation laws detected from stoichiometry matrix
         """
     @property
+    def event_assigned_species(self) -> list[int]:
+        """
+        Sorted 0-based indices of every species some event assigns (issue #733): such a species is reset by the event, so its value is not time plus a constant even where its right-hand side is 1.
+        """
+    @property
     def function_eval_expressions(self) -> list[str]:
         """
         Per-function evaluation expression, parallel to ``function_names``. Empty where the value is computed from the declared expression, which is every function the issue #333 zero-base logarithm guard did not rewrite.

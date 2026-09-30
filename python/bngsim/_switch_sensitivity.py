@@ -434,7 +434,86 @@ def _unit_rate_clock_indices(core) -> frozenset[int]:
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("switch-time: second RHS probe failed: %s", exc)
         return frozenset()
-    return frozenset(i for i in clock_idx if deriv2[i] == _CLOCK_SLOPE)
+    clock_idx = {i for i in clock_idx if deriv2[i] == _CLOCK_SLOPE}
+    if not clock_idx:
+        return frozenset()
+    return _structurally_unit_rate(core, clock_idx)
+
+
+# Identifiers a constant rate law may not read: the clock itself, and the
+# accessors that read the derivative of the state.
+_TIME_TOKENS = frozenset({"time", "t_", "rate_of"})
+
+
+def _structurally_unit_rate(core, candidates: set[int]) -> frozenset[int]:
+    """The candidates whose dc/dt is 1 for the whole run, by construction.
+
+    Two RHS probes agreeing on 1 do not make a clock (issue #733). Three kinds
+    of species pass them and are not one: a rate gated in time that happens to
+    be 1 at t = 0 and t = 1 (``if(time() < Toff, 1, 0)``); a species an event
+    assigns (an SBML timer reset ``x := 0``), whose value is not time plus a
+    constant after the reset; and a species a shift of every state by 1 leaves
+    at slope 1 (``A <-> B`` with kf = kr). Treated as clocks, their thresholds
+    were jumped once at a crossing time computed as though c = c0 + t, with the
+    wrong ∂t*/∂θ, and their real crossings were never rooted.
+
+    A candidate is kept only when no event assigns it, no reaction consumes it,
+    and every reaction producing it is zeroth-order with a rate law that,
+    inlined through every function and assignment rule, reads no species,
+    observable, time or rateOf: a constant, which the probes already say is 1.
+    """
+    from bngsim._jacobian import _IDENT_RE
+
+    assigned = set(getattr(core, "event_assigned_species", ()))
+    keep = {i for i in candidates if i not in assigned}
+    if not keep:
+        return frozenset()
+    try:
+        data = core.codegen_data()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("switch-time: clock structure unavailable: %s", exc)
+        return frozenset()
+    func_map = {f["name"]: f["expression"] for f in data.get("functions", ())}
+    param_expr = {p["name"]: p.get("expression", "") for p in data.get("parameters", ())}
+    params = list(data.get("parameters", ()))
+    state_names = set(core.species_names) | {
+        ob["name"] for ob in data.get("observables", ()) if isinstance(ob, dict)
+    }
+
+    def reads_state_or_time(text: str, depth: int = 0) -> bool:
+        if depth > 64:
+            return True  # a cycle or a chain too deep to trust: not a clock
+        for tok in _IDENT_RE.findall(text):
+            if tok in state_names or tok in _TIME_TOKENS or tok.startswith("rate_of__"):
+                return True
+            body = func_map.get(tok)
+            if body is None and param_expr.get(tok):
+                body = param_expr[tok]
+            if body is not None and reads_state_or_time(body, depth + 1):
+                return True
+        return False
+
+    for rxn in data.get("reactions", ()):
+        reactants = list(rxn.get("reactants", ()))
+        products = list(rxn.get("products", ()))
+        # Net stoichiometry, so a clock that only catalyses (Tc -> Tc + X, a
+        # reactant and a product at once) keeps its slope and stays a clock.
+        net = {i: products.count(i) - reactants.count(i) for i in keep}
+        keep -= {i for i, n in net.items() if n < 0}  # consumed: slope follows state
+        produced = {i for i, n in net.items() if n > 0 and i in keep}
+        if not produced:
+            continue
+        if reactants:
+            keep -= produced  # a rate that reads the state
+            continue
+        if rxn.get("type") == "functional":
+            text = func_map.get(rxn.get("function_name") or "", "")
+        else:
+            idx = [i for i in rxn.get("rate_param_indices", ()) if 0 <= i < len(params)]
+            text = " ".join(params[i]["name"] for i in idx)
+        if not text or reads_state_or_time(text):
+            keep -= produced
+    return frozenset(keep)
 
 
 def _unit_rate_clock_species(core, ctx=None) -> dict[str, int]:
