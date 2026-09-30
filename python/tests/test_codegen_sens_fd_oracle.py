@@ -894,20 +894,17 @@ TERMS: list = [
         param="thr",
         note="A0 = 1.001 moves B's rate off 1, so the #150 state path takes it",
     ),
-    pytest.param(
-        Term(
-            "not-a-clock-read-as-one",
-            "net",
-            _fill(_FAKE_CLOCK_NET, "thr", A0="1"),
-            "thr",
-            "0.4",
-            0.4,
-            tuple(np.linspace(0.0, 5.0, 11)),
-            ("Y()",),
-            param="thr",
-            note="B of A<->B at kf = kr is read as a clock: the jump lands at 0.4, 5x too small",
-        ),
-        marks=_xfail(733, "a two-probe RHS test mistakes a shift-invariant rate for a clock"),
+    Term(
+        "not-a-clock-read-as-one",
+        "net",
+        _fill(_FAKE_CLOCK_NET, "thr", A0="1"),
+        "thr",
+        "0.4",
+        0.4,
+        tuple(np.linspace(0.0, 5.0, 11)),
+        ("Y()",),
+        param="thr",
+        note="B of A<->B at kf = kr has slope 1 at both probes and is still not a clock (#733)",
     ),
     # ── The comoving onset frame (#545) ──────────────────────────────────────
     Term(

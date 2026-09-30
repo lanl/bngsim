@@ -1887,6 +1887,22 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "refuses (the #52 / #150 machinery), so overwriting the declared law would trade "
              "a NaN at one point for a declined analytic sensitivity RHS over the whole run.")
         .def_property_readonly("n_events", &bngsim::NetworkModel::n_events)
+        .def_property_readonly(
+            "event_assigned_species",
+            [](const bngsim::NetworkModel &self) {
+                std::vector<int> out;
+                for (const auto &ev : self.events()) {
+                    for (const auto &asg : ev.assignments) {
+                        out.push_back(asg.first);
+                    }
+                }
+                std::sort(out.begin(), out.end());
+                out.erase(std::unique(out.begin(), out.end()), out.end());
+                return out;
+            },
+            "Sorted 0-based indices of every species some event assigns (issue #733): "
+            "such a species is reset by the event, so its value is not time plus a "
+            "constant even where its right-hand side is 1.")
         .def("event_sensitivity_unsupported_reason",
              &bngsim::NetworkModel::event_sensitivity_unsupported_reason,
              pybind11::arg("sens_param_names"),
