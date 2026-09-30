@@ -2292,8 +2292,12 @@ struct CvodeSimulator::Impl {
 
     // Read s⁻ out of CVODES at t_evt. MUST run before the caller's
     // CVodeReInit — see the ordering note on apply_event_sensitivity_jump.
+    // `at_run_start`: before CVODES has taken a step there is nothing to
+    // interpolate, and s⁻ is the seed CVodeSensInit1 was given, still in
+    // sens.yS (issue #717).
     std::vector<std::vector<double>> capture_event_sens(void *cvode_mem, int ns, double t_evt,
-                                                        SensitivityState &sens);
+                                                        SensitivityState &sens,
+                                                        bool at_run_start = false);
 
     // Put an unjumped s back into CVODES after a bare CVodeReInit (issue #146).
     // The counterpart of capture_event_sens for a root that changes nothing:
@@ -4609,7 +4613,8 @@ void CvodeSimulator::Impl::restore_nominal_params(const SensitivityState &sens) 
 
 std::vector<std::vector<double>> CvodeSimulator::Impl::capture_event_sens(void *cvode_mem, int ns,
                                                                           double t_evt,
-                                                                          SensitivityState &sens) {
+                                                                          SensitivityState &sens,
+                                                                          bool at_run_start) {
     const int n_sens = sens.n_total;
     NVectorArrayGuard &yS_guard = sens.yS;
 
@@ -4617,11 +4622,17 @@ std::vector<std::vector<double>> CvodeSimulator::Impl::capture_event_sens(void *
     if (n_sens == 0) {
         return s_minus;
     }
-    sunrealtype t_tmp = static_cast<sunrealtype>(t_evt);
-    int gf = CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr);
-    if (gf != CV_SUCCESS) {
-        throw std::runtime_error("CVodeGetSens for event sensitivity capture failed: " +
-                                 std::to_string(gf));
+    // CVodeGetSens interpolates at the last return time, which CVodeInit never
+    // sets: before the first step it evaluates (t − tn)/h = 0/0 at t_start = 0
+    // (every s⁻ NaN) and rejects any other t_start with CV_BAD_T. An SBML
+    // initialValue=false event firing at t_start hit exactly that (issue #717).
+    if (!at_run_start) {
+        sunrealtype t_tmp = static_cast<sunrealtype>(t_evt);
+        int gf = CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr);
+        if (gf != CV_SUCCESS) {
+            throw std::runtime_error("CVodeGetSens for event sensitivity capture failed: " +
+                                     std::to_string(gf));
+        }
     }
     s_minus.resize(static_cast<size_t>(n_sens));
     for (int c = 0; c < n_sens; ++c) {
@@ -7377,8 +7388,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             std::vector<std::vector<double>> t0_s_minus;
             if (wants_sensitivity && !t0_firing.empty()) {
                 t0_x_minus.assign(y_data, y_data + ns);
-                t0_s_minus = impl_->capture_event_sens(cvode_mem, ns,
-                                                       static_cast<double>(times.t_start), sens);
+                t0_s_minus = impl_->capture_event_sens(
+                    cvode_mem, ns, static_cast<double>(times.t_start), sens, /*at_run_start=*/true);
             }
 
             bool t0_immediate_fired = process_firing_batch(times.t_start, t0_firing);
