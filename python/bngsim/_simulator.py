@@ -1796,7 +1796,11 @@ class Simulator:
         parameter, which leaves every other model's integration untouched.
         """
         names = list(param_names) if param_names is not None else list(self._sensitivity_params)
-        if not names:
+        # IC columns too: a counter clock's crossing moves with its own IC axis
+        # (issue #725), even on a run that requests no parameter at all.
+        species = list(core.species_names)
+        ic_species = [species.index(n) for n in self._sensitivity_ic if n in species]
+        if not names and not ic_species:
             return
         from bngsim._switch_sensitivity import compute_switch_time_sens
 
@@ -1807,6 +1811,7 @@ class Simulator:
                 float(t_start),
                 float(t_end),
                 has_analytic_sens_rhs=self._codegen_provides_sens_rhs(),
+                ic_species=ic_species,
             )
         except ValueError:
             # An unsupported switch parameter (one that also acts in-branch) is a
@@ -3398,12 +3403,14 @@ class Simulator:
                         # double-count to guard against here either: an `ic`
                         # axis across a carry boundary is refused outright.
                         ic_seed = None
-                    self._apply_switch_time_sens(opts, self._model._core, t_start, t_end)
                     self._apply_event_time_sens(opts, self._model._core, t_start, t_end)
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
                     opts.set_sensitivity_method(self._sensitivity_method)
+                    # Outside the parameter guard: a counter clock's crossing
+                    # moves with the clock's own IC axis (issue #725).
+                    self._apply_switch_time_sens(opts, self._model._core, t_start, t_end)
                     # Outside the parameter guard on purpose: a *state* crossing
                     # moves every column, initial conditions included (issue
                     # #150 / #144), so an IC-only request needs the jump too.

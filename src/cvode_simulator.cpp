@@ -5535,9 +5535,9 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
 //     `<`, …) because "before" is always the smaller clock value, and it
 //     needs no knowledge of the condition's structure.
 //
-// IC-sensitivity columns are not jumped: a clock whose own initial condition
-// is a fitted parameter would move t*, which the Python detector refuses
-// rather than silently zeroing.
+// Every column is jumped, IC columns included: a counter clock's crossing moves
+// with the clock's own sensitivity as well as the threshold's (issue #725).
+// That comment used to promise a Python-side refusal that did not exist.
 void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns,
                                                          double t_evt, const SwitchTimeSens &sw,
                                                          SwitchJumpScratch &scratch,
@@ -5713,6 +5713,25 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // f⁻ — or, at a second crossing on the instant it entered, against the f it
     // entered with — and after the jump every column this crossing moves at an
     // emitted c enters again, against f⁺.
+    // ∂t*/∂θ for every column (issue #725). A counter clock reads
+    // c(t) = c(t_start) + (t − t_start), so its crossing of θ moves as
+    // ∂θ/∂p − s_clock(t*) at dc/dt = 1. The detector supplies only ∂θ/∂p, for
+    // parameter columns; the clock's own sensitivity is s⁻ at the clock's row,
+    // just read into yS. Without it the columns for the clock's seed, its rate
+    // constant (BNG2.pl's `_rateLaw1`, which compute_all_sensitivities asks for
+    // by default) and its IC axis all came back 0. An IC column has no
+    // threshold part, and only the clock's own IC axis moves the clock.
+    const int n_sens_all = sens.n_total;
+    std::vector<double> dtstar_all(static_cast<size_t>(n_sens_all), 0.0);
+    for (int c = 0; c < n_sens_all; ++c) {
+        double d = c < n_sens_p ? sw.dtstar_dp[static_cast<size_t>(c)] : 0.0;
+        if (!time_clock) {
+            d -= N_VGetArrayPointer(yS_guard[c])[sw.clock_species_idx0];
+        }
+        dtstar_all[static_cast<size_t>(c)] = d;
+    }
+    const std::vector<double> dtstar_p(dtstar_all.begin(), dtstar_all.begin() + n_sens_p);
+
     std::vector<double *> sens_cols(static_cast<size_t>(n_sens_p));
     for (int c = 0; c < n_sens_p; ++c) {
         sens_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(yS_guard[c]);
@@ -5721,13 +5740,13 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         comoving_leave(sens, ns, sens_cols.data(),
                        t_evt == sens.comoving.t_entry ? sens.comoving.f_entry_after : sw_f_minus);
     }
-    comoving_enter(sens, ns, sens_cols.data(), t_evt, sw_f_jump, sw_f_plus, f_instant, sw.dtstar_dp,
+    comoving_enter(sens, ns, sens_cols.data(), t_evt, sw_f_jump, sw_f_plus, f_instant, dtstar_p,
                    1e-9);
-    for (int c = 0; c < n_sens_p; ++c) {
-        const double dtstar = sw.dtstar_dp[static_cast<size_t>(c)];
-        if (dtstar == 0.0 ||
-            (sens.comoving.enabled && sens.comoving.plist[static_cast<size_t>(c)] >= 0)) {
-            continue; // this parameter does not move this crossing, or its V does not jump
+    for (int c = 0; c < n_sens_all; ++c) {
+        const double dtstar = dtstar_all[static_cast<size_t>(c)];
+        if (dtstar == 0.0 || (c < n_sens_p && sens.comoving.enabled &&
+                              sens.comoving.plist[static_cast<size_t>(c)] >= 0)) {
+            continue; // this column does not move this crossing, or its V does not jump
         }
         double *col = N_VGetArrayPointer(yS_guard[c]);
         for (int i = 0; i < ns; ++i) {
@@ -7308,7 +7327,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // scratch the jump differentiates into. The jump itself — and why it is the
     // ENTIRE switch-time gradient — lives with Impl::apply_switch_sensitivity_jump.
     std::vector<const SwitchTimeSens *> switch_list;
-    if (wants_sensitivity && n_sens_p > 0 && !opts.sensitivity.switch_times.empty()) {
+    // Any sensitivity column, not only parameter ones: a counter clock's crossing
+    // moves with the clock's own IC axis (issue #725).
+    if (wants_sensitivity && !opts.sensitivity.switch_times.empty()) {
         for (const auto &sw : opts.sensitivity.switch_times) {
             // A crossing outside the reported window contributes nothing, and a
             // record whose width doesn't match this run's parameter columns is
