@@ -600,6 +600,42 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     const auto &events = model.events();
     const int n_events = static_cast<int>(events.size());
 
+    // Apply a firing's change of `dn` molecules to species si (issue #692).
+    //
+    // A species is stored as n/V (V = its volume_factor), so a firing moves the
+    // stored value by dn/V. Adding that to the stored value directly lets every
+    // firing round, and the rounding walks: after 1e5 firings at V = 10 an
+    // extinct species sat at -1.9e-7 molecules, which the negative-count
+    // diagnostic reported as a crossing, and a residue of the other sign left it
+    // a propensity it could fire on. So the update is taken on the count, n + dn,
+    // and a count within rounding of a whole number is put back on it before it
+    // is stored as n/V. A stored count is then always the same double that
+    // round_initial_population_to_storage and the propensity's falling factorial
+    // (c − j/V in model.cpp) form for that whole number, which is what makes the
+    // j-th factor exactly 0 at n = j. A count that is legitimately fractional
+    // (an event assigned it one) is far from a whole number and is carried as it
+    // is. At V = 1 (every `.net` model) this is the plain add it always was.
+    constexpr double COUNT_SNAP_EPS = 8.0 * std::numeric_limits<double>::epsilon();
+    auto fire_species = [&](int si, double dn) {
+        const double before = conc[si];
+        const double vf = species_list[si].volume_factor;
+        if (vf == 1.0) {
+            conc[si] += dn;
+        } else {
+            double n = before * vf + dn;
+            const double whole = std::round(n);
+            // `+ 0.0` turns the -0.0 that a residue of -1e-17 rounds to into 0.
+            if (std::fabs(n - whole) <= COUNT_SNAP_EPS * std::max(1.0, std::fabs(whole)))
+                n = whole + 0.0;
+            conc[si] = n / vf;
+        }
+        if (before >= 0.0 && conc[si] < 0.0) {
+            ++neg_cross_count;
+            if (first_neg_species < 0)
+                first_neg_species = si;
+        }
+    };
+
     // ─── Build (or reuse) dependency graph ───────────────────────────────────
     // Cached on the Impl across run() calls — topology-only, seed-independent.
     DependencyGraph &dep_graph = impl_->dependency_graph(use_psa);
@@ -1520,24 +1556,15 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     first_reverse_rxn = selected;
             }
             const double rstep = dir;
-            auto apply_delta = [&](int si, double delta) {
-                double before = conc[si];
-                conc[si] += delta;
-                if (before >= 0.0 && conc[si] < 0.0) {
-                    ++neg_cross_count;
-                    if (first_neg_species < 0)
-                        first_neg_species = si;
-                }
-            };
             for (int ri : rxn.reactant_indices) {
                 int si = ri - 1; // 1-based → 0-based
                 if (si >= 0 && si < ns && !species_list[si].fixed)
-                    apply_delta(si, -rstep / species_list[si].volume_factor);
+                    fire_species(si, -rstep);
             }
             for (int pi : rxn.product_indices) {
                 int si = pi - 1;
                 if (si >= 0 && si < ns && !species_list[si].fixed)
-                    apply_delta(si, rstep / species_list[si].volume_factor);
+                    fire_species(si, rstep);
             }
 
             // Advance time only (see header note: no per-step set_current_time).
@@ -1803,7 +1830,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         //    PSA: scale stoichiometric coefficients by 1/λ_r
         //    Per-species volume_factor: SBML loader stores values as
         //    `amount/V_c`, so each ±1 amount fire is `±1/V_c` in storage
-        //    units. Default volume_factor=1.0 → identical to ±1 fires.
+        //    units, taken on the count by fire_species (issue #692). Default
+        //    volume_factor=1.0 → identical to ±1 fires.
         const auto &rxn = reactions[selected];
         double stoich_scale = 1.0;
         if (use_psa) {
@@ -1829,26 +1857,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         }
         const double rstep = dir * stoich_scale;
 
-        auto apply_delta = [&](int si, double delta) {
-            double before = conc[si];
-            conc[si] += delta;
-            if (before >= 0.0 && conc[si] < 0.0) {
-                ++neg_cross_count;
-                if (first_neg_species < 0)
-                    first_neg_species = si;
-            }
-        };
-
         for (int ri : rxn.reactant_indices) {
             int si = ri - 1; // 1-based → 0-based
             if (si >= 0 && si < ns && !species_list[si].fixed) {
-                apply_delta(si, -rstep / species_list[si].volume_factor);
+                fire_species(si, -rstep);
             }
         }
         for (int pi : rxn.product_indices) {
             int si = pi - 1;
             if (si >= 0 && si < ns && !species_list[si].fixed) {
-                apply_delta(si, rstep / species_list[si].volume_factor);
+                fire_species(si, rstep);
             }
         }
 

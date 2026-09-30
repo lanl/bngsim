@@ -3138,8 +3138,8 @@ void NetworkModel::reset_rhs_counters() {
 // rather than the stored concentration. `amount_valued` defaults false and
 // `volume_factor` defaults 1.0, so the read is the stored value unchanged for
 // `.net` models, V=1 SBML, and every hOSU=false species (byte-identical). The
-// SSA falling factorial is taken over the amount, which is the physically
-// correct discrete population for an hOSU=true species.
+// SSA falling factorial is taken over the molecule count of every species,
+// whichever units it is stored in (see compute_species_factor_ssa).
 static double compute_species_factor_ode(const std::vector<int> &reactant_indices,
                                          const double *conc, int n_species,
                                          const std::vector<Species> &species_list) {
@@ -3158,17 +3158,31 @@ static double compute_species_factor_ode(const std::vector<int> &reactant_indice
 }
 
 // SSA version: uses pre-computed multiplicities (zero heap allocation)
+//
+// The falling factorial is over the molecule count n = c·V, where c is the
+// stored value and V the species' volume_factor (issue #692). It is formed in
+// storage units, ∏_{j<m} (c − j/V) = ∏(n − j)/V^m, so an hOSU=false species
+// keeps the concentration units its rate law is written in, and an amount-
+// valued one multiplies each term back by V. It used to subtract j from c
+// itself, which is the count only at V = 1: at V = 10 the propensity of
+// 2A -> B was k·n(n − V)/V, zero at n = V and negative below it.
+//
+// j/V is the same division the SSA uses to store a count (ssa_simulator.cpp
+// stores n as n/V), so at n = j the term is exactly 0 rather than an ulp off
+// it. At V = 1 every term is c − j, unchanged for `.net` models.
 static inline double
 compute_species_factor_ssa(const std::vector<std::pair<int, int>> &multiplicities,
                            const double *conc, const std::vector<Species> &species_list) {
     double factor = 1.0;
     for (const auto &[si, count] : multiplicities) {
-        double n = conc[si];
-        if (species_list[si].amount_valued) {
-            n *= species_list[si].volume_factor;
-        }
+        const double c = conc[si];
+        const double vf = species_list[si].volume_factor;
+        const bool amount = species_list[si].amount_valued;
         for (int k = 0; k < count; ++k) {
-            factor *= (n - k);
+            double term = k == 0 ? c : c - static_cast<double>(k) / vf;
+            if (amount)
+                term *= vf;
+            factor *= term;
         }
     }
     return factor;
@@ -3547,19 +3561,38 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
                     " * (" + lit(C) + " * p[" + std::to_string(rxn.ssa_volume_param_idx0) + "])";
             else if (C != 1.0)
                 body += " * " + lit(C);
+            // The species factor mirrors compute_species_factor_ssa: a falling
+            // factorial over the count, ∏(x − j/V), each term times V for an
+            // amount-valued species (issue #692). V is the species' compartment
+            // size, and like the propensity volume above it is a `p[]` read
+            // wherever the loader named its parameter: a literal would keep the
+            // load-time size after a write while the interpreted path followed
+            // it (issue #723). A species with no volume parameter cannot be
+            // resized, so its literal is exact, and at V = 1 it is omitted,
+            // which leaves the `.net` source byte-identical.
             for (const auto &mult : rxn.reactant_multiplicities) {
                 const int si = mult.first;
                 const int count = mult.second;
-                const double vf = species[si].amount_valued ? species[si].volume_factor : 1.0;
-                const std::string n = vf != 1.0
-                                          ? ("(" + lit(vf) + " * x[" + std::to_string(si) + "])")
-                                          : ("x[" + std::to_string(si) + "]");
+                const Species &sp = species[si];
+                const bool amount = sp.amount_valued;
+                std::string vol;
+                if (sp.volume_param_idx0 >= 0 &&
+                    sp.volume_param_idx0 < static_cast<int>(params.size()))
+                    vol = "p[" + std::to_string(sp.volume_param_idx0) + "]";
+                else if (sp.volume_factor != 1.0)
+                    vol = lit(sp.volume_factor);
+                const std::string x = "x[" + std::to_string(si) + "]";
                 for (int m = 0; m < count; ++m) {
-                    if (m == 0) {
-                        body += " * " + n;
-                    } else {
-                        body += " * (" + n + " - " + lit(static_cast<double>(m)) + ")";
-                    }
+                    std::string term;
+                    if (m == 0)
+                        term = x;
+                    else if (vol.empty())
+                        term = "(" + x + " - " + lit(static_cast<double>(m)) + ")";
+                    else // "m.0": `lit` prints 2.0 as "2", and "2 / 10" is integer 0 in C
+                        term = "(" + x + " - " + std::to_string(m) + ".0 / " + vol + ")";
+                    if (amount && !vol.empty())
+                        term = "(" + term + " * " + vol + ")";
+                    body += " * " + term;
                 }
             }
             body += ";\n";

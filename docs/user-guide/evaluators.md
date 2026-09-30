@@ -76,8 +76,10 @@ One entry per reaction, in reaction order: the amount/time propensity a
 stochastic step samples from, in the **SSA volume convention** rather than the
 ODE one. Two things differ from the ODE rate of the same reaction:
 
-- a repeated reactant takes the falling factorial — `A + A -> B` fires at
-  `k·x(x−1)/2`, where the ODE rate is `k·x²/2`;
+- a repeated reactant takes the falling factorial over its molecule count —
+  `A + A -> B` fires at `k·n(n−1)/2`, where the ODE rate is `k·n²/2`. The
+  count is `n = x·V` for a species stored as a concentration in a compartment
+  of size `V`, and `n = x` for a `.net` model;
 - a reaction in a compartment of volume `V` is multiplied by `V`, converting
   the ODE's storage-units rate to a per-event rate.
 
