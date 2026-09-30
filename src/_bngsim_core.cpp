@@ -273,6 +273,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("first_negative_species", &bngsim::SsaDiagnostics::first_negative_species)
         .def_readwrite("n_reverse_fires", &bngsim::SsaDiagnostics::n_reverse_fires)
         .def_readwrite("first_reverse_reaction", &bngsim::SsaDiagnostics::first_reverse_reaction)
+        .def_readwrite("n_rounded_populations", &bngsim::SsaDiagnostics::n_rounded_populations)
+        .def_readwrite("first_rounded_species", &bngsim::SsaDiagnostics::first_rounded_species)
         .def_readwrite("propensity_backend", &bngsim::SsaDiagnostics::propensity_backend)
         // GH #15 — PSA partial-scaling diagnostics.
         .def_readwrite("psa_active", &bngsim::SsaDiagnostics::psa_active)
@@ -302,6 +304,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             out["first_negative_species"] = d.first_negative_species;
             out["n_reverse_fires"] = d.n_reverse_fires;
             out["first_reverse_reaction"] = d.first_reverse_reaction;
+            out["n_rounded_populations"] = d.n_rounded_populations;
+            out["first_rounded_species"] = d.first_rounded_species;
             out["propensity_backend"] = d.propensity_backend;
             out["psa_active"] = d.psa_active;
             out["psa_reaction_index"] = d.psa_reaction_index;
@@ -2042,6 +2046,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     sd["reported"] = s.reported;                         // GH #71
                     sd["ode_live_volume_idx0"] = s.ode_live_volume_idx0; // GH #144 case 4
                     sd["report_rateof_amount"] = s.report_rateof_amount; // GH #231 sub-cluster 3
+                    sd["continuous"] = s.continuous;                     // issue #718
                     // (#170) Which parameter `volume_factor` IS, so the emitter can
                     // write `p[k]` where it used to write the number. -1 ⇒ no
                     // parameter (a `.net` species, or a promoted compartment).
@@ -2672,6 +2677,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "csymbol reports the amount-rate (volume_factor * stored-rate) instead of the "
              "stored d(conc)/dt. Correct for constant- and variable-volume compartments alike "
              "(the integrator stores amount/V_static). No-op if species_idx0 is out of range.")
+        .def("set_species_continuous", &bngsim::ModelBuilder::set_species_continuous,
+             py::arg("species_idx0"),
+             "Issue #718: mark a state slot as a continuous quantity (a promoted SBML "
+             "parameter or compartment, or an assignment- or rate-rule target) rather than a "
+             "molecule count, so SSA/PSA do not round it to a whole number. No-op if "
+             "species_idx0 is out of range.")
         .def("add_reaction_live_volume_term", &bngsim::ModelBuilder::add_reaction_live_volume_term,
              py::arg("rxn_idx0"), py::arg("live_idx0"), py::arg("v_static"), py::arg("exp"),
              "GH #144 (case 4): append a cross-compartment SSA live-volume term to a "
