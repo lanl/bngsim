@@ -3348,7 +3348,8 @@ def _classify_mass_action_ast(
     # ``compute_rxn_rate``/``ssa_propensity`` instead of being pre-baked three
     # different ways in the loader. ODE is byte-identical (the same Π V_c reaches
     # the accumulation); SSA is byte-identical for first-order hOSU and uses the
-    # physically correct population falling factorial for higher order.
+    # population falling factorial for higher order, as it does for an hOSU=false
+    # species (issue #692).
     sf = numeric_const * kl_volume_product / v_common
 
     # (#170) ``sf`` is the ONE place a compartment volume stops being a symbol.
