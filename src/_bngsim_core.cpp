@@ -509,6 +509,17 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "to the GH #212 form — except for a state-dependent trigger, whose "
             "∂t*/∂p the solver differentiates at the fire instead (issue #144).")
         .def(
+            "set_state_switch_reactions",
+            [](bngsim::SolverOptions &self, const std::vector<std::vector<int>> &reactions) {
+                self.sensitivity.state_switch_reactions = reactions;
+            },
+            py::arg("reactions"),
+            "Parallel to set_state_switch_conditions: the 0-based reactions whose "
+            "rate law reads each condition. The sensitivity jump judges whether a "
+            "crossing is continuous from these reactions' flux alone, so no other "
+            "species can hide or fake a jump (issue #763). Empty entries fall back "
+            "to the whole right-hand side.")
+        .def(
             "set_state_switch_conditions",
             [](bngsim::SolverOptions &self, const std::vector<std::string> &conditions) {
                 self.sensitivity.state_switch_conditions = conditions;

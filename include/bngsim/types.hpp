@@ -1052,6 +1052,11 @@ struct SensitivityOptions {
     // applied only when the run has sensitivity columns. Empty for every model
     // without such a condition, which leaves the root set untouched.
     std::vector<std::string> state_switch_conditions;
+    // Parallel to state_switch_conditions: the 0-based reactions whose rate law
+    // reads each condition. The sensitivity jump asks whether a crossing is
+    // continuous of these reactions' flux alone (issue #763). Empty, or an empty
+    // entry, means the whole right-hand side is judged.
+    std::vector<std::vector<int>> state_switch_reactions;
 
     // Events whose crossing time moves with a requested parameter (issue #49).
     // Empty for every model whose events fire at fixed instants — the event

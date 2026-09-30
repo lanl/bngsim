@@ -1360,16 +1360,20 @@ int test_mm_tqssa() {
 // and would silently become a self-comparison.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Issue #763: the state-switch continuity test reads each species' gap against
-// the gross flux its net rate is summed from, so a pool whose production and
-// consumption cancel still reports the size of those terms.
+// Issue #763: the state-switch continuity test reads the flux of the switch's
+// own reactions, with a roundoff floor from the gross flux they are summed from,
+// so a pool whose production and consumption cancel still reports the size of
+// those terms.
 int test_gross_flux_balanced_pool() {
     auto model = bngsim::NetworkModel::from_net(data_path("gross_flux_balanced_pool.net"));
     CHECK(model.n_species() == 3, "Expected 3 species");
 
-    std::vector<double> y = {1e8, 0.0, 5.0}, f(3), g(3);
+    std::vector<double> y = {1e8, 0.0, 5.0}, f(3), net(3), g(3);
     model.compute_derivs(0.0, y.data(), f.data());
-    model.compute_gross_flux(0.0, y.data(), g.data());
+    model.compute_flux_split(0.0, y.data(), nullptr, net.data(), g.data());
+    for (int i = 0; i < 3; ++i) {
+        CHECK_CLOSE(net[i], f[i], 1e-9, "over every reaction, net flux is dx/dt");
+    }
 
     CHECK_CLOSE(f[0], 0.0, 1e-30, "the pool is at steady state");
     CHECK_CLOSE(g[0], 2e7, 1e-6, "the pool's gross flux is both of its terms");
@@ -1377,6 +1381,13 @@ int test_gross_flux_balanced_pool() {
     CHECK_CLOSE(g[1], 20.0, 1e-12, "a one-signed flux is its own gross flux");
     CHECK_CLOSE(f[2], 0.0, 1e-30, "a fixed species does not move");
     CHECK_CLOSE(g[2], 0.0, 1e-30, "and reports no flux");
+
+    // A subset: only the pool's synthesis (reaction 0).
+    const std::vector<int> only_synthesis = {0};
+    model.compute_flux_split(0.0, y.data(), &only_synthesis, net.data(), g.data());
+    CHECK_CLOSE(net[0], 1e7, 1e-6, "the subset's net flux is its own term");
+    CHECK_CLOSE(g[0], 1e7, 1e-6, "and so is its gross flux");
+    CHECK_CLOSE(net[1], 0.0, 1e-30, "a species outside the subset gets nothing");
     return 0;
 }
 

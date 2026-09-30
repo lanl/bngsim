@@ -3493,10 +3493,12 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
     }
 }
 
-void NetworkModel::compute_gross_flux(double t, const double *conc, double *gross) {
+void NetworkModel::compute_flux_split(double t, const double *conc, const std::vector<int> *rxns,
+                                      double *net, double *gross) {
     const int ns = n_species();
     const int nr = n_reactions();
 
+    std::memset(net, 0, ns * sizeof(double));
     std::memset(gross, 0, ns * sizeof(double));
 
     if (impl_->has_functions) {
@@ -3506,14 +3508,17 @@ void NetworkModel::compute_gross_flux(double t, const double *conc, double *gros
         impl_->current_time = t;
     }
 
-    // compute_derivs_core's loop term for term, summing |term| where it sums
-    // the signed term.
+    // compute_derivs_core's loop term for term, over the subset, summing the
+    // signed term into `net` and |term| into `gross`.
     const auto &species_list = impl_->species;
-    for (int r = 0; r < nr; ++r) {
+    const int n_loop = rxns != nullptr ? static_cast<int>(rxns->size()) : nr;
+    for (int k = 0; k < n_loop; ++k) {
+        const int r = rxns != nullptr ? (*rxns)[static_cast<std::size_t>(k)] : k;
+        if (r < 0 || r >= nr)
+            continue;
         const auto &rxn = impl_->shared->reactions[r];
-        const double rate =
-            std::fabs(compute_rxn_rate(rxn, impl_->parameters, conc, ns, species_list, false));
-        if (rate == 0.0 || !std::isfinite(rate))
+        const double rate = compute_rxn_rate(rxn, impl_->parameters, conc, ns, species_list, false);
+        if (rate == 0.0)
             continue;
 
         auto divisor = [&](int si) -> double {
@@ -3527,17 +3532,25 @@ void NetworkModel::compute_gross_flux(double t, const double *conc, double *gros
             }
             return species_list[si].volume_factor;
         };
-        for (const auto *side : {&rxn.reactant_multiplicity, &rxn.product_multiplicity}) {
-            for (const auto &[si, m] : *side) {
-                if (si < ns) {
-                    gross[si] += std::fabs(m) * rate / std::fabs(divisor(si));
-                }
+        for (const auto &[si, m] : rxn.reactant_multiplicity) {
+            if (si < ns) {
+                const double term = m * rate / divisor(si);
+                net[si] -= term;
+                gross[si] += std::fabs(term);
+            }
+        }
+        for (const auto &[si, m] : rxn.product_multiplicity) {
+            if (si < ns) {
+                const double term = m * rate / divisor(si);
+                net[si] += term;
+                gross[si] += std::fabs(term);
             }
         }
     }
 
     for (const auto &s : impl_->species) {
         if (s.fixed) {
+            net[s.index - 1] = 0.0;
             gross[s.index - 1] = 0.0;
         }
     }

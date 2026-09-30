@@ -1,4 +1,4 @@
-# Issue #763: compute_gross_flux fixture. B is a pool at exact steady state
+# Issue #763: compute_flux_split fixture. B is a pool at exact steady state
 # (made at ksyn, lost at kdeg*B, 1e7 each way), so its net dx/dt is 0 while the
 # terms it is summed from are 1e7. S is fixed and feeds C two at a time.
 begin parameters

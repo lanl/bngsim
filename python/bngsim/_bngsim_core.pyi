@@ -837,6 +837,10 @@ class SolverOptions:
         """
         Set the rate-law conditions that read model state, as source text — one relational atom per entry, `Virus<1` (issue #150). Such a condition flips a branch of f at a crossing whose time moves with every parameter through the trajectory, so dx/dθ is DISCONTINUOUS there by the saltation term (f⁻−f⁺)·dt*/dθ — a term neither the analytic sensitivity RHS nor CVODES' difference quotient carries. run() resolves each through NetworkModel.state_switch_residual, registers that residual as a CVODE root so the crossing is located, and applies the jump there. A run without sensitivities roots the residuals it is given and applies no jump; it restarts at a crossing only where the flow clearly carries the state across (issue #897). Empty (the default) leaves the root set untouched.
         """
+    def set_state_switch_reactions(self, reactions: collections.abc.Sequence[collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]]) -> None:
+        """
+        Parallel to set_state_switch_conditions: the 0-based reactions whose rate law reads each condition. The sensitivity jump judges whether a crossing is continuous from these reactions' flux alone, so no other species can hide or fake a jump (issue #763). Empty entries fall back to the whole right-hand side.
+        """
     def set_switch_pinned_params(self, param_idx0: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]) -> None:
         """
         Hold these parameters (0-based indices) at their nominal value against CVODES' internal finite-difference sensitivity probe (issue #48). A switch-time parameter enters the RHS only through an `if()` condition, so ∂f/∂p is 0 in every branch interior — but an FD probe of it MOVES the switch, dragging the kink into the approach to the crossing and stalling the solver at mxstep. Pinning returns the correct (zero) source term and leaves the switch where the model puts it. Set only for parameters bngsim._switch_sensitivity has verified appear solely in conditions.

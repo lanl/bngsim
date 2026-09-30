@@ -2407,6 +2407,10 @@ struct CvodeSimulator::Impl {
                                         const std::vector<const NetworkModel::StateSwitch *> &batch,
                                         std::vector<std::vector<double>> &s,
                                         SensitivityState &sens);
+    // The reactions whose rate law reads each registered switch, for this run
+    // (SensitivityOptions::state_switch_reactions, issue #763). A switch with
+    // no entry, or an empty one, is judged over the whole right-hand side.
+    std::unordered_map<const NetworkModel::StateSwitch *, std::vector<int>> state_switch_rxns;
 
     // Issue #897: whether a plain run should restart at state switch `sw`'s
     // root, located at (t, x) in a step that ended at t_end. True when the
@@ -6118,32 +6122,67 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             break;
         }
     }
-    // |f⁻ − f⁺| species by species, each against that species' own |f|: below
-    // kStateSwitchContinuousRelTol of it, the two branches are the same function
-    // there.
+    // Whether the two branches are one function here is asked of the flux of
+    // the reactions whose rate law reads the batch's conditions, species by
+    // species, each against that flux's own size: below
+    // kStateSwitchContinuousRelTol of it, the branches are the same function.
     //
-    // Issue #763: this used to be ONE gap, the largest over all species, against
-    // ONE scale, the largest |f| anywhere. A species the switch never touches set
-    // the scale, so a 1e8-molecule pool turning over at 0.1/s read a jump of 3 in
-    // another species as roundoff, and the saltation term and every switch-time
-    // column were dropped without a word. The switch is continuous only where
-    // every species is (first_jump below). This is issue #322's repair, which
-    // took the same global max|f| out of residual_dtstar's transversality floor.
+    // Issue #763: this used to be ONE gap, the largest over all species of the
+    // whole dx/dt, against ONE scale, the largest |dx/dt| anywhere. A species the
+    // switch never touches set the scale, so a 1e8-molecule pool turning over at
+    // 0.1/s read a jump of 3 in another species as roundoff, and the saltation
+    // term and every switch-time column were dropped without a word. Judging each
+    // species' whole dx/dt instead is not enough either. A switched species' own
+    // large turnover dilutes its jump the same way, and a bystander whose rate
+    // law cancels internally (0.3·P − 0.1·Q over two 1e8 pools) is pure roundoff
+    // that reads as a jump. Only the switch's own reactions carry its jump, so
+    // only they are read (SensitivityOptions::state_switch_reactions); a batch
+    // with a switch that has no such map reads the whole right-hand side.
     //
-    // A species' own |f| is not a safe scale either when its terms cancel: a
-    // pool at steady state has a net rate of ~0 and a gap that is pure roundoff
-    // of terms 1e7 in size, which neither test above can call continuous. So
-    // there is a floor as well, kStateSwitchGrossRoundoff ulps of the GROSS flux
-    // (the terms' absolute sum). It is a roundoff bound and only that: the same
-    // pool with a switched source of 3 has a gross flux of 2e7, and reading its
-    // gap against the gross flux at kStateSwitchContinuousRelTol would lose that
-    // jump exactly as the global scale did.
+    // Even that flux can cancel within a species, so there is a floor as well,
+    // kStateSwitchGrossRoundoff ulps of its GROSS flux (the terms' absolute sum).
+    // It is a roundoff bound and only that. And a switched flux that vanishes at
+    // the surface on both branches (the BNGL signed-rate idiom) has nothing left
+    // but roundoff in its operands: ml_gradient_descent switches on
+    // vx = Vx − 5 with Vx ≈ 5, where the gap is a few ulps of 5 and scales with
+    // nothing. So a gap is also negligible below kStateSwitchContinuousRelTol of
+    // the rate that drives the crossing, the largest |dx/dt| among the species
+    // the batch's residuals read. That rate is bounded below by the crossing's
+    // own speed, and it leaves out bystanders and the switched species' own
+    // turnover alike. The switch is continuous only where every species is
+    // (first_jump below); issue #322 took the same global max|f| out of
+    // residual_dtstar's transversality floor.
+    std::vector<int> residual_support;
+    for (const NetworkModel::StateSwitch *one : batch) {
+        residual_support.insert(residual_support.end(), one->species.begin(), one->species.end());
+    }
+    const std::vector<int> *sub_rxns = nullptr;
+    std::vector<int> batch_rxns;
+    {
+        bool all_mapped = true;
+        for (const NetworkModel::StateSwitch *one : batch) {
+            auto it = state_switch_rxns.find(one);
+            if (it == state_switch_rxns.end()) {
+                all_mapped = false;
+                break;
+            }
+            batch_rxns.insert(batch_rxns.end(), it->second.begin(), it->second.end());
+        }
+        if (all_mapped && !batch_rxns.empty()) {
+            std::sort(batch_rxns.begin(), batch_rxns.end());
+            batch_rxns.erase(std::unique(batch_rxns.begin(), batch_rxns.end()), batch_rxns.end());
+            sub_rxns = &batch_rxns;
+        }
+    }
+    std::vector<double> sub_minus(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> sub_plus(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> gross_minus(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> gross_plus(static_cast<std::size_t>(ns), 0.0);
     struct BranchGaps {
-        std::vector<double> gap;   // |f⁻ − f⁺|
-        std::vector<double> scale; // max(|f⁻|, |f⁺|)
+        std::vector<double> gap;   // |f⁻ − f⁺| of the switch's reactions
+        std::vector<double> scale; // max(|f⁻|, |f⁺|) of the same
         std::vector<double> floor; // roundoff of the gross flux on either side
+        double drive = 0.0;        // max(|f⁻_j|, |f⁺_j|) over the residuals' species
     };
     auto branch_gaps = [&](BranchGaps &out) {
         const auto n = static_cast<std::size_t>(ns);
@@ -6151,10 +6190,17 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         out.scale.assign(n, 0.0);
         out.floor.assign(n, 0.0);
         for (std::size_t u = 0; u < n; ++u) {
-            out.gap[u] = std::fabs(f_minus[u] - f_plus[u]);
-            out.scale[u] = std::max(std::fabs(f_minus[u]), std::fabs(f_plus[u]));
+            out.gap[u] = std::fabs(sub_minus[u] - sub_plus[u]);
+            out.scale[u] = std::max(std::fabs(sub_minus[u]), std::fabs(sub_plus[u]));
             out.floor[u] = kStateSwitchGrossRoundoff * std::numeric_limits<double>::epsilon() *
                            std::max(gross_minus[u], gross_plus[u]);
+        }
+        out.drive = 0.0;
+        for (int j : residual_support) {
+            const auto u = static_cast<std::size_t>(j);
+            if (j >= 0 && j < ns) {
+                out.drive = std::max({out.drive, std::fabs(f_minus[u]), std::fabs(f_plus[u])});
+            }
         }
     };
     // The first species whose gap is a jump, or -1 when there is none. A gap is
@@ -6168,7 +6214,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                           const std::vector<double> *far_gap, const BranchGaps &at) {
         for (int i = 0; i < ns; ++i) {
             const auto u = static_cast<std::size_t>(i);
-            if (rel[u] <= kStateSwitchContinuousRelTol * at.scale[u] || rel[u] <= at.floor[u]) {
+            if (rel[u] <= kStateSwitchContinuousRelTol * std::max(at.scale[u], at.drive) ||
+                rel[u] <= at.floor[u]) {
                 continue;
             }
             if (far_gap != nullptr && near_gap[u] < kStateSwitchGapRatio * (*far_gap)[u]) {
@@ -6358,12 +6405,14 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 sync(xw, t_evt);
                 const double g_lo = eval.evaluate(sw.residual_expr_idx);
                 model.compute_derivs(t_evt, xw.data(), f_minus.data());
-                model.compute_gross_flux(t_evt, xw.data(), gross_minus.data());
+                model.compute_flux_split(t_evt, xw.data(), sub_rxns, sub_minus.data(),
+                                         gross_minus.data());
                 xw[static_cast<std::size_t>(best)] = xj + (-g_star + eta) / best_gj;
                 sync(xw, t_evt);
                 const double g_hi = eval.evaluate(sw.residual_expr_idx);
                 model.compute_derivs(t_evt, xw.data(), f_plus.data());
-                model.compute_gross_flux(t_evt, xw.data(), gross_plus.data());
+                model.compute_flux_split(t_evt, xw.data(), sub_rxns, sub_plus.data(),
+                                         gross_plus.data());
                 straddled = std::isfinite(g_lo) && std::isfinite(g_hi) && g_lo != 0.0 &&
                             g_hi != 0.0 && ((g_lo < 0.0) != (g_hi < 0.0));
                 branch_gaps(out);
@@ -6376,6 +6425,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 at1.scale[u] = std::max(at1.scale[u], at2.scale[u]);
                 at1.floor[u] = std::max(at1.floor[u], at2.floor[u]);
             }
+            at1.drive = std::max(at1.drive, at2.drive);
             jump = first_jump(at2.gap, at1.gap, &at2.gap, at1);
         }
         sync(x, t_evt);
@@ -6468,9 +6518,11 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         std::vector<double> g_far_before(nb, 0.0);
         std::vector<double> g_far_after(nb, 0.0);
         probe(-2.0 * dt, g_far_before);
-        model.compute_derivs(t_evt - 2.0 * dt, xw.data(), f_minus.data());
+        model.compute_flux_split(t_evt - 2.0 * dt, xw.data(), sub_rxns, sub_minus.data(),
+                                 gross_minus.data());
         probe(+2.0 * dt, g_far_after);
-        model.compute_derivs(t_evt + 2.0 * dt, xw.data(), f_plus.data());
+        model.compute_flux_split(t_evt + 2.0 * dt, xw.data(), sub_rxns, sub_plus.data(),
+                                 gross_plus.data());
         bool far_straddled = true;
         for (std::size_t k = 0; k < nb; ++k) {
             far_straddled = far_straddled && std::isfinite(g_far_before[k]) &&
@@ -6482,7 +6534,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             gap_far.resize(static_cast<std::size_t>(ns));
             for (int i = 0; i < ns; ++i) {
                 const auto u = static_cast<std::size_t>(i);
-                gap_far[u] = std::fabs(f_minus[u] - f_plus[u]);
+                gap_far[u] = std::fabs(sub_minus[u] - sub_plus[u]);
             }
         }
     }
@@ -6492,10 +6544,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // there is nothing left to compose (issue #153).
     probe(-dt, g_before);
     model.compute_derivs(t_evt - dt, xw.data(), f_minus.data());
-    model.compute_gross_flux(t_evt - dt, xw.data(), gross_minus.data());
+    model.compute_flux_split(t_evt - dt, xw.data(), sub_rxns, sub_minus.data(), gross_minus.data());
     probe(+dt, g_after);
     model.compute_derivs(t_evt + dt, xw.data(), f_plus.data());
-    model.compute_gross_flux(t_evt + dt, xw.data(), gross_plus.data());
+    model.compute_flux_split(t_evt + dt, xw.data(), sub_rxns, sub_plus.data(), gross_plus.data());
 
     // Issue #545: the continuity question and the jump below are both about S, so
     // a comoving column leaves first — against f⁻, the before-branch probe the
@@ -7020,15 +7072,34 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<const NetworkModel::StateSwitch *> state_switches;
     std::vector<int> state_switch_roots;
     std::vector<double> state_switch_zero_hold;
+    impl_->state_switch_rxns.clear();
     if (!opts.sensitivity.state_switch_conditions.empty()) {
-        std::unordered_set<std::string> seen_residual;
-        for (const std::string &cond : opts.sensitivity.state_switch_conditions) {
-            const NetworkModel::StateSwitch *sw = model.state_switch(cond);
-            if (sw == nullptr || !seen_residual.insert(sw->residual_source).second) {
+        const auto &conds = opts.sensitivity.state_switch_conditions;
+        const auto &rxn_lists = opts.sensitivity.state_switch_reactions;
+        std::unordered_map<std::string, const NetworkModel::StateSwitch *> by_residual;
+        std::unordered_set<const NetworkModel::StateSwitch *> unmapped;
+        for (std::size_t c = 0; c < conds.size(); ++c) {
+            const NetworkModel::StateSwitch *sw = model.state_switch(conds[c]);
+            if (sw == nullptr) {
                 continue;
             }
-            state_switches.push_back(sw);
-            state_switch_roots.push_back(sw->residual_expr_idx);
+            auto [it, fresh] = by_residual.emplace(sw->residual_source, sw);
+            if (fresh) {
+                state_switches.push_back(sw);
+                state_switch_roots.push_back(sw->residual_expr_idx);
+            }
+            // One spelling with no reaction map makes the whole crossing
+            // unmapped: the safe reading is the whole right-hand side.
+            const NetworkModel::StateSwitch *kept = it->second;
+            if (c >= rxn_lists.size() || rxn_lists[c].empty()) {
+                unmapped.insert(kept);
+            } else {
+                auto &dst = impl_->state_switch_rxns[kept];
+                dst.insert(dst.end(), rxn_lists[c].begin(), rxn_lists[c].end());
+            }
+        }
+        for (const NetworkModel::StateSwitch *sw : unmapped) {
+            impl_->state_switch_rxns.erase(sw);
         }
     }
     const int n_state_switch = static_cast<int>(state_switch_roots.size());

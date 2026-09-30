@@ -578,14 +578,17 @@ class TestABystanderDoesNotHideAJump:
         got = np.asarray(run.sensitivities)[-1, y, :]
         np.testing.assert_allclose(got, _bystander_closed_form(), rtol=1e-6)
 
-    def test_a_switched_species_with_its_own_turnover_still_jumps(self, tmp_path):
-        """The per-species scale is Y's own |f|, not the gross flux it is summed from.
+    @pytest.mark.parametrize("ksyn", [1e7, 0.0], ids=["steady", "decaying"])
+    def test_a_switched_species_with_its_own_turnover_still_jumps(self, tmp_path, ksyn):
+        """Only the switch's own reaction is read, not Y's whole dx/dt.
 
-        Here Y is itself a pool at steady state, made at ksyn = 1e7 and lost at
-        kdeg·Y, with the same switched source of kb = 3 on top. Its gross flux
-        is 2e7, so reading the gap of 3 against THAT at 1e-6 would call the
-        switch continuous and lose the jump, the same bug inside one species.
-        The gross flux only sets a roundoff floor, 1024 ulps of it (4.5e-6).
+        Here Y is itself a pool of 1e8, lost at kdeg·Y, with the same switched
+        source of kb = 3 on top. ``steady`` also makes it at ksyn = 1e7, so its
+        net rate is ~0 but its gross flux is 2e7; ``decaying`` does not, so
+        |dY/dt| is ~7e6 at t*. Reading the gap of 3 against either at 1e-6 would
+        call the switch continuous and lose the jump, the same bug inside one
+        species; ``decaying`` did exactly that on main and on the first cut of
+        the #763 fix. The switch's own reaction has a flux of 3 and a gap of 3.
 
         Past t*, Y relaxes toward its new level at kdeg:
         Y(T) = Y0 + (kb/kdeg)·(1 − e^{−kdeg·(T − t*)}), so
@@ -597,7 +600,7 @@ class TestABystanderDoesNotHideAJump:
         to 1e-4 off the closed form at rtol 1e-8 to 1e-12, identically before
         and after issue #763's change. The switch-time columns are what the
         change is about, and they are held tight."""
-        text = TURNOVER
+        text = TURNOVER.replace("    5 ksyn  1e7  # Constant", f"    5 ksyn  {ksyn!r}  # Constant")
         model = _model(tmp_path, text, name="turnover.net")
         run = bngsim.Simulator(model, method="ode", sensitivity_params=BYSTANDER_PARAMS).run(
             t_span=(0.0, BYSTANDER_T), n_points=3, rtol=1e-10, atol=1e-12
@@ -610,6 +613,48 @@ class TestABystanderDoesNotHideAJump:
         dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
         np.testing.assert_allclose(got[:3], -kb * decay * dtstar, rtol=1e-5)
         assert got[3] == pytest.approx((1 - decay) / kdeg, rel=1e-3)
+
+    def test_a_bystander_that_cancels_internally_is_not_read_as_a_jump(self, tmp_path):
+        """ml_hopfield's signed-rate crossing is continuous. Beside it here, Z is
+        made at ``0.3*P - 0.1*Q`` over two ~1e8 pools decaying together: one rate
+        law whose net is a small difference of large operands, so its value at
+        two nearby states differs by roundoff alone. Read as part of Z's dx/dt,
+        that roundoff looked like a jump and sent the continuous batch down the
+        jump path, which refuses it (issue #153's split-crossing message). That
+        was the first cut of the #763 fix, which judged every species' whole
+        dx/dt; main never looked per species, and the fix reads only the
+        signed-rate reactions. Z is decoupled, so the W columns of S1..S3 must
+        equal the model without it, to solver tolerance: the pools change CVODE's
+        error norm and so its steps (1.1e-9 of a 0.09 column, on main too)."""
+        noisy = (
+            HOPFIELD.replace(
+                "end parameters",
+                "    6 kd         0.1\n    7 P0         100000000.002\n"
+                "    8 Q0         3e8\nend parameters",
+            )
+            .replace("end functions", "   16 h() 0.3*Pobs-0.1*Qobs\nend functions")
+            .replace("end species", "    4 P() P0\n    5 Q() Q0\n    6 Z() 0\nend species")
+            .replace("end reactions", "    7 4 0 kd\n    8 5 0 kd\n    9 0 6 h\nend reactions")
+            .replace(
+                "end groups",
+                "    4 Pobs                 4\n    5 Qobs                 5\nend groups",
+            )
+        )
+        params = ["W12", "W13", "W23"]
+
+        def sens(text, name):
+            # The review's grid: which states the probes land on decides whether
+            # the roundoff reads as a jump, and on this one it did.
+            model = _model(tmp_path, text, name)
+            run = bngsim.Simulator(model, method="ode", sensitivity_params=params).run(
+                t_span=(0.0, 3.0), n_points=4, rtol=1e-9, atol=1e-12
+            )
+            return np.asarray(run.sensitivities)
+
+        plain = sens(HOPFIELD, "hop_plain.net")
+        got = sens(noisy, "hop_noisy.net")[:, :3, :]
+        scale = float(np.max(np.abs(plain)))
+        np.testing.assert_allclose(got, plain, rtol=0, atol=1e-6 * scale)
 
     def test_the_trajectory_was_never_the_problem(self, tmp_path):
         """Only the sensitivity was wrong: Y(T) = kb·(T − t*) either way, to the
