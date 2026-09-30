@@ -3343,6 +3343,14 @@ compute_rxn_rate(const Reaction &rxn, const std::vector<Parameter> &params, cons
                 // emitter. The rate's own denominator is the only degeneracy.
                 // See the header note in include/bngsim/mm_jacobian.hpp.
                 rate = q.KpsF > 0.0 ? kcat * rxn.stat_factor * q.sFree * E / q.KpsF : 0.0;
+                // Issue #809 (review): a NaN or infinite Km, kcat, E or S fails
+                // both guards above (`denom > 0` in mm_tqssa, `KpsF > 0` here)
+                // and came out as a rate of exactly 0, so the reaction silently
+                // stopped, under ODE and SSA alike. x − x is 0 for a finite x
+                // and NaN otherwise, so this adds exactly 0.0 to a finite
+                // rate and hands a non-finite input on to the callers that
+                // refuse it. Every emitter adds the same term.
+                rate += (kcat - kcat) + (Km - Km) + (E - E) + (S - S);
             }
         }
         break;
@@ -3656,10 +3664,12 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
                 "                           : ((D - d) > 0.0 ? 2.0 * Km * S / (D - d) : 0.0);\n";
             body += "    double den = Km + sf;\n";
             body +=
-                "    a[" + std::to_string(r) + "] = den > 0.0 ? p[" + std::to_string(kcat0) + "]";
+                "    a[" + std::to_string(r) + "] = (den > 0.0 ? p[" + std::to_string(kcat0) + "]";
             if (rxn.stat_factor != 1.0)
                 body += " * " + lit(rxn.stat_factor);
-            body += " * sf * E / den : 0.0; }\n";
+            // Non-finite inputs propagate, as in compute_rxn_rate (issue #809).
+            body += " * sf * E / den : 0.0) + ((p[" + std::to_string(kcat0) + "] - p[" +
+                    std::to_string(kcat0) + "]) + (Km - Km) + (E - E) + (S - S)); }\n";
             continue;
         }
 
