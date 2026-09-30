@@ -689,7 +689,6 @@ TERMS: list = [
             param="a",
             note="dY/da is 0 against 1.115651",
         ),
-        marks=_xfail(764, "the event jump's sync never refreshes the rateOf buffer"),
     ),
     Term(
         "event-batch-survivor-declared-last",

@@ -73,3 +73,48 @@ def test_the_trajectory_was_never_the_problem():
     a_tau = A0 * math.exp(-A_RATE * TAU)
     assert x[names.index("Y")] == pytest.approx(-A_RATE * a_tau, rel=1e-7)
     assert x[names.index("B")] == pytest.approx(A_RATE * a_tau * (T_END - TAU), rel=1e-7)
+
+
+def test_rateof_through_an_assignment_rule():
+    """``r := rateOf(A)`` then ``Y = r``: the rule is a function, evaluated
+    before the rateOf buffer was refreshed, so each difference read the
+    previous state's buffer and the column came out −½× the truth."""
+    text = MODEL.format(A0=A0, a=A_RATE, tau=TAU, rhs="r").replace(
+        "J0: A -> ; a*A\n", "J0: A -> ; a*A\nr := rateOf(A)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "A0"]).run(
+        sample_times=np.linspace(0.0, T_END, 7), rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    s = np.asarray(run.sensitivities)[-1]
+    want_dy, want_db = _closed_form()
+    np.testing.assert_allclose(s[names.index("Y")], want_dy, rtol=1e-6)
+    np.testing.assert_allclose(s[names.index("B")], want_db, rtol=1e-6)
+
+
+def test_a_trigger_reading_rateof_through_a_rule():
+    """The trigger side, through sync_model_at: ``r := rateOf(A)`` fires when
+    ``r > −thr``, at t* = ln(a·A0/thr)/a, and B then grows at 1, so
+    dB/dθ = −dt*/dθ: [(ln(a·A0/thr) − 1)/a², −1/(a·A0), 1/(a·thr)]. The thr
+    column came out −4 (−2×), read one sync behind like the assignment above.
+
+    Requested in this order on purpose: with thr first, every column comes back
+    0 on main and here alike — a separate defect, filed on its own."""
+    model = bngsim.Model.from_antimony_string(
+        "species A, Y, B; A = A0; Y = 0; B = 0; A0 = 10; a = 0.5; thr = 1\n"
+        "J0: A -> ; a*A\nJ1: -> B; Y\nr := rateOf(A)\n"
+        "E: at (r > -thr): Y = 1\n"
+    )
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "A0", "thr"]).run(
+        sample_times=np.linspace(0.0, T_END, 7), rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    got = np.asarray(run.sensitivities)[-1, names.index("B"), :]
+    thr = 1.0
+    want = [
+        (math.log(A_RATE * A0 / thr) - 1.0) / A_RATE**2,
+        -1.0 / (A_RATE * A0),
+        1.0 / (A_RATE * thr),
+    ]
+    np.testing.assert_allclose(got, want, rtol=1e-5)
