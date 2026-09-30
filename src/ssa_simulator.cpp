@@ -365,7 +365,14 @@ static std::string reaction_label(const NetworkModel &model, const Reaction &rxn
 // made them too large to inline, which cost 8-22% on small networks.
 [[noreturn]] BNGSIM_SSA_COLD static void
 throw_nonfinite_propensity(const NetworkModel &model, int r, double value, double t_at, bool psa) {
+    // Spelled out for NaN and infinity: glibc prints a NaN whose sign bit is
+    // set as "-nan" and macOS prints "nan", and the message should not depend
+    // on the platform (or on the sign bit, which carries no meaning).
     auto num = [](double v) {
+        if (std::isnan(v))
+            return std::string("nan");
+        if (std::isinf(v))
+            return std::string(v > 0 ? "inf" : "-inf");
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.17g", v);
         return std::string(buf);
