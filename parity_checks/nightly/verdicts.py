@@ -27,8 +27,9 @@ REPORT the verdict:
       ``--work-ratio`` and ``--work-min-delta``; or a counter's total over all
       such cases grew by more than ``--work-total-ratio``; or bngsim's total wall
       seconds grew by more than ``--wall-ratio`` on the same CPU model, or
-      ``--wall-ratio-any-cpu`` across models (coarse: hosted runners mix CPU
-      generations; precise timing is benchmarks/perf_ab.py on a fixed machine).
+      ``--wall-ratio-any-cpu`` across models, and by more than
+      ``--wall-min-delta`` seconds (coarse: hosted runners mix CPU generations;
+      precise timing is benchmarks/perf_ab.py on a fixed machine).
     * **incomplete** -- the run compared fewer than ``--min-fraction`` of the
       baseline's cases, so a green result would mean "compared too little".
 
@@ -74,6 +75,12 @@ WORK_ALERT_KEYS = ("n_steps", "n_rhs_evals", "n_jac_evals")
 # A per-case increase must clear this absolute floor too, so a 3 -> 5 Jacobian
 # count on a trivial model does not alert.
 WORK_MIN_DELTA = {"n_steps": 25, "n_rhs_evals": 50, "n_jac_evals": 10}
+# And the wall total must grow by this many seconds too, so a fixed cost on a
+# total that is near zero does not alert as a blowup. On the stochastic legs
+# ``bngsim_sec`` is only the load phase, 0.011 s over bng_nf's 231 cases, and the
+# millisecond XML scan #885 added to each session's construction read as x56. The ODE
+# and sensitivity legs total 79-913 s, so a real doubling clears it on every one.
+WALL_MIN_DELTA_SEC = 30.0
 
 # bngsim-side phases summed into ``bngsim_sec`` (whichever the runner records).
 BNGSIM_PHASES = (
@@ -280,6 +287,7 @@ def diff(
     work_total_ratio: float = 1.05,
     wall_ratio: float = 2.0,
     wall_ratio_any_cpu: float = 4.0,
+    wall_min_delta: float = WALL_MIN_DELTA_SEC,
     min_fraction: float = 0.9,
     expect_backend: str | None = None,
     flaky: dict[str, str] | None = None,
@@ -387,7 +395,8 @@ def diff(
         "cpu_fresh": cpu_f,
         "same_cpu": same_cpu,
         "limit": limit,
-        "alert": wb > 0 and wf > wb * limit,
+        "min_delta": wall_min_delta,
+        "alert": wb > 0 and wf > wb * limit and wf - wb > wall_min_delta,
     }
 
     # A run meant to exercise a specific backend must have run it: exprtk for the
@@ -435,6 +444,7 @@ def diff(
             "work_total_ratio": work_total_ratio,
             "wall_ratio": wall_ratio,
             "wall_ratio_any_cpu": wall_ratio_any_cpu,
+            "wall_min_delta": wall_min_delta,
             "min_fraction": min_fraction,
             "work_min_delta": WORK_MIN_DELTA,
         },
@@ -523,7 +533,8 @@ def render_md(result: dict, label: str = "", limit: int = 40) -> str:
         )
         lines += [
             f"bngsim wall over {w['n_cases']} cases: {w['before']} s -> {w['after']} s "
-            f"(x{w['ratio']}; {where}; alerts above x{w.get('limit')}){flag}",
+            f"(x{w['ratio']}; {where}; alerts above x{w.get('limit')} and "
+            f"+{w.get('min_delta')} s){flag}",
             "",
         ]
     for name, title in (
@@ -588,6 +599,7 @@ def _cmd_diff(args) -> int:
         work_total_ratio=args.work_total_ratio,
         wall_ratio=args.wall_ratio,
         wall_ratio_any_cpu=args.wall_ratio_any_cpu,
+        wall_min_delta=args.wall_min_delta,
         min_fraction=args.min_fraction,
         expect_backend=args.expect_backend or None,
         flaky=flaky,
@@ -681,6 +693,12 @@ def main(argv=None) -> int:
     d.add_argument("--wall-ratio", type=float, default=2.0, help="wall alert, same CPU model")
     d.add_argument(
         "--wall-ratio-any-cpu", type=float, default=4.0, help="wall alert, across CPU models"
+    )
+    d.add_argument(
+        "--wall-min-delta",
+        type=float,
+        default=WALL_MIN_DELTA_SEC,
+        help="wall alert: seconds the total must also grow by",
     )
     d.add_argument("--min-fraction", type=float, default=0.9)
     d.add_argument(
