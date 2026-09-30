@@ -33,6 +33,15 @@ The fix is at the Simulator: ``jacobian="auto"`` (the default) is a bet, so on a
 solver failure it transparently retries once with the FD Jacobian. An explicit
 ``jacobian="analytical"`` is *not* second-guessed.
 
+Since issue #897 a plain run roots ``(-70+V) < -20`` as well, because it reads
+the state. Here that root fires on the interpolant with V rising while
+dV/dt < 0, so it is an artifact of the parked trajectory. The core restarts on
+a lone state-switch root only where the flow clearly carries the residual
+across, which leaves this run exactly as it was before the root existed.
+Restarting there instead held the run on the wrong branch: the analytical
+attempt no longer failed, took 2,019,910 steps, and came out 63% off. So every
+test in this file also guards that rule.
+
 Issue #127 gave the steady-state solver the same bet — its march installs the
 closed-form Jacobian too — and therefore needed the same way out. That half is
 decided in C++ (a failed march is a flag on the result, not an exception) and is

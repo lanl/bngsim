@@ -171,7 +171,24 @@ species (issue #443), where the counter is landed exactly on its threshold so
 the restart reads the after-branch.
 
 These stops are added for any model carrying such a switch, sensitivities or
-not, because stepping over the discontinuity was never correct.
+not, because stepping over the discontinuity was never correct. A crossing whose
+time the state decides, such as `time() >= 4*S`, has no stop that can be placed
+before the run. Instead, each comparison over the state in a rate law's `if()`
+condition is a CVODE root in every run (issue #897). A run without sensitivities
+applies no jump there, and it restarts only at a genuine crossing. The solver's
+own trajectory must go past the threshold by more than the requested tolerance
+can blur, and the flow arriving at the threshold, read on the near side, must
+stay finite as the threshold is approached and carry the state across it. A
+trajectory that only approaches the threshold, parked beside it or relaxing onto
+it, can cross it on the solver's interpolant alone, within its own error, so the
+run steps on there as it did before these roots existed. A window narrower than
+the tolerance can resolve is therefore not guaranteed, as it is not in main.
+
+Issue #904 lists what this does not yet cover:
+- a comparison used as a number outside `if()`, such as `k*(X > 1)`;
+- a single comparison whose residual turns back within one step, such as
+  `abs(X - 5) < 0.01`;
+- `steady_state()`.
 
 ### A rate that rises from zero at the crossing
 
@@ -217,12 +234,16 @@ every column plain, for comparison.
 
 ### What is declined
 
-A condition whose crossing time moves with the *state* rather than with a
-parameter is a different problem, and the analytic path declines it rather than
-returning a gradient that silently omits the saltation term. So does a
-conjunction, a negation, and a comparison whose sides are themselves
-comparisons. A parameter that both sets a switch time and acts inside a branch
-is rejected rather than answered with the jump alone.
+A condition whose crossing time moves with the *state*, such as `if(X < 1, …)`
+or a window `(X > lo) && (X < hi)`, is not declined. Each comparison's residual
+is registered as a root, and the saltation jump `(f⁻ − f⁺)·dt*/dθ` is applied
+where it crosses (issue #150). A conjunction or a negation is split into its
+comparisons first. What the analytic path declines is a crossing nothing can
+locate: a comparison outside any `if()`, such as `k*(X > 1)`, and one whose sides
+are themselves comparisons, such as `(X > 1) == (Y > 1)`. A parameter that both
+sets a switch time and acts inside a branch is answered on the analytic path,
+which adds the in-branch term to the jump (issue #358), and rejected on the
+fallback, which cannot.
 
 A decline is never silent. Ask the Simulator directly:
 

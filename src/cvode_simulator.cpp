@@ -435,9 +435,20 @@ struct CvodeUserData {
     // roots. Unlike those two — booleans, rooted as `value − 0.5` — these are
     // rooted on the residual itself, so CVODE brackets the crossing on the very
     // function the saltation jump differentiates there. Null (and the root set
-    // unchanged) for every run that is not asking for sensitivities and every
-    // model with no such condition. Owned by run().
+    // unchanged) for every model with no such condition. Owned by run().
     const std::vector<int> *state_switch_roots = nullptr;
+
+    // Issue #897: per state-switch root, what to report instead of a residual
+    // that evaluates to exactly 0.0, or 0.0 to report it as it is. Set when a
+    // run steps on past a root the flow does not carry: a residual parked at
+    // exactly zero there would otherwise read as a second root at the same
+    // instant, which CVODE refuses ("Root found at and very near t"). A restart never
+    // needs it, since CVODE sets a root that is zero at the restart aside
+    // itself, so the root and crossing-stop restarts clear every hold. One that
+    // outlives a restart elsewhere costs at most an extra root return where the
+    // residual next leaves zero. Null wherever state_switch_roots is. Owned by
+    // run().
+    const std::vector<double> *state_switch_zero_hold = nullptr;
 
     // Earliest state at which a callback produced a non-finite value with no
     // clamp left to try (GH #336). Written by the RHS / Jacobian /
@@ -1785,7 +1796,14 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
         const auto &ss = *data->state_switch_roots;
         const int base = ne + static_cast<int>(disc.size());
         for (int j = 0; j < static_cast<int>(ss.size()); ++j) {
-            gout[base + j] = eval.evaluate(ss[j]);
+            double g = eval.evaluate(ss[j]);
+            if (g == 0.0 && data->state_switch_zero_hold != nullptr) {
+                const double hold = (*data->state_switch_zero_hold)[static_cast<size_t>(j)];
+                if (hold != 0.0) {
+                    g = hold; // issue #897: see CvodeUserData::state_switch_zero_hold
+                }
+            }
+            gout[base + j] = g;
         }
     }
     return 0;
@@ -1871,9 +1889,9 @@ struct SensitivityState {
 };
 
 // What `land_clock_on_threshold` needs in order to ask whether moving the clock
-// would step over a registered root. `n_roots == 0` — every .net model, which is
-// the whole of what issue #443 is about — skips the question and leaves the
-// other fields unused.
+// would step over a registered root. `n_roots == 0` — a .net model with no rate
+// law switched on its state (issue #897), which is most of what issue #443 is
+// about — skips the question and leaves the other fields unused.
 struct RootSignWatch {
     int n_roots = 0;
     void *user_data = nullptr;
@@ -2231,7 +2249,7 @@ struct CvodeSimulator::Impl {
 
     // Attach cvode_event_root_fn as CVODE's root function, and silence the
     // benign tiny-step warning a discontinuity root provokes.
-    void register_roots(void *cvode_mem, SUNContext ctx, int n_roots, int n_disc);
+    void register_roots(void *cvode_mem, SUNContext ctx, int n_roots, int n_restart_roots);
 
     // Size the Result and its (optional) sensitivity blocks, and name every axis.
     void allocate_run_result(Result &result, const SolverOptions &opts, int n_out, int n_sens_p,
@@ -2385,6 +2403,20 @@ struct CvodeSimulator::Impl {
                                         const std::vector<const NetworkModel::StateSwitch *> &batch,
                                         std::vector<std::vector<double>> &s,
                                         SensitivityState &sens);
+
+    // Issue #897: whether a plain run should restart at state switch `sw`'s
+    // root, located at (t, x) in a step that ended at t_end. True when the
+    // solver's trajectory over the rest of the step goes beyond the surface by
+    // more than the tolerance can blur, and the flow on the near side stays
+    // finite as the
+    // surface is approached and carries the residual across it in the
+    // direction `dir` (+1 rising, -1 falling) the root finder reported; true
+    // also when no near-side point can be built. Leaves the model synced at
+    // (t, x).
+    bool flow_carries_state_switch(void *cvode_mem, double t, const double *x, int ns,
+                                   const NetworkModel::StateSwitch &sw, int dir, double t_end,
+                                   N_Vector scratch, double rtol, double atol,
+                                   const std::vector<double> &atol_v);
 };
 
 // ─── Shared integrator setup (used by run() and run_warm()) ──────────────────
@@ -4322,23 +4354,28 @@ void CvodeSimulator::Impl::refresh_sens_error_floor(void *cvode_mem, double t, N
 
 // ─── Event rootfinding registration ──────────────────────────────────────────
 void CvodeSimulator::Impl::register_roots(void *cvode_mem, SUNContext ctx, int n_roots,
-                                          int n_disc) {
+                                          int n_restart_roots) {
     // Root function callback: see cvode_event_root_fn.
     int flag = CVodeRootInit(cvode_mem, n_roots, cvode_event_root_fn);
     if (flag != CV_SUCCESS) {
         throw std::runtime_error("CVodeRootInit failed: " + std::to_string(flag));
     }
 
-    if (n_disc > 0) {
+    if (n_restart_roots > 0) {
         // A discontinuity root makes CVODE restart at each pulse edge,
         // where its first post-reinit step can be so small that t+h==t in
         // floating point — a benign SUNDIALS warning ("solver will continue
         // anyway") that RoadRunner emits on the same models. Route THIS
         // context's warning log to the null sink so a dosing-schedule model
-        // doesn't spam stdout. Scoped to n_disc>0: models without time
-        // piecewise keep their exact prior logging. Hard errors still throw
-        // via the flag<0 checks. The context (and this logger) is freed when
-        // the run's SunContextGuard goes out of scope.
+        // doesn't spam stdout. A state-switch root (issues #150, #897) does
+        // the same restarts, and its residual can also sit at exactly zero
+        // from the start (`EVx > 0` over a species that starts at 0), which
+        // draws a second benign warning ("some root functions identically
+        // 0"). As for a discontinuity root, the whole warning stream of the
+        // run's context goes to the sink, not just those two. Models with
+        // neither kind of root keep their exact prior logging. Hard errors still throw via the
+        // flag<0 checks. The context (and this logger) is freed when the run's SunContextGuard goes
+        // out of scope.
         SUNLogger logger = nullptr;
         if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
             SUNLogger_SetWarningFilename(logger, bngsim::null_device);
@@ -5762,6 +5799,148 @@ static constexpr double kStateSwitchGapRatio = 0.7;
 // which for a genuine common factor is orders of magnitude below it.
 static constexpr double kStateSwitchTauAgreeTol = 1e-4;
 
+bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, const double *x,
+                                                     int ns, const NetworkModel::StateSwitch &sw,
+                                                     int dir, double t_end, N_Vector scratch,
+                                                     double rtol, double atol,
+                                                     const std::vector<double> &atol_v) {
+    // A trajectory that CROSSES the surface arrives at it with a flow that stays
+    // finite as the surface is approached. One that only approaches it, parked
+    // beside it or relaxing onto it, arrives with a flow that vanishes there, so
+    // any crossing the root finder reports for it is the solver's own error.
+    // Restarting on the far side of such a crossing commits the run to a branch
+    // the exact trajectory never takes: GH #176's Voltage, parked 1e-11 below
+    // 50, came out 63% off, as did the same model with a latch that holds the
+    // far branch once entered, with V relaxing to exactly 50, and with the
+    // threshold reached through V1 + V2 or moving as V tracks it. The unstable
+    // symmetric manifold of ml_q_learning is the same case seen from the other
+    // side: its residual grows only in proportion to itself.
+    //
+    // So dg/dt is read on the NEAR side, where the arriving branch is live, at
+    // two distances from the surface, η and 2η, along the coordinate that moves
+    // the residual most (the same Newton step onto the surface the saltation
+    // jump uses). A flow that is the same at both is finite at the surface; one
+    // that scales with the distance vanishes there. The run restarts only on a
+    // finite flow that carries the residual the way the root finder reported.
+    //
+    // Neither of those can see a crossing the exact trajectory misses by less
+    // than the solver's own error. A trajectory that parks 1e-11 short of the
+    // threshold while its flow is carried by another species (a damped
+    // approach, where V' reads P and not V) or by a threshold that moves with
+    // time arrives with a finite flow, and the interpolant crosses at rtol
+    // 1e-8 all the same: the fourth review of PR #903 found those 1.085 and
+    // 0.16 off, silently, where main is right. So first the crossing has to be
+    // RESOLVED: somewhere between the root and the end of the step, the
+    // solver's own trajectory (CVODE's interpolant, sampled) must go beyond the
+    // surface by more than the band the tolerance leaves the residual,
+    //     δg = Σ_j |∂g/∂x_j|·(rtol·|x_j| + atol_j),
+    // times 10·√N, because the WRMS error test lets a single component carry
+    // √N of the tolerance. A crossing inside that band is one the requested
+    // tolerance cannot decide, and it steps on. The whole step is sampled
+    // rather than its end: a window can open and close inside one step, and a
+    // curved residual (3u − u³) can cross and come back, so the end may be on
+    // the near side again after an excursion of 0.03.
+    //
+    // Where no near-side point can be built (a residual flat in every
+    // coordinate, or one that does not move to the side the Newton step aims
+    // for), the run restarts, which is what lets CVODE set a zero root aside.
+    auto &eval = model.evaluator();
+    const std::vector<double> xv(x, x + ns);
+    std::vector<double> xw(xv);
+    sync_model_at(t, x, ns);
+    const double g_star = eval.evaluate(sw.residual_expr_idx);
+    int best = -1;
+    double best_gj = 0.0;
+    double best_weight = 0.0;
+    std::vector<double> grad(static_cast<std::size_t>(ns), 0.0);
+    for (int j : sw.species) {
+        const double xj = xv[static_cast<std::size_t>(j)];
+        const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+        xw[static_cast<std::size_t>(j)] = xj + h;
+        sync_model_at(t, xw.data(), ns);
+        const double g_hi = eval.evaluate(sw.residual_expr_idx);
+        xw[static_cast<std::size_t>(j)] = xj - h;
+        sync_model_at(t, xw.data(), ns);
+        const double g_lo = eval.evaluate(sw.residual_expr_idx);
+        xw[static_cast<std::size_t>(j)] = xj;
+        const double gj = (g_hi - g_lo) / (2.0 * h);
+        if (std::isfinite(gj)) {
+            grad[static_cast<std::size_t>(j)] = gj;
+        }
+        const double weight = std::fabs(gj) * std::max(std::fabs(xj), 1.0);
+        if (std::isfinite(gj) && gj != 0.0 && weight > best_weight) {
+            best_weight = weight;
+            best_gj = gj;
+            best = j;
+        }
+    }
+    sync_model_at(t, x, ns);
+    if (best < 0 || !std::isfinite(g_star)) {
+        return true;
+    }
+    // The far-side excursion the solver's trajectory makes over the rest of the
+    // step, against the band at the state where it is measured.
+    const double k_resolve = 10.0 * std::sqrt(static_cast<double>(ns));
+    bool resolved = false;
+    if (t_end > t) {
+        constexpr int kSamples = 16;
+        for (int k = 1; k <= kSamples && !resolved; ++k) {
+            const double tk = t + (t_end - t) * static_cast<double>(k) / kSamples;
+            if (CVodeGetDky(cvode_mem, tk, 0, scratch) != CV_SUCCESS) {
+                break;
+            }
+            const double *xk = N_VGetArrayPointer(scratch);
+            sync_model_at(tk, xk, ns);
+            const double excursion = eval.evaluate(sw.residual_expr_idx) * static_cast<double>(dir);
+            double band = 0.0;
+            for (int j : sw.species) {
+                const double atol_j = atol_v.empty() ? atol : atol_v[static_cast<std::size_t>(j)];
+                band += std::fabs(grad[static_cast<std::size_t>(j)]) *
+                        (rtol * std::fabs(xk[j]) + atol_j);
+            }
+            resolved = std::isfinite(excursion) && excursion > k_resolve * band;
+        }
+        sync_model_at(t, x, ns);
+    }
+    if (!resolved) {
+        return false;
+    }
+    const double xj = xv[static_cast<std::size_t>(best)];
+    // The sign g has before the crossing. Not `near`: <windows.h> defines it
+    // as an empty macro, and MSVC then sees `( < 0.0)`.
+    const double near_sign = -static_cast<double>(dir);
+    std::vector<double> f(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> gx;
+    // dg/dt at the point whose residual the Newton step aims at near·m·η, or NaN
+    // when that point is not on the near side.
+    auto flow_at = [&](double eta, double m) {
+        xw.assign(xv.begin(), xv.end());
+        xw[static_cast<std::size_t>(best)] = xj + (near_sign * m * eta - g_star) / best_gj;
+        sync_model_at(t, xw.data(), ns);
+        const double g = eval.evaluate(sw.residual_expr_idx);
+        if (!std::isfinite(g) || g == 0.0 || (g < 0.0) != (near_sign < 0.0)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        model.compute_derivs(t, xw.data(), f.data());
+        double scale = 0.0;
+        return residual_flow(sw.residual_expr_idx, sw.species, t, ns, xw, f, gx, scale);
+    };
+    double eta = std::fabs(g_star) + 1e-9 * best_weight;
+    for (int attempt = 0; attempt < 4; ++attempt, eta *= 8.0) {
+        const double flow1 = flow_at(eta, 1.0);
+        const double flow2 = flow_at(eta, 2.0);
+        if (std::isnan(flow1) || std::isnan(flow2)) {
+            continue;
+        }
+        sync_model_at(t, x, ns);
+        const bool finite = std::fabs(flow2 - flow1) <= 0.25 * std::fabs(flow1);
+        return finite && flow1 * static_cast<double>(dir) > 0.0 &&
+               flow2 * static_cast<double>(dir) > 0.0;
+    }
+    sync_model_at(t, x, ns);
+    return true;
+}
+
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     void *cvode_mem, N_Vector y, int ns, double t_evt,
     const std::vector<const NetworkModel::StateSwitch *> &batch,
@@ -6372,9 +6551,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // the crossing. Until issue #440 no such run could reach here, because
     // every model that had stop times had registered the roots that produced
     // them; a .net model has the stops without the roots, so the check has to
-    // be made on its own.
-    const bool warm_eligible = !has_roots && opts.crossing_stops.empty() && !wants_sensitivity &&
-                               (opts.jacobian != "jax") && !std::getenv("BNGSIM_NO_WARM_CVODE");
+    // be made on its own. The state-switch roots of issue #897 are registered by
+    // the cold loop alone for the same reason, and a plain run can carry them.
+    const bool warm_eligible = !has_roots && opts.crossing_stops.empty() &&
+                               opts.sensitivity.state_switch_conditions.empty() &&
+                               !wants_sensitivity && (opts.jacobian != "jax") &&
+                               !std::getenv("BNGSIM_NO_WARM_CVODE");
     if (warm_eligible) {
         return impl_->run_warm(times, opts, use_sparse);
     }
@@ -6654,18 +6836,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // chased (which is what keeps a sensitivity run out of issue #82's collapsed
     // step), and there is a place to apply the saltation jump dx/dθ takes there.
     //
-    // Registered only when the run asks for sensitivities. Those are the runs the
-    // missing jump is wrong for, and leaving the root set alone otherwise keeps
-    // every plain trajectory in the corpus bit-for-bit unchanged; adding these
-    // roots unconditionally is a trajectory-accuracy change of its own and wants
-    // its own measurement.
+    // Registered for every run that hands conditions over, plain runs included
+    // (issue #897). A step can span a narrow state-gated window — a rate law
+    // that is on only while `onset(S) <= t < onset(S) + w` — and read the branch
+    // as off at both ends, so the window is lost with no error at any
+    // tolerance; the root is what stops the step inside it. A plain run gets
+    // the stop and the restart, and nothing else: the jump below is applied
+    // only when there are sensitivity columns to jump, and the restart is
+    // skipped at a root the flow does not clearly carry (see the CV_ROOT_RETURN
+    // handler).
     //
     // Deduplicated by the residual's text rather than the condition's, so
     // `X<1` and `X<=1` — the same crossing, two spellings — are one root and one
     // jump instead of two coincident ones the composition would double-count.
     std::vector<const NetworkModel::StateSwitch *> state_switches;
     std::vector<int> state_switch_roots;
-    if (wants_sensitivity && !opts.sensitivity.state_switch_conditions.empty()) {
+    std::vector<double> state_switch_zero_hold;
+    if (!opts.sensitivity.state_switch_conditions.empty()) {
         std::unordered_set<std::string> seen_residual;
         for (const std::string &cond : opts.sensitivity.state_switch_conditions) {
             const NetworkModel::StateSwitch *sw = model.state_switch(cond);
@@ -6677,8 +6864,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     }
     const int n_state_switch = static_cast<int>(state_switch_roots.size());
+    state_switch_zero_hold.assign(static_cast<size_t>(n_state_switch), 0.0);
     if (n_state_switch > 0) {
         user_data.state_switch_roots = &state_switch_roots;
+        user_data.state_switch_zero_hold = &state_switch_zero_hold;
     }
     const int n_roots = n_events + n_disc + n_state_switch;
 
@@ -7114,14 +7303,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // Scratch for the root-sign check inside `land_clock_on_threshold`: the
     // registered roots evaluated on either side of the ulp it moves the counter
     // by, so a move that would step over one can be taken back. Empty and never
-    // touched on a model with no roots, which is every .net model.
+    // touched on a model with no roots, which is most .net models.
     std::vector<sunrealtype> land_g_before(static_cast<size_t>(std::max(n_roots, 0)));
     std::vector<sunrealtype> land_g_after(land_g_before.size());
     const RootSignWatch root_watch{n_roots, &user_data, &land_g_before, &land_g_after};
 
     if (n_roots > 0) {
-        // Register the event + discontinuity roots (Impl::register_roots).
-        impl_->register_roots(cvode_mem, ctx, n_roots, n_disc);
+        // Register the event, discontinuity and state-switch roots
+        // (Impl::register_roots). The last two restart CVODE at a crossing
+        // alike, so they share its warning filter.
+        impl_->register_roots(cvode_mem, ctx, n_roots, n_disc + n_state_switch);
 
         // Two-phase t=0 trigger initialization (SBML L3 §3.4.5):
         //
@@ -7641,13 +7832,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // CVODE stopped at a root (event trigger zero-crossing).
             // Identify which events fired, apply assignments, reinit integrator.
             if (flag == CV_ROOT_RETURN && n_roots > 0) {
-                // root_info spans both event roots [0,n_events) and
-                // discontinuity roots [n_events,n_roots). The event-firing
-                // loops below only scan [0,n_events), so a discontinuity
-                // crossing is never misread as an event; its sole effect is
-                // the unconditional CVodeReInit at the end of this block, which
-                // breaks the integration step exactly at the `time` threshold
-                // so the solver cannot step over a narrow forcing pulse.
+                // root_info spans the event roots [0,n_events), the
+                // discontinuity roots [n_events,n_events+n_disc) and the
+                // state-switch roots after them. The event-firing loops below
+                // only scan [0,n_events), so no other root is misread as an
+                // event; its effect is the CVodeReInit at the end of this
+                // block, which breaks the integration step exactly at the
+                // threshold so the solver cannot step over a narrow pulse. That
+                // restart is skipped only for a plain run's lone state-switch
+                // roots that the flow does not clearly carry (issue #897, below).
                 std::vector<int> root_info(n_roots);
                 CVodeGetRootInfo(cvode_mem, root_info.data());
 
@@ -7828,25 +8021,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // whose own assignment FALSIFIES its trigger (trigger ``S1<0.1``,
                 // assignment ``S1:=1``) re-arms for the next rising edge, while
                 // one whose assignment RE-SATISFIES the trigger queues its next
-                // (delayed) fire. The cascade only queues, so the unconditional
-                // CVodeReInit below (for the root batch's own assignments) is the
+                // (delayed) fire. The cascade only queues, so the CVodeReInit
+                // below (for the root batch's own assignments) is the
                 // one that matters; sensitivities are upstream-guarded off for
                 // the self-triggering event models this path serves, so the GH
                 // #212 jump (keyed on the root batch `firing`) is left untouched.
                 cascade_triggered_events(static_cast<double>(t_ret));
 
-                // Reinitialize CVODE with modified state vector
-                int reinit_flag = impl_->reinit_cvode(cvode_mem, t_ret, y);
-                if (reinit_flag != CV_SUCCESS) {
-                    throw std::runtime_error("CVodeReInit after event failed: " +
-                                             std::to_string(reinit_flag));
-                }
-                // Jump dx/dp across the event and re-seed CVODES sensitivity
-                // vectors (GH #212). chatter_y_before holds this batch's
-                // pre-fire state x⁻ (snapshotted above whenever firing is
-                // non-empty, which any_event_fired implies). No-op unless
-                // sensitivities are active.
-                //
                 // A state-dependent rate-law switch crossed here too, if any of
                 // its residual roots is in this batch (issue #150).
                 std::vector<int> switched;
@@ -7855,6 +8036,77 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         switched.push_back(j);
                     }
                 }
+
+                // Issue #897: in a run without sensitivities, a batch of
+                // state-switch roots and nothing else restarts the integrator
+                // only when one of them is a genuine crossing: the solver's
+                // trajectory over the rest of the step goes past the surface by
+                // more than the tolerance can blur, and the flow on the near
+                // side stays finite as the
+                // surface is approached and carries the state across it
+                // (flow_carries_state_switch). A
+                // trajectory parked beside a threshold, or relaxing onto it,
+                // can cross it on the solver's interpolant alone, and restarting
+                // on the far side of that crossing commits the run to a branch
+                // the exact trajectory never takes: the GH #176 fixture came out
+                // 63% off, over 2e6 steps, and with no error. Stepping on is the
+                // stepping the run had before these roots existed. A batch that
+                // also stops at a crossing time restarts regardless, its own
+                // restart folded into this one.
+                bool restart = true;
+                if (!any_event_fired && sens.n_total == 0 && !switched.empty()) {
+                    bool other_root = false;
+                    for (int i = 0; i < n_events + n_disc; ++i) {
+                        other_root = other_root || root_info[i] != 0;
+                    }
+                    const double t_root = static_cast<double>(t_ret);
+                    const bool at_stop =
+                        (stop_at_crossing && t_root >= t_crossing - switch_t_eps) ||
+                        (stop_at_switch && t_root >= t_switch - switch_t_eps);
+                    if (!other_root && !at_stop) {
+                        // The end of the step the root was found in, whose
+                        // interpolant the resolution test samples.
+                        sunrealtype t_end = t_ret;
+                        CVodeGetCurrentTime(cvode_mem, &t_end);
+                        NVectorGuard scratch(N_VClone(y));
+                        restart = false;
+                        for (int j : switched) {
+                            if (impl_->flow_carries_state_switch(
+                                    cvode_mem, t_root, y_data, ns,
+                                    *state_switches[static_cast<size_t>(j)],
+                                    root_info[n_events + n_disc + j], static_cast<double>(t_end),
+                                    scratch, rtol, atol, atol_v)) {
+                                restart = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Reinitialize CVODE with modified state vector
+                if (restart) {
+                    // CVODE sets a root that is zero at a restart aside itself.
+                    std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
+                    int reinit_flag = impl_->reinit_cvode(cvode_mem, t_ret, y);
+                    if (reinit_flag != CV_SUCCESS) {
+                        throw std::runtime_error("CVodeReInit after event failed: " +
+                                                 std::to_string(reinit_flag));
+                    }
+                } else {
+                    // Stepping on past the roots: each residual stays on the
+                    // side the flow is taking it back to, even where it reads
+                    // exactly zero (nn_xor's relaxations park on 0.0 itself).
+                    for (int j : switched) {
+                        state_switch_zero_hold[static_cast<size_t>(j)] =
+                            -static_cast<double>(root_info[n_events + n_disc + j]) *
+                            std::numeric_limits<double>::min();
+                    }
+                }
+                // Jump dx/dp across the event and re-seed CVODES sensitivity
+                // vectors (GH #212). chatter_y_before holds this batch's
+                // pre-fire state x⁻ (snapshotted above whenever firing is
+                // non-empty, which any_event_fired implies). No-op unless
+                // sensitivities are active.
                 if (any_event_fired) {
                     if (!switched.empty() && !evt_s_minus.empty()) {
                         throw std::runtime_error(
@@ -7985,6 +8237,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         }
                         impl_->comoving_leave(sens, ns, cols.data(), cross_f_before);
                     }
+                    std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
                     int rf = impl_->reinit_cvode(cvode_mem, t_ret, y);
                     if (rf != CV_SUCCESS) {
                         throw std::runtime_error("CVodeReInit at the discontinuity crossing t=" +

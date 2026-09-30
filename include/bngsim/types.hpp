@@ -1037,10 +1037,11 @@ struct SensitivityOptions {
     // CVODE root so the crossing is located, and applies the saltation jump
     //     s⁺ = s⁻ + (f⁻ − f⁺)·dt*/dθ
     // there with dt*/dθ differentiated exactly as issue #144 does for a
-    // state-dependent event trigger. Registered ONLY for a run that asks for
-    // sensitivities: they are the runs the missing term is wrong for, and
-    // leaving the root set alone otherwise keeps every plain trajectory
-    // bit-for-bit unchanged. Empty for every model without such a condition.
+    // state-dependent event trigger. The root is registered for every run,
+    // plain ones included: without it a step can span a narrow state-gated
+    // window and read the branch as off at both ends (issue #897). The jump is
+    // applied only when the run has sensitivity columns. Empty for every model
+    // without such a condition, which leaves the root set untouched.
     std::vector<std::string> state_switch_conditions;
 
     // Events whose crossing time moves with a requested parameter (issue #49).
