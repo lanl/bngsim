@@ -50,3 +50,23 @@ def test_an_initial_condition_column_is_reset_with_the_state():
     s = np.asarray(run.sensitivities_ic)
     assert np.isfinite(s).all()
     np.testing.assert_allclose(s, 0.0, atol=1e-12)
+
+
+def test_a_state_dependent_assignment_carries_a_nonzero_seed():
+    """``S = S/2`` at t_start reads s⁻ through ∂h/∂x = 1/2, so a wrong s⁻ shows.
+    S decays at k from S0 after halving, so dS/dS0 = e^(−k·t)/2; T is not
+    assigned and keeps dT/dT0 = e^(−k·t)."""
+    model = bngsim.Model.from_antimony_string(
+        "species S, T; S0 = 100; T0 = 5; k = 0.1; S = S0; T = T0\n"
+        "J1: S -> ; k*S\nJ2: T -> ; k*T\n"
+        "E1: at (time >= 0), t0=false: S = S/2\n"
+    )
+    t = np.array([0.0, 1.0, 2.0])
+    run = bngsim.Simulator(model, method="ode", sensitivity_ic=["S", "T"]).run(
+        sample_times=list(t), rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    s = np.asarray(run.sensitivities_ic)
+    decay = np.exp(-0.1 * t)
+    np.testing.assert_allclose(s[:, names.index("S"), 0], 0.5 * decay, rtol=1e-7)
+    np.testing.assert_allclose(s[:, names.index("T"), 1], decay, rtol=1e-7)
