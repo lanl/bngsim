@@ -467,6 +467,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Per-instance RNG with deterministic seed
     std::mt19937_64 rng(seed);
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
+    // Random tie-break among equal-priority simultaneous events (SBML L3v2
+    // §4.11.6, issue #755). A stream of its own, derived from the run seed, so
+    // it is reproducible per seed and a tie never shifts the reaction stream:
+    // a model with no tie draws nothing from it and runs exactly as before.
+    std::mt19937_64 event_rng(seed ^ 0x9E3779B97F4A7C15ULL);
 
     // GH #149 ablation — fast RNG (BNGSIM_SSA_FAST_RNG=1). std::mt19937_64 +
     // uniform_real_distribution is the slow std combo; SSA draws 2 uniforms +
@@ -950,60 +955,119 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             conc[rate_rule_odes[i].target0] += rr_deriv[i] * dt;
     };
 
-    // process_firing_batch — adapted from cvode_simulator.cpp:1067-1186.
-    // SBML L3 simultaneous-event semantics: priority-ordered drain with
-    // state refresh between immediate fires; cancellation of non-persistent
-    // entries whose trigger reverts post-fire; UVFTT pre-snapshot of
-    // assignment RHS values. Returns true if any event modified conc[].
+    // process_firing_batch — SBML L3v2 §4.11.6 simultaneous-event execution,
+    // the same drain as cvode_simulator.cpp's process_firing_batch (GH #242).
+    //
+    // The batch is a dynamic MULTISET of execution instances, one per rising
+    // edge, not the fixed list the caller hands in. This used to be a copy of
+    // the ODE drain from before GH #242, and it differed in two ways, each
+    // silent:
+    //   - An assignment that turned another event's trigger true did not add it
+    //     to the batch, and every caller then synced trigger_was_true to the
+    //     post-batch truth, which recorded the new rising edge as "already
+    //     true". A cascaded event never fired, at that instant or later
+    //     (issue #761; SBML suite 00978 gave x, y, z = 0, 0, 0 against 5, 1, 3).
+    //   - Among instances at the same maximum priority the lowest index always
+    //     ran first, so the last-declared writer won every replicate and an
+    //     ensemble collapsed onto one branch where §4.11.6 and the ODE engine
+    //     pick at random (issue #755).
+    //
+    // So, as in the ODE drain:
+    //  1. Seed one instance per event in `firing_in`; `prev` is the trigger
+    //     baseline, with each seed marked true (it has just risen). Each
+    //     instance freezes its useValuesFromTriggerTime values at its own
+    //     trigger time: the pre-batch state for a seed.
+    //  2. Drain highest priority first, re-evaluating priorities before every
+    //     pick. Among not-done instances at the same maximum priority pick one
+    //     at random from `event_rng`. A single candidate draws nothing, so a
+    //     model with no tie never advances that stream.
+    //  3. After each fire, refresh observables and functions and re-check every
+    //     trigger against `prev`: a rising edge enqueues a new instance (its
+    //     values frozen now), a falling edge cancels the not-done instances of
+    //     a non-persistent event.
+    //  4. CASCADE_LIMIT stops an algebraic loop (A arms B arms A ...).
+    //  5. On exit trigger_was_true holds the settled truth of every trigger.
+    // Delays never reach here: run_internal refuses a delayed event up front
+    // (issue #526). Returns true if any event modified conc[].
+    struct ExecInstance {
+        int event_idx;
+        std::vector<double> snapshot_vals; // UVFTT frozen RHS (empty if !UVFTT)
+        bool done = false;
+    };
+    // Far above any legitimate cascade depth (00978 fires ~11; 01533 ~106).
+    constexpr int CASCADE_LIMIT = 100000;
     auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
         if (firing_in.empty())
             return false;
 
-        std::vector<std::vector<double>> snapshot_vals(firing_in.size());
-        for (size_t k = 0; k < firing_in.size(); ++k) {
-            const auto &ev = events[firing_in[k]];
+        auto make_instance = [&](int ei) -> ExecInstance {
+            ExecInstance inst;
+            inst.event_idx = ei;
+            const auto &ev = events[ei];
             if (ev.use_values_from_trigger_time) {
-                snapshot_vals[k].reserve(ev.assignments.size());
+                inst.snapshot_vals.reserve(ev.assignments.size());
                 for (const auto &[sp_idx0, val_expr_idx] : ev.assignments) {
                     (void)sp_idx0;
-                    snapshot_vals[k].push_back(eval_ref.evaluate(val_expr_idx));
+                    inst.snapshot_vals.push_back(eval_ref.evaluate(val_expr_idx));
                 }
             }
-            // Delays are gated out at Simulator init; ignore delay fields here.
+            return inst;
+        };
+
+        std::vector<bool> prev = trigger_was_true;
+        std::vector<ExecInstance> queue;
+        queue.reserve(firing_in.size());
+        for (int ei : firing_in) {
+            prev[ei] = true;
+            queue.push_back(make_instance(ei));
         }
 
-        std::vector<bool> done(firing_in.size(), false);
-        bool any_fired = false;
-
-        auto eval_pri = [&](size_t k) -> double {
-            const auto &ev = events[firing_in[k]];
+        auto eval_pri = [&](const ExecInstance &inst) -> double {
+            const auto &ev = events[inst.event_idx];
             return (ev.priority_expr_idx >= 0) ? eval_ref.evaluate(ev.priority_expr_idx)
                                                : static_cast<double>(ev.priority);
         };
 
+        bool any_fired = false;
+        int fires = 0;
+        std::vector<size_t> ties;
         while (true) {
-            ssize_t best = -1;
+            // The not-done instances sharing the maximum priority, in index
+            // order, so a single candidate is the old lowest-index pick.
             double best_pri = 0.0;
-            for (size_t k = 0; k < firing_in.size(); ++k) {
-                if (done[k])
+            ties.clear();
+            for (size_t k = 0; k < queue.size(); ++k) {
+                if (queue[k].done)
                     continue;
-                double pk = eval_pri(k);
-                if (best < 0 || pk > best_pri) {
-                    best = static_cast<ssize_t>(k);
+                const double pk = eval_pri(queue[k]);
+                if (ties.empty() || pk > best_pri) {
                     best_pri = pk;
+                    ties.clear();
+                    ties.push_back(k);
+                } else if (pk == best_pri) {
+                    ties.push_back(k);
                 }
             }
-            if (best < 0)
+            if (ties.empty())
                 break;
-            size_t k = static_cast<size_t>(best);
-            done[k] = true;
+            size_t k = ties[0];
+            if (ties.size() > 1) {
+                std::uniform_int_distribution<size_t> pick(0, ties.size() - 1);
+                k = ties[pick(event_rng)];
+            }
+            queue[k].done = true;
 
-            int ei = firing_in[k];
-            const auto &ev = events[ei];
+            if (++fires > CASCADE_LIMIT) {
+                throw std::runtime_error(
+                    "Event cascade exceeded CASCADE_LIMIT at t=" + std::to_string(t_now) +
+                    " (same-instant events appear to arm each other in an algebraic loop).");
+            }
+
+            const auto &ev = events[queue[k].event_idx];
             const auto &assigns = ev.assignments;
             std::vector<double> nv(assigns.size());
             if (ev.use_values_from_trigger_time) {
-                nv = snapshot_vals[k];
+                nv = queue[k].snapshot_vals;
             } else {
                 for (size_t a = 0; a < assigns.size(); ++a) {
                     nv[a] = eval_ref.evaluate(assigns[a].second);
@@ -1031,17 +1095,20 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             model.update_observables(conc.data());
             model.evaluate_functions(t_now);
 
-            for (size_t k2 = 0; k2 < firing_in.size(); ++k2) {
-                if (done[k2])
-                    continue;
-                const auto &ev_k = events[firing_in[k2]];
-                if (ev_k.persistent)
-                    continue;
-                double tv = eval_ref.evaluate(ev_k.trigger_expr_idx);
-                if (tv <= 0.5)
-                    done[k2] = true;
+            for (int ei = 0; ei < n_events; ++ei) {
+                const bool now_true = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
+                if (now_true && !prev[ei]) {
+                    queue.push_back(make_instance(ei));
+                } else if (!now_true && prev[ei] && !events[ei].persistent) {
+                    for (auto &inst : queue)
+                        if (!inst.done && inst.event_idx == ei)
+                            inst.done = true;
+                }
+                prev[ei] = now_true;
             }
         }
+
+        trigger_was_true = prev;
         return any_fired;
     };
 
