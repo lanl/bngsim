@@ -124,3 +124,35 @@ def test_an_sbml_initial_assignment_gets_its_column_too(tmp_path):
         sample_times=list(T), rtol=1e-11, atol=1e-13
     )
     np.testing.assert_allclose(np.asarray(run.sensitivities)[:, 0, 0], DECAY, rtol=1e-8)
+
+
+def test_a_user_parameter_named_like_a_carrier_keeps_its_column(tmp_path):
+    """Only the loader's own ``_ic_<species>`` is a carrier. A user parameter that
+    merely starts with ``_ic_`` is an ordinary derived parameter: seeded, and
+    reported."""
+    net = tmp_path / "m.net"
+    net.write_text(DERIVED.replace("Rt", "_ic_x"))
+    model = bngsim.Model.from_net(net)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["_ic_x"]).run(
+        sample_times=list(T), rtol=1e-11, atol=1e-13
+    )
+    np.testing.assert_allclose(np.asarray(run.sensitivities)[:, 0, 0], DECAY, rtol=1e-8)
+    assert bngsim.Model.from_net(net).effective_ic_sensitivity(["_ic_x"]) == {
+        "B()": {"_ic_x": 1.0}
+    }
+
+
+def test_a_carrier_is_seeded_when_named_and_never_reported(tmp_path):
+    """``S = 3*p1`` is lowered to a synthetic ``_ic_S = 3*p1`` (issue #147). A run
+    that names the carrier gets its real column, e^(−kd·t); the report still
+    speaks only of the symbols the model was written in."""
+    pytest.importorskip("antimony")
+    text = "species S; p1 = 10; S = 3*p1; kd = 0.5; J0: S -> ; kd*S"
+    model = bngsim.Model.from_antimony_string(text)
+    assert "_ic_S" in model.param_names
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["_ic_S"]).run(
+        sample_times=list(T), rtol=1e-11, atol=1e-13
+    )
+    np.testing.assert_allclose(np.asarray(run.sensitivities)[:, 0, 0], DECAY, rtol=1e-8)
+    report = bngsim.Model.from_antimony_string(text).effective_ic_sensitivity()
+    assert report == {"S": {"p1": 3.0}}

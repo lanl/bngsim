@@ -3084,11 +3084,6 @@ def _derived_expr_value_numeric(
         return None
 
 
-# The SBML loader's name for the derived parameter it declares to carry a
-# compound <initialAssignment> (issue #147; `_sbml_loader`, `_ic_{sym}`).
-_IC_CARRIER_PREFIX = "_ic_"
-
-
 def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
     """Forward-sensitivity initial-condition seeds for parameter-referenced
     species initial conditions (issue #43).
@@ -3114,8 +3109,8 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
     Returns ``[]`` when no species IC is a parameter reference and no compartment
     size reaches one (the overwhelming majority of models — two cheap C++ vector
     fetches, no sympy import). A derived IC whose expression cannot be
-    differentiated is simply omitted, leaving that species unseeded (pre-#43
-    behavior) without disturbing the others.
+    differentiated gets no primary rows (pre-#43 behavior), only its identity
+    row, without disturbing the others.
 
     Issue #170 stage 3 adds the **storage** axis. bngsim stores amount/V_c, so a
     species whose declared IC is an amount has a stored initial condition that
@@ -3193,20 +3188,14 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
             # cannot disturb a primary column. The identity row holds whatever
             # the expression is (x(0) = Rt, so ∂x(0)/∂Rt = 1), including one the
             # walk above could not parse — the row the C++ loop always gave it.
-            #
-            # Not on a synthetic `_ic_<species>` carrier, which the SBML loader
-            # (issue #147) declares for a compound <initialAssignment>: nobody
-            # named it, so it has no column of its own to answer, and
-            # effective_ic_sensitivity promises never to report it.
+            # The SBML loader's synthetic `_ic_<species>` carrier (issue #147)
+            # is seeded like any other derived parameter, so a run that names it
+            # gets its real column; Model.effective_ic_sensitivity is what keeps
+            # it out of the report.
             for dname, coeff in partials.items():
-                if (
-                    dname not in primary_names
-                    and dname in param_idx
-                    and not dname.startswith(_IC_CARRIER_PREFIX)
-                ):
+                if dname not in primary_names and dname in param_idx:
                     seeds.append((species_idx0, param_idx[dname], float(coeff) * vdiv))
-            if not pname.startswith(_IC_CARRIER_PREFIX):
-                seeds.append((species_idx0, param_idx0, vdiv))
+            seeds.append((species_idx0, param_idx0, vdiv))
         else:
             # Direct primary IC: seed coefficient 1 on the exact named
             # parameter, matching the legacy C++ identity seeding — except where
