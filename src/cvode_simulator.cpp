@@ -5392,7 +5392,10 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             // in time is exact.
             double dcdt = 0.0;
             if (tau_nonzero) {
-                const double ht = 1e-6 * std::max(std::fabs(t_evt), 1.0);
+                // Relative to the fire time itself, not floored at one time
+                // unit: a model timed in microseconds would otherwise take a
+                // step the size of its own dynamics.
+                const double ht = std::max(1e-6 * std::fabs(t_evt), 1e-12);
                 auto value_at = [&](double t) {
                     for (int i = 0; i < ns; ++i) {
                         sp_vec_outer[i].concentration = xwork[i];
