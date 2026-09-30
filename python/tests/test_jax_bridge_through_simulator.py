@@ -181,14 +181,10 @@ end groups
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #725: the counter-clock switch-time jump ignores the clock's own "
-    "sensitivity, so dX/dc0 and dX/drc come back 0 (as through Simulator.run)",
-)
 def test_a_counter_clock_switch_matches_its_closed_form(tmp_path):
     """#902's counter-clock case. C = c0 + rc·t crosses sigma at t* = (sigma − c0)/rc
-    = 2.5, and X(5) = k·(5 − t*), so dX/d[c0, rc, sigma, k] = [2, 5, −2, 2.5]."""
+    = 2.5, and X(5) = k·(5 − t*), so dX/d[c0, rc, sigma, k] = [2, 5, −2, 2.5]. The
+    clock's own columns need issue #725's term."""
     model = _model(tmp_path, COUNTER_CLOCK, "cc.net")
     assert list(model.primary_param_names) == ["c0", "rc", "sigma", "k"]
 
