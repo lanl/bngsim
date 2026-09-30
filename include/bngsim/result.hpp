@@ -87,7 +87,7 @@ struct SsaDiagnostics {
     // GH #190 — how propensities were evaluated this run, for accurate reporting
     // (parity matrix / instrumentation). One of: "cc" (cc-compiled .so +
     // recompute-all), "mir" (in-process MIR JIT + recompute-all), or "interpreted"
-    // (per-reaction compute_propensity + Fenwick — native arithmetic for
+    // (per-reaction compute_propensity + sum tree — native arithmetic for
     // mass-action, ExprTk for Functional rate laws). Default "interpreted".
     std::string propensity_backend = "interpreted";
 

@@ -1,13 +1,13 @@
 // bngsim/src/ssa_simulator.cpp — SSA and PSA stochastic simulators
 //
-// SSA: Gillespie's direct method with dependency graph + Fenwick tree.
+// SSA: Gillespie's direct method with dependency graph + pairwise sum tree.
 // PSA: Partial Scaling Algorithm (Lin, Feng, Hlavacek, J. Chem. Phys. 150, 244101, 2019).
 //
 // Optimizations:
 //   1. Dependency graph: After reaction fires, only recompute propensities
 //      for reactions whose propensity is affected by the changed species.
 //      O(k) where k ≈ 5–20, instead of O(N) over all reactions.
-//   2. Fenwick tree (binary indexed tree): O(log N) reaction selection
+//   2. Pairwise sum tree: O(log N) reaction selection
 //      and O(log N) propensity updates, replacing O(N) linear scan.
 //
 // Per-instance RNG (std::mt19937_64). Deterministic seeding.
@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -36,81 +37,142 @@
 
 namespace bngsim {
 
-// ─── Fenwick Tree (Binary Indexed Tree) ──────────────────────────────────────
+// Out-of-line, rarely-taken paths kept out of the SSA loop's inlined code.
+#if defined(_MSC_VER)
+#define BNGSIM_SSA_COLD __declspec(noinline)
+#else
+#define BNGSIM_SSA_COLD __attribute__((noinline, cold))
+#endif
+
+// ─── Sum tree ────────────────────────────────────────────────────────────────
 //
-// Supports O(log N) operations for:
-//   - point_update(i, delta): add delta to element i
-//   - prefix_sum(i): sum of elements 0..i (inclusive)
-//   - total(): sum of all elements
-//   - find(target): smallest index where prefix_sum >= target (O(log N))
+// Supports, for N non-negative weights:
+//   - set(i, value): O(log N)
+//   - total(): O(1)
+//   - find(target): the index whose slice holds target, O(log N)
 //
 // Used for reaction selection: stores propensities (or scaled propensities
 // for PSA), enabling O(log N) sampling instead of O(N) linear scan.
+//
+// Every internal node is the sum of its children, and an update recomputes
+// each node on the leaf's path from them. It used to be a Fenwick tree, whose
+// nodes are running sums that an update adjusts by a delta and nothing ever
+// re-summed, so each update's rounding stayed in the node for the rest of the
+// run (issue #713). A propensity of 1e11 that shared a node with one of 1e-6
+// absorbed the small one's first write into its own rounding; when the large
+// one decayed to 0 the node kept the residue, 1.1e-16, not 1e-6, and the slow
+// channel never fired again, with no warning. A residue of the other sign made
+// the total negative, which the loop read as "stuck". Here a node is a fresh
+// sum of its current children, so once a large weight is gone, nothing of it
+// is left behind.
+//
+// A leaf's slice is [sum of the weights before it, that sum + its weight). A
+// target in [0, total()) therefore never selects a leaf of weight 0: the old
+// find took the first index whose running sum reached the target, which for
+// target 0 was index 0 whatever its weight.
+//
+// Why four children: an update's cost is a chain of dependent adds, one per
+// level, and the next step reads the root straight away. A binary tree put
+// 7 adds on that chain at 97 reactions and cost up to 21% of a step there;
+// four children halve the depth, which brings the SSA back to the Fenwick
+// tree's speed (0.99x-1.05x of it on the committed SSA suite's small
+// networks, 0.8x-0.9x on the large ones).
 
-class FenwickTree {
+class SumTree {
   public:
-    FenwickTree() : n_(0) {}
+    SumTree() = default;
 
-    explicit FenwickTree(int n) : n_(n), tree_(n + 1, 0.0), vals_(n, 0.0) {}
+    // A 4-ary tree: node p's children are 4p-2 .. 4p+1 (the root is 1, its
+    // children 2..5), and the leaves are the last level. Four children rather
+    // than two halve the depth, which is what an update pays for (see set).
+    explicit SumTree(int n) : n_(n) {
+        int leaves = 1;
+        while (leaves < n) {
+            leaves *= 4;
+            ++depth_;
+        }
+        base_ = (leaves - 1) / 3 + 1; // 1-based index of leaf 0
+        // Offset by 2 so that every group of four siblings (4p-2 .. 4p+1)
+        // starts on a multiple of four doubles.
+        node_.assign(static_cast<std::size_t>(base_ + leaves) + 2, 0.0);
+    }
 
-    // Set element i to value (compute delta internally)
+    // Set leaf i to value and recompute its ancestors from their children. At
+    // each level the sum of the three siblings does not depend on the new
+    // value, so only one add per level is on the dependency chain; the running
+    // sum is carried in a register. An unchanged value leaves every ancestor as
+    // it is: a firing re-sets every reaction that reads a function it moved,
+    // and most of those are unchanged.
     void set(int i, double value) {
-        double delta = value - vals_[i];
-        vals_[i] = value;
-        point_update(i, delta);
-    }
-
-    // Add delta to element i: O(log N)
-    void point_update(int i, double delta) {
-        for (int j = i + 1; j <= n_; j += j & (-j)) {
-            tree_[j] += delta;
+        int j = base_ + i;
+        if (at(j) == value)
+            return;
+        double v = value;
+        at(j) = v;
+        while (j > 1) {
+            const int w = (j - 2) & 3; // position among its siblings
+            const int c0 = j - w;
+            v += at(c0 + (w ^ 1)) + (at(c0 + (w ^ 2)) + at(c0 + (w ^ 3)));
+            j = (j + 2) >> 2;
+            at(j) = v;
         }
     }
 
-    // Sum of elements 0..i (inclusive): O(log N)
-    double prefix_sum(int i) const {
-        double s = 0.0;
-        for (int j = i + 1; j > 0; j -= j & (-j)) {
-            s += tree_[j];
-        }
-        return s;
-    }
+    double total() const { return at(1); }
 
-    // Total sum of all elements: O(log N)
-    double total() const { return prefix_sum(n_ - 1); }
-
-    // Find smallest index where prefix_sum >= target: O(log N)
-    // Uses binary lifting (bit-by-bit descent), not binary search.
-    // This is the standard Fenwick tree "find" operation.
+    // The leaf whose slice holds target, for 0 <= target < total().
     int find(double target) const {
-        int pos = 0;
-        double sum = 0.0;
-        // Find highest bit
-        int bit = 1;
-        while (bit <= n_)
-            bit <<= 1;
-        bit >>= 1;
-
-        while (bit > 0) {
-            int next = pos + bit;
-            if (next <= n_ && sum + tree_[next] < target) {
-                pos = next;
-                sum += tree_[next];
+        int j = 1;
+        for (int d = 0; d < depth_; ++d) {
+            const int c0 = 4 * j - 2;
+            const double a = at(c0);
+            const double ab = a + at(c0 + 1);
+            const double abc = ab + at(c0 + 2);
+            if (target < a) {
+                j = c0;
+            } else if (target < ab) {
+                target -= a;
+                j = c0 + 1;
+            } else if (target < abc) {
+                target -= ab;
+                j = c0 + 2;
+            } else {
+                target -= abc;
+                j = c0 + 3;
             }
-            bit >>= 1;
         }
-        return pos; // 0-based index
+        const int i = j - base_;
+        if (i < n_ && at(j) > 0.0)
+            return i;
+        return nearest_positive(i);
     }
 
-    // Get raw value at index i
-    double value(int i) const { return vals_[i]; }
+    double value(int i) const { return at(base_ + i); }
 
     int size() const { return n_; }
 
   private:
-    int n_;
-    std::vector<double> tree_; // 1-indexed Fenwick tree
-    std::vector<double> vals_; // 0-indexed raw values (for computing deltas)
+    double &at(int j) { return node_[static_cast<std::size_t>(j) + 2]; }
+    double at(int j) const { return node_[static_cast<std::size_t>(j) + 2]; }
+
+    // Rounding can carry a target that lies at the very end of the last
+    // positive slice past it, into weight-0 leaves: find's prefix sums are not
+    // added in the order set formed the node. It belongs to that last positive
+    // leaf. Out of line: it is essentially never taken.
+    BNGSIM_SSA_COLD int nearest_positive(int i) const {
+        for (int k = std::min(i, n_ - 1); k >= 0; --k)
+            if (at(base_ + k) > 0.0)
+                return k;
+        for (int k = i + 1; k < n_; ++k)
+            if (at(base_ + k) > 0.0)
+                return k;
+        return std::min(i, n_ - 1);
+    }
+
+    int n_ = 0;
+    int depth_ = 0;
+    int base_ = 1;
+    std::vector<double> node_;
 };
 
 // ─── Dependency Graph ────────────────────────────────────────────────────────
@@ -297,6 +359,29 @@ static std::string reaction_label(const NetworkModel &model, const Reaction &rxn
            join(rxn.product_indices) + ")";
 }
 
+// Issue #809 — refuse a NaN or infinite propensity, naming the reaction (or,
+// with r < 0, the total) and the time. Out of line and cold: it is reached at
+// most once per run, and building the message inside the SSA loop's lambdas
+// made them too large to inline, which cost 8-22% on small networks.
+[[noreturn]] BNGSIM_SSA_COLD static void
+throw_nonfinite_propensity(const NetworkModel &model, int r, double value, double t_at, bool psa) {
+    auto num = [](double v) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.17g", v);
+        return std::string(buf);
+    };
+    const std::string what = r >= 0 ? "the propensity of reaction " +
+                                          reaction_label(model, model.reactions()[r]) + " is " +
+                                          num(value)
+                                    : "the total propensity is " + num(value) +
+                                          " (every reaction's is finite; their sum overflowed)";
+    throw std::runtime_error(
+        std::string(psa ? "PSA: " : "SSA: ") + what + " at t = " + num(t_at) +
+        ". A rate law that evaluates to NaN or infinity has no stochastic meaning: check its "
+        "parameters and functions at this state (for example a sqrt or log of a negative value, "
+        "a division by zero, or a table function read at a NaN index).");
+}
+
 struct SsaSimulator::Impl {
     NetworkModel &model;
 
@@ -308,7 +393,7 @@ struct SsaSimulator::Impl {
     // For an SSA ensemble that re-runs the same simulator across replicates this
     // dominated the per-replicate cost on low-activity models, where the step
     // loop barely runs. Cache it here, build lazily on first run, and reuse it.
-    // The Fenwick tree holds per-state propensities and is still built per-run
+    // The sum tree holds per-state propensities and is still built per-run
     // (its O(nr) allocation is trivial next to the graph build).
     DependencyGraph dep_graph;
     bool dep_graph_built = false;
@@ -322,7 +407,7 @@ struct SsaSimulator::Impl {
     // and the model is recompute-all eligible (pure mass-action exact SSA, no
     // events, small nr), run_internal loads it and takes the RR-style
     // recompute-all + flat-scan loop by DEFAULT — no MIR required. Empty ⇒ the
-    // model wasn't eligible / codegen was skipped, and the incremental Fenwick
+    // model wasn't eligible / codegen was skipped, and the incremental sum-tree
     // path runs unchanged.
     std::string propensity_lib_path;
 
@@ -410,7 +495,7 @@ Result SsaSimulator::run_psa(const TimeSpec &times, uint64_t seed, double poplev
 //
 // Optimizations:
 //   - Dependency graph: only recompute propensities for affected reactions
-//   - Fenwick tree: O(log N) reaction selection + O(log N) propensity updates
+//   - Sum tree: O(log N) reaction selection + O(log N) propensity updates
 
 Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double poplevel,
                                   double timeout_seconds) {
@@ -491,8 +576,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         return f && f[0] != '\0' && f[0] != '0';
     }();
 
-    // GH #190 — reaction-selection structure (opt-in; default Fenwick). bngsim
-    // selects with a Fenwick tree: O(log n) total/find plus an O(log n) update
+    // GH #190 — reaction-selection structure (opt-in; default sum tree). bngsim
+    // selects with a pairwise sum tree (issue #713; it was a Fenwick tree): O(1)
+    // total, O(log n) find, plus an O(log n) update
     // per affected reaction. For SMALL reaction counts a flat cumulative array
     // (O(n) total + O(n) linear scan, but a single contiguous, branch-predictable,
     // L1-resident pass — RoadRunner's direct method) wins the per-selection
@@ -500,11 +586,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // measured 1.4-1.9x on the isolated selection workload for nr<=44. BUT once
     // the per-step affected-set sort/dedup is precomputed (below), selection is a
     // small fraction of per-step cost and the flat win washes out end-to-end
-    // (flat≈Fenwick within noise on the high-activity suite models). So the flat
+    // (flat≈tree within noise on the high-activity suite models). So the flat
     // path stays OPT-IN — validated and bit-identical, useful for selection-bound
     // regimes and ablation, but not the default (no measured end-to-end gain, and
     // the index-order sum is a different—if equivalent—realization). Select with:
-    //   unset/"fenwick"   Fenwick tree (default)
+    //   unset/"fenwick"   sum tree (default; the name predates issue #713)
     //   "flat"            force the flat array
     //   "auto"            size-adaptive: flat when nr <= FLAT_SELECT_MAX_NR
     constexpr int FLAT_SELECT_MAX_NR = 64;
@@ -516,7 +602,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             return true;
         if (std::strcmp(f, "auto") == 0)
             return nr <= FLAT_SELECT_MAX_NR;
-        return false; // "fenwick" / unrecognized → Fenwick tree (default)
+        return false; // "fenwick" / unrecognized → sum tree (default)
     }();
     auto next_u01 = [&]() -> double {
         if (!fast_rng)
@@ -582,7 +668,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
     // GH #110 — sign-split firing direction per reaction. +1 forward (rate >= 0,
     // reactants → products), -1 reverse (rate < 0, products → reactants). The
-    // Fenwick tree and propensities[] hold |rate| for selection; rxn_dir[r]
+    // sum tree and propensities[] hold |rate| for selection; rxn_dir[r]
     // records which way reaction r runs at its last propensity evaluation.
     std::vector<int> rxn_dir(nr, 1);
 
@@ -604,12 +690,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Cached on the Impl across run() calls — topology-only, seed-independent.
     DependencyGraph &dep_graph = impl_->dependency_graph(use_psa);
 
-    // ─── Build Fenwick tree ──────────────────────────────────────────────────
+    // ─── Build the selection tree ────────────────────────────────────────────
     // Stores effective propensities: unscaled for SSA, scaled for PSA.
-    FenwickTree ftree(nr);
+    SumTree ftree(nr);
 
     // GH #190 — flat cumulative-propensity array (mirrors what goes into the
-    // Fenwick tree). Allocated only on the flat selection path; sel_set/sel_total/
+    // sum tree). Allocated only on the flat selection path; sel_set/sel_total/
     // sel_find below dispatch to one structure or the other.
     std::vector<double> flat_eff;
     if (use_flat_select)
@@ -628,20 +714,35 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             s += flat_eff[r];
         return s;
     };
-    // Smallest index where the cumulative propensity reaches `target`. The flat
-    // path scans left-to-right in index order (the same selection semantics as
-    // the tree's binary lifting), terminating early once the running sum passes
-    // the target; for small nr this contiguous pass beats the tree's descent.
+    // The index whose slice [running sum before it, running sum through it)
+    // holds `target`. The flat path scans left-to-right in index order (the
+    // same selection semantics as the tree's descent), terminating early once
+    // the running sum passes the target; for small nr this contiguous pass
+    // beats the tree's descent. The comparison is strict so a weight-0 entry,
+    // whose slice is empty, is never taken (issue #713).
     auto sel_find = [&](double target) -> int {
         if (!use_flat_select)
             return ftree.find(target);
         double cum = 0.0;
+        int last_positive = nr - 1;
         for (int r = 0; r < nr; ++r) {
             cum += flat_eff[r];
-            if (cum >= target)
+            if (flat_eff[r] > 0.0)
+                last_positive = r;
+            if (cum > target)
                 return r;
         }
-        return nr - 1;
+        return last_positive;
+    };
+
+    // Issue #809 — a propensity that is NaN or infinite has no stochastic
+    // meaning, and the loop cannot recover from one: a NaN total fails the
+    // `a0 <= 0` stuck test and gives a NaN waiting time, so the SSA never
+    // reached another sample and spun forever, while PSA returned the frozen
+    // initial state as a trajectory. Refuse it where it is computed, naming the
+    // reaction and the time, as the ODE path refuses a non-finite RHS.
+    auto refuse_nonfinite_propensity = [&](int r, double value, double t_at) {
+        throw_nonfinite_propensity(model, r, value, t_at, use_psa);
     };
 
     // ─── Structure-specialized propensity-vector backend (GH #149 / #190) ─────
@@ -794,7 +895,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     };
 
     // Helper: (re)compute one reaction's propensity, direction, PSA scaling,
-    // and Fenwick-tree entry from the current conc[]. GH #110: the rate law is
+    // and sum-tree entry from the current conc[]. GH #110: the rate law is
     // evaluated literally and may be negative; we store |rate| for selection and
     // record the sign in rxn_dir[r] (+1 forward, -1 reverse). The selection
     // magnitude is direction-agnostic, so a reaction whose rate law goes
@@ -806,7 +907,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     auto set_propensity = [&](int r) {
         // GH #81 — a rate-rule ODE reaction (`dX/dt = f`, compiled to `[] → [X]`)
         // is NOT a stochastic channel: its target is integrated deterministically
-        // (forward Euler) below. Keep it out of the Fenwick selection so it never
+        // (forward Euler) below. Keep it out of the tree selection so it never
         // contributes to a0 and is never picked as a fire.
         if (reactions[r].is_rate_rule_ode) {
             sel_set(r, 0.0);
@@ -823,6 +924,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             return;
         }
         double signed_prop = prop_jit_active ? a_jit[r] : model.compute_propensity(r, conc.data());
+        if (!std::isfinite(signed_prop))
+            refuse_nonfinite_propensity(r, signed_prop, psa_now);
         int dir = (signed_prop < 0.0) ? -1 : 1;
         double prop = (dir < 0) ? -signed_prop : signed_prop; // |signed_prop|
         rxn_dir[r] = dir;
@@ -882,7 +985,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         sel_set(r, effective_prop);
     };
 
-    // Helper: recompute ALL propensities + Fenwick-tree entries. Called after
+    // Helper: recompute ALL propensities + sum-tree entries. Called after
     // an event fires (assignments can touch any species, so the dep-graph
     // narrow-update is unsafe).
     auto recompute_all_propensities = [&]() {
@@ -1396,12 +1499,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // vector is available and the model is recompute-all eligible. The whole
     // vector is refilled with ONE native call, which makes the dependency-graph
     // incremental machinery (the affected-set lookup + per-affected
-    // set_propensity + Fenwick update that the main loop below runs every step)
+    // set_propensity + sum-tree update that the main loop below runs every step)
     // pure overhead. RoadRunner's direct method instead recomputes every
     // propensity each step and flat-scans a single contiguous cumulative pass
     // that both sums (a0) and selects. This branch mirrors that: one refill, one
     // flat pass for a0 + sign, one flat scan for selection — no dependency graph,
-    // no Fenwick, and no per-step model.set_current_time (time() is unread for
+    // no sum tree, and no per-step model.set_current_time (time() is unread for
     // pure mass-action, so the main loop's out-of-line call is exactly the
     // bookkeeping this branch sheds; the final write-back still publishes t). It
     // is bit-identical to the incremental flat+JIT realization: the same
@@ -1435,6 +1538,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     rxn_dir[r] = 1;
                     a0 += sp;
                 }
+            }
+            if (!std::isfinite(a0)) { // issue #809: NaN fails every comparison below
+                for (int r = 0; r < nr; ++r)
+                    if (!std::isfinite(a_jit[r]))
+                        refuse_nonfinite_propensity(r, a_jit[r], t);
+                refuse_nonfinite_propensity(-1, a0, t);
             }
 
             // Stuck — fast-forward all remaining samples at the frozen state.
@@ -1494,18 +1603,25 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 break;
 
             // Select the reaction: flat cumulative scan in index order (the same
-            // selection semantics as the Fenwick descent, contiguous + L1-hot).
+            // selection semantics as the tree descent, contiguous + L1-hot).
+            // Strict, as sel_find is: a weight-0 reaction is never taken.
             double target = next_u01() * a0;
             double cum = 0.0;
-            int selected = nr - 1;
+            int selected = -1;
+            int last_positive = nr - 1;
             for (int r = 0; r < nr; ++r) {
                 double sp = a_jit[r];
-                cum += (sp < 0.0) ? -sp : sp;
-                if (cum >= target) {
+                sp = (sp < 0.0) ? -sp : sp;
+                cum += sp;
+                if (sp > 0.0)
+                    last_positive = r;
+                if (cum > target) {
                     selected = r;
                     break;
                 }
             }
+            if (selected < 0)
+                selected = last_positive;
 
             if (rec_stats)
                 rs_count[selected] += 1.0;
@@ -1567,8 +1683,10 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         if (has_rate_rules)
             snapshot_rr();
 
-        // 1. Total propensity: O(log N) Fenwick prefix-sum, or O(N) flat sum.
+        // 1. Total propensity: the sum tree's root, O(1), or an O(N) flat sum.
         double a0 = sel_total();
+        if (!std::isfinite(a0)) // issue #809; each propensity was finite when it was set
+            refuse_nonfinite_propensity(-1, a0, t);
 
         // 2. If total propensity is zero, the reaction system is stuck —
         //    but a time-only event trigger could still fire. Probe within
@@ -1788,7 +1906,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             continue;
         }
 
-        // 6. Select reaction: O(log N) Fenwick descent, or O(N) flat scan.
+        // 6. Select reaction: O(log N) sum-tree descent, or O(N) flat scan.
         double r2 = next_u01() * a0;
         int selected = sel_find(r2);
         if (selected < 0)

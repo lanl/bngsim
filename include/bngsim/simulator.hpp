@@ -57,9 +57,9 @@ class CvodeSimulator {
 
 // ─── SSA Simulator ───────────────────────────────────────────────────────────
 //
-// Gillespie's direct method with dependency graph + Fenwick tree.
+// Gillespie's direct method with dependency graph + pairwise sum tree.
 // Dependency graph: O(k) propensity updates per step (k ≈ 5–20).
-// Fenwick tree: O(log N) reaction selection (binary indexed tree).
+// Sum tree: O(log N) reaction selection, drift-free (issue #713).
 // Per-instance RNG (std::mt19937_64). Deterministic seeding.
 //
 // When poplevel > 0, uses the Partial Scaling Algorithm (PSA) of
@@ -96,7 +96,7 @@ class SsaSimulator {
     // exact SSA, no events, small reaction count), the run takes the RR-style
     // recompute-all + flat-scan loop by default — no MIR required. A no-op for
     // ineligible models (PSA, events, functional/rate-rule rates, large nr),
-    // which keep the incremental Fenwick path. Empty string clears it.
+    // which keep the incremental sum-tree path. Empty string clears it.
     void set_propensity_library(const std::string &so_path);
 
     // GH #616 — record, at every output time, each reaction's cumulative firing

@@ -1,6 +1,6 @@
 # Benchmarks & validation
 
-BNGsim's SSA (Gillespie direct method with dependency graph + Fenwick tree) and
+BNGsim's SSA (Gillespie direct method with dependency graph + pairwise sum tree) and
 PSA (partial-scaling approximation) were benchmarked against `run_network` 3.0
 (BioNetGen 2.9.3) across 10 SSA models and 3 PSA models (6 configurations).
 BNGsim timing covers `sim.run()` only; run_network timing includes full subprocess
@@ -37,7 +37,7 @@ overhead. Protocol: 2 warmup + 5 timed runs, median reported.
 **Geometric mean PSA speedup: 6.8×**
 
 BNGsim's advantage comes from: (1) zero subprocess overhead (in-process execution),
-(2) O(log N) Fenwick tree reaction selection (vs O(N) linear scan in run_network),
+(2) O(log N) sum-tree reaction selection (vs O(N) linear scan in run_network),
 and (3) pre-computed propensity and dependency-graph data — including the
 per-reaction affected-set used after each fire — with zero heap allocation, sort,
 or dedup in the SSA hot loop.
