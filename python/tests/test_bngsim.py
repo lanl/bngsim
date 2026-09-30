@@ -280,7 +280,8 @@ class TestSsaSimulation:
         assert any(i.code == "non_integer_initial_population" for i in issues)
 
         sim = Simulator(model, method="ssa")
-        result = sim.run(t_span=(0, 5), n_points=6, seed=1)
+        with pytest.warns(bngsim.SsaRoundingWarning, match="rounded"):
+            result = sim.run(t_span=(0, 5), n_points=6, seed=1)
 
         species = np.asarray(result.species)[:, 0]
         assert species[0] == pytest.approx(6.0)

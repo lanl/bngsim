@@ -99,6 +99,10 @@ class ModelBuilder:
         """
         Issue #170: bind a reaction's SSA propensity volume to a compartment-size parameter, so compute_rxn_rate reads the live value rather than the number baked at load. No-op if rxn_idx0 is out of range.
         """
+    def set_species_continuous(self, species_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #718: mark a state slot as a continuous quantity (a promoted SBML parameter or compartment, or an assignment- or rate-rule target) rather than a molecule count, so SSA/PSA do not round it to a whole number. No-op if species_idx0 is out of range.
+        """
     def set_species_ode_live_volume(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, live_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         GH #144 (case 4): set the cross-compartment ODE live-volume divide on a species. compute_derivs divides this species's per-species accumulation by conc[live_idx0] (the promoted compartment species = V_live) instead of its static volume_factor. No-op if species_idx0 is out of range.
@@ -967,6 +971,7 @@ class SolverStats:
 class SsaDiagnostics:
     first_negative_species: str
     first_reverse_reaction: str
+    first_rounded_species: str
     propensity_backend: str
     psa_activation_crossed: bool
     psa_active: bool
@@ -987,6 +992,12 @@ class SsaDiagnostics:
         ...
     @n_reverse_fires.setter
     def n_reverse_fires(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def n_rounded_populations(self) -> int:
+        ...
+    @n_rounded_populations.setter
+    def n_rounded_populations(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def psa_exact_event_integral(self) -> float:

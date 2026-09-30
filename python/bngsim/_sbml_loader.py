@@ -5228,6 +5228,10 @@ def _build_model_from_sbml_doc(doc):
         species_idx[sid] = idx
         species_comp[sid] = comp
         species_hosu[sid] = hosu
+        # Issue #718: a rule sets this species' value; it is not a molecule
+        # count, and SSA/PSA must not round it to one.
+        if sid in assignment_targets or sid in rate_rule_targets:
+            builder.set_species_continuous(idx)
 
         # (#170) Bind the storage convention to the compartment SIZE PARAMETER, so
         # a later write re-derives `volume_factor` (and an amount-declared IC)
@@ -6011,6 +6015,7 @@ def _build_model_from_sbml_doc(doc):
                     p = sbml_model.getParameter(var)
                     ic = p.getValue() if (p and p.isSetValue()) else 0.0
                 sp_i = builder.add_species(_safe_name(var), ic)
+                builder.set_species_continuous(sp_i)  # issue #718: not a count
                 species_idx[var] = sp_i
                 species_ids.append(var)
                 builder.add_observable(_safe_name(var), [(sp_i, 1.0)])
@@ -7260,6 +7265,7 @@ def _build_model_from_sbml_doc(doc):
                     # genuine ODE variables RoadRunner reports — those stay
                     # reported.)
                     sp_i = builder.add_species(_safe_name(var), ic, fixed=False, reported=False)
+                    builder.set_species_continuous(sp_i)  # issue #718: not a count
                     event_param_promotions[var] = sp_i
                     species_idx[var] = sp_i
                     species_ids.append(var)

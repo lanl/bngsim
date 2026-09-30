@@ -110,6 +110,15 @@ struct Species {
     // (rate-rule targets ARE reported — RoadRunner reports them too).
     bool reported = true;
 
+    // Issue #718 — the slot holds a continuous quantity, not a molecule count:
+    // an SBML parameter, compartment or stoichiometry symbol promoted to a
+    // state slot (because an event or a rate rule writes it), or the target of
+    // an assignment or rate rule. The SSA rounds every other slot to a whole
+    // number of molecules at the start of a run, as run_network does, and must
+    // not round these: a rate constant of 0.4 ran as 0. Set by the SBML loader
+    // (ModelBuilder::set_species_continuous); false for every `.net` species.
+    bool continuous = false;
+
     // Declared with a negative initial value (issue #706): a quantity that is
     // negative by design, which the GH #135 non-finite-RHS retry must not clamp
     // to 0. Set wherever the DECLARED initial value is set (the builder, and the

@@ -297,6 +297,23 @@ class SsaBoundaryWarning(UserWarning):
     """
 
 
+class SsaRoundingWarning(UserWarning):
+    """An SSA run rounded a fractional molecule count to a whole one (issue #718).
+
+    The exact SSA fires whole molecules, so a species whose count is not a
+    whole number when a run starts is rounded to the nearest one, as
+    ``run_network`` does. This is emitted for every run and every ``run_until``
+    leg that rounds, not only when the Simulator is built: a count set between
+    legs, or left fractional by an event assignment, is rounded at the next leg.
+    A parameter or compartment that an event assigns and a rate-rule target
+    hold continuous values and are never rounded. ``result.ssa_diagnostics``
+    carries the count (``n_rounded_populations``) regardless of filters::
+
+        import warnings, bngsim
+        warnings.simplefilter("error", bngsim.SsaRoundingWarning)  # promote
+    """
+
+
 class DenseSolverFallbackWarning(UserWarning):
     """A large ODE model is running on the dense solver for lack of KLU (GH #209).
 
