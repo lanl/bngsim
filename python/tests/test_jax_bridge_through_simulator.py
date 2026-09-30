@@ -112,6 +112,15 @@ def test_a_time_window_inside_one_step_is_integrated(tmp_path):
     assert float(final_a(p0)) == pytest.approx(4.0, rel=1e-6)
     assert float(jax.grad(final_a)(p0)[0]) == pytest.approx(40.0, rel=1e-6)
 
+    # jacfwd and the chunked path agree with grad on the same quantity.
+    def solve(p, chunk):
+        return differentiable_solve(
+            model, p, (0.0, 240.0), 3, rtol=1e-8, atol=1e-10, chunk_size=chunk
+        )
+
+    assert float(jax.jacfwd(lambda p: solve(p, 0))(p0)[-1, 0, 0]) == pytest.approx(40.0, rel=1e-6)
+    assert float(jax.jacfwd(lambda p: solve(p, 2))(p0)[-1, 0, 0]) == pytest.approx(40.0, rel=1e-6)
+
 
 def test_a_state_window_inside_one_step_is_integrated(tmp_path):
     """#902 on #897's model: Y = k·(t2 − t1) with crossing times independent of k,
@@ -128,5 +137,64 @@ def test_a_state_window_inside_one_step_is_integrated(tmp_path):
 
     p0 = _p0(model)
     assert float(final_y(p0)) == pytest.approx(y_ref, rel=1e-8)
-    assert float(jax.grad(final_y)(p0)[0]) == pytest.approx(y_ref / 10.0, rel=1e-5)
-    assert math.isfinite(float(jax.grad(final_y)(p0)[1]))
+
+    # Every column in closed form. The window opens at t1 = 4·e^(−kd·t1) and
+    # closes at t2 = 4·e^(−kd·t2) + w, and Y = k·(t2 − t1). Differentiating each
+    # crossing implicitly: dt/dkd = −4·t·e^(−kd·t)/(1 + 4·kd·e^(−kd·t)), and
+    # dt2/dw = 1/(1 + 4·kd·e^(−kd·t2)).
+    k, w, kd = 10.0, 0.01, 0.5
+
+    def crossing(offset):
+        t = 1.0
+        for _ in range(60):
+            t -= (t - 4 * math.exp(-kd * t) - offset) / (1 + 4 * kd * math.exp(-kd * t))
+        return t
+
+    t1, t2 = crossing(0.0), crossing(w)
+    denom = [1 + 4 * kd * math.exp(-kd * t) for t in (t1, t2)]
+    dkd = [-4 * t * math.exp(-kd * t) / d for t, d in zip((t1, t2), denom, strict=True)]
+    exact = [t2 - t1, k / denom[1], k * (dkd[1] - dkd[0])]
+    np.testing.assert_allclose(np.asarray(jax.grad(final_y)(p0)), exact, rtol=1e-5)
+
+
+COUNTER_CLOCK = """\
+begin parameters
+    1 c0     0.5
+    2 rc     1
+    3 sigma  3
+    4 k      2
+end parameters
+begin functions
+    1 rate_X() if(t>=sigma,k,0)
+end functions
+begin species
+    1 C() c0
+    2 X() 0
+end species
+begin reactions
+    1 0 1 rc
+    2 0 2 rate_X
+end reactions
+begin groups
+    1 t                    1
+end groups
+"""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="issue #725: the counter-clock switch-time jump ignores the clock's own "
+    "sensitivity, so dX/dc0 and dX/drc come back 0 (as through Simulator.run)",
+)
+def test_a_counter_clock_switch_matches_its_closed_form(tmp_path):
+    """#902's counter-clock case. C = c0 + rc·t crosses sigma at t* = (sigma − c0)/rc
+    = 2.5, and X(5) = k·(5 − t*), so dX/d[c0, rc, sigma, k] = [2, 5, −2, 2.5]."""
+    model = _model(tmp_path, COUNTER_CLOCK, "cc.net")
+    assert list(model.primary_param_names) == ["c0", "rc", "sigma", "k"]
+
+    def final_x(p):
+        return differentiable_solve(model, p, (0.0, 5.0), 3, rtol=1e-10, atol=1e-12)[-1, 1]
+
+    np.testing.assert_allclose(
+        np.asarray(jax.grad(final_x)(_p0(model))), [2.0, 5.0, -2.0, 2.5], rtol=1e-6
+    )
