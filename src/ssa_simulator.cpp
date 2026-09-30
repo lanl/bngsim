@@ -1024,14 +1024,29 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
         auto eval_pri = [&](const ExecInstance &inst) -> double {
             const auto &ev = events[inst.event_idx];
-            return (ev.priority_expr_idx >= 0) ? eval_ref.evaluate(ev.priority_expr_idx)
-                                               : static_cast<double>(ev.priority);
+            const double p = (ev.priority_expr_idx >= 0) ? eval_ref.evaluate(ev.priority_expr_idx)
+                                                         : static_cast<double>(ev.priority);
+            // NaN compares false with everything, so the order silently fell
+            // back to declaration order. Refuse it.
+            if (std::isnan(p))
+                throw std::runtime_error("event '" + ev.id + "' has a priority that is NaN at t=" +
+                                         std::to_string(t_now) +
+                                         "; an event priority must be a number");
+            return p;
         };
 
         bool any_fired = false;
         int fires = 0;
         std::vector<size_t> ties;
         while (true) {
+            // Drop executed and cancelled instances once they pile up, so a
+            // long cascade (an algebraic loop runs to CASCADE_LIMIT) costs
+            // O(fires) rather than O(fires²). Order is kept, so the tie list
+            // below is still in index order.
+            if (queue.size() > 256)
+                queue.erase(std::remove_if(queue.begin(), queue.end(),
+                                           [](const ExecInstance &x) { return x.done; }),
+                            queue.end());
             // The not-done instances sharing the maximum priority, in index
             // order, so a single candidate is the old lowest-index pick.
             double best_pri = 0.0;
@@ -1185,14 +1200,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             trigger_was_true[i] = now_true;
         }
 
-        if (process_firing_batch(times.t_start, t0_firing)) {
-            // Re-sync trigger_was_true against post-fire state so any event
-            // that falsified its own trigger can re-arm on the next rise.
-            for (int ei = 0; ei < n_events; ++ei) {
-                double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                trigger_was_true[ei] = (v > 0.5);
-            }
-        }
+        // The drain leaves trigger_was_true settled, so an event that
+        // falsified its own trigger can re-arm on the next rise.
+        process_firing_batch(times.t_start, t0_firing);
     }
 
     // ─── Time-inhomogeneous propensity detection ─────────────────────────────
@@ -1457,6 +1467,27 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // contents, reused storage. Each use site aliases it as `firing`.
     std::vector<int> firing_scratch;
 
+    // Fire, as one §4.11.6 batch, every event whose trigger is true now but
+    // was not when trigger_was_true last recorded it, and leave trigger_was_true
+    // holding the settled truth of every trigger. Every caller after t_start
+    // goes through here. The two time-event callers used to take the batch
+    // only from the events their probe had located, then record every
+    // trigger's current truth; an event that rose some other way in the window
+    // (a trigger on a rate-rule target, which the probe reads frozen) was
+    // marked as already true and never fired, the issue #761 mechanism on
+    // another path.
+    auto fire_rising_edges = [&](double t_now) -> bool {
+        firing_scratch.clear();
+        for (int ei = 0; ei < n_events; ++ei) {
+            const bool now_true = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
+            if (now_true && !trigger_was_true[ei])
+                firing_scratch.push_back(ei); // the drain marks it true
+            else
+                trigger_was_true[ei] = now_true;
+        }
+        return process_firing_batch(t_now, firing_scratch);
+    };
+
     // ─── GH #190: RR-style recompute-all + flat-scan fast loop ────────────────
     //
     // Engaged (ssa_fast_loop, decided above) when a value-specialized propensity
@@ -1644,7 +1675,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         //    state.
         if (a0 <= 0.0) {
             if (n_events > 0) {
-                auto [t_event_idle, firing_at_event_idle] = probe_events_in_window(t, times.t_end);
+                // Only the time: the batch is taken from every trigger below.
+                const double t_event_idle = probe_events_in_window(t, times.t_end).first;
                 if (std::isfinite(t_event_idle) && t_event_idle <= times.t_end) {
                     // Record any samples strictly before t_event_idle.
                     while (next_output < n_out && t_event_idle > t_out[next_output] &&
@@ -1672,19 +1704,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     t = t_event_idle;
                     psa_now = t; // GH #15 — keep the PSA dwell clock on t
                     sync_state(t);
-                    firing_scratch.clear();
-                    std::vector<int> &firing = firing_scratch;
-                    for (int ei : firing_at_event_idle) {
-                        double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                        if (v > 0.5 && !trigger_was_true[ei]) {
-                            firing.push_back(ei);
-                        }
-                    }
-                    bool fired = process_firing_batch(t, firing);
-                    for (int ei = 0; ei < n_events; ++ei) {
-                        double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                        trigger_was_true[ei] = (v > 0.5);
-                    }
+                    const bool fired = fire_rising_edges(t);
                     if (fired) {
                         recompute_all_propensities();
                     }
@@ -1778,7 +1798,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         //    is a 1-D function of t and is well-resolved by bisection.
         //    State-dependent triggers (no time component) cannot flip during
         //    τ — those are handled post-fire below.
-        auto [t_event, firing_at_event] = probe_events_in_window(t, t_proposed);
+        // Only the time: the batch is taken from every trigger below.
+        const double t_event = probe_events_in_window(t, t_proposed).first;
 
         bool event_wins = std::isfinite(t_event) && t_event < t_proposed;
         double t_advance = event_wins ? t_event : t_proposed;
@@ -1821,22 +1842,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             t = t_event;
             psa_now = t; // GH #15 — keep the PSA dwell clock on t
             sync_state(t);
-            // Confirm rising-edge status under the post-sync state and apply
-            // the firing batch.
-            firing_scratch.clear();
-            std::vector<int> &firing = firing_scratch;
-            for (int ei : firing_at_event) {
-                double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                if (v > 0.5 && !trigger_was_true[ei]) {
-                    firing.push_back(ei);
-                }
-            }
-            bool fired = process_firing_batch(t, firing);
-            // Update trigger_was_true to post-fire truth values.
-            for (int ei = 0; ei < n_events; ++ei) {
-                double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                trigger_was_true[ei] = (v > 0.5);
-            }
+            const bool fired = fire_rising_edges(t);
             if (fired) {
                 recompute_all_propensities();
             }
@@ -1948,27 +1954,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // 10. State-dependent triggers can flip false→true after this fire.
         //     (Time-only triggers were already detected by bisection above.)
         //     Sweep all events; fire rising edges through process_firing_batch.
-        if (n_events > 0) {
-            firing_scratch.clear();
-            std::vector<int> &firing = firing_scratch;
-            for (int ei = 0; ei < n_events; ++ei) {
-                double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                bool now_true = (v > 0.5);
-                if (now_true && !trigger_was_true[ei]) {
-                    firing.push_back(ei);
-                }
-                trigger_was_true[ei] = now_true;
-            }
-            if (process_firing_batch(t, firing)) {
-                // Re-sync trigger_was_true so events that falsified their own
-                // trigger can re-arm.
-                for (int ei = 0; ei < n_events; ++ei) {
-                    double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                    trigger_was_true[ei] = (v > 0.5);
-                }
-                recompute_all_propensities();
-            }
-        }
+        if (n_events > 0 && fire_rising_edges(t))
+            recompute_all_propensities();
     }
 
     // ─── Write final state back to model ─────────────────────────────────────

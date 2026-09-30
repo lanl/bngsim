@@ -112,10 +112,10 @@ TIE = WITH_REACTION + (
 def test_equal_priorities_are_ordered_at_random(method, kw):
     """Two events at one instant and one priority write z. The last to run
     wins, and which that is is a fair coin. SSA gave z = 2 on every seed."""
-    n = 60
+    n = 200
     wins = sum(_final(TIE, method, kw, seed=s)["z"] == 2.0 for s in range(n))
-    # Binomial(60, 1/2): 4.5 standard deviations either side of 30.
-    assert 13 <= wins <= 47, wins
+    # Binomial(200, 1/2): 4.5 standard deviations either side of 100.
+    assert 68 <= wins <= 132, wins
 
 
 @pytest.mark.parametrize(("method", "kw"), METHODS)
@@ -125,12 +125,116 @@ def test_the_tie_break_is_reproducible_per_seed(method, kw):
     assert set(runs[0]) == {1.0, 2.0}
 
 
-def test_distinct_priorities_stay_deterministic():
+DISTINCT = WITH_REACTION + (
+    "species z = 0;\n"
+    "E1: at (time >= 1), priority = 2: z = 1;\n"
+    "E2: at (time >= 1), priority = 1: z = 2;\n"
+)
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS)
+def test_distinct_priorities_stay_deterministic(method, kw):
     """With distinct priorities the order is fixed (higher first), whatever the
     seed: the random draw happens only at a genuine tie."""
+    assert {_final(DISTINCT, method, kw, seed=s)["z"] for s in range(20)} == {2.0}
+
+
+def _trajectory(ant, method, kw, seed):
+    m = bngsim.Model.from_antimony_string(ant)
+    r = bngsim.Simulator(m, method=method, **kw).run(t_span=(0, 3.0), n_points=31, seed=seed)
+    return np.asarray(r.species)[:, list(r.species_names).index("A")]
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS)
+def test_a_tie_does_not_move_the_reaction_stream(method, kw):
+    """The tie-break draws from a stream of its own: the reacting species run
+    exactly as they do in the same model without the tie."""
+    for seed in range(8):
+        np.testing.assert_array_equal(
+            _trajectory(TIE, method, kw, seed), _trajectory(DISTINCT, method, kw, seed)
+        )
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS)
+def test_a_three_way_tie_is_uniform(method, kw):
     ant = WITH_REACTION + (
         "species z = 0;\n"
-        "E1: at (time >= 1), priority = 2: z = 1;\n"
+        "E1: at (time >= 1), priority = 1: z = 1;\n"
         "E2: at (time >= 1), priority = 1: z = 2;\n"
+        "E3: at (time >= 1), priority = 1: z = 3;\n"
     )
-    assert {_final(ant, "ssa", {}, seed=s)["z"] for s in range(20)} == {2.0}
+    n = 300
+    last = [_final(ant, method, kw, seed=s)["z"] for s in range(n)]
+    for z in (1.0, 2.0, 3.0):
+        k = last.count(z)
+        # Binomial(300, 1/3): 4.5 standard deviations either side of 100.
+        assert 63 <= k <= 137, (z, k)
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS + [pytest.param("ode", {}, id="ode")])
+def test_priorities_are_reevaluated_before_each_pick(method, kw):
+    """E1 runs first and drops E2's priority from 3 to 0, below E3's 1, so E3
+    runs before E2 and z ends at 1. Priorities read once at the start would run
+    E2 before E3 and end at 2."""
+    ant = WITH_REACTION + (
+        "species s = 1; species z = 0;\n"
+        "E1: at (time >= 1), priority = 5: s = 0;\n"
+        "E2: at (time >= 1), priority = 3*s: z = 1;\n"
+        "E3: at (time >= 1), priority = 1: z = 2;\n"
+    )
+    assert _final(ant, method, kw)["z"] == 1.0
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS)
+def test_a_reaction_triggers_a_cascade(method, kw):
+    """The post-reaction sweep: A decaying past 50 fires E1, whose assignment
+    fires E2 at the same instant."""
+    ant = (
+        "species A = 100; J: A => ; 0.5*A;\n"
+        "species x = 0; species y = 0;\n"
+        "E1: at (A < 50): x = 1;\n"
+        "E2: at (x > 0.5): y = 1;\n"
+    )
+    for seed in range(5):
+        got = _final(ant, method, kw, t_end=10.0, seed=seed)
+        assert (got["x"], got["y"]) == (1.0, 1.0), got
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS)
+def test_a_trigger_on_a_rate_rule_target_is_not_swallowed(method, kw):
+    """No reaction: the SSA jumps to the next event its time probe finds (t = 1,
+    where E1's condition reads y frozen at 0). E2 rose on the way, because y
+    moved, and was recorded as already true, so it never fired. It fires now.
+    When it fires (at t = 1 rather than 0.5) is issue #751's."""
+    ant = (
+        "y' = 1; y = 0; species a = 0; species b = 0;\n"
+        "E1: at (time >= 1 && y < 0.8): a = 1;\n"
+        "E2: at (y > 0.5): b = 1;\n"
+    )
+    for seed in range(3):
+        assert _final(ant, method, kw, seed=seed)["b"] == 1.0
+
+
+LOOP = "species x = 0;\nE1: at (x < 0.5), t0 = false: x = 1;\nE2: at (x > 0.5): x = 0;\n"
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS + [pytest.param("ode", {}, id="ode")])
+def test_an_algebraic_loop_of_events_is_refused(method, kw):
+    """Two events that re-arm each other at one instant never settle."""
+    m = bngsim.Model.from_antimony_string(WITH_REACTION + LOOP)
+    with pytest.raises(bngsim.SimulationError, match="CASCADE_LIMIT"):
+        bngsim.Simulator(m, method=method, **kw).run(t_span=(0, 1.0), n_points=2, seed=1)
+
+
+@pytest.mark.parametrize(("method", "kw"), METHODS + [pytest.param("ode", {}, id="ode")])
+def test_a_nan_priority_is_refused(method, kw):
+    """A priority that evaluates to NaN compares false with everything, and the
+    order fell back to declaration order."""
+    ant = WITH_REACTION + (
+        "species z = 0; q = 0;\n"
+        "E1: at (time >= 1), priority = q/q: z = 1;\n"
+        "E2: at (time >= 1), priority = 5: z = 2;\n"
+    )
+    m = bngsim.Model.from_antimony_string(ant)
+    with pytest.raises(bngsim.SimulationError, match="priority that is NaN"):
+        bngsim.Simulator(m, method=method, **kw).run(t_span=(0, 3.0), n_points=4, seed=1)
