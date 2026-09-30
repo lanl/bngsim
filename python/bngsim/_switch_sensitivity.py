@@ -4399,8 +4399,63 @@ def _isolation_bump(
     return param_idx[name], delta_threshold / private[name]
 
 
+def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int]) -> frozenset[int]:
+    """The clock species a requested column moves (issue #725).
+
+    A clock moves with its own initial-condition axis, with a parameter its IC
+    is seeded from, and with a parameter its rate law reads (inlined through
+    functions and derived parameters): BNG2.pl's ``_rateLaw1`` for
+    ``0 -> counter() 1``, which compute_all_sensitivities requests by default.
+    """
+    from bngsim._codegen import compute_ic_param_sens_seed
+    from bngsim._jacobian import _IDENT_RE, _inline_functions
+
+    idx = {i for i in clocks.values() if i >= 0}
+    if not idx:
+        return frozenset()
+    wanted = set(names)
+    moved = {i for i in idx if i in set(ic_species)}
+    if wanted and idx - moved:
+        pnames = list(core.param_names)
+        for sp, pidx, _coeff in compute_ic_param_sens_seed(core):
+            if sp in idx and 0 <= pidx < len(pnames) and pnames[pidx] in wanted:
+                moved.add(sp)
+        data = core.codegen_data()
+        params = list(data.get("parameters", ()))
+        func_map = {f["name"]: f["expression"] for f in data.get("functions", ())}
+        derived = {p["name"]: p["expression"] for p in params if p.get("expression")}
+
+        def reads(text: str, depth: int = 0) -> bool:
+            if depth > 64:
+                return True
+            for tok in _IDENT_RE.findall(text):
+                if tok in wanted:
+                    return True
+                if tok in derived and reads(derived[tok], depth + 1):
+                    return True
+            return False
+
+        for rxn in data.get("reactions", ()):
+            produced = {
+                i
+                for i in idx - moved
+                if list(rxn.get("products", ())).count(i) > list(rxn.get("reactants", ())).count(i)
+            }
+            if not produced:
+                continue
+            if rxn.get("type") == "functional":
+                body = func_map.get(rxn.get("function_name") or "", "")
+                text = _inline_functions(body, func_map) or body
+            else:
+                ids = [i for i in rxn.get("rate_param_indices", ()) if 0 <= i < len(params)]
+                text = " ".join(params[i]["name"] for i in ids)
+            if reads(text):
+                moved |= produced
+    return frozenset(moved)
+
+
 def _emit_switch_records(
-    found: list[_Crossing], param_idx: dict[str, int]
+    found: list[_Crossing], param_idx: dict[str, int], moved_clocks: frozenset[int] = frozenset()
 ) -> list[SwitchCrossing]:
     """Turn detected crossings into records, isolating any that coincide.
 
@@ -4419,8 +4474,12 @@ def _emit_switch_records(
     records: list[SwitchCrossing] = []
     for group in by_instant.values():
         for cross in group:
-            if not any(v != 0.0 for v in cross.dtstar):
-                continue  # no requested parameter moves this crossing
+            if not any(v != 0.0 for v in cross.dtstar) and cross.clock_idx0 not in moved_clocks:
+                # No requested column moves this crossing: not its threshold,
+                # and not the clock it is read on (issue #725). One on a moved
+                # clock is kept even inside a coinciding group, isolated below
+                # by its own threshold's parameters like any other member.
+                continue
             if len(group) > 1:
                 idx0, delta = _isolation_bump(
                     cross, group, param_idx, thresholds_on_clock[cross.clock_idx0]
@@ -4580,8 +4639,15 @@ def compute_switch_time_sens(
     t_start: float,
     t_end: float,
     has_analytic_sens_rhs: bool = False,
+    ic_species: Sequence[int] = (),
 ) -> tuple[list[SwitchCrossing], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
+
+    ``ic_species`` are the 0-based species of the run's initial-condition
+    columns. A counter clock's crossing moves with the clock's own sensitivity
+    as well as its threshold's (issue #725), so a crossing on a clock that a
+    requested column moves is recorded even when no column moves the threshold;
+    the core subtracts the clock's own sensitivity from each column there.
 
     Parameters
     ----------
@@ -4635,7 +4701,7 @@ def compute_switch_time_sens(
         charged each parameter with the other's.
     """
     names = list(sens_param_names)
-    if not names or core.n_functions == 0:
+    if (not names and not ic_species) or core.n_functions == 0:
         return [], []
 
     ctx = core.functional_jacobian_context()
@@ -4819,7 +4885,9 @@ def compute_switch_time_sens(
                         found_index,
                     )
 
-    records = _emit_switch_records(found, param_idx)
+    records = _emit_switch_records(
+        found, param_idx, _clocks_moved(core, clocks, names, ic_species)
+    )
     if not records:
         return [], []
 
