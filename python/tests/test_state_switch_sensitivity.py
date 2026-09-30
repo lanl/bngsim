@@ -656,6 +656,73 @@ class TestABystanderDoesNotHideAJump:
         scale = float(np.max(np.abs(plain)))
         np.testing.assert_allclose(got, plain, rtol=0, atol=1e-6 * scale)
 
+    def test_a_switched_rate_law_with_a_large_smooth_term_still_jumps(self, tmp_path):
+        """``fY() = ksyn + if(Aobs<thr, kb, 0)``: the switched rate law carries a
+        smooth 1e7 of its own, balanced by Y's separate degradation. Read
+        against the switched reactions' own flux, the jump of 3 was under 1e-6
+        of it and was dropped (the old global test saw it, since Y's net rate
+        is ~3). Same closed form as the turnover case."""
+        text = TURNOVER.replace(
+            "    2 0 2 fY #_R2\n    3 0 2 ksyn #_R3\n", "    2 0 2 fY #_R2\n"
+        ).replace("    1 fY() if(Aobs<thr,kb,0)", "    1 fY() ksyn+if(Aobs<thr,kb,0)")
+        assert "ksyn+if" in text and "0 2 ksyn" not in text
+        model = _model(tmp_path, text, name="basal.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=BYSTANDER_PARAMS).run(
+            t_span=(0.0, BYSTANDER_T), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        y = list(run.species_names).index("Y()")
+        got = np.asarray(run.sensitivities)[-1, y, :3]
+        A0, a, thr, kb, kdeg, T = 10.0, 0.5, 2.0, 3.0, 0.1, BYSTANDER_T
+        t_star = np.log(A0 / thr) / a
+        dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
+        np.testing.assert_allclose(got, -kb * np.exp(-kdeg * (T - t_star)) * dtstar, rtol=1e-4)
+
+    def test_a_condition_no_rate_law_reads_moves_nothing(self, tmp_path):
+        """``flag()`` is an output: no rate law reads it, so its crossing cannot
+        move f and is continuous outright. Judging it over the whole right-hand
+        side instead read the roundoff of an internally cancelling bystander
+        (``h() = 0.3*Pobs - 0.1*Qobs`` over two 1e8 pools) as a jump and put
+        it into Z, which is decoupled from A: dZ/dthr and dZ/da are exactly 0."""
+        text = """\
+begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr 0.001
+    4 kd 0.01
+    5 P0 100000000.001
+    6 Q0 3e8
+end parameters
+begin functions
+    1 flag() if(Aobs<thr,1,0)
+    2 h() 0.3*Pobs-0.1*Qobs
+end functions
+begin species
+    1 A() A0
+    2 P() P0
+    3 Q() Q0
+    4 Z() 0
+end species
+begin reactions
+    1 1 0 a
+    2 2 0 kd
+    3 3 0 kd
+    4 0 4 h
+end reactions
+begin groups
+    1 Aobs 1
+    2 Pobs 2
+    3 Qobs 3
+end groups
+"""
+        model = _model(tmp_path, text, name="outflag.net")
+        assert sw.state_switch_conditions(model._core) == ["Aobs<thr"]
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["thr", "a", "kd"]).run(
+            t_span=(0.0, 30.0), n_points=4, rtol=1e-9, atol=1e-12
+        )
+        z = list(run.species_names).index("Z()")
+        s = np.asarray(run.sensitivities)[:, z, :]
+        assert np.all(s[:, 0] == 0.0) and np.all(s[:, 1] == 0.0), s[:, :2]
+
     def test_the_trajectory_was_never_the_problem(self, tmp_path):
         """Only the sensitivity was wrong: Y(T) = kb·(T − t*) either way, to the
         run's tolerance (1.4e-8 relative at rtol 1e-9, with the pool's 1e8 in

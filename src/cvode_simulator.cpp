@@ -6156,21 +6156,28 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     for (const NetworkModel::StateSwitch *one : batch) {
         residual_support.insert(residual_support.end(), one->species.begin(), one->species.end());
     }
+    // Legacy: some switch in the batch has no reaction map, so the crossing is
+    // judged exactly as before issue #763 (one global gap against one global
+    // scale). NoReader: every switch is mapped and no rate law reads any of
+    // them, so f cannot jump. Subset: the reactions that read them decide.
+    enum class Judge { Legacy, NoReader, Subset };
+    Judge judge = Judge::Subset;
     const std::vector<int> *sub_rxns = nullptr;
     std::vector<int> batch_rxns;
-    {
-        bool all_mapped = true;
-        for (const NetworkModel::StateSwitch *one : batch) {
-            auto it = state_switch_rxns.find(one);
-            if (it == state_switch_rxns.end()) {
-                all_mapped = false;
-                break;
-            }
-            batch_rxns.insert(batch_rxns.end(), it->second.begin(), it->second.end());
+    for (const NetworkModel::StateSwitch *one : batch) {
+        auto it = state_switch_rxns.find(one);
+        if (it == state_switch_rxns.end()) {
+            judge = Judge::Legacy;
+            break;
         }
-        if (all_mapped && !batch_rxns.empty()) {
-            std::sort(batch_rxns.begin(), batch_rxns.end());
-            batch_rxns.erase(std::unique(batch_rxns.begin(), batch_rxns.end()), batch_rxns.end());
+        batch_rxns.insert(batch_rxns.end(), it->second.begin(), it->second.end());
+    }
+    if (judge == Judge::Subset) {
+        std::sort(batch_rxns.begin(), batch_rxns.end());
+        batch_rxns.erase(std::unique(batch_rxns.begin(), batch_rxns.end()), batch_rxns.end());
+        if (batch_rxns.empty()) {
+            judge = Judge::NoReader;
+        } else {
             sub_rxns = &batch_rxns;
         }
     }
@@ -6212,10 +6219,46 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // displacement straddled the surface.
     auto first_jump = [&](const std::vector<double> &rel, const std::vector<double> &near_gap,
                           const std::vector<double> *far_gap, const BranchGaps &at) {
+        if (judge == Judge::NoReader) {
+            return -1;
+        }
+        if (judge == Judge::Legacy) {
+            // One gap against one scale, over every species, as before #763.
+            // `rel` is the gap the old test read on this path, and the growth
+            // test is the tangent path's own, applied to the maxima.
+            double gap_max = 0.0;
+            double scale_max = 0.0;
+            double near_max = 0.0;
+            double far_max = 0.0;
+            for (int i = 0; i < ns; ++i) {
+                const auto u = static_cast<std::size_t>(i);
+                gap_max = std::max(gap_max, rel[u]);
+                scale_max = std::max(scale_max, at.scale[u]);
+                near_max = std::max(near_max, near_gap[u]);
+                if (far_gap != nullptr) {
+                    far_max = std::max(far_max, (*far_gap)[u]);
+                }
+            }
+            const bool continuous = gap_max <= kStateSwitchContinuousRelTol * scale_max ||
+                                    (far_gap != nullptr && &near_gap != &rel &&
+                                     near_max < kStateSwitchGapRatio * far_max);
+            if (continuous) {
+                return -1;
+            }
+            int worst = 0;
+            for (int i = 1; i < ns; ++i) {
+                if (rel[static_cast<std::size_t>(i)] > rel[static_cast<std::size_t>(worst)]) {
+                    worst = i;
+                }
+            }
+            return worst;
+        }
         for (int i = 0; i < ns; ++i) {
             const auto u = static_cast<std::size_t>(i);
-            if (rel[u] <= kStateSwitchContinuousRelTol * std::max(at.scale[u], at.drive) ||
-                rel[u] <= at.floor[u]) {
+            // Not against the switched reactions' own flux: a rate law
+            // `ksyn + if(…, kb, 0)` puts ksyn there, and a jump of kb under
+            // 1e-6·ksyn read as continuous where the old global test saw it.
+            if (rel[u] <= kStateSwitchContinuousRelTol * at.drive || rel[u] <= at.floor[u]) {
                 continue;
             }
             if (far_gap != nullptr && near_gap[u] < kStateSwitchGapRatio * (*far_gap)[u]) {
@@ -6429,7 +6472,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             jump = first_jump(at2.gap, at1.gap, &at2.gap, at1);
         }
         sync(x, t_evt);
-        if (straddled && jump < 0) {
+        if (judge == Judge::NoReader || (straddled && jump < 0)) {
             return; // continuous at its own switch: no jump, and none to refuse
         }
         const double dt_max = dt / kStateSwitchNudgeGrowth;
@@ -7088,10 +7131,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 state_switches.push_back(sw);
                 state_switch_roots.push_back(sw->residual_expr_idx);
             }
-            // One spelling with no reaction map makes the whole crossing
-            // unmapped: the safe reading is the whole right-hand side.
+            // One spelling with no reaction list makes the whole crossing
+            // unmapped, judged as it always was. An EMPTY list is a finding,
+            // not a gap: no functional rate law reads the condition (an output
+            // function does), so the crossing cannot move f.
             const NetworkModel::StateSwitch *kept = it->second;
-            if (c >= rxn_lists.size() || rxn_lists[c].empty()) {
+            if (c >= rxn_lists.size()) {
                 unmapped.insert(kept);
             } else {
                 auto &dst = impl_->state_switch_rxns[kept];
