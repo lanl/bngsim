@@ -723,6 +723,80 @@ end groups
         s = np.asarray(run.sensitivities)[:, z, :]
         assert np.all(s[:, 0] == 0.0) and np.all(s[:, 1] == 0.0), s[:, :2]
 
+    @pytest.mark.parametrize(
+        "fz",
+        ["fZ() if(Bobs>A0-thr,kc*(Bobs-(A0-thr)),0)", "flag() if(Bobs>A0-thr,1,0)\n    3 fZ() 0"],
+        ids=["continuous-clamp", "output-only"],
+    )
+    def test_a_second_spelling_of_the_surface_keeps_its_jump(self, tmp_path, fz):
+        """A -> B conserves A + B = A0, so ``Bobs > A0 - thr`` and ``Aobs < thr``
+        are one surface, and CVODE may report only one of the two roots. When the
+        one it reported read as continuous (a clamp, or an output nobody reads),
+        restarting past the surface left the other root behind, never fired, and
+        fY's jump of kb went with it: 32 of these 60 points came back 0. Every
+        switch the same probe pair straddles is now read with the crossing."""
+        tmpl = """\
+begin parameters
+    1 A0    10
+    2 a     {a}
+    3 thr   {thr}
+    4 kb    3
+    5 kc    1
+end parameters
+begin functions
+    1 {fz}
+    2 fY() if(Aobs<thr,kb,0)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 Z() 0
+    4 B() 0
+end species
+begin reactions
+    1 1 4 a #_R1
+    2 0 2 fY #_R2
+    3 0 3 fZ #_R3
+end reactions
+begin groups
+    1 Aobs                 1
+    2 Bobs                 4
+end groups
+"""
+        worst = 0.0
+        for a in (0.3, 0.5, 0.7, 1.1, 1.3, 2.9):
+            for thr in (2.0, 3.3, 7.1, 1.7, 4.4):
+                model = _model(tmp_path, tmpl.format(a=a, thr=thr, fz=fz), name="cons.net")
+                run = bngsim.Simulator(
+                    model, method="ode", sensitivity_params=["A0", "a", "thr", "kb"]
+                ).run(t_span=(0, 12), n_points=3, rtol=1e-10, atol=1e-12)
+                got = np.asarray(run.sensitivities)[-1, 1, 1:3]
+                exact = np.array([3 * np.log(10 / thr) / a**2, 3 / (a * thr)])
+                worst = max(worst, float(np.max(np.abs(got - exact) / np.abs(exact))))
+        assert worst < 1e-6
+
+    def test_a_jump_on_a_very_large_switched_flux_is_not_roundoff(self, tmp_path):
+        """``ksyn + if(...)`` with ksyn = 1e14: a jump of 3 is ~190 ulps of the
+        switched flux, which a 1024-ulp roundoff floor excused and a 64-ulp one
+        does not. Same closed form as the turnover case."""
+        text = (
+            TURNOVER.replace("    2 0 2 fY #_R2\n    3 0 2 ksyn #_R3\n", "    2 0 2 fY #_R2\n")
+            .replace("    1 fY() if(Aobs<thr,kb,0)", "    1 fY() ksyn+if(Aobs<thr,kb,0)")
+            .replace("    5 ksyn  1e7  # Constant", "    5 ksyn  1e14  # Constant")
+            .replace("    2 Y() 1e8", "    2 Y() 1e15")
+        )
+        assert "1e14" in text and "1e15" in text
+        model = _model(tmp_path, text, name="basal14.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=BYSTANDER_PARAMS).run(
+            t_span=(0.0, BYSTANDER_T), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        y = list(run.species_names).index("Y()")
+        got = np.asarray(run.sensitivities)[-1, y, :3]
+        A0, a, thr, kb, kdeg, T = 10.0, 0.5, 2.0, 3.0, 0.1, BYSTANDER_T
+        t_star = np.log(A0 / thr) / a
+        dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
+        np.testing.assert_allclose(got, -kb * np.exp(-kdeg * (T - t_star)) * dtstar, rtol=1e-4)
+
     def test_the_trajectory_was_never_the_problem(self, tmp_path):
         """Only the sensitivity was wrong: Y(T) = kb·(T − t*) either way, to the
         run's tolerance (1.4e-8 relative at rtol 1e-9, with the pool's 1e8 in

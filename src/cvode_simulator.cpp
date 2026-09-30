@@ -2411,6 +2411,9 @@ struct CvodeSimulator::Impl {
     // (SensitivityOptions::state_switch_reactions, issue #763). A switch with
     // no entry, or an empty one, is judged over the whole right-hand side.
     std::unordered_map<const NetworkModel::StateSwitch *, std::vector<int>> state_switch_rxns;
+    // Every state switch registered for this run, so a crossing can find the
+    // others its own probe pair straddles (issue #763).
+    std::vector<const NetworkModel::StateSwitch *> state_switch_all;
 
     // Issue #897: whether a plain run should restart at state switch `sw`'s
     // root, located at (t, x) in a step that ended at t_end. True when the
@@ -5864,11 +5867,12 @@ static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
-// Issue #763: a branch gap below this many ulps of a species' gross flux is
-// roundoff in the terms its net rate is summed from, not a jump. Generous for
-// the sum itself, which is a few ulps per term; the slack is for rate laws whose
-// own evaluation carries more.
-static constexpr double kStateSwitchGrossRoundoff = 1024.0;
+// Issue #763: a branch gap below this many ulps of the switched reactions' gross
+// flux is roundoff in the terms that flux is summed from, not a jump. A few ulps
+// per term, with room for a rate law whose own evaluation carries more; not so
+// many that a real jump on a large flux hides under it (a jump of 3 on a flux of
+// 1e14 is ~190 ulps, which 1024 excused).
+static constexpr double kStateSwitchGrossRoundoff = 64.0;
 // Issue #545: how closely a state-switch dt*/dθ — a finite difference — has to
 // match an emitted comoving shift for its column to enter that frame. The shift
 // itself is exact; this only decides which case the crossing is.
@@ -6438,6 +6442,12 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         BranchGaps at2;
         int jump = -1;
         bool straddled = false;
+        // Here the flow does not carry the state across, so the probes do not
+        // show which other switches share the surface; a batch that no rate law
+        // reads is judged as before issue #763, over the whole right-hand side.
+        if (judge == Judge::NoReader) {
+            judge = Judge::Legacy;
+        }
         if (best >= 0 && std::isfinite(g_star)) {
             const double xj = x[static_cast<std::size_t>(best)];
             const double eta0 =
@@ -6472,7 +6482,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             jump = first_jump(at2.gap, at1.gap, &at2.gap, at1);
         }
         sync(x, t_evt);
-        if (judge == Judge::NoReader || (straddled && jump < 0)) {
+        if (straddled && jump < 0) {
             return; // continuous at its own switch: no jump, and none to refuse
         }
         const double dt_max = dt / kStateSwitchNudgeGrowth;
@@ -6500,6 +6510,57 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         throw std::runtime_error(msg.str());
     }
     dt = dt_used;
+
+    // Issue #763 (third review): another registered switch whose residual this
+    // same probe pair straddles crosses here too, on the same surface: A -> B
+    // conserves A + B, so `Bobs > A0 - thr` and `Aobs < thr` are one crossing
+    // spelled twice, and CVODE may report only one. Its jump is this crossing's
+    // jump, and restarting past the surface without reading it would leave its
+    // root behind the restart, never fired. So its reactions join the reading,
+    // and an unmapped one sends the batch back to the pre-#763 judgment.
+    if (judge != Judge::Legacy && state_switch_all.size() > batch.size()) {
+        bool added = false;
+        for (const NetworkModel::StateSwitch *other : state_switch_all) {
+            if (std::find(batch.begin(), batch.end(), other) != batch.end()) {
+                continue;
+            }
+            double g_side[2] = {0.0, 0.0};
+            for (int side = 0; side < 2; ++side) {
+                const double sdt = side == 0 ? -dt : dt;
+                for (int i = 0; i < ns; ++i) {
+                    xw[static_cast<std::size_t>(i)] =
+                        x[static_cast<std::size_t>(i)] + sdt * f0[static_cast<std::size_t>(i)];
+                }
+                sync(xw, t_evt + sdt);
+                g_side[side] = eval.evaluate(other->residual_expr_idx);
+            }
+            const bool straddles = std::isfinite(g_side[0]) && std::isfinite(g_side[1]) &&
+                                   g_side[0] != 0.0 && g_side[1] != 0.0 &&
+                                   ((g_side[0] < 0.0) != (g_side[1] < 0.0));
+            if (!straddles) {
+                continue;
+            }
+            auto it = state_switch_rxns.find(other);
+            if (it == state_switch_rxns.end()) {
+                judge = Judge::Legacy;
+                sub_rxns = nullptr;
+                break;
+            }
+            batch_rxns.insert(batch_rxns.end(), it->second.begin(), it->second.end());
+            residual_support.insert(residual_support.end(), other->species.begin(),
+                                    other->species.end());
+            added = true;
+        }
+        if (judge != Judge::Legacy && added) {
+            std::sort(batch_rxns.begin(), batch_rxns.end());
+            batch_rxns.erase(std::unique(batch_rxns.begin(), batch_rxns.end()), batch_rxns.end());
+            if (!batch_rxns.empty()) {
+                judge = Judge::Subset;
+                sub_rxns = &batch_rxns;
+            }
+        }
+        sync(x, t_evt);
+    }
 
     // ── Restart just PAST the surface, not on it (issue #82, rate-law side) ──
     // CVODE locates a root only to ~100·ε·(|t| + |h|), so x(t*) lands on either
@@ -7116,6 +7177,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<int> state_switch_roots;
     std::vector<double> state_switch_zero_hold;
     impl_->state_switch_rxns.clear();
+    impl_->state_switch_all.clear();
     if (!opts.sensitivity.state_switch_conditions.empty()) {
         const auto &conds = opts.sensitivity.state_switch_conditions;
         const auto &rxn_lists = opts.sensitivity.state_switch_reactions;
@@ -7146,6 +7208,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         for (const NetworkModel::StateSwitch *sw : unmapped) {
             impl_->state_switch_rxns.erase(sw);
         }
+        impl_->state_switch_all = state_switches;
     }
     const int n_state_switch = static_cast<int>(state_switch_roots.size());
     state_switch_zero_hold.assign(static_cast<size_t>(n_state_switch), 0.0);
