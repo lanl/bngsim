@@ -314,7 +314,7 @@ def _run_primal(model, params_jnp, t_span, n_points, opts):
     np.ndarray, shape (n_points, n_species)
         Species concentrations.
     """
-    from bngsim._bngsim_core import CvodeSimulator, SolverOptions, TimeSpec
+    from bngsim._simulator import Simulator
 
     params_np = np.asarray(params_jnp, dtype=np.float64)
     diff_param_names = opts[5]
@@ -338,21 +338,17 @@ def _run_primal(model, params_jnp, t_span, n_points, opts):
         clone._core.set_param(name, float(params_np[i]), force_override=flat)
     clone.reset()
 
-    # Set up solver
-    sim = CvodeSimulator(clone._core)
-    ts = TimeSpec()
-    ts.t_start = t_span[0]
-    ts.t_end = t_span[1]
-    ts.n_points = n_points
-
+    # Through Simulator.run, not a bare CvodeSimulator (issues #902, #913). The
+    # bare core got none of what Simulator adds to a run: the crossing stops of
+    # a rate law switched on time or a counter clock (#305, #440, #443), the
+    # roots of one switched on model state (#150, #897), so a narrow if() window
+    # inside one step was stepped over and the primal came back as if it never
+    # opened. Building the options here again is how the bridge fell behind.
     rtol, atol, max_steps = opts[:3]
-    solver_opts = SolverOptions()
-    solver_opts.rtol = rtol
-    solver_opts.atol = atol
-    solver_opts.max_steps = max_steps
-
-    core_result = sim.run(ts, solver_opts)
-    return np.array(core_result.species_data, dtype=np.float64)
+    result = Simulator(clone, method="ode").run(
+        t_span=t_span, n_points=n_points, rtol=rtol, atol=atol, max_steps=max_steps
+    )
+    return np.asarray(result.species, dtype=np.float64)
 
 
 def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
@@ -426,32 +422,24 @@ def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
         return Y, sens
 
     # ── Single CVODES call (all selected params at once) ──
-    from bngsim._bngsim_core import (
-        CvodeSimulator,
-        SolverOptions,
-        TimeSpec,
-    )
+    # Through Simulator, like the chunked path above (issues #902, #913). A bare
+    # CvodeSimulator skipped every sensitivity term Simulator arranges: the
+    # initial-condition seed of a primary that reaches a species through a
+    # derived parameter (#43; dB/dR0 came back 0), the switch-time, event-time
+    # and saltation jumps (#48, #49, #150), and the crossing stops and roots
+    # those jumps sit on.
+    from bngsim._simulator import Simulator
 
     clone = model.clone()
     for i, name in enumerate(diff_param_names):
         clone._core.set_param(name, float(params_np[i]), force_override=flat)
     clone.reset()
 
-    sim = CvodeSimulator(clone._core)
-    ts = TimeSpec()
-    ts.t_start = t_span[0]
-    ts.t_end = t_span[1]
-    ts.n_points = n_points
+    result = Simulator(clone, method="ode", sensitivity_params=list(diff_param_names)).run(
+        t_span=t_span, n_points=n_points, rtol=rtol, atol=atol, max_steps=max_steps
+    )
 
-    solver_opts = SolverOptions()
-    solver_opts.rtol = rtol
-    solver_opts.atol = atol
-    solver_opts.max_steps = max_steps
-    solver_opts.set_sensitivity_params(list(diff_param_names))
-
-    core_result = sim.run(ts, solver_opts)
-
-    Y = np.array(core_result.species_data, dtype=np.float64)
-    sens = np.array(core_result.sensitivity_data, dtype=np.float64)
+    Y = np.asarray(result.species, dtype=np.float64)
+    sens = np.asarray(result.sensitivities, dtype=np.float64)
 
     return Y, sens

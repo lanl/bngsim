@@ -2292,8 +2292,12 @@ struct CvodeSimulator::Impl {
 
     // Read s⁻ out of CVODES at t_evt. MUST run before the caller's
     // CVodeReInit — see the ordering note on apply_event_sensitivity_jump.
+    // `at_run_start`: before CVODES has taken a step there is nothing to
+    // interpolate, and s⁻ is the seed CVodeSensInit1 was given, still in
+    // sens.yS (issue #717).
     std::vector<std::vector<double>> capture_event_sens(void *cvode_mem, int ns, double t_evt,
-                                                        SensitivityState &sens);
+                                                        SensitivityState &sens,
+                                                        bool at_run_start = false);
 
     // Put an unjumped s back into CVODES after a bare CVodeReInit (issue #146).
     // The counterpart of capture_event_sens for a root that changes nothing:
@@ -4609,7 +4613,8 @@ void CvodeSimulator::Impl::restore_nominal_params(const SensitivityState &sens) 
 
 std::vector<std::vector<double>> CvodeSimulator::Impl::capture_event_sens(void *cvode_mem, int ns,
                                                                           double t_evt,
-                                                                          SensitivityState &sens) {
+                                                                          SensitivityState &sens,
+                                                                          bool at_run_start) {
     const int n_sens = sens.n_total;
     NVectorArrayGuard &yS_guard = sens.yS;
 
@@ -4617,11 +4622,17 @@ std::vector<std::vector<double>> CvodeSimulator::Impl::capture_event_sens(void *
     if (n_sens == 0) {
         return s_minus;
     }
-    sunrealtype t_tmp = static_cast<sunrealtype>(t_evt);
-    int gf = CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr);
-    if (gf != CV_SUCCESS) {
-        throw std::runtime_error("CVodeGetSens for event sensitivity capture failed: " +
-                                 std::to_string(gf));
+    // CVodeGetSens interpolates at the last return time, which CVodeInit never
+    // sets: before the first step it evaluates (t − tn)/h = 0/0 at t_start = 0
+    // (every s⁻ NaN) and rejects any other t_start with CV_BAD_T. An SBML
+    // initialValue=false event firing at t_start hit exactly that (issue #717).
+    if (!at_run_start) {
+        sunrealtype t_tmp = static_cast<sunrealtype>(t_evt);
+        int gf = CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr);
+        if (gf != CV_SUCCESS) {
+            throw std::runtime_error("CVodeGetSens for event sensitivity capture failed: " +
+                                     std::to_string(gf));
+        }
     }
     s_minus.resize(static_cast<size_t>(n_sens));
     for (int c = 0; c < n_sens; ++c) {
@@ -5384,9 +5395,39 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             }
             sync_state(); // restore evaluator state at (x⁻, p₀)
 
+            // ∂c/∂t at fixed (x⁻, p₀), for an assignment that reads `time`
+            // (issue #735): `Tlast = time`, `END_M = time + 1000`. x⁺ =
+            // h(x⁻(t*), p, t*(p)), so a fire time that moves with p moves the
+            // assigned value by ∂h/∂t·∂t*/∂p as well. Only needed where some
+            // column's fire time moves; a central difference, so a value linear
+            // in time is exact.
+            double dcdt = 0.0;
+            if (tau_nonzero) {
+                // Relative to the fire time itself, not floored at one time
+                // unit: a model timed in microseconds would otherwise take a
+                // step the size of its own dynamics.
+                const double ht = std::max(1e-6 * std::fabs(t_evt), 1e-12);
+                auto value_at = [&](double t) {
+                    for (int i = 0; i < ns; ++i) {
+                        sp_vec_outer[i].concentration = xwork[i];
+                    }
+                    model.update_observables(xwork.data());
+                    model.evaluate_functions(t);
+                    if (model.uses_rateof()) {
+                        model.refresh_rateof_derivs(t, xwork.data());
+                        model.evaluate_functions(t);
+                    }
+                    return eval_ref_outer.evaluate(vexpr);
+                };
+                const double c_hi = value_at(t_evt + ht);
+                const double c_lo = value_at(t_evt - ht);
+                dcdt = (c_hi - c_lo) / (2.0 * ht);
+                sync_state();
+            }
+
             // Assemble s⁺_k for every sensitivity column:
             //     s⁺_k = Σ_j (∂h_k/∂x_j)·(s⁻_j + f⁻_j·∂t*/∂p)
-            //            + ∂h_k/∂p − f⁺_k·∂t*/∂p
+            //            + ∂h_k/∂p + ∂h_k/∂t·∂t*/∂p − f⁺_k·∂t*/∂p
             // The pre-shift carries s⁻ along the pre-event flow by how far
             // the event time moves, the event Jacobian maps it through the
             // reset, and the post-shift carries it back along the
@@ -5407,7 +5448,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     acc += dcdp[c];
                 }
                 if (tau_c != 0.0) {
-                    acc -= f_plus[k] * tau_c;
+                    acc += (dcdt - f_plus[k]) * tau_c;
                 }
                 N_VGetArrayPointer(yS_guard[c])[k] = acc;
             }
@@ -7022,11 +7063,28 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
         auto eval_pri = [&](const ExecInstance &inst) -> double {
             const auto &ev = events_outer[inst.event_idx];
-            return (ev.priority_expr_idx >= 0) ? eval_ref_outer.evaluate(ev.priority_expr_idx)
-                                               : static_cast<double>(ev.priority);
+            const double p = (ev.priority_expr_idx >= 0)
+                                 ? eval_ref_outer.evaluate(ev.priority_expr_idx)
+                                 : static_cast<double>(ev.priority);
+            // NaN compares false with everything, so the execution order
+            // silently fell back to declaration order. Refuse it, as the SSA
+            // drain does.
+            if (std::isnan(p))
+                throw std::runtime_error("event '" + ev.id +
+                                         "' has a priority that is NaN at t=" + diag_number(t_now) +
+                                         "; an event priority must be a number");
+            return p;
         };
 
         while (true) {
+            // Drop executed and cancelled instances once they pile up, so a
+            // long cascade (an algebraic loop runs to CASCADE_LIMIT) costs
+            // O(fires) rather than O(fires²). Order is kept, so `ties` below
+            // is still index-ordered.
+            if (queue.size() > 256)
+                queue.erase(std::remove_if(queue.begin(), queue.end(),
+                                           [](const ExecInstance &x) { return x.done; }),
+                            queue.end());
             // Collect the not-done instances sharing the MAXIMUM priority.
             // Iterating in increasing index keeps `ties` index-ordered, so the
             // single-candidate case reproduces the old lowest-index pick without
@@ -7377,8 +7435,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             std::vector<std::vector<double>> t0_s_minus;
             if (wants_sensitivity && !t0_firing.empty()) {
                 t0_x_minus.assign(y_data, y_data + ns);
-                t0_s_minus = impl_->capture_event_sens(cvode_mem, ns,
-                                                       static_cast<double>(times.t_start), sens);
+                t0_s_minus = impl_->capture_event_sens(
+                    cvode_mem, ns, static_cast<double>(times.t_start), sens, /*at_run_start=*/true);
             }
 
             bool t0_immediate_fired = process_firing_batch(times.t_start, t0_firing);
