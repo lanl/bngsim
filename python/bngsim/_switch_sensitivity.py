@@ -4474,11 +4474,11 @@ def _emit_switch_records(
     records: list[SwitchCrossing] = []
     for group in by_instant.values():
         for cross in group:
-            if not any(v != 0.0 for v in cross.dtstar) and not (
-                cross.clock_idx0 in moved_clocks and len(group) == 1
-            ):
+            if not any(v != 0.0 for v in cross.dtstar) and cross.clock_idx0 not in moved_clocks:
                 # No requested column moves this crossing: not its threshold,
-                # and not the clock it is read on (issue #725).
+                # and not the clock it is read on (issue #725). One on a moved
+                # clock is kept even inside a coinciding group, isolated below
+                # by its own threshold's parameters like any other member.
                 continue
             if len(group) > 1:
                 idx0, delta = _isolation_bump(

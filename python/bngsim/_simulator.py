@@ -4799,14 +4799,16 @@ class Simulator:
                     # param-dependent coefficient, so it must track set_params.
                     # That is also why each row's Result carries its OWN matrix.
                     row_ic_seed = self._apply_ic_param_sens_seed(opts, clone)
-                    # Likewise the switch times: this row's t0/sigma set where the
-                    # crossings are, so they must be detected on the clone.
-                    self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1])
                     self._apply_event_time_sens(opts, clone._core, t_span[0], t_span[1])
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
                     opts.set_sensitivity_method(self._sensitivity_method)
+                    # Likewise the switch times: this row's t0/sigma set where the
+                    # crossings are, so they must be detected on the clone. Outside
+                    # the parameter guard, as at the single-shot site: a counter
+                    # clock's crossing moves with its own IC axis (issue #725).
+                    self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1])
                     # See the note at the single-shot site: keyed on "any
                     # sensitivity at all", not on a parameter request.
                     self._apply_state_switch_sens(opts, clone._core)

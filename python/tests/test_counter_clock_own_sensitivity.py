@@ -106,3 +106,94 @@ def test_compute_all_default_columns_include_the_counter_rate(tmp_path):
     )
     x = list(result.species_names).index("X()")
     assert float(np.asarray(result.sensitivities)[-1, x, 0]) == pytest.approx(5.0, abs=1e-6)
+
+
+# Two switches on the same counter at the same instant: X at t >= s1, Z at t >= s2,
+# s1 = s2 = 3, so both cross at t* = 2.5. The core reads a crossing's jump by
+# nudging the clock, which flips both, so each is isolated by its own threshold
+# parameter (issue #375) — and a crossing only the clock moves must be kept inside
+# such a group too, or its columns come back 0.
+COINCIDENT = """\
+begin parameters
+    1 c0     0.5
+    2 rc     1
+    3 s1     3
+    4 s2     3
+    5 k      2
+    6 kz     5
+end parameters
+begin functions
+    1 rate_X() if(t>=s1,k,0)
+    2 rate_Z() if(t>=s2,kz,0)
+end functions
+begin species
+    1 C() c0
+    2 X() 0
+    3 Z() 0
+end species
+begin reactions
+    1 0 1 rc
+    2 0 2 rate_X
+    3 0 3 rate_Z
+end reactions
+begin groups
+    1 t                    1
+end groups
+"""
+# dX/d[c0, rc] = [k/rc, k·t*/rc] = [2, 5]; dZ/d[c0, rc] = [kz/rc, kz·t*/rc] = [5, 12.5].
+
+
+@pytest.mark.parametrize(
+    "params,want_x,want_z",
+    [
+        (["c0"], [2.0], [5.0]),
+        (["rc"], [5.0], [12.5]),
+        (["c0", "s1"], [2.0, -2.0], [5.0, 0.0]),
+    ],
+    ids=["seed", "rate", "seed-and-one-threshold"],
+)
+def test_coinciding_crossings_on_a_counter_each_move_with_it(tmp_path, params, want_x, want_z):
+    run = bngsim.Simulator(
+        _model(tmp_path, COINCIDENT), method="ode", sensitivity_params=params
+    ).run(sample_times=[0, 1, 2, 3, 4, 5], rtol=1e-10, atol=1e-12)
+    s = np.asarray(run.sensitivities)[-1]
+    np.testing.assert_allclose(s[_final(run, "X()")], want_x, atol=1e-7)
+    np.testing.assert_allclose(s[_final(run, "Z()")], want_z, atol=1e-7)
+
+
+def test_coinciding_crossings_along_the_clocks_ic_axis(tmp_path):
+    run = bngsim.Simulator(_model(tmp_path, COINCIDENT), method="ode", sensitivity_ic=["C()"]).run(
+        sample_times=[0, 1, 2, 3, 4, 5], rtol=1e-10, atol=1e-12
+    )
+    s = np.asarray(run.sensitivities_ic)[-1]
+    assert s[_final(run, "X()"), 0] == pytest.approx(2.0, abs=1e-7)
+    assert s[_final(run, "Z()"), 0] == pytest.approx(5.0, abs=1e-7)
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 10])
+def test_compute_all_does_not_depend_on_the_chunk_size(tmp_path, chunk):
+    """Which chunk a column lands in must not decide its answer (#243)."""
+    sim = bngsim.Simulator(_model(tmp_path, COINCIDENT), method="ode")
+    result = sim.compute_all_sensitivities(
+        t_span=(0.0, 5.0),
+        n_points=6,
+        params=["c0", "rc", "s1", "s2"],
+        chunk_size=chunk,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    s = np.asarray(result.sensitivities)[-1]
+    names = list(result.species_names)
+    np.testing.assert_allclose(s[names.index("X()")], [2, 5, -2, 0], atol=1e-6)
+    np.testing.assert_allclose(s[names.index("Z()")], [5, 12.5, 0, -5], atol=1e-6)
+
+
+def test_run_batch_matches_run_on_an_ic_only_request(tmp_path):
+    sim = bngsim.Simulator(_model(tmp_path), method="ode", sensitivity_ic=["C()"])
+    single = sim.run(t_span=(0.0, 5.0), n_points=6, rtol=1e-10, atol=1e-12)
+    batch = sim.run_batch(
+        t_span=(0.0, 5.0), n_points=6, params=[{"k": 2.0}], rtol=1e-10, atol=1e-12
+    )[0]
+    x = _final(single, "X()")
+    assert np.asarray(single.sensitivities_ic)[-1, x, 0] == pytest.approx(2.0, abs=1e-7)
+    assert np.asarray(batch.sensitivities_ic)[-1, x, 0] == pytest.approx(2.0, abs=1e-7)
