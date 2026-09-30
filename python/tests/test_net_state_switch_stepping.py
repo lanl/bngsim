@@ -27,12 +27,13 @@ What this locks:
      alone;
   5. the scan runs once per model, a clone inherits it, and a batch scans once
      for all of its rows;
-  6. a root restarts the run only at a genuine crossing, where the flow on the
-     near side stays finite at the surface and carries the state across: GH
-     #176's parked trajectory and three twins, a state relaxing onto its
-     threshold, and one on an unstable surface all keep main's answers; a
-     residual parked at exactly 0.0 is not read as a second root; and a real
-     crossing on a curved residual still restarts;
+  6. a root restarts the run only at a genuine crossing, one the solver's own
+     trajectory resolves past its tolerance and whose flow on the near side
+     stays finite at the surface and carries the state across: GH #176's
+     parked trajectory and five twins, a state relaxing onto its threshold, and
+     one on an unstable surface all keep main's answers; a residual parked at
+     exactly 0.0 is not read as a second root; and a real crossing on a curved
+     residual, whose window opens and closes inside one step, still restarts;
   7. a residual too deep for ``ast.unparse`` keeps every root, and one that
      starts at exactly zero does not print a SUNDIALS warning.
 """
@@ -341,27 +342,35 @@ _V_LATCH = "if(((-70+Voltage_Level)<-20),0,kup)"
 def _ltype_variant(text, kind):
     """GH #176's fixture, or a twin that parks the same way, 1e-11 on the exact
     trajectory's side of the threshold, while defeating one earlier rule.
+    Returns the network and its oracle: the same network with each step
+    replaced by the branch the exact trajectory takes throughout.
 
     ``split`` carries Voltage_Level as V + V2 exchanging at kx*time() and kx, so
     dg/dt is f_V + f_V2, two terms of about 0.3 that cancel to 1e-11. ``ramp``
     moves the threshold at rr = 1e-8 per unit time and feeds V the same ramp, so
     dg/dt = f_V - rr, and the rounding in d/dt of rr*time() is 1e-10 whatever
     rr is. ``latch`` adds 0 -> Voltage at 1e-6 on the far branch only, so once
-    across, the far-side flow carries V further across.
+    across, the far-side flow carries V further across. ``damped`` makes the
+    latch's V approach its rest point as a critically damped second-order
+    system, V' = P - Ps, so the flow arriving at the threshold is carried by P
+    and does not shrink as V nears it. ``moving`` makes the latch's threshold
+    50 + 1e-6*sin(10t), with V resting 1e-11 below its minimum, so the flow
+    arriving at the threshold is its own finite d/dt.
     """
 
-    def swap(old, new):
+    def swap(old, new, n=1):
         nonlocal text
-        assert text.count(old) == 1, old
+        assert text.count(old) == n, old
         text = text.replace(old, new)
 
     last_param = "   19 _rateLaw2       0.01  # Constant\n"
+    last_rxn = "   25 10 8 _rateLaw2 #_R8\n"
+    last_species = "   10 LTCC(b,g~C,loc~mem,p~P,s~I) 0\n"
+    steps = {_V_STEP: "0.5", "if((Phospho_LTCC>0),k_pka_shift,0)": "k_pka_shift"}
     if kind == "split":
         swap(last_param, last_param + "   20 kx 0.01\n")
         swap(f"    4 v_rec() {_V_STEP}\n", f"    4 v_rec() {_V_STEP}\n    5 xf() kx*time()\n")
-        last_species = "   10 LTCC(b,g~C,loc~mem,p~P,s~I) 0\n"
         swap(last_species, last_species + "   11 Voltage2() 0\n")
-        last_rxn = "   25 10 8 _rateLaw2 #_R8\n"
         swap(last_rxn, last_rxn + "   26 3 11 xf\n   27 11 3 kx\n   28 11 0 k_v_leak\n")
         swap("    8 Voltage_Level        3\n", "    8 Voltage_Level        3,11\n")
     elif kind == "ramp":
@@ -371,15 +380,41 @@ def _ltype_variant(text, kind):
             f"    4 v_rec() {_V_STEP_RAMP}\n    5 stim() k_v_stim+rr*(time()+1)\n",
         )
         swap("    4 0 3 k_v_stim #_R9\n", "    4 0 3 stim #_R9\n")
-    elif kind == "latch":
+        steps = {_V_STEP_RAMP: "0.5", "if((Phospho_LTCC>0),k_pka_shift,0)": "k_pka_shift"}
+    elif kind in ("latch", "damped", "moving"):
         swap(last_param, last_param + "   20 kup 1e-06\n")
         swap(f"    4 v_rec() {_V_STEP}\n", f"    4 v_rec() {_V_STEP}\n    5 vup() {_V_LATCH}\n")
-        last_rxn = "   25 10 8 _rateLaw2 #_R8\n"
         swap(last_rxn, last_rxn + "   26 0 3 vup\n")
-    return text
+        steps[_V_LATCH] = "0"
+        if kind == "damped":
+            swap("   20 kup 1e-06\n", "   20 kup 1e-06\n   21 Ps 10\n")
+            second_order = "    6 fv() Pvel-Ps\n    7 fp() -(Voltage_Level-k_v_stim)-2*(Pvel-Ps)\n"
+            swap("    5 vup() ", second_order + "    5 vup() ")
+            swap("    4 0 3 k_v_stim #_R9\n", "    4 0 3 fv #_R9\n")
+            swap("    5 3 0 k_v_leak #_R10\n", "    5 0 11 fp #_R10\n")
+            swap(last_species, last_species + "   11 P() 10\n")
+            swap("    8 Voltage_Level        3\n", "    8 Voltage_Level        3\n    9 Pvel 11\n")
+        elif kind == "moving":
+            swap(
+                "   16 k_v_stim        49.99999999999  # Constant\n",
+                "   16 k_v_stim        49.999998999990005  # Constant\n",
+            )
+            swap("   20 kup 1e-06\n", "   20 kup 1e-06\n   21 amp 1e-06\n   22 om 10.0\n")
+            moving = "((-70+Voltage_Level)<(-20+(amp*sin(om*time()))))"
+            swap("((-70+Voltage_Level)<-20)", moving, n=2)
+            steps = {
+                f"if({moving},0.5,0.05)": "0.5",
+                "if((Phospho_LTCC>0),k_pka_shift,0)": "k_pka_shift",
+                f"if({moving},0,kup)": "0",
+            }
+    exact = text
+    for condition, branch in steps.items():
+        assert exact.count(condition) == 1, condition
+        exact = exact.replace(condition, branch)
+    return text, exact
 
 
-@pytest.mark.parametrize("kind", ["fixture", "split", "ramp", "latch"])
+@pytest.mark.parametrize("kind", ["fixture", "split", "ramp", "latch", "damped", "moving"])
 def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
     """GH #176's fixture parks Voltage 1e-11 below the step at 50, far inside
     the solver's own error at rtol 1e-8, so the interpolant can cross the step
@@ -388,22 +423,26 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
     never takes. The observables came out 63% off after 2,019,910 steps, with no
     error.
 
-    The core now restarts at a lone state-switch root only at a genuine
-    crossing: the flow on the near side, where the arriving branch is live,
-    must stay finite as the surface is approached and carry the state across.
-    A parked trajectory's flow vanishes there, so its root steps on as it did
-    before the root existed: the analytical attempt fails loudly and ``auto``
-    retries with FD. The twins each defeated an earlier rule (review of PR
-    #903). Restarting unless the flow read as opposed sent split and ramp 9.4e-3
-    and 0.62 off, worse at tighter tolerances. Restarting whenever the flow at
-    the located state carried sent latch 0.633 off at every tolerance, because
-    there the far side does carry. main is right on all four.
+    The core restarts at a lone state-switch root only at a genuine crossing:
+    the solver's own trajectory has to go past the surface by more than its
+    tolerance can blur, and the flow on the near side, where the arriving
+    branch is live, has to stay finite at the surface and carry the state
+    across. A parked trajectory fails the first test at least, so its root
+    steps on as it did before the root existed: the analytical attempt fails
+    loudly and ``auto`` retries with FD.
 
-    The oracle is the same network with each step replaced by the branch the
-    exact trajectory takes throughout: V < 50 always, so 0.5, and
-    Phospho_LTCC > 0 for every t > 0.
+    Each twin defeated an earlier rule (review of PR #903):
+    - Restarting unless the flow read as opposed sent split and ramp 9.4e-3 and
+      0.62 off, worse at tighter tolerances.
+    - Restarting whenever the flow at the located state carried sent latch 0.633
+      off at every tolerance.
+    - Restarting on a finite near-side flow alone sent damped and moving 1.085
+      and 0.16 off: there the arriving flow is finite, and only the tolerance
+      tells the crossing is not resolved.
+
+    main is right on all six.
     """
-    text = _ltype_variant((data_dir / _LTYPE).read_text(), kind)
+    text, exact_text = _ltype_variant((data_dir / _LTYPE).read_text(), kind)
     model = _write(tmp_path, text, f"{kind}.net")
     assert any("Voltage_Level" in c for c in model.state_switch_root_conditions())
     window = dict(t_span=(0.0, 150.0), n_points=301, rtol=1e-8, atol=1e-8)
@@ -419,15 +458,6 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
         )
     result = bngsim.Simulator(model).run(**window)
     assert result.solver_stats["n_steps"] < 10_000
-
-    exact_text = text
-    step = _V_STEP_RAMP if kind == "ramp" else _V_STEP
-    branches = [(step, "0.5"), ("if((Phospho_LTCC>0),k_pka_shift,0)", "k_pka_shift")]
-    if kind == "latch":
-        branches.append((_V_LATCH, "0"))
-    for condition, branch in branches:
-        assert exact_text.count(condition) == 1, condition
-        exact_text = exact_text.replace(condition, branch)
     exact = bngsim.Simulator(_write(tmp_path, exact_text, f"{kind}_exact.net")).run(
         **{**window, "rtol": 1e-12, "atol": 1e-12}
     )

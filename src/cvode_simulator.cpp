@@ -2405,13 +2405,18 @@ struct CvodeSimulator::Impl {
                                         SensitivityState &sens);
 
     // Issue #897: whether a plain run should restart at state switch `sw`'s
-    // root: true when the flow on the near side of the surface stays finite as
-    // the surface is approached and carries the residual across it in the
-    // direction `dir` (+1 rising, -1 falling) the root finder reported, and when
-    // no near-side point can be built. False when that flow vanishes at the
-    // surface or opposes the crossing. Leaves the model synced at (t, x).
-    bool flow_carries_state_switch(double t, const double *x, int ns,
-                                   const NetworkModel::StateSwitch &sw, int dir);
+    // root, located at (t, x) in a step that ended at t_end. True when the
+    // solver's trajectory over the rest of the step goes beyond the surface by
+    // more than the tolerance can blur, and the flow on the near side stays
+    // finite as the
+    // surface is approached and carries the residual across it in the
+    // direction `dir` (+1 rising, -1 falling) the root finder reported; true
+    // also when no near-side point can be built. Leaves the model synced at
+    // (t, x).
+    bool flow_carries_state_switch(void *cvode_mem, double t, const double *x, int ns,
+                                   const NetworkModel::StateSwitch &sw, int dir, double t_end,
+                                   N_Vector scratch, double rtol, double atol,
+                                   const std::vector<double> &atol_v);
 };
 
 // ─── Shared integrator setup (used by run() and run_warm()) ──────────────────
@@ -5794,8 +5799,11 @@ static constexpr double kStateSwitchGapRatio = 0.7;
 // which for a genuine common factor is orders of magnitude below it.
 static constexpr double kStateSwitchTauAgreeTol = 1e-4;
 
-bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, int ns,
-                                                     const NetworkModel::StateSwitch &sw, int dir) {
+bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, const double *x,
+                                                     int ns, const NetworkModel::StateSwitch &sw,
+                                                     int dir, double t_end, N_Vector scratch,
+                                                     double rtol, double atol,
+                                                     const std::vector<double> &atol_v) {
     // A trajectory that CROSSES the surface arrives at it with a flow that stays
     // finite as the surface is approached. One that only approaches it, parked
     // beside it or relaxing onto it, arrives with a flow that vanishes there, so
@@ -5815,6 +5823,24 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, 
     // that scales with the distance vanishes there. The run restarts only on a
     // finite flow that carries the residual the way the root finder reported.
     //
+    // Neither of those can see a crossing the exact trajectory misses by less
+    // than the solver's own error. A trajectory that parks 1e-11 short of the
+    // threshold while its flow is carried by another species (a damped
+    // approach, where V' reads P and not V) or by a threshold that moves with
+    // time arrives with a finite flow, and the interpolant crosses at rtol
+    // 1e-8 all the same: the fourth review of PR #903 found those 1.085 and
+    // 0.16 off, silently, where main is right. So first the crossing has to be
+    // RESOLVED: somewhere between the root and the end of the step, the
+    // solver's own trajectory (CVODE's interpolant, sampled) must go beyond the
+    // surface by more than the band the tolerance leaves the residual,
+    //     δg = Σ_j |∂g/∂x_j|·(rtol·|x_j| + atol_j),
+    // times 10·√N, because the WRMS error test lets a single component carry
+    // √N of the tolerance. A crossing inside that band is one the requested
+    // tolerance cannot decide, and it steps on. The whole step is sampled
+    // rather than its end: a window can open and close inside one step, and a
+    // curved residual (3u − u³) can cross and come back, so the end may be on
+    // the near side again after an excursion of 0.03.
+    //
     // Where no near-side point can be built (a residual flat in every
     // coordinate, or one that does not move to the side the Newton step aims
     // for), the run restarts, which is what lets CVODE set a zero root aside.
@@ -5826,6 +5852,7 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, 
     int best = -1;
     double best_gj = 0.0;
     double best_weight = 0.0;
+    std::vector<double> grad(static_cast<std::size_t>(ns), 0.0);
     for (int j : sw.species) {
         const double xj = xv[static_cast<std::size_t>(j)];
         const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
@@ -5837,6 +5864,9 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, 
         const double g_lo = eval.evaluate(sw.residual_expr_idx);
         xw[static_cast<std::size_t>(j)] = xj;
         const double gj = (g_hi - g_lo) / (2.0 * h);
+        if (std::isfinite(gj)) {
+            grad[static_cast<std::size_t>(j)] = gj;
+        }
         const double weight = std::fabs(gj) * std::max(std::fabs(xj), 1.0);
         if (std::isfinite(gj) && gj != 0.0 && weight > best_weight) {
             best_weight = weight;
@@ -5847,6 +5877,33 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, 
     sync_model_at(t, x, ns);
     if (best < 0 || !std::isfinite(g_star)) {
         return true;
+    }
+    // The far-side excursion the solver's trajectory makes over the rest of the
+    // step, against the band at the state where it is measured.
+    const double k_resolve = 10.0 * std::sqrt(static_cast<double>(ns));
+    bool resolved = false;
+    if (t_end > t) {
+        constexpr int kSamples = 16;
+        for (int k = 1; k <= kSamples && !resolved; ++k) {
+            const double tk = t + (t_end - t) * static_cast<double>(k) / kSamples;
+            if (CVodeGetDky(cvode_mem, tk, 0, scratch) != CV_SUCCESS) {
+                break;
+            }
+            const double *xk = N_VGetArrayPointer(scratch);
+            sync_model_at(tk, xk, ns);
+            const double excursion = eval.evaluate(sw.residual_expr_idx) * static_cast<double>(dir);
+            double band = 0.0;
+            for (int j : sw.species) {
+                const double atol_j = atol_v.empty() ? atol : atol_v[static_cast<std::size_t>(j)];
+                band += std::fabs(grad[static_cast<std::size_t>(j)]) *
+                        (rtol * std::fabs(xk[j]) + atol_j);
+            }
+            resolved = std::isfinite(excursion) && excursion > k_resolve * band;
+        }
+        sync_model_at(t, x, ns);
+    }
+    if (!resolved) {
+        return false;
     }
     const double xj = xv[static_cast<std::size_t>(best)];
     // The sign g has before the crossing. Not `near`: <windows.h> defines it
@@ -7982,9 +8039,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
                 // Issue #897: in a run without sensitivities, a batch of
                 // state-switch roots and nothing else restarts the integrator
-                // only when one of them is a genuine crossing: the flow on the
-                // near side stays finite as the surface is approached and
-                // carries the state across it (flow_carries_state_switch). A
+                // only when one of them is a genuine crossing: the solver's
+                // trajectory over the rest of the step goes past the surface by
+                // more than the tolerance can blur, and the flow on the near
+                // side stays finite as the
+                // surface is approached and carries the state across it
+                // (flow_carries_state_switch). A
                 // trajectory parked beside a threshold, or relaxing onto it,
                 // can cross it on the solver's interpolant alone, and restarting
                 // on the far side of that crossing commits the run to a branch
@@ -8004,11 +8064,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         (stop_at_crossing && t_root >= t_crossing - switch_t_eps) ||
                         (stop_at_switch && t_root >= t_switch - switch_t_eps);
                     if (!other_root && !at_stop) {
+                        // The end of the step the root was found in, whose
+                        // interpolant the resolution test samples.
+                        sunrealtype t_end = t_ret;
+                        CVodeGetCurrentTime(cvode_mem, &t_end);
+                        NVectorGuard scratch(N_VClone(y));
                         restart = false;
                         for (int j : switched) {
                             if (impl_->flow_carries_state_switch(
-                                    t_root, y_data, ns, *state_switches[static_cast<size_t>(j)],
-                                    root_info[n_events + n_disc + j])) {
+                                    cvode_mem, t_root, y_data, ns,
+                                    *state_switches[static_cast<size_t>(j)],
+                                    root_info[n_events + n_disc + j], static_cast<double>(t_end),
+                                    scratch, rtol, atol, atol_v)) {
                                 restart = true;
                                 break;
                             }
