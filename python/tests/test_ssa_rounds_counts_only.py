@@ -165,3 +165,104 @@ def test_replicates_sum_the_rounding_count(tmp_path):
             4, t_span=(0, 1), n_points=2, seed=1, squeeze=True
         )
     assert r.ssa_diagnostics["n_rounded_populations"] == 4
+
+
+# ── Review additions ─────────────────────────────────────────────────────────
+
+
+def test_an_event_on_a_rate_rule_timer_survives_a_leg_boundary():
+    """``T' = 1`` crosses ``T >= 1`` in the last stretch of each 1.0-long
+    ``run_until`` leg, which the loop never checked; the next leg re-seeds the
+    trigger from initialValue and saw no rising edge. Every dose was lost (A
+    stayed 0). The dose now lands at the boundary: the next leg starts from
+    A = 100 with the timer reset, as the ODE's legs do."""
+    ant = "species A = 0; T = 0; T' = 1; J: A => ; 0.5*A; E: at (T >= 1): A = A + 100, T = 0;"
+    for seed in range(5):
+        m = bngsim.Model.from_antimony_string(ant)
+        sim = bngsim.Simulator(m, method="ssa")
+        sim.run_until(1.0, n_points=2, seed=seed)
+        r = sim.run_until(2.0, n_points=2, seed=seed + 100)
+        names = list(r.species_names)
+        a0, t0 = (np.asarray(r.species)[0, names.index(n)] for n in ("A", "T"))
+        assert a0 == 100.0, (seed, a0)
+        assert t0 == pytest.approx(0.0, abs=1e-12), (seed, t0)
+
+
+def test_an_assignment_rule_species_is_not_a_count():
+    """The loader stores an assignment-rule species in a fixed slot. It holds
+    the rule's value, 0.4, and was rounded and warned about on every run."""
+    m = bngsim.Model.from_antimony_string("species A = 0; species R; R := 0.4; J: => A; R;")
+    issues = m.validate_for_ssa()
+    assert not [i for i in issues if i.code == "non_integer_initial_population"], issues
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", bngsim.SsaRoundingWarning)
+        r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 1), n_points=2, seed=1)
+    assert r.ssa_diagnostics["n_rounded_populations"] == 0
+
+
+def test_a_fixed_species_is_still_rounded(tmp_path):
+    """A boundary species is a count, and run_network rounds every species
+    before an SSA; bngsim does too, and says so."""
+    path = tmp_path / "fixed.net"
+    path.write_text(
+        "begin parameters\n    1 k 0.1\nend parameters\n"
+        "begin species\n    1 $B() 2.5\n    2 A() 0\nend species\n"
+        "begin reactions\n    1 1 1,2 k\nend reactions\n"
+        "begin groups\n    1 Btot 1\nend groups\n"
+    )
+    m = bngsim.Model.from_net(str(path))
+    with pytest.warns(bngsim.SsaRoundingWarning, match=r"first: B\(\)"):
+        r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 1), n_points=2, seed=1)
+    assert r.species[0][0] == 3.0
+
+
+def test_a_hidden_builder_species_is_still_rounded():
+    """``reported=False`` only hides a species from the output columns. Only
+    the continuous mark exempts a slot from rounding."""
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("k", 0.1)
+    a = b.add_species("A", 2.5, fixed=False, reported=False)
+    b.add_reaction([a], [], "elementary", "k")
+    m = bngsim.Model(_core=b.build())
+    with pytest.warns(bngsim.SsaRoundingWarning):
+        r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 1), n_points=2, seed=1)
+    assert r.ssa_diagnostics["n_rounded_populations"] == 1
+
+
+def test_a_count_far_below_one_molecule_is_reported():
+    """5e-10 of a molecule (a model written in moles) rounds to 0. The noise
+    test was absolute below one molecule, so it was dropped with no word."""
+    m = bngsim.Model.from_antimony_string(
+        "compartment C = 1; species A in C = 5e-10; J: A => ; A;"
+    )
+    assert any(i.code == "non_integer_initial_population" for i in m.validate_for_ssa())
+    with pytest.warns(bngsim.SsaRoundingWarning):
+        r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 1), n_points=2, seed=1)
+    assert r.species[0][0] == 0.0
+
+
+def test_run_batch_reports_rounding(tmp_path):
+    """run() and run_replicates warned; a run_batch row rounded silently."""
+    path = tmp_path / "ic.net"
+    path.write_text(
+        "begin parameters\n    1 k 0.1\n    2 A0 5\nend parameters\n"
+        "begin species\n    1 A() A0\nend species\n"
+        "begin reactions\n    1 1 0 k\nend reactions\n"
+        "begin groups\n    1 Atot 1\nend groups\n"
+    )
+    m = bngsim.Model.from_net(str(path))
+    sim = bngsim.Simulator(m, method="ssa")
+    with pytest.warns(bngsim.SsaRoundingWarning):
+        rows = sim.run_batch(t_span=(0, 1), n_points=2, params=[{"A0": 5.7}, {"A0": 2.5}], seed=1)
+    assert [np.asarray(r.species)[0, 0] for r in rows] == [6.0, 3.0]
+
+
+def test_psa_diagnostics_cover_the_whole_horizon():
+    """The loop leaves the clock at t_end now, so PSA's dwell integrals run to
+    the end of the simulated horizon, as their docstring says, instead of
+    stopping at the last firing (1.63 of 100 time units here)."""
+    m = bngsim.Model.from_antimony_string("species A = 5000; J: A => ; 5*A;")
+    r = bngsim.Simulator(m, method="psa", poplevel=10).run(t_span=(0, 100), n_points=3, seed=1)
+    assert r.psa_diagnostics["time"] == pytest.approx(100.0)

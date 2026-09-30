@@ -4827,6 +4827,10 @@ class Simulator:
         result = Result(core_result)
         if self._method != "ode":
             result._seed = base_seed + index
+        if self._method in ("ssa", "psa"):
+            # run() and run_replicates warn per result; a batch row rounded or
+            # drove a count negative without a word (issue #718 review).
+            self._warn_ssa_boundary(result)
         # GH #203/#198 — on a sensitivity batch, carry the expression
         # output-sensitivity support map so an unsupported expression selector
         # raises its specific reason on each row's Result, exactly as run() does.

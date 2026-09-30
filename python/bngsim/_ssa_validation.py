@@ -67,11 +67,12 @@ def validate_for_ssa(model: Model) -> list[SsaIssue]:
         species_meta, reactions_meta = [], []
 
     # Only a molecule count is rounded (issue #718), by the same rule the SSA
-    # applies in ssa_simulator.cpp: a slot the SBML loader promoted for an
-    # event-assigned parameter, compartment or stoichiometry (reported=False),
-    # and a rate-rule target, hold continuous values and are left as they are.
-    # Warning about them called a rate constant an "initial SSA population".
-    continuous = {i for i, sp in enumerate(species_meta) if not sp.get("reported", True)}
+    # applies in ssa_simulator.cpp: a slot the loader marked continuous (a
+    # promoted parameter, compartment or stoichiometry, an assignment- or
+    # rate-rule target) and the target of any rate-rule reaction hold
+    # continuous values and are left as they are. Warning about them called a
+    # rate constant an "initial SSA population".
+    continuous = {i for i, sp in enumerate(species_meta) if sp.get("continuous", False)}
     for rxn in reactions_meta:
         if rxn.get("is_rate_rule_ode"):
             continuous.update(int(i) for i in rxn.get("products", ()))
@@ -91,7 +92,9 @@ def validate_for_ssa(model: Model) -> list[SsaIssue]:
         if not math.isfinite(amount):
             continue
         rounded_amount = math.floor(amount + 0.5) if amount >= 0.0 else math.ceil(amount - 0.5)
-        if abs(amount - rounded_amount) <= 1e-9 * max(1.0, abs(amount)):
+        # Relative all the way down, as the SSA's own count is, so 5e-10 of a
+        # molecule (a model written in moles) is reported, not read as noise.
+        if abs(amount - rounded_amount) <= 1e-9 * abs(amount):
             continue
         issues.append(
             SsaIssue(
