@@ -33,6 +33,7 @@ bit-for-bit identical to the pre-#48 path.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import re
@@ -2085,7 +2086,9 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     ``mod``, ...) that reads a clock outside every condition, such as the
     ``floor(...)`` terms of a pulse written as a difference of floors. That is
     not a condition, but it is a jump at a knowable time, and the one consumer,
-    :func:`fixed_crossing_stops`, places a stop at each of its jumps.
+    :func:`fixed_crossing_stops`, places a stop at each of its jumps. A step
+    inside another step's argument is returned as the outer call, whose jumps
+    are the rate law's, rather than on its own.
 
     Empty for a model with no functions, and for the far more common model whose
     conditions read state rather than a clock, so nothing about its stepping
@@ -2145,17 +2148,32 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
         for atom in _iter_condition_atoms(flat):
             if atom not in found and _switches_on_clock_alone(atom, scope):
                 found.append(atom)
+
     # A step call outside every condition jumps the rate law itself (issue
     # #869): `floor((time()-t0)/P) - floor((time()-t0-w)/P)` is a unit pulse
     # written with no comparison at all. Between its jumps the rate is flat, so
     # nothing stops CVODE's step from growing across a whole pulse. The call is
     # handed over as its own entry, which :func:`_step_edge_stop_times` reads.
-    for text in stepped:
-        flat = _inline_functions(text, func_map) or text
-        for call, _arg in _iter_step_calls(flat, outermost=True):
+    #
+    # The outermost call, not every call. A step inside another step's argument
+    # reaches the rate law only through the outer one, and its own jumps are
+    # not jumps of the rate law: `floor(floor(time()+phase)/cyclePeriod)`, the
+    # day counter of the Pokhilko/Adams circadian light functions, changes once
+    # a cycle while its inner floor changes every hour, and a stop at each of
+    # those hours was a CVODE restart for nothing (4x the Jacobian evaluations
+    # on BIOMD0000000412). Only a call that cannot be admitted whole, because
+    # it reads state, is looked inside, for the steps of time it holds.
+    def admit(text: str) -> None:
+        for call, arg in _iter_step_calls(text, outermost=True):
             inlined = _inline_derived_param_refs(call, scope.derived_exprs) or call
-            if call not in found and _reads_clock_and_run_constants(inlined, scope):
-                found.append(call)
+            if _reads_clock_and_run_constants(inlined, scope):
+                if call not in found:
+                    found.append(call)
+            else:
+                admit(arg)
+
+    for text in stepped:
+        admit(_inline_functions(text, func_map) or text)
     return tuple(found)
 
 
@@ -2363,10 +2381,13 @@ def _resolve_step_edge_stop_times(
     trunc = sp.Function("_bng_trunc")
     expr = expr.replace(sp.ceiling, lambda x: -sp.floor(-x))
     while True:
+        # Innermost first; a `_bng_trunc` already rewritten inside does not
+        # count, so `mod(mod(time(), 24), 12)` is read too.
         calls = [
             e
             for e in expr.atoms(AppliedUndef)
-            if e.func.__name__ in ("rint", "mod") and not e.atoms(AppliedUndef) - {e}
+            if e.func.__name__ in ("rint", "mod")
+            and not any(x.func.__name__ in ("rint", "mod") for x in e.atoms(AppliedUndef) - {e})
         ]
         if not calls:
             break
@@ -2385,104 +2406,131 @@ def _resolve_step_edge_stop_times(
     if not steps:
         return None
 
-    def nested_in(e) -> set:
-        return {
-            s for s in e.args[0].atoms(sp.floor) | e.args[0].atoms(trunc) if t in s.free_symbols
-        }
+    # A step may hold other steps in its argument, as the day counter
+    # `floor(floor(time()+phase)/24)` does. Each argument is read as affine in
+    # time with the steps inside it held, so its crossings are listed piece by
+    # piece between theirs. A step's argument holds only steps with fewer steps
+    # in their own, so ordering by that count reads every inner step first.
+    def n_inner(e) -> int:
+        return len(e.args[0].atoms(sp.floor) | e.args[0].atoms(trunc))
 
-    # One level of nesting, as in `floor(floor(time()+phase)/P)`, a day count
-    # over an hour count (the light cycle of BIOMD0000000412/445/476). The outer
-    # step's argument then holds still wherever the inner steps do, so it can
-    # only jump at one of their jumps, and is judged there like any other value
-    # this reads. Its argument is evaluated in doubles, as the engine evaluates
-    # it, so an edge lands where the rate law actually jumps. Before, the inner
-    # call was read as a bare step of its own and every hour became a stop.
-    inner = [e for e in steps if not nested_in(e)]
-    inner_marks = [sp.Symbol(f"_bng_inner_{i}") for i in range(len(inner))]
-    outer_args = {}  # outer step -> its argument as a function of the inner steps
+    steps.sort(key=lambda e: (n_inner(e), sp.default_sort_key(e)))
+    n_leaves = sum(1 for e in steps if n_inner(e) == 0)
+    marks = [sp.Symbol(f"_bng_step_{i}") for i in range(len(steps))]
+    to_mark = dict(zip(steps, marks, strict=True))
+
+    # Every coefficient below is read off an expanded sympy form, which is not
+    # the model's arithmetic: `floor(t)/24` is `0.041666666666666664*m` there,
+    # and `x/49` is `(1/49)*x`, so a value the model computes as exactly 1 or 0
+    # comes out an ulp or two away, and `1/49*49` floors to 0. Each is therefore
+    # read with the sum of its terms' magnitudes, and a value within
+    # :data:`_ROUNDING` of that scale from the integer (or zero) it stands for
+    # is that integer. A decision to the exact bit, `a == 0.0` or `floor(v)`,
+    # would otherwise take the rounding's side.
+    def affine(expr):
+        """*expr* and the size of its terms, as functions of the steps' values."""
+        size = sp.Add(*(sp.Abs(term) for term in sp.Add.make_args(expr)))
+        return _lambdify_doubles(marks, expr), _lambdify_doubles(marks, size)
+
+    def read(part, held: list[float], to_integer: bool) -> float:
+        """*part* at *held*, snapped to the integer (or zero) it is rounding away from."""
+        value_of, size_of = part
+        v = float(value_of(*held))
+        r = float(round(v)) if to_integer else 0.0
+        return r if abs(v - r) <= _ROUNDING * float(size_of(*held)) else v
+
+    args = []  # (slope, intercept) of each step's argument, over the inner steps' values
     for e in steps:
-        nested = nested_in(e)
-        if not nested:
-            continue
-        if not nested <= set(inner):
-            return None  # a step two levels down
-        arg = e.args[0].xreplace(dict(zip(inner, inner_marks, strict=True)))
-        if t in arg.free_symbols:
-            return None  # it also moves between the inner jumps
-        outer_args[e] = sp.lambdify(inner_marks, arg, modules="math")
-    lines: list[tuple[float, float, bool]] = []  # (slope, intercept, is_trunc), per inner step
-    for e in inner:
-        u = sp.expand(e.args[0])
+        u = sp.expand(e.args[0].xreplace(to_mark))
         alpha = sp.diff(u, t)
         beta = sp.expand(u - alpha * t)
-        if not (alpha.is_number and beta.is_number):
+        if t in alpha.free_symbols or t in beta.free_symbols:
             return None  # the argument is not affine in time
-        alpha_f, beta_f = float(alpha), float(beta)
-        if alpha_f == 0.0 or not (math.isfinite(alpha_f) and math.isfinite(beta_f)):
-            return None
-        lines.append((alpha_f, beta_f, e.func is trunc))
+        if not (alpha.free_symbols or beta.free_symbols):
+            alpha_f, beta_f = float(alpha), float(beta)
+            if alpha_f == 0.0 or not (math.isfinite(alpha_f) and math.isfinite(beta_f)):
+                return None
+        args.append((affine(alpha), affine(beta)))
+    is_trunc = [e.func is trunc for e in steps]
 
-    # The jumps: each argument's integer crossings in (t_start, t_end].
-    jumps: list[float] = []
-    for alpha_f, beta_f, is_trunc in lines:
-        u0, u1 = alpha_f * t_start + beta_f, alpha_f * t_end + beta_f
-        n_lo, n_hi = math.ceil(min(u0, u1)), math.floor(max(u0, u1))
-        if n_hi - n_lo + 1 > _SCHEDULE_EDGE_BUDGET - len(jumps):
-            logger.warning(
-                "%r jumps more than %d times between t=%r and t=%r; the integrator "
-                "will step over them unclamped and may miss whole pulses (issue "
-                "#869). Pass max_step to bound the step instead.",
-                atom,
-                _SCHEDULE_EDGE_BUDGET,
-                t_start,
-                t_end,
-            )
-            return None
-        for n in range(n_lo, n_hi + 1):
-            if is_trunc and n == 0:
-                continue
-            tn = (n - beta_f) / alpha_f
-            if t_start < tn <= t_end:
-                jumps.append(tn)
-    jumps.sort()
+    def held_at(x: float) -> list[float]:
+        """Every step's value at *x*, which is never on an edge."""
+        held = [0.0] * len(steps)
+        for i, (slope, intercept) in enumerate(args):
+            a = read(slope, held, to_integer=False)
+            if a == 0.0:
+                # Flat between the inner steps' jumps, where it can sit on an
+                # integer for a whole piece: `floor(t)/24` is 1 on [24, 25).
+                v = read(intercept, held, to_integer=True)
+            else:
+                v = a * x + float(intercept[0](*held))
+            held[i] = float(math.trunc(v) if is_trunc[i] else math.floor(v))
+        return held
+
+    # The jumps: each argument's integer crossings in (t_start, t_end]. A step of
+    # time itself is read over the whole window at once, and a step holding
+    # others piece by piece between the edges already found, theirs among them.
     edges: list[float] = []
-    for tn in jumps:
-        if not edges or tn - edges[-1] > 1e-12 * max(abs(tn), 1.0):
-            edges.append(tn)
+    for i, (slope, intercept) in enumerate(args):
+        bounds = [t_start, t_end] if i < n_leaves else [t_start, *edges, t_end]
+        jumps: list[float] = []
+        for lo, hi in zip(bounds, bounds[1:], strict=False):
+            if hi <= lo:
+                continue
+            held = held_at(0.5 * (lo + hi))
+            a = read(slope, held, to_integer=False)
+            if a == 0.0:
+                continue  # flat here: it can only jump where an inner step does
+            b = float(intercept[0](*held))
+            u0, u1 = a * lo + b, a * hi + b
+            n_lo, n_hi = math.ceil(min(u0, u1)), math.floor(max(u0, u1))
+            if n_hi - n_lo + 1 > _SCHEDULE_EDGE_BUDGET - len(edges) - len(jumps):
+                logger.warning(
+                    "%r jumps more than %d times between t=%r and t=%r; the integrator "
+                    "will step over them unclamped and may miss whole pulses (issue "
+                    "#869). Pass max_step to bound the step instead.",
+                    atom,
+                    _SCHEDULE_EDGE_BUDGET,
+                    t_start,
+                    t_end,
+                )
+                return None
+            for n in range(n_lo, n_hi + 1):
+                if is_trunc[i] and n == 0:
+                    continue
+                tn = (n - b) / a
+                if lo < tn <= hi:
+                    jumps.append(tn)
+        merged: list[float] = []
+        for tn in sorted([*edges, *jumps]):
+            if not merged or tn - merged[-1] > 1e-12 * max(abs(tn), 1.0):
+                merged.append(tn)
+        edges = merged
 
     # Between two edges every step is a constant. Read each interval at its
     # midpoint, never on an edge, so a step's value there is unambiguous.
-    marks = [sp.Symbol(f"_bng_step_{i}") for i in range(len(steps))]
-    flat = sp.expand(expr.xreplace(dict(zip(steps, marks, strict=True))))
+    flat = sp.expand(expr.xreplace(to_mark))
     slope = sp.diff(flat, t)
     if t in slope.free_symbols:
         return None  # not affine in time between jumps: nothing here solves it
     intercept = sp.expand(flat - slope * t)
     if t in intercept.free_symbols:
         return None
-    slope_f = sp.lambdify(marks, slope, modules="math")
-    intercept_f = sp.lambdify(marks, intercept, modules="math")
+    residual_slope, residual_intercept = affine(slope), affine(intercept)
 
-    def piece(lo: float, hi: float) -> tuple[float, float]:
-        mid = 0.5 * (lo + hi)
-        held_inner = dict(
-            zip(
-                inner,
-                (
-                    float(math.trunc(a * mid + b) if is_t else math.floor(a * mid + b))
-                    for a, b, is_t in lines
-                ),
-                strict=True,
-            )
-        )
-        held = []
-        for e in steps:
-            if e in held_inner:
-                held.append(held_inner[e])
-            else:
-                v = float(outer_args[e](*held_inner.values()))
-                held.append(float(math.trunc(v) if e.func is trunc else math.floor(v)))
-        return float(slope_f(*held)), float(intercept_f(*held))
+    def piece(lo: float, hi: float) -> tuple[float, float, float]:
+        """The residual's slope and intercept on the piece, and the size of the
+        intercept's terms."""
+        held = held_at(0.5 * (lo + hi))
+        a = read(residual_slope, held, to_integer=False)
+        if a == 0.0:
+            return 0.0, read(residual_intercept, held, to_integer=False), 0.0
+        return a, float(residual_intercept[0](*held)), float(residual_intercept[1](*held))
+
+    def at(a: float, b: float, size: float, x: float) -> float:
+        """The residual at the bound *x*, 0 where it is rounding away from 0."""
+        v = a * x + b
+        return 0.0 if abs(v) <= _ROUNDING * (abs(a * x) + size) else v
 
     bounds = [t_start, *edges]
     if edges[-1:] != [t_end]:
@@ -2493,8 +2541,8 @@ def _resolve_step_edge_stop_times(
         lo, hi = bounds[i], bounds[i + 1]
         if hi <= lo:
             continue
-        a, b = piece(lo, hi)
-        at_lo, at_hi = a * lo + b, a * hi + b
+        a, b, size = piece(lo, hi)
+        at_lo, at_hi = at(a, b, size, lo), at(a, b, size, hi)
         if not (math.isfinite(at_lo) and math.isfinite(at_hi)):
             return None
         if compare is not None:
@@ -2520,6 +2568,36 @@ def _resolve_step_edge_stop_times(
                 out.append(root)
         before = at_hi
     return sorted(set(out))
+
+
+def _inner_step_stop_times(
+    cond: str, scope: SwitchConditionScope, t_start: float, t_end: float
+) -> list[float] | None:
+    """The stops of the step calls inside a bare step call that
+    :func:`_step_edge_stop_times` could not read, or ``None``.
+
+    :func:`time_discontinuity_conditions` hands over a step inside another
+    step's argument as the outer call. When the outer one is a call nothing
+    here knows the jumps of, the inner calls are stopped at instead, each read
+    the same way, which is what main placed for such a model. That covers every
+    jump the outer call makes where an inner one does, at the cost of a restart
+    where it does not change, and not a jump it makes between them:
+    `sign(mod(time(), P) - 12)` jumps at 12 as well as at each period. A
+    comparison is not looked inside: its truth is the condition, and a jump of
+    a step within it need not move that.
+    """
+    text = _strip_redundant_parens(cond.strip())
+    m = _STEP_CALL.match(text)
+    if m is None or _find_close_paren_strict(text, m.end() - 1) != len(text) - 1:
+        return None
+    found: list[float] | None = None
+    for call, _arg in _iter_step_calls(text[m.end() : -1], outermost=True):
+        times = _step_edge_stop_times(call, scope, t_start, t_end)
+        if times is None:
+            times = _inner_step_stop_times(call, scope, t_start, t_end)
+        if times is not None:
+            found = sorted({*(found or ()), *times})
+    return found
 
 
 def _stop_memo_key(atom: str, scope: SwitchConditionScope, t_start: float, t_end: float):
@@ -2677,6 +2755,8 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
             times = _schedule_stop_times(text, scope, t_start, t_end)
             if times is None:
                 times = _step_edge_stop_times(text, scope, t_start, t_end)
+            if times is None:
+                times = _inner_step_stop_times(text, scope, t_start, t_end)
         for t_cross in times or ():
             if not (t_start < t_cross <= t_end):
                 continue
@@ -2798,14 +2878,16 @@ def _iter_step_calls(expr: str, outermost: bool = False):
 
     One inside a condition is that condition's business: its atom is scanned
     whole, floor and all, so reporting the call again would only repeat it.
-    With ``outermost``, a call inside another call's argument is that call's
-    business the same way: ``floor(time()+phase)`` in ``floor(floor(time()+
-    phase)/24)`` jumps every hour, but the day count it feeds does not.
+
+    With *outermost*, a call inside another call's argument is not reported
+    either: it is part of that argument, which the caller has in hand.
     """
     spans = _condition_spans(expr)
-    covered = -1  # end of the last call yielded, when outermost
+    covered = -1  # the close paren of the last call reported, under *outermost*
     for m in _STEP_CALL.finditer(expr):
-        if any(lo <= m.start() < hi for lo, hi in spans) or m.start() < covered:
+        if m.start() < covered:
+            continue
+        if any(lo <= m.start() < hi for lo, hi in spans):
             continue
         open_paren = m.end() - 1
         close_paren = _find_close_paren_strict(expr, open_paren)
@@ -3368,6 +3450,35 @@ def _schedule_compensated(atom: str, scope: SwitchConditionScope) -> bool:
 # right at the start of the run and wrong at the end, which is the silent-zero
 # failure this whole module exists to avoid.
 _SCHEDULE_EDGE_BUDGET = 8192
+
+# How far a value read off an expanded sympy form may sit from the integer or
+# zero it stands for, relative to the sum of its terms' magnitudes, and still be
+# that integer (:func:`_resolve_step_edge_stop_times`). Each constant is off the
+# model's own arithmetic by an ulp or two (a reciprocal where the model divides),
+# and a few terms add a few more; 64 ulps covers that with room. A non-integer
+# is never read as one unless it is within 1.4e-14 of the scale, so a large
+# offset keeps its fraction: (15 + 2e9)/24 is 83333333.958, not 83333334.
+_ROUNDING = 64 * sys.float_info.epsilon
+
+
+def _lambdify_doubles(args, expr):
+    """``sp.lambdify`` over the math module, printing each Float as the double it
+    holds. The default printer writes 15 significant digits, so ``1/24`` came
+    back ``0.0416666666666667`` and moved every value read through it."""
+    import sympy as sp
+
+    return sp.lambdify(args, expr, modules="math", printer=_double_printer()())
+
+
+@functools.cache
+def _double_printer():
+    from sympy.printing.pycode import PythonCodePrinter
+
+    class _DoublePrinter(PythonCodePrinter):
+        def _print_Float(self, expr):
+            return repr(float(expr))
+
+    return _DoublePrinter
 
 
 def _schedule_index_window(
