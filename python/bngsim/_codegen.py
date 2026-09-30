@@ -3095,19 +3095,22 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
     ``SolverOptions.set_ic_param_sens``.
 
     ``core`` is the C++ ``NetworkModel``. Returns
-    ``[(species_idx0, primary_param_idx0, ∂IC/∂primary), ...]``:
+    ``[(species_idx0, param_idx0, ∂IC/∂param), ...]``:
 
       * a **direct** primary IC (``R() R0``) contributes coefficient 1 on that
         primary — identical to the legacy identity seeding;
       * a **derived** IC (``R() Rtot``, ``Rtot = f(primaries)``) contributes one
-        entry per primary with a non-zero ∂f/∂primary, chained through nested
-        derived parameters and evaluated at the current parameter values.
+        entry per primary it reaches, chained through nested derived parameters
+        and evaluated at the current parameter values; one per derived parameter
+        the chain passes through; and coefficient 1 on ``Rtot`` itself, the
+        column a ``force_override`` pin of it makes real (issue #715). Each row
+        only takes effect when its parameter is requested.
 
     Returns ``[]`` when no species IC is a parameter reference and no compartment
     size reaches one (the overwhelming majority of models — two cheap C++ vector
     fetches, no sympy import). A derived IC whose expression cannot be
-    differentiated is simply omitted, leaving that species unseeded (pre-#43
-    behavior) without disturbing the others.
+    differentiated gets no primary rows (pre-#43 behavior), only its identity
+    row, without disturbing the others.
 
     Issue #170 stage 3 adds the **storage** axis. bngsim stores amount/V_c, so a
     species whose declared IC is an amount has a stored initial condition that
@@ -3143,11 +3146,16 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
         pname = names[param_idx0]
         if is_expr[param_idx0] and derived_exprs.get(pname):
             partials = _derived_expr_partials_numeric(
-                derived_exprs[pname], primary_names, param_idx, values, derived_exprs
+                derived_exprs[pname],
+                primary_names,
+                param_idx,
+                values,
+                derived_exprs,
+                include_derived=True,
             )
             # An unparseable derived expression yields no partials, so this
-            # species is simply left unseeded (pre-#43 behavior) rather than
-            # mis-seeded on the derived index.
+            # species gets no primary rows (pre-#43 behavior) — only the
+            # identity row below, which does not depend on the expression.
             #
             # Issue #155: a primary the expression *reaches* keeps a row even
             # when its partial is zero at this parameter point — ∂(a*R0)/∂R0 is
@@ -3170,6 +3178,24 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
                             float(partials.get(prim_name, 0.0)) * vdiv,
                         )
                     )
+            # Issue #715: the derived parameter is a sensitivity coordinate of
+            # its own — the column a force_override pin of it makes real — and
+            # so is every derived parameter the walk passed through (Rt = 2*Q,
+            # Q = 3*R0 gives the Q column 2). Seeding only the primaries left an
+            # explicitly requested derived IC parameter's column at 0, since any
+            # Python seed replaces the C++ identity loop that used to cover it.
+            # A row only takes effect when its parameter is requested, so these
+            # cannot disturb a primary column. The identity row holds whatever
+            # the expression is (x(0) = Rt, so ∂x(0)/∂Rt = 1), including one the
+            # walk above could not parse — the row the C++ loop always gave it.
+            # The SBML loader's synthetic `_ic_<species>` carrier (issue #147)
+            # is seeded like any other derived parameter, so a run that names it
+            # gets its real column; Model.effective_ic_sensitivity is what keeps
+            # it out of the report.
+            for dname, coeff in partials.items():
+                if dname not in primary_names and dname in param_idx:
+                    seeds.append((species_idx0, param_idx[dname], float(coeff) * vdiv))
+            seeds.append((species_idx0, param_idx0, vdiv))
         else:
             # Direct primary IC: seed coefficient 1 on the exact named
             # parameter, matching the legacy C++ identity seeding — except where
