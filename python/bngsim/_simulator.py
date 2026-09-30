@@ -1769,6 +1769,46 @@ class Simulator:
                 [(stop.time, stop.clock_species_idx, stop.threshold) for stop in stops]
             )
 
+    @staticmethod
+    def _apply_ssa_breakpoints(sims, model, t_start, t_end) -> None:
+        """Hand the SSA/PSA continuous loop each fixed time discontinuity (#719).
+
+        A model whose rates read time runs on a loop that integrates each
+        dynamic propensity over a step. The step is adaptive, but a jump inside
+        it is only resolved by shrinking around it, and a pulse narrower than a
+        step is not seen at all: the quadrature nodes can fall either side of
+        it. The same crossings :meth:`_apply_crossing_stops` stops CVODE on are
+        places the loop must not step across, so it ends a step on each.
+
+        A crossing on a counter species is placed too. Where the counter is
+        integrated (an SBML rate rule) it is exactly where the rate jumps; where
+        it fires stochastically (a BNGL ``0 -> Time()``) the jump comes with a
+        firing, which the loop handles already, and the extra step end is
+        harmless.
+
+        Always sets the list, so a reused simulator cannot keep a previous
+        window's times. A model with no rate that reads time pays nothing.
+        """
+        times: list[float] = []
+        if model._time_disc_conditions or model._core.functions_use_time:
+            conditions = model.time_discontinuity_conditions()
+            if conditions:
+                from bngsim._switch_sensitivity import fixed_crossing_stops
+
+                try:
+                    stops = fixed_crossing_stops(
+                        model._core, float(t_start), float(t_end), conditions
+                    )
+                    times = [float(stop.time) for stop in stops]
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Discontinuity crossing resolution failed (%s); the SSA "
+                        "continuous loop will step without breakpoints (issue #719).",
+                        e,
+                    )
+        for sim in sims:
+            sim.set_breakpoints(times)
+
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
 
@@ -3438,8 +3478,10 @@ class Simulator:
 
                 core_result = self._run_ode_with_jacobian_fallback(times, opts)
             elif self._method == "ssa":
+                self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
             elif self._method == "psa":
+                self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
                 core_result = self._sim.run_psa(times, used_seed, self._poplevel, timeout_seconds)
             elif self._method == "nfsim" or self._method == "rulemonkey":
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
@@ -3859,6 +3901,7 @@ class Simulator:
                     local.sim = SsaSimulator(local.model._core)
                     if self._reaction_stats:
                         local.sim.set_record_reaction_stats(True)
+                    self._apply_ssa_breakpoints([local.sim], local.model, t_start, t_end)
                     local.times = _make_times()
                     sim = local.sim
                 return _run_one(sim, local.model, local.times, i)
@@ -3890,6 +3933,7 @@ class Simulator:
             invocation_state = self._model.get_state()
             invocation_carry = self._capture_carryover_state()
             times = _make_times()
+            self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
             try:
                 results = [_run_one(self._sim, self._model, times, i) for i in range(n_replicates)]
             finally:
@@ -4811,6 +4855,8 @@ class Simulator:
                 from bngsim._bngsim_core import SsaSimulator
 
                 sim = SsaSimulator(clone._core)
+                # This row's parameters place its crossings, so resolve on the clone.
+                self._apply_ssa_breakpoints([sim], clone, t_span[0], t_span[1])
                 if self._method == "psa":
                     core_result = sim.run_psa(
                         times, base_seed + index, self._poplevel, timeout_seconds

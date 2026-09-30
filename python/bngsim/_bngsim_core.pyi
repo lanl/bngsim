@@ -1061,6 +1061,10 @@ class SsaSimulator:
         Lin, Feng, Hlavacek, J. Chem. Phys. 150, 244101 (2019).
         poplevel = N_c (critical population size, must be > 1). Releases GIL. timeout_seconds > 0 enables a wall-clock budget; on overrun, raises bngsim.SimulationTimeout.
         """
+    def set_breakpoints(self, times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Issue #719: times at which a time-dependent rate may jump. The continuous (time-dependent) loop never steps across one. Applies to every later run; [] clears it.
+        """
     def set_propensity_library(self, so_path: str) -> None:
         """
         GH #190: supply a cc-compiled value-specialized propensity .so (symbol bngsim_ssa_propensities). When set and the model is recompute-all eligible (pure mass-action exact SSA, no events, small nr), the run takes the RR-style recompute-all + flat-scan loop by default. No-op for ineligible models; '' clears it.

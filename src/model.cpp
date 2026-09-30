@@ -19,6 +19,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -1343,6 +1344,81 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
     }
     impl_->expression_support_cache.emplace(expr_idx,
                                             std::make_pair(std::move(sp_out), std::move(pa_out)));
+}
+
+bool NetworkModel::reaction_rate_species_support(int rxn_idx0, std::vector<int> &out) const {
+    out.clear();
+    const auto &reactions = impl_->shared->reactions;
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(reactions.size()))
+        return false;
+    if (!impl_->table_functions.empty())
+        return false;
+    const Reaction &rxn = reactions[rxn_idx0];
+    const int ns = static_cast<int>(impl_->species.size());
+    const int np = static_cast<int>(impl_->parameters.size());
+    std::set<int> sp;
+    auto add = [&](int si) {
+        if (si >= 0 && si < ns)
+            sp.insert(si);
+    };
+    for (int ri : rxn.reactant_indices)
+        add(ri - 1);
+    add(rxn.ssa_live_volume_idx0);
+    for (const auto &lt : rxn.ssa_live_volume_terms)
+        add(lt.live_idx0);
+    std::vector<int> params{rxn.rate_param_idx0};
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+    params.push_back(rxn.ssa_volume_param_idx0);
+    std::vector<int> found;
+    for (int pidx : params) {
+        if (pidx < 0 || pidx >= np)
+            continue;
+        int eid = -1;
+        for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
+            if (param_idx == pidx) {
+                eid = impl_->functions[func_idx].evaluator_id;
+                break;
+            }
+        if (eid < 0 && impl_->parameters[pidx].is_expression)
+            eid = impl_->parameters[pidx].evaluator_id;
+        if (eid < 0)
+            continue;
+        expression_support(eid, &found, nullptr);
+        for (int si : found)
+            add(si);
+    }
+    out.assign(sp.begin(), sp.end());
+    return true;
+}
+
+bool NetworkModel::reaction_rate_reads_functions(int rxn_idx0) const {
+    const auto &reactions = impl_->shared->reactions;
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(reactions.size()))
+        return false;
+    const Reaction &rxn = reactions[rxn_idx0];
+    const int np = static_cast<int>(impl_->parameters.size());
+    std::vector<char> written(static_cast<std::size_t>(np), 0);
+    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
+        if (param_idx >= 0 && param_idx < np)
+            written[param_idx] = 1;
+    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+    std::vector<int> support;
+    for (int pidx : params) {
+        if (pidx < 0 || pidx >= np)
+            continue;
+        if (written[pidx])
+            return true;
+        if (!impl_->parameters[pidx].is_expression)
+            continue;
+        expression_support(impl_->parameters[pidx].evaluator_id, nullptr, &support);
+        for (int q : support)
+            if (q >= 0 && q < np && written[q])
+                return true;
+    }
+    return false;
 }
 
 bool NetworkModel::event_trigger_is_state_dependent(int event_idx0) const {

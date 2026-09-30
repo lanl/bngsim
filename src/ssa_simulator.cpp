@@ -422,6 +422,9 @@ struct SsaSimulator::Impl {
     // path runs unchanged.
     std::string propensity_lib_path;
 
+    // Issue #719 — see SsaSimulator::set_breakpoints. Sorted, unique.
+    std::vector<double> breakpoints;
+
     // GH #616 — record per-reaction firing counts and propensity integrals at
     // every output time (set_record_reaction_stats). The labels the result
     // reports the reaction axis under are built once per simulator, on the
@@ -480,6 +483,16 @@ SsaSimulator::~SsaSimulator() = default;
 
 void SsaSimulator::set_record_reaction_stats(bool enabled) {
     impl_->record_reaction_stats = enabled;
+}
+
+void SsaSimulator::set_breakpoints(const std::vector<double> &times) {
+    auto &bp = impl_->breakpoints;
+    bp.clear();
+    for (double x : times)
+        if (std::isfinite(x))
+            bp.push_back(x);
+    std::sort(bp.begin(), bp.end());
+    bp.erase(std::unique(bp.begin(), bp.end()), bp.end());
 }
 
 void SsaSimulator::set_propensity_library(const std::string &so_path) {
@@ -1005,6 +1018,52 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         model.evaluate_functions(t_eval);
     };
 
+    // Issues #719/#751/#753 — the continuous path (see the loop for models with
+    // time-dependent rates or rate rules, below). A *dynamic* reaction is one
+    // whose propensity changes between firings: a Functional rate law, or a
+    // reactant that is a rate-rule target. Its propensity is not held in the
+    // selection tree (which then holds only the constant part of a0); the loop
+    // integrates it over time instead. Empty, and cont_mode false, for every
+    // model without time-dependent rates or rate rules.
+    bool cont_mode = false;
+    std::vector<char> is_dyn(nr, 0);
+    std::vector<int> dyn;
+
+    // GH #14 — the PSA leap m_r for reaction r at the current populations,
+    // updating the peak-population diagnostic (GH #15).
+    auto psa_leap = [&](int r) -> double {
+        const auto &rxn = reactions[r];
+        // GH #14 — PSA leap factor (iScaling = 1/λ_r) is governed by the
+        // smallest population among ALL species the reaction changes: its
+        // reactants (a leap cannot consume more than are present) AND its
+        // products (a leap must not overshoot a currently-small produced
+        // species). This is the union min over reactants ∪ products, matching
+        // run_network's default heterogeneous adaptive scaling (rxn_rate_scaled
+        // with pScaleChecker=true, Network3/network.cpp). A synthesis reaction
+        // (∅ → A) has no reactants, so its bound comes from the product A: it
+        // scales once A is large and runs as exact SSA while A is small —
+        // unlike run_network, which scales synthesis by a fixed N_c regardless
+        // of A. Direction is irrelevant here since both sides are inspected.
+        double n_min = std::numeric_limits<double>::max();
+        auto fold_min = [&](const std::vector<int> &idx) {
+            for (int ci : idx) {
+                int si = ci - 1;
+                if (si >= 0 && si < ns) {
+                    const double count = conc[si] * species_list[si].volume_factor;
+                    n_min = std::min(n_min, count);
+                    psa_peak_pop = std::max(psa_peak_pop, count); // GH #15
+                }
+            }
+        };
+        fold_min(rxn.reactant_indices);
+        fold_min(rxn.product_indices);
+        // Only a null reaction (no reactants and no products) leaves the
+        // sentinel; it changes nothing, so leave it unscaled.
+        if (n_min == std::numeric_limits<double>::max())
+            n_min = 0.0;
+        return std::max(1.0, std::floor(n_min / poplevel));
+    };
+
     // Helper: (re)compute one reaction's propensity, direction, PSA scaling,
     // and sum-tree entry from the current conc[]. GH #110: the rate law is
     // evaluated literally and may be negative; we store |rate| for selection and
@@ -1041,42 +1100,31 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         double prop = (dir < 0) ? -signed_prop : signed_prop; // |signed_prop|
         rxn_dir[r] = dir;
         propensities[r] = prop;
+
+        if (cont_mode && is_dyn[r]) {
+            // A dynamic reaction (see above): its propensity is integrated by the
+            // continuous loop, not held in the tree. What is set here is what
+            // stays fixed until the next firing: the PSA leap, from the
+            // populations. The dwell integrals bank a zero rate; the loop adds
+            // the reaction's integrated propensity itself.
+            if (rec_stats)
+                rs_bank(r, psa_now, 0.0);
+            if (use_psa) {
+                const double m_r = psa_leap(r);
+                scaling_factors[r] = 1.0 / m_r;
+                psa_flush(r);
+                psa_m_at[r] = m_r;
+                psa_a_at[r] = 0.0;
+            }
+            sel_set(r, 0.0);
+            return;
+        }
         if (rec_stats) // GH #616 — psa_now mirrors t (kept current on every advance)
             rs_bank(r, psa_now, prop);
 
         double effective_prop = prop;
         if (use_psa && prop > 0.0) {
-            const auto &rxn = reactions[r];
-            // GH #14 — PSA leap factor (iScaling = 1/λ_r) is governed by the
-            // smallest population among ALL species the reaction changes: its
-            // reactants (a leap cannot consume more than are present) AND its
-            // products (a leap must not overshoot a currently-small produced
-            // species). This is the union min over reactants ∪ products, matching
-            // run_network's default heterogeneous adaptive scaling (rxn_rate_scaled
-            // with pScaleChecker=true, Network3/network.cpp). A synthesis reaction
-            // (∅ → A) has no reactants, so its bound comes from the product A: it
-            // scales once A is large and runs as exact SSA while A is small —
-            // unlike run_network, which scales synthesis by a fixed N_c regardless
-            // of A. Direction is irrelevant here since both sides are inspected.
-            double n_min = std::numeric_limits<double>::max();
-            auto fold_min = [&](const std::vector<int> &idx) {
-                for (int ci : idx) {
-                    int si = ci - 1;
-                    if (si >= 0 && si < ns) {
-                        const double count = conc[si] * species_list[si].volume_factor;
-                        n_min = std::min(n_min, count);
-                        psa_peak_pop = std::max(psa_peak_pop, count); // GH #15
-                    }
-                }
-            };
-            fold_min(rxn.reactant_indices);
-            fold_min(rxn.product_indices);
-            // Only a null reaction (no reactants and no products) leaves the
-            // sentinel; it changes nothing, so leave it unscaled.
-            if (n_min == std::numeric_limits<double>::max())
-                n_min = 0.0;
-            double floor_ratio = std::floor(n_min / poplevel);
-            double inv_lambda = std::max(1.0, floor_ratio);
+            const double inv_lambda = psa_leap(r);
             scaling_factors[r] = 1.0 / inv_lambda;
             effective_prop = scaling_factors[r] * prop;
             // GH #15 — bank the (m_r, a_r) that was in force over its dwell, then
@@ -1139,33 +1187,6 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             {r, t0, rxn.per_species_volume_scaling, species_list[t0].volume_factor});
     }
     const bool has_rate_rules = !rate_rule_odes.empty();
-
-    // dX/dt for every rate-rule target, snapshotted at the current (already
-    // synced) state. compute_propensity returns the rule RHS f directly — these
-    // reactions carry ssa_volume_factor=1 and no reactants, so the "propensity"
-    // is exactly f — and the per-species branch reproduces compute_derivs'
-    // `f / V_c(X)` (hOSU rate-rule targets store amount/V_c).
-    std::vector<double> rr_deriv(rate_rule_odes.size(), 0.0);
-    auto snapshot_rr = [&]() {
-        for (std::size_t i = 0; i < rate_rule_odes.size(); ++i) {
-            const auto &rr = rate_rule_odes[i];
-            double f = model.compute_propensity(rr.rxn, conc.data());
-            rr_deriv[i] = rr.per_species ? f / rr.vf : f;
-        }
-    };
-    // Advance every rate-rule target by forward Euler over `dt`, holding dX/dt at
-    // the last snapshot (piecewise-constant across the sub-step, exactly as the
-    // propensities are). Writing into conc[] makes the target appear in the
-    // recorded trajectory and lets the next sync_state see the advanced value.
-    auto integrate_rr = [&](double dt) {
-        if (dt <= 0.0)
-            return;
-        for (std::size_t i = 0; i < rate_rule_odes.size(); ++i) {
-            const int x = rate_rule_odes[i].target0;
-            conc[x] += rr_deriv[i] * dt;
-            counts[x] = conc[x] * rate_rule_odes[i].vf; // a continuous value, not snapped
-        }
-    };
 
     // process_firing_batch — SBML L3v2 §4.11.6 simultaneous-event execution,
     // the same drain as cvode_simulator.cpp's process_firing_batch (GH #242).
@@ -1478,12 +1499,38 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // driven (one Euler step per sub-step).
     if (has_rate_rules)
         time_dependent_rates = true;
-    // Sub-step cap for time-dependent rates: resolve the rate variation over
-    // the simulation horizon. 1000 sub-steps tracks the smooth exponential
-    // assignment rules in the RC#2 corpus within stochastic tolerance, and is
-    // the forward-Euler step for rate-rule targets (GH #81).
-    const double time_dep_dt_max =
-        time_dependent_rates ? (times.t_end - times.t_start) / 1000.0 : 0.0;
+    // Issues #719/#751/#753 — such a model runs on the continuous loop below.
+    // Its dynamic reactions (see is_dyn) are the Functional ones, which may read
+    // time or a rate-rule target, any other whose rate parameter a function
+    // writes, and those whose rate reads a rate-rule target (a reactant, or a
+    // live compartment volume); every other propensity is constant between
+    // firings.
+    if (time_dependent_rates) {
+        std::vector<char> is_cont(ns, 0);
+        for (const auto &rr : rate_rule_odes)
+            is_cont[rr.target0] = 1;
+        std::vector<int> sup;
+        for (int r = 0; r < nr; ++r) {
+            const auto &rx = reactions[r];
+            if (rx.is_rate_rule_ode || rx.ode_only)
+                continue;
+            bool d = rx.rate_law_type == RateLawType::Functional ||
+                     model.reaction_rate_reads_functions(r);
+            // A rate-rule target anywhere in what the rate reads: a reactant, or
+            // the live compartment volume a mass-action rate divides by.
+            if (!d && !model.reaction_rate_species_support(r, sup))
+                d = true;
+            if (!d)
+                for (int si : sup)
+                    if (is_cont[si])
+                        d = true;
+            if (d) {
+                is_dyn[r] = 1;
+                dyn.push_back(r);
+            }
+        }
+        cont_mode = true;
+    }
 
     // ─── Decide the propensity backend + recompute-all fast loop ──────────────
     // Now that the event / rate-rule / time-dependent gates are known, choose how
@@ -1604,28 +1651,6 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     int next_output = 1;
     long total_steps = 0;
 
-    // Species buffer to record at an output time falling inside the current
-    // sub-step. A rate-rule target is a continuous quantity; recording it at the
-    // sub-step's left endpoint would lag the true value by up to dt_max and, for
-    // a purely time-driven target, manifest as spurious cross-replicate jitter
-    // (the fire times — hence the sub-step grid — differ per replicate). Advance
-    // the targets to the exact sample time into a scratch buffer instead. When
-    // no rate rules are present this returns conc.data() unchanged, so every
-    // non-rate-rule model records byte-identically. `t` is the current sub-step
-    // start, where rr_deriv was snapshotted, so conc + rr_deriv·(t_sample−t) is
-    // the forward-Euler value at the sample time.
-    std::vector<double> rec_conc(ns);
-    auto sample_conc = [&](double t_sample) -> const double * {
-        if (!has_rate_rules)
-            return conc.data();
-        std::copy(conc.begin(), conc.end(), rec_conc.begin());
-        double dt = t_sample - t;
-        if (dt > 0.0)
-            for (std::size_t i = 0; i < rate_rule_odes.size(); ++i)
-                rec_conc[rate_rule_odes[i].target0] += rr_deriv[i] * dt;
-        return rec_conc.data();
-    };
-
     // Helper: probe currently-false triggers within (t_lo, t_hi]. Returns
     // {t_event, firing_indices}: t_event is the earliest crossing (∞ if
     // none), firing_indices are events whose t_cross is at or within
@@ -1711,6 +1736,79 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 trigger_was_true[ei] = now_true;
         }
         return process_firing_batch(t_now, firing_scratch);
+    };
+
+    // Fire reaction `selected` once: its count, its species (PSA: a leap of m_r
+    // molecules), the reverse-fire diagnostic. Shared by both loops.
+    auto apply_firing = [&](int selected) {
+        if (rec_stats)
+            rs_count[selected] += 1.0;
+
+        // 7. Execute reaction: update species populations
+        //    PSA: scale stoichiometric coefficients by 1/λ_r
+        //    Per-species volume_factor: SBML loader stores values as
+        //    `amount/V_c`, so each ±1 amount fire is `±1/V_c` in storage
+        //    units, taken on the count by fire_species (issue #692). Default
+        //    volume_factor=1.0 → identical to ±1 fires.
+        const auto &rxn = reactions[selected];
+        double stoich_scale = 1.0;
+        if (use_psa) {
+            // The leap size m_r itself: 1/(1/m) is not m for 11,867 of the
+            // integers below 1e5 (1/(1/98) = 98.00000000000001), which left a
+            // count off a whole number after a leap.
+            stoich_scale = psa_m_at[selected];
+        }
+
+        // GH #110 — sign-split firing, no non-negativity floor.
+        //   dir > 0 (rate >= 0): reactants consumed, products produced (normal).
+        //   dir < 0 (rate  < 0): reactants produced, products consumed — the
+        //     reaction runs in reverse with propensity |rate|, exactly as the
+        //     CVODE path integrates a negative rate (derivs[reactant] -= rate
+        //     grows the reactant). Both directions apply the full ±step to BOTH
+        //     sides, so mass is conserved and the SSA mean tracks the ODE.
+        // Species counts are NOT clamped at zero: a count goes negative exactly
+        // as the literal rate law dictates (matching CVODE, which has no
+        // CVodeSetConstraints). Non-negativity is the modeler's job. Each
+        // downward zero-crossing is recorded for the run diagnostic.
+        const int dir = rxn_dir[selected];
+        if (dir < 0) {
+            ++reverse_fire_count;
+            if (first_reverse_rxn < 0)
+                first_reverse_rxn = selected;
+        }
+        const double rstep = dir * stoich_scale;
+
+        for (int ri : rxn.reactant_indices) {
+            int si = ri - 1; // 1-based → 0-based
+            if (si >= 0 && si < ns && !species_list[si].fixed) {
+                fire_species(si, -rstep);
+            }
+        }
+        for (int pi : rxn.product_indices) {
+            int si = pi - 1;
+            if (si >= 0 && si < ns && !species_list[si].fixed) {
+                fire_species(si, rstep);
+            }
+        }
+    };
+    // After a firing at the current t: refresh the propensities it affects.
+    auto refresh_after_firing = [&](int selected) {
+        // 9. Update propensities for AFFECTED reactions only: O(k log N)
+        //    - If model has functional rate laws, update observables + functions first
+        //    - Use the dependency graph's precomputed affected-reaction set (GH #190)
+        //    - Recompute their propensities and update the selection structure
+
+        if (dep_graph.has_functional_rates) {
+            model.update_observables(conc.data());
+            model.evaluate_functions(t);
+        }
+
+        // GH #149: refill the JIT'd propensity buffer from the post-fire conc[]
+        // before the affected reactions read it (no-op when the fast path is off).
+        refresh_jit_propensities();
+
+        for (int r : dep_graph.affected_reactions(selected))
+            set_propensity(r);
     };
 
     // ─── GH #190: RR-style recompute-all + flat-scan fast loop ────────────────
@@ -1873,93 +1971,760 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         }
     }
 
-    while (next_output < n_out) {
-        if (budget.active() && ++steps_since_timeout_check >= TIMEOUT_CHECK_STRIDE) {
-            budget.check();
-            steps_since_timeout_check = 0;
+    // ─── The continuous loop: time-dependent rates and rate rules ─────────────
+    //
+    // Issues #719, #751, #753. Between two firings the discrete state is fixed,
+    // but a model with time-dependent rates or rate rules still moves: every
+    // dynamic propensity (see is_dyn) follows t and the rate-rule targets y,
+    // and y follows its ODE. The next firing is then at the time τ where the
+    // integrated hazard
+    //     H(τ) = A_s·(τ − t) + ∫_t^τ a_d(s, y(s)) ds
+    // reaches an Exp(1) draw E, A_s being the constant sum the tree holds and
+    // a_d the sum of the dynamic propensities; which reaction fires is chosen
+    // from the propensities at τ. That is exact for the time-inhomogeneous
+    // process (the time-change theorem), where the old loop held every rate
+    // fixed over windows of horizon/1000 and moved y by forward Euler: results
+    // depended on the run's length (2-6x off, #719), an idle jump to an event
+    // froze the rates and took one Euler step over the whole gap (x' = -x went
+    // to -8, #751), and a stiff rate rule blew up (#753).
+    //
+    // The loop steps (y, ∫a_d) together over panels with error control:
+    //   - y by an L-stable Rosenbrock method (Shampine & Reichelt's ode23s,
+    //     order 2 with a third-order error estimate and dense output), with a
+    //     finite-difference Jacobian. Being implicit it takes stiff rate rules
+    //     in its stride; being one-step it restarts after a firing at no cost.
+    //   - ∫a_d by Simpson's rule over the panel, error-controlled against the
+    //     midpoint rule, with a_d evaluated on the dense y. Inside the panel the
+    //     quadratic through a_d's three values gives H as a cubic, on which τ
+    //     is found; an event trigger (which may read y) is checked at the
+    //     panel's end and located on the dense y.
+    // A panel never crosses a breakpoint (a time at which a rate jumps, from
+    // set_breakpoints) or t_end. After a firing or an event the discrete state
+    // has moved, and the next panel starts from there.
+    //
+    // Tolerances: rate-rule targets rtol 1e-6, atol 1e-9; the hazard integral
+    // 1e-7 + 1e-6·|∫| per panel, so a firing time is off by far less than the
+    // spread of the draw that places it.
+    if (time_dependent_rates) {
+        const int m = static_cast<int>(rate_rule_odes.size());
+        const int nd = static_cast<int>(dyn.size());
+        constexpr double RTOL_Y = 1e-6, ATOL_Y = 1e-9;
+        constexpr double RTOL_H = 1e-6, ATOL_H = 1e-7;
+        const double dR = 1.0 / (2.0 + std::sqrt(2.0)); // ode23s
+        const double e32 = 6.0 + std::sqrt(2.0);
+        const bool need_dyn_nodes = rec_stats || use_psa;
+
+        // A firing that changes no species a dynamic propensity reads leaves the
+        // panel's a_d polynomial valid past it: the loop carries on in the same
+        // panel from the firing, with a fresh draw, instead of evaluating a_d at
+        // five new nodes. A rate that reads only time (a forcing, a dosing
+        // schedule) keeps its panel through every firing. Only without rate
+        // rules, whose trajectory a firing redirects. Decided once, per reaction,
+        // from what each dynamic propensity reads; anything that cannot be
+        // decided (a table function, a species a rule sets) keeps no panel.
+        std::vector<char> fire_keeps_panel(nr, 0);
+        if (m == 0) {
+            std::vector<char> read(ns, 0);
+            bool all = false;
+            std::vector<int> sup;
+            for (int r : dyn) {
+                if (!model.reaction_rate_species_support(r, sup)) {
+                    all = true;
+                    break;
+                }
+                for (int si : sup) {
+                    if (species_list[si].continuous)
+                        all = true;
+                    read[si] = 1;
+                }
+                if (use_psa) // the leap m_r reads the products' populations too
+                    for (int pi : reactions[r].product_indices)
+                        if (pi >= 1 && pi <= ns)
+                            read[pi - 1] = 1;
+                if (all)
+                    break;
+            }
+            if (!all)
+                for (int r = 0; r < nr; ++r) {
+                    char keeps = 1;
+                    for (int si : dep_graph.reaction_to_affected_species[r])
+                        if (read[si])
+                            keeps = 0;
+                    fire_keeps_panel[r] = keeps;
+                }
         }
 
-        // Time-dependent rates: refresh all functions + propensities at the
-        // current time so a0 reflects the rate laws at t, not at the last fire.
-        if (time_dependent_rates) {
-            sync_state(t);
-            recompute_all_propensities();
-        }
+        std::vector<double> y(m), y1(m), ytmp(m), F0(m), F1(m), F2(m), Tt(m);
+        std::vector<double> k1(m), k2(m), k3(m), J(static_cast<std::size_t>(m) * m);
+        std::vector<double> W(static_cast<std::size_t>(m) * m);
+        std::vector<int> piv(m);
+        // Dynamic propensities at the panel's five nodes θ = 0, ¼, ½, ¾, 1.
+        std::vector<std::vector<double>> dnv(5, std::vector<double>(need_dyn_nodes ? nd : 0));
+        std::vector<double> dnow(nd);
+        for (int i = 0; i < m; ++i)
+            y[i] = conc[rate_rule_odes[i].target0];
 
-        // GH #81 — snapshot dX/dt for the rate-rule targets at the current
-        // (just-synced) state. The snapshot is held constant across whatever
-        // sub-step this iteration takes; integrate_rr(dt) applies it when t
-        // advances. Re-snapshotting every iteration keeps the Euler step
-        // current as the state evolves.
-        if (has_rate_rules)
-            snapshot_rr();
-
-        // 1. Total propensity: the sum tree's root, O(1), or an O(N) flat sum.
-        double a0 = sel_total();
-        if (!std::isfinite(a0)) // issue #809; each propensity was finite when it was set
-            refuse_nonfinite_propensity(-1, a0, t);
-
-        // 2. If total propensity is zero, the reaction system is stuck —
-        //    but a time-only event trigger could still fire. Probe within
-        //    (t, t_end]; if a crossing exists, advance to it and fire.
-        //    Otherwise, fast-forward all remaining samples at the current
-        //    state.
-        if (a0 <= 0.0) {
-            if (n_events > 0) {
-                // Only the time: the batch is taken from every trigger below.
-                const double t_event_idle = probe_events_in_window(t, times.t_end).first;
-                if (std::isfinite(t_event_idle) && t_event_idle <= times.t_end) {
-                    // Record any samples strictly before t_event_idle.
-                    while (next_output < n_out && t_event_idle > t_out[next_output] &&
-                           t_out[next_output] < t_event_idle - sample_event_tol(t_event_idle)) {
-                        const double *cc = sample_conc(t_out[next_output]);
-                        model.update_observables(cc);
-                        for (int j = 0; j < n_obs; ++j) {
-                            obs_buf[j] = model.observables()[j].total;
-                        }
-                        result.record(next_output, t_out[next_output], cc, obs_buf.data());
-                        if (rec_stats)
-                            rs_record(next_output, t_out[next_output]);
-                        if (n_func > 0) {
-                            model.evaluate_functions(t_out[next_output]);
-                            auto fvals = model.function_values();
-                            result.record_expressions(next_output, fvals.data());
-                        }
-                        ++next_output;
-                    }
-                    if (next_output >= n_out)
-                        break;
-                    // GH #81: advance rate-rule targets over (t, t_event_idle]
-                    // before firing so the event sees their integrated values.
-                    integrate_rr(t_event_idle - t);
-                    t = t_event_idle;
-                    psa_now = t; // GH #15 — keep the PSA dwell clock on t
-                    sync_state(t);
-                    const bool fired = fire_rising_edges(t);
-                    if (fired) {
-                        recompute_all_propensities();
-                    }
-                    model.set_current_time(t);
-                    continue;
+        // The model's observables hold the current discrete state (cleared by
+        // anything that moves it outside a sync).
+        bool obs_current = false;
+        // Put a rate-rule state into conc[] (and the count array beside it).
+        auto load_y = [&](const double *yv) {
+            for (int i = 0; i < m; ++i) {
+                const int x = rate_rule_odes[i].target0;
+                conc[x] = yv[i];
+                counts[x] = conc[x] * rate_rule_odes[i].vf;
+            }
+        };
+        // The continuous right-hand side at (s, yv): the rate-rule derivatives
+        // into fout (when non-null) and the dynamic propensities (each |a| into
+        // raw when non-null); returns their effective sum (PSA: each over m_r).
+        auto eval_cont = [&](double s, const double *yv, double *fout, double *raw, bool want_dyn,
+                             bool synced = false) -> double {
+            if (!synced) {
+                if (m > 0 || !obs_current) {
+                    load_y(yv);
+                    sync_state(s);
+                    obs_current = true;
+                } else {
+                    // No rate rule: across a panel only time moves, so the
+                    // observables already hold this state; only the functions
+                    // of time need evaluating.
+                    model.evaluate_functions(s);
                 }
             }
-            // Time-dependent rates: a zero total propensity now does NOT mean
-            // the system is permanently stuck — a time-varying rate (e.g. a
-            // synthesis flux gated by an assignment rule that is 0 at t_start)
-            // can lift off later. Advance one capped sub-step, recording any
-            // samples it crosses at the current (frozen) state, then let the
-            // loop refresh all functions + propensities at the new time.
-            if (time_dependent_rates) {
-                double t_next = std::min(t + time_dep_dt_max, times.t_end);
-                while (next_output < n_out && t_out[next_output] <= t_next) {
-                    const double *cc = sample_conc(t_out[next_output]);
-                    model.update_observables(cc);
-                    for (int j = 0; j < n_obs; ++j) {
-                        obs_buf[j] = model.observables()[j].total;
+            if (fout) {
+                for (int i = 0; i < m; ++i) {
+                    const auto &rr = rate_rule_odes[i];
+                    const double f = model.compute_propensity(rr.rxn, conc.data());
+                    if (!std::isfinite(f))
+                        throw std::runtime_error(
+                            std::string(use_psa ? "PSA" : "SSA") + ": the rate rule for " +
+                            model.species()[rr.target0].name + " evaluates to " +
+                            (std::isnan(f) ? "nan" : (f > 0 ? "inf" : "-inf")) +
+                            " at t=" + std::to_string(s));
+                    fout[i] = rr.per_species ? f / rr.vf : f;
+                }
+            }
+            double sum = 0.0;
+            if (!want_dyn)
+                return sum;
+            for (int k = 0; k < nd; ++k) {
+                const int r = dyn[k];
+                const double v = model.compute_propensity(r, conc.data());
+                if (!std::isfinite(v))
+                    refuse_nonfinite_propensity(r, v, s);
+                const double a = v < 0.0 ? -v : v;
+                if (raw)
+                    raw[k] = a;
+                sum += use_psa ? a * scaling_factors[r] : a;
+            }
+            return sum;
+        };
+
+        // Dense LU of the small W = I − h·d·J (partial pivoting); false if singular.
+        auto lu = [&]() -> bool {
+            for (int c = 0; c < m; ++c) {
+                int p = c;
+                double best = std::fabs(W[static_cast<std::size_t>(c) * m + c]);
+                for (int r2 = c + 1; r2 < m; ++r2) {
+                    const double v = std::fabs(W[static_cast<std::size_t>(r2) * m + c]);
+                    if (v > best) {
+                        best = v;
+                        p = r2;
                     }
-                    result.record(next_output, t_out[next_output], cc, obs_buf.data());
+                }
+                if (!(best > 0.0))
+                    return false;
+                piv[c] = p;
+                if (p != c)
+                    for (int j = 0; j < m; ++j)
+                        std::swap(W[static_cast<std::size_t>(c) * m + j],
+                                  W[static_cast<std::size_t>(p) * m + j]);
+                const double d = W[static_cast<std::size_t>(c) * m + c];
+                for (int r2 = c + 1; r2 < m; ++r2) {
+                    double &l = W[static_cast<std::size_t>(r2) * m + c];
+                    l /= d;
+                    for (int j = c + 1; j < m; ++j)
+                        W[static_cast<std::size_t>(r2) * m + j] -=
+                            l * W[static_cast<std::size_t>(c) * m + j];
+                }
+            }
+            return true;
+        };
+        auto solve = [&](std::vector<double> &b) {
+            for (int c = 0; c < m; ++c)
+                if (piv[c] != c)
+                    std::swap(b[c], b[piv[c]]);
+            for (int r2 = 1; r2 < m; ++r2)
+                for (int j = 0; j < r2; ++j)
+                    b[r2] -= W[static_cast<std::size_t>(r2) * m + j] * b[j];
+            for (int r2 = m - 1; r2 >= 0; --r2) {
+                for (int j = r2 + 1; j < m; ++j)
+                    b[r2] -= W[static_cast<std::size_t>(r2) * m + j] * b[j];
+                b[r2] /= W[static_cast<std::size_t>(r2) * m + r2];
+            }
+        };
+
+        // Panel state: [t, t + hh], a_d at its start, middle and end (A0, A1,
+        // A2), the Rosenbrock stages k1, k2 for the dense y.
+        double Av[5] = {0.0, 0.0, 0.0, 0.0, 0.0}, hh = 0.0;
+        double &A0 = Av[0];
+        double h = (times.t_end - times.t_start) * 1e-3;
+        bool fresh = true;   // F0/A0 must be evaluated at (t, y)
+        bool synced = false; // ...and the model already holds the state at t
+        bool jac_ok = false; // J and ∂f/∂t are for the current panel start
+        const auto &bps = impl_->breakpoints;
+        std::size_t next_bp = 0;
+
+        auto dense_y = [&](double th, double *out) {
+            const double c1 = th * (1.0 - th) / (1.0 - 2.0 * dR);
+            const double c2 = th * (th - 2.0 * dR) / (1.0 - 2.0 * dR);
+            for (int i = 0; i < m; ++i)
+                out[i] = y[i] + hh * (c1 * k1[i] + c2 * k2[i]);
+        };
+        // The quartic through five values at θ = 0, ¼, ½, ¾, 1 in the monomial
+        // basis: c = V⁻¹ v, V[i][k] = θ_i^k, inverted once here.
+        double Vinv[5][5];
+        {
+            double V[5][10];
+            for (int i = 0; i < 5; ++i)
+                for (int k = 0; k < 10; ++k)
+                    V[i][k] = k < 5 ? std::pow(0.25 * i, k) : (k - 5 == i ? 1.0 : 0.0);
+            for (int c = 0; c < 5; ++c) {
+                int p = c;
+                for (int r2 = c + 1; r2 < 5; ++r2)
+                    if (std::fabs(V[r2][c]) > std::fabs(V[p][c]))
+                        p = r2;
+                for (int k = 0; k < 10; ++k)
+                    std::swap(V[c][k], V[p][k]);
+                const double d = V[c][c];
+                for (int k = 0; k < 10; ++k)
+                    V[c][k] /= d;
+                for (int r2 = 0; r2 < 5; ++r2)
+                    if (r2 != c) {
+                        const double f = V[r2][c];
+                        for (int k = 0; k < 10; ++k)
+                            V[r2][k] -= f * V[c][k];
+                    }
+            }
+            for (int i = 0; i < 5; ++i)
+                for (int j = 0; j < 5; ++j)
+                    Vinv[i][j] = V[i][5 + j];
+        }
+        auto coeffs = [&](const double v[5], double c[5]) {
+            for (int k = 0; k < 5; ++k) {
+                c[k] = 0.0;
+                for (int j = 0; j < 5; ++j)
+                    c[k] += Vinv[k][j] * v[j];
+            }
+        };
+        // ∫_0^θ of the quartic with coefficients c, in time units.
+        auto poly_int = [&](const double c[5], double th) {
+            double acc = 0.0;
+            for (int k = 4; k >= 0; --k)
+                acc = acc * th + c[k] / (k + 1);
+            return hh * th * acc;
+        };
+        double Ac[5] = {0.0, 0.0, 0.0, 0.0, 0.0}; // the panel's a_d quartic
+        auto L_at = [&](double th) { return poly_int(Ac, th); };
+        auto quad_int = [&](int k, double th) { // one dynamic reaction's integral
+            const double v[5] = {dnv[0][k], dnv[1][k], dnv[2][k], dnv[3][k], dnv[4][k]};
+            double c[5];
+            coeffs(v, c);
+            return poly_int(c, th);
+        };
+
+        // Dynamic reactions' integrated propensities (stats, PSA): banked up to
+        // bank_th of the current panel.
+        double bank_th = 0.0;
+        auto bank_dyn = [&](double th) {
+            if (!need_dyn_nodes || th <= bank_th)
+                return;
+            for (int k = 0; k < nd; ++k) {
+                const int r = dyn[k];
+                const double I = quad_int(k, th) - quad_int(k, bank_th);
+                if (rec_stats)
+                    rs_integral[r] += I;
+                if (use_psa) {
+                    psa_exact_int += I;
+                    psa_scaled_int += I * scaling_factors[r];
+                    psa_qexc_int[r] += (psa_m_at[r] - 1.0) * I;
+                }
+            }
+            bank_th = th;
+        };
+
+        // Record output row next_output at time tk = t + th·hh (inside the panel).
+        auto record_at = [&](double tk, double th) {
+            if (m > 0) {
+                dense_y(th, ytmp.data());
+                load_y(ytmp.data());
+            }
+            sync_state(tk);
+            for (int j = 0; j < n_obs; ++j)
+                obs_buf[j] = model.observables()[j].total;
+            result.record(next_output, tk, conc.data(), obs_buf.data());
+            if (rec_stats) {
+                for (int r = 0; r < nr; ++r)
+                    rs_scratch[r] = rs_integral[r] + rs_a[r] * (tk - rs_last_t[r]);
+                if (need_dyn_nodes)
+                    for (int k = 0; k < nd; ++k)
+                        rs_scratch[dyn[k]] += quad_int(k, th) - quad_int(k, bank_th);
+                result.record_reaction_stats(next_output, rs_count.data(), rs_scratch.data());
+            }
+            if (n_func > 0) {
+                auto fvals = model.function_values();
+                result.record_expressions(next_output, fvals.data());
+            }
+            ++next_output;
+        };
+
+        auto draw_exp = [&]() {
+            double r1 = next_u01();
+            while (r1 == 0.0)
+                r1 = next_u01();
+            return -std::log(r1);
+        };
+        double E = draw_exp();
+        double Hz = 0.0; // hazard accumulated since the last firing
+        // The panel is [tp, s1p], hh long; the loop is at t = tp + th0·hh inside
+        // it (th0 = 0 but after a firing that kept the panel). h_next_p is the
+        // step the panel's error test proposed for the next one.
+        double tp = t, th0 = 0.0, s1p = t, h_next_p = h;
+        bool carry = false;
+
+        while (t < times.t_end) {
+            if (budget.active() && ++steps_since_timeout_check >= TIMEOUT_CHECK_STRIDE) {
+                budget.check();
+                steps_since_timeout_check = 0;
+            }
+            while (next_bp < bps.size() && bps[next_bp] <= t)
+                ++next_bp;
+            const double t_stop =
+                (next_bp < bps.size() && bps[next_bp] < times.t_end) ? bps[next_bp] : times.t_end;
+
+            const double hmin =
+                64.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::fabs(t));
+            if (!carry) {
+                if (fresh) {
+                    A0 = eval_cont(t, y.data(), F0.data(), need_dyn_nodes ? dnv[0].data() : nullptr,
+                                   true, synced);
+                    fresh = false;
+                    synced = false;
+                    jac_ok = false;
+                }
+                if (m > 0 && !jac_ok) {
+                    // Finite-difference Jacobian ∂f/∂y and ∂f/∂t at the panel start.
+                    const double sq = std::sqrt(std::numeric_limits<double>::epsilon());
+                    for (int j = 0; j < m; ++j) {
+                        ytmp = y;
+                        const double dj = sq * std::max(std::fabs(y[j]), 1e-3);
+                        ytmp[j] += dj;
+                        eval_cont(t, ytmp.data(), F1.data(), nullptr, false);
+                        for (int i = 0; i < m; ++i)
+                            J[static_cast<std::size_t>(i) * m + j] = (F1[i] - F0[i]) / dj;
+                    }
+                    const double dt = sq * std::max(std::fabs(t), std::max(h, 1e-8));
+                    eval_cont(t + dt, y.data(), Tt.data(), nullptr, false);
+                    for (int i = 0; i < m; ++i)
+                        Tt[i] = (Tt[i] - F0[i]) / dt;
+                    jac_ok = true;
+                }
+
+                // One error-controlled panel.
+                double h_next = h;
+                while (true) {
+                    const bool to_stop = h >= t_stop - t;
+                    hh = to_stop ? t_stop - t : h;
+                    const double s1 = to_stop ? t_stop : t + hh;
+                    double err = 0.0;
+                    if (m > 0) {
+                        for (int i = 0; i < m; ++i)
+                            for (int j = 0; j < m; ++j)
+                                W[static_cast<std::size_t>(i) * m + j] =
+                                    (i == j ? 1.0 : 0.0) -
+                                    hh * dR * J[static_cast<std::size_t>(i) * m + j];
+                        if (!lu()) {
+                            err = 1e10; // singular: shrink
+                        } else {
+                            for (int i = 0; i < m; ++i)
+                                k1[i] = F0[i] + hh * dR * Tt[i];
+                            solve(k1);
+                            for (int i = 0; i < m; ++i)
+                                ytmp[i] = y[i] + 0.5 * hh * k1[i];
+                            eval_cont(t + 0.5 * hh, ytmp.data(), F1.data(), nullptr, false);
+                            for (int i = 0; i < m; ++i)
+                                k2[i] = F1[i] - k1[i];
+                            solve(k2);
+                            for (int i = 0; i < m; ++i) {
+                                k2[i] += k1[i];
+                                y1[i] = y[i] + hh * k2[i];
+                            }
+                            Av[4] = eval_cont(s1, y1.data(), F2.data(),
+                                              need_dyn_nodes ? dnv[4].data() : nullptr, true);
+                            for (int i = 0; i < m; ++i)
+                                k3[i] = F2[i] - e32 * (k2[i] - F1[i]) - 2.0 * (k1[i] - F0[i]) +
+                                        hh * dR * Tt[i];
+                            solve(k3);
+                            for (int i = 0; i < m; ++i) {
+                                const double e = hh / 6.0 * (k1[i] - 2.0 * k2[i] + k3[i]);
+                                const double sc =
+                                    ATOL_Y + RTOL_Y * std::max(std::fabs(y[i]), std::fabs(y1[i]));
+                                err = std::max(err, std::fabs(e) / sc);
+                            }
+                            for (int q = 1; q <= 3; ++q) {
+                                dense_y(0.25 * q, ytmp.data());
+                                Av[q] = eval_cont(t + 0.25 * q * hh, ytmp.data(), nullptr,
+                                                  need_dyn_nodes ? dnv[q].data() : nullptr, true);
+                            }
+                        }
+                    } else {
+                        for (int q = 1; q <= 3; ++q)
+                            Av[q] = eval_cont(t + 0.25 * q * hh, nullptr, nullptr,
+                                              need_dyn_nodes ? dnv[q].data() : nullptr, true);
+                        Av[4] = eval_cont(s1, nullptr, nullptr,
+                                          need_dyn_nodes ? dnv[4].data() : nullptr, true);
+                    }
+                    if (err < 1e10) {
+                        // Simpson over the panel against Simpson over its halves: the
+                        // difference over 15 estimates the error of the latter (and
+                        // the quartic's integral, Boole's rule, is better still).
+                        const double s_whole = hh / 6.0 * (Av[0] + 4.0 * Av[2] + Av[4]);
+                        const double s_halves =
+                            hh / 12.0 * (Av[0] + 4.0 * Av[1] + 2.0 * Av[2] + 4.0 * Av[3] + Av[4]);
+                        err = std::max(err, std::fabs(s_halves - s_whole) / 15.0 /
+                                                (ATOL_H + RTOL_H * std::fabs(s_halves)));
+                    }
+                    // Local orders: 3 for the Rosenbrock y error, 5 for the quadrature's.
+                    const double fac =
+                        err > 0.0
+                            ? std::clamp(0.9 * (m > 0 ? 1.0 / std::cbrt(err) : std::pow(err, -0.2)),
+                                         0.2, 5.0)
+                            : 5.0;
+                    if (err <= 1.0) {
+                        h_next = to_stop ? std::max(h, hh * fac) : hh * fac;
+                        break;
+                    }
+                    h = hh * fac;
+                    if (h < hmin)
+                        throw std::runtime_error(
+                            std::string(use_psa ? "PSA" : "SSA") +
+                            ": the continuous part of the model (time-dependent rates or rate "
+                            "rules) "
+                            "cannot be integrated past t=" +
+                            std::to_string(t) + ": the step size fell below " +
+                            std::to_string(hmin) +
+                            ". A rate or a rate rule may be discontinuous or singular there.");
+                }
+                s1p = (hh == t_stop - t) ? t_stop : t + hh;
+                h_next_p = h_next;
+                tp = t;
+                th0 = 0.0;
+                bank_th = 0.0;
+                coeffs(Av, Ac);
+            }
+            carry = false;
+            const double s1 = s1p;
+
+            // Where in the panel does something discrete happen first?
+            const double A_s = sel_total();
+            if (!std::isfinite(A_s))
+                refuse_nonfinite_propensity(-1, A_s, t);
+            double th_fire = 2.0;
+            const double L0 = L_at(th0);
+            const double span = A_s * hh * (1.0 - th0) + (L_at(1.0) - L0);
+            if (Hz + span >= E) {
+                // The hazard reaches E inside the panel: solve the quintic by
+                // Newton, kept inside a shrinking bracket (bisecting when a step
+                // leaves it).
+                auto G = [&](double th) {
+                    return Hz + A_s * hh * (th - th0) + (L_at(th) - L0) - E;
+                };
+                auto q_at = [&](double th) {
+                    double acc = 0.0;
+                    for (int k = 4; k >= 0; --k)
+                        acc = acc * th + Ac[k];
+                    return acc;
+                };
+                double lo = th0, hi = 1.0;
+                double th = th0 + (1.0 - th0) * (E - Hz) / span;
+                if (!(th > lo && th < hi))
+                    th = 0.5 * (lo + hi);
+                th_fire = hi;
+                for (int it = 0; it < 100; ++it) {
+                    const double g = G(th);
+                    if (std::fabs(g) <= 1e-15 * std::max(1.0, E)) {
+                        th_fire = th; // converged on the root itself
+                        break;
+                    }
+                    if (g > 0.0)
+                        hi = th;
+                    else
+                        lo = th;
+                    th_fire = hi;
+                    if (hi - lo <= 1e-15)
+                        break;
+                    const double dg = hh * (A_s + q_at(th));
+                    // The next Newton step is below θ's resolution here. The test
+                    // on |g| above cannot see this: G's terms run to thousands
+                    // (A_s·hh), so its rounding floor sits far above 1e-15, and a
+                    // step that rounds onto the bracket's end would otherwise
+                    // fall through to bisecting a bracket the root already sits
+                    // at one end of.
+                    if (dg > 0.0 && std::fabs(g) <= 1e-14 * dg) {
+                        th_fire = th;
+                        break;
+                    }
+                    double nt = dg > 0.0 ? th - g / dg : 0.5 * (lo + hi);
+                    if (!(nt > lo && nt < hi))
+                        nt = 0.5 * (lo + hi);
+                    th = nt;
+                }
+            }
+            double th_ev = 2.0;
+            if (n_events > 0) {
+                if (m > 0)
+                    load_y(y1.data());
+                sync_state(s1);
+                for (int ei = 0; ei < n_events; ++ei) {
+                    if (trigger_was_true[ei] ||
+                        eval_ref.evaluate(events[ei].trigger_expr_idx) <= 0.5)
+                        continue;
+                    // Rising somewhere in (t, s1]: locate it on the dense y.
+                    double lo = th0, hi = 1.0;
+                    for (int it = 0; it < 200; ++it) {
+                        const double mid = 0.5 * (lo + hi);
+                        const double tmid = tp + mid * hh;
+                        if (mid <= lo || mid >= hi || hh * (hi - lo) <= bisect_tol(tmid))
+                            break;
+                        if (m > 0) {
+                            dense_y(mid, ytmp.data());
+                            load_y(ytmp.data());
+                        }
+                        sync_state(tmid);
+                        if (eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5)
+                            hi = mid;
+                        else
+                            lo = mid;
+                    }
+                    th_ev = std::min(th_ev, hi);
+                }
+            }
+
+            const bool event_first = th_ev <= 1.0 && th_ev <= th_fire;
+            const bool fire_first = !event_first && th_fire <= 1.0;
+            const double th_cut = event_first ? th_ev : (fire_first ? th_fire : 1.0);
+            const double s_cut = th_cut >= 1.0 ? s1 : tp + th_cut * hh;
+
+            // Rows strictly before the change (a row within bisection precision
+            // of an event records the post-event state, as the old loop did).
+            while (next_output < n_out) {
+                const double tk = t_out[next_output];
+                const bool before = event_first ? tk < s_cut - sample_event_tol(s_cut)
+                                                : (fire_first ? tk < s_cut : tk <= s1);
+                if (!before)
+                    break;
+                record_at(tk, (tk - tp) / hh);
+            }
+            bank_dyn(th_cut);
+            Hz += A_s * (s_cut - t) + (L_at(th_cut) - L0);
+
+            if (!event_first && !fire_first) {
+                // Nothing discrete in the panel: move to its end.
+                t = s1;
+                y = y1;
+                A0 = Av[4];
+                F0 = F2;
+                if (need_dyn_nodes)
+                    dnv[0] = dnv[4];
+                if (m > 0)
+                    load_y(y.data());
+                jac_ok = false;
+                h = h_next_p;
+                psa_now = t;
+                model.set_current_time(t);
+                if (s1 == t_stop && t_stop < times.t_end)
+                    fresh = true; // a breakpoint: a rate may jump here
+                continue;
+            }
+
+            // Move to the change.
+            if (m > 0) {
+                dense_y(th_cut, ytmp.data());
+                y = ytmp;
+                load_y(y.data());
+            }
+            t = s_cut;
+            psa_now = t;
+            model.set_current_time(t);
+            sync_state(t);
+            h = std::max(h_next_p, 64.0 * hmin);
+            fresh = true;
+
+            if (event_first) {
+                obs_current = true; // sync_state above
+                if (fire_rising_edges(t)) {
+                    recompute_all_propensities();
+                    for (int i = 0; i < m; ++i) // an event may assign a rate-rule target
+                        y[i] = conc[rate_rule_odes[i].target0];
+                }
+                continue;
+            }
+
+            // A firing at t: which reaction, from the propensities at t.
+            Hz = 0.0;
+            E = draw_exp();
+            double a_dyn = 0.0;
+            for (int k = 0; k < nd; ++k) {
+                const int r = dyn[k];
+                const double v = model.compute_propensity(r, conc.data());
+                if (!std::isfinite(v))
+                    refuse_nonfinite_propensity(r, v, t);
+                rxn_dir[r] = v < 0.0 ? -1 : 1;
+                dnow[k] = (v < 0.0 ? -v : v) * (use_psa ? scaling_factors[r] : 1.0);
+                a_dyn += dnow[k];
+            }
+            const double A_now = sel_total();
+            const double a_all = A_now + a_dyn;
+            if (!(a_all > 0.0))
+                continue; // the rates vanished at the crossing: nothing can fire
+            const double u = next_u01() * a_all;
+            int selected = -1;
+            if (u < A_now) {
+                selected = sel_find(u);
+            } else {
+                double cum = A_now;
+                for (int k = 0; k < nd; ++k) {
+                    if (dnow[k] <= 0.0)
+                        continue;
+                    selected = dyn[k];
+                    cum += dnow[k];
+                    if (cum > u)
+                        break;
+                }
+            }
+            if (selected < 0)
+                continue;
+            apply_firing(selected);
+            ++total_steps;
+            obs_current = false;
+            if (n_events == 0 && th_cut < 1.0 && fire_keeps_panel[selected]) {
+                // Nothing a dynamic propensity reads moved, and no trigger is
+                // watching: stay in this panel. The static propensities the
+                // firing moved are all that need refreshing, and none of them
+                // reads a function (a rate that does is dynamic), so the
+                // observables and functions wait for the next sync.
+                refresh_jit_propensities();
+                for (int r : dep_graph.affected_reactions(selected))
+                    set_propensity(r);
+                carry = true;
+                fresh = false;
+                th0 = th_cut;
+                synced = false;
+                continue;
+            }
+            refresh_after_firing(selected);
+            obs_current = dep_graph.has_functional_rates; // refresh updated them
+            const bool drained = n_events > 0 && fire_rising_edges(t);
+            if (drained) {
+                recompute_all_propensities();
+                for (int i = 0; i < m; ++i)
+                    y[i] = conc[rate_rule_odes[i].target0];
+            }
+            if (!drained && th_cut < 1.0 && fire_keeps_panel[selected]) {
+                // Nothing a_d reads moved: stay in this panel.
+                carry = true;
+                fresh = false;
+                th0 = th_cut;
+                synced = false;
+                continue;
+            }
+            // Every dynamic propensity is Functional or reads a rate-rule target,
+            // and a rate rule is itself a Functional reaction, so the refresh
+            // above (and any event drain) left the observables and functions at
+            // this state: the next panel's start needs no second evaluation.
+            synced = dep_graph.has_functional_rates;
+        }
+        // Rows at t_end not yet written (a row at exactly t_end whose panel
+        // ended in an event).
+        hh = 0.0; // the state is at t: no dense step, no partial integral
+        bank_th = 0.0;
+        while (next_output < n_out)
+            record_at(t_out[next_output], 0.0);
+        if (m > 0)
+            load_y(y.data());
+    } else
+        // The discrete loop: no rate reads time and there is no rate rule, so every
+        // propensity is constant between firings and the draw is exact as it stands.
+        while (next_output < n_out) {
+            if (budget.active() && ++steps_since_timeout_check >= TIMEOUT_CHECK_STRIDE) {
+                budget.check();
+                steps_since_timeout_check = 0;
+            }
+
+            // 1. Total propensity: the sum tree's root, O(1), or an O(N) flat sum.
+            double a0 = sel_total();
+            if (!std::isfinite(a0)) // issue #809; each propensity was finite when it was set
+                refuse_nonfinite_propensity(-1, a0, t);
+
+            // 2. If total propensity is zero, the reaction system is stuck —
+            //    but a time-only event trigger could still fire. Probe within
+            //    (t, t_end]; if a crossing exists, advance to it and fire.
+            //    Otherwise, fast-forward all remaining samples at the current
+            //    state.
+            if (a0 <= 0.0) {
+                if (n_events > 0) {
+                    // Only the time: the batch is taken from every trigger below.
+                    const double t_event_idle = probe_events_in_window(t, times.t_end).first;
+                    if (std::isfinite(t_event_idle) && t_event_idle <= times.t_end) {
+                        // Record any samples strictly before t_event_idle.
+                        while (next_output < n_out && t_event_idle > t_out[next_output] &&
+                               t_out[next_output] < t_event_idle - sample_event_tol(t_event_idle)) {
+                            const double *cc = conc.data();
+                            model.update_observables(cc);
+                            for (int j = 0; j < n_obs; ++j) {
+                                obs_buf[j] = model.observables()[j].total;
+                            }
+                            result.record(next_output, t_out[next_output], cc, obs_buf.data());
+                            if (rec_stats)
+                                rs_record(next_output, t_out[next_output]);
+                            if (n_func > 0) {
+                                model.evaluate_functions(t_out[next_output]);
+                                auto fvals = model.function_values();
+                                result.record_expressions(next_output, fvals.data());
+                            }
+                            ++next_output;
+                        }
+                        if (next_output >= n_out)
+                            break;
+                        t = t_event_idle;
+                        psa_now = t; // GH #15 — keep the PSA dwell clock on t
+                        sync_state(t);
+                        const bool fired = fire_rising_edges(t);
+                        if (fired) {
+                            recompute_all_propensities();
+                        }
+                        model.set_current_time(t);
+                        continue;
+                    }
+                }
+                // Truly stuck — fast-forward.
+                model.update_observables(conc.data());
+                for (int j = 0; j < n_obs; ++j) {
+                    obs_buf[j] = model.observables()[j].total;
+                }
+                while (next_output < n_out) {
+                    result.record(next_output, t_out[next_output], conc.data(), obs_buf.data());
                     if (rec_stats)
                         rs_record(next_output, t_out[next_output]);
+                    // Issue #569 — same pairing as every other recording site above.
+                    // Evaluated per sample rather than once before the loop, because
+                    // arriving here does NOT mean the functions are constant: the
+                    // fast-forward is entered on a0 == 0 with no live reaction left,
+                    // which says nothing about a function that reads time() — an
+                    // output-only function, or one whose reaction is exhausted. Its
+                    // recorded column must keep tracking t across the frozen tail; a
+                    // single pre-loop evaluation would flatline it at one value.
                     if (n_func > 0) {
                         model.evaluate_functions(t_out[next_output]);
                         auto fvals = model.function_values();
@@ -1967,35 +2732,44 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     }
                     ++next_output;
                 }
-                if (next_output >= n_out)
-                    break;
-                // GH #81: Euler-advance the rate-rule targets across the idle
-                // sub-step so a propensity that was 0 at t can lift off as the
-                // continuous targets move.
-                integrate_rr(t_next - t);
-                t = t_next;
-                psa_now = t; // GH #15 — keep the PSA dwell clock on t
-                model.set_current_time(t);
-                continue;
+                break;
             }
 
-            // Truly stuck — fast-forward.
-            model.update_observables(conc.data());
-            for (int j = 0; j < n_obs; ++j) {
-                obs_buf[j] = model.observables()[j].total;
-            }
-            while (next_output < n_out) {
-                result.record(next_output, t_out[next_output], conc.data(), obs_buf.data());
+            // 3. Sample time to next reaction: tau = -ln(r1) / a0
+            double r1 = next_u01();
+            while (r1 == 0.0)
+                r1 = next_u01(); // avoid log(0)
+            double tau = -std::log(r1) / a0;
+            double t_proposed = t + tau;
+
+            // 4. Detect event-trigger crossings within (t, t_proposed].
+            //    State is piecewise-constant during τ, so a time-dependent trigger
+            //    is a 1-D function of t and is well-resolved by bisection.
+            //    State-dependent triggers (no time component) cannot flip during
+            //    τ — those are handled post-fire below.
+            // Only the time: the batch is taken from every trigger below.
+            const double t_event = probe_events_in_window(t, t_proposed).first;
+
+            bool event_wins = std::isfinite(t_event) && t_event < t_proposed;
+            double t_advance = event_wins ? t_event : t_proposed;
+
+            // 5. Record output points strictly before t_advance. When an event
+            //    lands at (or within bisection precision of) a sample time,
+            //    defer that sample so it records post-event state on the next
+            //    iteration — matches ODE rootfind semantics. The tolerance is
+            //    several orders wider than bisect_tol so a legitimate sample
+            //    strictly before t_event is still recorded pre-event.
+            while (next_output < n_out && t_advance >= t_out[next_output]) {
+                if (event_wins && t_out[next_output] >= t_event - sample_event_tol(t_event))
+                    break;
+                const double *cc = conc.data();
+                model.update_observables(cc);
+                for (int j = 0; j < n_obs; ++j) {
+                    obs_buf[j] = model.observables()[j].total;
+                }
+                result.record(next_output, t_out[next_output], cc, obs_buf.data());
                 if (rec_stats)
                     rs_record(next_output, t_out[next_output]);
-                // Issue #569 — same pairing as every other recording site above.
-                // Evaluated per sample rather than once before the loop, because
-                // arriving here does NOT mean the functions are constant: the
-                // fast-forward is entered on a0 == 0 with no live reaction left,
-                // which says nothing about a function that reads time() — an
-                // output-only function, or one whose reaction is exhausted. Its
-                // recorded column must keep tracking t across the frozen tail; a
-                // single pre-loop evaluation would flatline it at one value.
                 if (n_func > 0) {
                     model.evaluate_functions(t_out[next_output]);
                     auto fvals = model.function_values();
@@ -2003,213 +2777,58 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 }
                 ++next_output;
             }
-            break;
-        }
 
-        // 3. Sample time to next reaction: tau = -ln(r1) / a0
-        double r1 = next_u01();
-        while (r1 == 0.0)
-            r1 = next_u01(); // avoid log(0)
-        double tau = -std::log(r1) / a0;
-        double t_proposed = t + tau;
-
-        // Time-dependent rates: cap the step so the rate law is refreshed at
-        // least every dt_max. If the sampled fire time lands beyond the cap,
-        // no reaction fires in this window — advance to the cap and resample
-        // against the refreshed propensity next iteration (exact for the
-        // piecewise-constant rate over the window by exponential memorylessness).
-        bool time_dep_capped = false;
-        if (time_dependent_rates && t_proposed > t + time_dep_dt_max) {
-            t_proposed = t + time_dep_dt_max;
-            time_dep_capped = true;
-        }
-
-        // 4. Detect event-trigger crossings within (t, t_proposed].
-        //    State is piecewise-constant during τ, so a time-dependent trigger
-        //    is a 1-D function of t and is well-resolved by bisection.
-        //    State-dependent triggers (no time component) cannot flip during
-        //    τ — those are handled post-fire below.
-        // Only the time: the batch is taken from every trigger below.
-        const double t_event = probe_events_in_window(t, t_proposed).first;
-
-        bool event_wins = std::isfinite(t_event) && t_event < t_proposed;
-        double t_advance = event_wins ? t_event : t_proposed;
-
-        // 5. Record output points strictly before t_advance. When an event
-        //    lands at (or within bisection precision of) a sample time,
-        //    defer that sample so it records post-event state on the next
-        //    iteration — matches ODE rootfind semantics. The tolerance is
-        //    several orders wider than bisect_tol so a legitimate sample
-        //    strictly before t_event is still recorded pre-event.
-        while (next_output < n_out && t_advance >= t_out[next_output]) {
-            if (event_wins && t_out[next_output] >= t_event - sample_event_tol(t_event))
+            if (next_output >= n_out)
                 break;
-            const double *cc = sample_conc(t_out[next_output]);
-            model.update_observables(cc);
-            for (int j = 0; j < n_obs; ++j) {
-                obs_buf[j] = model.observables()[j].total;
-            }
-            result.record(next_output, t_out[next_output], cc, obs_buf.data());
-            if (rec_stats)
-                rs_record(next_output, t_out[next_output]);
-            if (n_func > 0) {
-                model.evaluate_functions(t_out[next_output]);
-                auto fvals = model.function_values();
-                result.record_expressions(next_output, fvals.data());
-            }
-            ++next_output;
-        }
 
-        if (next_output >= n_out)
-            break;
-
-        if (event_wins) {
-            // Advance time to t_event, fire the batch, redraw τ. The
-            // candidate reaction is NOT fired — its tentative τ assumed the
-            // pre-event state and is discarded on the redraw.
-            // GH #81: integrate rate-rule targets over (t, t_event] first so
-            // the event's assignment RHS sees their values at the event time.
-            integrate_rr(t_event - t);
-            t = t_event;
-            psa_now = t; // GH #15 — keep the PSA dwell clock on t
-            sync_state(t);
-            const bool fired = fire_rising_edges(t);
-            if (fired) {
-                recompute_all_propensities();
+            if (event_wins) {
+                // Advance time to t_event, fire the batch, redraw τ. The
+                // candidate reaction is NOT fired — its tentative τ assumed the
+                // pre-event state and is discarded on the redraw.
+                t = t_event;
+                psa_now = t; // GH #15 — keep the PSA dwell clock on t
+                sync_state(t);
+                const bool fired = fire_rising_edges(t);
+                if (fired) {
+                    recompute_all_propensities();
+                }
+                model.set_current_time(t);
+                continue;
             }
-            model.set_current_time(t);
-            continue;
-        }
 
-        if (time_dep_capped) {
-            // No reaction fired within this capped window; advance time and let
-            // the loop refresh time-dependent propensities at the new t.
-            // GH #81: Euler-advance the rate-rule targets across the full cap.
-            integrate_rr(t_proposed - t);
+            // 6. Select reaction: O(log N) sum-tree descent, or O(N) flat scan.
+            double r2 = next_u01() * a0;
+            int selected = sel_find(r2);
+            if (selected < 0)
+                selected = 0;
+            if (selected >= nr)
+                selected = nr - 1;
+
+            apply_firing(selected);
+
+            // 8. Advance time unconditionally so time() stays current
             t = t_proposed;
             psa_now = t; // GH #15 — keep the PSA dwell clock on t
             model.set_current_time(t);
-            continue;
+            ++total_steps;
+
+            refresh_after_firing(selected);
+
+            // 10. State-dependent triggers can flip false→true after this fire.
+            //     (Time-only triggers were already detected by bisection above.)
+            //     Sweep all events; fire rising edges through process_firing_batch.
+            if (n_events > 0 && fire_rising_edges(t))
+                recompute_all_propensities();
         }
-
-        // 6. Select reaction: O(log N) sum-tree descent, or O(N) flat scan.
-        double r2 = next_u01() * a0;
-        int selected = sel_find(r2);
-        if (selected < 0)
-            selected = 0;
-        if (selected >= nr)
-            selected = nr - 1;
-
-        if (rec_stats)
-            rs_count[selected] += 1.0;
-
-        // 7. Execute reaction: update species populations
-        //    PSA: scale stoichiometric coefficients by 1/λ_r
-        //    Per-species volume_factor: SBML loader stores values as
-        //    `amount/V_c`, so each ±1 amount fire is `±1/V_c` in storage
-        //    units, taken on the count by fire_species (issue #692). Default
-        //    volume_factor=1.0 → identical to ±1 fires.
-        const auto &rxn = reactions[selected];
-        double stoich_scale = 1.0;
-        if (use_psa) {
-            // The leap size m_r itself: 1/(1/m) is not m for 11,867 of the
-            // integers below 1e5 (1/(1/98) = 98.00000000000001), which left a
-            // count off a whole number after a leap.
-            stoich_scale = psa_m_at[selected];
-        }
-
-        // GH #110 — sign-split firing, no non-negativity floor.
-        //   dir > 0 (rate >= 0): reactants consumed, products produced (normal).
-        //   dir < 0 (rate  < 0): reactants produced, products consumed — the
-        //     reaction runs in reverse with propensity |rate|, exactly as the
-        //     CVODE path integrates a negative rate (derivs[reactant] -= rate
-        //     grows the reactant). Both directions apply the full ±step to BOTH
-        //     sides, so mass is conserved and the SSA mean tracks the ODE.
-        // Species counts are NOT clamped at zero: a count goes negative exactly
-        // as the literal rate law dictates (matching CVODE, which has no
-        // CVodeSetConstraints). Non-negativity is the modeler's job. Each
-        // downward zero-crossing is recorded for the run diagnostic.
-        const int dir = rxn_dir[selected];
-        if (dir < 0) {
-            ++reverse_fire_count;
-            if (first_reverse_rxn < 0)
-                first_reverse_rxn = selected;
-        }
-        const double rstep = dir * stoich_scale;
-
-        for (int ri : rxn.reactant_indices) {
-            int si = ri - 1; // 1-based → 0-based
-            if (si >= 0 && si < ns && !species_list[si].fixed) {
-                fire_species(si, -rstep);
-            }
-        }
-        for (int pi : rxn.product_indices) {
-            int si = pi - 1;
-            if (si >= 0 && si < ns && !species_list[si].fixed) {
-                fire_species(si, rstep);
-            }
-        }
-
-        // 8. Advance time unconditionally so time() stays current
-        // GH #81: Euler-advance the rate-rule targets over the inter-fire
-        // interval (t, t_proposed] alongside the discrete fire just applied.
-        integrate_rr(t_proposed - t);
-        t = t_proposed;
-        psa_now = t; // GH #15 — keep the PSA dwell clock on t
-        model.set_current_time(t);
-        ++total_steps;
-
-        // 9. Update propensities for AFFECTED reactions only: O(k log N)
-        //    - If model has functional rate laws, update observables + functions first
-        //    - Use the dependency graph's precomputed affected-reaction set (GH #190)
-        //    - Recompute their propensities and update the selection structure
-
-        if (dep_graph.has_functional_rates) {
-            model.update_observables(conc.data());
-            model.evaluate_functions(t);
-        }
-
-        // GH #149: refill the JIT'd propensity buffer from the post-fire conc[]
-        // before the affected reactions read it (no-op when the fast path is off).
-        refresh_jit_propensities();
-
-        for (int r : dep_graph.affected_reactions(selected))
-            set_propensity(r);
-
-        // 10. State-dependent triggers can flip false→true after this fire.
-        //     (Time-only triggers were already detected by bisection above.)
-        //     Sweep all events; fire rising edges through process_firing_batch.
-        if (n_events > 0 && fire_rising_edges(t))
-            recompute_all_propensities();
-    }
 
     // ─── Write final state back to model ─────────────────────────────────────
     //
-    // The loop ends at the last event it took, somewhere before t_end: no
-    // reaction fires in (t, t_end], so every count is already its t_end value,
-    // but a rate-rule target keeps moving. The last recorded row carries it to
-    // t_end (sample_conc), and so must the state a run_until leg hands to the
-    // next one. It used to be written back as of t, so each leg started its
-    // continuous targets up to one sub-step behind where the previous leg had
-    // reported them: X' = 1 in 0.3-long legs reached 3.898 at t = 3.9
-    // (issue #718). rr_deriv was snapshotted at t, as sample_conc used it.
-    if (t < times.t_end) {
-        integrate_rr(times.t_end - t);
+    // The discrete loop ends at the last firing it took, somewhere before t_end;
+    // nothing fires in (t, t_end], so every count is already its t_end value. The
+    // continuous loop runs to t_end itself, rate-rule targets and the events
+    // they trigger included (issues #718, #751).
+    if (t < times.t_end)
         t = times.t_end;
-        // Nothing checked the triggers over that last stretch. An event whose
-        // trigger reads a rate-rule target that crossed its threshold there was
-        // carried into the next leg already true, which re-seeds from
-        // initialValue and saw no rising edge: a periodic dose on a rate-rule
-        // timer was lost at every leg boundary (A stayed 0 where the ODE gives
-        // 60.65, 97.44, ...). Fire it here, so the next leg starts from the
-        // post-event state, as the ODE's does. Its time is the crossing's to
-        // within the loop's stepping (issue #751). Only a rate-rule target can
-        // move without the loop seeing it, so nothing else is touched.
-        if (n_events > 0 && has_rate_rules) {
-            sync_state(t);
-            fire_rising_edges(t);
-        }
-    }
     {
         auto &species = const_cast<std::vector<Species> &>(model.species());
         for (int i = 0; i < ns; ++i) {

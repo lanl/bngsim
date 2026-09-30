@@ -246,6 +246,20 @@ class NetworkModel {
     void expression_support(int expr_idx, std::vector<int> *species_out,
                             std::vector<int> *params_out) const;
 
+    // The species reaction `rxn_idx0`'s SSA propensity reads (issue #719): its
+    // reactants, a live compartment volume it divides by, and whatever
+    // expression_support() finds behind each of its rate parameters (the
+    // function or expression that writes it). Sorted, into `out`. Returns false
+    // when that cannot be decided — a table function, whose index may read an
+    // observable no expression names — and the caller must assume every species.
+    bool reaction_rate_species_support(int rxn_idx0, std::vector<int> &out) const;
+
+    // Does a rate parameter of reaction `rxn_idx0` take its value from a model
+    // function, directly or through a derived parameter (issue #719)? Such a
+    // rate moves with whatever the function reads, time included, whatever the
+    // reaction's rate-law type.
+    bool reaction_rate_reads_functions(int rxn_idx0) const;
+
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //
     // The rate-law twin of the state-dependent event trigger issue #144 covers.

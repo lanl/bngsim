@@ -2278,7 +2278,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "(symbol bngsim_ssa_propensities). When set and the model is "
              "recompute-all eligible (pure mass-action exact SSA, no events, small "
              "nr), the run takes the RR-style recompute-all + flat-scan loop by "
-             "default. No-op for ineligible models; '' clears it.");
+             "default. No-op for ineligible models; '' clears it.")
+        .def("set_breakpoints", &bngsim::SsaSimulator::set_breakpoints, py::arg("times"),
+             "Issue #719: times at which a time-dependent rate may jump. The "
+             "continuous (time-dependent) loop never steps across one. Applies to "
+             "every later run; [] clears it.");
 
     // ─── NfsimSimulator (conditional on BNGSIM_HAS_NFSIM) ────────────────────
     //

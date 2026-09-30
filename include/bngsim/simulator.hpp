@@ -99,6 +99,13 @@ class SsaSimulator {
     // which keep the incremental sum-tree path. Empty string clears it.
     void set_propensity_library(const std::string &so_path);
 
+    // Issue #719: times at which a time-dependent rate may jump (an if() of
+    // time, a table function's breakpoint). The continuous loop never steps
+    // across one, so a jump is not smeared by the quadrature and a pulse that
+    // is narrower than a step is not stepped over. Applies to every later run;
+    // an empty list clears it. Unsorted and repeated times are accepted.
+    void set_breakpoints(const std::vector<double> &times);
+
     // GH #616 — record, at every output time, each reaction's cumulative firing
     // count N_r(t) and integrated propensity ∫ |a_r| ds: the two accumulators a
     // likelihood-ratio (Girsanov) parameter gradient of an SSA ensemble is built
