@@ -517,8 +517,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "Parallel to set_state_switch_conditions: the 0-based reactions whose "
             "rate law reads each condition. The sensitivity jump judges whether a "
             "crossing is continuous from these reactions' flux alone, so no other "
-            "species can hide or fake a jump (issue #763). Empty entries fall back "
-            "to the whole right-hand side.")
+            "species can hide or fake a jump (issue #763). A condition with no entry "
+            "is judged over the whole right-hand side, as before; an empty entry "
+            "means no rate law reads it, so the crossing is continuous.")
         .def(
             "set_state_switch_conditions",
             [](bngsim::SolverOptions &self, const std::vector<std::string> &conditions) {

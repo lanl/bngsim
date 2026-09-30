@@ -2409,7 +2409,8 @@ struct CvodeSimulator::Impl {
                                         SensitivityState &sens);
     // The reactions whose rate law reads each registered switch, for this run
     // (SensitivityOptions::state_switch_reactions, issue #763). A switch with
-    // no entry, or an empty one, is judged over the whole right-hand side.
+    // no entry is judged over the whole right-hand side, as before; an empty
+    // entry means no rate law reads it.
     std::unordered_map<const NetworkModel::StateSwitch *, std::vector<int>> state_switch_rxns;
     // Every state switch registered for this run, so a crossing can find the
     // others its own probe pair straddles (issue #763).
@@ -5867,15 +5868,16 @@ static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
-// Issue #763: a branch gap below this many ulps of the part of the switched
-// reactions' gross flux that cancels is roundoff in the terms that flux is summed
-// from, not a jump. A few ulps
-// per term, with room for a rate law whose own evaluation carries more; not so
-// many that a real jump on a large flux hides under it (a jump of 3 on a flux of
-// 1e14 is ~190 ulps, which 1024 excused).
-static constexpr double kStateSwitchGrossRoundoff = 64.0;
-// ...and this many ulps of the whole gross flux, cancelled or not.
-static constexpr double kStateSwitchSumRoundoff = 4.0;
+// Issue #763: a branch gap below this many ulps of the switched reactions' gross
+// flux (the absolute sum of their terms) is the final rounding of the two sums
+// it is read from, one per side, not a jump. It is the gross flux and not the
+// net because that is what rounding scales with, and it does not grow where the
+// terms cancel. It is kept this small because every ulp it excuses is a real
+// jump dropped silently: 1024 hid a jump of 3 on a flux of 1e14, 64 ulps of a
+// cancelling pair hid a jump of 1 on 1e14 molecules exchanging at 1/s, and 4
+// still hid it at 1e15, where main reads it. A gap of roundoff that is read as a
+// jump costs only a saltation term of the same roundoff.
+static constexpr double kStateSwitchSumRoundoff = 2.0;
 // Issue #545: how closely a state-switch dt*/dθ — a finite difference — has to
 // match an emitted comoving shift for its column to enter that frame. The shift
 // itself is exact; this only decides which case the crossing is.
@@ -6147,7 +6149,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // with a switch that has no such map reads the whole right-hand side.
     //
     // Even that flux can cancel within a species, so there is a floor as well,
-    // kStateSwitchGrossRoundoff ulps of its GROSS flux (the terms' absolute sum).
+    // kStateSwitchSumRoundoff ulps of its GROSS flux (the terms' absolute sum).
     // It is a roundoff bound and only that. And a switched flux that vanishes at
     // the surface on both branches (the BNGL signed-rate idiom) has nothing left
     // but roundoff in its operands: ml_gradient_descent switches on
@@ -6206,14 +6208,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         for (std::size_t u = 0; u < n; ++u) {
             out.gap[u] = std::fabs(sub_minus[u] - sub_plus[u]);
             out.scale[u] = std::max(std::fabs(sub_minus[u]), std::fabs(sub_plus[u]));
-            // What cancels rounds at kStateSwitchGrossRoundoff ulps; a flux
-            // that does not cancel rounds at a few ulps of itself, and a jump
-            // of 1 on a flux of 1e14 is ~70 of those, not roundoff.
-            const double cancelled = std::max(gross_minus[u] - std::fabs(sub_minus[u]),
-                                              gross_plus[u] - std::fabs(sub_plus[u]));
-            out.floor[u] = std::numeric_limits<double>::epsilon() *
-                           (kStateSwitchGrossRoundoff * std::max(cancelled, 0.0) +
-                            kStateSwitchSumRoundoff * std::max(gross_minus[u], gross_plus[u]));
+            out.floor[u] = std::numeric_limits<double>::epsilon() * kStateSwitchSumRoundoff *
+                           std::max(gross_minus[u], gross_plus[u]);
         }
         out.drive = 0.0;
         for (int j : residual_support) {
@@ -6791,11 +6787,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             bool jumps = false;
             for (std::size_t u = 0; u < n && !jumps; ++u) {
                 const double gap = std::fabs(net_lo[u] - net_hi[u]);
-                const double cancelled = std::max(gross_lo[u] - std::fabs(net_lo[u]),
-                                                  gross_hi[u] - std::fabs(net_hi[u]));
                 const double floor = std::numeric_limits<double>::epsilon() *
-                                     (kStateSwitchGrossRoundoff * std::max(cancelled, 0.0) +
-                                      kStateSwitchSumRoundoff * std::max(gross_lo[u], gross_hi[u]));
+                                     kStateSwitchSumRoundoff * std::max(gross_lo[u], gross_hi[u]);
                 jumps = gap > std::max(floor, kStateSwitchContinuousRelTol * drive);
             }
             if (jumps) {
@@ -6814,10 +6807,17 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             tau_scale = std::max(tau_scale, std::fabs(tau_k[static_cast<std::size_t>(c)]));
         }
         if (worst > kStateSwitchTauAgreeTol * tau_scale) {
+            // Name every residual counted, the co-crossing ones included.
+            std::ostringstream names;
+            for (std::size_t j = 0; j < agree.size(); ++j) {
+                names << (j == 0 ? "'" : (j + 1 == agree.size() ? "' and '" : "', '"))
+                      << agree[j]->residual_source;
+            }
+            names << "'";
             std::ostringstream msg;
             msg << "Forward sensitivity: " << agree.size()
                 << " state-dependent rate-law switches cross at the same instant t=" << t_evt
-                << " (residuals " << name_the_batch()
+                << " (residuals " << names.str()
                 << "), the right-hand side jumps there, and their crossing times move differently "
                    "with the requested columns: dt*/dθ from '"
                 << sw.residual_source << "' and from '" << agree[k]->residual_source

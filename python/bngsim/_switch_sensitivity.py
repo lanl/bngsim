@@ -3734,8 +3734,9 @@ def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[li
     and a switched species' own large turnover dilutes a real one. A rate law
     reads a condition when an atom of its inlined text has the same crossing
     surface (:func:`_surface_key`), so ``X<1`` and ``X<=1`` both match. An
-    empty entry means no functional rate law was found to read it, and the
-    solver then judges the whole right-hand side, as it did before.
+    empty entry means no functional rate law reads it (only an output does), so
+    the solver takes the crossing as continuous; a tangent crossing, which its
+    probes cannot see past, is still judged over the whole right-hand side.
     """
     from bngsim._jacobian import _inline_functions
 

@@ -779,9 +779,8 @@ end groups
     def test_a_jump_on_a_very_large_switched_flux_is_not_roundoff(self, tmp_path, kb):
         """``ksyn + if(...)`` with ksyn = 1e14: a jump of kb is ~70·kb ulps of the
         switched flux, which a floor proportional to the whole flux excused (1024
-        ulps dropped kb = 3; 64 ulps still dropped kb = 1). The floor now scales
-        with the part that cancels, none here. Same closed form as the turnover
-        case."""
+        ulps dropped kb = 3; 64 ulps still dropped kb = 1). The floor is now 2
+        ulps. Same closed form as the turnover case."""
         text = (
             TURNOVER.replace("    2 0 2 fY #_R2\n    3 0 2 ksyn #_R3\n", "    2 0 2 fY #_R2\n")
             .replace("    1 fY() if(Aobs<thr,kb,0)", "    1 fY() ksyn+if(Aobs<thr,kb,0)")
@@ -800,6 +799,52 @@ end groups
         t_star = np.log(A0 / thr) / a
         dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
         np.testing.assert_allclose(got, -kb * np.exp(-kdeg * (T - t_star)) * dtstar, rtol=1e-4)
+
+    @pytest.mark.parametrize(("kb", "X0"), [(3.0, 1e14), (3.0, 1e15), (1.0, 5e13), (1.0, 1e15)])
+    def test_a_jump_beside_a_large_cancelling_exchange_is_not_roundoff(self, tmp_path, kb, X0):
+        """X swaps with P at kx·clamp both ways, so X's switched flux is ~2·X0 and
+        cancels to kb. A floor of 64 ulps of the cancelling part read the jump of
+        kb as roundoff from X0 = 5e13 (kb = 1) and 1e14 (kb = 3), where main reads
+        it; 4 ulps of the gross flux still did at 1e15. The rounding of a sum
+        does not grow because its terms cancel. X + P gains kb until t*, so
+        d(X+P)/dθ = -kb·dt*/dθ at any T past t*."""
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr 2
+    4 kb {kb!r}
+    5 X0 {X0!r}
+    6 kx 1
+end parameters
+begin functions
+    1 fY() if(Aobs<thr,kb,0)
+    2 fc() kx*if(Aobs<thr,Aobs/thr,1)
+end functions
+begin species
+    1 A() A0
+    2 X() X0
+    3 P() X0
+end species
+begin reactions
+    1 1 0 a #_R1
+    2 0 2 fY #_R2
+    3 3 2 fc #_R3
+    4 2 3 fc #_R4
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="exchange.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["A0", "a", "thr"]).run(
+            t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+        got = s[names.index("X()")] + s[names.index("P()")]
+        A0, a, thr = 10.0, 0.5, 2.0
+        dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
+        np.testing.assert_allclose(got, -kb * dtstar, rtol=1e-6)
 
     def test_two_independent_thresholds_a_hair_apart_are_refused_not_mixed(self, tmp_path):
         """Aobs < thr1 drives Y and Aobs < thr2 drives Z, with thr2 a few hundred

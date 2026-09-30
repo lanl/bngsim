@@ -1054,8 +1054,12 @@ struct SensitivityOptions {
     std::vector<std::string> state_switch_conditions;
     // Parallel to state_switch_conditions: the 0-based reactions whose rate law
     // reads each condition. The sensitivity jump asks whether a crossing is
-    // continuous of these reactions' flux alone (issue #763). Empty, or an empty
-    // entry, means the whole right-hand side is judged.
+    // continuous of these reactions' flux alone (issue #763). A condition with
+    // no entry (this vector left short or empty) is judged over the whole
+    // right-hand side, as before. An empty entry means no rate law reads the
+    // condition, so the crossing cannot move f; a tangent crossing, whose
+    // probes cannot show what else crosses there, is still judged over the
+    // whole right-hand side.
     std::vector<std::vector<int>> state_switch_reactions;
 
     // Events whose crossing time moves with a requested parameter (issue #49).
