@@ -400,6 +400,9 @@ class Result:
                 "first_negative_species": ssa_diag.first_negative_species,
                 "n_reverse_fires": ssa_diag.n_reverse_fires,
                 "first_reverse_reaction": ssa_diag.first_reverse_reaction,
+                # Issue #718 — fractional molecule counts rounded at run start.
+                "n_rounded_populations": ssa_diag.n_rounded_populations,
+                "first_rounded_species": ssa_diag.first_rounded_species,
                 # GH #190 — how propensities were evaluated: "cc"/"mir"
                 # (compiled recompute-all) or "interpreted".
                 "propensity_backend": getattr(ssa_diag, "propensity_backend", "interpreted"),
@@ -446,6 +449,8 @@ class Result:
                 "first_negative_species": "",
                 "n_reverse_fires": 0,
                 "first_reverse_reaction": "",
+                "n_rounded_populations": 0,
+                "first_rounded_species": "",
                 # A loaded or hand-built result ran nothing here, so no backend
                 # is known; "interpreted" would name one that was never used.
                 "propensity_backend": "unknown",
@@ -2028,6 +2033,12 @@ class Result:
           rate law was negative.
         - ``first_reverse_reaction`` (str): label of the first reaction
           reversed; ``""`` if none.
+        - ``n_rounded_populations`` (int): molecule counts that were not whole
+          numbers when the run (or ``run_until`` leg) started and were rounded
+          to one. Event-assigned parameters and compartments and rate-rule
+          targets hold continuous values and are never rounded (issue #718).
+        - ``first_rounded_species`` (str): name of the first rounded species;
+          ``""`` if none.
 
         All zero/empty on every non-SSA backend.
         """
@@ -2999,6 +3010,11 @@ class Result:
             "n_reverse_fires": sum(int(d.get("n_reverse_fires", 0)) for d in diags),
             "first_reverse_reaction": next(
                 (d["first_reverse_reaction"] for d in diags if d.get("n_reverse_fires")), ""
+            ),
+            "n_rounded_populations": sum(int(d.get("n_rounded_populations", 0)) for d in diags),
+            "first_rounded_species": next(
+                (d["first_rounded_species"] for d in diags if d.get("n_rounded_populations")),
+                "",
             ),
             "propensity_backend": next(iter(backends)) if len(backends) == 1 else "mixed",
         }

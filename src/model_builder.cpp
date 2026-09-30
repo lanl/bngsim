@@ -516,6 +516,12 @@ void ModelBuilder::set_species_rateof_amount(int species_idx0) {
     bimpl_->species[species_idx0].report_rateof_amount = true;
 }
 
+void ModelBuilder::set_species_continuous(int species_idx0) {
+    if (species_idx0 < 0 || species_idx0 >= static_cast<int>(bimpl_->species.size()))
+        return;
+    bimpl_->species[species_idx0].continuous = true;
+}
+
 void ModelBuilder::add_reaction_live_volume_term(int rxn_idx0, int live_idx0, double v_static,
                                                  double exp) {
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(bimpl_->reactions.size()))

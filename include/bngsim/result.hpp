@@ -84,6 +84,13 @@ struct SsaDiagnostics {
     long n_reverse_fires = 0;
     std::string first_reverse_reaction; // label of the first reaction reversed; empty ⇒ none
 
+    // Issue #718 — molecule counts that were not whole numbers at the start of
+    // this run (or run_until leg) and were rounded to one. Non-count state slots
+    // (event-assigned parameters and compartments, rate-rule targets) are never
+    // rounded, so they never count here.
+    long n_rounded_populations = 0;
+    std::string first_rounded_species; // name of the first rounded species; empty ⇒ none
+
     // GH #190 — how propensities were evaluated this run, for accurate reporting
     // (parity matrix / instrumentation). One of: "cc" (cc-compiled .so +
     // recompute-all), "mir" (in-process MIR JIT + recompute-all), or "interpreted"

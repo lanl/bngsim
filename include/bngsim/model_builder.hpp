@@ -162,6 +162,11 @@ class ModelBuilder {
     /// No-op if species_idx0 is out of range.
     void set_species_rateof_amount(int species_idx0);
 
+    /// Issue #718: mark a state slot as holding a continuous quantity rather
+    /// than a molecule count (see Species::continuous), so the SSA does not
+    /// round it. No-op if species_idx0 is out of range.
+    void set_species_continuous(int species_idx0);
+
     /// GH #144 (case 4): append a CROSS-COMPARTMENT SSA live-volume term to an
     /// already-added reaction. compute_rxn_rate multiplies the SSA propensity by
     /// `(v_static / V_live)^exp`, with `V_live = conc[live_idx0]` (the promoted
