@@ -104,10 +104,16 @@ unbounded, so the run is refused.
 assignment that reads `rateOf(x_j)` reads `f_j`. Its `h_x` and `h_p` therefore
 include `∂f_j/∂x` and `∂f_j/∂p`, and the finite-difference sync that forms them
 has to refresh the `rateOf` buffer.
-- **Open:** the `h_t·τ` term is missing (#735, `event-assignment-reads-time`,
-  `event-assignment-reads-time-clock`). The `rateOf` buffer is never refreshed,
-  and `rateOf` gets no parameter support, so the row is zero (#764,
+- **Covered:** `h_t` is a central difference of the assignment in time at
+  `(x⁻, p₀)`, with the functions and the `rateOf` buffer re-evaluated at each
+  offset, so time read through a rule counts (#735,
+  `event-assignment-reads-time`, `event-assignment-reads-time-clock`). The sync
+  refreshes the `rateOf` buffer and re-evaluates the functions after it, and a
+  `rateOf` read counts every parameter as support (#764,
   `event-assignment-reads-rateof`).
+- **Open:** an assignment that reads a step in time exactly at the fire instant
+  (`u := piecewise(5, time >= T0, 0)`, `B = u`, fired at `time >= T0`) has no
+  derivative there to difference, and its row is wrong on main and here alike (#915).
 
 **At `t_start`.** An SBML event with `initialValue=false` whose trigger is already
 true at `t_start` fires there. Then `τ = 0`, and `s⁻` is the seed that is already

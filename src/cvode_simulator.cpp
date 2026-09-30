@@ -5384,9 +5384,39 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             }
             sync_state(); // restore evaluator state at (x⁻, p₀)
 
+            // ∂c/∂t at fixed (x⁻, p₀), for an assignment that reads `time`
+            // (issue #735): `Tlast = time`, `END_M = time + 1000`. x⁺ =
+            // h(x⁻(t*), p, t*(p)), so a fire time that moves with p moves the
+            // assigned value by ∂h/∂t·∂t*/∂p as well. Only needed where some
+            // column's fire time moves; a central difference, so a value linear
+            // in time is exact.
+            double dcdt = 0.0;
+            if (tau_nonzero) {
+                // Relative to the fire time itself, not floored at one time
+                // unit: a model timed in microseconds would otherwise take a
+                // step the size of its own dynamics.
+                const double ht = std::max(1e-6 * std::fabs(t_evt), 1e-12);
+                auto value_at = [&](double t) {
+                    for (int i = 0; i < ns; ++i) {
+                        sp_vec_outer[i].concentration = xwork[i];
+                    }
+                    model.update_observables(xwork.data());
+                    model.evaluate_functions(t);
+                    if (model.uses_rateof()) {
+                        model.refresh_rateof_derivs(t, xwork.data());
+                        model.evaluate_functions(t);
+                    }
+                    return eval_ref_outer.evaluate(vexpr);
+                };
+                const double c_hi = value_at(t_evt + ht);
+                const double c_lo = value_at(t_evt - ht);
+                dcdt = (c_hi - c_lo) / (2.0 * ht);
+                sync_state();
+            }
+
             // Assemble s⁺_k for every sensitivity column:
             //     s⁺_k = Σ_j (∂h_k/∂x_j)·(s⁻_j + f⁻_j·∂t*/∂p)
-            //            + ∂h_k/∂p − f⁺_k·∂t*/∂p
+            //            + ∂h_k/∂p + ∂h_k/∂t·∂t*/∂p − f⁺_k·∂t*/∂p
             // The pre-shift carries s⁻ along the pre-event flow by how far
             // the event time moves, the event Jacobian maps it through the
             // reset, and the post-shift carries it back along the
@@ -5407,7 +5437,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     acc += dcdp[c];
                 }
                 if (tau_c != 0.0) {
-                    acc -= f_plus[k] * tau_c;
+                    acc += (dcdt - f_plus[k]) * tau_c;
                 }
                 N_VGetArrayPointer(yS_guard[c])[k] = acc;
             }
