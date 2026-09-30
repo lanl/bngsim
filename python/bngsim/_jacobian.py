@@ -3115,7 +3115,15 @@ def differentiate_rate_law_c(
 #     x86_64 and nowhere else, succeeding on both neighbouring tolerances and on
 #     arm64 at all of them. That is an arithmetic knife-edge, not a model property,
 #     and it is unpinnable in either direction (issue #245).
-#   * (a) survives as a *cost* constraint, which is what sets the floor:
+#   * (a) survives as a *cost* constraint, which is what sets the floor. Issue
+#     #898 re-measured it after #888 made BIOMD0000000608's RHS far cheaper: 608
+#     now solves at ~1.05x and derives in 0.045 s, and the slowest derivation that
+#     pays is MODEL1601050000 (1.85 s on the faster machine, 3.27x), for a floor
+#     of 6 s. The same re-measurement leaves #245's ceiling and window below as
+#     history: BIOMD0000000385 now attaches (10.1 s, analytical solve 0.31x of
+#     FD's speed) and 469 derives in 5.4 s for 0.47x, both under this default,
+#     so it no longer sits below every loser. The value is not re-tuned here.
+#     The rest of this bullet, (b), and the window paragraph are #245's reading:
 #       - BIOMD0000000608 solves 4.2x faster with the analytical Jacobian
 #         (0.015 s vs 0.065 s) and derives in **4.76 s**. FD *works* here, so the
 #         #95 screen could not see it; it is nonetheless the most expensive

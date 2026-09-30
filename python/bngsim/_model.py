@@ -52,6 +52,15 @@ _LOAD_DISPATCH: dict[str, str] = {
 }
 
 
+def _ic_carrier_name(species_id: str) -> str:
+    """The synthetic parameter the SBML loader declares to carry a compound
+    ``<initialAssignment>`` on ``species_id`` (issue #147). It is seeded like any
+    derived parameter (issue #715), and never reported as a model symbol."""
+    from bngsim._sbml_loader import _safe_name
+
+    return _safe_name(f"_ic_{species_id}")
+
+
 class Model:
     """A BioNetGen reaction network model.
 
@@ -1712,8 +1721,8 @@ class Model:
                 if sp_i < 0:
                     continue  # the sentinel row, which seeds nothing
                 pname = pnames[p_i]
-                if pname not in wanted:
-                    continue
+                if pname not in wanted or pname == _ic_carrier_name(species[sp_i]):
+                    continue  # issue #715: the carrier is seeded, never reported
                 row = out.setdefault(species[sp_i], {})
                 # The C++ seeding accumulates (`yS[iS][i] += coeff`): one initial
                 # condition can reach the same primary by more than one path.

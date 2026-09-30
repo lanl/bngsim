@@ -4968,9 +4968,13 @@ void CvodeSimulator::Impl::sync_model_at(double t, const double *x, int ns) {
     model.evaluate_functions(t);
     // A trigger may read rateOf(species) (GH #106), whose bound value is only
     // refreshed by a derivative probe — without this a difference would report
-    // 0 through that path instead of dx/dt's own dependence.
+    // 0 through that path instead of dx/dt's own dependence. The functions are
+    // evaluated again after it for a trigger that reads rateOf through one (an
+    // assignment rule `r := rateOf(A)`): before, they held the previous sync's
+    // buffer, and a trigger's dt*/dθ came out −2× (issue #764).
     if (model.uses_rateof()) {
         model.refresh_rateof_derivs(t, x);
+        model.evaluate_functions(t);
     }
 }
 
@@ -5257,6 +5261,17 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         }
         model.update_observables(xwork.data());
         model.evaluate_functions(t_evt);
+        // An assignment may read rateOf(species), bound to a buffer only a
+        // derivative probe refreshes — as sync_model_at does (GH #106). Without
+        // it every difference below reads a frozen dx/dt and ∂h/∂x, ∂h/∂p come
+        // out 0 (issue #764). The functions are evaluated again after it, so
+        // one that reads rateOf (an assignment rule `r := rateOf(A)`) sees
+        // this state's buffer and not the previous sync's, which read one
+        // difference behind and came out −½× the derivative.
+        if (model.uses_rateof()) {
+            model.refresh_rateof_derivs(t_evt, xwork.data());
+            model.evaluate_functions(t_evt);
+        }
     };
     // Sync after perturbing parameter `skip_idx` — see the identically-shaped
     // helper in state_trigger_dtstar: functions, then the derived-parameter

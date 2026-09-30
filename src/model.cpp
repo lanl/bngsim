@@ -1228,8 +1228,10 @@ const std::vector<int> &NetworkModel::event_trigger_residual_species(int event_i
 // So the walk follows both: an observable expands to the species behind it, and
 // a parameter that is an expression — or that a model function writes, which is
 // how an SBML assignment rule arrives — expands to whatever ITS body reads.
-// Only a rateOf accessor is opaque (dx_i/dt can read the whole state), and it
-// widens the species support to everything.
+// Only a rateOf accessor is opaque: dx_i/dt can read the whole state and any
+// parameter, so it widens both supports to everything (issue #764 — it used to
+// widen only the species, and every parameter column of an event assignment
+// reading rateOf was skipped as unsupported).
 void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_out,
                                       std::vector<int> *params_out) const {
     {
@@ -1263,6 +1265,10 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
         param_of.emplace(&impl_->parameters[i].value, i);
     }
     // param index → the model function that writes it, if any.
+    std::unordered_set<const double *> rateof_addrs;
+    for (const double &deriv : impl_->current_derivs) {
+        rateof_addrs.insert(&deriv);
+    }
     std::unordered_map<int, int> written_by_function;
     for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings) {
         written_by_function.emplace(param_idx, func_idx);
@@ -1271,6 +1277,7 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
     std::unordered_set<int> species_support;
     std::unordered_set<int> param_support;
     bool all_species = false;
+    bool all_params = false;
     std::unordered_set<int> visited; // expression ids, so a cycle terminates
 
     std::function<void(int)> visit = [&](int eid) {
@@ -1296,6 +1303,7 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
             auto pa = param_of.find(addr);
             if (pa == param_of.end()) {
                 all_species = true; // a rateOf accessor, or something unmodelled
+                all_params = all_params || rateof_addrs.count(addr) != 0;
                 continue;
             }
             const int pidx = pa->second;
@@ -1318,8 +1326,14 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
         sp_out.assign(species_support.begin(), species_support.end());
         std::sort(sp_out.begin(), sp_out.end());
     }
-    std::vector<int> pa_out(param_support.begin(), param_support.end());
-    std::sort(pa_out.begin(), pa_out.end());
+    std::vector<int> pa_out;
+    if (all_params) {
+        pa_out.resize(impl_->parameters.size());
+        std::iota(pa_out.begin(), pa_out.end(), 0);
+    } else {
+        pa_out.assign(param_support.begin(), param_support.end());
+        std::sort(pa_out.begin(), pa_out.end());
+    }
 
     if (species_out != nullptr) {
         *species_out = sp_out;
