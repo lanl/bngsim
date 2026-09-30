@@ -3699,6 +3699,14 @@ class Simulator:
         # method='ode' on the per-sim path.
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
 
+        if self._method == "ode":
+            # Every row runs on a clone, and a clone inherits these structural
+            # scans only if the parent has already made them. Made here, once,
+            # before any row is cloned (and before any worker thread exists),
+            # rather than once per row and again on the next call (issue #897).
+            self._model.time_discontinuity_conditions()
+            self._model.state_switch_root_conditions()
+
         def _run_one(i: int) -> Result:
             """Run simulation i (thread-safe, GIL released)."""
             return self._run_single_batch(

@@ -519,9 +519,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "run() resolves each through NetworkModel.state_switch_residual, "
             "registers that residual as a CVODE root so the crossing is located, "
             "and applies the jump there. A run without sensitivities roots the "
-            "same residuals and applies no jump, so a narrow state-gated window "
-            "cannot be stepped over (issue #897); empty (the default) leaves the "
-            "root set untouched.")
+            "residuals it is given and applies no jump; it restarts at a crossing "
+            "unless the flow there opposes it (issue #897). Empty (the default) "
+            "leaves the root set untouched.")
         .def(
             "set_switch_pinned_params",
             [](bngsim::SolverOptions &self, const std::vector<int> &param_idx0) {

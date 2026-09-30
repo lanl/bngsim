@@ -171,10 +171,19 @@ species (issue #443), where the counter is landed exactly on its threshold so
 the restart reads the after-branch.
 
 These stops are added for any model carrying such a switch, sensitivities or
-not, because stepping over the discontinuity was never correct. The same holds
-for a crossing whose time the state decides, such as `time() >= 4*S`, which no
-stop can be placed at before the run. Its residual is a CVODE root in every run,
-and a run without sensitivities stops there and applies no jump (issue #897).
+not, because stepping over the discontinuity was never correct. A crossing whose
+time the state decides, such as `time() >= 4*S`, has no stop that can be placed
+before the run. Instead, each comparison over the state in a rate law's `if()`
+condition is a CVODE root in every run (issue #897). A run without sensitivities
+restarts at such a root and applies no jump. It does not restart where the flow
+at the located crossing points back across the threshold, which is what a
+trajectory parked on the threshold produces.
+
+Issue #904 lists what this does not yet cover:
+- a comparison used as a number outside `if()`, such as `k*(X > 1)`;
+- a single comparison whose residual turns back within one step, such as
+  `abs(X - 5) < 0.01`;
+- `steady_state()`.
 
 ### A rate that rises from zero at the crossing
 

@@ -3641,13 +3641,16 @@ def _surface_key(residual: str) -> str:
     text = residual.replace("^", "**")
     for pattern, repl in _SURFACE_KEY_SUBS:
         text = pattern.sub(repl, text)
+    # Anything the parser or the printer cannot manage is its own key: a sum of
+    # 400 observables nests too deep for ``ast.unparse`` (RecursionError), and
+    # letting that escape dropped every root of the model, not just this one.
     try:
         tree = ast.parse(text, mode="eval").body
-    except (SyntaxError, ValueError, RecursionError):
+        key = ast.unparse(tree)
+        if isinstance(tree, ast.BinOp) and isinstance(tree.op, ast.Sub):
+            key = min(key, ast.unparse(ast.BinOp(tree.right, ast.Sub(), tree.left)))
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return residual
-    key = ast.unparse(tree)
-    if isinstance(tree, ast.BinOp) and isinstance(tree.op, ast.Sub):
-        key = min(key, ast.unparse(ast.BinOp(tree.right, ast.Sub(), tree.left)))
     return key
 
 

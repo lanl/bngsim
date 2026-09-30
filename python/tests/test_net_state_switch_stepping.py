@@ -25,8 +25,14 @@ What this locks:
   4. what is rooted: only a state-reading atom of a rate law. A counter clock is
      left to its stop, and an output-only function and an equality are left
      alone;
-  5. the scan runs once per model, and a clone inherits it;
-  6. a residual that starts at exactly zero does not print a SUNDIALS warning.
+  5. the scan runs once per model, a clone inherits it, and a batch scans once
+     for all of its rows;
+  6. a root the flow opposes does not restart the run: GH #176's parked
+     trajectory keeps its exact answer, a residual parked at exactly 0.0 is not
+     read as a second root, and a real crossing on a curved residual is not
+     mistaken for an opposed one;
+  7. a residual too deep for ``ast.unparse`` keeps every root, and one that
+     starts at exactly zero does not print a SUNDIALS warning.
 """
 
 import math
@@ -344,13 +350,19 @@ def test_a_root_the_flow_opposes_does_not_restart_the_run(data_dir, tmp_path):
     model = bngsim.Model.from_net(str(data_dir / _LTYPE))
     assert "(-70+Voltage_Level)<-20" in model.state_switch_root_conditions()
     window = dict(t_span=(0.0, 150.0), n_points=301, rtol=1e-8, atol=1e-8)
+    # Keyed on explicit FD, as the #176 tests are: whether FD carries this
+    # fixture is the host's business, but once it does, the default run failing
+    # is this rule failing and must not read as a skip.
     try:
-        result = bngsim.Simulator(model).run(**window)
+        bngsim.Simulator(bngsim.Model.from_net(str(data_dir / _LTYPE)), jacobian="fd").run(
+            **window
+        )
     except bngsim.SimulationError:
         pytest.skip(
             "the finite-difference Jacobian does not carry this fixture on this "
             "build, so there is no rescue to compare (see lanl/bngsim#176)"
         )
+    result = bngsim.Simulator(model).run(**window)
     assert result.solver_stats["n_steps"] < 10_000
 
     steps = {"if(((-70+Voltage_Level)<-20),0.5,0.05)": "0.5"}
@@ -386,6 +398,7 @@ def test_a_residual_parked_at_zero_is_not_a_second_root(data_dir):
     assert _Y_RELAXATION in model.state_switch_root_conditions()
     window = dict(t_span=(0.0, 160.0), n_points=201)
     result = bngsim.Simulator(model).run(**window, rtol=1e-8, atol=1e-8)
+    assert result.solver_stats["n_steps"] <= 400
     reference = bngsim.Simulator(
         bngsim.Model.from_net(str(data_dir / "nnxor_parked_residual.net"))
     ).run(**window, rtol=1e-11, atol=1e-13)
@@ -393,6 +406,98 @@ def test_a_residual_parked_at_zero_is_not_a_second_root(data_dir):
     want = np.asarray(reference.species)
     scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
     assert float((np.abs(got - want) / scale).max()) < 1e-5
+
+
+# The window opens on a cubic, 3u - u^3 > 1.971 with u = A - 6, at u = 0.9,
+# and closes on the linear A < 6.905. A = 2t, so it is open for 0.0025 time
+# units and Y = 10 * 0.0025 = 0.025 exactly.
+_CUBIC_NET = """\
+begin parameters
+    1 k    10.0
+    2 two  2.0
+    3 c    1.971
+    4 s    6.0
+    5 g0   1.9
+    6 wc   0.905
+end parameters
+begin functions
+    1 r() if(((3*(Aobs-s)-(Aobs-s)^3)>c)&&(Aobs<(s+wc))&&(Aobs>(s-g0)),k,0)
+end functions
+begin species
+    1 A() 0
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 two
+    2 0 2 r
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+
+
+@pytest.mark.parametrize("max_step", [None, 0.37, 0.385])
+@pytest.mark.parametrize("rtol", [1e-6, 1e-8, 1e-10])
+def test_a_crossing_on_a_curved_residual_restarts(tmp_path, rtol, max_step):
+    """Whether the flow opposes a root is read from dg/dt at the located state.
+    It used to be read as a secant along x +/- h*f over the whole last step,
+    and 3u - u^3 curves enough across one that the secant pointed backwards
+    once h > 0.3775: the opening was read as opposed, the restart skipped, and
+    Y came out 0 at every tolerance (review of PR #903). max_step pins h on
+    either side of that threshold."""
+    model = _write(tmp_path, _CUBIC_NET)
+    assert "(3*(Aobs-s)-(Aobs-s)^3)>c" in model.state_switch_root_conditions()
+    kw = {} if max_step is None else {"max_step": max_step}
+    result = bngsim.Simulator(model).run(
+        t_span=(0.0, 5.0), n_points=3, rtol=rtol, atol=rtol * 1e-2, **kw
+    )
+    assert float(result.species[-1][1]) == pytest.approx(0.025, rel=1000 * rtol)
+
+
+def test_a_residual_too_deep_to_print_keeps_every_root(tmp_path):
+    """A rate law over a sum of 400 observables has a residual that nests too
+    deep for ``ast.unparse``. The RecursionError escaped the dedupe key, the
+    model-level fallback caught it, and every root of the model went with it,
+    the issue's own window included (Y = 0; review of PR #903)."""
+    n = 400
+    species = ["    1 S() 1", "    2 Y() 0", "    3 Z() 0"]
+    species += [f"    {4 + i} A{i}() 0.001" for i in range(n)]
+    groups = ["    1 Sobs 1"] + [f"    {2 + i} O{i} {4 + i}" for i in range(n)]
+    total = "+".join(f"O{i}" for i in range(n))
+    net = _GATE_NET.format(w=0.01)
+    net = net.replace("    3 kd  0.5\n", "    3 kd  0.5\n    4 c   1e9\n")
+    net = net.replace(
+        "end functions", f"    3 tot() {total}\n    4 g() if(tot()>c,1,0)\nend functions"
+    )
+    net = net.replace("    1 S() 1\n    2 Y() 0", "\n".join(species))
+    net = net.replace("    2 0 2 r\n", "    2 0 2 r\n    3 0 3 g\n")
+    net = net.replace("    1 Sobs 1", "\n".join(groups))
+    assert _surface_key(f"({total})-(c)") == f"({total})-(c)"
+    model = _write(tmp_path, net)
+    conditions = model.state_switch_root_conditions()
+    assert "time()>=(4*Sobs)" in conditions and len(conditions) == 3
+    assert _final_Y(model, 1e-10) == pytest.approx(_gate_exact(0.01), rel=1e-5)
+
+
+def test_a_batch_scans_once_for_all_its_rows(tmp_path, monkeypatch):
+    """Every row runs on a clone, which inherits the scan only if the parent
+    has made it. The parent had not, so each row scanned again, and the next
+    batch did it all over (review of PR #903)."""
+    import bngsim._switch_sensitivity as sw
+
+    calls = []
+    real = sw.state_switch_root_conditions
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(sw, "state_switch_root_conditions", counting)
+    sim = bngsim.Simulator(_gate_model(tmp_path))
+    for _ in range(2):
+        sim.run_batch(t_span=(0.0, 10.0), n_points=3, params=[{"w": 0.01}] * 5)
+    assert len(calls) == 1
 
 
 # ── 7. Output ───────────────────────────────────────────────────────────────
