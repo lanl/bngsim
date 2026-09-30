@@ -88,6 +88,37 @@ def test_a_clock_that_catalyses_a_reaction_is_still_a_clock(tmp_path):
     assert clocks.get("counter()") == 0
 
 
+def test_a_counter_driven_by_a_table_function_of_time_is_not_a_clock(tmp_path):
+    """The rate reads ``tf()``, a table function indexed by time: 1 up to t = 1,
+    then down to 0 by t = 2. Its text names no clock, but it is gated in time."""
+    text = """\
+begin parameters
+    1 thr 3
+end parameters
+begin functions
+    1 tf() tfun([0,1,2,10],[1,1,0,0],time,method=>"linear")
+end functions
+begin species
+    1 C() 0
+end species
+begin reactions
+    1 0 1 tf
+end reactions
+begin groups
+    1 Cnt                  1
+end groups
+"""
+    assert sw._unit_rate_clock_species(_net(tmp_path, text, "tf.net")._core) == {}
+
+
+def test_a_kinetic_law_that_is_the_whole_flux_can_make_a_clock():
+    """``J0: S -> x; 1`` lists S as a reactant, but an SBML kinetic law is the
+    whole flux and does not multiply by it: x rises at exactly 1."""
+    pytest.importorskip("antimony")
+    model = bngsim.Model.from_antimony_string("species S = 100; species x = 0; J0: S -> x; 1")
+    assert "x" in sw._unit_rate_clock_species(model._core)
+
+
 def test_an_event_reset_timer_is_not_a_clock():
     pytest.importorskip("antimony")
     model = bngsim.Model.from_antimony_string("x' = 1; x = 0; P = 100; E1: at (x >= P): x = 0")

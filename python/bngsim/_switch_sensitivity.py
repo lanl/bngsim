@@ -425,9 +425,10 @@ def _unit_rate_clock_indices(core) -> frozenset[int]:
     clock_idx = {i for i in range(n_species) if deriv[i] == _CLOCK_SLOPE}
     if not clock_idx:
         return frozenset()
-    # Confirm the slope is state-independent: a species whose RHS merely happens
-    # to equal 1 at the initial state is not a clock. Probing at a perturbed
-    # state is enough to reject every state-dependent rate law.
+    # A species whose RHS merely happens to equal 1 at the initial state is not
+    # a clock, so probe again at a shifted state and time. That is only a
+    # filter: shift-invariant and time-gated rates pass it, and
+    # _structurally_unit_rate decides (issue #733).
     probe = [c + 1.0 for c in conc]
     try:
         deriv2 = core._eval_rhs(1.0, probe)
@@ -440,9 +441,9 @@ def _unit_rate_clock_indices(core) -> frozenset[int]:
     return _structurally_unit_rate(core, clock_idx)
 
 
-# Identifiers a constant rate law may not read: the clock itself, and the
-# accessors that read the derivative of the state.
-_TIME_TOKENS = frozenset({"time", "t_", "rate_of"})
+# The clock, read by a rate law that is therefore not constant. rateOf accessors
+# (`rate_of__X`) are caught by their prefix.
+_TIME_TOKENS = frozenset({"time"})
 
 
 def _structurally_unit_rate(core, candidates: set[int]) -> frozenset[int]:
@@ -457,14 +458,16 @@ def _structurally_unit_rate(core, candidates: set[int]) -> frozenset[int]:
     were jumped once at a crossing time computed as though c = c0 + t, with the
     wrong ∂t*/∂θ, and their real crossings were never rooted.
 
-    A candidate is kept only when no event assigns it, no reaction consumes it,
-    and every reaction producing it is zeroth-order with a rate law that,
-    inlined through every function and assignment rule, reads no species,
-    observable, time or rateOf: a constant, which the probes already say is 1.
+    A candidate is kept only when no event assigns it, no reaction consumes it
+    on net, and every reaction producing it on net has a rate that is a
+    constant: mass action with no reactants, or a rate law (an SBML kinetic law
+    is the whole flux, whatever reactants it lists) that, inlined through every
+    function and assignment rule, reads no species, observable, time, rateOf or
+    table function. The probes already say that constant is 1.
     """
     from bngsim._jacobian import _IDENT_RE
 
-    assigned = set(getattr(core, "event_assigned_species", ()))
+    assigned = set(core.event_assigned_species)
     keep = {i for i in candidates if i not in assigned}
     if not keep:
         return frozenset()
@@ -474,6 +477,10 @@ def _structurally_unit_rate(core, candidates: set[int]) -> frozenset[int]:
         logger.debug("switch-time: clock structure unavailable: %s", exc)
         return frozenset()
     func_map = {f["name"]: f["expression"] for f in data.get("functions", ())}
+    # A table function reads its index (time, or an observable) outside its text.
+    # A function body calls it through its accessor, `tfun_<name>()`.
+    tables = {t["name"] for t in data.get("table_functions", ()) if isinstance(t, dict)}
+    tables |= {f"tfun_{name}" for name in tables}
     param_expr = {p["name"]: p.get("expression", "") for p in data.get("parameters", ())}
     params = list(data.get("parameters", ()))
     state_names = set(core.species_names) | {
@@ -484,7 +491,12 @@ def _structurally_unit_rate(core, candidates: set[int]) -> frozenset[int]:
         if depth > 64:
             return True  # a cycle or a chain too deep to trust: not a clock
         for tok in _IDENT_RE.findall(text):
-            if tok in state_names or tok in _TIME_TOKENS or tok.startswith("rate_of__"):
+            if (
+                tok in state_names
+                or tok in _TIME_TOKENS
+                or tok in tables
+                or tok.startswith("rate_of__")
+            ):
                 return True
             body = func_map.get(tok)
             if body is None and param_expr.get(tok):
@@ -503,9 +515,11 @@ def _structurally_unit_rate(core, candidates: set[int]) -> frozenset[int]:
         produced = {i for i, n in net.items() if n > 0 and i in keep}
         if not produced:
             continue
-        if reactants:
-            keep -= produced  # a rate that reads the state
+        if reactants and rxn.get("apply_species_factor", True):
+            keep -= produced  # mass action: the reactants multiply the rate
             continue
+        # Otherwise the rate law is the whole flux (an SBML kinetic law lists
+        # its reactants but does not multiply by them), and its text decides.
         if rxn.get("type") == "functional":
             text = func_map.get(rxn.get("function_name") or "", "")
         else:
