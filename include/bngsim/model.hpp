@@ -496,6 +496,14 @@ class NetworkModel {
     // Byte-identical to the single-pass body for models without rateOf.
     void compute_derivs(double t, const double *conc, double *derivs);
 
+    // The gross flux behind each species' dx/dt: the same reaction terms
+    // compute_derivs sums, with their absolute values summed instead, so a
+    // species whose production and consumption cancel still reports the size of
+    // the terms its net rate is rounded from (issue #763). Zero for a fixed
+    // species, as its dx/dt is. Refreshes observables and functions at (t, conc)
+    // exactly as compute_derivs does, and reads the rateOf buffer as it stands.
+    void compute_gross_flux(double t, const double *conc, double *gross);
+
     // True iff the model references rateOf(species) (GH #106). Simulators use
     // this to refresh current_derivs before evaluating rateOf-bearing triggers
     // (CVODE root fn) and to reject rateOf under SSA.

@@ -237,8 +237,11 @@ every column plain, for comparison.
 A condition whose crossing time moves with the *state*, such as `if(X < 1, …)`
 or a window `(X > lo) && (X < hi)`, is not declined. Each comparison's residual
 is registered as a root, and the saltation jump `(f⁻ − f⁺)·dt*/dθ` is applied
-where it crosses (issue #150). A conjunction or a negation is split into its
-comparisons first. What the analytic path declines is a crossing nothing can
+where it crosses (issue #150). A crossing where the rate law is continuous, such
+as a clamp whose live branch is 0 at its threshold, needs no jump. That is
+decided species by species, so a fast flux elsewhere in the model cannot make a
+real jump read as continuous (issue #763). A conjunction or a negation is split
+into its comparisons first. What the analytic path declines is a crossing nothing can
 locate: a comparison outside any `if()`, such as `k*(X > 1)`, and one whose sides
 are themselves comparisons, such as `(X > 1) == (Y > 1)`. A parameter that both
 sets a switch time and acts inside a branch is answered on the analytic path,

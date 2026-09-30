@@ -1,0 +1,18 @@
+# Issue #763: compute_gross_flux fixture. B is a pool at exact steady state
+# (made at ksyn, lost at kdeg*B, 1e7 each way), so its net dx/dt is 0 while the
+# terms it is summed from are 1e7. S is fixed and feeds C two at a time.
+begin parameters
+    1 ksyn  1e7
+    2 kdeg  0.1
+    3 k2    2.0
+end parameters
+begin species
+    1 B()   1e8
+    2 C()   0
+    3 $S()  5
+end species
+begin reactions
+    1 0 1 ksyn
+    2 1 0 kdeg
+    3 3 2,2 k2
+end reactions

@@ -472,6 +472,156 @@ class TestAContinuousSwitchNeedsNoJump:
         np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-9 * scale)
 
 
+# ─── a bystander must not decide whether a switch jumps (issue #763) ────────
+#
+# Whether a crossing is continuous used to be ONE comparison: the largest
+# |f⁻ − f⁺| over all species against the largest |f| over all species. A species
+# the switch never touches then set the scale. Here Y's source switches off
+# when A decays past thr, a jump of kb = 3 in Y and nothing else. A pool B, which
+# nothing reads, degrades from B0; at B0 = 1e8 its |dB/dt| at t* is 7.2e6, more
+# than 1e6·kb, so the jump read as roundoff. The saltation term was dropped and
+# dY/d[A0, a, thr] came back exactly 0, with no warning. The trajectory itself
+# was right, and dY/dkb (an in-branch derivative) survived.
+#
+# The closed form needs no sensitivity code: t* = ln(A0/thr)/a and
+# Y(T) = kb·(T − t*), so
+#
+#   dY/dA0 = −kb/(a·A0),  dY/da = kb·ln(A0/thr)/a²,  dY/dthr = kb/(a·thr),
+#   dY/dkb = T − t*.
+BYSTANDER = """\
+begin parameters
+    1 A0    10  # Constant
+    2 a     0.5  # Constant
+    3 thr   2  # Constant
+    4 kb    3  # Constant
+    5 B0    {B0}  # Constant
+    6 kdeg  0.1  # Constant
+    7 vfast {vfast}  # Constant
+end parameters
+begin functions
+    1 fY() if(Aobs<thr,kb,0)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 B() B0
+    4 F() 0
+end species
+begin reactions
+    1 1 0 a #_R1
+    2 0 2 fY #_R2
+    3 3 0 kdeg #_R3
+    4 0 4 vfast #_R4
+end reactions
+begin groups
+    1 Aobs                 1
+end groups
+"""
+BYSTANDER_PARAMS = ["A0", "a", "thr", "kb"]
+
+# The same switch, with Y itself a pool at steady state: made at ksyn and lost at
+# kdeg·Y, Y(0) = ksyn/kdeg.
+TURNOVER = """\
+begin parameters
+    1 A0    10  # Constant
+    2 a     0.5  # Constant
+    3 thr   2  # Constant
+    4 kb    3  # Constant
+    5 ksyn  1e7  # Constant
+    6 kdeg  0.1  # Constant
+end parameters
+begin functions
+    1 fY() if(Aobs<thr,kb,0)
+end functions
+begin species
+    1 A() A0
+    2 Y() 1e8
+end species
+begin reactions
+    1 1 0 a #_R1
+    2 0 2 fY #_R2
+    3 0 2 ksyn #_R3
+    4 2 0 kdeg #_R4
+end reactions
+begin groups
+    1 Aobs                 1
+end groups
+"""
+BYSTANDER_T = 6.0
+
+
+def _bystander_closed_form():
+    A0, a, thr, kb, T = 10.0, 0.5, 2.0, 3.0, BYSTANDER_T
+    t_star = np.log(A0 / thr) / a
+    return np.array([-kb / (a * A0), kb * np.log(A0 / thr) / a**2, kb / (a * thr), T - t_star])
+
+
+@requires_cc
+class TestABystanderDoesNotHideAJump:
+    @pytest.mark.parametrize(
+        "B0,vfast",
+        [
+            (1.0, 0.0),  # the control: nothing large anywhere
+            (1e8, 0.0),  # the issue's pool: a molecule-count reservoir turning over
+            (1.0, 1e8),  # an unread species made at a constant 1e8 per unit time
+        ],
+        ids=["control", "pool", "fast-source"],
+    )
+    def test_the_switch_time_columns_match_the_closed_form(self, tmp_path, B0, vfast):
+        """B and F are decoupled from A and Y, so neither can move a Y column."""
+        text = BYSTANDER.format(B0=B0, vfast=vfast)
+        model = _model(tmp_path, text, name="bystander.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=BYSTANDER_PARAMS).run(
+            t_span=(0.0, BYSTANDER_T), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        y = list(run.species_names).index("Y()")
+        got = np.asarray(run.sensitivities)[-1, y, :]
+        np.testing.assert_allclose(got, _bystander_closed_form(), rtol=1e-6)
+
+    def test_a_switched_species_with_its_own_turnover_still_jumps(self, tmp_path):
+        """The per-species scale is Y's own |f|, not the gross flux it is summed from.
+
+        Here Y is itself a pool at steady state, made at ksyn = 1e7 and lost at
+        kdeg·Y, with the same switched source of kb = 3 on top. Its gross flux
+        is 2e7, so reading the gap of 3 against THAT at 1e-6 would call the
+        switch continuous and lose the jump, the same bug inside one species.
+        The gross flux only sets a roundoff floor, 1024 ulps of it (4.5e-6).
+
+        Past t*, Y relaxes toward its new level at kdeg:
+        Y(T) = Y0 + (kb/kdeg)·(1 − e^{−kdeg·(T − t*)}), so
+        dY/dθ = −kb·e^{−kdeg·(T − t*)}·dt*/dθ for θ in A0, a, thr.
+
+        The in-branch dY/dkb is held to the tolerance the run asks of it, which
+        is loose here: a sensitivity's absolute tolerance scales with its
+        species (atol·|Y|/|kb| ≈ 3e-5 for Y = 1e8), and that column lands 1e-6
+        to 1e-4 off the closed form at rtol 1e-8 to 1e-12, identically before
+        and after issue #763's change. The switch-time columns are what the
+        change is about, and they are held tight."""
+        text = TURNOVER
+        model = _model(tmp_path, text, name="turnover.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=BYSTANDER_PARAMS).run(
+            t_span=(0.0, BYSTANDER_T), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        y = list(run.species_names).index("Y()")
+        got = np.asarray(run.sensitivities)[-1, y, :]
+        A0, a, thr, kb, kdeg, T = 10.0, 0.5, 2.0, 3.0, 0.1, BYSTANDER_T
+        t_star = np.log(A0 / thr) / a
+        decay = np.exp(-kdeg * (T - t_star))
+        dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
+        np.testing.assert_allclose(got[:3], -kb * decay * dtstar, rtol=1e-5)
+        assert got[3] == pytest.approx((1 - decay) / kdeg, rel=1e-3)
+
+    def test_the_trajectory_was_never_the_problem(self, tmp_path):
+        """Only the sensitivity was wrong: Y(T) = kb·(T − t*) either way, to the
+        run's tolerance (1.4e-8 relative at rtol 1e-9, with the pool's 1e8 in
+        the error norm)."""
+        text = BYSTANDER.format(B0=1e8, vfast=0.0)
+        run = _sens(tmp_path, ["kb"], name="bystander_y.net", text=text, t_end=BYSTANDER_T)
+        y = list(run.species_names).index("Y()")
+        exact = 3.0 * (BYSTANDER_T - np.log(5.0) / 0.5)
+        assert float(np.asarray(run.species)[-1, y]) == pytest.approx(exact, rel=1e-6)
+
+
 # ─── the gate and the detector must read the same text ─────────────────────
 
 

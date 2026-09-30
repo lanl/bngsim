@@ -3493,6 +3493,56 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
     }
 }
 
+void NetworkModel::compute_gross_flux(double t, const double *conc, double *gross) {
+    const int ns = n_species();
+    const int nr = n_reactions();
+
+    std::memset(gross, 0, ns * sizeof(double));
+
+    if (impl_->has_functions) {
+        update_observables(conc);
+        evaluate_functions(t);
+    } else {
+        impl_->current_time = t;
+    }
+
+    // compute_derivs_core's loop term for term, summing |term| where it sums
+    // the signed term.
+    const auto &species_list = impl_->species;
+    for (int r = 0; r < nr; ++r) {
+        const auto &rxn = impl_->shared->reactions[r];
+        const double rate =
+            std::fabs(compute_rxn_rate(rxn, impl_->parameters, conc, ns, species_list, false));
+        if (rate == 0.0 || !std::isfinite(rate))
+            continue;
+
+        auto divisor = [&](int si) -> double {
+            if (!rxn.per_species_volume_scaling)
+                return 1.0;
+            int lv = species_list[si].ode_live_volume_idx0;
+            if (lv >= 0 && lv < ns) {
+                double v_live = conc[lv];
+                if (v_live > 0.0)
+                    return v_live;
+            }
+            return species_list[si].volume_factor;
+        };
+        for (const auto *side : {&rxn.reactant_multiplicity, &rxn.product_multiplicity}) {
+            for (const auto &[si, m] : *side) {
+                if (si < ns) {
+                    gross[si] += std::fabs(m) * rate / std::fabs(divisor(si));
+                }
+            }
+        }
+    }
+
+    for (const auto &s : impl_->species) {
+        if (s.fixed) {
+            gross[s.index - 1] = 0.0;
+        }
+    }
+}
+
 double NetworkModel::compute_propensity(int rxn_index, const double *conc) {
     if (rxn_index < 0 || rxn_index >= static_cast<int>(impl_->shared->reactions.size())) {
         return 0.0;

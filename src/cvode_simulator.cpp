@@ -5860,6 +5860,11 @@ static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
+// Issue #763: a branch gap below this many ulps of a species' gross flux is
+// roundoff in the terms its net rate is summed from, not a jump. Generous for
+// the sum itself, which is a few ulps per term; the slack is for rate laws whose
+// own evaluation carries more.
+static constexpr double kStateSwitchGrossRoundoff = 1024.0;
 // Issue #545: how closely a state-switch dt*/dθ — a finite difference — has to
 // match an emitted comoving shift for its column to enter that frame. The shift
 // itself is exact; this only decides which case the crossing is.
@@ -6113,16 +6118,65 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             break;
         }
     }
-    // |f⁻ − f⁺| against the scale of f itself: below this, the two branches are
-    // the same function here and the saltation term is zero.
-    auto branch_gap = [&](double &scale_out) {
-        double gap = 0.0;
-        scale_out = 0.0;
-        for (int i = 0; i < ns; ++i) {
-            gap = std::max(gap, std::fabs(f_minus[i] - f_plus[i]));
-            scale_out = std::max(scale_out, std::max(std::fabs(f_minus[i]), std::fabs(f_plus[i])));
+    // |f⁻ − f⁺| species by species, each against that species' own |f|: below
+    // kStateSwitchContinuousRelTol of it, the two branches are the same function
+    // there.
+    //
+    // Issue #763: this used to be ONE gap, the largest over all species, against
+    // ONE scale, the largest |f| anywhere. A species the switch never touches set
+    // the scale, so a 1e8-molecule pool turning over at 0.1/s read a jump of 3 in
+    // another species as roundoff, and the saltation term and every switch-time
+    // column were dropped without a word. The switch is continuous only where
+    // every species is (first_jump below). This is issue #322's repair, which
+    // took the same global max|f| out of residual_dtstar's transversality floor.
+    //
+    // A species' own |f| is not a safe scale either when its terms cancel: a
+    // pool at steady state has a net rate of ~0 and a gap that is pure roundoff
+    // of terms 1e7 in size, which neither test above can call continuous. So
+    // there is a floor as well, kStateSwitchGrossRoundoff ulps of the GROSS flux
+    // (the terms' absolute sum). It is a roundoff bound and only that: the same
+    // pool with a switched source of 3 has a gross flux of 2e7, and reading its
+    // gap against the gross flux at kStateSwitchContinuousRelTol would lose that
+    // jump exactly as the global scale did.
+    std::vector<double> gross_minus(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> gross_plus(static_cast<std::size_t>(ns), 0.0);
+    struct BranchGaps {
+        std::vector<double> gap;   // |f⁻ − f⁺|
+        std::vector<double> scale; // max(|f⁻|, |f⁺|)
+        std::vector<double> floor; // roundoff of the gross flux on either side
+    };
+    auto branch_gaps = [&](BranchGaps &out) {
+        const auto n = static_cast<std::size_t>(ns);
+        out.gap.assign(n, 0.0);
+        out.scale.assign(n, 0.0);
+        out.floor.assign(n, 0.0);
+        for (std::size_t u = 0; u < n; ++u) {
+            out.gap[u] = std::fabs(f_minus[u] - f_plus[u]);
+            out.scale[u] = std::max(std::fabs(f_minus[u]), std::fabs(f_plus[u]));
+            out.floor[u] = kStateSwitchGrossRoundoff * std::numeric_limits<double>::epsilon() *
+                           std::max(gross_minus[u], gross_plus[u]);
         }
-        return gap;
+    };
+    // The first species whose gap is a jump, or -1 when there is none. A gap is
+    // not a jump when `rel` is within kStateSwitchContinuousRelTol of the
+    // species' |f| or under its roundoff floor, or when it grows with the probe:
+    // `near_gap` read against `far_gap`, measured at twice the displacement,
+    // scales like f varying smoothly across it (ratio → 0.5) rather than like a
+    // jump (ratio → 1). `far_gap` is null when no probe at twice the
+    // displacement straddled the surface.
+    auto first_jump = [&](const std::vector<double> &rel, const std::vector<double> &near_gap,
+                          const std::vector<double> *far_gap, const BranchGaps &at) {
+        for (int i = 0; i < ns; ++i) {
+            const auto u = static_cast<std::size_t>(i);
+            if (rel[u] <= kStateSwitchContinuousRelTol * at.scale[u] || rel[u] <= at.floor[u]) {
+                continue;
+            }
+            if (far_gap != nullptr && near_gap[u] < kStateSwitchGapRatio * (*far_gap)[u]) {
+                continue;
+            }
+            return i;
+        }
+        return -1;
     };
 
     // "'a', 'b' and 'c'", for the refusals a batch can reach.
@@ -6289,38 +6343,43 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // That discriminator is what `ph_lorenz_attractor` needs — its condition
         // is `X·Y − beta·Z > 0`, the sign of dZ/dt, so both branches are 0 at
         // the surface and its 1.5e-6 relative "gap" is entirely the probe's.
-        double f_scale = 0.0;
-        double gap1 = 0.0;
-        double gap2 = 0.0;
+        // Both readings are made species by species (issue #763).
+        BranchGaps at1;
+        BranchGaps at2;
+        int jump = -1;
         bool straddled = false;
         if (best >= 0 && std::isfinite(g_star)) {
             const double xj = x[static_cast<std::size_t>(best)];
             const double eta0 =
                 std::fabs(g_star) + 1e-9 * std::fabs(best_gj) * std::max(std::fabs(xj), 1.0);
-            auto gap_at = [&](double eta, double &scale_out) {
+            auto gaps_at = [&](double eta, BranchGaps &out) {
                 xw.assign(x.begin(), x.end());
                 xw[static_cast<std::size_t>(best)] = xj + (-g_star - eta) / best_gj;
                 sync(xw, t_evt);
                 const double g_lo = eval.evaluate(sw.residual_expr_idx);
                 model.compute_derivs(t_evt, xw.data(), f_minus.data());
+                model.compute_gross_flux(t_evt, xw.data(), gross_minus.data());
                 xw[static_cast<std::size_t>(best)] = xj + (-g_star + eta) / best_gj;
                 sync(xw, t_evt);
                 const double g_hi = eval.evaluate(sw.residual_expr_idx);
                 model.compute_derivs(t_evt, xw.data(), f_plus.data());
+                model.compute_gross_flux(t_evt, xw.data(), gross_plus.data());
                 straddled = std::isfinite(g_lo) && std::isfinite(g_hi) && g_lo != 0.0 &&
                             g_hi != 0.0 && ((g_lo < 0.0) != (g_hi < 0.0));
-                return branch_gap(scale_out);
+                branch_gaps(out);
             };
-            double scale2 = 0.0;
-            gap2 = gap_at(2.0 * eta0, scale2);
+            gaps_at(2.0 * eta0, at2);
             const bool straddled2 = straddled;
-            gap1 = gap_at(eta0, f_scale);
+            gaps_at(eta0, at1);
             straddled = straddled && straddled2;
-            f_scale = std::max(f_scale, scale2);
+            for (std::size_t u = 0; u < at1.scale.size(); ++u) {
+                at1.scale[u] = std::max(at1.scale[u], at2.scale[u]);
+                at1.floor[u] = std::max(at1.floor[u], at2.floor[u]);
+            }
+            jump = first_jump(at2.gap, at1.gap, &at2.gap, at1);
         }
         sync(x, t_evt);
-        if (straddled && (gap2 <= kStateSwitchContinuousRelTol * f_scale ||
-                          gap1 < kStateSwitchGapRatio * gap2)) {
+        if (straddled && jump < 0) {
             return; // continuous at its own switch: no jump, and none to refuse
         }
         const double dt_max = dt / kStateSwitchNudgeGrowth;
@@ -6331,9 +6390,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             << " time units either way does not change the residual's sign — the trajectory "
                "rides that surface rather than crossing it. ";
         if (straddled) {
-            msg << "The two branches of the right-hand side there differ by " << gap1
-                << " against a scale of " << f_scale
-                << ", and doubling the probe leaves that gap at " << gap2
+            const auto u = static_cast<std::size_t>(jump);
+            msg << "The two branches of species '" << sp_vec[u].name
+                << "'s right-hand side there differ by " << at1.gap[u] << " against its rate of "
+                << at1.scale[u] << ", and doubling the probe leaves that gap at " << at2.gap[u]
                 << " rather than doubling it, so the jump is real";
         } else {
             msg << "Perturbing the residual's own support does not move it across zero either, "
@@ -6397,13 +6457,45 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         }
     };
 
+    // The same pair at twice the nudge, so the continuity test below can read a
+    // species' gap by how it scales, as the tangent path above does: a species
+    // whose terms all sit near zero at the surface (the BNGL signed-rate idiom,
+    // continuous where the signed rate is 0) has a gap of the same size as its
+    // own flux, and only its growth with the probe says it is smooth. Taken
+    // first, so the pair below leaves the evaluator where it always has.
+    std::vector<double> gap_far;
+    {
+        std::vector<double> g_far_before(nb, 0.0);
+        std::vector<double> g_far_after(nb, 0.0);
+        probe(-2.0 * dt, g_far_before);
+        model.compute_derivs(t_evt - 2.0 * dt, xw.data(), f_minus.data());
+        probe(+2.0 * dt, g_far_after);
+        model.compute_derivs(t_evt + 2.0 * dt, xw.data(), f_plus.data());
+        bool far_straddled = true;
+        for (std::size_t k = 0; k < nb; ++k) {
+            far_straddled = far_straddled && std::isfinite(g_far_before[k]) &&
+                            std::isfinite(g_far_after[k]) &&
+                            ((g_far_before[k] < 0.0 && g_far_after[k] > 0.0) ||
+                             (g_far_before[k] > 0.0 && g_far_after[k] < 0.0));
+        }
+        if (far_straddled) {
+            gap_far.resize(static_cast<std::size_t>(ns));
+            for (int i = 0; i < ns; ++i) {
+                const auto u = static_cast<std::size_t>(i);
+                gap_far[u] = std::fabs(f_minus[u] - f_plus[u]);
+            }
+        }
+    }
+
     // One probe pair for the whole batch: the ladder verified it crosses every
     // residual, so the branch change it reads is already the combined one and
     // there is nothing left to compose (issue #153).
     probe(-dt, g_before);
     model.compute_derivs(t_evt - dt, xw.data(), f_minus.data());
+    model.compute_gross_flux(t_evt - dt, xw.data(), gross_minus.data());
     probe(+dt, g_after);
     model.compute_derivs(t_evt + dt, xw.data(), f_plus.data());
+    model.compute_gross_flux(t_evt + dt, xw.data(), gross_plus.data());
 
     // Issue #545: the continuity question and the jump below are both about S, so
     // a comoving column leaves first — against f⁻, the before-branch probe the
@@ -6423,14 +6515,15 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     }
 
     {
-        // Same question on the transversal path, where it is free: f⁻ and f⁺ are
-        // already in hand. A continuous switch gets no jump, no dt*/dθ solve, and
-        // no transversality refusal — MODEL1006230090 reaches the last of those
-        // with a denominator of 1e-15. Both models the batch path was written for
-        // are the BNGL signed-rate idiom and leave HERE, before their several
-        // residuals ever have to agree on a dt*/dθ.
-        double f_scale = 0.0;
-        if (branch_gap(f_scale) <= kStateSwitchContinuousRelTol * f_scale) {
+        // Same question on the transversal path, where it is nearly free: f⁻ and
+        // f⁺ are already in hand. A continuous switch gets no jump, no dt*/dθ
+        // solve, and no transversality refusal — MODEL1006230090 reaches the last
+        // of those with a denominator of 1e-15. Both models the batch path was
+        // written for are the BNGL signed-rate idiom and leave HERE, before their
+        // several residuals ever have to agree on a dt*/dθ.
+        BranchGaps at;
+        branch_gaps(at);
+        if (first_jump(at.gap, at.gap, gap_far.empty() ? nullptr : &gap_far, at) < 0) {
             // Issue #545: a continuous crossing is exactly where a comoving column
             // is wanted — a pulse rising from zero past an onset — so ask for
             // dt*/dθ after all, but only on a run that can use it.
