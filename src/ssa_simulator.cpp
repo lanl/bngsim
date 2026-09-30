@@ -2082,14 +2082,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // move without the loop seeing it, so nothing else is touched.
         if (n_events > 0 && has_rate_rules) {
             sync_state(t);
-            firing_scratch.clear();
-            for (int ei = 0; ei < n_events; ++ei) {
-                const bool now_true = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
-                if (now_true && !trigger_was_true[ei])
-                    firing_scratch.push_back(ei);
-                trigger_was_true[ei] = now_true;
-            }
-            process_firing_batch(t, firing_scratch);
+            fire_rising_edges(t);
         }
     }
     {
