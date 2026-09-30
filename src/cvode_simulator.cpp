@@ -5257,6 +5257,13 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         }
         model.update_observables(xwork.data());
         model.evaluate_functions(t_evt);
+        // An assignment may read rateOf(species), bound to a buffer only a
+        // derivative probe refreshes — as sync_model_at does (GH #106). Without
+        // it every difference below reads a frozen dx/dt and ∂h/∂x, ∂h/∂p come
+        // out 0 (issue #764).
+        if (model.uses_rateof()) {
+            model.refresh_rateof_derivs(t_evt, xwork.data());
+        }
     };
     // Sync after perturbing parameter `skip_idx` — see the identically-shaped
     // helper in state_trigger_dtstar: functions, then the derived-parameter
