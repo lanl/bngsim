@@ -57,8 +57,8 @@ Three things are locked in here:
     models — see ``_NEEDS_ANALYTICAL_SWEEP``.
   * **But it does have a performance floor, and 457 is not where it lives**
     (``test_paying_model_*`` / ``test_default_budget_covers_*``, issue #245).
-    ``BIOMD0000000608``'s FD solve is correct and **4.16x slower**, and its
-    derivation costs 4.76 s — nearly 10x 457's. A screen that asks only whether FD
+    ``MODEL1601050000``'s FD solve is correct and **3.3x slower**, and its
+    derivation costs 1.85 s — several times 457's. A screen that asks only whether FD
     *works* is blind to that population by construction, which is why #249 could
     conclude no inequality was left to assert. One is: not on correctness, on cost.
 
@@ -258,9 +258,37 @@ _DEFAULT_BUDGET_S = 20.0
 #   | MODEL1602080000 |     2.32 s |                 1.70x |
 #   | MODEL1504130000 |     2.16 s |                 1.40x |
 #
-# A default below 608's 4.76 s does not merely make that build pay a derivation and
-# discard it — it hands the model a solve 4.16x slower for the rest of its life. So
-# the floor is 4.76 s times the one spread that can move it, 3.3x for machine speed
+# **Re-measured for #898 (arm64, 8f9e25d), and the table above no longer holds.**
+# #888 applied BIOMD0000000608's x1,000,000 stoichiometric coefficients as one
+# update per species instead of one unit at a time, which made its RHS far
+# cheaper, and the FD Jacobian (many RHS calls) gained most: 608 now solves at
+# 1.05-1.09x, and its derivation is 0.045 s (the drop was not bisected). Same
+# method as the table (warm-up, best of 3, reset() between, budget lifted), over
+# every attaching model whose unbudgeted derivation is at least MODEL1601050000's:
+#
+#   | model            | derivation | FD / analytical solve |
+#   |------------------|-----------:|----------------------:|
+#   | MODEL1601050000  |     1.85 s |             **3.27x** |
+#   | MODEL0406793751  |     3.59 s |                 1.12x |
+#   | BIOMD0000000577  |     2.46 s |                 1.07x |
+#   | BIOMD0000000469  |     5.36 s |                 0.47x |
+#   | BIOMD0000000628  |    32.7 s  |                 0.71x |
+#   | BIOMD0000000385  |    10.1 s  |                 0.31x |
+#   | MODEL1006230049/053/077 | 59-93 s | 0.62x / 0.33x / 0.35x |
+#
+# (Derivations over 2 s were timed four to a machine, so read them as upper
+# bounds. BIOMD0000000470-473 were not timed: they are 469's linlog family, whose
+# analytical solve loses. MODEL1006230090 still runs past a 300 s probe cap.)
+# So MODEL1601050000 is now the slowest derivation that pays for itself.
+#
+# A default below it does not merely make that build pay a derivation and discard
+# it — it hands the model a solve 3.3x slower for the rest of its life. So the floor
+# is its 1.85 s (measured here, on the faster of the two machines) times the one
+# spread that can move it, 3.3x for machine speed: 6.1 s, held at 6.0. The
+# shipping default clears it by 3.3x. The rest of this block is #245's reading,
+# kept for provenance; its 15 s floor rested on 608 and is retired with it.
+#
+# #245's floor was 4.76 s times the one spread that can move it, 3.3x for machine speed
 # (the ratio in the module docstring; seconds do not travel, ratios do): 15.7 s,
 # held at 15.0. The shipping default clears it by 1.33x.
 #
@@ -275,13 +303,13 @@ _DEFAULT_BUDGET_S = 20.0
 # 0.49x — slower than its FD one. Between 4.76 s and 59.3 s nothing needs getting
 # right (496 at 10.9 s measures 1.02x, 497 at 11.1 s measures 1.25x), so the window
 # is 12.5x wide and 20 s sits 4.2x above the floor and 3.0x below the ceiling.
-_SLOWEST_PAYING_DERIVATION_S = 4.76
-_PAYING_DERIVATION_FLOOR_S = 15.0
+_SLOWEST_PAYING_DERIVATION_S = 1.85
+_PAYING_DERIVATION_FLOOR_S = 6.0
 
 # The most expensive derivation that still pays for itself, and the speed-up
-# asserted for it — well under the measured 4.16x, so the claim is a decision
+# asserted for it — well under the measured 3.27x, so the claim is a decision
 # rather than a coin flip.
-_PAYING_ANALYTICAL = ("BIOMD0000000608", 10.0, 1001)
+_PAYING_ANALYTICAL = ("MODEL1601050000", 100.0, 101)
 _PAYING_SOLVE_SPEEDUP = 2.0
 
 # The tolerance ladder the 457 canary walks, and how much of it must hold. A
@@ -433,8 +461,8 @@ def test_default_budget_is_a_performance_knob():
         "the analytical Jacobian (issue #249), so nothing here forbids it — but it "
         "is a performance decision, not a free one: a budget below a model's "
         "derivation cost makes the build pay the derivation and then discard it, "
-        f"and below {_PAYING_DERIVATION_FLOOR_S}s it also costs a 4.16x slower "
-        "solve on BIOMD0000000608 (issue #245, see the floor test). Update "
+        f"and below {_PAYING_DERIVATION_FLOOR_S}s it also costs a 3.3x slower "
+        "solve on MODEL1601050000 (issues #245, #898, see the floor test). Update "
         "_DEFAULT_BUDGET_S with the new value and record what it was measured "
         "against; do not delete this pin."
     )
@@ -553,9 +581,10 @@ def test_paying_model_solves_faster_on_the_analytical_jacobian(monkeypatch):
     """The premise under ``_PAYING_DERIVATION_FLOOR_S``, run instead of asserted.
 
     #249 was right that there is no *correctness* floor left, and the equality pin
-    above says so. What survives is a performance one: ``BIOMD0000000608`` derives
-    for 4.76 s and solves 4.16x faster for it (0.065 s vs 0.015 s, 52 species, 86
-    functional reactions). FD is perfectly correct there — which is precisely why a
+    above says so. What survives is a performance one: ``MODEL1601050000`` derives
+    for 1.85 s and solves 3.27x faster for it (0.085 s vs 0.026 s, 2047 species).
+    Issue #898 re-picked it after #888 took ``BIOMD0000000608``, the fixture before
+    it (4.76 s, 4.16x), to about 1.05x. FD is perfectly correct there — which is precisely why a
     screen asking only whether FD *works* cannot see it, and why the floor it
     supports had to be re-derived rather than inherited (issue #245).
 
@@ -570,7 +599,7 @@ def test_paying_model_solves_faster_on_the_analytical_jacobian(monkeypatch):
       the second run integrates a different problem (see the canary above).
       ``reset()`` between.
 
-    Asserted at 2x against a measured 4.16x. The budget is lifted for the analytical
+    Asserted at 2x against a measured 3.27x. The budget is lifted for the analytical
     arm so this measures the *value* of the derivation rather than whether the
     shipping default happens to cover it — that is the pin's job, and coupling them
     would make one failure report as two.
@@ -610,7 +639,7 @@ def test_paying_model_solves_faster_on_the_analytical_jacobian(monkeypatch):
     fd_s = _best_run_s("fd")
     assert fd_s > _PAYING_SOLVE_SPEEDUP * analytical_s, (
         f"{model_id} FD solve {fd_s:.4f}s is not {_PAYING_SOLVE_SPEEDUP}x the "
-        f"analytical {analytical_s:.4f}s (measured 4.16x: 0.065s vs 0.015s) — the "
+        f"analytical {analytical_s:.4f}s (measured 3.27x: 0.085s vs 0.026s) — the "
         f"{_PAYING_DERIVATION_FLOOR_S}s floor rests on this derivation being worth "
         "paying for. Re-run the classification and re-pick the fixture from "
         "whatever pays then; do not delete this and keep the floor."
@@ -625,7 +654,7 @@ def test_default_budget_covers_paying_derivations():
     redundant: the pin is a change detector that an intentional re-tune updates,
     and this is what still holds after it has been updated.
 
-    ``BIOMD0000000608`` derives in 4.76 s here and solves 4.16x slower without the
+    ``MODEL1601050000`` derives in 1.85 s here and solves 3.3x slower without the
     result, so a default under it does not merely waste a derivation — it hands the
     model a permanently slower solve. See ``_PAYING_DERIVATION_FLOOR_S`` for the
     band behind the number and for why the margin is 3.3x.
@@ -634,8 +663,8 @@ def test_default_budget_covers_paying_derivations():
     """
     assert _DEFAULT_DERIVATION_BUDGET_S >= _PAYING_DERIVATION_FLOOR_S, (
         f"default derivation budget {_DEFAULT_DERIVATION_BUDGET_S}s is below the "
-        f"{_PAYING_DERIVATION_FLOOR_S}s floor — BIOMD0000000608 derives in "
-        f"{_SLOWEST_PAYING_DERIVATION_S}s here and solves 4.16x slower without the "
+        f"{_PAYING_DERIVATION_FLOOR_S}s floor — MODEL1601050000 derives in "
+        f"{_SLOWEST_PAYING_DERIVATION_S}s here and solves 3.3x slower without the "
         "analytical Jacobian, and the floor carries 3.3x for machine speed. "
         "Re-measure before lowering this, and record what the slowest derivation "
         "that still pays for itself became — a cold codegen cache or a single "
