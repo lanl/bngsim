@@ -440,9 +440,9 @@ struct CvodeUserData {
 
     // Issue #897: per state-switch root, what to report instead of a residual
     // that evaluates to exactly 0.0, or 0.0 to report it as it is. Set when a
-    // run steps on past a root the flow opposes: a residual parked at exactly
-    // zero there would otherwise read as a second root at the same instant,
-    // which CVODE refuses ("Root found at and very near t"). A restart never
+    // run steps on past a root the flow does not carry: a residual parked at
+    // exactly zero there would otherwise read as a second root at the same
+    // instant, which CVODE refuses ("Root found at and very near t"). A restart never
     // needs it, since CVODE sets a root that is zero at the restart aside
     // itself, so the root and crossing-stop restarts clear every hold. One that
     // outlives a restart elsewhere costs at most an extra root return where the
@@ -2362,9 +2362,11 @@ struct CvodeSimulator::Impl {
     // for whether a trajectory LEAVES a threshold it starts on (issue #340).
     // Fills `gx_out` (∂g/∂x, sized ns, zero off `support`) and `scale_out`
     // (Σ|term|), and leaves the model synced at (t, x).
+    // `step_scale` multiplies every difference step (1 everywhere but the
+    // issue #897 resolution check, which compares two).
     double residual_flow(int gidx, const std::vector<int> &support, double t, int ns,
                          const std::vector<double> &x, const std::vector<double> &f,
-                         std::vector<double> &gx_out, double &scale_out);
+                         std::vector<double> &gx_out, double &scale_out, double step_scale = 1.0);
 
     // ∂t*/∂θ at a located crossing of the surface g = 0, by the implicit
     // function theorem (issue #144, reused for the rate-law switches of issue
@@ -2404,12 +2406,12 @@ struct CvodeSimulator::Impl {
                                         std::vector<std::vector<double>> &s,
                                         SensitivityState &sens);
 
-    // Issue #897: whether the flow at x(t) moves state switch `sw`'s residual
-    // AGAINST the direction `dir` (+1 rising, -1 falling) the root finder
-    // reported: dg/dt from residual_flow, resolved above its own error. False
-    // when the flow moves it the reported way, and when the differences cannot
-    // tell. Leaves the model synced at (t, x).
-    bool flow_opposes_state_switch(double t, const double *x, int ns,
+    // Issue #897: whether the flow at x(t) clearly carries state switch `sw`'s
+    // residual across zero in the direction `dir` (+1 rising, -1 falling) the
+    // root finder reported: dg/dt from residual_flow, taken at two steps that
+    // must agree. False when it opposes that direction, and when the
+    // differences cannot resolve it. Leaves the model synced at (t, x).
+    bool flow_carries_state_switch(double t, const double *x, int ns,
                                    const NetworkModel::StateSwitch &sw, int dir);
 };
 
@@ -4971,7 +4973,8 @@ void CvodeSimulator::Impl::sync_model_at(double t, const double *x, int ns) {
 double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &support, double t,
                                            int ns, const std::vector<double> &x,
                                            const std::vector<double> &f,
-                                           std::vector<double> &gx_out, double &scale_out) {
+                                           std::vector<double> &gx_out, double &scale_out,
+                                           double step_scale) {
     auto &eval = model.evaluator();
     std::vector<double> xwork(x.begin(), x.end());
 
@@ -4983,6 +4986,7 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
         if (h == 0.0) {
             h = 1e-9;
         }
+        h *= step_scale;
         xwork[j] = xj + h;
         sync_model_at(t, xwork.data(), ns);
         const double g_hi = eval.evaluate(gidx);
@@ -4994,7 +4998,7 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
     }
 
     // ∂g/∂t — the trigger's own explicit time dependence, held at x.
-    const double h_t = 1e-6 * std::max(std::fabs(t), 1.0);
+    const double h_t = 1e-6 * std::max(std::fabs(t), 1.0) * step_scale;
     sync_model_at(t + h_t, xwork.data(), ns);
     const double g_t_hi = eval.evaluate(gidx);
     sync_model_at(t - h_t, xwork.data(), ns);
@@ -5793,13 +5797,21 @@ static constexpr double kStateSwitchGapRatio = 0.7;
 // which for a genuine common factor is orders of magnitude below it.
 static constexpr double kStateSwitchTauAgreeTol = 1e-4;
 
-bool CvodeSimulator::Impl::flow_opposes_state_switch(double t, const double *x, int ns,
+bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, int ns,
                                                      const NetworkModel::StateSwitch &sw, int dir) {
-    // dg/dt at x(t) itself, by the same local differences the #340 start-on-
+    // dg/dt at x(t) itself, by the local differences the #340 start-on-
     // threshold test and the saltation jump use. A secant along x ± h·f over a
     // whole step is not a derivative: a residual that curves along the flow
-    // (3u − u³ near u = 0.9) reads backwards once h is large, and a genuine
-    // crossing was then stepped past with its window lost.
+    // (3u − u³ near u = 0.9) reads backwards once h is large.
+    //
+    // Taken twice, at the base step and at four times it, and believed only
+    // when the two agree. Rounding in a difference grows as the step shrinks and
+    // truncation as it grows, so two steps that agree have neither in them. A
+    // term scale cannot stand in for that test: when the flow is a near-cancel
+    // of large terms (a threshold approached through V1 + V2, or one that moves
+    // with time as the state tracks it), it is small against the scale while
+    // being exact, and when the residual reads `time()` the rounding in ∂g/∂t
+    // is set by the size of time's operands, not by ∂g/∂t.
     const std::vector<double> xv(x, x + ns);
     std::vector<double> f(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> gx;
@@ -5807,10 +5819,13 @@ bool CvodeSimulator::Impl::flow_opposes_state_switch(double t, const double *x, 
     model.compute_derivs(t, x, f.data());
     double scale = 0.0;
     const double flow = residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale);
-    // Opposed only when the flow clears the differences' own error. A flow that
-    // cancels to below it says nothing either way, and is left to the restart.
-    return std::isfinite(flow) && flow * static_cast<double>(dir) < 0.0 &&
-           std::fabs(flow) > 1e-6 * scale;
+    const double flow4 =
+        residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale, 4.0);
+    if (!std::isfinite(flow) || !std::isfinite(flow4) || flow == 0.0 ||
+        (flow < 0.0) != (flow4 < 0.0) || std::fabs(flow - flow4) > 0.25 * std::fabs(flow)) {
+        return false;
+    }
+    return flow * static_cast<double>(dir) > 0.0;
 }
 
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
@@ -6715,7 +6730,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // tolerance; the root is what stops the step inside it. A plain run gets
     // the stop and the restart, and nothing else: the jump below is applied
     // only when there are sensitivity columns to jump, and the restart is
-    // skipped at a root the flow opposes (see the CV_ROOT_RETURN handler).
+    // skipped at a root the flow does not clearly carry (see the CV_ROOT_RETURN
+    // handler).
     //
     // Deduplicated by the residual's text rather than the condition's, so
     // `X<1` and `X<=1` — the same crossing, two spellings — are one root and one
@@ -7711,7 +7727,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // block, which breaks the integration step exactly at the
                 // threshold so the solver cannot step over a narrow pulse. That
                 // restart is skipped only for a plain run's lone state-switch
-                // roots that the flow opposes (issue #897, below).
+                // roots that the flow does not clearly carry (issue #897, below).
                 std::vector<int> root_info(n_roots);
                 CVodeGetRootInfo(cvode_mem, root_info.data());
 
@@ -7909,20 +7925,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
 
                 // Issue #897: in a run without sensitivities, a batch of
-                // state-switch roots and nothing else does not restart the
-                // integrator when the flow at the located state moves every one
-                // of them the other way. A residual that the trajectory
-                // approaches and parks beside, within the solver's own error of
-                // zero, can still change sign on the interpolant: the GH #176
-                // fixture parks Voltage 1e-11 below 50 at rtol 1e-8, and its
-                // root fires with V rising while dV/dt < 0 there. Restarting ON
-                // that surface put the run on the branch the exact trajectory
+                // state-switch roots and nothing else restarts the integrator
+                // only when the flow at the located state clearly carries one of
+                // them across in the reported direction. A residual that the
+                // trajectory approaches and parks beside, within the solver's own
+                // error of zero, can still change sign on the interpolant: the
+                // GH #176 fixture parks Voltage 1e-11 below 50 at rtol 1e-8, and
+                // its root fires with V rising while dV/dt < 0 there. Restarting
+                // ON that surface put the run on the branch the exact trajectory
                 // never takes, for good: 63% off, over 2e6 steps, and no error.
-                // Leaving it alone is the stepping the run had before these
-                // roots existed. A crossing the flow carries, or cannot be seen
-                // to oppose, restarts as always, and so does any batch that also
-                // stops at a crossing time, whose own restart is folded into this
-                // one.
+                // The same happens where the flow is too small to read at all (a
+                // parked V1 + V2, a threshold V tracks 1e-11 below), so "cannot
+                // tell" steps on too: that is the stepping the run had before
+                // these roots existed, and never worse than it. A batch that also
+                // stops at a crossing time restarts regardless, its own restart
+                // folded into this one.
                 bool restart = true;
                 if (!any_event_fired && sens.n_total == 0 && !switched.empty()) {
                     bool other_root = false;
@@ -7936,7 +7953,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     if (!other_root && !at_stop) {
                         restart = false;
                         for (int j : switched) {
-                            if (!impl_->flow_opposes_state_switch(
+                            if (impl_->flow_carries_state_switch(
                                     t_root, y_data, ns, *state_switches[static_cast<size_t>(j)],
                                     root_info[n_events + n_disc + j])) {
                                 restart = true;

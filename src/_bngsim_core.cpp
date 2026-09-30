@@ -520,8 +520,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "registers that residual as a CVODE root so the crossing is located, "
             "and applies the jump there. A run without sensitivities roots the "
             "residuals it is given and applies no jump; it restarts at a crossing "
-            "unless the flow there opposes it (issue #897). Empty (the default) "
-            "leaves the root set untouched.")
+            "only where the flow clearly carries the state across (issue #897). "
+            "Empty (the default) leaves the root set untouched.")
         .def(
             "set_switch_pinned_params",
             [](bngsim::SolverOptions &self, const std::vector<int> &param_idx0) {
