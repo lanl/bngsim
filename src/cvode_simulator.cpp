@@ -5867,12 +5867,15 @@ static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
-// Issue #763: a branch gap below this many ulps of the switched reactions' gross
-// flux is roundoff in the terms that flux is summed from, not a jump. A few ulps
+// Issue #763: a branch gap below this many ulps of the part of the switched
+// reactions' gross flux that cancels is roundoff in the terms that flux is summed
+// from, not a jump. A few ulps
 // per term, with room for a rate law whose own evaluation carries more; not so
 // many that a real jump on a large flux hides under it (a jump of 3 on a flux of
 // 1e14 is ~190 ulps, which 1024 excused).
 static constexpr double kStateSwitchGrossRoundoff = 64.0;
+// ...and this many ulps of the whole gross flux, cancelled or not.
+static constexpr double kStateSwitchSumRoundoff = 4.0;
 // Issue #545: how closely a state-switch dt*/dθ — a finite difference — has to
 // match an emitted comoving shift for its column to enter that frame. The shift
 // itself is exact; this only decides which case the crossing is.
@@ -6203,8 +6206,14 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         for (std::size_t u = 0; u < n; ++u) {
             out.gap[u] = std::fabs(sub_minus[u] - sub_plus[u]);
             out.scale[u] = std::max(std::fabs(sub_minus[u]), std::fabs(sub_plus[u]));
-            out.floor[u] = kStateSwitchGrossRoundoff * std::numeric_limits<double>::epsilon() *
-                           std::max(gross_minus[u], gross_plus[u]);
+            // What cancels rounds at kStateSwitchGrossRoundoff ulps; a flux
+            // that does not cancel rounds at a few ulps of itself, and a jump
+            // of 1 on a flux of 1e14 is ~70 of those, not roundoff.
+            const double cancelled = std::max(gross_minus[u] - std::fabs(sub_minus[u]),
+                                              gross_plus[u] - std::fabs(sub_plus[u]));
+            out.floor[u] = std::numeric_limits<double>::epsilon() *
+                           (kStateSwitchGrossRoundoff * std::max(cancelled, 0.0) +
+                            kStateSwitchSumRoundoff * std::max(gross_minus[u], gross_plus[u]));
         }
         out.drive = 0.0;
         for (int j : residual_support) {
@@ -6518,25 +6527,35 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // jump, and restarting past the surface without reading it would leave its
     // root behind the restart, never fired. So its reactions join the reading,
     // and an unmapped one sends the batch back to the pre-#763 judgment.
+    std::vector<const NetworkModel::StateSwitch *> co_crossing; // read by some rate law
     if (judge != Judge::Legacy && state_switch_all.size() > batch.size()) {
-        bool added = false;
+        std::vector<const NetworkModel::StateSwitch *> others;
         for (const NetworkModel::StateSwitch *other : state_switch_all) {
-            if (std::find(batch.begin(), batch.end(), other) != batch.end()) {
-                continue;
+            if (std::find(batch.begin(), batch.end(), other) == batch.end()) {
+                others.push_back(other);
             }
-            double g_side[2] = {0.0, 0.0};
-            for (int side = 0; side < 2; ++side) {
-                const double sdt = side == 0 ? -dt : dt;
-                for (int i = 0; i < ns; ++i) {
-                    xw[static_cast<std::size_t>(i)] =
-                        x[static_cast<std::size_t>(i)] + sdt * f0[static_cast<std::size_t>(i)];
-                }
-                sync(xw, t_evt + sdt);
-                g_side[side] = eval.evaluate(other->residual_expr_idx);
+        }
+        // One sync per side, every other residual read there.
+        std::vector<double> g_side[2];
+        for (int side = 0; side < 2; ++side) {
+            const double sdt = side == 0 ? -dt : dt;
+            for (int i = 0; i < ns; ++i) {
+                xw[static_cast<std::size_t>(i)] =
+                    x[static_cast<std::size_t>(i)] + sdt * f0[static_cast<std::size_t>(i)];
             }
-            const bool straddles = std::isfinite(g_side[0]) && std::isfinite(g_side[1]) &&
-                                   g_side[0] != 0.0 && g_side[1] != 0.0 &&
-                                   ((g_side[0] < 0.0) != (g_side[1] < 0.0));
+            sync(xw, t_evt + sdt);
+            g_side[side].reserve(others.size());
+            for (const NetworkModel::StateSwitch *other : others) {
+                g_side[side].push_back(eval.evaluate(other->residual_expr_idx));
+            }
+        }
+        bool added = false;
+        for (std::size_t o = 0; o < others.size(); ++o) {
+            const NetworkModel::StateSwitch *other = others[o];
+            const double lo = g_side[0][o];
+            const double hi = g_side[1][o];
+            const bool straddles = std::isfinite(lo) && std::isfinite(hi) && lo != 0.0 &&
+                                   hi != 0.0 && ((lo < 0.0) != (hi < 0.0));
             if (!straddles) {
                 continue;
             }
@@ -6549,6 +6568,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             batch_rxns.insert(batch_rxns.end(), it->second.begin(), it->second.end());
             residual_support.insert(residual_support.end(), other->species.begin(),
                                     other->species.end());
+            if (!it->second.empty()) {
+                co_crossing.push_back(other);
+            }
             added = true;
         }
         if (judge != Judge::Legacy && added) {
@@ -6736,8 +6758,54 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         tau_scale = std::max(tau_scale, std::fabs(tau[static_cast<std::size_t>(c)]));
     }
     std::vector<double> tau_k;
-    for (std::size_t k = 1; k < nb; ++k) {
-        residual_dtstar(batch[k]->residual_expr_idx, batch[k]->species, subject_of(*batch[k]),
+    // The batch CVODE reported, and every other switch a rate law reads whose
+    // residual the same probe pair straddles and whose own reactions jump there
+    // (issue #763): one surface spelled twice agrees here by construction, while
+    // two independent thresholds a hair apart do not, and are refused instead of
+    // one being credited with the other's jump. A continuous co-crossing switch
+    // (a clamp whose branches meet) carries no branch change, whatever its t*(θ).
+    std::vector<const NetworkModel::StateSwitch *> agree(batch.begin(), batch.end());
+    if (!co_crossing.empty()) {
+        double drive = 0.0;
+        for (int j : residual_support) {
+            if (j >= 0 && j < ns) {
+                drive = std::max({drive, std::fabs(f_minus[static_cast<std::size_t>(j)]),
+                                  std::fabs(f_plus[static_cast<std::size_t>(j)])});
+            }
+        }
+        const auto n = static_cast<std::size_t>(ns);
+        std::vector<double> net_lo(n), net_hi(n), gross_lo(n), gross_hi(n);
+        for (const NetworkModel::StateSwitch *other : co_crossing) {
+            const std::vector<int> &rxns = state_switch_rxns.at(other);
+            for (int side = 0; side < 2; ++side) {
+                const double sdt = side == 0 ? -dt : dt;
+                for (int i = 0; i < ns; ++i) {
+                    xw[static_cast<std::size_t>(i)] =
+                        x[static_cast<std::size_t>(i)] + sdt * f0[static_cast<std::size_t>(i)];
+                }
+                sync(xw, t_evt + sdt);
+                model.compute_flux_split(t_evt + sdt, xw.data(), &rxns,
+                                         (side == 0 ? net_lo : net_hi).data(),
+                                         (side == 0 ? gross_lo : gross_hi).data());
+            }
+            bool jumps = false;
+            for (std::size_t u = 0; u < n && !jumps; ++u) {
+                const double gap = std::fabs(net_lo[u] - net_hi[u]);
+                const double cancelled = std::max(gross_lo[u] - std::fabs(net_lo[u]),
+                                                  gross_hi[u] - std::fabs(net_hi[u]));
+                const double floor = std::numeric_limits<double>::epsilon() *
+                                     (kStateSwitchGrossRoundoff * std::max(cancelled, 0.0) +
+                                      kStateSwitchSumRoundoff * std::max(gross_lo[u], gross_hi[u]));
+                jumps = gap > std::max(floor, kStateSwitchContinuousRelTol * drive);
+            }
+            if (jumps) {
+                agree.push_back(other);
+            }
+        }
+        sync(x, t_evt);
+    }
+    for (std::size_t k = 1; k < agree.size(); ++k) {
+        residual_dtstar(agree[k]->residual_expr_idx, agree[k]->species, subject_of(*agree[k]),
                         t_evt, ns, x, f_minus, s, sens, tau_k);
         double worst = 0.0;
         for (int c = 0; c < n_sens; ++c) {
@@ -6747,12 +6815,12 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         }
         if (worst > kStateSwitchTauAgreeTol * tau_scale) {
             std::ostringstream msg;
-            msg << "Forward sensitivity: " << nb
+            msg << "Forward sensitivity: " << agree.size()
                 << " state-dependent rate-law switches cross at the same instant t=" << t_evt
                 << " (residuals " << name_the_batch()
                 << "), the right-hand side jumps there, and their crossing times move differently "
                    "with the requested columns: dt*/dθ from '"
-                << sw.residual_source << "' and from '" << batch[k]->residual_source
+                << sw.residual_source << "' and from '" << agree[k]->residual_source
                 << "' differ by " << worst << " against a scale of " << tau_scale
                 << ". So they are separate crossings that happen to coincide rather than one "
                    "surface written twice, there is no single t*(θ) to shift the flow along, and "

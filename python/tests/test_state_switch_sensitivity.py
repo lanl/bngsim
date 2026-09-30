@@ -775,15 +775,19 @@ end groups
                 worst = max(worst, float(np.max(np.abs(got - exact) / np.abs(exact))))
         assert worst < 1e-6
 
-    def test_a_jump_on_a_very_large_switched_flux_is_not_roundoff(self, tmp_path):
-        """``ksyn + if(...)`` with ksyn = 1e14: a jump of 3 is ~190 ulps of the
-        switched flux, which a 1024-ulp roundoff floor excused and a 64-ulp one
-        does not. Same closed form as the turnover case."""
+    @pytest.mark.parametrize("kb", [3.0, 1.0])
+    def test_a_jump_on_a_very_large_switched_flux_is_not_roundoff(self, tmp_path, kb):
+        """``ksyn + if(...)`` with ksyn = 1e14: a jump of kb is ~70·kb ulps of the
+        switched flux, which a floor proportional to the whole flux excused (1024
+        ulps dropped kb = 3; 64 ulps still dropped kb = 1). The floor now scales
+        with the part that cancels, none here. Same closed form as the turnover
+        case."""
         text = (
             TURNOVER.replace("    2 0 2 fY #_R2\n    3 0 2 ksyn #_R3\n", "    2 0 2 fY #_R2\n")
             .replace("    1 fY() if(Aobs<thr,kb,0)", "    1 fY() ksyn+if(Aobs<thr,kb,0)")
             .replace("    5 ksyn  1e7  # Constant", "    5 ksyn  1e14  # Constant")
             .replace("    2 Y() 1e8", "    2 Y() 1e15")
+            .replace("    4 kb    3  # Constant", f"    4 kb    {kb!r}  # Constant")
         )
         assert "1e14" in text and "1e15" in text
         model = _model(tmp_path, text, name="basal14.net")
@@ -792,10 +796,69 @@ end groups
         )
         y = list(run.species_names).index("Y()")
         got = np.asarray(run.sensitivities)[-1, y, :3]
-        A0, a, thr, kb, kdeg, T = 10.0, 0.5, 2.0, 3.0, 0.1, BYSTANDER_T
+        A0, a, thr, kdeg, T = 10.0, 0.5, 2.0, 0.1, BYSTANDER_T
         t_star = np.log(A0 / thr) / a
         dtstar = np.array([1 / (a * A0), -np.log(A0 / thr) / a**2, -1 / (a * thr)])
         np.testing.assert_allclose(got, -kb * np.exp(-kdeg * (T - t_star)) * dtstar, rtol=1e-4)
+
+    def test_two_independent_thresholds_a_hair_apart_are_refused_not_mixed(self, tmp_path):
+        """Aobs < thr1 drives Y and Aobs < thr2 drives Z, with thr2 a few hundred
+        ulps below thr1: two independent crossings CVODE can report as one. The
+        second one's jump was credited to the first one's dt*/dθ, silently
+        (dZ/dthr1 = 5, dZ/dthr2 = 0, where the truth is the other way round).
+        Every column is now either right or refused, never silently wrong."""
+        a, thr1, kb, kc, T = 0.5, 2.0, 3.0, 5.0, 12.0
+        eps = np.finfo(float).eps
+        for k in (100, 300, 1000):
+            thr2 = float(thr1 * (1 - k * eps))
+            text = f"""\
+begin parameters
+    1 A0    10
+    2 a     {a!r}
+    3 thr1  {thr1!r}
+    4 thr2  {thr2!r}
+    5 kb    {kb!r}
+    6 kc    {kc!r}
+end parameters
+begin functions
+    1 fY() if(Aobs<thr1,kb,0)
+    2 fZ() if(Aobs<thr2,kc,0)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 Z() 0
+end species
+begin reactions
+    1 1 0 a
+    2 0 2 fY
+    3 0 3 fZ
+end reactions
+begin groups
+    1 Aobs                 1
+end groups
+"""
+            model = _model(tmp_path, text, name=f"pair{k}.net")
+            try:
+                run = bngsim.Simulator(
+                    model, method="ode", sensitivity_params=["a", "thr1", "thr2", "kb", "kc"]
+                ).run(t_span=(0, T), n_points=3, rtol=1e-9, atol=1e-12)
+            except SimulationError as e:
+                assert "cross at the same instant" in str(e)
+                continue
+            s = np.asarray(run.sensitivities)[-1]
+            names = list(run.species_names)
+            ln = np.log(10.0 / thr1)
+            want_y = [kb * ln / a**2, kb / (a * thr1), 0.0, T - ln / a, 0.0]
+            want_z = [
+                kc * np.log(10.0 / thr2) / a**2,
+                0.0,
+                kc / (a * thr2),
+                0.0,
+                T - np.log(10.0 / thr2) / a,
+            ]
+            np.testing.assert_allclose(s[names.index("Y()")], want_y, rtol=1e-5, atol=1e-6)
+            np.testing.assert_allclose(s[names.index("Z()")], want_z, rtol=1e-5, atol=1e-6)
 
     def test_the_trajectory_was_never_the_problem(self, tmp_path):
         """Only the sensitivity was wrong: Y(T) = kb·(T − t*) either way, to the
