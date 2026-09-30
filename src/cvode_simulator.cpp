@@ -5823,14 +5823,23 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, 
     const double flow = residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale);
     const double flow4 =
         residual_flow(sw.residual_expr_idx, sw.species, t, ns, xv, f, gx, scale, 4.0);
-    // A residual that is exactly zero here and that neither difference can move
-    // is not parked beside the surface but lying ON it: a symmetric state
-    // (Q_Right − Q_Left in ml_q_learning, whose two sides evolve identically) or
-    // a floating-point plateau. That is a restart, which is what lets CVODE set
-    // the zero root aside until the residual leaves zero. Stepping on instead
-    // kept it armed under the zero hold, so every 6e-11 wobble across the
-    // surface was another root: 140,000 restarts and 4.9 off at rtol 1e-11.
-    if (flow == 0.0 && flow4 == 0.0 && model.evaluator().evaluate(sw.residual_expr_idx) == 0.0) {
+    // A residual that is exactly zero here, whose flow is exactly zero while its
+    // terms are not, is moving ALONG the surface: a symmetric state (Q_Right −
+    // Q_Left in ml_q_learning, whose two sides evolve identically). That is a
+    // restart, which is what lets CVODE set the zero root aside until the
+    // residual leaves zero. Stepping on instead kept it armed under the zero
+    // hold, so every 6e-11 wobble across the surface was another root: about
+    // 140,000 of them and 4.9 off at rtol 1e-11.
+    //
+    // Terms that are all zero are different: nothing the residual reads is
+    // moving, so the state is resting on the surface at a fixed point of its
+    // support. The l-type model's Voltage relaxes to exactly the threshold 50,
+    // and the root finder interpolates it onto 50.0 itself, where dV/dt = 0.
+    // Restarting there held V on 50.0, and on the far branch, for the rest of
+    // the run at every tolerance, where main's own steps never land on it.
+    // That steps on, like any other root the flow does not carry.
+    if (flow == 0.0 && flow4 == 0.0 && scale > 0.0 &&
+        model.evaluator().evaluate(sw.residual_expr_idx) == 0.0) {
         return true;
     }
     if (!std::isfinite(flow) || !std::isfinite(flow4) || flow == 0.0 ||

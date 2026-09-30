@@ -31,8 +31,9 @@ What this locks:
      across, or where the residual lies exactly on its surface: GH #176's
      parked trajectory, and two twins whose flow near the park cannot be
      resolved, keep their exact answers; a residual parked at exactly 0.0 is
-     not read as a second root; one lying on its surface does not chatter; and
-     a real crossing on a curved residual still restarts;
+     not read as a second root; one moving along its surface does not chatter,
+     and one resting on it at a fixed point is not restarted onto it; and a
+     real crossing on a curved residual still restarts;
   7. a residual too deep for ``ast.unparse`` keeps every root, and one that
      starts at exactly zero does not print a SUNDIALS warning.
 """
@@ -419,6 +420,38 @@ def test_a_parked_root_does_not_restart_the_run(data_dir, tmp_path, kind):
         assert exact_text.count(condition) == 1, condition
         exact_text = exact_text.replace(condition, branch)
     exact = bngsim.Simulator(_write(tmp_path, exact_text, f"{kind}_exact.net")).run(
+        **{**window, "rtol": 1e-12, "atol": 1e-12}
+    )
+    got = np.asarray(result.observables)
+    want = np.asarray(exact.observables)
+    scale = np.maximum(np.abs(want).max(axis=0), 1e-12)
+    assert float((np.abs(got - want) / scale).max()) < 1e-6
+
+
+def test_a_state_resting_on_its_surface_steps_on(data_dir, tmp_path):
+    """The rulehub model the #176 fixture was edited from: k_v_stim is 50.0, so
+    Voltage relaxes to exactly the threshold. The exact trajectory never reaches
+    it (V = 50 - 49 e^-t), and main converges to that at rtol 1e-10 (9.8e-10).
+    The root finder, though, interpolates V onto 50.0 itself, where every term
+    of the residual's flow is zero. Restarting there, as a residual lying on
+    its surface does, held V on 50.0 and on the far branch for the rest of the
+    run: 0.633 off at every tolerance (review of PR #903). Nothing the residual
+    reads is moving, so this is a state resting on the surface, and it steps on.
+    """
+    text = (data_dir / _LTYPE).read_text()
+    old = "   16 k_v_stim        49.99999999999  # Constant\n"
+    assert text.count(old) == 1
+    text = text.replace(old, "   16 k_v_stim        50.0  # Constant\n")
+    window = dict(t_span=(0.0, 150.0), n_points=301, rtol=1e-10, atol=1e-10)
+    result = bngsim.Simulator(_write(tmp_path, text, "upstream.net")).run(**window)
+    exact_text = text
+    for condition, branch in (
+        (_V_STEP, "0.5"),
+        ("if((Phospho_LTCC>0),k_pka_shift,0)", "k_pka_shift"),
+    ):
+        assert exact_text.count(condition) == 1, condition
+        exact_text = exact_text.replace(condition, branch)
+    exact = bngsim.Simulator(_write(tmp_path, exact_text, "upstream_exact.net")).run(
         **{**window, "rtol": 1e-12, "atol": 1e-12}
     )
     got = np.asarray(result.observables)
