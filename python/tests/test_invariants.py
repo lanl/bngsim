@@ -717,17 +717,7 @@ def _cme_mean_count(t: float) -> float:
     return float(states @ (expm(Q * t) @ p0))
 
 
-@pytest.mark.parametrize(
-    "V",
-    [
-        pytest.param(1.0, id="V=1"),
-        pytest.param(
-            10.0,
-            id="V=10",
-            marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="#692"),
-        ),
-    ],
-)
+@pytest.mark.parametrize("V", [pytest.param(1.0, id="V=1"), pytest.param(10.0, id="V=10")])
 def test_ssa_mean_equals_cme_mean(V: float) -> None:
     """The SSA mean count is within 5 standard errors of the exact CME mean (#692)."""
     model = sbml_dimer({"V": V, "A0": _N0 / V, "k": _C * V})

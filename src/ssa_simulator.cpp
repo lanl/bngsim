@@ -353,6 +353,19 @@ struct SsaSimulator::Impl {
     }
 };
 
+// The molecule count a stored value stands for (issue #692): storage is n/V, so
+// n = c·V, which lands within rounding of a whole number when n is one. Such a
+// count is put back on the whole number; a fractional one (an event can assign
+// it) is returned as it is. `+ 0.0` turns a -0.0 into 0.
+static double storage_to_count(double storage_value, double volume_factor) {
+    const double n = storage_value * volume_factor;
+    const double whole = std::round(n);
+    if (std::fabs(n - whole) <=
+        8.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::fabs(whole)))
+        return whole + 0.0;
+    return n;
+}
+
 static double round_initial_population_to_storage(double storage_value, double volume_factor) {
     if (!std::isfinite(storage_value) || !std::isfinite(volume_factor) || volume_factor <= 0.0) {
         return storage_value;
@@ -542,11 +555,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<double> t_out = times.output_times();
     const int n_out = static_cast<int>(t_out.size());
 
-    // Working arrays: species populations (0-based)
+    // Working arrays: species populations (0-based). conc[] holds each species
+    // in its storage units, n/V, which is what rate laws, observables and the
+    // recorded trajectory read. counts[] holds the molecule count n itself, which
+    // is what a firing changes (issue #692, see fire_species).
     std::vector<double> conc(ns);
+    std::vector<double> counts(ns);
     for (int i = 0; i < ns; ++i) {
         const auto &sp = model.species()[i];
         conc[i] = round_initial_population_to_storage(sp.concentration, sp.volume_factor);
+        counts[i] = storage_to_count(conc[i], sp.volume_factor);
     }
 
     // Propensity arrays
@@ -604,6 +622,39 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     const auto &species_list = model.species();
     const auto &events = model.events();
     const int n_events = static_cast<int>(events.size());
+
+    // Apply a firing's change of `dn` molecules to species si (issue #692).
+    //
+    // A species is stored as n/V (V = its volume_factor), so a firing moves the
+    // stored value by dn/V. It used to add dn/V to the stored value, and every
+    // such add rounded, and the rounding walked: after 1e5 firings at V = 10 an
+    // extinct species sat at -1.9e-7 molecules, which the negative-count
+    // diagnostic reported as a crossing, and a residue of the other sign left it
+    // a propensity it could fire on. The firing now moves the count, which is a
+    // whole number held exactly, and the stored value is derived from it with
+    // the one division the old update also made. So a count n is always stored
+    // as the same double n/V, the one round_initial_population_to_storage and
+    // the falling factorial's j/V (model.cpp) form, which makes the j-th factor
+    // exactly 0 at n = j. At V = 1 (every `.net` model) the stored value is the
+    // count, and the arithmetic is the old add, bit for bit.
+    auto fire_species = [&](int si, double dn) {
+        const double before = conc[si];
+        counts[si] += dn;
+        conc[si] = counts[si] / species_list[si].volume_factor;
+        if (before >= 0.0 && conc[si] < 0.0) {
+            ++neg_cross_count;
+            if (first_neg_species < 0)
+                first_neg_species = si;
+        }
+    };
+    // An event assignment writes a stored value through here, so the count
+    // stays the count of the stored value. A value within rounding of a whole
+    // count is stored as exactly n/V; a fractional one is kept as written.
+    auto store_value = [&](int si, double value) {
+        const double n = storage_to_count(value, species_list[si].volume_factor);
+        counts[si] = n;
+        conc[si] = n == std::round(n) ? n / species_list[si].volume_factor : value;
+    };
 
     // ─── Build (or reuse) dependency graph ───────────────────────────────────
     // Cached on the Impl across run() calls — topology-only, seed-independent.
@@ -951,8 +1002,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     auto integrate_rr = [&](double dt) {
         if (dt <= 0.0)
             return;
-        for (std::size_t i = 0; i < rate_rule_odes.size(); ++i)
-            conc[rate_rule_odes[i].target0] += rr_deriv[i] * dt;
+        for (std::size_t i = 0; i < rate_rule_odes.size(); ++i) {
+            const int x = rate_rule_odes[i].target0;
+            conc[x] += rr_deriv[i] * dt;
+            counts[x] = conc[x] * rate_rule_odes[i].vf; // a continuous value, not snapped
+        }
     };
 
     // process_firing_batch — SBML L3v2 §4.11.6 simultaneous-event execution,
@@ -1101,8 +1155,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     continue;
                 int sp_idx0 = assigns[a].first;
                 if (sp_idx0 >= 0 && sp_idx0 < ns) {
-                    conc[sp_idx0] = nv[a];
-                    sp_vec_ref[sp_idx0].concentration = nv[a];
+                    store_value(sp_idx0, nv[a]);
+                    sp_vec_ref[sp_idx0].concentration = conc[sp_idx0];
                 }
             }
             any_fired = true;
@@ -1618,24 +1672,15 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     first_reverse_rxn = selected;
             }
             const double rstep = dir;
-            auto apply_delta = [&](int si, double delta) {
-                double before = conc[si];
-                conc[si] += delta;
-                if (before >= 0.0 && conc[si] < 0.0) {
-                    ++neg_cross_count;
-                    if (first_neg_species < 0)
-                        first_neg_species = si;
-                }
-            };
             for (int ri : rxn.reactant_indices) {
                 int si = ri - 1; // 1-based → 0-based
                 if (si >= 0 && si < ns && !species_list[si].fixed)
-                    apply_delta(si, -rstep / species_list[si].volume_factor);
+                    fire_species(si, -rstep);
             }
             for (int pi : rxn.product_indices) {
                 int si = pi - 1;
                 if (si >= 0 && si < ns && !species_list[si].fixed)
-                    apply_delta(si, rstep / species_list[si].volume_factor);
+                    fire_species(si, rstep);
             }
 
             // Advance time only (see header note: no per-step set_current_time).
@@ -1876,11 +1921,15 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         //    PSA: scale stoichiometric coefficients by 1/λ_r
         //    Per-species volume_factor: SBML loader stores values as
         //    `amount/V_c`, so each ±1 amount fire is `±1/V_c` in storage
-        //    units. Default volume_factor=1.0 → identical to ±1 fires.
+        //    units, taken on the count by fire_species (issue #692). Default
+        //    volume_factor=1.0 → identical to ±1 fires.
         const auto &rxn = reactions[selected];
         double stoich_scale = 1.0;
         if (use_psa) {
-            stoich_scale = 1.0 / scaling_factors[selected];
+            // The leap size m_r itself: 1/(1/m) is not m for 11,867 of the
+            // integers below 1e5 (1/(1/98) = 98.00000000000001), which left a
+            // count off a whole number after a leap.
+            stoich_scale = psa_m_at[selected];
         }
 
         // GH #110 — sign-split firing, no non-negativity floor.
@@ -1902,26 +1951,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         }
         const double rstep = dir * stoich_scale;
 
-        auto apply_delta = [&](int si, double delta) {
-            double before = conc[si];
-            conc[si] += delta;
-            if (before >= 0.0 && conc[si] < 0.0) {
-                ++neg_cross_count;
-                if (first_neg_species < 0)
-                    first_neg_species = si;
-            }
-        };
-
         for (int ri : rxn.reactant_indices) {
             int si = ri - 1; // 1-based → 0-based
             if (si >= 0 && si < ns && !species_list[si].fixed) {
-                apply_delta(si, -rstep / species_list[si].volume_factor);
+                fire_species(si, -rstep);
             }
         }
         for (int pi : rxn.product_indices) {
             int si = pi - 1;
             if (si >= 0 && si < ns && !species_list[si].fixed) {
-                apply_delta(si, rstep / species_list[si].volume_factor);
+                fire_species(si, rstep);
             }
         }
 
