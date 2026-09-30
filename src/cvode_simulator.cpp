@@ -5849,17 +5849,19 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(double t, const double *x, 
         return true;
     }
     const double xj = xv[static_cast<std::size_t>(best)];
-    const double near = -static_cast<double>(dir); // the sign g has before the crossing
+    // The sign g has before the crossing. Not `near`: <windows.h> defines it
+    // as an empty macro, and MSVC then sees `( < 0.0)`.
+    const double near_sign = -static_cast<double>(dir);
     std::vector<double> f(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> gx;
     // dg/dt at the point whose residual the Newton step aims at near·m·η, or NaN
     // when that point is not on the near side.
     auto flow_at = [&](double eta, double m) {
         xw.assign(xv.begin(), xv.end());
-        xw[static_cast<std::size_t>(best)] = xj + (near * m * eta - g_star) / best_gj;
+        xw[static_cast<std::size_t>(best)] = xj + (near_sign * m * eta - g_star) / best_gj;
         sync_model_at(t, xw.data(), ns);
         const double g = eval.evaluate(sw.residual_expr_idx);
-        if (!std::isfinite(g) || g == 0.0 || (g < 0.0) != (near < 0.0)) {
+        if (!std::isfinite(g) || g == 0.0 || (g < 0.0) != (near_sign < 0.0)) {
             return std::numeric_limits<double>::quiet_NaN();
         }
         model.compute_derivs(t, xw.data(), f.data());
