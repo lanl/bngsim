@@ -23,7 +23,7 @@ import pytest
 MATH = 'xmlns="http://www.w3.org/1998/Math/MathML"'
 
 
-def _sbml(*, comps, species, reactants, products, law, params, rules=""):
+def _sbml(*, comps, species, reactants, products, law, params, rules="", modifiers=(), local=()):
     cs = "".join(
         f'<compartment id="{c}" spatialDimensions="3" size="{v}" constant="{str(k).lower()}"/>'
         for c, v, k in comps
@@ -34,7 +34,14 @@ def _sbml(*, comps, species, reactants, products, law, params, rules=""):
         'constant="false"/>'
         for s, c, n, h, b in species
     )
-    pr = "".join(f'<parameter id="{k}" value="{v}" constant="true"/>' for k, v in params)
+    pr = "".join(
+        f'<parameter id="{k}" value="{v}" constant="{str(not rest or rest[0]).lower()}"/>'
+        for k, v, *rest in params
+    )
+    mods = "".join(f'<modifierSpeciesReference species="{m}"/>' for m in modifiers)
+    mods = f"<listOfModifiers>{mods}</listOfModifiers>" if mods else ""
+    lps = "".join(f'<localParameter id="{k}" value="{v}"/>' for k, v in local)
+    lps = f"<listOfLocalParameters>{lps}</listOfLocalParameters>" if lps else ""
 
     def refs(items):
         return "".join(
@@ -51,15 +58,24 @@ def _sbml(*, comps, species, reactants, products, law, params, rules=""):
 {rules}
 <listOfReactions><reaction id="J" reversible="false">
 <listOfReactants>{refs(reactants)}</listOfReactants>
-<listOfProducts>{refs(products)}</listOfProducts>
-<kineticLaw><math {MATH}>{law}</math></kineticLaw>
+<listOfProducts>{refs(products)}</listOfProducts>{mods}
+<kineticLaw><math {MATH}>{law}</math>{lps}</kineticLaw>
 </reaction></listOfReactions>
 </model>
 </sbml>"""
 
 
 def _times(*names):
-    return "<apply><times/>" + "".join(f"<ci>{n}</ci>" for n in names) + "</apply>"
+    return (
+        "<apply><times/>"
+        + "".join(n if n.startswith("<") else f"<ci>{n}</ci>" for n in names)
+        + "</apply>"
+    )
+
+
+def _pow(base, exp):
+    base = base if base.startswith("<") else f"<ci>{base}</ci>"
+    return f"<apply><power/>{base}{exp}</apply>"
 
 
 def _boundary_dimer(v=10.0, nb=3, k=0.01):
@@ -219,3 +235,334 @@ def test_the_ode_is_unchanged():
     r = bngsim.Simulator(m, method="ode").run(t_span=(0, 100), n_points=2)
     p = np.asarray(r.species)[-1, list(r.species_names).index("P")]
     assert p == pytest.approx(k * (nb / v) ** 2 * 100, rel=1e-8)
+
+
+# ── shapes the walker reads ─────────────────────────────────────────────────
+
+
+def _boundary_law(law, *, nb=3, v=10.0, k=0.01, stoich=2, local=()):
+    return bngsim.Model.from_sbml_string(
+        _sbml(
+            comps=[("C", v, True)],
+            species=[("B", "C", nb, False, True), ("P", "C", 0, False, False)],
+            reactants=[("B", stoich)],
+            products=[("P", 1)],
+            law=law,
+            params=[("k", k)],
+            local=local,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        pytest.param(_times("k", _pow("B", "<cn>3</cn>"), "C"), id="power"),
+        pytest.param(_times("k", "B", _pow("B", "<cn>2</cn>"), "C"), id="factor-and-power"),
+        pytest.param(_times("k", _pow("B", "<cn>3.0</cn>"), "C"), id="real-exponent"),
+        pytest.param(
+            _times("k", _pow("B", '<cn type="rational">6<sep/>2</cn>'), "C"), id="rational"
+        ),
+        pytest.param(
+            f"<apply><divide/>{_times('k', _pow(_times('B', 'C'), '<cn>2</cn>'), 'B')}"
+            "<ci>C</ci></apply>",
+            id="power-of-a-product",
+        ),
+        pytest.param(_times("k", "B", "B", "B", "C", _pow("B", "<cn>0</cn>")), id="x-to-the-0"),
+    ],
+)
+def test_a_trimer_takes_three_factors(law):
+    """``3B -> P``: n(n−1)(n−2), however the law writes B³. Two B molecules
+    cannot make a triple."""
+    v, k = 10.0, 0.01
+    m = _boundary_law(law, stoich=3)
+    for n in (0, 1, 2, 3, 7):
+        got = m.propensities([n / v, 0.0])[0]
+        want = k * n * (n - 1) * (n - 2) / v**2
+        assert got == pytest.approx(want, rel=1e-13, abs=0.0), (n, got, want)
+
+
+PIECE_ON = "<apply><lt/><ci>k</ci><cn>1</cn></apply>"
+PIECE_READS_B = "<apply><gt/><ci>B</ci><cn>0</cn></apply>"
+
+
+@pytest.mark.parametrize("cond", [PIECE_ON, PIECE_READS_B], ids=["param-cond", "species-cond"])
+def test_a_piecewise_whose_live_branches_agree(cond):
+    """``piecewise(k·B·B·C, cond, 0)``: whichever branch is in force, the
+    value is 0 or the same product of B, so the pair count applies. A
+    condition only selects; it may read B."""
+    v, k = 10.0, 0.01
+    law = (
+        f"<piecewise><piece>{_times('k', 'B', 'B', 'C')}{cond}</piece>"
+        "<otherwise><cn>0</cn></otherwise></piecewise>"
+    )
+    m = _boundary_law(law)
+    for n in (1, 2, 3):
+        got = m.propensities([n / v, 0.0])[0]
+        assert got == pytest.approx(k * n * (n - 1) / v, rel=1e-14, abs=0.0), (n, got)
+
+
+def test_a_piecewise_whose_branches_disagree_is_left_as_written():
+    v, k = 10.0, 0.01
+    law = (
+        f"<piecewise><piece>{_times('k', 'B', 'B', 'C')}{PIECE_ON}</piece>"
+        f"<otherwise>{_times('k', 'B', 'C')}</otherwise></piecewise>"
+    )
+    m = _boundary_law(law)
+    for n in (1, 3):
+        got = m.propensities([n / v, 0.0])[0]
+        assert got == pytest.approx(k * n * n / v, rel=1e-14), (n, got)
+
+
+def test_a_local_parameter_that_shadows_a_species():
+    """A local ``B`` inside the law is a number, not the species."""
+    v, k = 10.0, 0.01
+    m = _boundary_law(_times("k", "B", "B", "C"), local=[("B", 0.5)])
+    for n in (1, 3):
+        assert m.propensities([n / v, 0.0])[0] == pytest.approx(k * 0.25 * v, rel=1e-14)
+
+
+@pytest.mark.parametrize(
+    "exp", ["<infinity/>", "<notanumber/>", "<cn>INF</cn>"], ids=["inf", "nan", "cn-inf"]
+)
+@pytest.mark.parametrize("boundary", [True, False], ids=["boundary", "floating"])
+def test_a_non_finite_exponent_loads(exp, boundary):
+    """``B^inf`` is not an integer power. Both the mass-action classifier and
+    the walker used to take ``int()`` of it and raise OverflowError."""
+    bngsim.Model.from_sbml_string(
+        _sbml(
+            comps=[("C", 10.0, True)],
+            species=[("B", "C", 3, False, boundary), ("P", "C", 0, False, False)],
+            reactants=[("B", 2)],
+            products=[("P", 1)],
+            law=_times("k", _pow("B", exp), "C"),
+            params=[("k", 0.01)],
+        )
+    )
+
+
+RATE_RULE_X = (
+    f'<listOfRules><rateRule variable="X"><math {MATH}><cn>0</cn></math></rateRule></listOfRules>'
+)
+ASSIGN_X = (
+    f'<listOfRules><assignmentRule variable="X"><math {MATH}><ci>q</ci></math>'
+    "</assignmentRule></listOfRules>"
+)
+
+
+@pytest.mark.parametrize("rules", [RATE_RULE_X, ASSIGN_X], ids=["rate-rule", "assignment-rule"])
+def test_a_rule_target_is_not_a_count(rules):
+    """X is continuous (a rule sets it), so ``X·X`` is its square, not a pair
+    count: 1/V of X is 0.1, not "one molecule". A is a single reactant."""
+    v, k = 10.0, 0.01
+    m = bngsim.Model.from_sbml_string(
+        _sbml(
+            comps=[("C", v, True)],
+            species=[
+                ("A", "C", 3, False, True),
+                ("X", "C", 1, False, False),
+                ("P", "C", 0, False, False),
+            ],
+            reactants=[("A", 1)],
+            products=[("P", 1)],
+            modifiers=["X"],
+            law=_times("k", "A", "X", "X", "C"),
+            params=[("k", k), ("q", 0.1)],
+            rules=rules,
+        )
+    )
+    names = list(m.species_names)
+    x = np.zeros(len(names))
+    x[names.index("A")] = 0.1
+    x[names.index("X")] = 0.1
+    # J is the last reaction: a rate rule is emitted first, as its own ``[] -> X``
+    assert m.propensities(x)[-1] == pytest.approx(k * 0.1 * 0.01 * v, rel=1e-12)
+
+
+def test_a_conversion_factor_scales_the_change_not_the_pairs():
+    """A conversionFactor on the product sends the reaction through the
+    per-species-change emission; its propensity is still the pair count."""
+    v, k = 10.0, 0.01
+    s = _sbml(
+        comps=[("C", v, True)],
+        species=[("A", "C", 3, False, False), ("P", "C", 0, False, False)],
+        reactants=[("A", 2)],
+        products=[("P", 1)],
+        law=_times("k", "A", "A", "C"),
+        params=[("k", k), ("cfp", 3.0)],
+    )
+    sp = '<species id="P" compartment="C"'
+    s = s.replace(sp, sp + ' conversionFactor="cfp"')
+    m = bngsim.Model.from_sbml_string(s)
+    for n in (1, 2, 3):
+        got = m.propensities([n / v, 0.0])[0]
+        assert got == pytest.approx(k * n * (n - 1) / v, rel=1e-14, abs=0.0), (n, got)
+    r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 1e4), n_points=2, seed=2)
+    a = np.asarray(r.species)[-1, list(r.species_names).index("A")] * v
+    assert a == 1.0  # one A left, which cannot pair
+
+
+def test_the_writesbml_shape_with_an_assigned_rate_constant():
+    """BNG's writeSBML emits ``2A -> P`` as ``0.5·rl·A·A`` with ``rl`` an
+    assignment rule. The rule keeps the law Functional; A still pairs."""
+    k = 0.01
+    rules = (
+        f'<listOfRules><assignmentRule variable="rl"><math {MATH}><ci>k</ci></math>'
+        "</assignmentRule></listOfRules>"
+    )
+    m = bngsim.Model.from_sbml_string(
+        _sbml(
+            comps=[("C", 1.0, True)],
+            species=[("A", "C", 3, False, False), ("P", "C", 0, False, False)],
+            reactants=[("A", 2)],
+            products=[("P", 1)],
+            law=_times("<cn>0.5</cn>", "rl", "A", "A"),
+            params=[("k", k), ("rl", 0.0, False)],
+            rules=rules,
+        )
+    )
+    names = list(m.species_names)
+    for n in (1, 2, 3):
+        x = np.zeros(len(names))
+        x[names.index("A")] = n
+        got = m.propensities(x)[0]
+        assert got == pytest.approx(0.5 * k * n * (n - 1), rel=1e-14, abs=0.0), (n, got)
+
+
+def test_psa_takes_the_same_propensity():
+    m = _boundary_dimer(nb=1)
+    r = bngsim.Simulator(m, method="psa", poplevel=100).run(t_span=(0, 1e4), n_points=3, seed=1)
+    assert np.asarray(r.species)[-1, list(r.species_names).index("P")] == 0.0
+
+
+def test_the_codegen_key_of_other_models_is_unchanged(tmp_path):
+    """The fields are exported only when set: the structural codegen key
+    hashes the whole dict, so every other model keeps its cached kernel."""
+    rx = _boundary_dimer()._core.codegen_data()["reactions"]
+    assert rx[0]["ssa_falling_factorial"] == [(0, 2)]
+    net = tmp_path / "m.net"
+    net.write_text(
+        "begin parameters\n    1 k 1\nend parameters\n"
+        "begin species\n    1 A() 10\nend species\n"
+        "begin reactions\n    1 1,1 0 k\nend reactions\n"
+    )
+    cd = bngsim.Model.from_net(str(net))._core.codegen_data()
+    assert "ssa_falling_factorial" not in cd["reactions"][0]
+    assert "ssa_volume_param_idx0" not in cd["reactions"][0]
+    assert "initial_amount" not in cd["species"][0]
+
+
+# ── the builder setter ──────────────────────────────────────────────────────
+
+
+def _builder(rtype):
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("k", 1.0)
+    b.add_species("A", 5.0)
+    if rtype == "functional":
+        b.add_function("f", "k*A*A")
+        b.add_reaction([0, 0], [], "functional", "f", apply_species_factor=False)
+    else:
+        b.add_reaction([0, 0], [], "elementary", "k")
+    return b
+
+
+def test_the_setter_refuses_an_elementary_reaction():
+    """An elementary reaction takes its falling factorial from its reactants,
+    and the compiled SSA kernel never reads this field: setting it would make
+    the two SSA backends disagree."""
+    with pytest.raises(ValueError, match="not Functional"):
+        _builder("elementary").set_reaction_ssa_falling_factorial(0, [(0, 2)])
+
+
+def test_the_setter_refuses_a_species_listed_twice():
+    with pytest.raises(ValueError, match="listed twice"):
+        _builder("functional").set_reaction_ssa_falling_factorial(0, [(0, 2), (0, 2)])
+
+
+# ── make_subset_model carries what the engine reads ─────────────────────────
+
+
+def test_a_subset_keeps_the_falling_factorial():
+    from bngsim.coupling import make_subset_model
+
+    v = 10.0
+    full = _boundary_dimer(nb=1)
+    sub = make_subset_model(full, keep_reactions=[0])
+    for n in (1, 2, 5):
+        x = [n / v, 0.0]
+        assert sub.propensities(x)[0] == full.propensities(x)[0], n
+    r = bngsim.Simulator(sub, method="ssa").run(t_span=(0, 1e4), n_points=2, seed=1)
+    assert np.asarray(r.species)[-1, list(r.species_names).index("P")] == 0.0
+
+
+def test_a_subset_follows_a_compartment_write():
+    """An initialAmount is stored as amount/V. A write to V re-divides it in
+    the model; the subset kept the load-time amount/V (A = 2, not 1)."""
+    from bngsim.coupling import make_subset_model
+
+    full = bngsim.Model.from_sbml_string(
+        _sbml(
+            comps=[("C", 5.0, True)],
+            species=[("A", "C", 10, False, False), ("P", "C", 0, False, False)],
+            reactants=[("A", 1)],
+            products=[("P", 1)],
+            law=_times("k", "A", "C"),
+            params=[("k", 0.1)],
+        )
+    )
+    sub = make_subset_model(full)
+    assert sub.compartment_size_params == full.compartment_size_params == ["C"]
+    for mm in (full, sub):
+        mm.set_param("C", 10.0)
+        mm.reset()
+    np.testing.assert_array_equal(sub.get_state(), full.get_state())
+    np.testing.assert_array_equal(sub.get_state(), [1.0, 0.0])
+
+
+def test_a_subset_keeps_a_refused_compartment_write():
+    """``A(C1) + B(C2)`` in two compartments that happen to share a size is
+    one mass-action scalar, exact only while the sizes agree, so the model
+    refuses a write to either. The subset accepted it and ran on."""
+    from bngsim.coupling import make_subset_model
+
+    full = bngsim.Model.from_sbml_string(
+        _sbml(
+            comps=[("C1", 2.0, True), ("C2", 2.0, True)],
+            species=[
+                ("A", "C1", 10, False, False),
+                ("B", "C2", 10, False, False),
+                ("P", "C1", 0, False, False),
+            ],
+            reactants=[("A", 1), ("B", 1)],
+            products=[("P", 1)],
+            law=_times("k", "A", "B", "C1"),
+            params=[("k", 0.1)],
+        )
+    )
+    sub = make_subset_model(full)
+    assert sub.unwritable_compartment_size_params == full.unwritable_compartment_size_params
+    for mm in (full, sub):
+        with pytest.raises(ValueError, match="compartment size"):
+            mm.set_param("C1", 4.0)
+
+
+def test_a_subset_follows_an_initial_value_parameter(tmp_path):
+    """``A() A0``: a write to A0 moves A's initial value (#79). The subset
+    dropped the reference and kept A = 50."""
+    from bngsim.coupling import make_subset_model
+
+    net = tmp_path / "ic.net"
+    net.write_text(
+        "begin parameters\n    1 k 0.1\n    2 A0 50\nend parameters\n"
+        "begin species\n    1 A() A0\n    2 B() 0\nend species\n"
+        "begin reactions\n    1 1 2 k\nend reactions\n"
+    )
+    full = bngsim.Model.from_net(str(net))
+    sub = make_subset_model(full)
+    for mm in (full, sub):
+        mm.set_param("A0", 80.0)
+        mm.reset()
+    np.testing.assert_array_equal(sub.get_state(), [80.0, 0.0])

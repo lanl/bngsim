@@ -2660,12 +2660,15 @@ def _ssa_falling_factorial_terms(rxn, species_idx, continuous_ids) -> list[tuple
 
     Returns ``[(species index, m), ...]`` for every count species the law holds
     to a power m >= 2 when the law is a product: species only as factors of the
-    numerator (bare, or to a positive integer power), anything else (numbers,
-    parameters, compartments, functions of those) free to appear anywhere. A
+    numerator (bare, or to a non-negative integer power), anything else
+    (numbers, parameters, compartments, functions of those) free to appear
+    anywhere. A piecewise counts when every branch that is not a literal 0 is
+    such a product of the same species (its conditions may read anything). A
     law that puts a species anywhere else (a sum such as ``X*(X-1)``, a
-    function call, a denominator, a piecewise) is its own statement of the
-    combinatorics and gets nothing. A continuous slot (an assignment- or
-    rate-rule target) is not a count and gets nothing.
+    function call, a denominator, piecewise branches that disagree) is its own
+    statement of the combinatorics and gets nothing. A continuous slot (an
+    assignment- or rate-rule target) is not a count and gets nothing, nor is a
+    local parameter that shadows a species id.
     """
     kl = rxn.getKineticLaw()
     math = kl.getMath() if kl is not None else None
@@ -2689,37 +2692,70 @@ def _ssa_falling_factorial_terms(rxn, species_idx, continuous_ids) -> list[tuple
             return True
         return any(mentions_species(node.getChild(i)) for i in range(node.getNumChildren()))
 
-    mult: Counter = Counter()
+    def integer_exponent(node):
+        """A finite, integer-valued numeric literal, as an int; else None."""
+        et = node.getType()
+        if et == libsbml.AST_INTEGER:
+            return node.getInteger()
+        if et in (libsbml.AST_REAL, libsbml.AST_REAL_E):
+            r = node.getReal()
+            return int(r) if _math.isfinite(r) and r == int(r) else None
+        if et == libsbml.AST_RATIONAL:
+            num, den = node.getNumerator(), node.getDenominator()
+            return num // den if den != 0 and num % den == 0 else None
+        return None
 
-    def walk(node, numerator: bool) -> bool:
+    def is_zero(node) -> bool:
+        et = node.getType()
+        return (et == libsbml.AST_INTEGER and node.getInteger() == 0) or (
+            et in (libsbml.AST_REAL, libsbml.AST_REAL_E) and node.getReal() == 0.0
+        )
+
+    def walk(node, numerator: bool, times: int, acc: Counter) -> bool:
+        """Add each species factor of ``node`` (raised ``times``) to ``acc``."""
         t = node.getType()
         if t == libsbml.AST_TIMES:
-            return all(walk(node.getChild(i), numerator) for i in range(node.getNumChildren()))
+            return all(
+                walk(node.getChild(i), numerator, times, acc) for i in range(node.getNumChildren())
+            )
         if t == libsbml.AST_DIVIDE and node.getNumChildren() == 2:
-            return walk(node.getChild(0), numerator) and walk(node.getChild(1), not numerator)
+            return walk(node.getChild(0), numerator, times, acc) and walk(
+                node.getChild(1), not numerator, times, acc
+            )
         if is_species(node):
             if not numerator:
                 return False
-            mult[node.getName()] += 1
+            acc[node.getName()] += times
             return True
         if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER) and node.getNumChildren() == 2:
-            base, exp = node.getChild(0), node.getChild(1)
-            if is_species(base):
-                et = exp.getType()
-                n = None
-                if et == libsbml.AST_INTEGER:
-                    n = exp.getInteger()
-                elif et in (libsbml.AST_REAL, libsbml.AST_REAL_E) and exp.getReal() == int(
-                    exp.getReal()
-                ):
-                    n = int(exp.getReal())
-                if n is None or n < 1 or not numerator:
+            n = integer_exponent(node.getChild(1))
+            if n is not None and n >= 0:
+                # x^0 contributes nothing; (B*C)^2 contributes B twice.
+                return n == 0 or walk(node.getChild(0), numerator, times * n, acc)
+            return not mentions_species(node)
+        if t == libsbml.AST_FUNCTION_PIECEWISE:
+            # piecewise(k*B*B*C, cond, 0): the value in force is a product of the
+            # same species wherever it is not 0, so the factorial is the same
+            # whichever branch applies. Conditions only select, and may read
+            # species freely. Branches that disagree are left as written.
+            maps = []
+            for i in range(0, node.getNumChildren(), 2):  # values; a trailing otherwise
+                val = node.getChild(i)
+                if is_zero(val):
+                    continue
+                sub: Counter = Counter()
+                if not walk(val, numerator, times, sub):
                     return False
-                mult[base.getName()] += n
-                return True
+                maps.append(sub)
+            if any(mp != maps[0] for mp in maps[1:]):
+                return False
+            if maps:
+                acc.update(maps[0])
+            return True
         return not mentions_species(node)
 
-    if not walk(math, True):
+    mult: Counter = Counter()
+    if not walk(math, True, 1, mult):
         return []
     return sorted(
         (species_idx[sid], m) for sid, m in mult.items() if m >= 2 and sid not in continuous_ids
@@ -2752,7 +2788,7 @@ def _flatten_product_for_mass_action(node, out):
             n_exp = exp.getInteger()
         elif et in (libsbml.AST_REAL, libsbml.AST_REAL_E):
             r = exp.getReal()
-            if r == int(r):
+            if _math.isfinite(r) and r == int(r):  # inf/nan: not an integer
                 n_exp = int(r)
         if n_exp is None or n_exp < 1:
             return False
@@ -2806,7 +2842,7 @@ def _factor_minus_subtree(node):
                 n_exp = exp.getInteger()
             elif et in (libsbml.AST_REAL, libsbml.AST_REAL_E):
                 r = exp.getReal()
-                if r == int(r):
+                if _math.isfinite(r) and r == int(r):  # inf/nan: not an integer
                     n_exp = int(r)
             if n_exp is None or n_exp < 1:
                 return False
@@ -6392,6 +6428,9 @@ def _build_model_from_sbml_doc(doc):
     #     zero, so the consumption side of the reaction never fires.
     #     Reserved for the cross-compartment / non-integer cases that
     #     Phase 2 will replace.
+    # Continuous slots never take a falling factorial (see
+    # _ssa_falling_factorial_terms); built once, not per reaction.
+    _ssa_ff_continuous = set(assignment_targets) | set(rate_rule_targets)
     for i in range(sbml_model.getNumReactions()):
         rxn = sbml_model.getReaction(i)
         rid = rxn.getId()
@@ -6990,9 +7029,7 @@ def _build_model_from_sbml_doc(doc):
             if not _cf_groups:  # no changed species (e.g. all-modifier) — keep one emission
                 _cf_groups[_cf_i] = (reactant_mult, product_mult)
             _func_rxn_idx = None
-            _ssa_ff = _ssa_falling_factorial_terms(
-                rxn, species_idx, set(assignment_targets) | set(rate_rule_targets)
-            )
+            _ssa_ff = _ssa_falling_factorial_terms(rxn, species_idx, _ssa_ff_continuous)
             for _cf_v, (_rm, _pm) in _cf_groups.items():
                 _func_rxn_idx = builder.add_reaction(
                     _rm,
@@ -7071,9 +7108,7 @@ def _build_model_from_sbml_doc(doc):
                 ssa_volume_factor=1.0,
                 per_species_volume_scaling=True,
             )
-            _ssa_ff = _ssa_falling_factorial_terms(
-                rxn, species_idx, set(assignment_targets) | set(rate_rule_targets)
-            )
+            _ssa_ff = _ssa_falling_factorial_terms(rxn, species_idx, _ssa_ff_continuous)
             if _ssa_ff:
                 builder.set_reaction_ssa_falling_factorial(_xrxn_idx, _ssa_ff)
             # (#144 case 4) Cross-compartment variable-volume monomial certified by

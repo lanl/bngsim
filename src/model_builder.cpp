@@ -526,11 +526,28 @@ void ModelBuilder::set_reaction_ssa_falling_factorial(
     int rxn_idx0, const std::vector<std::pair<int, int>> &terms) {
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(bimpl_->reactions.size()))
         return;
-    auto &out = bimpl_->reactions[rxn_idx0].ssa_falling_factorial;
-    out.clear();
-    for (const auto &[si, m] : terms)
-        if (si >= 0 && si < static_cast<int>(bimpl_->species.size()) && m >= 2)
-            out.emplace_back(si, m);
+    auto &rxn = bimpl_->reactions[rxn_idx0];
+    // Only a law evaluated as written needs it. An Elementary or MM reaction
+    // already takes its falling factorial from its reactant list, and the
+    // compiled SSA kernel (which covers those) never reads this field: the two
+    // SSA backends would disagree.
+    if (!terms.empty() && rxn.rate_law_type != RateLawType::Functional)
+        throw std::invalid_argument("set_reaction_ssa_falling_factorial: reaction " +
+                                    std::to_string(rxn_idx0) +
+                                    " is not Functional; an elementary or Michaelis-Menten "
+                                    "reaction takes its falling factorial from its reactants");
+    std::vector<std::pair<int, int>> out;
+    for (const auto &[si, m] : terms) {
+        if (si < 0 || si >= static_cast<int>(bimpl_->species.size()) || m < 2)
+            continue;
+        for (const auto &[s2, m2] : out)
+            if (s2 == si)
+                throw std::invalid_argument("set_reaction_ssa_falling_factorial: species " +
+                                            std::to_string(si) +
+                                            " is listed twice; give its total power once");
+        out.emplace_back(si, m);
+    }
+    rxn.ssa_falling_factorial = std::move(out);
 }
 
 void ModelBuilder::add_reaction_live_volume_term(int rxn_idx0, int live_idx0, double v_static,

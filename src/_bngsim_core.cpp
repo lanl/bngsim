@@ -2067,6 +2067,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     // write `p[k]` where it used to write the number. -1 ⇒ no
                     // parameter (a `.net` species, or a promoted compartment).
                     sd["volume_param_idx0"] = s.volume_param_idx0;
+                    // The declared amount a volume write re-divides (#170). Only
+                    // when set, so a model without one keeps its codegen key.
+                    if (!std::isnan(s.initial_amount))
+                        sd["initial_amount"] = s.initial_amount;
                     sp_list.append(sd);
                 }
                 d["species"] = sp_list;
@@ -2140,6 +2144,16 @@ PYBIND11_MODULE(_bngsim_core, m) {
                         live_terms.append(td);
                     }
                     rd["ssa_live_volume_terms"] = live_terms;
+                    // Exported only when set, so a model without them keeps its
+                    // structural codegen key (the key hashes this whole dict).
+                    if (r.ssa_volume_param_idx0 >= 0)
+                        rd["ssa_volume_param_idx0"] = r.ssa_volume_param_idx0; // #170
+                    if (!r.ssa_falling_factorial.empty()) {
+                        py::list ff;
+                        for (const auto &[si, m] : r.ssa_falling_factorial)
+                            ff.append(py::make_tuple(si, m));
+                        rd["ssa_falling_factorial"] = ff;
+                    }
                     rd["ode_only"] = r.ode_only;
                     // Convert 1-based indices to 0-based, filter nulls (0 in 1-based)
                     py::list reactants;
