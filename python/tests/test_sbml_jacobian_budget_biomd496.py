@@ -262,9 +262,10 @@ _DEFAULT_BUDGET_S = 20.0
 # #888 applied BIOMD0000000608's x1,000,000 stoichiometric coefficients as one
 # update per species instead of one unit at a time, which made its RHS far
 # cheaper, and the FD Jacobian (many RHS calls) gained most: 608 now solves at
-# 1.05-1.09x, and its derivation is 0.045 s (the drop was not bisected). Same
-# method as the table (warm-up, best of 3, reset() between, budget lifted), over
-# every attaching model whose unbudgeted derivation is at least MODEL1601050000's:
+# 1.05-1.09x, and its derivation is 0.045 s (the drop was not bisected). This
+# test's own method (one warm-up, then best of 3 with reset() between, budget
+# lifted; the #245 table used medians), over every attaching model whose
+# unbudgeted derivation is at least MODEL1601050000's:
 #
 #   | model            | derivation | FD / analytical solve |
 #   |------------------|-----------:|----------------------:|
@@ -272,14 +273,21 @@ _DEFAULT_BUDGET_S = 20.0
 #   | MODEL0406793751  |     3.59 s |                 1.12x |
 #   | BIOMD0000000577  |     2.46 s |                 1.07x |
 #   | BIOMD0000000469  |     5.36 s |                 0.47x |
+#   | BIOMD0000000471  |     3.69 s |                 0.61x |
+#   | BIOMD0000000470  |     3.00 s |                 0.47x |
+#   | BIOMD0000000472  |     2.03 s |                 0.45x |
 #   | BIOMD0000000628  |    32.7 s  |                 0.71x |
 #   | BIOMD0000000385  |    10.1 s  |                 0.31x |
 #   | MODEL1006230049/053/077 | 59-93 s | 0.62x / 0.33x / 0.35x |
 #
-# (Derivations over 2 s were timed four to a machine, so read them as upper
-# bounds. BIOMD0000000470-473 were not timed: they are 469's linlog family, whose
-# analytical solve loses. MODEL1006230090 still runs past a 300 s probe cap.)
-# So MODEL1601050000 is now the slowest derivation that pays for itself.
+# (Derivations other than MODEL1601050000's were timed four to a machine, so
+# read them as upper bounds. BIOMD0000000473 (2.07 s) was not timed: its
+# compile alone runs ~10 min, and its Smallbone2013 siblings 470 and 472 lose.
+# MODEL1006230090 still runs past a 300 s probe cap.) So MODEL1601050000 is now
+# the slowest derivation that pays for itself. Its solve reaches t = 100 in a
+# handful of steps (~0.03 s against ~0.09 s), so the ratio is load-sensitive:
+# a machine loaded well past its core count has read it as low as 2.0x. Run
+# this test on a quiet machine before reading a failure as a finding.
 #
 # A default below it does not merely make that build pay a derivation and discard
 # it — it hands the model a solve 3.3x slower for the rest of its life. So the floor
@@ -292,11 +300,12 @@ _DEFAULT_BUDGET_S = 20.0
 # (the ratio in the module docstring; seconds do not travel, ratios do): 15.7 s,
 # held at 15.0. The shipping default clears it by 1.33x.
 #
-# **These ratios are only visible on a warm cache.** ``fd_viability.jsonl`` runs one
-# cold sample per mode, analytical first, so that arm absorbs codegen warm-up: it
-# reports 496 at 5.84x (really 1.02x) and MODEL1603150001 at 0.33x (really 3.01x) —
-# wrong by 5.8x in one direction and 9x in the other. Every number above is a
-# median of repeats after a discarded warm-up run.
+# **These ratios are only visible on a warm cache** (#245's words, about its medians;
+# the #898 table above is best-of-3 after a warm-up, as the test is).
+# ``fd_viability.jsonl`` runs one cold sample per mode, analytical first, so that arm
+# absorbs codegen warm-up: it reports 496 at 5.84x (really 1.02x) and MODEL1603150001 at
+# 0.33x (really 3.01x) — wrong by 5.8x in one direction and 9x in the other. Every
+# number in the #245 table is a median of repeats after a discarded warm-up run.
 #
 # The ceiling, for the same reason it is not asserted: the cheapest derivation that
 # does *not* pay for itself is BIOMD0000000628 at 59.3 s, whose analytical solve is
