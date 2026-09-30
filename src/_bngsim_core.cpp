@@ -2699,6 +2699,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "parameter or compartment, or an assignment- or rate-rule target) rather than a "
              "molecule count, so SSA/PSA do not round it to a whole number. No-op if "
              "species_idx0 is out of range.")
+        .def("set_reaction_ssa_falling_factorial",
+             &bngsim::ModelBuilder::set_reaction_ssa_falling_factorial, py::arg("rxn_idx0"),
+             py::arg("terms"),
+             "Give a Functional reaction an SSA falling factorial: terms is a list of "
+             "(0-based species index, m) for each species its kinetic law holds to the "
+             "power m >= 2, so the SSA propensity takes n(n-1)...(n-m+1) where the law has "
+             "n^m. The ODE path ignores it. No-op if rxn_idx0 is out of range.")
         .def("add_reaction_live_volume_term", &bngsim::ModelBuilder::add_reaction_live_volume_term,
              py::arg("rxn_idx0"), py::arg("live_idx0"), py::arg("v_static"), py::arg("exp"),
              "GH #144 (case 4): append a cross-compartment SSA live-volume term to a "

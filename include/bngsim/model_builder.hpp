@@ -162,6 +162,13 @@ class ModelBuilder {
     /// No-op if species_idx0 is out of range.
     void set_species_rateof_amount(int species_idx0);
 
+    /// Give an SSA falling factorial to a Functional reaction whose kinetic law
+    /// is a product that holds these species to these powers (m >= 2), so its
+    /// SSA propensity takes n(n−1)…(n−m+1) where the law has n^m. See
+    /// Reaction::ssa_falling_factorial. No-op if rxn_idx0 is out of range.
+    void set_reaction_ssa_falling_factorial(int rxn_idx0,
+                                            const std::vector<std::pair<int, int>> &terms);
+
     /// Issue #718: mark a state slot as holding a continuous quantity rather
     /// than a molecule count (see Species::continuous), so the SSA does not
     /// round it. No-op if species_idx0 is out of range.

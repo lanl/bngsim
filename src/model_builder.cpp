@@ -522,6 +522,17 @@ void ModelBuilder::set_species_continuous(int species_idx0) {
     bimpl_->species[species_idx0].continuous = true;
 }
 
+void ModelBuilder::set_reaction_ssa_falling_factorial(
+    int rxn_idx0, const std::vector<std::pair<int, int>> &terms) {
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(bimpl_->reactions.size()))
+        return;
+    auto &out = bimpl_->reactions[rxn_idx0].ssa_falling_factorial;
+    out.clear();
+    for (const auto &[si, m] : terms)
+        if (si >= 0 && si < static_cast<int>(bimpl_->species.size()) && m >= 2)
+            out.emplace_back(si, m);
+}
+
 void ModelBuilder::add_reaction_live_volume_term(int rxn_idx0, int live_idx0, double v_static,
                                                  double exp) {
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(bimpl_->reactions.size()))

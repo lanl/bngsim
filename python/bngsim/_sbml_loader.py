@@ -2646,6 +2646,86 @@ def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = No
     return load_sbml_string(sbml_str, compartment_sizes)
 
 
+def _ssa_falling_factorial_terms(rxn, species_idx, continuous_ids) -> list[tuple[int, int]]:
+    """The SSA falling factorial a kinetic law evaluated as written needs.
+
+    A reaction the mass-action classifier declines (a boundary reactant,
+    reactants in compartments of different sizes, an assignment-rule
+    compartment, a law divided by a volume) is emitted Functional and its law
+    is evaluated literally, so under SSA a species it reads m times contributes
+    n^m where the number of distinct m-tuples of its molecules is
+    n(n-1)...(n-m+1). ``2B -> P`` at ``k*B*B`` kept firing at k with a single B
+    left, where the same reaction from a `.net` (``$B + $B``) or a law the
+    classifier lifts fires at 0.
+
+    Returns ``[(species index, m), ...]`` for every count species the law holds
+    to a power m >= 2 when the law is a product: species only as factors of the
+    numerator (bare, or to a positive integer power), anything else (numbers,
+    parameters, compartments, functions of those) free to appear anywhere. A
+    law that puts a species anywhere else (a sum such as ``X*(X-1)``, a
+    function call, a denominator, a piecewise) is its own statement of the
+    combinatorics and gets nothing. A continuous slot (an assignment- or
+    rate-rule target) is not a count and gets nothing.
+    """
+    kl = rxn.getKineticLaw()
+    math = kl.getMath() if kl is not None else None
+    if math is None:
+        return []
+    shadowed = set()
+    for j in range(kl.getNumLocalParameters()):
+        shadowed.add(kl.getLocalParameter(j).getId())
+    for j in range(kl.getNumParameters()):
+        shadowed.add(kl.getParameter(j).getId())
+
+    def is_species(node) -> bool:
+        return (
+            node.getType() == libsbml.AST_NAME
+            and node.getName() in species_idx
+            and node.getName() not in shadowed
+        )
+
+    def mentions_species(node) -> bool:
+        if is_species(node):
+            return True
+        return any(mentions_species(node.getChild(i)) for i in range(node.getNumChildren()))
+
+    mult: Counter = Counter()
+
+    def walk(node, numerator: bool) -> bool:
+        t = node.getType()
+        if t == libsbml.AST_TIMES:
+            return all(walk(node.getChild(i), numerator) for i in range(node.getNumChildren()))
+        if t == libsbml.AST_DIVIDE and node.getNumChildren() == 2:
+            return walk(node.getChild(0), numerator) and walk(node.getChild(1), not numerator)
+        if is_species(node):
+            if not numerator:
+                return False
+            mult[node.getName()] += 1
+            return True
+        if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER) and node.getNumChildren() == 2:
+            base, exp = node.getChild(0), node.getChild(1)
+            if is_species(base):
+                et = exp.getType()
+                n = None
+                if et == libsbml.AST_INTEGER:
+                    n = exp.getInteger()
+                elif et in (libsbml.AST_REAL, libsbml.AST_REAL_E) and exp.getReal() == int(
+                    exp.getReal()
+                ):
+                    n = int(exp.getReal())
+                if n is None or n < 1 or not numerator:
+                    return False
+                mult[base.getName()] += n
+                return True
+        return not mentions_species(node)
+
+    if not walk(math, True):
+        return []
+    return sorted(
+        (species_idx[sid], m) for sid, m in mult.items() if m >= 2 and sid not in continuous_ids
+    )
+
+
 def _flatten_product_for_mass_action(node, out):
     """Walk a kinetic-law AST as a flat product, appending leaves to ``out``.
 
@@ -6910,6 +6990,9 @@ def _build_model_from_sbml_doc(doc):
             if not _cf_groups:  # no changed species (e.g. all-modifier) — keep one emission
                 _cf_groups[_cf_i] = (reactant_mult, product_mult)
             _func_rxn_idx = None
+            _ssa_ff = _ssa_falling_factorial_terms(
+                rxn, species_idx, set(assignment_targets) | set(rate_rule_targets)
+            )
             for _cf_v, (_rm, _pm) in _cf_groups.items():
                 _func_rxn_idx = builder.add_reaction(
                     _rm,
@@ -6920,6 +7003,8 @@ def _build_model_from_sbml_doc(doc):
                     apply_species_factor=False,
                     ssa_volume_factor=common_vs,
                 )
+                if _ssa_ff:
+                    builder.set_reaction_ssa_falling_factorial(_func_rxn_idx, _ssa_ff)
                 # (#170) `common_vs` is the storage compartment's size; bind it to
                 # that parameter so a write moves the propensity too. Only for a
                 # single-compartment reaction — a mixed-V unified emission has no
@@ -6986,6 +7071,11 @@ def _build_model_from_sbml_doc(doc):
                 ssa_volume_factor=1.0,
                 per_species_volume_scaling=True,
             )
+            _ssa_ff = _ssa_falling_factorial_terms(
+                rxn, species_idx, set(assignment_targets) | set(rate_rule_targets)
+            )
+            if _ssa_ff:
+                builder.set_reaction_ssa_falling_factorial(_xrxn_idx, _ssa_ff)
             # (#144 case 4) Cross-compartment variable-volume monomial certified by
             # the classifier (§7). The per-species emission above divides each
             # species's storage derivative by its *static* volume_factor, which is
