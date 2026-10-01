@@ -13,10 +13,12 @@ slopes, and a value that turns inside the difference as whatever the difference
 caught of it.
 
 A central difference across a step, a bend or a turn is not a derivative, and
-the run is now refused there. A value is smooth across the difference where the
-difference over half the step agrees with it and the second difference about
-the point is a quarter as large. Where it is, the derivative is taken exactly as
-it was.
+the run is now refused there. Across a smooth value the difference over half
+the step is half as large and the second difference about the point a quarter
+as large. A value is refused where either is out by more than a part in 1e3 of
+what the value moves by across the step, and by more than 16 ulp of the largest
+thing the value reads. Where the value is smooth, the derivative is taken
+exactly as it was.
 
 Every expected value is a closed form: nothing changes B after the event.
 """
@@ -147,7 +149,7 @@ TURNS = {
     # 98273.2 for 1e5: the difference is over 2.3e-6 either side, a quarter of
     # the width of the turn.
     "tanh": ("tanh((time - 2.3)/1e-5)", "time >= T0 + 1", 1.3, 5.0),
-    # 6.7e-13 for 9.4e-13: the difference is over a whole unit of time either
+    # 6.7e-13 for 8.0e-13: the difference is over a whole unit of time either
     # side of 1e6.
     "sin-at-a-late-time": ("1e-12*sin(time)", "time >= T0 + 1e6", 1.0, 2e6),
 }
@@ -156,7 +158,7 @@ TURNS = {
 @pytest.mark.parametrize("turn", sorted(TURNS))
 def test_a_value_that_turns_inside_the_difference_is_refused(turn):
     """A smooth value, but not across a millionth of the fire time: the central
-    difference was 1.7% and 28% off."""
+    difference was 1.7% and 16% off."""
     value, trigger, T0, t_end = TURNS[turn]
     text = f"species B; B = 0; T0 = {T0}\nE1: at ({trigger}): B = {value}\n"
     _refused(text, ["T0"], t_end, "the time")
@@ -193,7 +195,8 @@ REFUSED_WHERE_IT_WAS_RIGHT = {
     ),
     # (time − 2.3)³ read at 2.3: smooth, with slope and curvature both 0 there.
     # The difference is h² over the whole step and h²/4 over half of it, which
-    # is what a value that turns inside the step shows. 5e-12 for 0.
+    # is what a value that turns inside the step shows. 5e-12 for 0. It reads
+    # nothing but the time, so there is no larger thing to round against.
     "a-flat-inflection": (
         "species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = (time - 2.3)^3\n",
         "the time",
@@ -316,3 +319,77 @@ def test_a_value_read_at_a_state_trigger():
         "E1: at (X >= thr): B = time - thr/k\n"
     )
     np.testing.assert_allclose(_sens(text, ["k", "thr"], 5.0), [0.0, 0.0], atol=1e-8)
+
+
+@pytest.mark.parametrize("value", ["piecewise(1, X > 3, -1, X < 3, 0)", "tanh((X - 3)/3e-6)"])
+def test_a_step_or_a_turn_a_species_sits_exactly_on_is_refused(value):
+    """X is held at 3 by its initial value x0. The step is odd about 3, so the
+    value at 3 lies midway between its neighbours and the three readings are in
+    line: dB/dx0 came back 333333 for the step, which has no derivative, and
+    253865 for the turn, whose is 333333."""
+    text = (
+        f"species B, X; B = 0; x0 = 3; X = x0\nJ0: -> B; 0*x0\nE1: at (time >= 1): B = {value}\n"
+    )
+    _refused(text, ["x0"], 5.0, "the species 'X'")
+
+
+@pytest.mark.parametrize("x0", [0.1, 0.4, 0.7, 1.0, 1.9, 2.8, 4.0])
+def test_a_value_that_is_a_difference_of_larger_things(x0):
+    """Control. ``Atot − X − Abound`` with Atot at 1000 is 1.5 − X and rounds
+    by an ulp of 1000, which is a thousand times what its own size says: the
+    readings are not in line to that. dB/dx0 = −1. A first cut of this fix
+    refused 12 of 40 such values."""
+    text = (
+        f"species B, X; B = 0; x0 = {x0}; X = x0; Atot = 1000; Abound = 998.5\n"
+        "J0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = Atot - X - Abound\n"
+    )
+    assert _sens(text, ["x0"], 5.0)[0] == pytest.approx(-1.0, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("value", "param", "want", "rel"),
+    [
+        ("1 - exp(-k1*time)", "k1", 2.3 * np.exp(-0.001 * 2.3), 1e-6),
+        # 1e-10, read from a value that is 1 and rounds by 1e-16: three digits.
+        ("X^3/(8 + X^3)", "x0", 3 * 8 * 700.0**2 / (8 + 700.0**3) ** 2, 2e-3),
+        ("exp(-320000*k1*time)", "k1", 0.0, 0.0),
+    ],
+    ids=["slow-first-order", "saturated", "vanishing"],
+)
+def test_a_value_that_barely_moves_across_the_difference(value, param, want, rel):
+    """Control. A slow first-order term, 0.0023 beside the 1 it is taken from;
+    a Hill function at X = 700, where it is 1 to eight digits; and a value that
+    has decayed to 1e-320, where a double has four digits left. Each moves
+    across the difference by little more than it rounds by, and the derivative
+    is that small."""
+    text = (
+        "species B, X; B = 0; x0 = 700; X = x0; k1 = 0.001; T0 = 1.3\n"
+        "J0: -> B; 0*x0\n"
+        f"E1: at (time >= T0 + 1): B = {value}\n"
+    )
+    assert _sens(text, [param], 5.0)[0] == pytest.approx(want, rel=rel, abs=1e-300)
+
+
+@pytest.mark.parametrize("T0", [1.0, 3.0, 7.0])
+def test_a_minimum_at_a_fire_time_that_is_a_power_of_two(T0):
+    """Control. ``(time − c)²`` read at its minimum, with c = T0 + 1 at 2, 4 and
+    8, where the time rounds differently on either side: the difference is the
+    rounding of the two readings, and it is as far out over half the step."""
+    text = f"species B; B = 0; T0 = {T0}\nE1: at (time >= T0 + 1): B = (time - {T0 + 1.0})^2\n"
+    assert _sens(text, ["T0"], 2 * (T0 + 1.0))[0] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_a_bend_in_time_under_a_state_trigger_no_column_moves():
+    """Control. The event fires as X = k·t passes thr, at t = 2, and assigns a
+    value that steps in time there. Only z is requested, which moves nothing
+    the trigger reads: the fire time does not move, and the step is not asked
+    about. A state trigger takes the path a moving fire time takes, with every
+    shift 0."""
+    text = (
+        "species B, X, W; B = 0; X = 0; W = 1; k = 1; thr = 2; z = 0.5\n"
+        "J0: -> X; k\n"
+        "J1: W -> ; z*W\n"
+        "E1: at (X >= thr): B = piecewise(5, time >= 2.0, 0)\n"
+    )
+    assert _sens(text, ["z"], 5.0)[0] == pytest.approx(0.0, abs=1e-12)

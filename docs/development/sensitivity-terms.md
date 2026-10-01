@@ -116,10 +116,15 @@ has to refresh the `rateOf` buffer.
   `B = u`, fired at `time >= T0 + 1`), a step in a parameter at the parameter's
   own value, a bend, or a value that turns inside a millionth of what it reads.
   `∂h/∂p`, `∂h/∂x` and `∂h/∂t` are central differences, and across any of these
-  a central difference is not a derivative. The value is taken as smooth where
-  the difference over half the step agrees to a part in 1e4 and the second
-  difference about the point is no more than 3/8 as large there; a species is
-  asked only where a column carries something through it (#915,
+  a central difference is not a derivative. Across a smooth value the
+  difference over half the step is half as large and the second difference
+  about the point a quarter as large; the run is refused where either is out by
+  more than a part in 1e3 of what the value moves by across the step, and by
+  more than 16 ulp of the largest thing the value reads or of what the moved
+  variable's own last digit moves it by. A difference retaken over a wider step
+  (#767) is across a value that is straight there, and is not asked. A species
+  is refused only where a column carries something through it, and the time
+  only where a column moves the fire time (#915,
   `test_event_value_time_step_sensitivity.py`). A step or a bend that moves
   with the event has a derivative, and is refused with the rest.
 
