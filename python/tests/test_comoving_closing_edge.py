@@ -12,10 +12,11 @@ it moves at the same rate as the closing one, and is still in its frame when
 the window closes.
 
 A column whose next switch time is approached through such a power now enters
-before it: at the start of the run, or at a stop the run takes halfway from the
-clock crossing behind it. Not at that crossing. A window that opens as a power
-too, ``s^(a-1)·(1-s)^(a-1)``, has an f whose slope is unbounded just past the
-opening.
+before it, at a stop the run takes a sixteenth of the way along the last stretch
+between switch times that leads to it. Not at the crossing that begins the
+stretch: a window that opens as a power too, ``s^(a-1)·(1-s)^(a-1)``, has an f
+whose slope is unbounded just past the opening. And not on an earlier stretch,
+where the frame would meet the edges of windows the column does not move.
 
 X is linear in the pulse, so every expected value is a quadrature of the pulse
 against ``e^(-kdeg·(T-t))``, differenced in the parameter at two steps and
@@ -30,8 +31,8 @@ import pytest
 from scipy.integrate import quad
 
 ON, WIDTH, K1, KDEG = 3.0, 4.0, 2.0, 0.3
-# 5 is the stop the D column enters at. Nothing is sampled on the onset (3) or
-# the close (7): the window's own edge is a kink in D there.
+# Nothing is sampled on the onset (3) or the close (7): the window's own edge
+# is a kink in D there. The D column enters at 3.25.
 T = [0.0, 1.0, 2.0, 4.0, 5.0, 5.5, 6.5, 6.99, 7.01, 8.0, 10.0]
 
 NET = """begin parameters
@@ -277,6 +278,35 @@ def test_a_window_that_only_opens_as_a_power_is_as_it_was(tmp_path, a):
     whose column at the opening edge has no shift at all."""
     got = _column(_model(tmp_path, "opening", a), "D")
     assert _worst(got, _exact("opening", a, "D")) < 5e-6
+
+
+@pytest.mark.parametrize("param", ["on", "D"])
+def test_nothing_enters_ahead_of_a_window_that_only_opens_as_a_power(tmp_path, param):
+    """Control. A column in its frame reads back as V − c·f, which is rounding
+    where the plain column is an exact 0. Only a case the generator marks is
+    entered ahead, so before this window opens both columns are plain."""
+    times = [0.0, 0.5, 1.0, 2.0, 2.9]
+    got = _column(_model(tmp_path, "opening", 1.1), param, times=times)
+    assert np.all(got == 0.0)
+
+
+def test_only_a_scale_the_numerator_reads_is_split():
+    """The closing base ``(on + D − t)/D`` is written as two powers. The opening
+    base ``(t − on)/D`` is left as it is written: its numerator does not read D,
+    and a model with no closing power emits the code it always did."""
+    import sympy as sp
+    from bngsim import _codegen
+
+    t, on, width, a = sp.symbols("t on D a")
+    values = {on: sp.Float(3.0), width: sp.Float(4.0), a: sp.Float(1.1)}
+    opening = ((t - on) / width) ** (a - 1)
+    closing = (1 - (t - on) / width) ** (a - 1)
+    assert _codegen._split_shared_scale(opening, {"t"}, values, sp) == opening
+    split = _codegen._split_shared_scale(closing, {"t"}, values, sp)
+    assert split != closing
+    assert {factor.exp for factor in split.args} == {a - 1, 1 - a}
+    point = {t: 5.5, on: 3.0, width: 4.0, a: 1.1}
+    assert float(split.subs(point)) == pytest.approx(float(closing.subs(point)), rel=1e-14)
 
 
 def test_the_generator_marks_the_case_a_closing_edge_approaches(tmp_path):
