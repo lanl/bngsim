@@ -213,3 +213,63 @@ def test_an_ordered_pair_at_the_start_of_the_run():
     np.testing.assert_allclose(s[:, a, 0], 0.0, atol=1e-9)
     np.testing.assert_allclose(s[:, b, 0], 0.0, atol=1e-9)
     np.testing.assert_allclose(s[:, b, 1], 8.0 * t * np.exp(-0.3 * t), rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)], ids=["resize-first", "resize-last"])
+def test_a_compartment_resize_shares_rows_with_the_events_beside_it(order):
+    """Egrow (priority 2) doubles the compartment, which rescales every
+    concentration in it, Y's included. Eset then writes Y = b·p. The two share
+    Y's row without naming the same target, and the survivor is Eset: Y = b·p.
+    Declared with Egrow last, the old jump gave dY/d[p, b] = (0, 0)."""
+    head = (
+        "compartment Cc = 1; species X in Cc, Y in Cc; X = 0; Y = 1; p = 1; b = 2\nJ0: -> X; p\n"
+    )
+    events = [
+        "Egrow: at (time >= 2), priority = 2: Cc = 2",
+        "Eset: at (time >= 2), priority = 1: Y = b*p",
+    ]
+    x, s = _run(_model(head, events, order), ["p", "b"])
+    assert x["Y"] == pytest.approx(2.0, rel=1e-9)
+    np.testing.assert_allclose(s["Y"], [2.0, 1.0], rtol=1e-6, atol=1e-9)
+    # X is 2p in a volume of 1 at t = 2, p in a volume of 2 after it, and then
+    # grows at p/2: X(4) = 2p.
+    assert x["X"] == pytest.approx(2.0, rel=1e-9)
+    np.testing.assert_allclose(s["X"], [2.0, 0.0], rtol=1e-6, atol=1e-9)
+
+
+FIXED_AND_MOVING = (
+    "species X, Y, Z; X = 0; Y = 0.2; Z = 0.1; p = 1; b = 2; T = {T}; d = 0.4\n"
+    "J0: -> X; p\n"
+    "J1: Y -> ; d*Y\n"
+    "E1: at (time >= 2), priority = 2: Y = X*b\n"
+    "E2: at (time >= T), priority = 1: Z = 7\n"
+)
+
+
+def test_a_fixed_event_beside_one_whose_time_moves_is_refused():
+    """E1 fires at t = 2 whatever T is, and E2 at T = 2. With T requested the
+    batch comes apart under it, and one shift cannot serve both: E2's was
+    applied to the row E1 writes, dY/dT(3.4) = 2.06 for a truth of 0, with no
+    error (found by the review of this fix, on main too). Two crossing times
+    that move differently were already refused; one that does not move beside
+    one that does is the same thing."""
+    model = bngsim.Model.from_antimony_string(FIXED_AND_MOVING.format(T=2))
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["T", "p"])
+    with pytest.raises(Exception, match="move differently") as err:
+        sim.run(sample_times=[0.0, 1.0, 2.2, 2.7, 3.4], rtol=1e-10, atol=1e-12)
+    assert "E1" in str(err.value) and "E2" in str(err.value)
+
+
+@pytest.mark.parametrize(("T", "params"), [(2, ["p", "b"]), (2.5, ["T", "p"])])
+def test_the_same_pair_runs_when_nothing_requested_pulls_it_apart(T, params):
+    """With T not requested the batch at t = 2 is one fixed instant, and with
+    T = 2.5 the two events are apart. Y = 2p·b·exp(−d·(t − 2)) either way."""
+    model = bngsim.Model.from_antimony_string(FIXED_AND_MOVING.format(T=T))
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=params).run(
+        sample_times=[0.0, 1.0, 2.2, 2.7, 3.4], rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    s = np.asarray(run.sensitivities)[-1, names.index("Y")]
+    decay = np.exp(-0.4 * 1.4)
+    want = {"p": 2 * 2 * decay, "b": 2 * decay, "T": 0.0}
+    np.testing.assert_allclose(s, [want[q] for q in params], rtol=1e-6, atol=1e-9)

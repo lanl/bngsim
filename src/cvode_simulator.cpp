@@ -1984,10 +1984,6 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
     }
 }
 
-// Scratch for the issue #48 switch-time sensitivity jump: the RHS on either
-// branch at the crossing state, and the state copy whose clock gets nudged
-// across the threshold to select the branch. Owned by run() and sized once,
-// before the integration loop, so a crossing itself allocates nothing.
 // One immediate fire of a same-instant event batch, in the order the batch
 // executed (issue #722). The sensitivity jump composes the batch from these.
 struct ExecutedEventFire {
@@ -1999,6 +1995,10 @@ struct ExecutedEventFire {
     std::vector<double> values; // what each assignment wrote, in declaration order
 };
 
+// Scratch for the issue #48 switch-time sensitivity jump: the RHS on either
+// branch at the crossing state, and the state copy whose clock gets nudged
+// across the threshold to select the branch. Owned by run() and sized once,
+// before the integration loop, so a crossing itself allocates nothing.
 struct SwitchJumpScratch {
     std::vector<double> f_minus;
     std::vector<double> f_plus;
@@ -5241,10 +5241,18 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // Pass 1 — the crossing times issue #49's Python detector resolved ahead of
     // the run. Its records carry the parameter columns only, so they are
     // widened with zero IC columns here.
+    // An event of the batch whose time no requested column moves. Beside one
+    // whose time does move it is the same ambiguity adopt_tau refuses, with
+    // one of the two vectors zero: the batch comes apart under the parameter,
+    // and the one shift was applied to both events' rows. `at (time >= 2)`
+    // beside `at (time >= T)` with T = 2 gave dY/dT = 2.06 for a row only the
+    // fixed event writes, where the truth is 0 (issue #722's review).
+    int fixed_event = -1;
     for (int ei : fired) {
         if (differentiated_here.count(ei) != 0) {
             continue;
         }
+        bool moves = false;
         for (const auto &et : opts.sensitivity.event_times) {
             if (et.event_idx0 != ei || et.dtstar_dp.size() != static_cast<size_t>(n_sens_p)) {
                 continue;
@@ -5256,6 +5264,10 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             std::vector<double> widened(static_cast<size_t>(n_sens), 0.0);
             std::copy(et.dtstar_dp.begin(), et.dtstar_dp.end(), widened.begin());
             adopt_tau(ei, widened);
+            moves = true;
+        }
+        if (!moves && fixed_event < 0) {
+            fixed_event = ei;
         }
     }
     const bool needs_flow = tau_nonzero || !state_dep_fired.empty();
@@ -5321,6 +5333,17 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         if (state_trigger_dtstar(ei, t_evt, ns, x_minus, f_minus, s_minus, sens, candidate)) {
             adopt_tau(ei, candidate);
         }
+    }
+    if (fixed_event >= 0 && tau_event >= 0 &&
+        std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; })) {
+        throw std::runtime_error(
+            "Forward sensitivity: events '" + events_outer[fixed_event].id + "' and '" +
+            events_outer[tau_event].id + "' fire at the same instant t=" + std::to_string(t_evt) +
+            " but their crossing times move differently with the requested "
+            "parameters: the first does not move and the second does. The "
+            "event-time sensitivity jump is ambiguous (issue #49). Separate the "
+            "trigger times, or drop the parameters that move them from "
+            "sensitivity_params.");
     }
 
     // ── The batch, in the order it executed (issue #722) ─────────────────────
