@@ -1360,10 +1360,11 @@ int test_mm_tqssa() {
 // and would silently become a self-comparison.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Issue #763: the state-switch continuity test reads the flux of the switch's
-// own reactions, with a roundoff floor from the gross flux they are summed from,
-// so a pool whose production and consumption cancel still reports the size of
-// those terms.
+// Issue #763: the state-switch jump reads the flux of each switch's own
+// reactions. Which switches must share one dt*/dθ, and whether a tangent
+// crossing jumps, are judged against the rounding of the gross flux those
+// reactions are summed from, so a pool whose production and consumption cancel
+// still reports the size of those terms.
 int test_gross_flux_balanced_pool() {
     auto model = bngsim::NetworkModel::from_net(data_path("gross_flux_balanced_pool.net"));
     CHECK(model.n_species() == 3, "Expected 3 species");

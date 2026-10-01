@@ -958,10 +958,12 @@ end groups
         ulps below thr1: two independent crossings CVODE can report as one. The
         second one's jump was credited to the first one's dt*/dθ, silently
         (dZ/dthr1 = 5, dZ/dthr2 = 0, where the truth is the other way round).
-        Every column is now either right or refused, never silently wrong."""
+        Every column is now either right or refused, never silently wrong. At
+        500 and 700 ulps only the wider probe crosses thr2, and its jump must not
+        enter the jump applied at thr1."""
         a, thr1, kb, kc, T = 0.5, 2.0, 3.0, 5.0, 12.0
         eps = np.finfo(float).eps
-        for k in (100, 300, 1000):
+        for k in (100, 300, 500, 700, 1000):
             thr2 = float(thr1 * (1 - k * eps))
             text = f"""\
 begin parameters
@@ -1339,6 +1341,181 @@ end groups
             # One ulp of A moves the clamp's flux by 4.4e-16·kbig.
             assert abs(z[1]) < 1e-14 * kbig
             assert z[2] == pytest.approx(kbig * (HAIR_T - np.log(10.0 / thr2) / 0.5), rel=1e-6)
+
+    @pytest.mark.parametrize(
+        ("A0", "thr", "kb", "kc"), [(1e6, 2e5, 50.0, 0.05), (1e8, 2e7, 1000.0, 5.0)]
+    )
+    def test_a_small_jump_on_a_second_switch_of_the_surface_is_kept(
+        self, tmp_path, A0, thr, kb, kc
+    ):
+        """kb into Y at ``Aobs < thr`` and kc into Z on a second switch of the same
+        surface, with kc under 1e-6 of the rate that drives the crossing. On its
+        own that second switch reads as continuous. But the crossing jumps, and
+        the jump main applies is the whole right-hand side, kc included. Taking a
+        continuous reader's reactions out of the jump took kc with them:
+        dZ/d[A0, a, thr] came back 0 where main is right (eighth review). Only
+        what such a reader's kink puts in is taken out now. The second switch is
+        the other spelling under A + B conservation, then a second parameter of
+        the same value."""
+        a, T = 0.5, 6.0
+        want = kc * np.array([-1 / (a * A0), np.log(A0 / thr) / a**2, 1 / (a * thr)])
+        for second, sp in (("Bobs>A0-thr", "1 1 2 a"), ("Aobs<thr2", "1 1 0 a")):
+            text = (
+                f"begin parameters\n    1 A0 {A0!r}\n    2 a 0.5\n    3 thr {thr!r}\n"
+                f"    4 kb {kb!r}\n    5 kc {kc!r}\n    6 thr2 {thr!r}\nend parameters\n"
+                f"begin functions\n    1 fY() if(Aobs<thr,kb,0)\n    2 fZ() if({second},kc,0)\n"
+                "end functions\n"
+                "begin species\n    1 A() A0\n    2 B() 0\n    3 Y() 0\n    4 Z() 0\nend species\n"
+                f"begin reactions\n    {sp}\n    2 0 3 fY\n    3 0 4 fZ\nend reactions\n"
+                "begin groups\n    1 Aobs 1\n    2 Bobs 2\nend groups\n"
+            )
+            model = _model(tmp_path, text, name="small_second.net")
+            run = bngsim.Simulator(model, method="ode", sensitivity_params=["A0", "a", "thr"]).run(
+                t_span=(0.0, T), n_points=3, rtol=1e-10, atol=1e-12
+            )
+            names = list(run.species_names)
+            s = np.asarray(run.sensitivities)[-1]
+            got = s[names.index("Z()")]
+            if second == "Aobs<thr2":
+                got, ref = got[:2], want[:2]  # thr2 is its own parameter here
+            else:
+                ref = want
+            np.testing.assert_allclose(got, ref, rtol=1e-5)
+            np.testing.assert_allclose(s[names.index("Y()")], want * kb / kc, rtol=1e-5)
+
+    @pytest.mark.parametrize("k", [0, 100, -100])
+    def test_a_jump_under_the_agreement_floor_moves_with_its_own_switch(self, tmp_path, k):
+        """kb into Y at thr1, and at thr2 a jump of kc into X, which also swaps
+        with P at 1e15 each way through a clamp on thr2. kc is under 16 ulps of
+        thr2's gross flux, so that switch is not asked to agree on dt*/dθ. Its
+        jump was then moved with thr1's: d(X+P)/d[thr1, thr2] = (3, 0) for a
+        truth of (0, 3), silently, where main refuses the two together (eighth
+        review). A switch under its floor is now moved with its own dt*/dθ."""
+        a, thr1, kb, kc, X0 = 0.5, 2.0, 3.0, 3.0, 1e15
+        thr2 = float(thr1 * (1 - k * EPS))
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr1 2
+    4 thr2 {thr2!r}
+    5 kb 3
+    6 kc {kc!r}
+    7 X0 {X0!r}
+    8 kx 1
+end parameters
+begin functions
+    1 fY() if(Aobs<thr1,kb,0)
+    2 fX() if(Aobs<thr2,kc,0)
+    3 fc() kx*if(Aobs<thr2,Aobs/thr2,1)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 X() X0
+    4 P() X0
+end species
+begin reactions
+    1 1 0 a
+    2 0 2 fY
+    3 0 3 fX
+    4 4 3 fc
+    5 3 4 fc
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="under_floor.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "thr1", "thr2"]).run(
+            t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+        y = s[names.index("Y()")]
+        xp = s[names.index("X()")] + s[names.index("P()")]
+        np.testing.assert_allclose(y[1:], [kb / (a * thr1), 0.0], atol=1e-3)
+        # X and P are 1e15 each: their sum's columns carry that rounding.
+        np.testing.assert_allclose(xp[1:], [0.0, kc / (a * thr2)], atol=0.05)
+
+    def test_a_reaction_the_map_does_not_list_is_judged_as_before(self, tmp_path):
+        """A Michaelis-Menten law whose kcat is a parameter a function writes,
+        ``kcat() = if(Aobs<thr, kb, 0)``, reads the condition but is not a
+        functional rate law, so the reaction map has no entry for it. With no
+        reader the crossing was taken as continuous and dP/dthr, dP/da came back
+        0 where main is right (eighth review). Where the mapped reactions do not
+        account for what the pre-#763 test reads as a jump, that test stands.
+
+        P's own value is not asserted. In a sensitivity run it stays 0, on main
+        too: the sensitivity right-hand side reads kcat's parameter slot rather
+        than the function. That is a separate defect."""
+        text = """begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr 2
+    4 kb 3
+    5 kcat 0
+    6 Km 1
+    7 E0 1
+    8 S0 1e6
+end parameters
+begin functions
+    1 kcat() if(Aobs<thr,kb,0)
+end functions
+begin species
+    1 A() A0
+    2 E() E0
+    3 S() S0
+    4 P() 0
+end species
+begin reactions
+    1 1 0 a
+    2 2,3 2,4 MM kcat Km
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="mm_kcat.net")
+        conditions = sw.state_switch_conditions(model._core)
+        assert sw.state_switch_reactions(model._core, conditions) == [[]]
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["thr", "a"]).run(
+            t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("P()")]
+        # The rate past the switch is kb·E0·S/(Km + S), with S = 1e6.
+        rate = 3.0 * 1e6 / (1.0 + 1e6)
+        np.testing.assert_allclose(got, [rate / (0.5 * 2.0), rate * np.log(5.0) / 0.25], rtol=1e-5)
+
+    def test_a_threshold_only_an_output_reads_does_not_take_the_wider_probe(self, tmp_path):
+        """A jump at thr0, a continuous clamp on a 2e8 pool at thr1 inside the
+        probe, and a third threshold that only an output reads, crossed by the
+        wider probe alone. Counting every registered switch, the wider probe was
+        dropped, the clamp was read from the near pair with its smooth change in
+        it, and the run was refused where main is right (eighth review). Only a
+        switch whose jump can show in the reading takes the wider probe away."""
+        kb, B0, T = 100.0, 2e8, 8.0
+        want = np.array([kb * np.log(5.0) / 0.25, kb / (0.5 * 2.0), 0.0, 0.0])
+        for k1, k2 in ((100, 500), (200, 600), (300, 700)):
+            thr1 = float(2.0 * (1 - k1 * EPS))
+            thr2 = float(2.0 * (1 - k2 * EPS))
+            text = (
+                "begin parameters\n    1 A0 10\n    2 a 0.5\n    3 thr0 2\n"
+                f"    4 thr1 {thr1!r}\n    5 thr2 {thr2!r}\n    6 kb {kb!r}\n    7 B0 {B0!r}\n"
+                "end parameters\n"
+                "begin functions\n    1 fY() if(Aobs<thr0,kb,0)\n"
+                "    2 fc() 0.1*if(Aobs<thr1,Aobs/thr1,1)\n    3 o2() if(Aobs<thr2,1,0)\n"
+                "end functions\n"
+                "begin species\n    1 A() A0\n    2 Y() 0\n    3 B() B0\n    4 C() 0\n"
+                "end species\n"
+                "begin reactions\n    1 1 0 a\n    2 0 2 fY\n    3 3 4 fc\nend reactions\n"
+                "begin groups\n    1 Aobs 1\nend groups\n"
+            )
+            model = _model(tmp_path, text, name="third_output.net")
+            run = bngsim.Simulator(
+                model, method="ode", sensitivity_params=["a", "thr0", "thr1", "thr2"]
+            ).run(t_span=(0.0, T), n_points=3, rtol=1e-10, atol=1e-12)
+            got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()")]
+            np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-6)
 
     def test_a_tangent_crossing_ignores_a_threshold_its_reactions_do_not_read(self, tmp_path):
         """The same crawl past thr2 = 2 + 3e-9, but there the rate law is a

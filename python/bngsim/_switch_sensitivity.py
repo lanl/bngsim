@@ -3737,6 +3737,12 @@ def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[li
     empty entry means no functional rate law reads it (only an output does), so
     the solver takes the crossing as continuous; a tangent crossing, which its
     probes cannot see past, is still judged over the whole right-hand side.
+
+    The list is of functional rate laws only. A law of another kind can read a
+    condition through a parameter a function writes (a Michaelis-Menten ``kcat``
+    bound to ``if(X<1, kb, 0)``), and is not listed. The solver covers that: a
+    jump the pre-#763 test reads, and that the listed reactions do not account
+    for, is judged as before.
     """
     from bngsim._jacobian import _inline_functions
 
