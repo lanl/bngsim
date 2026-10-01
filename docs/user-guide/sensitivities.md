@@ -314,6 +314,11 @@ refused, because one jump would otherwise be moved with the other's `dt*/dθ`.
 A state that slides along the surface is refused too (issue #926): with
 `if(S < 1, amp, -amp)` both branches point into `S = 1`, the state stays on it,
 and the sensitivity there is that of neither branch.
+So is a state held just short of a surface it approaches too slowly for any
+step to cross (issue #952): `if(A > thr, kb, 0)` with `A` rising at 1e-10 a unit
+of time. The step that moves `A` by one ulp fails its error test on the jump,
+so no crossing is located and there is no crossing time for the sensitivities
+to move with. A run without sensitivities is carried across.
 A conjunction or a negation is split into its comparisons first. What the
 analytic path declines is a crossing nothing can locate: a comparison outside any
 `if()`, such as `k*(X > 1)`, and one whose sides
