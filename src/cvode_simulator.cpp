@@ -43,6 +43,7 @@
 #include "bngsim/sundials_guards.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -5727,11 +5728,16 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             // ∂c/∂t at fixed (state, p₀), for an assignment that reads `time`
             // (issue #735): `Tlast = time`, `END_M = time + 1000`. x⁺ =
             // h(x⁻(t*), p, t*(p)), so a fire time that moves with p moves the
-            // assigned value by ∂h/∂t·∂t*/∂p as well. Only needed where some
-            // column's fire time moves; a central difference, so a value linear
-            // in time is exact.
+            // assigned value by ∂h/∂t·∂t*/∂p as well. A central difference, so a
+            // value linear in time is exact. Needed where some column's fire
+            // time moves, and, to know that the value reads the time at all,
+            // where a requested parameter is one the value reads (issue #915).
+            bool reads_requested = false;
+            for (int col = 0; col < n_sens_p && !reads_requested; ++col) {
+                reads_requested = p_support_set.count(sens_param_indices[col]) != 0;
+            }
             double dcdt = 0.0;
-            if (tau_nonzero) {
+            if (tau_nonzero || reads_requested) {
                 // Relative to the fire time itself, not floored at one time
                 // unit: a model timed in microseconds would otherwise take a
                 // step the size of its own dynamics.
@@ -5752,6 +5758,109 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 const double c_lo = value_at(t_evt - ht);
                 dcdt = (c_hi - c_lo) / (2.0 * ht);
                 sync_state();
+            }
+
+            // A value that reads the time is differentiated along each column's
+            // own direction, the parameter and the fire time moving together
+            // (issue #915). ∂h/∂p and ∂h/∂t·∂t*/∂p taken apart are each a
+            // difference across a step when the value has one at the fire
+            // instant, `u := piecewise(5, time >= T0, 0)` assigned by an event at
+            // T0, and they cancel only where the two steps happen to be equal.
+            // Along the direction, a step the fire time carries is never
+            // crossed. Both points are read a nudge late, where the event fires,
+            // which costs a smooth value nothing.
+            //
+            // A step the fire time does not carry is a kink in the parameter: a
+            // fixed `time >= 1.3` read by an event at T0 = 1.3, or a threshold
+            // that moves at another rate. The increment along the direction is
+            // then the same at half the step, where a smooth value's halves, and
+            // the run is refused. The two separate differences gave 1.9e6 for
+            // the first and 0 for the second. So is a step a parameter moves
+            // across an event that parameter does not move, where ∂h/∂p alone
+            // is the difference across it.
+            //
+            // direction_fix[c] is what this adds to ∂h/∂p + ∂h/∂t·∂t*/∂p.
+            std::vector<double> direction_fix(static_cast<size_t>(n_sens), 0.0);
+            if (dcdt != 0.0) {
+                const double ht = std::max(1e-6 * std::fabs(t_evt), 1e-12);
+                auto value_along = [&](int pidx, double p0, double dp, double t) {
+                    if (pidx >= 0) {
+                        params[pidx].value = p0 + dp;
+                    }
+                    auto at_time = [&]() {
+                        for (int i = 0; i < ns; ++i) {
+                            sp_vec_outer[i].concentration = xwork[i];
+                        }
+                        model.update_observables(xwork.data());
+                        model.evaluate_functions(t);
+                        if (model.uses_rateof()) {
+                            model.refresh_rateof_derivs(t, xwork.data());
+                            model.evaluate_functions(t);
+                        }
+                    };
+                    at_time();
+                    if (pidx >= 0) {
+                        model.refresh_derived_params(pidx);
+                        at_time();
+                    }
+                    return eval_ref_outer.evaluate(vexpr);
+                };
+                for (int c = 0; c < n_sens; ++c) {
+                    const double tau_c = tau[static_cast<size_t>(c)];
+                    int pidx = -1;
+                    if (c < n_sens_p && p_support_set.count(sens_param_indices[c]) != 0) {
+                        pidx = sens_param_indices[c];
+                    }
+                    if (tau_c == 0.0 && pidx < 0) {
+                        continue; // the column moves neither the value nor the event
+                    }
+                    const double p0 = pidx >= 0 ? params[pidx].value : 0.0;
+                    // One unit of the column: `step` of it moves the parameter by
+                    // `step` and the time by `step·τ`.
+                    double step = tau_c != 0.0 ? ht / std::fabs(tau_c)
+                                               : std::numeric_limits<double>::infinity();
+                    if (pidx >= 0) {
+                        double dp = 1e-6 * std::fabs(p0);
+                        if (dp == 0.0) {
+                            dp = 1e-9;
+                        }
+                        step = std::min(step, dp);
+                    }
+                    const double late = std::max(clock_nudge, 1e-4 * step * std::fabs(tau_c));
+                    auto increment = [&](double by) {
+                        const double hi =
+                            value_along(pidx, p0, pidx >= 0 ? by : 0.0, t_evt + by * tau_c + late);
+                        const double lo =
+                            value_along(pidx, p0, pidx >= 0 ? -by : 0.0, t_evt - by * tau_c + late);
+                        return std::array<double, 3>{hi - lo, std::fabs(hi), std::fabs(lo)};
+                    };
+                    const auto whole = increment(step);
+                    const auto half = increment(0.5 * step);
+                    if (pidx >= 0) {
+                        params[pidx].value = p0;
+                        perturbed_sync(pidx, t_evt);
+                    }
+                    sync_state();
+                    const double size = std::max({whole[1], whole[2], half[1], half[2]});
+                    if (std::fabs(whole[0]) > 64.0 * eps_d * size &&
+                        std::fabs(half[0] - 0.5 * whole[0]) > 0.25 * std::fabs(whole[0])) {
+                        throw std::runtime_error(
+                            "Forward sensitivity: the value event '" + ev.id + "' assigns to '" +
+                            model.species()[static_cast<size_t>(k)].name +
+                            "' steps in time at t=" + std::to_string(t_evt) +
+                            ", the instant the event fires, and a requested parameter moves the "
+                            "event and the step apart. The assigned value jumps as the parameter "
+                            "carries one across the other, so the sensitivity does not exist "
+                            "there (issue #915). Separate the two times, or drop the parameters "
+                            "that move one of them from sensitivity_params.");
+                    }
+                    if (tau_c == 0.0) {
+                        continue; // ∂h/∂p as it was: the points above only looked for a step
+                    }
+                    const double separate =
+                        (c < n_sens_p ? dcdp[static_cast<size_t>(c)] : 0.0) + dcdt * tau_c;
+                    direction_fix[static_cast<size_t>(c)] = whole[0] / (2.0 * step) - separate;
+                }
             }
 
             // D_k for every column, without its ∂h/∂t·∂t*/∂θ term:
@@ -5785,7 +5894,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 if (c < n_sens_p) {
                     acc += dcdp[c];
                 }
-                row.base[static_cast<size_t>(c)] = acc;
+                row.base[static_cast<size_t>(c)] = acc + direction_fix[static_cast<size_t>(c)];
             }
             // The same row of the batch's Jacobian applied to each probe: a
             // column with no parameter part and no shift.

@@ -111,9 +111,12 @@ has to refresh the `rateOf` buffer.
   refreshes the `rateOf` buffer and re-evaluates the functions after it, and a
   `rateOf` read counts every parameter as support (#764,
   `event-assignment-reads-rateof`).
-- **Open:** an assignment that reads a step in time exactly at the fire instant
-  (`u := piecewise(5, time >= T0, 0)`, `B = u`, fired at `time >= T0`) has no
-  derivative there to difference, and its row is wrong on main and here alike (#915).
+- **Covered:** an assignment that reads a step in time exactly at the fire
+  instant (`u := piecewise(5, time >= T0 + 1, 0)`, `B = u`, fired at
+  `time >= T0 + 1`). A value that reads the time is differenced along each
+  column's own direction, the parameter and the fire time together, which a step
+  the fire time carries never crosses. A step it does not carry is a kink in the
+  parameter and is refused (#915, `test_event_value_time_step_sensitivity.py`).
 
 **At `t_start`.** An SBML event with `initialValue=false` whose trigger is already
 true at `t_start` fires there. Then `τ = 0`, and `s⁻` is the seed that is already
