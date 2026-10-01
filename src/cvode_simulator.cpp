@@ -9428,18 +9428,33 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // condition reads time alone, so f on the branch the column was
                 // integrated with is f a little before t_ret — further back than the
                 // root finder's own placement of it.
-                if (sens.comoving.n_active > 0 && !evt_s_minus.empty()) {
+                //
+                // Unless the root is a switch time's own (issue #760): an SBML
+                // `time <= on + D` is registered as a root and is a switch record
+                // as well. Where the record's jump is still to come, it leaves
+                // and enters against one f, which cancels, and nothing is done
+                // here. Where the root is reported after the record's stop, the
+                // read 1e-9 back is before that switch: a window closing as
+                // (1-s)^0.1 is still 0.13 of its height there, and the onset
+                // column came out 30% off past the close.
+                const bool switch_root =
+                    next_switch < switch_list.size() &&
+                    same_instant(switch_list[next_switch]->t_star, static_cast<double>(t_ret));
+                if (sens.comoving.n_active > 0 && !evt_s_minus.empty() && !switch_root) {
                     bool state_switch_root = false;
                     for (int j = 0; j < n_state_switch; ++j) {
                         state_switch_root |= root_info[n_events + n_disc + j] != 0;
                     }
                     if (!state_switch_root) {
                         std::vector<double> f_before;
-                        if (static_cast<double>(t_ret) == sens.comoving.t_entry) {
+                        const double back =
+                            1e-9 * std::max(std::fabs(static_cast<double>(t_ret)), 1.0);
+                        if (static_cast<double>(t_ret) - back <= sens.comoving.t_entry) {
+                            // The root is reported a few ulp after the stop the
+                            // columns entered at. A read that far back is on the
+                            // other side of that switch.
                             f_before = sens.comoving.f_entry_after;
                         } else {
-                            const double back =
-                                1e-9 * std::max(std::fabs(static_cast<double>(t_ret)), 1.0);
                             impl_->comoving_rhs(static_cast<double>(t_ret) - back, y_data, ns,
                                                 f_before);
                             model.update_observables(y_data);
@@ -9465,8 +9480,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     for (int c = 0; c < sens.n_p; ++c) {
                         cols[static_cast<size_t>(c)] = evt_s_minus[static_cast<size_t>(c)].data();
                     }
-                    if (!state_switch_root && impl_->comoving_wants_ahead(
-                                                  sens, cols.data(), static_cast<double>(t_ret))) {
+                    if (!state_switch_root && !switch_root &&
+                        impl_->comoving_wants_ahead(sens, cols.data(),
+                                                    static_cast<double>(t_ret))) {
                         sens.comoving.entry_request = static_cast<double>(t_ret);
                     }
                 }

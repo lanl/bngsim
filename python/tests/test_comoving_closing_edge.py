@@ -69,8 +69,19 @@ SHAPES = {
 }
 
 
-def _model(tmp_path, shape, a, close="<=", extra="", tmid=5.0):
+def _model(tmp_path, shape, a, close="<=", extra="", tmid=5.0, state_switch=None):
     text = NET.format(a=a, close=close, shape=SHAPES[shape][0], extra=extra, tmid=tmid)
+    if state_switch is not None:
+        # A third species whose rate switches where X crosses a level. It feeds
+        # nothing back: the run restarts there and X's columns are what they were.
+        text = (
+            text.replace(
+                "end functions", f"    3 zr() if(Xg>{state_switch!r},0.2,0.1)\nend functions"
+            )
+            .replace("end species", "    3 Z() 0\nend species")
+            .replace("end reactions", "    4 0 3 zr\nend reactions")
+            .replace("end groups", "    2 Xg 1\nend groups")
+        )
     path = tmp_path / "m.net"
     path.write_text(text)
     return bngsim.Model.from_net(path)
@@ -147,6 +158,67 @@ def test_a_crossing_inside_the_window_asks_again(tmp_path, shape, tmid):
     extra = "+if(t>=tmid,0.0,0.0)*0"
     got = _column(_model(tmp_path, shape, 1.1, extra=extra, tmid=tmid), "D")
     assert _worst(got, _exact(shape, 1.1, "D")) < 5e-6
+
+
+@pytest.mark.parametrize(
+    ("shape", "level"),
+    [("closing", 0.6), ("closing", 1.85), ("both", 2.0), ("both", 3.6)],
+    ids=["closing-before-the-stop", "closing-after", "both-before-the-stop", "both-after"],
+)
+def test_a_state_switch_inside_the_window(tmp_path, shape, level):
+    """X crosses the level near t = 4.3 or t = 6, either side of the stop at 5
+    the D column enters at. A state switch restarts the run and leaves every
+    frame; f is smooth there, so the column enters again on the spot."""
+    got = _column(_model(tmp_path, shape, 1.1, state_switch=level), "D")
+    assert _worst(got, _exact(shape, 1.1, "D")) < 5e-6
+
+
+# ─── The same window through SBML, on literal time ──────────────────────────
+
+SBML_SHAPES = {
+    "closing": "s*(1-s)^(a-1)",
+    "both": "s^(a-1)*(1-s)^(a-1)",
+    "opening": "s^(a-1)*(1-s)",
+}
+
+
+def _sbml(shape, a, extra=""):
+    law = SBML_SHAPES[shape].replace("s", "((time-on)/D)")
+    return bngsim.Model.from_antimony_string(
+        f"species X; X = 0; k0 = 0.1; k1 = 2; a = {a}; on = 3; D = 4; kdeg = 0.3; tmid = 5.5\n"
+        f"J1: -> X; k0 + piecewise(piecewise(k1*{law}, time <= on + D, 0), time >= on, 0)"
+        f"{extra}\n"
+        "J2: X -> ; kdeg*X\n"
+    )
+
+
+@pytest.mark.parametrize("param", ["D", "on"])
+@pytest.mark.parametrize("a", [1.1, 1.3])
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_the_closing_edge_through_sbml(shape, a, param):
+    """An SBML ``time <= on + D`` is a switch record and a registered root as
+    well, and the root is reported a few ulp after the record's stop. The frame
+    was left there against f read 1e-9 back, which is before the switch, where
+    a window closing as (1-s)^0.1 is still 0.13 of its height: the onset column
+    was 32% off past the close, with no warning, and the D column raised."""
+    got = _column(_sbml(shape, a), param)
+    assert _worst(got, _exact(shape, a, param)) < 5e-6
+
+
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_a_root_inside_the_window_through_sbml(shape):
+    """A fixed ``time >= 5.5`` inside the window is a root with no record. The
+    D column is in its frame by then, leaves at the root and asks for a stop
+    halfway to the close."""
+    got = _column(_sbml(shape, 1.1, " + 0*piecewise(1, time >= tmid, 0)"), "D")
+    assert _worst(got, _exact(shape, 1.1, "D")) < 5e-6
+
+
+@pytest.mark.parametrize("param", ["D", "on"])
+def test_a_window_that_only_opens_as_a_power_through_sbml(param):
+    """Control."""
+    got = _column(_sbml("opening", 1.5), param)
+    assert _worst(got, _exact("opening", 1.5, param)) < 5e-6
 
 
 @pytest.mark.parametrize("a", [1.1, 1.5])
