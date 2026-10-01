@@ -158,6 +158,12 @@ before-branch is read with the other switch's threshold bumped away, so a
 coincident pair does not merge into a single doubled jump (issue #375). Models
 with distinct switch times are unaffected and read the plain `f⁻ − f⁺`.
 
+Two crossings share an instant when they are within 64 ulp of each other, which
+is how far the clock is nudged to read the two branches. Crossings further apart
+than that, however close, are stopped at one after the other, fitted or fixed. The same holds for
+a crossing just after an output time, an event or the start of the run: its jump
+is taken at its own instant, not at the stop before it (issue #737).
+
 ### Landing on the crossing
 
 A discontinuity root alone cannot catch these. CVODE tests for a root only on a

@@ -2596,7 +2596,7 @@ def _resolve_step_edge_stop_times(
                     jumps.append(tn)
         merged: list[float] = []
         for tn in sorted([*edges, *jumps]):
-            if not merged or tn - merged[-1] > 1e-12 * max(abs(tn), 1.0):
+            if not merged or not _same_instant(tn, merged[-1]):
                 merged.append(tn)
         edges = merged
 
@@ -2867,7 +2867,7 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
     found.sort(key=lambda stop: stop.time)
     out: list[CrossingStop] = []
     for stop in found:
-        if not out or abs(stop.time - out[-1].time) > 1e-12 * max(abs(stop.time), 1.0):
+        if not out or not _same_instant(stop.time, out[-1].time):
             out.append(stop)
         elif stop.clock_species_idx >= 0 and out[-1].clock_species_idx < 0:
             # Two conditions crossing at one instant, one on a counter and
@@ -4376,8 +4376,16 @@ def _isolation_bump(
     delta_threshold = _ISOLATION_REL * span
     # Never step so far that the bumped threshold reaches a DIFFERENT threshold
     # on the same clock: that would flip a condition this crossing does not own,
-    # which is the very contamination being removed.
-    gaps = [abs(t - cross.threshold) for t in thresholds_on_clock if _q(t) != _q(cross.threshold)]
+    # which is the very contamination being removed. The thresholds of this
+    # group are not such neighbours. The parameter bumped is one none of them
+    # reads, so they stay where they are, and since issue #737 a group can hold
+    # two thresholds that differ in their last digits.
+    grouped = {other.threshold for other in group if other.clock_idx0 == cross.clock_idx0}
+    gaps = [
+        abs(t - cross.threshold)
+        for t in thresholds_on_clock
+        if t not in grouped and _q(t) != _q(cross.threshold)
+    ]
     if gaps:
         delta_threshold = min(delta_threshold, 0.25 * min(gaps))
     # Unreachable while :func:`_q` groups on 12 significant digits: the closest
@@ -4454,6 +4462,69 @@ def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int])
     return frozenset(moved)
 
 
+# The core reads a crossing by nudging its clock this many ulp either side of
+# the threshold (``kSwitchInstantUlps`` in cvode_simulator.cpp), and treats two
+# times within that reach as one instant.
+_INSTANT_ULPS = 64.0
+
+
+def _same_instant(a: float, b: float) -> bool:
+    """Whether the core's clock nudge about ``a`` can reach ``b`` (issue #737).
+
+    The core's reach and a few ulp, so that a crossing time this module and the
+    core round differently in the last place is still on the safe side. Not
+    more: a pair grouped here has to be isolated, and two thresholds that share
+    their only parameter cannot be, so every pair grouped beyond the nudge's
+    reach is a run refused for nothing.
+    """
+    return abs(a - b) <= (_INSTANT_ULPS + 4.0) * _EPS * max(abs(a), abs(b), 1.0)
+
+
+def _instant_groups(found: Sequence[_Crossing]) -> list[list[_Crossing]]:
+    """The crossings the core cannot read one at a time, grouped.
+
+    Two crossings belong together when the nudge that reads one flips the other
+    as well: their times are one instant, or they threshold one counter clock at
+    values within the nudge of each other (a counter that starts at 1e6 is
+    nudged by 1e-8, whatever the time). The 12-digit key :func:`_q` is kept as a
+    third reason, so nothing grouped before issue #737 is split.
+
+    ``_q`` alone was not enough. It is a bucket, not a distance: two times an
+    ulp apart can fall either side of a bucket edge, and below t = 1 its buckets
+    are narrower than the nudge. Either way two crossings the nudge flips
+    together went ungrouped, and each was charged with the other's jump.
+    """
+    parent = list(range(len(found)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def chain(order: list[int], value) -> None:
+        for i, j in zip(order, order[1:], strict=False):
+            if _same_instant(value(found[i]), value(found[j])):
+                parent[root(j)] = root(i)
+
+    everything = list(range(len(found)))
+    chain(sorted(everything, key=lambda i: found[i].t_star), lambda c: c.t_star)
+    by_clock: dict[int, list[int]] = {}
+    by_key: dict[str, int] = {}
+    for i, cross in enumerate(found):
+        if cross.clock_idx0 >= 0:
+            by_clock.setdefault(cross.clock_idx0, []).append(i)
+        first = by_key.setdefault(_q(cross.t_star), i)
+        parent[root(i)] = root(first)
+    for members in by_clock.values():
+        chain(sorted(members, key=lambda i: found[i].threshold), lambda c: c.threshold)
+
+    groups: dict[int, list[_Crossing]] = {}
+    for i, cross in enumerate(found):
+        groups.setdefault(root(i), []).append(cross)
+    return list(groups.values())
+
+
 def _emit_switch_records(
     found: list[_Crossing], param_idx: dict[str, int], moved_clocks: frozenset[int] = frozenset()
 ) -> list[SwitchCrossing]:
@@ -4465,14 +4536,12 @@ def _emit_switch_records(
     reproduced with a single parameter requested: the coinciding condition
     contaminates the core's ``f⁻`` whether or not anyone asked about it.
     """
-    by_instant: dict[str, list[_Crossing]] = {}
     thresholds_on_clock: dict[int, set[float]] = {}
     for cross in found:
-        by_instant.setdefault(_q(cross.t_star), []).append(cross)
         thresholds_on_clock.setdefault(cross.clock_idx0, set()).add(cross.threshold)
 
     records: list[SwitchCrossing] = []
-    for group in by_instant.values():
+    for group in _instant_groups(found):
         for cross in group:
             if not any(v != 0.0 for v in cross.dtstar) and cross.clock_idx0 not in moved_clocks:
                 # No requested column moves this crossing: not its threshold,
