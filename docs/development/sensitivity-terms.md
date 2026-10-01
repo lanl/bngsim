@@ -190,9 +190,24 @@ assigned row:     s⁺ = h_x·(s⁻ + f_before(x⁻)·τ) + h_p + h_t·τ − f_
 unassigned row:   s⁺ = s⁻ + (f_before(x⁻) − f_after(x⁺))·τ
 ```
 
-- Oracle: `event-beside-clock-switch`.
-- **Open:** the event jump reads `f⁻` on the after-branch, and the switch jump
-  then adds its gap at `x⁺` (#767, `event-coincident-with-clock-switch`).
+The event jump reads both of its flows on the switch's before-branch, a nudge
+before the switch's own time or with a counter a hair short of its threshold,
+and the switch jump that follows adds `(f_before(x⁺) − f_after(x⁺))·τ` (#767).
+
+A switch the event comes apart from under some column, a fixed one or one
+fitted by another parameter, leaves a kink unless the two commute:
+`H·Δ(x⁻) = Δ(x⁺)`, with `H` the batch's Jacobian and `Δ = f_before − f_after`.
+`Δ` is the limit of `f` from before the instant less its limit from after, each
+carried to the switch from reads one, two and four nudges out. On an instant
+that several crossings of one clock share, where not all of them move with the
+event, the instant is asked as a whole and each record on it for its own jump,
+read by its isolation bump (#375). The run is refused where either disagrees.
+
+- Oracle: `event-beside-clock-switch`, `event-coincident-with-clock-switch`.
+- **Open:** a `floor` step on a fitted switch (#944), a state-dependent switch
+  within the integration tolerance of an event (#945), a state-dependent
+  switch and a time switch on one instant (#946), and two time switches of one
+  rate law on one instant with no event (#951).
 
 ## 6. A counter clock
 
@@ -313,8 +328,8 @@ them in this order:
 1. The event jump (§3, §4) at `x⁻`.
 2. The switch jump (§5), at the post-event state.
 
-The two steps together must equal §5's coincident-event formula; #767 is the case
-where they do not.
+The two steps together equal §5's coincident-event formula, with the event's
+flows read on the switch's before-branch (#767).
 
 A comoving frame (§7) is entered inside the switch jump at its crossing, or
 ahead of a crossing approached through a singular power, and left at the next

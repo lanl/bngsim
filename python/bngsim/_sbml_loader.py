@@ -2653,6 +2653,212 @@ _SSA_FF_MAX_POWER = 2**31 - 1
 _MASS_ACTION_MAX_POWER = 1000
 
 
+def _math_names(node) -> tuple[set[str], bool]:
+    """The names a math AST reads, and whether it reads the clock (the time
+    csymbol, ``delay``, ``rateOf``). Iterative: a rule over a thousand terms is
+    a thousand-deep tree."""
+    names: set[str] = set()
+    clock = False
+    stack = [node] if node is not None else []
+    while stack:
+        n = stack.pop()
+        t = n.getType()
+        if t in (libsbml.AST_NAME_TIME, libsbml.AST_FUNCTION_DELAY, libsbml.AST_FUNCTION_RATE_OF):
+            clock = True
+        elif t == libsbml.AST_NAME:
+            names.add(n.getName())
+        stack.extend(n.getChild(i) for i in range(n.getNumChildren()))
+    return names, clock
+
+
+def _moving_assignment_rule_vars(sbml_model) -> tuple[dict, set[str]]:
+    """The names each assignment rule reads, by variable, and the variables whose
+    value moves during a run: one that reads the clock, a species, a rate-rule or
+    event target, or another moving rule's variable. A rule over constants
+    (``C := 2``, ``C := p``) holds its value."""
+    reads: dict[str, set[str]] = {}
+    moving: set[str] = set()
+    rate_vars = set()
+    for j in range(sbml_model.getNumRules()):
+        r = sbml_model.getRule(j)
+        if r.isAssignment() and r.getMath() is not None:
+            names, clock = _math_names(r.getMath())
+            reads[r.getVariable()] = names
+            if clock:
+                moving.add(r.getVariable())
+        elif r.isRate():
+            rate_vars.add(r.getVariable())
+    sources = set(rate_vars)
+    for j in range(sbml_model.getNumEvents()):
+        ev = sbml_model.getEvent(j)
+        for k in range(ev.getNumEventAssignments()):
+            sources.add(ev.getEventAssignment(k).getVariable())
+    # A species moves unless declared constant (a boundary species moves only
+    # through a rule or an event, which name it among the sources already).
+    sources |= {
+        sp.getId()
+        for sp in (sbml_model.getSpecies(j) for j in range(sbml_model.getNumSpecies()))
+        if not sp.getConstant() and not sp.getBoundaryCondition()
+    }
+    changed = True
+    while changed:  # to the fixed point: a rule over a moving rule moves
+        changed = False
+        for var, names in reads.items():
+            if var not in moving and (names & sources or names & moving):
+                moving.add(var)
+                changed = True
+    return reads, moving
+
+
+def _ssa_rule_event_conc_reads(
+    sbml_model, rules, moving_comps, species_comp, species_hosu, rule_targets=frozenset()
+) -> list[tuple[str, list[str]]]:
+    """Rate rules and events that read a concentration-valued species in a
+    compartment whose size moves (``moving_comps``: assignment-rule, event- or
+    rate-rule-resized), directly or through assignment rules: the SSA stores a
+    count over the load-time size, so such a read is stale. ``x' = S`` with S in
+    ``C := 1 + 0.5*time`` integrated 40 against the ODE's 22, and ``at S < 6``
+    never fired. Returns ``[(location, [compartments])]``."""
+    if not moving_comps:
+        return []
+
+    def hits(math) -> list[str]:
+        out: set[str] = set()
+        work = list(_math_names(math)[0]) if math is not None else []
+        seen: set[str] = set()
+        while work:
+            name = work.pop()
+            comp = species_comp.get(name)
+            if (
+                comp in moving_comps
+                and not species_hosu.get(name, False)
+                and name not in rule_targets
+            ):
+                out.add(comp)
+            if name in rules and name not in seen:
+                seen.add(name)
+                work.extend(rules[name])
+        return sorted(out)
+
+    found = []
+    for j in range(sbml_model.getNumRules()):
+        r = sbml_model.getRule(j)
+        if r.isRate():
+            h = hits(r.getMath())
+            if h:
+                found.append((f"rule:{r.getVariable()}", h))
+    for j in range(sbml_model.getNumEvents()):
+        ev = sbml_model.getEvent(j)
+        maths = []
+        if ev.isSetTrigger():
+            maths.append(ev.getTrigger().getMath())
+        if ev.isSetDelay():
+            maths.append(ev.getDelay().getMath())
+        if ev.isSetPriority():
+            maths.append(ev.getPriority().getMath())
+        maths.extend(
+            ev.getEventAssignment(k).getMath() for k in range(ev.getNumEventAssignments())
+        )
+        h = sorted({c for m in maths for c in hits(m)})
+        if h:
+            found.append((f"event:{ev.getId() or j}", h))
+    return found
+
+
+def _ssa_moving_ar_comp_reads(
+    rxn,
+    rules,
+    moving_vars,
+    moving_comps,
+    species_comp,
+    species_hosu,
+    varvol_comps=frozenset(),
+    rule_targets=frozenset(),
+) -> tuple[list[str], list[str]]:
+    """The moving assignment-rule compartments holding a concentration-valued
+    species that reaction ``rxn`` changes or reads: one of its reactants,
+    products or modifiers, or one its kinetic law reads, directly or through the
+    assignment rules it reads. The size itself is read live, and an amount-valued
+    species is stored and read as an amount.
+
+    Second, the event-resized or rate-rule compartments (``varvol_comps``) whose
+    concentration-valued species the rate reads from outside them, or through an
+    assignment rule: the SSA's live-volume correction covers the species of the
+    compartment a reaction acts in, and no others.
+
+    ``rules`` maps each assignment rule's variable to the names it reads. A
+    species a rule sets (``rule_targets``) holds the value its rule gives it,
+    not a count over a size, so reading it is not stale."""
+    if not moving_comps and not varvol_comps:
+        return [], []
+    kl = rxn.getKineticLaw()
+    local = set()
+    if kl is not None:
+        for j in range(kl.getNumLocalParameters()):
+            local.add(kl.getLocalParameter(j).getId())
+        for j in range(kl.getNumParameters()):
+            local.add(kl.getParameter(j).getId())
+    hit: set[str] = set()
+    vv_hit: set[str] = set()
+    acts_in = {
+        species_comp.get(lst.get(j).getSpecies())
+        for lst in (rxn.getListOfReactants(), rxn.getListOfProducts())
+        for j in range(lst.size())
+    }
+    law_names = _math_names(kl.getMath())[0] - local if kl is not None and kl.getMath() else set()
+    # A reaction across compartments, one of them resized: the live-volume
+    # correction is a power of V_static/V_live per compartment, exact only when
+    # the law reads each concentration there as a reactant, once per unit of its
+    # stoichiometry. A modifier (`k*X*S*C`), a reactant read again (`k*X*X*C`
+    # for X -> P) or a power is not that shape, and ran 16-24 sigma off the ODE.
+    if len(acts_in - {None}) >= 2 and acts_in & set(varvol_comps) and kl is not None:
+        stoich: dict[str, float] = {}
+        for j in range(rxn.getNumReactants()):
+            r = rxn.getReactant(j)
+            stoich[r.getSpecies()] = stoich.get(r.getSpecies(), 0.0) + r.getStoichiometry()
+        counts: dict[str, int] = {}
+        powered: set[str] = set()
+        stack = [kl.getMath()] if kl.getMath() is not None else []
+        while stack:
+            nd = stack.pop()
+            t = nd.getType()
+            if t == libsbml.AST_NAME and nd.getName() not in local:
+                counts[nd.getName()] = counts.get(nd.getName(), 0) + 1
+            if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+                powered |= _math_names(nd)[0]
+            stack.extend(nd.getChild(i) for i in range(nd.getNumChildren()))
+        for sid, cnt in counts.items():
+            comp = species_comp.get(sid)
+            if comp not in varvol_comps or species_hosu.get(sid, False) or sid in rule_targets:
+                continue
+            if sid not in stoich or sid in powered or cnt != stoich[sid]:
+                vv_hit.add(comp)
+    # (name, read through a rule); the touched species are read directly.
+    work = [(n, False) for n in law_names | _ssa_species_touched(rxn)]
+    seen_rules: set[str] = set()
+    while work:
+        name, via_rule = work.pop()
+        comp = species_comp.get(name)
+        conc = comp is not None and not species_hosu.get(name, False) and name not in rule_targets
+        if conc and comp in moving_comps:
+            hit.add(comp)
+        if conc and comp in varvol_comps and (via_rule or comp not in acts_in):
+            vv_hit.add(comp)
+        if name in rules and name not in seen_rules:
+            seen_rules.add(name)
+            work.extend((n, True) for n in rules[name])
+    return sorted(hit), sorted(vv_hit)
+
+
+def _ssa_species_touched(rxn) -> set[str]:
+    """Every species a reaction names: reactants, products and modifiers."""
+    out = set()
+    for lst in (rxn.getListOfReactants(), rxn.getListOfProducts(), rxn.getListOfModifiers()):
+        for j in range(lst.size()):
+            out.add(lst.get(j).getSpecies())
+    return out
+
+
 def _ssa_falling_factorial_terms(rxn, species_idx, continuous_ids) -> list[tuple[int, int]]:
     """The SSA falling factorial a kinetic law evaluated as written needs.
 
@@ -6440,9 +6646,68 @@ def _build_model_from_sbml_doc(doc):
     # Continuous slots never take a falling factorial (see
     # _ssa_falling_factorial_terms); built once, not per reaction.
     _ssa_ff_continuous = set(assignment_targets) | set(rate_rule_targets)
+    _ar_rules, _ar_moving_vars = _moving_assignment_rule_vars(sbml_model)
+    _ar_moving_comps = ar_comp_targets & _ar_moving_vars
     for i in range(sbml_model.getNumReactions()):
         rxn = sbml_model.getReaction(i)
         rid = rxn.getId()
+
+        # A compartment whose size an assignment rule sets moves with the run,
+        # and the SSA does not follow it (#81 left it out of scope): a count is
+        # stored over the load-time size, so a concentration the law reads is
+        # stale by V_static/V(t), and the live divide on the law is never undone
+        # by a live volume factor. `J: A => ; C*k*A` with `C := 1 + 0.5*time` ran
+        # at 2x the ODE's A(2), and a mass-action `k*A` at 3x its A(4), silently.
+        # (Its reported concentration is the count over the load-time size too,
+        # #741.) A rule over constants holds its size, and an amount-valued
+        # species is stored exactly and read as an amount; the size itself, read
+        # by a law, is read live.
+        _ar_conc, _vv_read = _ssa_moving_ar_comp_reads(
+            rxn,
+            _ar_rules,
+            _ar_moving_vars,
+            _ar_moving_comps,
+            species_comp,
+            species_hosu,
+            varvol_ssa_comps,
+            _ssa_ff_continuous,
+        )
+        if _vv_read:
+            # (g): `J: => A; k*S*D` with S in C, C resized by an event, read
+            # [S] at C's load-time size and over-fired after the resize.
+            ssa_issues.append(
+                SsaIssue(
+                    severity="error",
+                    code="variable_compartment_read",
+                    message=(
+                        f"Reaction '{rid}' reads a concentration in a compartment "
+                        f"whose size changes during the run ({', '.join(_vv_read)}), "
+                        "from outside that compartment or through an assignment "
+                        "rule. SSA corrects a propensity for a changing volume only "
+                        "for the species of the compartment the reaction acts in, so "
+                        "this one would be wrong. Use method='ode', or declare the "
+                        'species hasOnlySubstanceUnits="true".'
+                    ),
+                    location=f"reaction:{rid}",
+                )
+            )
+        if _ar_conc:
+            ssa_issues.append(
+                SsaIssue(
+                    severity="error",
+                    code="assignment_rule_compartment",
+                    message=(
+                        f"Reaction '{rid}' changes or reads a concentration in a "
+                        f"compartment whose size an assignment rule changes "
+                        f"({', '.join(_ar_conc)}). "
+                        "SSA does not follow such a compartment's size, so this "
+                        "reaction's propensity would be wrong. Use method='ode', "
+                        "make the compartment's size constant or a rate rule, or "
+                        'declare the species hasOnlySubstanceUnits="true".'
+                    ),
+                    location=f"reaction:{rid}",
+                )
+            )
 
         # conversionFactor (GH #232): the factor for this reaction. For a
         # uniform reaction it multiplies the emitted stat_factor so the rate —
@@ -7259,6 +7524,29 @@ def _build_model_from_sbml_doc(doc):
                 stat_factor=float(coeff) * species_cf.get(sid, 1.0),
             )
 
+    for _loc, _comps in _ssa_rule_event_conc_reads(
+        sbml_model,
+        _ar_rules,
+        _ar_moving_comps | varvol_ssa_comps,
+        species_comp,
+        species_hosu,
+        _ssa_ff_continuous,
+    ):
+        ssa_issues.append(
+            SsaIssue(
+                severity="error",
+                code="variable_compartment_read",
+                message=(
+                    f"{_loc.split(':', 1)[0].capitalize()} '{_loc.split(':', 1)[1]}' reads a "
+                    "concentration in a compartment whose size changes during the run "
+                    f"({', '.join(_comps)}). SSA stores a count over the compartment's "
+                    "load-time size, so the value it reads would be wrong. Use "
+                    "method='ode', or declare the species hasOnlySubstanceUnits=\"true\"."
+                ),
+                location=_loc,
+            )
+        )
+
     # ── 10. SBML Events ──────────────────────────────────────────────
     # Parse <listOfEvents> and call builder.add_event() for each.
     # SBML events fire when trigger transitions false→true.
@@ -7523,6 +7811,12 @@ def _build_model_from_sbml_doc(doc):
             # in both modes. Empty/all-False ⇒ byte-identical for non-resize
             # events.
             assignment_ode_only = [False] * len(assignments)
+            # (#936) Each rescale's (assignment index, compartment size, index of
+            # the event's own assignment to the species or -1): the engine stores
+            # base·size before/size after the event's other assignments, so the
+            # amount is the one the species has when the resize executes and the
+            # new size the one the compartment takes.
+            rescale_meta: list[tuple[int, str, int]] = []
             if resized_comps:
                 explicitly_assigned = {sp_i for sp_i, _ in assignments}
                 for comp_id, new_size_expr in resized_comps:
@@ -7546,12 +7840,19 @@ def _build_model_from_sbml_doc(doc):
                             # amount from that explicit assignment is conserved.
                             value_expr = explicit_species_assignment_expr[sp_i]
                             rescale_expr = f"({value_expr}) * ({comp_safe}) / ({new_size_expr})"
+                            base_idx = next(
+                                i
+                                for i, (j, _) in enumerate(assignments)
+                                if j == sp_i and not assignment_ode_only[i]
+                            )
+                            rescale_meta.append((len(assignments), comp_safe, base_idx))
                             assignments.append((sp_i, rescale_expr))
                             assignment_ode_only.append(True)
                             continue
                         if sp_i in explicitly_assigned:
                             continue
                         rescale_expr = f"{_safe_name(sid)} * ({comp_safe}) / ({new_size_expr})"
+                        rescale_meta.append((len(assignments), comp_safe, -1))
                         assignments.append((sp_i, rescale_expr))
                         assignment_ode_only.append(True)
 
@@ -7572,6 +7873,8 @@ def _build_model_from_sbml_doc(doc):
                 priority_expr=priority_expr,
                 assignment_ode_only=assignment_ode_only,
             )
+            for _ai, _size, _base in rescale_meta:
+                builder.set_last_event_assignment_rescale(_ai, _size, _base)
 
     # (#81) Apply the deferred SSA live-volume tags. §9 recorded each mass-action
     # varvol reaction as (rxn_idx, comp_id, exp); the compartment's promoted
@@ -7595,6 +7898,19 @@ def _build_model_from_sbml_doc(doc):
     # resolvable here, after §10. ODE: each varvol hOSU=false species divides by its
     # live compartment volume in compute_derivs. SSA: a per-compartment propensity
     # correction (V_static / V_live)^m_c.
+    # (#741) SSA: an event's assignment of a concentration to an hOSU=false
+    # species in a rate-rule or event-resized compartment, stored as
+    # amount/V_static under SSA, is stored as value·V_live/V_static.
+    for _sid, _cid in species_comp.items():
+        if (
+            _cid in (rate_rule_comps | event_resize_comps)
+            and _sid in species_idx
+            and not species_hosu.get(_sid, False)
+            and _sid not in rate_rule_targets
+            and _sid not in assignment_targets
+            and species_idx.get(_cid) is not None
+        ):
+            builder.set_species_ssa_live_volume(species_idx[_sid], species_idx[_cid])
     for _sp_idx, _comp_id in ode_xcomp_species_fixups:
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:

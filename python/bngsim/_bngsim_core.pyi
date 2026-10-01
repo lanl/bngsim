@@ -83,6 +83,10 @@ class ModelBuilder:
         """
         Enable/disable conservation-law detection in build() (GH #102). The detector is dense O(n_species^3) Gaussian elimination consumed only by the steady-state solver; disable it to keep setup O(reactions) for very large ODE-only networks (~100K species). Default True preserves existing behavior.
         """
+    def set_last_event_assignment_rescale(self, assign_idx0: typing.SupportsInt | typing.SupportsIndex, size_expr: str, base_assign_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #936: mark an assignment of the most recently added event as the concentration rescale a compartment resize injects. size_expr is the compartment's size; base_assign_idx0 the event's own assignment to the same species, or -1. The engine stores base * size before / size after the event's other assignments rather than the assignment's expression.
+        """
     def set_net_file_dir(self, dir: str) -> None:
         """
         Set the directory a relative table-function path resolves against — the source .net file's own directory, which is where BNG writes the .tfun beside it. Empty leaves a relative path to resolve against the process's working directory.
@@ -114,6 +118,10 @@ class ModelBuilder:
     def set_species_rateof_amount(self, species_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         GH #231 (rateOf): mark a hasOnlySubstanceUnits=true species so its rateOf csymbol reports the amount-rate (volume_factor * stored-rate) instead of the stored d(conc)/dt. Correct for constant- and variable-volume compartments alike (the integrator stores amount/V_static). No-op if species_idx0 is out of range.
+        """
+    def set_species_ssa_live_volume(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, live_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #741: under SSA/PSA, an event assignment of a concentration to this species is stored as value * conc[live_idx0] / volume_factor (V_live / V_static). No-op if species_idx0 is out of range.
         """
     def set_species_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex, initial_amount: typing.SupportsFloat | typing.SupportsIndex = ...) -> None:
         """
@@ -170,6 +178,14 @@ class NetworkModel:
     def compute_propensity(self, rxn_index: typing.SupportsInt | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> float:
         """
         One reaction's SSA propensity at conc (0-based rxn_index), reading the observable totals and function-bound parameters the model currently holds — the per-reaction body of the SSA propensity pass, without its refresh. Use compute_propensities for the refreshed vector. Issue #523.
+        """
+    def event_carry(self) -> typing.Any:
+        """
+        The event state the last run left for a run that continues it (issue #693): None, or (t, trigger truth per event, [(event index, apply time, frozen values)] for the delayed executions not yet applied). A run starting at t continues it; any other run is a fresh start.
+        """
+    def event_carry_state(self) -> typing.Any:
+        """
+        The carry together with the trajectory's leg ends a rollback can return to (issue #693), opaque, for set_event_carry_state: what a protocol primitive that rewinds the state and the clock saves and puts back.
         """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
@@ -239,6 +255,10 @@ class NetworkModel:
         """
         Reset the RHS instrumentation counters to zero.
         """
+    def rewind_event_carry(self, t: typing.SupportsFloat | typing.SupportsIndex) -> int:
+        """
+        Move the events to the trajectory's leg end at time t, for a caller that rolls the clock there (issue #693): 1 when there is one, -1 when t is older than the retained leg ends and some were dropped, 0 otherwise. Nothing changes unless 1.
+        """
     def save_concentrations(self) -> None:
         """
         Snapshot current concentrations as new initial state
@@ -246,6 +266,14 @@ class NetworkModel:
     def set_concentration(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex) -> None:
         """
         Set a single species concentration by name
+        """
+    def set_event_carry(self, carry: typing.Any) -> None:
+        """
+        Install a carry in event_carry()'s form (None: a fresh start). Checked against this model's events.
+        """
+    def set_event_carry_state(self, state: typing.Any) -> None:
+        """
+        Put back what event_carry_state() returned (None clears).
         """
     def set_function_eval_expression(self, name: str, expression: str) -> bool:
         """
@@ -445,6 +473,11 @@ class NetworkModel:
     @property
     def species_names(self) -> list[str]:
         ...
+    @property
+    def ssa_reads_clock(self) -> bool:
+        """
+        Whether a reaction rate or an event trigger reads the clock, or the model has a rate rule (whose target may be a clock): the SSA then needs the model's breakpoints (issue #719). Decided from the model's text.
+        """
     @property
     def table_function_names(self) -> list[str]:
         ...
@@ -802,6 +835,10 @@ class SolverOptions:
     steady_state: bool
     def __init__(self) -> None:
         ...
+    def set_crossing_probes(self, stops: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
+        """
+        Set every fixed crossing of the run, one entry per (time, clock_species_index, threshold), without the merge that leaves set_crossing_stops one stop per instant. Stepping does not read it. The event sensitivity jump asks each fixed switch on an event's instant for its own jump (issue #767), and two conditions that cross together are two switches. Resolved by bngsim._switch_sensitivity.all_fixed_crossings.
+        """
     def set_crossing_stops(self, stops: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
         """
         Set the model times a fixed time-dependent `piecewise`/`if()` branch flips at, so the integrator lands ON each crossing instead of trying to step over it (issue #305). A GH #72 discontinuity root cannot do this by itself: CVODE tests for a root only on a step it ACCEPTS, and where the jump is large enough that the error test rejects every step containing the crossing, t creeps to the last double below it and wedges at t + h == t without the root ever firing. Each entry is (time, clock_species_index, threshold); the clock index is -1 for a condition on literal simulation time, and otherwise names the counter species the condition thresholds, which run() lands on `threshold` at the stop so the restart reads the after-branch (issue #443). Resolved by bngsim._switch_sensitivity.fixed_crossing_stops; empty (the default) leaves the integration loop untouched.
@@ -849,9 +886,9 @@ class SolverOptions:
         """
         Hold these parameters (0-based indices) at their nominal value against CVODES' internal finite-difference sensitivity probe (issue #48). A switch-time parameter enters the RHS only through an `if()` condition, so ∂f/∂p is 0 in every branch interior — but an FD probe of it MOVES the switch, dragging the kink into the approach to the crossing and stalling the solver at mxstep. Pinning returns the correct (zero) source term and leaves the switch where the model puts it. Set only for parameters bngsim._switch_sensitivity has verified appear solely in conditions.
         """
-    def set_switch_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex], collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
+    def set_switch_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex], collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], bool]]) -> None:
         """
-        Set the switch-time crossings to stop at and jump across, as (t_star, clock_species_idx0, threshold, [∂t*/∂p per param column], [isolate_param_idx0], [isolate_delta]) records (issue #48). A switch time is a fitted parameter that sets WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset time. Its whole gradient is the jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p at the crossing, since ∂f/∂p is a clean 0 inside each smooth branch. clock_species_idx0 is the unit-rate counter species whose crossing of `threshold` flips the branch (-1 for literal simulation time). isolate_param_idx0/isolate_delta are the parameter bumps applied only while f⁻ is read, so that a crossing sharing its instant with another falls back to its before-branch alone and is charged only its own jump (issue #375); both empty — every model with distinct switch times — reads the plain f⁻ − f⁺. Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty records (the default) leave the integration loop untouched.
+        Set the switch-time crossings to stop at and jump across, as (t_star, clock_species_idx0, threshold, [∂t*/∂p per param column], [isolate_param_idx0], [isolate_delta], fixed_on_instant) records (issue #48). A switch time is a fitted parameter that sets WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset time. Its whole gradient is the jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p at the crossing, since ∂f/∂p is a clean 0 inside each smooth branch. clock_species_idx0 is the unit-rate counter species whose crossing of `threshold` flips the branch (-1 for literal simulation time). isolate_param_idx0/isolate_delta are the parameter bumps applied only while f⁻ is read, so that a crossing sharing its instant with another falls back to its before-branch alone and is charged only its own jump (issue #375); both empty — every model with distinct switch times — reads the plain f⁻ − f⁺. fixed_on_instant says a crossing no requested column moves shares this one's clock and instant (issue #767). Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty records (the default) leave the integration loop untouched.
         """
     @property
     def atol(self) -> float:
@@ -1068,6 +1105,14 @@ class SsaSimulator:
         Run PSA (Partial Scaling Algorithm) simulation.
         Lin, Feng, Hlavacek, J. Chem. Phys. 150, 244101 (2019).
         poplevel = N_c (critical population size, must be > 1). Releases GIL. timeout_seconds > 0 enables a wall-clock budget; on overrun, raises bngsim.SimulationTimeout.
+        """
+    def set_breakpoints(self, times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Issue #719: times at which a time-dependent rate may jump. The continuous (time-dependent) loop never steps across one. Applies to every later run; [] clears it.
+        """
+    def set_piecewise_constant_functions(self, names: collections.abc.Sequence[str]) -> None:
+        """
+        Functions, by name, constant in time between the breakpoints: a rate that reads the clock only through them is held constant and re-read at each breakpoint. Applies to every later run; [] clears it.
         """
     def set_propensity_library(self, so_path: str) -> None:
         """

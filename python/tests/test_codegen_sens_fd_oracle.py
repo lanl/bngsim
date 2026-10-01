@@ -769,20 +769,17 @@ TERMS: list = [
         param="tau",
         note="an event and a clock switch tau moves, half a time unit apart",
     ),
-    pytest.param(
-        Term(
-            "event-coincident-with-clock-switch",
-            "antimony",
-            _fill(_COINCIDENT, "tau", switch="tau"),
-            "tau",
-            "3.0",
-            3.0,
-            _SWITCH_T,
-            ("X", "Y"),
-            param="tau",
-            note="dY/dtau(6) is 0 against -k·a·(T-tau) = -3",
-        ),
-        marks=_xfail(767, "the event jump reads f⁻ on the switch's after-branch"),
+    Term(
+        "event-coincident-with-clock-switch",
+        "antimony",
+        _fill(_COINCIDENT, "tau", switch="tau"),
+        "tau",
+        "3.0",
+        3.0,
+        _SWITCH_T,
+        ("X", "Y"),
+        param="tau",
+        note="dY/dtau(6) was 0 against -k·a·(T-tau) = -3 (issue #767)",
     ),
     # ── Rate-law switches ────────────────────────────────────────────────────
     Term(

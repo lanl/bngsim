@@ -26,6 +26,8 @@ is measured against ``exp(-k t)``, not against another bngsim run.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import bngsim
@@ -429,7 +431,7 @@ def test_a_mistyped_token_names_the_two_that_exist(decay_sim):
         sim.run(t_span=(0.0, 1.0), atol="trackng")
 
 
-def test_a_solver_failure_under_tracking_names_tracking(data_dir: Path):
+def test_a_solver_failure_under_tracking_names_tracking(tmp_path):
     """CVODE's own report never mentions the tolerance mode that caused it.
 
     Measured on 391 rr_parity models that integrate at the default tolerance: 6
@@ -445,28 +447,32 @@ def test_a_solver_failure_under_tracking_names_tracking(data_dir: Path):
     model stalls at its discontinuity on every platform, which is what
     ``test_discontinuity_stall_bound.py`` already relies on.
 
-    Its crossing stop is stood down for the same reason that module stands it
-    down, written out there: since issue #443 the model as written is stopped
-    exactly at its switch and completes, so the stall has to be reached the way
-    a model whose crossing bngsim cannot resolve reaches it.
+    Its condition is written on the time and its crossing stop is stood down for
+    the same reasons that module does both, written out there: since issue #443
+    the model as written is stopped exactly at its switch and completes, and
+    since issue #928 a threshold on its counter species is put across, so the
+    stall has to be reached the way a model whose crossing bngsim cannot resolve
+    reaches it.
     """
-    model = bngsim.Model.from_net(str(data_dir / "switch_discontinuity_stall.net"))
-    model._derived_time_disc_conditions = ()
-    sim = bngsim.Simulator(model, method="ode")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _stall_fixture import stalling_model
+
+    sim = bngsim.Simulator(stalling_model(tmp_path), method="ode")
     with pytest.raises(bngsim.SimulationError, match=r"tracking absolute tolerance 12 decades"):
         sim.run(t_span=(0.0, 648.0), n_points=649, atol="tracking")
 
 
-def test_a_solver_failure_without_tracking_says_nothing_about_it(data_dir: Path):
+def test_a_solver_failure_without_tracking_says_nothing_about_it(tmp_path):
     """The other half: the hint is not glued onto every failure.
 
     Same model, same stall, same stood-down crossing stop, no tracking — so this
     pins the *gate*, not just the text. Without it the first half would pass on a
     hint appended to everything.
     """
-    model = bngsim.Model.from_net(str(data_dir / "switch_discontinuity_stall.net"))
-    model._derived_time_disc_conditions = ()
-    sim = bngsim.Simulator(model, method="ode")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _stall_fixture import stalling_model
+
+    sim = bngsim.Simulator(stalling_model(tmp_path), method="ode")
     with pytest.raises(bngsim.SimulationError) as excinfo:
         sim.run(t_span=(0.0, 648.0), n_points=649)
     assert "no progress" in str(excinfo.value)

@@ -3044,7 +3044,7 @@ class Result:
                 return np.empty((0, 0))
             return np.stack([getattr(r, attr) for r in results], axis=0)
 
-        return Result(
+        out = Result(
             core=None,
             _time=time,
             _species=species_3d,
@@ -3070,6 +3070,20 @@ class Result:
             _reaction_labels=results[0]._reaction_labels,
             _ssa_diagnostics=agg_ssa,
         )
+        # The assignment-rule report metadata each row was stamped with (issues
+        # #698, #743). A redirect is kept where every row agrees on it; a row
+        # whose compartment size differs divides by its own size, and its row
+        # of the stacked sensitivity tensor already holds that, so a selector
+        # with no common redirect reads the tensor. A refusal of any row stands.
+        maps = [r._ar_sens_map for r in results]
+        out._ar_sens_map = {
+            name: entry
+            for name, entry in maps[0].items()
+            if all(m.get(name) == entry for m in maps[1:])
+        }
+        out._ar_sens_blocked = frozenset().union(*(r._ar_sens_blocked for r in results))
+        out._ar_sens_refused = frozenset().union(*(r._ar_sens_refused for r in results))
+        return out
 
     # ─── Dunder methods ─────────────────────────────────────────────
 
