@@ -311,3 +311,36 @@ def test_a_carry_must_be_finite():
         s.model._core.set_event_carry((t, trig, [(0, float("nan"), [])]))
     with pytest.raises(ValueError, match="not finite"):
         s.model._core.set_event_carry((float("inf"), trig, pend))
+
+
+@pytest.mark.parametrize("n_points", [2, 5])
+def test_an_event_at_the_leg_start_cancels_a_carried_non_persistent_execution(n_points):
+    """As the intervention test, but A is zeroed by an event that fires at the
+    leg start: the carried execution (due at 2) is cancelled by it, before D's
+    trigger rises again at 1.5."""
+    text = (
+        "species A = 0; species n = 0; tE = 100; J: => A; 1;"
+        " Z: at (time >= tE), t0 = false: A = 0;"
+        " D: at 1.5 after (A > 0.5), persistent = false, fromTrigger = false: n = n + 1;"
+    )
+    s = _sim(text)
+    s.run_until(1)
+    s.intervene({"tE": 1.0})
+    assert _at(s.run_until(5, n_points=n_points), "n") == 1
+
+
+def test_a_look_back_then_forward_again():
+    """Back to 10 and forward to 10.5 again, touching nothing: the run continues
+    from 10.5 with the dose still pending and the counter not refired."""
+    text = (
+        "species A = 10; species n = 0; species m = 0; k1 = 0.1; R1: A => ; k1*A;"
+        " D: at 2 after (time >= 9): A = A + 5, n = n + 1;"
+        " E: at (time >= 5), t0 = false: m = m + 1;"
+    )
+    s = _sim(text)
+    s.run_until(10)
+    s.run_until(10.5)
+    s.set_time(10)
+    s.set_time(10.5)
+    r = s.run_until(20)
+    assert (_at(r, "n"), _at(r, "m")) == (1, 1)

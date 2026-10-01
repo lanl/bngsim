@@ -839,6 +839,12 @@ void NetworkModel::publish_event_carry(EventCarry carry, bool continued) {
     if (!continued) {
         h.clear();
         impl_->event_carry_evicted_t = -std::numeric_limits<double>::infinity();
+    } else {
+        // The run continued from where the trajectory stood at its start; the
+        // leg ends after that belong to a branch it has left.
+        const double t0 = impl_->event_carry.t;
+        while (!h.empty() && h.back().t > t0)
+            h.pop_back();
     }
     h.push_back(carry);
     if (h.size() > kEventCarryHistory) {
@@ -858,8 +864,7 @@ int NetworkModel::rewind_event_carry(double t) {
     auto &h = impl_->event_carry_history;
     for (auto it = h.rbegin(); it != h.rend(); ++it)
         if (it->valid && it->t == t) {
-            h.erase(it.base(), h.end());
-            impl_->event_carry = h.back();
+            impl_->event_carry = *it;
             return 1;
         }
     return t <= impl_->event_carry_evicted_t ? -1 : 0;

@@ -8630,6 +8630,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     trigger_was_true[ei] = (v > 0.5);
                 }
             }
+            // A second pass, after the batch: an event that fired here can have made a
+            // non-persistent trigger false, which cancels its pending execution
+            // now, as after any batch the run fires later (the next stop's check
+            // comes too late when the trigger has risen again by then).
+            if (t0_immediate_fired)
+                pending_events.erase(std::remove_if(pending_events.begin(), pending_events.end(),
+                                                    [&](const PendingEvent &pe) {
+                                                        const auto &ev = events_outer[pe.event_idx];
+                                                        return !ev.persistent &&
+                                                               eval_ref_outer.evaluate(
+                                                                   ev.trigger_expr_idx) <= 0.5;
+                                                    }),
+                                     pending_events.end());
 
             // ─── Triggers that start ON their threshold (issue #340) ─────
             //

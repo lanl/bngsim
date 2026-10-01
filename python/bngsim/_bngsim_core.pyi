@@ -249,7 +249,7 @@ class NetworkModel:
         """
     def rewind_event_carry(self, t: typing.SupportsFloat | typing.SupportsIndex) -> int:
         """
-        Roll the events back to the trajectory's leg end at time t, for a caller that rolls the clock back there (issue #693): 1 when there is one (the later leg ends are dropped), -1 when t is older than the retained leg ends and some were dropped, 0 otherwise. Nothing changes unless 1.
+        Move the events to the trajectory's leg end at time t, for a caller that rolls the clock there (issue #693): 1 when there is one, -1 when t is older than the retained leg ends and some were dropped, 0 otherwise. Nothing changes unless 1.
         """
     def save_concentrations(self) -> None:
         """

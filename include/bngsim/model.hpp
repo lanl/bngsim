@@ -680,11 +680,12 @@ class NetworkModel {
     //
     // The history is the current trajectory's leg ends, oldest first (at most
     // kEventCarryHistory of them): a run that continues the carry appends to
-    // it, a fresh start replaces it. A caller that rolls the clock back to one
-    // of those times (rewind_event_carry: Simulator.set_state(x, time=t0), a
-    // predictor-corrector step) continues the events from there, and the leg
-    // ends after it are dropped. A run is never matched to a history entry
-    // implicitly, since its state need not be the one that entry went with.
+    // it (after dropping the leg ends past its start: a branch it left), a
+    // fresh start replaces it. A caller that rolls the clock back to one of
+    // those times (rewind_event_carry: Simulator.set_state(x, time=t0), a
+    // predictor-corrector step) continues the events from there. A run is
+    // never matched to a history entry implicitly, since its state need not be
+    // the one that entry went with.
     struct CarriedEventExecution {
         int event_idx = 0;
         double apply_time = 0.0;
@@ -707,9 +708,9 @@ class NetworkModel {
     // At a run's write-back; `continued`: the run started from the carry.
     void publish_event_carry(EventCarry carry, bool continued);
     void clear_event_carry(); // the carry and the history
-    // Roll the events back to the leg end at time t: 1 when there is one (the
-    // later ones are dropped), -1 when t is older than the retained history
-    // and leg ends were dropped from it, 0 otherwise; nothing changes unless 1.
+    // Roll the events back (or forward) to the leg end at time t: 1 when there
+    // is one, -1 when t is older than the retained history and leg ends were
+    // dropped from it, 0 otherwise; nothing changes unless 1.
     int rewind_event_carry(double t);
     // The carry a run over n_events events starting at t_start continues, or
     // nullptr when that run is a fresh start.

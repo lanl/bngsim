@@ -1443,10 +1443,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             py::arg("state"), "Put back what event_carry_state() returned (None clears).")
         .def("rewind_event_carry", &bngsim::NetworkModel::rewind_event_carry, py::arg("t"),
-             "Roll the events back to the trajectory's leg end at time t, for a caller "
-             "that rolls the clock back there (issue #693): 1 when there is one (the "
-             "later leg ends are dropped), -1 when t is older than the retained leg "
-             "ends and some were dropped, 0 otherwise. Nothing changes unless 1.")
+             "Move the events to the trajectory's leg end at time t, for a caller that "
+             "rolls the clock there (issue #693): 1 when there is one, -1 when t is "
+             "older than the retained leg ends and some were dropped, 0 otherwise. "
+             "Nothing changes unless 1.")
         .def_property_readonly(
             "has_pending_sensitivity_seed",
             [](const bngsim::NetworkModel &self) { return !self.pending_sens_seed().empty(); },
