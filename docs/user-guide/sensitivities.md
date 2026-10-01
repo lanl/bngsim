@@ -176,13 +176,19 @@ bngsim measures whether the event and the switch commute, and refuses the run
 where they do not. A pair that commutes runs: a bolus beside an infusion that
 starts at the same time.
 
-An event on, or within a few hundred ulp of, a switch time that shares its
-instant with another switch is refused as well: which side of the event each is
-on cannot be read by moving the clock. Some of those runs have a derivative.
+Switches that share an instant with each other are asked together: the event
+has to commute with what that instant does as a whole. Back-to-back infusions
+with a bolus on the boundary run. A fixed switch within a few hundred ulp of an
+event that moves is asked too, so a pair that does not commute is refused a
+little before the two times coincide, where the derivative still exists.
 
-Two coincidences are not detected, and return a number: a `floor` step beside a
-fitted switch (issue #944), and a state-dependent switch that crosses within the
-integration tolerance of the event (issue #945).
+What is not detected returns a number:
+
+- a `floor` step on a fitted switch (issue #944);
+- a state-dependent switch that crosses within the integration tolerance of the
+  event (issue #945);
+- a parameter that moves the event by under 1e-9 of its time per unit relative
+  change, which counts as not moving it.
 
 ### Landing on the crossing
 

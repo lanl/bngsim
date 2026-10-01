@@ -520,6 +520,94 @@ def test_a_fixed_switch_under_an_event_early_in_time_is_refused(tau):
         sim.run(sample_times=[0.0, 0.5 * tau, 2.0 * tau, 3.0 * tau], rtol=1e-10, atol=1e-30)
 
 
+@pytest.mark.parametrize("atol", [1e-8, "tracking"])
+def test_a_jump_beside_a_species_at_1e13_whatever_the_tolerance(atol):
+    """A reset at tau beside a rate law that switches at the literal 3, and a
+    species at 1e13 that does nothing. A floor under the jump that read the
+    absolute tolerance let it through where the tolerance tracks the state: the
+    ceiling it read was 1000. The jump is carried to a bracket of zero width
+    now, and has no floor."""
+    text = (
+        "species X, Y, W; X = 0; Y = 0; W = 1e13; a = 2; k = 0.5; kw = 0; tau = 3\n"
+        "J0: -> X; a\n"
+        "JW: W -> ; kw*W\n"
+        "J1: -> Y; piecewise(k*X, time >= 3, 0)\n"
+        "E1: at (time >= tau): X = 0\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(Exception, match="at a fixed time.*issue #767"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=atol)
+
+
+@pytest.mark.parametrize(("t0", "off"), [(0.05, 5e-14), (0.007, 2e-14)])
+def test_a_fitted_switch_near_an_early_event_does_not_hide_a_fixed_one(t0, off):
+    """Below t = 1 the detector's twelve digits are narrower than the reach of
+    the event's root, so a fitted switch can be within that reach of the event
+    and not grouped with the fixed switch on the event's instant. The search
+    for a fixed switch was skipped wherever a record was in reach. It now skips
+    only a crossing within one instant of a record on the same clock."""
+    text = (
+        f"species X, Y, W; X = 0; Y = 0; W = 0; a = 2; k = 0.5; q = 0.7; tau = {t0!r}; off = 0\n"
+        "J0: -> X; a\n"
+        "J1: -> Y; piecewise(k*X, time >= tau + off, 0)\n"
+        f"J2: -> W; piecewise(q*X, time >= {t0!r}, 0)\n"
+        "E1: at (time >= tau): X = 0.5*X\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    model.set_param("off", off)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(Exception, match="issue #767"):
+        sim.run(sample_times=[0.0, 0.5 * t0, 2 * t0, 3 * t0], rtol=1e-10, atol=1e-12)
+
+
+BACK_TO_BACK = (
+    "species X; X = 0; kd = 0.3; R1 = 1.5; R2 = 0.7; D = 20; t1 = 3; dur = 2; t2 = 5\n"
+    "J0: X -> ; kd*X\n"
+    "J1: -> X; piecewise(R1, time >= t1 && time < t1 + dur, 0)"
+    " + piecewise(R2, time >= t2 && time < t2 + dur, 0)\n"
+    "E1: at (time >= t2): X = X + D\n"
+)
+
+
+@pytest.mark.parametrize("params", [["dur"], ["t1"], ["t2"], ["t1", "t2", "dur"]])
+def test_back_to_back_infusions_with_a_bolus_on_the_boundary(params):
+    """Control. One infusion ends at t1 + dur = 5, where the next begins and a
+    bolus is given: three crossings on one instant, two of them grouped by the
+    detector. The bolus adds to X and neither rate reads X, so everything
+    commutes and each derivative exists. With u = T − 5 and v = T − 3:
+
+        dX/d(dur) = R1·e^(−kd·u)
+        dX/d(t1)  = R1·(e^(−kd·u) − e^(−kd·v))
+        dX/d(t2)  = (D·kd − R2)·e^(−kd·u)
+
+    An earlier cut refused every event on a group of switches. The group is
+    asked for its jump now, like any other switch."""
+    kd, r1, r2, dose = 0.3, 1.5, 0.7, 20.0
+    end = 6.0
+    u, v = end - 5.0, end - 3.0
+    want = {
+        "dur": r1 * np.exp(-kd * u),
+        "t1": r1 * (np.exp(-kd * u) - np.exp(-kd * v)),
+        "t2": (dose * kd - r2) * np.exp(-kd * u),
+    }
+    _x, s = _sens(BACK_TO_BACK, params)
+    np.testing.assert_allclose(s["X"], [want[p] for p in params], rtol=1e-6)
+
+
+def test_an_onset_of_second_order_at_a_tolerance_of_1e_30():
+    """Control. The square onset of the smooth cases, with an absolute tolerance
+    far under anything in the model. A floor that read the tolerance refused
+    it."""
+    text = SMOOTH.format(law="piecewise(k*X*(time - 3)^2, time >= 3, 0)")
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"]).run(
+        sample_times=TIMES, rtol=1e-10, atol=1e-30
+    )
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y"), 0]
+    assert got == pytest.approx(0.0, abs=1e-7)
+
+
 COUNTER = (
     "species X, Y, Cl; X = 0; Y = 0; Cl = 0; a = 2; k = 0.5; tau = {tau!r}\n"
     "J0: -> X; a\n"
