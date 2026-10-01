@@ -2929,8 +2929,18 @@ def _condition_resolves_exactly(core, cond, scope, t_start, t_end, bodies) -> bo
         return False
     lhs, rhs = (_strip_redundant_parens(x.strip()) for x in split)
     for clock, other in ((lhs, rhs), (rhs, lhs)):
-        if re.fullmatch(r"time\s*\(\s*\)", clock) and not _ANY_CLOCK.search(other):
-            return _crossing_time_of_condition(text, scope, t_start, t_end, bodies) is not None
+        if not re.fullmatch(r"time\s*\(\s*\)", clock):
+            continue
+        # The threshold as the model evaluates it: a function slot or derived
+        # parameter that reads the clock (`T := time > 0.5`) moves it.
+        flat = _inline_function_slots(other, bodies)
+        flat = _inline_derived_param_refs(flat, scope.derived_exprs) or flat
+        if _ANY_CLOCK.search(flat) or any(
+            m.group(0) in bodies or m.group(0) in scope.function_names
+            for m in _IDENTIFIER.finditer(flat)
+        ):
+            return False
+        return _crossing_time_of_condition(text, scope, t_start, t_end, bodies) is not None
     return False
 
 

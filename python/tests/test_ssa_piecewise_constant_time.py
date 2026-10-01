@@ -280,3 +280,28 @@ def test_no_false_alarm_on_a_boundary_at_t_end(tmp_path):
         reps, t_span=(0, 10), n_points=11, seed=2, squeeze=True
     )
     _within(np.asarray(r.species)[:, -1, 0].mean(), 100.0, reps)
+
+
+@pytest.mark.parametrize(("method", "kw"), [("ssa", {}), ("psa", {"poplevel": 100})])
+def test_an_idle_run_with_breakpoints_and_no_held_rate(method, kw):
+    """A timed event refills A after it ran out: the run idles with a breakpoint
+    ahead and no held rate, and must look past it to t_end (it used to spin
+    there for ever)."""
+    m = _ant("species A = 3; species B = 0; J: A => B; 10*A; E1: at (time > 7): A = 3;")
+    assert _pc(m, 10.0) == []
+    r = bngsim.Simulator(m, method=method, **kw).run(
+        t_span=(0, 10), n_points=11, seed=1, timeout=20
+    )
+    assert _col(r, "B")[-1] == 6
+
+
+def test_a_threshold_that_reads_the_clock_through_a_function():
+    """``T := time > 0.5`` moves the threshold of ``time > T``: the rate is 10,
+    then 0 on (0.5, 1), then 10. E[N(20)] = 195, with no row inside to guard."""
+    m = _ant("T := time > 0.5; species N = 0; J: => N; piecewise(10, time > T, 0);")
+    assert "J" not in _pc(m, 20.0)
+    reps = 300
+    r = bngsim.Simulator(m, method="ssa").run_replicates(
+        reps, t_span=(0, 20), n_points=2, seed=4, squeeze=True
+    )
+    _within(_col(r, "N")[:, -1].mean(), 195.0, reps)

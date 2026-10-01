@@ -1905,6 +1905,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // firing or an event landing on it, an idle stretch), at the top of each
     // loop: pc_seen counts the breakpoints at or before the last re-read.
     std::size_t pc_seen = 0;
+    // Only for a run with held rates: pc_seen moves in pc_refresh_at alone.
     auto pc_next = [&]() {
         return pc_seen < bps.size() ? bps[pc_seen] : std::numeric_limits<double>::infinity();
     };
@@ -2968,7 +2969,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (a0 <= 0.0) {
                 // A piecewise-constant rate may turn on at the next breakpoint:
                 // look no further than that.
-                const double t_lim = std::min(times.t_end, pc_next());
+                const double t_lim = pc_refresh ? std::min(times.t_end, pc_next()) : times.t_end;
                 if (n_events > 0) {
                     // Only the time: the batch is taken from every trigger below.
                     const double t_event_idle = probe_events_in_window(t, t_lim);
