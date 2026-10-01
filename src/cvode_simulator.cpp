@@ -2416,11 +2416,10 @@ struct CvodeSimulator::Impl {
     // Every state switch registered for this run, so a crossing can find the
     // others its own probe pair straddles (issue #763).
     std::vector<const NetworkModel::StateSwitch *> state_switch_all;
-    // The last restart past a state-switch crossing, and the switches whose
-    // jump was applied there (issue #763): a crossing closer behind it than its
-    // own probe step would read those jumps a second time.
-    double state_switch_restart_t = std::numeric_limits<double>::quiet_NaN();
-    std::vector<const NetworkModel::StateSwitch *> state_switch_consumed;
+    // The switches whose jump a recent restart applied, each with the time of
+    // that restart (issue #763): a crossing that follows closely enough for its
+    // probe pair to cross one of them again would read that jump a second time.
+    std::vector<std::pair<const NetworkModel::StateSwitch *, double>> state_switch_consumed;
 
     // Issue #897: whether a plain run should restart at state switch `sw`'s
     // root, located at (t, x) in a step that ended at t_end. True when the
@@ -5902,6 +5901,9 @@ static constexpr double kStateSwitchSumRoundoff = 2.0;
 // is sound. One that shares a reaction with another reader, or whose residual
 // reads a species the rest of the jump moves, has to agree after all.
 static constexpr double kStateSwitchAgreeRoundoff = 16.0;
+// For how many probe steps of time a jump applied at one stop is remembered, so
+// that a stop that follows closely cannot read it again (issue #763).
+static constexpr double kStateSwitchRememberSteps = 64.0;
 // Issue #763: a reader's root along the flow is known only as finely as the
 // state is. One ulp of a species the residual reads moves the root by that
 // ulp's worth of the residual over dg/dt, and a continuous clamp read that far
@@ -6660,29 +6662,63 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     g_side[side].push_back(eval.evaluate(other->residual_expr_idx));
                 }
             }
+            // A jump is forgotten once the run is well past it. The window is
+            // generous on purpose: the restart keeps the time and moves the
+            // state, so times here run behind the state by a probe step each.
+            state_switch_consumed.erase(
+                std::remove_if(state_switch_consumed.begin(), state_switch_consumed.end(),
+                               [&](const auto &applied) {
+                                   const double since = t_evt - applied.second;
+                                   return !(since >= 0.0 && since < kStateSwitchRememberSteps * dt);
+                               }),
+                state_switch_consumed.end());
             for (std::size_t o = 0; o < others.size(); ++o) {
                 other_near[o] = straddles(g_side[0][o], g_side[1][o]);
-                if (!other_near[o]) {
-                    continue;
-                }
-                // The last restart stepped over this switch's root and its
-                // jump was applied then. This crossing follows by less than its
-                // own probe step, so the pair's backward point is behind that
-                // restart, on the switch's old branch, and would read the jump
-                // again: clamp, jump 200 ulps on, clamp 600 ulps on gave
-                // dY/dthr = 14 for 7 (tenth review). A switch that did not jump
-                // there, a clamp or one no rate law reads, has nothing to read
-                // twice and is not remembered.
-                if (t_evt - state_switch_restart_t < dt &&
-                    std::find(state_switch_consumed.begin(), state_switch_consumed.end(),
-                              others[o]) != state_switch_consumed.end()) {
+                // The step past this crossing lands exactly ON another switch's
+                // surface: its residual is 0.0 at +δt and was not at −δt. CVODE
+                // sets a root that is zero at a restart aside, so that crossing
+                // would never be reported. And at the surface itself a strict
+                // condition still reads its old branch, so the pair does not
+                // show the jump either: two jumps 412 ulps apart gave every
+                // column of the second as 0 (eleventh review; on main too).
+                // A condition that already reads its new branch there puts its
+                // jump into the pair unasked. Neither can be read from here.
+                if (!other_near[o] && g_side[1][o] == 0.0 && std::isfinite(g_side[0][o]) &&
+                    g_side[0][o] != 0.0) {
+                    sync(x, t_evt);
                     std::ostringstream msg;
                     msg << "Forward sensitivity: the state-dependent rate-law switch with "
                            "residual '"
+                        << sw.residual_source << "' crosses at t=" << t_evt << ", and the step of "
+                        << dt
+                        << " that the run restarts past it lands exactly on the surface of "
+                           "the switch with residual '"
                         << others[o]->residual_source
-                        << "' was crossed at t=" << state_switch_restart_t
+                        << "'. That crossing would not be located and its jump would be "
+                           "lost, so bngsim refuses (issue #763). Separate the thresholds, "
+                           "or drop sensitivities for this run.";
+                    throw std::runtime_error(msg.str());
+                }
+                if (!other_near[o]) {
+                    continue;
+                }
+                // A recent restart stepped over this switch's root and applied
+                // its jump. This crossing follows so closely that the pair's
+                // backward point is behind that restart, on the switch's old
+                // branch, and would read the jump again: clamp, jump 200 ulps
+                // on, clamp 600 ulps on gave dY/dthr = 14 for 7 (tenth review).
+                // A switch that did not jump there, a clamp or one no rate law
+                // reads, has nothing to read twice and is not remembered.
+                const auto applied =
+                    std::find_if(state_switch_consumed.begin(), state_switch_consumed.end(),
+                                 [&](const auto &one) { return one.first == others[o]; });
+                if (applied != state_switch_consumed.end()) {
+                    std::ostringstream msg;
+                    msg << "Forward sensitivity: the state-dependent rate-law switch with "
+                           "residual '"
+                        << others[o]->residual_source << "' was crossed at t=" << applied->second
                         << " and its jump applied there. The switch with residual '"
-                        << sw.residual_source << "' crosses " << (t_evt - state_switch_restart_t)
+                        << sw.residual_source << "' crosses " << (t_evt - applied->second)
                         << " later, closer than the step of " << dt
                         << " that tells its two branches apart, so reading this crossing would "
                            "read that jump a second time. bngsim refuses rather than apply it "
@@ -6764,8 +6800,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             throw std::runtime_error("CVodeReInit past a state-switch crossing failed: " +
                                      std::to_string(rf));
         }
-        state_switch_restart_t = t_evt;
-        state_switch_consumed = jumped;
+        // A stop that applies no jump leaves the earlier ones remembered.
+        for (const NetworkModel::StateSwitch *one : jumped) {
+            state_switch_consumed.emplace_back(one, t_evt);
+        }
     };
 
     // The readers' flux at ±2δt, then at ±δt. From two points on each side the
@@ -6903,16 +6941,26 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // on it, the co-crossing ones too. Main asks only the reported ones, which
     // credits an unlisted jump on a co-crossing switch to the wrong threshold
     // without a word.
+    //
+    // The second difference can miss a jump. Two unlisted jumps of one size
+    // either side of x(t*) cancel in it, and one below the rounding of every
+    // gross flux it enters is under its floor. Where the readers see nothing
+    // and the pre-#763 test does, such a jump was dropped where main applies it
+    // (eleventh review). So what the readers leave is also read as main reads
+    // it, by its change across the pair, and where only that shows something
+    // the answer is `Unclear`: the crossing is then judged exactly as before
+    // #763, asking what main asks and no more.
+    enum class Unlisted { None, Unclear, Jump };
     bool unlisted = false;
     auto unlisted_jump = [&]() {
         std::vector<double> listed0(n_sp, 0.0);
-        std::vector<double> all0(n_sp, 0.0);
+        std::vector<double> whole0(n_sp, 0.0); // f at x(t*) again; only the gross is wanted
         std::vector<double> gross0(n_sp, 0.0);
         sync(x, t_evt);
         if (!readers.empty()) {
             model.compute_flux_split(t_evt, x.data(), &batch_rxns, listed0.data(), nullptr);
         }
-        model.compute_flux_split(t_evt, x.data(), nullptr, all0.data(), gross0.data());
+        model.compute_flux_split(t_evt, x.data(), nullptr, whole0.data(), gross0.data());
         const std::vector<double> *lo = nullptr;
         const std::vector<double> *hi = nullptr;
         if (readers.size() == 1) {
@@ -6935,13 +6983,24 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                                           std::numeric_limits<double>::epsilon() *
                                               kStateSwitchAgreeRoundoff * gross0[u]);
             if (!(std::fabs(rest) <= floor)) {
-                return true;
+                return Unlisted::Jump;
             }
         }
-        return false;
+        for (std::size_t u = 0; u < n_sp; ++u) {
+            double rest = f_minus[u] - f_plus[u];
+            if (lo != nullptr) {
+                rest -= (*lo)[u] - (*hi)[u];
+            }
+            if (!(std::fabs(rest) <= kStateSwitchContinuousRelTol * f_scale)) {
+                return Unlisted::Unclear;
+            }
+        }
+        return Unlisted::None;
     };
-    auto judge_as_before = [&]() {
-        unlisted = true;
+    // `ask_all`: every switch the pair crosses has to agree on dt*/dθ, not
+    // only the reported ones.
+    auto judge_as_before = [&](bool ask_all) {
+        unlisted = ask_all;
         judge = Judge::Legacy;
         readers.clear();
         reader_batch_idx.clear();
@@ -7044,7 +7103,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         }
         // The readers see no jump. If the pre-#763 test does, either it is
         // reading what a reader does smoothly, or the map has missed a
-        // reaction: then that test stands.
+        // reaction: then that test stands, and main's answer is never dropped.
         if (continuous) {
             double whole = 0.0;
             double f_scale = 0.0;
@@ -7052,12 +7111,19 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 whole = std::max(whole, std::fabs(f_minus[u] - f_plus[u]));
                 f_scale = std::max({f_scale, std::fabs(f_minus[u]), std::fabs(f_plus[u])});
             }
-            if (whole > kStateSwitchContinuousRelTol * f_scale && unlisted_jump()) {
-                judge_as_before();
-                continuous = false;
+            if (whole > kStateSwitchContinuousRelTol * f_scale) {
+                const Unlisted found = unlisted_jump();
+                if (found != Unlisted::None) {
+                    judge_as_before(found == Unlisted::Jump);
+                    continuous = false;
+                }
             }
-        } else if (unlisted_jump()) {
-            judge_as_before();
+        } else if (unlisted_jump() == Unlisted::Jump) {
+            // Beside a reader that jumps, only a jump counts. The change across
+            // the pair of what the readers leave is large for smooth reasons
+            // there (tenth review), and going back to the old judgment on it
+            // gave main's wrong answers back.
+            judge_as_before(true);
         }
     }
     if (continuous) {
@@ -7748,7 +7814,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<double> state_switch_zero_hold;
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
-    impl_->state_switch_restart_t = std::numeric_limits<double>::quiet_NaN();
     impl_->state_switch_consumed.clear();
     if (!opts.sensitivity.state_switch_conditions.empty()) {
         const auto &conds = opts.sensitivity.state_switch_conditions;

@@ -619,7 +619,9 @@ def _switched_source(thr, ksw, col):
 #   ramp   ``size·(thr_i − Aobs)`` into Y_i below the threshold, continuous;
 #   clamp  B_i (= size) -> C_i at ``0.1·min(Aobs/thr_i, 1)``, continuous.
 UNIT_KB = (3.0, 5.0, 7.0)
-UNIT_REFUSED = re.compile("cross at the same instant|and its jump applied there")
+UNIT_REFUSED = re.compile(
+    "cross at the same instant|and its jump applied there|lands exactly on the surface"
+)
 
 
 def _units_sens(tmp_path, units, name):
@@ -2026,6 +2028,190 @@ end groups
         np.testing.assert_allclose(s[names.index("Y()")], [3.0, 0.0], atol=1e-5)
         if not clamp:
             np.testing.assert_allclose(s[names.index("Z()")], [0.0, 5.0], atol=1e-5)
+
+    def test_two_unlisted_jumps_either_side_of_the_crossing_are_not_dropped(self, tmp_path):
+        """Two Michaelis-Menten laws into P, each with a kcat a function switches,
+        at thresholds 300 ulps apart. Neither is in the map. The state the run
+        stops at lies between the two, so the second difference of the
+        right-hand side there is -kc + kc = 0, and a test built on it alone saw
+        no jump and dropped both: dP/d[A0, a] = (0, 0) where main is right
+        (eleventh review). Where only the change across the pair shows
+        something, the crossing is now judged exactly as before #763."""
+        thr3 = float(2.0 * (1 - 300 * EPS))
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr2 2
+    4 thr3 {thr3!r}
+    5 kc 5
+    6 kcat1 0
+    7 kcat2 0
+    8 Km 1
+end parameters
+begin functions
+    1 kcat1() if(Aobs<thr2,kc,0)
+    2 kcat2() if(Aobs<thr3,kc,0)
+end functions
+begin species
+    1 A() A0
+    2 E() 1
+    3 S() 1e6
+    4 P() 0
+end species
+begin reactions
+    1 1 0 a
+    2 2,3 2,4 MM kcat1 Km
+    3 2,3 2,4 MM kcat2 Km
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="two_unlisted.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["A0", "a"]).run(
+            t_span=(0.0, 8.0), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("P()")]
+        # P = 2·kc'·(T − ln(A0/thr)/a) with kc' = kc·S/(Km + S).
+        rate = 2 * 5.0 * 1e6 / (1.0 + 1e6)
+        np.testing.assert_allclose(
+            got, [-rate / (0.5 * 10.0), rate * np.log(5.0) / 0.25], rtol=1e-5
+        )
+
+    @pytest.mark.parametrize(("X0", "kq"), [(1e15, 1.0), (1e9, 1e6)])
+    def test_an_unlisted_jump_under_the_rounding_of_every_flux_it_enters(self, tmp_path, X0, kq):
+        """One unlisted Michaelis-Menten jump of 5 from S to P, with S and P each
+        in a balanced exchange whose gross flux is 1e15. The jump is under 16
+        ulps of that in both species, so the second-difference test, which
+        allows for the rounding of the gross flux, saw nothing and the jump was
+        dropped: d(P + P2)/d[thr2, a] = (0, 0) where main is right (eleventh
+        review)."""
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr2 2
+    4 kc 5
+    5 kcat 0
+    6 Km 1
+    7 kq1 {1.1 * kq!r}
+    8 kq2 {0.6 * kq!r}
+    9 X0 {X0!r}
+    10 R0 {X0 * 1.1 / 0.6!r}
+end parameters
+begin functions
+    1 kcat() if(Aobs<thr2,kc,0)
+end functions
+begin species
+    1 A() A0
+    2 E() 1
+    3 S() X0
+    4 P() X0
+    5 P2() R0
+    6 S2() R0
+end species
+begin reactions
+    1 1 0 a
+    2 2,3 2,4 MM kcat Km
+    3 4 5 kq1
+    4 5 4 kq2
+    5 3 6 kq1
+    6 6 3 kq2
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="unlisted_sub_rounding.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["thr2", "a"]).run(
+            t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+        got = s[names.index("P()")] + s[names.index("P2()")]
+        np.testing.assert_allclose(got, [5.0 / (0.5 * 2.0), 5.0 * np.log(5.0) / 0.25], rtol=1e-3)
+
+    @pytest.mark.parametrize("k", [300, -300])
+    def test_two_clamps_a_hair_apart_beside_a_noisy_balance_are_not_refused(self, tmp_path, k):
+        """Two clamps at thresholds 300 ulps apart, B -> C and D -> F, and a
+        species Q made at ``kf*Aobs`` and lost at kf·Q with kf = 1e12 that reads
+        neither. Nothing jumps. The rounding of Q's two fluxes passes the
+        pre-#763 tolerance, so that test reads a jump here, and main applies it
+        with the reported clamp's dt*/dθ. It is rounding, and main is right.
+        Asking BOTH clamps to agree on that dt*/dθ, as a crossing with a real
+        unlisted jump is asked, would refuse this run."""
+        thr2 = float(2.0 * (1 - k * EPS))
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr1 2
+    4 thr2 {thr2!r}
+    5 kx 0.1
+    6 kf 1e12
+end parameters
+begin functions
+    1 f1() kx*if(Aobs<thr1,Aobs/thr1,1)
+    2 f2() kx*if(Aobs<thr2,Aobs/thr2,1)
+    3 fq() kf*Aobs
+end functions
+begin species
+    1 A() A0
+    2 B() 1000
+    3 C() 0
+    4 D() 1000
+    5 F() 0
+    6 Q() 10
+end species
+begin reactions
+    1 1 0 a
+    2 2 3 f1
+    3 4 5 f2
+    4 0 6 fq
+    5 6 0 kf
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="noisy_clamps.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["thr1", "thr2"]).run(
+            t_span=(0.0, 6.0), n_points=3, rtol=1e-9, atol=1e-12
+        )
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+
+        # B(T) = B0·exp(−kx·t* − (kx/(a·thr))·(thr − A(T))), t* = ln(A0/thr)/a.
+        def b_end(thr):
+            t_star = np.log(10.0 / thr) / 0.5
+            return 1000.0 * np.exp(
+                -0.1 * t_star - (0.1 / (0.5 * thr)) * (thr - 10.0 * np.exp(-0.5 * 6.0))
+            )
+
+        h = 1e-6
+        want = (b_end(2.0 + h) - b_end(2.0 - h)) / (2 * h)
+        np.testing.assert_allclose(s[names.index("B()")], [want, 0.0], rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(s[names.index("D()")], [0.0, want], rtol=1e-5, atol=1e-6)
+
+    def test_a_restart_that_lands_on_another_surface_is_refused(self, tmp_path):
+        """Two jumps a few hundred ulps apart. The run stops at the first and
+        restarts a probe step past it. For one spacing in a few hundred that
+        point is exactly on the second threshold: its residual is 0.0 there,
+        CVODE sets a root that is zero at a restart aside, and the second
+        crossing is never reported. Every column of the first jump came back 0,
+        on main too (eleventh review; -412 ulps on this machine). Which spacing
+        it is depends on the last bits of the arithmetic, so a range is run and
+        each case has to be right or refused."""
+        refused = 0
+        for k in range(-424, -399):
+            units = [("jump", 0, 0.0), ("jump", k, 0.0)]
+            try:
+                s = _units_sens(tmp_path, units, f"lands_on{k}.net")
+            except SimulationError as e:
+                assert UNIT_REFUSED.search(str(e))
+                refused += 1
+                continue
+            np.testing.assert_allclose(s["Y0"][2:], [3.0, 0.0], atol=1e-5, err_msg=f"k = {k}")
+            np.testing.assert_allclose(s["Y1"][2:], [0.0, 5.0], atol=1e-5, err_msg=f"k = {k}")
+        assert refused < 25, "every spacing was refused, so the range shows nothing"
 
     def test_a_tangent_crossing_ignores_a_threshold_its_reactions_do_not_read(self, tmp_path):
         """The same crawl past thr2 = 2 + 3e-9, but there the rate law is a
