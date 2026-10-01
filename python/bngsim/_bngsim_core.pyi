@@ -171,6 +171,14 @@ class NetworkModel:
         """
         One reaction's SSA propensity at conc (0-based rxn_index), reading the observable totals and function-bound parameters the model currently holds — the per-reaction body of the SSA propensity pass, without its refresh. Use compute_propensities for the refreshed vector. Issue #523.
         """
+    def event_carry(self) -> typing.Any:
+        """
+        The event state the last run left for a run that continues it (issue #693): None, or (t, trigger truth per event, [(event index, apply time, frozen values)] for the delayed executions not yet applied). A run starting at t continues it; any other run is a fresh start.
+        """
+    def event_carry_state(self) -> typing.Any:
+        """
+        The carry together with the trajectory's leg ends a rollback can return to (issue #693), opaque, for set_event_carry_state: what a protocol primitive that rewinds the state and the clock saves and puts back.
+        """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
         Return a reason string if any event blocks forward sensitivity for the given sensitivity-parameter names, else None (GH #212, issue #49, issue #144). event_time_compensated lists the 0-based indices of events whose ∂t*/∂p the caller supplies via SolverOptions.set_event_time_sens, which lifts the parameter-dependent-trigger refusal for exactly those.
@@ -239,6 +247,10 @@ class NetworkModel:
         """
         Reset the RHS instrumentation counters to zero.
         """
+    def rewind_event_carry(self, t: typing.SupportsFloat | typing.SupportsIndex) -> int:
+        """
+        Move the events to the trajectory's leg end at time t, for a caller that rolls the clock there (issue #693): 1 when there is one, -1 when t is older than the retained leg ends and some were dropped, 0 otherwise. Nothing changes unless 1.
+        """
     def save_concentrations(self) -> None:
         """
         Snapshot current concentrations as new initial state
@@ -246,6 +258,14 @@ class NetworkModel:
     def set_concentration(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex) -> None:
         """
         Set a single species concentration by name
+        """
+    def set_event_carry(self, carry: typing.Any) -> None:
+        """
+        Install a carry in event_carry()'s form (None: a fresh start). Checked against this model's events.
+        """
+    def set_event_carry_state(self, state: typing.Any) -> None:
+        """
+        Put back what event_carry_state() returned (None clears).
         """
     def set_function_eval_expression(self, name: str, expression: str) -> bool:
         """

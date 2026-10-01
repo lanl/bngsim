@@ -63,6 +63,8 @@ std::vector<double> uniform_time_labels(double t_start, double t_end, int n_poin
     for (int i = 0; i < n_points; ++i) {
         labels[i] = t_start + i * dt;
     }
+    if (n_points > 1)
+        labels.back() = t_end; // as TimeSpec::output_times() (issue #693)
     return labels;
 }
 
@@ -222,6 +224,11 @@ Result RuleMonkeySimulator::run(const TimeSpec &times, uint64_t seed, double tim
         std::vector<double> labels(rm_result.time.begin(), rm_result.time.end());
         for (double &t : labels)
             t += times.t_start;
+        // The requested instants themselves, as every other backend reports
+        // them: elapsed + t_start can miss the last by an ulp (issue #693).
+        const auto requested = times.output_times();
+        if (requested.size() == labels.size())
+            labels = requested;
         return convert_rulemonkey_result(rm_result, &labels);
     } catch (const rulemonkey::Cancelled &) {
         // Upstream raises Cancelled iff our callback returned false, which it
