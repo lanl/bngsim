@@ -20,13 +20,22 @@ reaches ``sigma`` at t = sigma and stops the step exactly there, and the run
 completes — which is the better fix and is asserted at the bottom of this file.
 So the ``stall_model`` fixture stands the crossing stop down, by emptying the
 conditions the model derived. That is not an artificial state: it is what every
-model whose crossing time bngsim cannot resolve still looks like — a threshold on
-live state, a residual that is not linear in time — and those are the models the
-bounded retry is there for.
+model whose crossing time bngsim cannot resolve still looks like, and those are
+the models the bounded retry is there for.
+
+Since issue #928 that is not enough to wedge it either. With the stop stood down
+the counter species is pinned an ulp short of ``sigma``, and a run pinned on a
+state-switch surface now has the species the threshold reads moved the few ulp
+that put it across (``test_stalled_state_switch_surface.py`` asserts that this
+fixture then matches the run as written). So the fixture also writes the
+condition on the time itself, ``time() >= sigma``: there is no species to move,
+and the step size still collapses there.
 """
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -34,6 +43,10 @@ import bngsim
 import numpy as np
 import pytest
 from bngsim._exceptions import SimulationError
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _stall_fixture import stalling_model  # noqa: E402
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "tests" / "data"
 STALL_NET = DATA_DIR / "switch_discontinuity_stall.net"
@@ -48,22 +61,12 @@ _FAST = 30.0
 
 
 @pytest.fixture
-def stall_model():
-    """The fixture with its crossing stop stood down, so it still wedges.
-
-    See the module docstring: the model as written is repaired by issue #443,
-    and what is under test here is the retry bound rather than the crossing.
-    Emptying the derived conditions is how a model whose crossing time cannot be
-    resolved reaches the integrator, which is the population this guard covers.
-    """
-    assert STALL_NET.exists(), f"test data not found: {STALL_NET}"
-    model = bngsim.Model.from_net(str(STALL_NET))
-    assert model.time_discontinuity_conditions(), (
-        "the fixture no longer derives a crossing at all, so standing it down "
-        "proves nothing; check what changed in the scan"
-    )
-    model._derived_time_disc_conditions = ()
-    return model
+def stall_model(tmp_path):
+    """The fixture with its condition on the time itself and its crossing stop
+    stood down, so it still wedges. See ``_stall_fixture.py``: the model as
+    written is repaired by issue #443 and a threshold on the counter species by
+    issue #928, and what is under test here is the retry bound."""
+    return stalling_model(tmp_path)
 
 
 def test_stall_raises_quickly_instead_of_hanging(stall_model):
@@ -134,9 +137,9 @@ def test_the_switch_is_stopped_at_rather_than_wedged_on():
     the step there, takes the whole approach on the branch that is ending, and
     restarts on the other one. Nothing is left for the error test to fail on.
 
-    The same run with the crossing stood down is the `stall_model` fixture
-    above, and it still raises — so this asserts the repair rather than a
-    quietly loosened tolerance.
+    The same run with the condition on the time and the crossing stood down is
+    the `stall_model` fixture above, and it still raises — so this asserts the
+    repair rather than a quietly loosened tolerance.
     """
     model = bngsim.Model.from_net(str(STALL_NET))
     assert model.time_discontinuity_conditions() == ("t>=sigma",)
