@@ -1078,6 +1078,10 @@ class SsaSimulator:
         """
         Issue #719: times at which a time-dependent rate may jump. The continuous (time-dependent) loop never steps across one. Applies to every later run; [] clears it.
         """
+    def set_piecewise_constant_functions(self, names: collections.abc.Sequence[str]) -> None:
+        """
+        Functions, by name, constant in time between the breakpoints: a rate that reads the clock only through them is held constant and re-read at each breakpoint. Applies to every later run; [] clears it.
+        """
     def set_propensity_library(self, so_path: str) -> None:
         """
         GH #190: supply a cc-compiled value-specialized propensity .so (symbol bngsim_ssa_propensities). When set and the model is recompute-all eligible (pure mass-action exact SSA, no events, small nr), the run takes the RR-style recompute-all + flat-scan loop by default. No-op for ineligible models; '' clears it.

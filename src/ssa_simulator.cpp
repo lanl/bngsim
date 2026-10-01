@@ -33,6 +33,8 @@
 #include <random>
 #include <set>
 #include <stdexcept>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace bngsim {
@@ -424,6 +426,8 @@ struct SsaSimulator::Impl {
 
     // Issue #719 — see SsaSimulator::set_breakpoints. Sorted, unique.
     std::vector<double> breakpoints;
+    // Functions constant in time between the breakpoints (set_piecewise_constant_functions).
+    std::vector<std::string> pc_functions;
 
     // GH #616 — record per-reaction firing counts and propensity integrals at
     // every output time (set_record_reaction_stats). The labels the result
@@ -483,6 +487,10 @@ SsaSimulator::~SsaSimulator() = default;
 
 void SsaSimulator::set_record_reaction_stats(bool enabled) {
     impl_->record_reaction_stats = enabled;
+}
+
+void SsaSimulator::set_piecewise_constant_functions(const std::vector<std::string> &names) {
+    impl_->pc_functions = names;
 }
 
 void SsaSimulator::set_breakpoints(const std::vector<double> &times) {
@@ -1489,15 +1497,34 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Per reaction since issue #719: a function that reads time but feeds no
     // rate (an output, a trigger) leaves every propensity constant between
     // firings, and a Functional rate that reads no time is constant too.
+    //
+    // A function the caller resolved as piecewise constant in time (it reads the
+    // clock only inside conditions whose crossings are this run's breakpoints)
+    // leaves a rate constant between breakpoints: such a rate is static, and is
+    // refreshed at each breakpoint instead of integrated (pc_rxns).
+    std::vector<char> pc_fn(static_cast<std::size_t>(model.n_functions()), 0);
+    if (!impl_->pc_functions.empty()) {
+        const std::unordered_set<std::string> names(impl_->pc_functions.begin(),
+                                                    impl_->pc_functions.end());
+        const auto &fns = model.functions();
+        for (std::size_t fi = 0; fi < fns.size(); ++fi)
+            pc_fn[fi] = names.count(fns[fi].name) ? 1 : 0;
+    }
     std::vector<char> rate_reads_time(nr, 0);
+    std::vector<int> pc_rxns;
     bool time_dependent_rates = false;
     if (model.functions_use_time())
-        for (int r = 0; r < nr; ++r)
-            if (!reactions[r].is_rate_rule_ode && !reactions[r].ode_only &&
-                model.reaction_rate_reads_time(r)) {
+        for (int r = 0; r < nr; ++r) {
+            if (reactions[r].is_rate_rule_ode || reactions[r].ode_only)
+                continue;
+            if (model.reaction_rate_reads_time(r, &pc_fn)) {
                 rate_reads_time[r] = 1;
                 time_dependent_rates = true;
+            } else if (!impl_->pc_functions.empty() && model.reaction_rate_reads_time(r)) {
+                pc_rxns.push_back(r);
             }
+        }
+    const bool pc_refresh = !pc_rxns.empty();
 
     // Leave the function-bound parameters holding their t_start values, which is
     // where the probe this replaced left them. Nothing above has necessarily
@@ -1572,7 +1599,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
         // Backend-agnostic eligibility for the recompute-all branch.
         const bool recompute_eligible =
-            !use_psa && n_events == 0 && !time_dependent_rates && !has_rate_rules;
+            !use_psa && n_events == 0 && !time_dependent_rates && !has_rate_rules && !pc_refresh;
         // Size gate for the DEFAULT path: the O(nr) full recompute beats the
         // incremental dep-graph update only for small nr (measured win ≤44,
         // neutral by ~60). BNGSIM_SSA_RECOMPUTE_ALL forces past it (ablation).
@@ -1868,6 +1895,46 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             set_propensity(r);
     };
 
+    // A rate that reads the clock only through piecewise-constant functions
+    // jumps only at a breakpoint: re-evaluate those at one (the loops stop
+    // there). And a guard, at output times, that such a rate has not moved
+    // since it was last set while nothing fired and no breakpoint passed: a
+    // classification that let a moving rate through would otherwise freeze it
+    // silently, so it is refused, loudly.
+    std::size_t pc_bp = 0;
+    auto next_pc_bp = [&](double t_now) {
+        while (pc_bp < bps.size() && bps[pc_bp] <= t_now)
+            ++pc_bp;
+        return pc_bp < bps.size() ? bps[pc_bp] : std::numeric_limits<double>::infinity();
+    };
+    // Read inside the interval the rate is constant on, (t_now, next breakpoint),
+    // not at t_now: at a breakpoint a condition is still on its old side (`time()
+    // > 5` is false at 5), and the rate it switches holds from just after.
+    auto pc_refresh_at = [&](double t_now) {
+        const double t_hi = std::min(next_pc_bp(t_now), times.t_end);
+        const double t_in = t_hi > t_now ? 0.5 * (t_now + t_hi) : t_now;
+        sync_state(t_in);
+        refresh_jit_propensities();
+        for (int r : pc_rxns)
+            set_propensity(r);
+        model.evaluate_functions(t_now);
+    };
+    auto pc_check = [&](double t_now) { // functions evaluated at t_now, state current
+        for (int r : pc_rxns) {
+            const double v = std::fabs(model.compute_propensity(r, conc.data()));
+            if (v != propensities[r]) {
+                char buf[96];
+                std::snprintf(buf, sizeof buf, " at t = %.17g (%.17g, set as %.17g)", t_now, v,
+                              propensities[r]);
+                throw std::runtime_error(
+                    std::string(use_psa ? "PSA" : "SSA") + ": the rate of reaction " +
+                    reaction_label(model, reactions[r]) + " moved between breakpoints" + buf +
+                    ", though its time dependence was classified piecewise constant. This is "
+                    "a bngsim bug; please report it.");
+            }
+        }
+    };
+
     // ─── GH #190: RR-style recompute-all + flat-scan fast loop ────────────────
     //
     // Engaged (ssa_fast_loop, decided above) when a value-specialized propensity
@@ -2062,6 +2129,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Tolerances: rate-rule targets rtol 1e-6, atol 1e-9; the hazard integral
     // 1e-7 + 1e-6·|∫| per panel, so a firing time is off by far less than the
     // spread of the draw that places it.
+    //
+    // A piecewise-constant rate was set at t_start, where a condition reads its
+    // boundary value (`time() > 0` at 0); it holds the first interval's value.
+    if (pc_refresh)
+        pc_refresh_at(t);
     if (time_dependent_rates) {
         const int m = static_cast<int>(rate_rule_odes.size());
         const int nd = static_cast<int>(dyn.size());
@@ -2729,8 +2801,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 h = h_next_p;
                 psa_now = t;
                 model.set_current_time(t);
-                if (s1 == t_stop && t_stop < times.t_end)
+                if (s1 == t_stop && t_stop < times.t_end) {
                     fresh = true; // a breakpoint: a rate may jump here
+                    if (pc_refresh)
+                        pc_refresh_at(t);
+                }
                 continue;
             }
 
@@ -2863,10 +2938,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             //    Otherwise, fast-forward all remaining samples at the current
             //    state.
             if (a0 <= 0.0) {
+                // A piecewise-constant rate may turn on at the next breakpoint:
+                // look no further than that.
+                const double t_lim =
+                    pc_refresh ? std::min(times.t_end, next_pc_bp(t)) : times.t_end;
                 if (n_events > 0) {
                     // Only the time: the batch is taken from every trigger below.
-                    const double t_event_idle = probe_events_in_window(t, times.t_end);
-                    if (std::isfinite(t_event_idle) && t_event_idle <= times.t_end) {
+                    const double t_event_idle = probe_events_in_window(t, t_lim);
+                    if (std::isfinite(t_event_idle) && t_event_idle <= t_lim) {
                         // Record any samples strictly before t_event_idle.
                         while (next_output < n_out && t_event_idle > t_out[next_output] &&
                                t_out[next_output] < t_event_idle - sample_event_tol(t_event_idle)) {
@@ -2897,6 +2976,29 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         model.set_current_time(t);
                         continue;
                     }
+                }
+                if (t_lim < times.t_end) {
+                    // Nothing fires before the breakpoint: rows up to it hold this
+                    // state, and the rates are re-read there.
+                    while (next_output < n_out && t_out[next_output] <= t_lim) {
+                        model.update_observables(conc.data());
+                        for (int j = 0; j < n_obs; ++j)
+                            obs_buf[j] = model.observables()[j].total;
+                        result.record(next_output, t_out[next_output], conc.data(), obs_buf.data());
+                        if (rec_stats)
+                            rs_record(next_output, t_out[next_output]);
+                        model.evaluate_functions(t_out[next_output]);
+                        auto fvals = model.function_values();
+                        result.record_expressions(next_output, fvals.data());
+                        ++next_output;
+                    }
+                    if (next_output >= n_out)
+                        break;
+                    t = t_lim;
+                    psa_now = t;
+                    model.set_current_time(t);
+                    pc_refresh_at(t);
+                    continue;
                 }
                 // Truly stuck — fast-forward.
                 model.update_observables(conc.data());
@@ -2931,6 +3033,17 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 r1 = next_u01(); // avoid log(0)
             double tau = -std::log(r1) / a0;
             double t_proposed = t + tau;
+            // A breakpoint first: a piecewise-constant rate jumps there, so stop,
+            // re-read the rates and redraw (exact by memorylessness).
+            bool pc_cap = false;
+            double t_pc = std::numeric_limits<double>::infinity();
+            if (pc_refresh) {
+                t_pc = next_pc_bp(t);
+                if (t_proposed > t_pc) {
+                    t_proposed = t_pc;
+                    pc_cap = true;
+                }
+            }
 
             // 4. Detect event-trigger crossings within (t, t_proposed].
             //    State is piecewise-constant during τ, so a time-dependent trigger
@@ -2964,12 +3077,26 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     model.evaluate_functions(t_out[next_output]);
                     auto fvals = model.function_values();
                     result.record_expressions(next_output, fvals.data());
+                    // (At a breakpoint itself a condition reads its boundary
+                    // value, which the interval on either side need not share.)
+                    if (pc_refresh && t_out[next_output] < t_pc &&
+                        !std::binary_search(bps.begin(), bps.end(), t_out[next_output]))
+                        pc_check(t_out[next_output]);
                 }
                 ++next_output;
             }
 
             if (next_output >= n_out)
                 break;
+
+            if (pc_cap && !event_wins) {
+                // The breakpoint came first: nothing fired.
+                t = t_proposed;
+                psa_now = t;
+                model.set_current_time(t);
+                pc_refresh_at(t);
+                continue;
+            }
 
             if (event_wins) {
                 // Advance time to t_event, fire the batch, redraw τ. The

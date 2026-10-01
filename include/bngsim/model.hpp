@@ -268,7 +268,12 @@ class NetworkModel {
     // time-indexed table function, or a rate accessor (which reads the running
     // derivatives) says yes. Never by probing values, which can alias (#654);
     // it may over-report, which costs only time.
-    bool reaction_rate_reads_time(int rxn_idx0) const;
+    //
+    // `pc_functions` (indexed like functions()) marks functions known to be
+    // constant between the run's breakpoints: their own clock reads are not
+    // counted (issue #719 follow-up).
+    bool reaction_rate_reads_time(int rxn_idx0,
+                                  const std::vector<char> *pc_functions = nullptr) const;
 
     // Does event `event_idx0`'s trigger read the clock, through the same walk?
     // A trigger that does not can change only when the state does.
@@ -728,9 +733,10 @@ class NetworkModel {
         bool unknown = false; // something whose reads cannot be named
         std::set<int> species;
     };
-    RateDeps rate_dependencies_(std::vector<int> params,
-                                const std::vector<std::string> &texts) const;
-    RateDeps reaction_rate_dependencies_(int rxn_idx0) const;
+    RateDeps rate_dependencies_(std::vector<int> params, const std::vector<std::string> &texts,
+                                const std::vector<char> *pc_functions = nullptr) const;
+    RateDeps reaction_rate_dependencies_(int rxn_idx0,
+                                         const std::vector<char> *pc_functions = nullptr) const;
     void set_load_warnings_(std::vector<std::string> warnings);
 
     /// The single-pass RHS body (GH #106). compute_derivs() and
