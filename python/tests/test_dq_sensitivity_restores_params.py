@@ -143,18 +143,20 @@ def test_an_event_assignment_reading_a_sensitivity_parameter_is_exact():
     assert m.get_param("reset") == 5.0
 
 
-def test_a_time_reading_derived_parameter_still_gets_its_parameters_back():
+def test_a_derived_parameter_off_the_snapshot_path_still_gets_its_parameters_back():
     """The restore copies a snapshot of the nominal point only when re-deriving
-    there is a function of the parameters alone. ``kt`` reads ``time()``, so this
-    model takes the re-deriving restore instead, and must end the run at nominal
-    all the same (issue #690)."""
+    there is provably a function of the listed built-ins of the parameters.
+    ``kt`` calls ``erf``, which that check does not list, so this model takes
+    the re-deriving restore instead, and must end the run at nominal all the
+    same (issue #690). (It read ``time()`` until the builder began refusing a
+    parameter that does.)"""
     from bngsim._bngsim_core import ModelBuilder
 
     b = ModelBuilder()
     a = b.add_species("A", 10.0)
     bb = b.add_species("B", 0.0)
     b.add_parameter("k", 0.5)
-    b.add_parameter("kt", 0.0, "k*(1 + 0.1*time())", is_expression=True)
+    b.add_parameter("kt", 0.0, "k*(1 + 0.1*erf(k))", is_expression=True)
     b.add_observable("Atot", [(a, 1.0)])
     b.add_function("rf", "kt*abs(Atot)")
     b.add_reaction([a], [bb], "functional", "rf")

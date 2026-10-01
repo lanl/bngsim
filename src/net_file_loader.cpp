@@ -340,10 +340,11 @@ parse_species(std::ifstream &file, std::unordered_map<std::string, int> &param_n
 // any of them had a value, so it loaded as 0.0 and a reaction whose rate it was
 // never fired (issue #844). #602 refuses a symbol the model never declares; an
 // observable or a function is declared, so it passed. Refuse it here, naming
-// the parameter and the symbol. A name that is also a parameter is left alone:
-// that is the SBML assignment-rule shape after `.net` conversion, a parameter
-// row shadowed by a same-named function (#266), and the reference reads the
-// parameter's slot.
+// the parameter and the symbol. A name that is also a parameter is left to
+// ModelBuilder::build(): that is the SBML assignment-rule shape after `.net`
+// conversion, a parameter row shadowed by a same-named function (#266). The slot
+// belongs to the function, which rewrites it every step, so build() refuses a
+// parameter that reads it, as it refuses one that calls time().
 void refuse_parameters_that_read_state(const std::vector<ParsedParam> &params,
                                        const std::vector<ParsedFunction> &functions,
                                        const std::vector<ParsedObservable> &observables) {
