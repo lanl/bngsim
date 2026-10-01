@@ -7545,10 +7545,45 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         t0_x.assign(y_data, y_data + ns);
                     }
                     double scale = 0.0;
-                    const double flow =
-                        impl_->residual_flow(gidx, model.event_trigger_residual_species(ei),
-                                             times.t_start, ns, t0_x, t0_f, gx_scratch, scale);
-                    on_threshold_at_start[ei] = (flow > 0.0) ? 0 : 1;
+                    const std::vector<int> &support = model.event_trigger_residual_species(ei);
+                    const double flow = impl_->residual_flow(gidx, support, times.t_start, ns, t0_x,
+                                                             t0_f, gx_scratch, scale);
+                    // The residual is lhs − rhs whatever the comparison, so its
+                    // positive side is the trigger's true side for `>` and its
+                    // FALSE side for `<`. Taking positive for true left
+                    // `at (A < 10)` with A(0) = 10 and A decaying marked as not
+                    // leaving, and it never fired, where `at (10 > A)` fires at
+                    // once. So the side is read off the trigger: step each
+                    // coordinate the residual reads (and the clock, if it reads
+                    // that) the way that raises it, and ask the trigger there.
+                    double g_t = flow;
+                    for (int j : support) {
+                        g_t -= gx_scratch[static_cast<std::size_t>(j)] *
+                               t0_f[static_cast<std::size_t>(j)];
+                    }
+                    std::vector<double> x_up(t0_x);
+                    for (int j : support) {
+                        const auto uj = static_cast<std::size_t>(j);
+                        double h = 1e-6 * std::fabs(t0_x[uj]);
+                        if (h == 0.0) {
+                            h = 1e-9;
+                        }
+                        if (gx_scratch[uj] != 0.0) {
+                            x_up[uj] += gx_scratch[uj] > 0.0 ? h : -h;
+                        }
+                    }
+                    const double h_t = 1e-6 * std::max(std::fabs(times.t_start), 1.0);
+                    const double t_up =
+                        times.t_start + (g_t > 0.0 ? h_t : (g_t < 0.0 ? -h_t : 0.0));
+                    impl_->sync_model_at(t_up, x_up.data(), ns);
+                    const double g_up = eval_ref_outer.evaluate(gidx);
+                    const bool true_up =
+                        eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx) > 0.5;
+                    impl_->sync_model_at(times.t_start, t0_x.data(), ns);
+                    // Where the step did not raise the residual, positive is
+                    // taken for true, as before.
+                    const bool true_is_positive = !(g_up > 0.0) || true_up;
+                    on_threshold_at_start[ei] = ((true_is_positive ? flow : -flow) > 0.0) ? 0 : 1;
                 }
                 // Nothing to undo: residual_flow's differences walk the model
                 // through perturbed states but leave it synced at (t_start, y),
@@ -8272,10 +8307,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         // and the trajectory itself was wrong with no word of
                         // it. `at (A < thr)` beside `piecewise(kb, A < thr, 0)`
                         // is that case, the same threshold written twice. The
-                        // switch jump and the event jump cannot be composed at
-                        // one instant (issue #150), so a rise across the restart
-                        // is refused like the exact coincidence above. A fall
-                        // only re-arms the event.
+                        // event's own crossing was not located, so it has no
+                        // sensitivity jump to take, and one could not be
+                        // composed with the switch's at one instant anyway
+                        // (issue #150). So a rise across the restart is refused
+                        // like the exact coincidence above. A fall only re-arms
+                        // the event.
                         for (int ei = 0; ei < n_events; ++ei) {
                             const bool now_true =
                                 eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx) > 0.5;
@@ -8286,12 +8323,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                     batch.front()->residual_source + "') crosses at t=" +
                                     std::to_string(t_ret) + ", and event '" + events_outer[ei].id +
                                     "' triggers within the step the solver takes past that "
-                                    "crossing. The event jump differentiates at the pre-event "
-                                    "state and the switch jump differentiates the branch of f at "
-                                    "what is the same instant to the solver, so composing them is "
-                                    "ambiguous and bngsim refuses rather than pick an order or "
-                                    "skip the event (issue #150). Separate the two thresholds, or "
-                                    "drop sensitivities for this run.");
+                                    "crossing, so the event's own crossing is not located. bngsim "
+                                    "has no sensitivity jump for an event it did not locate, and "
+                                    "could not compose one with the switch's at what is the same "
+                                    "instant to the solver (issue #150). It refuses rather than "
+                                    "skip the event. Separate the two thresholds, or drop "
+                                    "sensitivities for this run.");
                             }
                             trigger_was_true[ei] = now_true;
                         }

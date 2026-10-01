@@ -53,7 +53,10 @@ RISE = (
 def test_an_event_on_a_switch_threshold_fires_or_is_refused(k):
     """A decays past thr1, where Y's source switches, and past thr2 = thr1·(1 − k·ε),
     where the event sets W = 1 and B starts to grow: B(T) = T − ln(A0/thr2)/a.
-    For k from 0 to 300 the sensitivity run returned W = 0 and B = 0."""
+    For k from 0 to 300 the sensitivity run returned W = 0 and B = 0. Those may
+    be refused; at 600, 1000 and −300 the event is its own crossing and the run
+    has to be right. (−100 is refused on main too: there CVODE reports the two
+    roots together, the exact coincidence of issue #150.)"""
     thr2 = float(2.0 * (1 - k * EPS))
     text = RISE.format(thr2=thr2)
     plain, _ = _final(text, times=(0.0, 4.0, 8.0))
@@ -62,6 +65,9 @@ def test_an_event_on_a_switch_threshold_fires_or_is_refused(k):
     try:
         sens, s = _final(text, ["a", "thr1", "kb"], times=(0.0, 4.0, 8.0))
     except SimulationError as e:
+        # Well clear of the restart step the two are separate crossings, and
+        # the run must not be refused.
+        assert k in (0, 50, 100, 300, -100), str(e)
         assert "state-dependent rate-law switch" in str(e) and "event" in str(e)
         return
     assert sens["W"] == 1.0 and sens["B"] == pytest.approx(want_b, rel=1e-8)
@@ -73,6 +79,40 @@ def test_the_same_threshold_written_twice_is_refused_not_skipped():
     """k = 0, the natural spelling. The message names the switch and the event."""
     with pytest.raises(SimulationError, match="event 'E'"):
         _final(RISE.format(thr2=2.0), ["a", "thr1", "kb"], times=(0.0, 4.0, 8.0))
+
+
+@pytest.mark.parametrize("trigger", ["A < 10", "10 > A"])
+def test_a_trigger_that_starts_on_its_threshold_fires_whichever_way_it_is_written(trigger):
+    """A(0) = 10 and A decays, so the trigger is false at the start and true
+    from the first instant on: the event fires at once, W = 1 and B(8) = 8.
+
+    A trigger that starts ON its threshold fires only if the trajectory leaves
+    into its true side (issue #340). That was read off the sign of d/dt of
+    ``lhs - rhs``, taking positive for true, which is right for ``>`` and wrong
+    for ``<``: ``at (A < 10)`` never fired, and W and B stayed 0, where
+    ``at (10 > A)`` fired. That is in a run without sensitivities too. The
+    review of the #910 fix found it."""
+    text = (
+        "species A, W, B; A = 10; W = 0; B = 0; a = 0.5\n"
+        f"J0: A -> ; a*A\nJ1: -> B; W\nE: at ({trigger}): W = 1\n"
+    )
+    plain, _ = _final(text, times=(0.0, 4.0, 8.0))
+    assert plain["W"] == 1.0 and plain["B"] == pytest.approx(8.0, rel=1e-8)
+    sens, s = _final(text, ["a"], times=(0.0, 4.0, 8.0))
+    assert sens["W"] == 1.0 and sens["B"] == pytest.approx(8.0, rel=1e-8)
+    assert s[0] == pytest.approx(0.0, abs=1e-9)  # the fire time does not move with a
+
+
+@pytest.mark.parametrize("trigger", ["A <= 10", "A > 10"])
+def test_a_trigger_that_does_not_leave_its_threshold_into_its_true_side_does_not_fire(trigger):
+    """``A <= 10`` is true at the start, so there is no rising edge. ``A > 10``
+    is false at the start and A moves away from it."""
+    text = (
+        "species A, W, B; A = 10; W = 0; B = 0; a = 0.5\n"
+        f"J0: A -> ; a*A\nJ1: -> B; W\nE: at ({trigger}): W = 1\n"
+    )
+    plain, _ = _final(text, times=(0.0, 4.0, 8.0))
+    assert plain["W"] == 0.0 and plain["B"] == 0.0
 
 
 # C is fed through a smooth gate on a clock species T, about 1e-17 at the switch
