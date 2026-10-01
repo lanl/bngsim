@@ -190,6 +190,14 @@ it, can cross it on the solver's interpolant alone, within its own error, so the
 run steps on there as it did before these roots existed. A window narrower than
 the tolerance can resolve is therefore not guaranteed, as it is not in main.
 
+Stepping on can leave a run pinned on the threshold: a step long enough to move
+the state across by one ulp carries the rate law's jump into an error test it
+fails, and a shorter one leaves the state where it is. Where the solver has
+spent a whole batch of steps that way, the state is carried across the
+threshold along the flow and the run restarts there (issue #928). A state that
+slides along the threshold, with both branches pointing into it, is not
+carried.
+
 Issue #904 lists what this does not yet cover:
 - a comparison used as a number outside `if()`, such as `k*(X > 1)`;
 - a single comparison whose residual turns back within one step, such as
