@@ -16,8 +16,10 @@ A central difference across a step, a bend or a turn is not a derivative, and
 the run is now refused there. Across a smooth value the difference over half
 the step is half as large and the second difference about the point a quarter
 as large. A value is refused where either is out by more than a part in 1e3 of
-what the value moves by across the step, and by more than 16 ulp of the largest
-thing the value reads. Where the value is smooth, the derivative is taken
+what the value moves by across the step. What is out by no more than the
+rounding of the largest thing the value reads is let pass where it leaves the
+derivative in doubt by under a part in 1e3 of the value per unit relative
+change of what is moved. Where the value is smooth, the derivative is taken
 exactly as it was.
 
 Every expected value is a closed form: nothing changes B after the event.
@@ -353,9 +355,12 @@ def test_a_value_that_is_a_difference_of_larger_things(x0):
         ("1 - exp(-k1*time)", "k1", 2.3 * np.exp(-0.001 * 2.3), 1e-6),
         # 1e-10, read from a value that is 1 and rounds by 1e-16: three digits.
         ("X^3/(8 + X^3)", "x0", 3 * 8 * 700.0**2 / (8 + 700.0**3) ** 2, 2e-3),
+        # The same a thousand times further into saturation: no digits, and
+        # nothing to refuse.
+        ("X^3/(8 + X^3*1e9)*1e9", "x0", 0.0, 0.0),
         ("exp(-320000*k1*time)", "k1", 0.0, 0.0),
     ],
-    ids=["slow-first-order", "saturated", "vanishing"],
+    ids=["slow-first-order", "saturated", "far-into-saturation", "vanishing"],
 )
 def test_a_value_that_barely_moves_across_the_difference(value, param, want, rel):
     """Control. A slow first-order term, 0.0023 beside the 1 it is taken from;
@@ -393,3 +398,35 @@ def test_a_bend_in_time_under_a_state_trigger_no_column_moves():
         "E1: at (X >= thr): B = piecewise(5, time >= 2.0, 0)\n"
     )
     assert _sens(text, ["z"], 5.0)[0] == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("x0", [0.37, 1.1, 2.0, 5.7])
+def test_a_difference_that_rounds_by_more_than_it_resolves_is_refused(x0):
+    """``(X + Y) − Y`` is X, and with Y at 1e9 it rounds by an ulp of 1e9: 1e-7,
+    where it moves by 2e-6·X across the difference. dB/dx0 = 1 came back 0.967,
+    0.975, 1.013 and 0.993, with no warning, and no wider step is taken for it:
+    the value's own size says it keeps nine digits. The readings are out of
+    line at each of these. At x0 = 1 they happen to round in line, and the run
+    returns 0.954, as it did."""
+    text = (
+        f"species B, X, Y; B = 0; x0 = {x0}; X = x0; Y = 1e9\n"
+        "J0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = (X + Y) - Y\n"
+    )
+    _refused(text, ["x0"], 5.0, "the species 'X'")
+
+
+@pytest.mark.parametrize("large", ["D", "Dsp"], ids=["a-parameter", "a-species"])
+def test_rounding_of_what_the_value_reads_under_a_weak_dependence(large):
+    """Control. ``(D + q·time) − D + 5`` with D at 1e6 and q at 1e-9 is 5 and
+    rounds by an ulp of 1e6, a thousand times what it moves by across the
+    difference in time. The derivative is q, and whatever the difference makes
+    of it is under 1e-4: nothing beside the 5. D is a parameter in one case and
+    a species in the other, and it is what the value reads that says how much
+    it rounds by."""
+    text = (
+        "species B, Dsp; B = 0; Dsp = 1e6; D = 1e6; q = 1e-9; T0 = 1.3\n"
+        "J0: -> B; 0*q\n"
+        f"E1: at (time >= T0 + 1): B = ({large} + q*time) - {large} + 5\n"
+    )
+    assert _sens(text, ["T0"], 5.0)[0] == pytest.approx(0.0, abs=1e-3)

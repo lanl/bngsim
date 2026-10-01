@@ -2095,6 +2095,8 @@ constexpr double kAssignedDerivativeRelTol = 1e-9;
 // across the step where what a smooth value leaves out of its half-step
 // differences is under this fraction of what the value moves by across it.
 constexpr double kAssignedSmoothRelTol = 1e-3;
+// The difference is taken over this fraction of what is moved, each way.
+constexpr double kAssignedDifferenceStep = 1e-6;
 // Two shifts ∂t*/∂p are one when they agree to this fraction, or when their
 // difference moves the time by under this fraction of itself per unit relative
 // change of the parameter. A shift under the second is no shift: a
@@ -6201,24 +6203,17 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // step.
     //
     // The readings round, too, and by more than their own last digits where
-    // the value is a difference of larger things: `Atot − X − Abound` with Atot
-    // at 1000 is 1.5 and rounds by an ulp of 1000. So what is out is also
-    // allowed 16 ulp of `reach`, the largest of the value and of everything it
-    // reads. A value that moves by less than that across the step, a saturated
-    // `X³/(8 + X³)` at X = 700, has a derivative that small, and whatever the
-    // difference makes of it is under 1e-8 of the value per unit relative change
-    // of what is moved.
-    //
-    // Where the readings round by more than both, `(D + X) − D` with D = 1e8,
-    // whether the value is smooth is for the wider steps to say (see
-    // widen_difference), which are taken only across a value that is straight.
-    // Where there are none, the difference kept is not a derivative to that
-    // part in 1e3 either way.
-    //
-    // And each reading takes what is moved to an ulp of it: `scale` is its
-    // size, and the value moves by its slope there times that ulp.
+    // the value is a difference of larger things: `(D + q·time) − D` with D at
+    // 1e6 rounds by an ulp of 1e6. What is out by no more than 16 ulp of
+    // `reach`, the largest of the value and of everything it reads, may be
+    // that rounding. It is let pass where it leaves the derivative in doubt by
+    // under a part in 1e3 of the value per unit relative change of what is
+    // moved, which is what a saturated `X³/(8 + X³)` at X = 2000 is, and a
+    // term with a coefficient of 1e-9. Where it leaves more in doubt than
+    // that, `(X + Y) − Y` with Y at 1e9, the difference is not a derivative to
+    // that part in 1e3, and the run is refused as it is for a step.
     auto smooth_across = [&](const std::function<double(double)> &value_at, double h, double lo,
-                             double here, double hi, double scale, double reach) {
+                             double here, double hi, double reach) {
         const double span = std::fabs(hi - here) + std::fabs(here - lo);
         // A value that is not finite is refused elsewhere, and one that does
         // not move across the step has nothing in it to ask about.
@@ -6229,13 +6224,14 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         const double half_lo = value_at(-0.5 * h);
         const double whole = (hi - here) - (here - lo);
         const double half = (half_hi - here) - (here - half_lo);
+        const double size = std::max({std::fabs(lo), std::fabs(here), std::fabs(hi)});
+        const double rounding =
+            std::min(16.0 * std::numeric_limits<double>::epsilon() * reach,
+                     2.0 * kAssignedDifferenceStep * kAssignedSmoothRelTol * size);
         // The smallest normal number stands in for the rounding of a value
         // that is itself denormal.
-        const double eps = std::numeric_limits<double>::epsilon();
-        const double steepest = std::max(std::fabs(hi - here), std::fabs(here - lo)) / h;
         const double allowed =
-            std::max({kAssignedSmoothRelTol * span, 16.0 * eps * std::max(reach, scale * steepest),
-                      std::numeric_limits<double>::min()});
+            std::max({kAssignedSmoothRelTol * span, rounding, std::numeric_limits<double>::min()});
         return std::fabs((hi - lo) - 2.0 * (half_hi - half_lo)) <= allowed &&
                std::fabs(half - 0.25 * whole) <= allowed;
     };
@@ -6369,13 +6365,10 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     sync_state();
                     return eval_ref_outer.evaluate(vexpr);
                 };
-                const double narrow = dcdx[j];
-                const bool smooth =
-                    smooth_across(value_at, h, f_lo, value_here, f_hi, std::fabs(xj), reach);
+                rough_x[static_cast<size_t>(j)] =
+                    smooth_across(value_at, h, f_lo, value_here, f_hi, reach) ? 0 : 1;
                 // Taken again over wider steps where it keeps too few digits.
                 widen_difference(value_at, h, value_here, value_size, dcdx[j], dcdx_rounding[j]);
-                // A wider step taken is across a value that is straight.
-                rough_x[static_cast<size_t>(j)] = (smooth || dcdx[j] != narrow) ? 0 : 1;
                 xwork[j] = xj; // restore this component
             }
             sync_state(); // back to the read state for the parameter FD
@@ -6409,14 +6402,11 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     perturbed_sync(pidx, t_evt);
                     return eval_ref_outer.evaluate(vexpr);
                 };
-                const double narrow = dcdp[col];
-                const bool smooth =
-                    smooth_across(value_at, h, f_lo, value_here, f_hi, std::fabs(p0), reach);
+                const bool smooth = smooth_across(value_at, h, f_lo, value_here, f_hi, reach);
                 widen_difference(value_at, h, value_here, value_size, dcdp[col], rounding);
                 params[pidx].value = p0; // restore
                 perturbed_sync(pidx, t_evt);
-                // A wider step taken is across a value that is straight.
-                if (!smooth && dcdp[col] == narrow) {
+                if (!smooth) {
                     sync_state();
                     refuse_not_smooth("the parameter '" + params[pidx].name + "'");
                 }
@@ -6453,8 +6443,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 const std::function<double(double)> at_offset = [&](double offset) {
                     return value_at(t_evt + offset);
                 };
-                const bool smooth =
-                    smooth_across(at_offset, ht, c_lo, value_here, c_hi, std::fabs(t_evt), reach);
+                const bool smooth = smooth_across(at_offset, ht, c_lo, value_here, c_hi, reach);
                 sync_state();
                 // Only where a column moves the fire time: a state trigger
                 // takes this path with every shift 0.
