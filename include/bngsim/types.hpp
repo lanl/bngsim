@@ -1630,6 +1630,12 @@ struct TimeSpec {
         for (int i = 0; i < n_points; ++i) {
             t_out[i] = t_start + i * dt;
         }
+        // The last point is t_end itself, as np.linspace makes it: the state a
+        // run writes back is t_end's, and a run that continues it starts from
+        // the last time reported (issue #693), which t_start + (n-1)·dt can
+        // miss by an ulp (0 + 73·0.1 = 7.300000000000001).
+        if (n_points > 1)
+            t_out.back() = t_end;
         return t_out;
     }
 

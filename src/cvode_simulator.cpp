@@ -8649,7 +8649,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // expression value, ignoring `initialValue` entirely; that
         // suppressed legitimate t=0 fires for events declared with
         // `initialValue=false`.
+        //
+        // A run that continues the previous one (issue #693: a run_until leg,
+        // a run whose span starts where the last ended) is not a simulation
+        // start. Its baselines are the triggers' truth where that run left
+        // them, so only an edge since then fires here (an intervention that
+        // made a trigger true), and the delayed executions it left pending are
+        // queued again.
         {
+            const NetworkModel::EventCarry *carry = model.event_carry_for(times.t_start, n_events);
+            if (carry != nullptr) {
+                for (const auto &ce : carry->pending) {
+                    if (ce.event_idx < 0 || ce.event_idx >= n_events)
+                        continue;
+                    pending_events.push_back(
+                        PendingEvent{ce.event_idx, ce.apply_time, ce.frozen_values});
+                }
+            }
             model.update_observables(y_data);
             model.evaluate_functions(times.t_start);
             // GH #106: the t=0 trigger init runs OUTSIDE the root function, so
@@ -8660,11 +8676,24 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (model.uses_rateof()) {
                 model.compute_derivs(times.t_start, y_data, user_data.rateof_root_scratch.data());
             }
+            // A carried execution of a non-persistent event whose trigger is
+            // false here (an intervention between the legs made it so) is
+            // cancelled, as it would have been the moment the trigger fell.
+            if (carry != nullptr)
+                pending_events.erase(std::remove_if(pending_events.begin(), pending_events.end(),
+                                                    [&](const PendingEvent &pe) {
+                                                        const auto &ev = events_outer[pe.event_idx];
+                                                        return !ev.persistent &&
+                                                               eval_ref_outer.evaluate(
+                                                                   ev.trigger_expr_idx) <= 0.5;
+                                                    }),
+                                     pending_events.end());
 
             std::vector<int> t0_firing;
             t0_firing.reserve(n_events);
             for (int i = 0; i < n_events; ++i) {
-                trigger_was_true[i] = events_outer[i].initial_value;
+                trigger_was_true[i] =
+                    carry != nullptr ? carry->trigger[i] != 0 : events_outer[i].initial_value;
                 double val = eval_ref_outer.evaluate(events_outer[i].trigger_expr_idx);
                 bool now_true = (val > 0.5);
                 if (now_true && !trigger_was_true[i]) {
@@ -8705,6 +8734,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     trigger_was_true[ei] = (v > 0.5);
                 }
             }
+            // A second pass, after the batch: an event that fired here can have made a
+            // non-persistent trigger false, which cancels its pending execution
+            // now, as after any batch the run fires later (the next stop's check
+            // comes too late when the trigger has risen again by then).
+            if (t0_immediate_fired)
+                pending_events.erase(std::remove_if(pending_events.begin(), pending_events.end(),
+                                                    [&](const PendingEvent &pe) {
+                                                        const auto &ev = events_outer[pe.event_idx];
+                                                        return !ev.persistent &&
+                                                               eval_ref_outer.evaluate(
+                                                                   ev.trigger_expr_idx) <= 0.5;
+                                                    }),
+                                     pending_events.end());
 
             // ─── Triggers that start ON their threshold (issue #340) ─────
             //
@@ -8969,15 +9011,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 break;
             }
 
-            // Pick the next stop: the earliest pending apply_time strictly
-            // inside (t_now, t_out[i]], else t_out[i] itself.
+            // Pick the next stop: the earliest pending apply_time inside
+            // (t_now, t_out[i]], else t_out[i] itself. One due at t_now or
+            // within roundoff of it (an execution carried into a leg that
+            // starts an ulp short of it, issue #693; an output point that
+            // landed an ulp short) is stopped for a few ulps ahead, the
+            // nearest stop CVODE takes, rather than passed over to the next
+            // output point.
             double t_target = t_out[i];
             bool target_is_event = false;
             if (n_events > 0) {
+                const double t_min = static_cast<double>(t_now) +
+                                     8.0 * std::numeric_limits<double>::epsilon() *
+                                         std::max(1.0, std::fabs(static_cast<double>(t_now)));
                 for (const auto &pe : pending_events) {
-                    if (pe.apply_time > static_cast<double>(t_now) + 1e-15 &&
-                        pe.apply_time < t_target) {
-                        t_target = pe.apply_time;
+                    const double ta = std::max(pe.apply_time, t_min);
+                    if (ta < t_target) {
+                        t_target = ta;
                         target_is_event = true;
                     }
                 }
@@ -9953,6 +10003,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // Issue #545: the carry-over seed is S.
         impl_->comoving_finish(sens, ns, final_t, y_data);
         impl_->write_final_state_back(opts, ns, y_data, final_t, sens);
+        // ...and the event state that goes with it, for a run that continues
+        // this one (issue #693).
+        NetworkModel::EventCarry carry;
+        carry.valid = true;
+        carry.t = final_t;
+        carry.trigger.assign(trigger_was_true.begin(), trigger_was_true.end());
+        for (auto &pe : pending_events)
+            carry.pending.push_back(NetworkModel::CarriedEventExecution{
+                pe.event_idx, pe.apply_time, std::move(pe.frozen_values)});
+        const bool continued = model.event_carry_for(times.t_start, n_events) != nullptr;
+        model.publish_event_carry(std::move(carry), continued);
     }
 
     // ─── Cleanup ─────────────────────────────────────────────────────────────

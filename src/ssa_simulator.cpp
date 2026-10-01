@@ -33,6 +33,8 @@
 #include <random>
 #include <set>
 #include <stdexcept>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace bngsim {
@@ -424,6 +426,8 @@ struct SsaSimulator::Impl {
 
     // Issue #719 — see SsaSimulator::set_breakpoints. Sorted, unique.
     std::vector<double> breakpoints;
+    // Functions constant in time between the breakpoints (set_piecewise_constant_functions).
+    std::vector<std::string> pc_functions;
 
     // GH #616 — record per-reaction firing counts and propensity integrals at
     // every output time (set_record_reaction_stats). The labels the result
@@ -483,6 +487,10 @@ SsaSimulator::~SsaSimulator() = default;
 
 void SsaSimulator::set_record_reaction_stats(bool enabled) {
     impl_->record_reaction_stats = enabled;
+}
+
+void SsaSimulator::set_piecewise_constant_functions(const std::vector<std::string> &names) {
+    impl_->pc_functions = names;
 }
 
 void SsaSimulator::set_breakpoints(const std::vector<double> &times) {
@@ -1446,13 +1454,18 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // false but whose actual t=0 value is true — before the initial state
     // is recorded. After firing, re-sync trigger_was_true to the post-fire
     // truth values so subsequent transitions are detected as rising edges.
+    //
+    // A run that continues the previous one (issue #693) seeds them from the
+    // truth that run left instead: a leg boundary is not a simulation start.
     if (n_events > 0) {
         sync_state(times.t_start);
 
+        const NetworkModel::EventCarry *carry = model.event_carry_for(times.t_start, n_events);
         std::vector<int> t0_firing;
         t0_firing.reserve(n_events);
         for (int i = 0; i < n_events; ++i) {
-            trigger_was_true[i] = events[i].initial_value;
+            trigger_was_true[i] =
+                carry != nullptr ? carry->trigger[i] != 0 : events[i].initial_value;
             double val = eval_ref.evaluate(events[i].trigger_expr_idx);
             bool now_true = (val > 0.5);
             if (now_true && !trigger_was_true[i]) {
@@ -1501,15 +1514,33 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Per reaction since issue #719: a function that reads time but feeds no
     // rate (an output, a trigger) leaves every propensity constant between
     // firings, and a Functional rate that reads no time is constant too.
+    //
+    // A function the caller resolved as piecewise constant in time (it reads the
+    // clock only inside conditions whose crossings are this run's breakpoints)
+    // leaves a rate constant between breakpoints: such a rate is static, and is
+    // refreshed at each breakpoint instead of integrated (pc_rxns).
+    std::vector<char> pc_fn(static_cast<std::size_t>(model.n_functions()), 0);
+    if (!impl_->pc_functions.empty()) {
+        const std::unordered_set<std::string> names(impl_->pc_functions.begin(),
+                                                    impl_->pc_functions.end());
+        const auto &fns = model.functions();
+        for (std::size_t fi = 0; fi < fns.size(); ++fi)
+            pc_fn[fi] = names.count(fns[fi].name) ? 1 : 0;
+    }
     std::vector<char> rate_reads_time(nr, 0);
+    std::vector<int> pc_rxns;
     bool time_dependent_rates = false;
     if (model.functions_use_time())
-        for (int r = 0; r < nr; ++r)
-            if (!reactions[r].is_rate_rule_ode && !reactions[r].ode_only &&
-                model.reaction_rate_reads_time(r)) {
+        for (int r = 0; r < nr; ++r) {
+            if (reactions[r].is_rate_rule_ode || reactions[r].ode_only)
+                continue;
+            if (model.reaction_rate_reads_time(r, &pc_fn)) {
                 rate_reads_time[r] = 1;
                 time_dependent_rates = true;
+            } else if (!impl_->pc_functions.empty() && model.reaction_rate_reads_time(r)) {
+                pc_rxns.push_back(r);
             }
+        }
 
     // Leave the function-bound parameters holding their t_start values, which is
     // where the probe this replaced left them. Nothing above has necessarily
@@ -1558,7 +1589,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             }
         }
         cont_mode = true;
+        // A rate that also reads a rate-rule target is integrated, not held.
+        pc_rxns.erase(
+            std::remove_if(pc_rxns.begin(), pc_rxns.end(), [&](int r) { return is_dyn[r] != 0; }),
+            pc_rxns.end());
     }
+    const bool pc_refresh = !pc_rxns.empty();
 
     // ─── Decide the propensity backend + recompute-all fast loop ──────────────
     // Now that the event / rate-rule / time-dependent gates are known, choose how
@@ -1584,7 +1620,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
         // Backend-agnostic eligibility for the recompute-all branch.
         const bool recompute_eligible =
-            !use_psa && n_events == 0 && !time_dependent_rates && !has_rate_rules;
+            !use_psa && n_events == 0 && !time_dependent_rates && !has_rate_rules && !pc_refresh;
         // Size gate for the DEFAULT path: the O(nr) full recompute beats the
         // incremental dep-graph update only for small nr (measured win ≤44,
         // neutral by ~60). BNGSIM_SSA_RECOMPUTE_ALL forces past it (ablation).
@@ -1880,6 +1916,64 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             set_propensity(r);
     };
 
+    // A rate that reads the clock only through piecewise-constant functions
+    // jumps only at a breakpoint. It is re-read once the loop's time has reached
+    // a breakpoint, by whatever path got it there (the stop at the breakpoint, a
+    // firing or an event landing on it, an idle stretch), at the top of each
+    // loop: pc_seen counts the breakpoints at or before the last re-read.
+    std::size_t pc_seen = 0;
+    // Only for a run with held rates: pc_seen moves in pc_refresh_at alone.
+    auto pc_next = [&]() {
+        return pc_seen < bps.size() ? bps[pc_seen] : std::numeric_limits<double>::infinity();
+    };
+    auto pc_due = [&](double t_now) { return pc_refresh && pc_next() <= t_now; };
+    // Read inside the interval the rate is constant on, (t_now, next breakpoint),
+    // not at t_now: at a breakpoint a condition is still on its old side (`time()
+    // > 5` is false at 5), and the rate it switches holds from just after.
+    auto pc_refresh_at = [&](double t_now) {
+        while (pc_seen < bps.size() && bps[pc_seen] <= t_now)
+            ++pc_seen;
+        const double t_hi = std::min(pc_next(), times.t_end);
+        const double t_in = t_hi > t_now ? 0.5 * (t_now + t_hi) : t_now;
+        sync_state(t_in);
+        refresh_jit_propensities();
+        for (int r : pc_rxns)
+            set_propensity(r);
+        model.evaluate_functions(t_now);
+    };
+    // A guard at every output row that such a rate has not moved since it was
+    // set: a classification that let a moving rate through would otherwise
+    // freeze it silently, so the run is refused, loudly. Called with the state
+    // and the functions at t_row. Not within a few ulps of a breakpoint, t_start
+    // or t_end, where a condition may read its boundary value (`time() >= 5` at
+    // 5) or the crossing Python placed may sit an ulp from the one the model
+    // evaluates; and to a relative 1e-10, the compiled and interpreted rate
+    // laws rounding differently.
+    auto pc_guard = [&](double t_row) {
+        if (!pc_refresh)
+            return;
+        const double tol =
+            64.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::fabs(t_row));
+        if (std::fabs(t_row - times.t_start) <= tol || std::fabs(times.t_end - t_row) <= tol)
+            return;
+        const auto it = std::lower_bound(bps.begin(), bps.end(), t_row - tol);
+        if (it != bps.end() && *it <= t_row + tol)
+            return;
+        for (int r : pc_rxns) {
+            const double v = std::fabs(model.compute_propensity(r, conc.data()));
+            const double p = propensities[r];
+            if (std::fabs(v - p) <= 1e-10 * std::max(v, p))
+                continue;
+            char buf[96];
+            std::snprintf(buf, sizeof buf, " at t = %.17g (%.17g, set as %.17g)", t_row, v, p);
+            throw std::runtime_error(
+                std::string(use_psa ? "PSA" : "SSA") + ": the rate of reaction " +
+                reaction_label(model, reactions[r]) + " moved between breakpoints" + buf +
+                ", though its time dependence was classified piecewise constant. This is "
+                "a bngsim bug; please report it.");
+        }
+    };
+
     // ─── GH #190: RR-style recompute-all + flat-scan fast loop ────────────────
     //
     // Engaged (ssa_fast_loop, decided above) when a value-specialized propensity
@@ -2074,6 +2168,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Tolerances: rate-rule targets rtol 1e-6, atol 1e-9; the hazard integral
     // 1e-7 + 1e-6·|∫| per panel, so a firing time is off by far less than the
     // spread of the draw that places it.
+    //
+    // A piecewise-constant rate was set at t_start, where a condition reads its
+    // boundary value (`time() > 0` at 0); it holds the first interval's value.
+    if (pc_refresh)
+        pc_refresh_at(t);
     if (time_dependent_rates) {
         const int m = static_cast<int>(rate_rule_odes.size());
         const int nd = static_cast<int>(dyn.size());
@@ -2355,6 +2454,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 load_y(ytmp.data());
             }
             sync_state(tk);
+            pc_guard(tk);
             for (int j = 0; j < n_obs; ++j)
                 obs_buf[j] = model.observables()[j].total;
             result.record(next_output, tk, conc.data(), obs_buf.data());
@@ -2395,6 +2495,13 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (budget.active() && ++steps_since_timeout_check >= TIMEOUT_CHECK_STRIDE) {
                 budget.check();
                 steps_since_timeout_check = 0;
+            }
+            if (pc_due(t)) {
+                // A new panel from here, on the re-read rates.
+                pc_refresh_at(t);
+                carry = false;
+                fresh = true;
+                synced = false;
             }
             while (next_bp < bps.size() && bps[next_bp] <= t)
                 ++next_bp;
@@ -2863,6 +2970,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 budget.check();
                 steps_since_timeout_check = 0;
             }
+            if (pc_due(t))
+                pc_refresh_at(t);
 
             // 1. Total propensity: the sum tree's root, O(1), or an O(N) flat sum.
             double a0 = sel_total();
@@ -2875,10 +2984,13 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             //    Otherwise, fast-forward all remaining samples at the current
             //    state.
             if (a0 <= 0.0) {
+                // A piecewise-constant rate may turn on at the next breakpoint:
+                // look no further than that.
+                const double t_lim = pc_refresh ? std::min(times.t_end, pc_next()) : times.t_end;
                 if (n_events > 0) {
                     // Only the time: the batch is taken from every trigger below.
-                    const double t_event_idle = probe_events_in_window(t, times.t_end);
-                    if (std::isfinite(t_event_idle) && t_event_idle <= times.t_end) {
+                    const double t_event_idle = probe_events_in_window(t, t_lim);
+                    if (std::isfinite(t_event_idle) && t_event_idle <= t_lim) {
                         // Record any samples strictly before t_event_idle.
                         while (next_output < n_out && t_event_idle > t_out[next_output] &&
                                t_out[next_output] < t_event_idle - sample_event_tol(t_event_idle)) {
@@ -2894,6 +3006,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                                 model.evaluate_functions(t_out[next_output]);
                                 auto fvals = model.function_values();
                                 result.record_expressions(next_output, fvals.data());
+                                pc_guard(t_out[next_output]);
                             }
                             ++next_output;
                         }
@@ -2909,6 +3022,29 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         model.set_current_time(t);
                         continue;
                     }
+                }
+                if (t_lim < times.t_end) {
+                    // Nothing fires before the breakpoint: rows up to it hold this
+                    // state, and the rates are re-read there (at the loop's top).
+                    while (next_output < n_out && t_out[next_output] <= t_lim) {
+                        model.update_observables(conc.data());
+                        for (int j = 0; j < n_obs; ++j)
+                            obs_buf[j] = model.observables()[j].total;
+                        result.record(next_output, t_out[next_output], conc.data(), obs_buf.data());
+                        if (rec_stats)
+                            rs_record(next_output, t_out[next_output]);
+                        model.evaluate_functions(t_out[next_output]);
+                        auto fvals = model.function_values();
+                        result.record_expressions(next_output, fvals.data());
+                        pc_guard(t_out[next_output]);
+                        ++next_output;
+                    }
+                    if (next_output >= n_out)
+                        break;
+                    t = t_lim;
+                    psa_now = t;
+                    model.set_current_time(t);
+                    continue;
                 }
                 // Truly stuck — fast-forward.
                 model.update_observables(conc.data());
@@ -2931,6 +3067,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         model.evaluate_functions(t_out[next_output]);
                         auto fvals = model.function_values();
                         result.record_expressions(next_output, fvals.data());
+                        pc_guard(t_out[next_output]);
                     }
                     ++next_output;
                 }
@@ -2943,6 +3080,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 r1 = next_u01(); // avoid log(0)
             double tau = -std::log(r1) / a0;
             double t_proposed = t + tau;
+            // A breakpoint first: a piecewise-constant rate jumps there, so stop,
+            // re-read the rates and redraw (exact by memorylessness).
+            const bool pc_cap = pc_refresh && t_proposed > pc_next();
+            if (pc_cap)
+                t_proposed = pc_next();
 
             // 4. Detect event-trigger crossings within (t, t_proposed].
             //    State is piecewise-constant during τ, so a time-dependent trigger
@@ -2952,7 +3094,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             // Only the time: the batch is taken from every trigger below.
             const double t_event = probe_events_in_window(t, t_proposed);
 
-            bool event_wins = std::isfinite(t_event) && t_event < t_proposed;
+            // At the breakpoint itself an event still fires: the stop there is
+            // not a firing, and the event's rows then read its effect, as
+            // without the stop.
+            const bool event_wins = std::isfinite(t_event) &&
+                                    (t_event < t_proposed || (pc_cap && t_event <= t_proposed));
             double t_advance = event_wins ? t_event : t_proposed;
 
             // 5. Record output points strictly before t_advance. When an event
@@ -2976,12 +3122,22 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     model.evaluate_functions(t_out[next_output]);
                     auto fvals = model.function_values();
                     result.record_expressions(next_output, fvals.data());
+                    pc_guard(t_out[next_output]);
                 }
                 ++next_output;
             }
 
             if (next_output >= n_out)
                 break;
+
+            if (pc_cap && !event_wins) {
+                // The breakpoint came first: nothing fired. The rates are re-read
+                // at the loop's top.
+                t = t_proposed;
+                psa_now = t;
+                model.set_current_time(t);
+                continue;
+            }
 
             if (event_wins) {
                 // Advance time to t_event, fire the batch, redraw τ. The
@@ -3037,6 +3193,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             species[i].concentration = conc[i];
         }
         model.set_current_time(t);
+        // ...and the event state that goes with it (issue #693). No execution
+        // is ever pending: a delayed event is refused above.
+        NetworkModel::EventCarry carry;
+        carry.valid = true;
+        carry.t = t;
+        carry.trigger.assign(trigger_was_true.begin(), trigger_was_true.end());
+        const bool continued = model.event_carry_for(times.t_start, n_events) != nullptr;
+        model.publish_event_carry(std::move(carry), continued);
     }
 
     // Solver stats

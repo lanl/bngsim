@@ -141,6 +141,11 @@ NetworkModel NetworkModel::clone() const {
     // too or the clone's reset() would forget it.
     copy.impl_->baseline_sens_seed = impl_->baseline_sens_seed;
     copy.impl_->baseline_sens_seed_param_names = impl_->baseline_sens_seed_param_names;
+    // ...and the event state that goes with the copied state and clock (issue
+    // #693).
+    copy.impl_->event_carry = impl_->event_carry;
+    copy.impl_->event_carry_history = impl_->event_carry_history;
+    copy.impl_->event_carry_evicted_t = impl_->event_carry_evicted_t;
     // ...and whether that baseline is a saved state rather than the declared IC
     // (issue #79), or the clone's set_param() would re-resolve a parameter-named
     // IC over a baseline the original had already retired.
@@ -661,6 +666,8 @@ void NetworkModel::reset() {
         s.concentration = s.initial_conc;
     }
     impl_->current_time = 0.0;
+    // A fresh start for the events too (issue #693).
+    clear_event_carry();
     // Back at the IC baseline. When that baseline is θ-independent (the literal
     // .net ICs) this is a fresh start: no carry-over, no pending seed (GH #210).
     // But save_concentrations() can have redefined the baseline to a
@@ -776,6 +783,99 @@ void NetworkModel::clear_pending_sens_seed() {
 bool NetworkModel::has_baseline_sens_seed() const { return !impl_->baseline_sens_seed.empty(); }
 
 bool NetworkModel::ic_baseline_saved() const { return impl_->ic_baseline_saved; }
+
+// ─── Event state carried between runs (issue #693) ───────────────────────────
+
+const NetworkModel::EventCarry &NetworkModel::event_carry() const { return impl_->event_carry; }
+
+const std::deque<NetworkModel::EventCarry> &NetworkModel::event_carry_history() const {
+    return impl_->event_carry_history;
+}
+
+double NetworkModel::event_carry_evicted_t() const { return impl_->event_carry_evicted_t; }
+
+namespace {
+void check_event_carry(const NetworkModel::EventCarry &carry, const std::vector<Event> &evs) {
+    if (!carry.valid)
+        return;
+    if (!std::isfinite(carry.t))
+        throw std::invalid_argument("set_event_carry: the time is not finite");
+    if (carry.trigger.size() != evs.size())
+        throw std::invalid_argument("set_event_carry: " + std::to_string(carry.trigger.size()) +
+                                    " trigger values for a model with " +
+                                    std::to_string(evs.size()) + " events");
+    for (const auto &pe : carry.pending) {
+        if (pe.event_idx < 0 || pe.event_idx >= static_cast<int>(evs.size()))
+            throw std::invalid_argument("set_event_carry: no event " +
+                                        std::to_string(pe.event_idx));
+        if (!std::isfinite(pe.apply_time))
+            throw std::invalid_argument("set_event_carry: an apply time is not finite");
+        const auto n = evs[static_cast<std::size_t>(pe.event_idx)].assignments.size();
+        if (!pe.frozen_values.empty() && pe.frozen_values.size() != n)
+            throw std::invalid_argument(
+                "set_event_carry: " + std::to_string(pe.frozen_values.size()) +
+                " frozen values for an event with " + std::to_string(n) + " assignments");
+    }
+}
+} // namespace
+
+void NetworkModel::set_event_carry(EventCarry carry) {
+    check_event_carry(carry, impl_->events);
+    impl_->event_carry = std::move(carry);
+}
+
+void NetworkModel::set_event_carry_state(EventCarry carry, std::deque<EventCarry> history,
+                                         double evicted_t) {
+    check_event_carry(carry, impl_->events);
+    for (const auto &h : history)
+        check_event_carry(h, impl_->events);
+    impl_->event_carry = std::move(carry);
+    impl_->event_carry_history = std::move(history);
+    impl_->event_carry_evicted_t = evicted_t;
+}
+
+void NetworkModel::publish_event_carry(EventCarry carry, bool continued) {
+    auto &h = impl_->event_carry_history;
+    if (!continued) {
+        h.clear();
+        impl_->event_carry_evicted_t = -std::numeric_limits<double>::infinity();
+    } else {
+        // The run continued from where the trajectory stood at its start; the
+        // leg ends after that belong to a branch it has left.
+        const double t0 = impl_->event_carry.t;
+        while (!h.empty() && h.back().t > t0)
+            h.pop_back();
+    }
+    h.push_back(carry);
+    if (h.size() > kEventCarryHistory) {
+        impl_->event_carry_evicted_t = h.front().t;
+        h.pop_front();
+    }
+    impl_->event_carry = std::move(carry);
+}
+
+void NetworkModel::clear_event_carry() {
+    impl_->event_carry = EventCarry{};
+    impl_->event_carry_history.clear();
+    impl_->event_carry_evicted_t = -std::numeric_limits<double>::infinity();
+}
+
+int NetworkModel::rewind_event_carry(double t) {
+    auto &h = impl_->event_carry_history;
+    for (auto it = h.rbegin(); it != h.rend(); ++it)
+        if (it->valid && it->t == t) {
+            impl_->event_carry = *it;
+            return 1;
+        }
+    return t <= impl_->event_carry_evicted_t ? -1 : 0;
+}
+
+const NetworkModel::EventCarry *NetworkModel::event_carry_for(double t_start, int n_events) const {
+    const auto &c = impl_->event_carry;
+    if (!c.valid || c.t != t_start || static_cast<int>(c.trigger.size()) != n_events)
+        return nullptr;
+    return &c;
+}
 
 // ─── Accessors ───────────────────────────────────────────────────────────────
 
@@ -1380,9 +1480,14 @@ static size_t skip_number(const std::string &e, size_t i) {
 // The clock is the call `time()`, and a bare `time` unless the model declares a
 // scalar of that name (issue #776): ExprTk calls a zero-argument function
 // without its parentheses.
+//
+// A function in `pc_functions` (by index) reads the clock only inside
+// conditions whose crossings are breakpoints, so it is constant between them:
+// its own text's clock is not counted (a table or a rate accessor it calls
+// still is).
 NetworkModel::RateDeps
-NetworkModel::rate_dependencies_(std::vector<int> params,
-                                 const std::vector<std::string> &texts) const {
+NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std::string> &texts,
+                                 const std::vector<char> *pc_functions) const {
     RateDeps deps;
     const auto &sd = *impl_->shared;
     const int ns = static_cast<int>(impl_->species.size());
@@ -1405,7 +1510,7 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
     };
 
     std::vector<char> seen(static_cast<std::size_t>(np), 0);
-    const auto scan = [&](const std::string &e) {
+    const auto scan = [&](const std::string &e, bool clock = true) {
         if (e.find("rate_of__") != std::string::npos) {
             deps.time = true; // the running derivatives: every species, at every time
             deps.unknown = true;
@@ -1430,7 +1535,7 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
             while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
                 ++k;
             const bool call = k < e.size() && e[k] == '(';
-            if (id == "time" && (call || !time_declared))
+            if (clock && id == "time" && (call || !time_declared))
                 deps.time = true;
             auto tit = tables.find(id);
             if (tit != tables.end()) {
@@ -1463,8 +1568,12 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
         int eid = -1;
         if (written_by[p] >= 0) {
             const Function &f = impl_->functions[written_by[p]];
-            scan(f.expression);
-            scan(f.eval_expression);
+            const bool clock =
+                !(pc_functions && written_by[p] < static_cast<int>(pc_functions->size()) &&
+                  (*pc_functions)[written_by[p]]);
+            scan(f.expression, clock);
+            scan(f.eval_expression); // a guarded form (#333) is not what was classified
+
             eid = f.evaluator_id;
         } else if (impl_->parameters[p].is_expression) {
             scan(impl_->parameters[p].expression);
@@ -1482,12 +1591,14 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
 // A reaction's propensity, as compute_rxn_rate reads it: its reactants, the
 // species of its SSA falling factorial, a live compartment volume, and its
 // rate parameters' definitions.
-NetworkModel::RateDeps NetworkModel::reaction_rate_dependencies_(int rxn_idx0) const {
+NetworkModel::RateDeps
+NetworkModel::reaction_rate_dependencies_(int rxn_idx0,
+                                          const std::vector<char> *pc_functions) const {
     const Reaction &rxn = impl_->shared->reactions[rxn_idx0];
     std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
     for (int pi : rxn.rate_law_param_indices)
         params.push_back(pi - 1);
-    RateDeps deps = rate_dependencies_(std::move(params), {});
+    RateDeps deps = rate_dependencies_(std::move(params), {}, pc_functions);
     const int ns = static_cast<int>(impl_->species.size());
     const auto add = [&](int si) {
         if (si >= 0 && si < ns)
@@ -1541,10 +1652,11 @@ bool NetworkModel::reaction_rate_reads_functions(int rxn_idx0) const {
     return false;
 }
 
-bool NetworkModel::reaction_rate_reads_time(int rxn_idx0) const {
+bool NetworkModel::reaction_rate_reads_time(int rxn_idx0,
+                                            const std::vector<char> *pc_functions) const {
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
         return false;
-    return reaction_rate_dependencies_(rxn_idx0).time;
+    return reaction_rate_dependencies_(rxn_idx0, pc_functions).time;
 }
 
 bool NetworkModel::event_trigger_reads_time(int event_idx0) const {
