@@ -2777,7 +2777,7 @@ class Simulator:
             # factor (issue #741). (A species a reaction or rule touches is refused
             # under SSA; this is one only an output reads.)
             stochastic = self._method in ("ssa", "psa")
-            vf = self._get_volume_factors() if stochastic else []
+            vf = self._get_volume_factors(model) if stochastic else []
             recorded = False
             for s_name, comp_name in amount_map.items():
                 j = sp_idx.get(s_name)
