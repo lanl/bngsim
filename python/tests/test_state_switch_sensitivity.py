@@ -556,6 +556,61 @@ def _bystander_closed_form():
     return np.array([-kb / (a * A0), kb * np.log(A0 / thr) / a**2, kb / (a * thr), T - t_star])
 
 
+# ─── what the seventh review of the #763 fix found ─────────────────────────
+#
+# Thresholds a few hundred ulps apart, steep smooth terms beside a jump, and
+# balanced exchanges whose flux is all rounding. Closed forms throughout.
+EPS = float(np.finfo(float).eps)
+
+# A decays at a from A0 = 10, so Aobs < thr is crossed at t = ln(A0/thr)/a, and
+# a source `ksw` switched on there gives Y(T) = ksw·(T − t).
+HAIR = """\
+begin parameters
+    1 A0    10
+    2 a     0.5
+    3 thr1  2
+    4 thr2  {thr2!r}
+    5 kb    3
+    6 kc    {kc!r}
+    7 kbig  {kbig!r}
+end parameters
+begin functions
+    1 fY() {fy}
+    2 fZ() {fz}
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 Z() 0
+end species
+begin reactions
+    1 1 0 a
+    2 0 2 fY
+    3 0 3 fZ
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+HAIR_PARAMS = ["a", "thr1", "thr2", "kb", "kc"]
+HAIR_T = 12.0
+
+
+def _hair(tmp_path, name, sample_times=None, kc=5.0, **fmt):
+    model = _model(tmp_path, HAIR.format(kc=kc, **fmt), name=name)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=HAIR_PARAMS)
+    kw = {"sample_times": sample_times} if sample_times else {"n_points": 3}
+    return sim.run(t_span=(0.0, HAIR_T), rtol=1e-10, atol=1e-12, **kw)
+
+
+def _switched_source(thr, ksw, col):
+    """d/d[a, thr1, thr2, kb, kc] of ksw·(T − ln(A0/thr)/a), thr in column `col`."""
+    want = np.zeros(5)
+    want[0] = ksw * np.log(10.0 / thr) / 0.5**2
+    want[col] = ksw / (0.5 * thr)
+    return want
+
+
 @requires_cc
 class TestABystanderDoesNotHideAJump:
     @pytest.mark.parametrize(
@@ -779,8 +834,8 @@ end groups
     def test_a_jump_on_a_very_large_switched_flux_is_not_roundoff(self, tmp_path, kb):
         """``ksyn + if(...)`` with ksyn = 1e14: a jump of kb is ~70·kb ulps of the
         switched flux, which a floor proportional to the whole flux excused (1024
-        ulps dropped kb = 3; 64 ulps still dropped kb = 1). The floor is now 2
-        ulps. Same closed form as the turnover case."""
+        ulps dropped kb = 3; 64 ulps still dropped kb = 1). No floor decides
+        whether a jump is applied now. Same closed form as the turnover case."""
         text = (
             TURNOVER.replace("    2 0 2 fY #_R2\n    3 0 2 ksyn #_R3\n", "    2 0 2 fY #_R2\n")
             .replace("    1 fY() if(Aobs<thr,kb,0)", "    1 fY() ksyn+if(Aobs<thr,kb,0)")
@@ -861,7 +916,8 @@ end groups
         probe it varies by its slope times up to dt, which passed 1e-6 of the
         drive, so it was read as a jump, joined the dt*/dθ agreement check, and
         was refused ("the right-hand side jumps there"). Main runs these and is
-        right. The co-crossing test now has the primary path's growth test.
+        right. The clamp is now read at its own root, each branch extended to it
+        from two points on its own side, where its two branches meet.
         `decay` is B -> C through the clamp; `exchange` is X <-> P through it
         with a steady net flux `size` (refused only once the floor was lowered)."""
         eps = np.finfo(float).eps
@@ -955,6 +1011,345 @@ end groups
             ]
             np.testing.assert_allclose(s[names.index("Y()")], want_y, rtol=1e-5, atol=1e-6)
             np.testing.assert_allclose(s[names.index("Z()")], want_z, rtol=1e-5, atol=1e-6)
+
+    @pytest.mark.parametrize("kc", [5.0, 3.0])
+    def test_a_switch_only_the_wider_probe_crosses_does_not_hide_the_jump(self, tmp_path, kc):
+        """``fY = if(A<thr1,kb,0) + if(A<thr2,kc,0)`` with thr2 crossed between
+        one and two probe steps after thr1. The gap at thr1 was read by how it
+        grew with the probe, and the probe at twice the step took in thr2's jump:
+        near = kb, far = kb + kc, "growth", so the thr1 jump was dropped and
+        dY/d[a, thr1, thr2] came back exactly 0, where main is right. The same
+        happened at thr2's own crossing, whose wider probe reaches back over
+        thr1. The wider probe is now used only when it crosses the same switches
+        as the near one. Closer than one step the two are refused as before.
+        With kc = kb the two jumps cancel exactly in a branch extended across
+        thr2, which is how an extension that ignored it would read the crossing."""
+        ran = 0
+        for k in (450, 550, 650, 750):
+            thr2 = float(2.0 * (1 - k * EPS))
+            fy = "if(Aobs<thr1,kb,0)+if(Aobs<thr2,kc,0)"
+            try:
+                run = _hair(tmp_path, f"third{k}.net", kc=kc, thr2=thr2, kbig=0.0, fy=fy, fz="0")
+            except SimulationError as e:
+                assert "cross at the same instant" in str(e)
+                continue
+            ran += 1
+            got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()")]
+            want = _switched_source(2.0, 3.0, 1) + _switched_source(thr2, kc, 2)
+            want[3] = HAIR_T - np.log(10.0 / 2.0) / 0.5
+            want[4] = HAIR_T - np.log(10.0 / thr2) / 0.5
+            np.testing.assert_allclose(got, want, rtol=1e-6)
+        assert ran > 0
+
+    @pytest.mark.parametrize("kbig", [1e10, 1e12, 1e13])
+    def test_a_steep_smooth_term_in_the_switched_rate_law_does_not_hide_the_jump(
+        self, tmp_path, kbig
+    ):
+        """``fY = kbig*Aobs + if(A<thr1, kb, 0)``: between the two probe points
+        the smooth term moves by 2·δt·kbig·|dA/dt|, which is 0.37 at kbig = 1e12
+        and passes kb = 3 near 1e13. Read as a gap that grows with the probe, the
+        jump was dropped from kbig = 6e12 (on main from 1e10, by the global
+        scale), and dY/dthr1 was exactly 0. Each branch is now extended to the
+        surface from two points on its own side, so the smooth term is not in the
+        reading, and not in the jump the columns take either: just past the
+        switch dY/dthr1 was 2.63 at kbig = 1e12, for a truth of 3."""
+        fy = "kbig*Aobs+if(Aobs<thr1,kb,0)"
+        t1 = np.log(5.0) / 0.5
+        run = _hair(
+            tmp_path,
+            "steep.net",
+            sample_times=[0.0, t1 + 0.05, HAIR_T],
+            thr2=1.0,
+            kbig=kbig,
+            fy=fy,
+            fz="0",
+        )
+        y = list(run.species_names).index("Y()")
+        s = np.asarray(run.sensitivities)[:, y, :]
+        # dY/dthr1 = kb/(a·thr1) at every time past the switch; the flux it
+        # rides on is 2·kbig, whose rounding is 0.1% of kb at kbig = 1e13.
+        assert s[1, 1] == pytest.approx(3.0, rel=5e-3)
+        assert s[2, 1] == pytest.approx(3.0, rel=5e-3)
+        assert s[2, 3] == pytest.approx(HAIR_T - t1, rel=1e-6)
+
+    @pytest.mark.parametrize("kbig", [1e13, 1e14])
+    def test_a_steep_term_in_the_co_crossing_switch_is_refused_not_mixed(self, tmp_path, kbig):
+        """Two independent thresholds a few hundred ulps apart, the second in
+        ``fZ = kbig*Aobs + if(A<thr2, kc, 0)``. Its smooth term made its gap grow
+        with the probe, so it was not asked to agree on dt*/dθ, and its jump was
+        credited to thr1: dZ/dthr1 = 4.96 and dZ/dthr2 = 0, the truth being 0 and
+        5 (main drops both). The co-crossing switch is now read at its own root
+        with the smooth term taken out."""
+        for k in (100, 300):
+            thr2 = float(2.0 * (1 - k * EPS))
+            try:
+                run = _hair(
+                    tmp_path,
+                    f"co{k}.net",
+                    thr2=thr2,
+                    kbig=kbig,
+                    fy="if(Aobs<thr1,kb,0)",
+                    fz="kbig*Aobs+if(Aobs<thr2,kc,0)",
+                )
+            except SimulationError as e:
+                assert "cross at the same instant" in str(e)
+                continue
+            z = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Z()")]
+            # kc on a flux of 2·kbig: its rounding is up to 4% of kc at 1e14.
+            assert abs(z[1]) < 0.25
+            assert z[2] == pytest.approx(5.0 / (0.5 * thr2), abs=0.25)
+
+    @pytest.mark.parametrize(("npair", "X0"), [(1, 1e14), (1, 1e15), (8, 1e10), (8, 1e14)])
+    def test_the_rounding_of_a_balanced_exchange_is_not_asked_to_agree(self, tmp_path, npair, X0):
+        """A continuous clamp ``c = if(A<thr2, A/thr2, 1)`` scales both
+        directions of X <-> P_i exchanges that sit at equilibrium, so its
+        reactions' net flux is 0 on both branches and what the probes read is the
+        rounding of X0-sized terms. It co-crosses a real jump (kb into Y at
+        A < thr1). With no roundoff floor that rounding passed the drive, did not
+        grow with the probe, and sent the clamp into the dt*/dθ agreement check,
+        which refused 51 of 88 such runs; main runs them all. The floor is back
+        in that check only: the jump itself is still applied whatever its size."""
+        kf = [1.1, 1.3, 0.7, 0.9, 1.7, 0.3, 1.9, 0.55][:npair]
+        kr = [0.6, 1.2, 1.45, 0.35, 0.8, 1.05, 0.25, 1.35][:npair]
+        a, thr1, kb, T = 0.5, 2.0, 3.0, 8.0
+        t1 = np.log(10.0 / thr1) / a
+        want_y = np.array([kb * np.log(10.0 / thr1) / a**2, kb / (a * thr1), 0.0, T - t1])
+        for k in (100, 200, 300):
+            thr2 = float(thr1 * (1 - k * EPS))
+            params = [
+                "1 A0 10",
+                "2 a 0.5",
+                "3 thr1 2",
+                f"4 thr2 {thr2!r}",
+                "5 kb 3",
+                f"6 X0 {X0!r}",
+            ]
+            funcs = ["1 fY() if(Aobs<thr1,kb,0)", "2 c() if(Aobs<thr2,Aobs/thr2,1)"]
+            species = ["1 A() A0", "2 Y() 0", "3 X() X0"]
+            rxns = ["1 1 0 a", "2 0 2 fY"]
+            for i in range(npair):
+                n = len(params) + 1
+                params += [f"{n} kf{i} {kf[i]!r}", f"{n + 1} kr{i} {kr[i]!r}"]
+                params += [f"{n + 2} P{i}0 {X0 * kf[i] / kr[i]!r}"]
+                m = len(funcs) + 1
+                funcs += [f"{m} ff{i}() kf{i}*c()", f"{m + 1} fr{i}() kr{i}*c()"]
+                species.append(f"{4 + i} P{i}() P{i}0")
+                r = len(rxns) + 1
+                rxns += [f"{r} 3 {4 + i} ff{i}", f"{r + 1} {4 + i} 3 fr{i}"]
+            text = "".join(
+                f"begin {block}\n" + "".join(f"    {line}\n" for line in lines) + f"end {block}\n"
+                for block, lines in (
+                    ("parameters", params),
+                    ("functions", funcs),
+                    ("species", species),
+                    ("reactions", rxns),
+                    ("groups", ["1 Aobs 1"]),
+                )
+            )
+            model = _model(tmp_path, text, name=f"eq{npair}_{k}.net")
+            run = bngsim.Simulator(
+                model, method="ode", sensitivity_params=["a", "thr1", "thr2", "kb"]
+            ).run(t_span=(0.0, T), n_points=3, rtol=1e-10, atol=1e-12)
+            names = list(run.species_names)
+            s = np.asarray(run.sensitivities)[-1]
+            np.testing.assert_allclose(s[names.index("Y()")], want_y, rtol=1e-6, atol=1e-6)
+            # X and every P_i are constant, so their columns are 0.
+            assert np.max(np.abs(s[2:])) < 1e-12 * X0
+
+    @pytest.mark.parametrize("Z0", [0.0, 1e9])
+    def test_two_clamps_at_one_threshold_value_are_not_refused(self, tmp_path, Z0):
+        """Two continuous clamps, on K1 and on K2 = K1 (or a few ulps off), each
+        scaling a balanced X0-sized exchange. CVODE reports both roots together,
+        the rounding of the exchanges reads as a jump, and the two had to agree
+        on dt*/dθ, which they cannot: dK1 moves one and dK2 the other. Neither
+        carries a branch change, so neither is asked now. Main refused a few of
+        these too, on the same rounding, unless a large bystander hid it."""
+        for k in (0, 1, 5, 40):
+            K2 = float(2.0 * (1 - k * EPS))
+            X0 = 1e14
+            text = f"""\
+begin parameters
+    1 A0 10
+    2 a 0.5
+    3 K1 2
+    4 K2 {K2!r}
+    5 X0 {X0!r}
+    6 P0 {X0 * 1.1 / 0.6!r}
+    7 Q0 {X0 * 1.3 / 0.7!r}
+    8 kf 1.1
+    9 kr 0.6
+   10 lf 1.3
+   11 lr 0.7
+   12 Z0 {Z0!r}
+   13 kz 1
+end parameters
+begin functions
+    1 c1() if(Aobs<K1,Aobs/K1,1)
+    2 c2() if(Aobs<K2,Aobs/K2,1)
+    3 f1() kf*c1()
+    4 r1() kr*c1()
+    5 f2() lf*c2()
+    6 r2() lr*c2()
+end functions
+begin species
+    1 A() A0
+    2 X() X0
+    3 P() P0
+    4 Q() Q0
+    5 Z() Z0
+end species
+begin reactions
+    1 1 0 a
+    2 2 3 f1
+    3 3 2 r1
+    4 2 4 f2
+    5 4 2 r2
+    6 5 0 kz
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+            model = _model(tmp_path, text, name=f"clamps{k}.net")
+            run = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "K1", "K2"]).run(
+                t_span=(0.0, 8.0), n_points=3, rtol=1e-10, atol=1e-12
+            )
+            # X, P and Q are constant, so their columns are 0.
+            assert np.max(np.abs(np.asarray(run.sensitivities)[-1, 1:4])) < 1e-12 * X0
+
+    def test_a_tangent_crossing_beside_a_second_threshold_is_refused(self, tmp_path):
+        """A relaxes onto 2 from above and passes thr2 = 2 + 3e-9 at a crawl, too
+        slowly for a step along the flow to carry it across, so the crossing is
+        read along a coordinate instead, at ±2e-9 and at ±4e-9. The wider pair
+        also crosses thr1 = 2, whose jump kb sits in the same rate law: near =
+        kc, far = kc + kb, "growth", so the crossing was taken as continuous and
+        left without a restart, standing on a real jump. Main never returns from
+        that run. A jump at a crossing the flow cannot resolve is refused."""
+        text = """\
+begin parameters
+    1 A0 10
+    2 k 1
+    3 thr1 2
+    4 thr2 2.000000003
+    5 kb 3
+    6 kc 5
+end parameters
+begin functions
+    1 src() k*thr1
+    2 fY() if(Aobs<thr1,kb,0)+if(Aobs<thr2,kc,0)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 src
+    2 1 0 k
+    3 0 2 fY
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="crawl.net")
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr1", "kb"])
+        with pytest.raises(SimulationError, match="rides that surface") as err:
+            sim.run(t_span=(0.0, 40.0), n_points=5, rtol=1e-8, atol=1e-12)
+        assert "crosses another switch's surface" in str(err.value)
+
+    @pytest.mark.parametrize("B0", [1e3, 3e6])
+    def test_a_clamp_crossed_just_before_a_jump_leaves_the_jump_its_own_dtstar(self, tmp_path, B0):
+        """The clamp ``kx·if(Aobs<thr2, Aobs/thr2, 1)`` on B -> C is crossed a few
+        hundred ulps BEFORE the jump at thr1, so the clamp's root is the one
+        CVODE reports and the jump co-crosses. dt*/dθ was taken from the
+        reported switch: main credited the jump to thr2 (dY/dthr2 = 3,
+        dY/dthr1 = 0, silently), and the earlier cuts of this fix refused. It
+        now comes from a switch whose own reactions jump."""
+        A0, a, thr1, kb, T = 10.0, 0.5, 2.0, 3.0, 8.0
+        t1 = np.log(A0 / thr1) / a
+        want = np.array([kb * np.log(A0 / thr1) / a**2, kb / (a * thr1), 0.0, T - t1])
+        for k in (100, 300):
+            thr2 = float(thr1 * (1 + k * EPS))
+            text = f"""\
+begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr1 2
+    4 thr2 {thr2!r}
+    5 kb 3
+    6 kx 0.1
+    7 B0 {B0!r}
+end parameters
+begin functions
+    1 fY() if(Aobs<thr1,kb,0)
+    2 fc() kx*if(Aobs<thr2,Aobs/thr2,1)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 B() B0
+    4 C() 0
+end species
+begin reactions
+    1 1 0 a
+    2 0 2 fY
+    3 3 4 fc
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+            model = _model(tmp_path, text, name=f"clampfirst{k}.net")
+            run = bngsim.Simulator(
+                model, method="ode", sensitivity_params=["a", "thr1", "thr2", "kb"]
+            ).run(t_span=(0.0, T), n_points=3, rtol=1e-10, atol=1e-12)
+            got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()")]
+            np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-6)
+
+    def test_a_tangent_crossing_ignores_a_threshold_its_reactions_do_not_read(self, tmp_path):
+        """The same crawl past thr2 = 2 + 3e-9, but there the rate law is a
+        clamp, ``kc·(thr2 − Aobs)`` below it and 0 above, continuous at its own
+        switch, and thr1 = 2 is read by another reaction. The wider probe still
+        crosses thr1, but nothing it reads changes there, so the clamp's gap is
+        read by how it grows, as continuous, and the run is not refused."""
+        text = """\
+begin parameters
+    1 A0 10
+    2 k 1
+    3 thr1 2
+    4 thr2 2.000000003
+    5 kb 3
+    6 kc 5
+end parameters
+begin functions
+    1 src() k*thr1
+    2 fY() if(Aobs<thr2,kc*(thr2-Aobs),0)
+    3 fW() if(Aobs<thr1,kb,0)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 W() 0
+end species
+begin reactions
+    1 0 1 src
+    2 1 0 k
+    3 0 2 fY
+    4 0 3 fW
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="crawl_clamp.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "kc"]).run(
+            t_span=(0.0, 30.0), n_points=5, rtol=1e-8, atol=1e-12
+        )
+        names = list(run.species_names)
+        y = np.asarray(run.species)[-1, names.index("Y()")]
+        s = np.asarray(run.sensitivities)[-1, names.index("Y()")]
+        # Y = kc·∫(thr2 − A)⁺, so dY/dkc = Y/kc; both are ~1e-8.
+        assert y > 0.0 and s[1] == pytest.approx(y / 5.0, rel=1e-3)
 
     def test_the_trajectory_was_never_the_problem(self, tmp_path):
         """Only the sensitivity was wrong: Y(T) = kb·(T − t*) either way, to the
