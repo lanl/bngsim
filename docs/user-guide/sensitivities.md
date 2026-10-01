@@ -164,6 +164,12 @@ than that, however close, are stopped at one after the other. The same holds for
 a crossing just after an output time, an event or the start of the run: its jump
 is taken at its own instant, not at the stop before it (issue #737).
 
+An event on the same fitted time as a switch, a dose at `tau` beside
+`piecewise(k*X, time >= tau, 0)`, is supported: the event's jump and the
+switch's compose (issue #767). If a requested parameter moves one of the two
+and not the other, the run is refused, because which of them comes first would
+then depend on that parameter.
+
 ### Landing on the crossing
 
 A discontinuity root alone cannot catch these. CVODE tests for a root only on a
