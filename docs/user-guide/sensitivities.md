@@ -217,7 +217,11 @@ unchanged, so the singular terms of `∂f/∂on` and `c·∂f/∂t` cancel in `�
 whose crossing makes such a power singular: a base that can reach 0, raised to an
 exponent between 0 and 1 or to one that is not a number, such as `a-1`. At that
 crossing the solver switches the column to `V`, and at the next restart it
-switches back to `S`. `S = V − c·f` is what every output reports. A parameter
+switches back to `S`. `S = V − c·f` is what every output reports. A crossing
+that is *approached* through such a power, the closing edge of a window
+`s*(1-s)^(a-1)`, needs the column in `V` before it: the solver switches at the
+start of the run, or at a stop it takes halfway from the clock crossing behind
+(issue #760). A parameter
 that moves no such crossing keeps its plain column. A model with no such power
 emits the code it always did, and that includes a logistic onset
 `1/(1+exp(-k*(t-on)))`, whose base is never 0.

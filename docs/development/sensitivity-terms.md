@@ -236,18 +236,24 @@ skips the clock column, so every rate that reads the clock has to put its
 
 - Python: `_comoving_coefficients` and `_functional_comoving_plan` emit `c` and
   `β`, and `_guard_clock_columns` masks the clock column (`_codegen.py`).
-- C++: `comoving_enter` (at the crossing) and `comoving_leave` (at the next
-  restart) in `cvode_simulator.cpp`.
-- Oracle: `comoving-onset`, `comoving-onset-loose`, `comoving-closing-edge-regular`.
-- **Open:**
-  - `β` keeps `c·∂f/∂clock` only for laws whose text names the clock. Mass action,
-    a species factor or an observable that reads the clock species loses it
-    (#749, `comoving-onset-clock-fed-rate`).
-  - A column for a *derived* onset never gets its comoving case (#750,
-    `comoving-onset-derived`).
-  - A window closing as `(1−s)^(a−1)` is singular on the *approach* to its
-    crossing, which the frame, entered at the crossing, never covers (#760,
-    `comoving-closing-edge`).
+- C++: `comoving_enter` (at the crossing), `comoving_enter_ahead` (before it) and
+  `comoving_leave` (at the next restart) in `cvode_simulator.cpp`.
+- Oracle: `comoving-onset`, `comoving-onset-loose`, `comoving-onset-clock-fed-rate`,
+  `comoving-onset-derived`, `comoving-closing-edge-regular`, `comoving-closing-edge`.
+
+A window closing as `(1−s)^(a−1)` is singular on the *approach* to its crossing:
+the forcing of the column that moves the edge goes as `(1−s)^(a−2)` before it. A
+frame entered at the crossing has already integrated that. The generator marks
+such a case (`bngsim_codegen_comoving_approach`), and a plain column whose next
+switch time moves at that case's `c` enters ahead of it (#760): at the start of
+the run, at a state switch, or at a stop the run takes halfway from the clock
+crossing behind it. Not at that crossing. A window that also opens as a power has
+an `f` whose slope is unbounded just past the opening, and a frame entered there
+has that slope in its forcing. `V = S + c·f` holds for any constant `c` anywhere,
+so entering early changes only which column is integrated.
+
+- **Open:** a closing edge whose crossing is not a switch time of the run (a
+  state-dependent one) is still approached in the plain column.
 
 ## Order at one instant
 
@@ -260,5 +266,6 @@ them in this order:
 The two steps together must equal §5's coincident-event formula; #767 is the case
 where they do not.
 
-A comoving frame (§7) is entered inside the switch jump at its crossing and left
-at the next restart. It is never entered on a run that has events.
+A comoving frame (§7) is entered inside the switch jump at its crossing, or
+ahead of a crossing approached through a singular power, and left at the next
+restart. It is never entered on a run that has events.
