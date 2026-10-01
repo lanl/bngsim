@@ -2330,7 +2330,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def("set_breakpoints", &bngsim::SsaSimulator::set_breakpoints, py::arg("times"),
              "Issue #719: times at which a time-dependent rate may jump. The "
              "continuous (time-dependent) loop never steps across one. Applies to "
-             "every later run; [] clears it.");
+             "every later run; [] clears it.")
+        .def("set_piecewise_constant_functions",
+             &bngsim::SsaSimulator::set_piecewise_constant_functions, py::arg("names"),
+             "Functions, by name, constant in time between the breakpoints: a rate that "
+             "reads the clock only through them is held constant and re-read at each "
+             "breakpoint. Applies to every later run; [] clears it.");
 
     // ─── NfsimSimulator (conditional on BNGSIM_HAS_NFSIM) ────────────────────
     //
