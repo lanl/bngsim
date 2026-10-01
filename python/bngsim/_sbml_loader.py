@@ -6869,6 +6869,50 @@ def _build_model_from_sbml_doc(doc):
         # branch's single representative-compartment divide is the bug source.
         if i in ssa_varvol_xcompartment:
             unified_ok = False
+        # The same holds for every cross-compartment reaction that changes an
+        # hOSU=false species in a compartment whose size is integrated or reset
+        # (a rate rule, an event), whatever its law: a reversible difference, a
+        # saturating law, or a monomial on a reaction flagged reversible, which
+        # SBML L2 does by default and Antimony's `->` does. The classifier
+        # certifies only the irreversible monomial, because only that one has an
+        # exact SSA propensity correction. The ODE row is `stoich·law/V_live` for
+        # all of them. The single divide is by one representative compartment,
+        # which is right only for the species in it, and the per-species divide
+        # below is by the load-time size.
+        #
+        # A species the reaction leaves as it found it (a catalyst, net 0) has no
+        # row to divide, and does not count: a reaction whose changed species all
+        # sit in one compartment keeps the single divide it is right with.
+        _xc_varvol_species = (
+            [
+                _sid
+                for _sid in net
+                if net[_sid] != 0
+                and species_comp[_sid] in varvol_ssa_comps
+                and not species_hosu.get(_sid, False)
+            ]
+            if len(_rxn_comps) > 1
+            else []
+        )
+        if _xc_varvol_species:
+            unified_ok = False
+        # Two kinds of such a reaction cannot take the per-species divide either.
+        # One that also changes a species in an assignment-rule compartment: that
+        # compartment is no state, so there is nothing to point its divide at
+        # (#745). One that mixes conversion factors, which that emission refuses.
+        # Both are written out one species at a time instead, each over its own
+        # compartment's live symbol and with its own factor, as a non-integer
+        # stoichiometry is. That form has no SSA reading, and these are refused
+        # under SSA already. The certified monomial keeps the per-species divide,
+        # which its SSA correction is written for.
+        _xc_by_function = (
+            bool(_xc_varvol_species)
+            and i not in ssa_varvol_xcompartment
+            and (
+                _cf_mixed_i
+                or any(net[_sid] != 0 and species_comp[_sid] in ar_comp_targets for _sid in net)
+            )
+        )
         # (#192) The same by-value hazard for a WRITABLE STATIC volume, which is
         # #170's territory rather than #144's and was never done. `involved_vs`
         # holds volume VALUES, so a reaction whose species span several
@@ -7092,7 +7136,7 @@ def _build_model_from_sbml_doc(doc):
         # ssa_volume_factor=1.0; the SSA fire step's per-species
         # 1/volume_factor divide already handles per-species amount→storage
         # scaling.
-        if not non_integer:
+        if not non_integer and not _xc_by_function:
             # GH #232: a cross-compartment reaction whose species carry DIFFERENT
             # conversion factors would need a per-cf-group split interleaved with
             # the per-species volume scaling below — not yet implemented. Refuse
@@ -7134,10 +7178,20 @@ def _build_model_from_sbml_doc(doc):
             #     bare-law emission uses ssa_volume_factor=1.0 and no /V_live in the
             #     function, so exp = m_c with no −1, unlike the single-compartment
             #     scalar's n_f − 1.)
+            # The ODE divide does not depend on the law, so it is recorded for
+            # every such reaction, certified or not. The SSA term is exact only
+            # for the certified monomial; the rest stay refused under SSA
+            # (varvol_non_mass_action, above).
+            for _sid in _xc_varvol_species:
+                ode_xcomp_species_fixups.append((species_idx[_sid], species_comp[_sid]))
             if i in ssa_varvol_xcompartment:
                 _varvol_comps = set(ssa_varvol_xcompartment[i])
                 for _sid in net:
-                    if species_comp[_sid] in _varvol_comps and not species_hosu.get(_sid, False):
+                    if (
+                        _sid not in _xc_varvol_species
+                        and species_comp[_sid] in _varvol_comps
+                        and not species_hosu.get(_sid, False)
+                    ):
                         ode_xcomp_species_fixups.append((species_idx[_sid], species_comp[_sid]))
                 _comp_exp: Counter = Counter()
                 for _ridx in reactant_mult:  # 0-based species idx, repeated by mult
@@ -7177,11 +7231,17 @@ def _build_model_from_sbml_doc(doc):
                 # (#170) A static V=1 compartment that is a writable PARAMETER
                 # also gets the divide, so the write reaches this path; ÷1.0 is
                 # exact, so no number moves at the nominal point.
+                # One function per divisor. A reaction that changes a
+                # concentration and an amount-valued species in the same
+                # changing compartment needs both, and under one name the
+                # second registration was dropped: both rows then divided by
+                # whichever came first.
                 if comp in vstatic_divide_comps and species_hosu.get(sid, False):
                     divisor = repr(float(vol))
+                    vf_name = f"_vds_{rid}_{comp}"
                 else:
                     divisor = _safe_name(comp)
-                vf_name = f"_vd_{rid}_{comp}"
+                    vf_name = f"_vd_{rid}_{comp}"
                 with contextlib.suppress(RuntimeError):
                     builder.add_function(vf_name, f"{base_func}/{divisor}")
                 use_func = vf_name
