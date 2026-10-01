@@ -618,6 +618,7 @@ def _switched_source(thr, ksw, col):
 #   jump   a source of UNIT_KB[i] into Y_i, so dY_i/dthr_i = UNIT_KB[i];
 #   ramp   ``size·(thr_i − Aobs)`` into Y_i below the threshold, continuous;
 #   clamp  B_i (= size) -> C_i at ``0.1·min(Aobs/thr_i, 1)``, continuous.
+#   noreader  a function of the condition that no reaction uses.
 UNIT_KB = (3.0, 5.0, 7.0)
 UNIT_REFUSED = re.compile("cross at the same instant|and its jump applied there")
 
@@ -631,12 +632,14 @@ def _units_sens(tmp_path, units, name):
             fs.append(f"f{i}() if(Aobs<thr{i},{UNIT_KB[i]!r},0)")
         elif kind == "ramp":
             fs.append(f"f{i}() if(Aobs<thr{i},{size!r}*(thr{i}-Aobs),0)")
+        elif kind == "noreader":
+            fs.append(f"f{i}() if(Aobs<thr{i},1,0)")
         else:
             fs.append(f"f{i}() 0.1*if(Aobs<thr{i},Aobs/thr{i},1)")
         if kind == "clamp":
             sp += [f"B{i}() {size!r}", f"C{i}() 0"]
             rx.append(f"{len(sp) - 1} {len(sp)} f{i}")
-        else:
+        elif kind != "noreader":
             sp.append(f"Y{i}() 0")
             rx.append(f"0 {len(sp)} f{i}")
 
@@ -2222,19 +2225,22 @@ end groups
     @pytest.mark.parametrize(
         "units",
         [
-            [("jump", 0, 0.0), ("clamp", 412, 1e9)],
+            [("jump", 0, 0.0), ("noreader", 412, 0.0)],
             [("clamp", 0, 1e9), ("clamp", 412, 1e9)],
             [("jump", 0, 0.0), ("clamp", 474, 1e9)],
         ],
-        ids=["jump-clamp-412", "clamp-clamp-412", "jump-clamp-474"],
+        ids=["jump-unread-412", "clamp-clamp-412", "jump-clamp-474"],
     )
-    def test_a_landing_on_a_clamp_is_not_refused(self, tmp_path, units):
-        """The same landings on a clamp's threshold. A first cut refused every
-        landing, and these run on main (twelfth review). The third is one of
-        the #763 cases main gets wrong: its jump column came back 0 there."""
-        s = _units_sens(tmp_path, units, "lands_on_clamp.net")
+    def test_a_landing_on_a_switch_that_cannot_jump_is_not_refused(self, tmp_path, units):
+        """The same landings on a threshold no rate law reads and on a clamp's.
+        A first cut refused every landing (twelfth review). Main runs the first
+        two and is right. The third is one of the #763 cases main gets wrong:
+        its jump column comes back 0 there."""
+        s = _units_sens(tmp_path, units, "lands_on_quiet.net")
         if units[0][0] == "jump":
             np.testing.assert_allclose(s["Y0"][2:], [3.0, 0.0], atol=1e-5)
+        if units[1][0] != "clamp":
+            return
         # B1(T) = B0·exp(−0.1·t1 − (0.1/(a·thr1))·(thr1 − A(T))), t1 = ln(A0/thr1)/a.
         thr1 = float(2.0 * (1 - units[1][1] * EPS))
 
