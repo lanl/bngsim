@@ -93,28 +93,38 @@ def test_rateof_through_an_assignment_rule():
     np.testing.assert_allclose(s[names.index("B")], want_db, rtol=1e-6)
 
 
-def test_a_trigger_reading_rateof_through_a_rule():
+@pytest.mark.parametrize(
+    "params",
+    [["a", "A0", "thr"], ["thr"], ["thr", "a"], ["a"], ["A0", "thr"], ["thr", "a", "A0"]],
+    ids="-".join,
+)
+def test_a_trigger_reading_rateof_through_a_rule(params):
     """The trigger side, through sync_model_at: ``r := rateOf(A)`` fires when
     ``r > −thr``, at t* = ln(a·A0/thr)/a, and B then grows at 1, so
     dB/dθ = −dt*/dθ: [(ln(a·A0/thr) − 1)/a², −1/(a·A0), 1/(a·thr)]. The thr
     column came out −4 (−2×), read one sync behind like the assignment above.
 
-    Requested in this order on purpose: with thr first, every column comes back
-    0 on main and here alike — a separate defect, issue #910."""
+    Whatever is requested, and in any order (issue #910). The root pass that
+    confirms the rising edge evaluated the rule before it refreshed the rateOf
+    buffer, so it read ``r`` one probe behind and could miss the rise. The event
+    was then fired a moment later by the re-check that follows every root, with
+    no sensitivity jump, and every column came back 0. Whether it did depended on
+    where the root landed, which the requested columns move: only requests with
+    both ``a`` and ``A0`` in them were right."""
     model = bngsim.Model.from_antimony_string(
         "species A, Y, B; A = A0; Y = 0; B = 0; A0 = 10; a = 0.5; thr = 1\n"
         "J0: A -> ; a*A\nJ1: -> B; Y\nr := rateOf(A)\n"
         "E: at (r > -thr): Y = 1\n"
     )
-    run = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "A0", "thr"]).run(
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=params).run(
         sample_times=np.linspace(0.0, T_END, 7), rtol=1e-10, atol=1e-12
     )
     names = list(run.species_names)
     got = np.asarray(run.sensitivities)[-1, names.index("B"), :]
     thr = 1.0
-    want = [
-        (math.log(A_RATE * A0 / thr) - 1.0) / A_RATE**2,
-        -1.0 / (A_RATE * A0),
-        1.0 / (A_RATE * thr),
-    ]
-    np.testing.assert_allclose(got, want, rtol=1e-5)
+    want = {
+        "a": (math.log(A_RATE * A0 / thr) - 1.0) / A_RATE**2,
+        "A0": -1.0 / (A_RATE * A0),
+        "thr": 1.0 / (A_RATE * thr),
+    }
+    np.testing.assert_allclose(got, [want[p] for p in params], rtol=1e-5)
