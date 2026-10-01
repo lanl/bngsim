@@ -231,3 +231,27 @@ def test_a_state_that_is_close_to_a_surface_is_not_pinned_on_it(tmp_path):
     assert y == 0.0
     assert p == pytest.approx(np.sin(50.0 * SLOW_END), abs=1e-6)
     assert q == pytest.approx(np.cos(50.0 * SLOW_END), abs=1e-6)
+
+
+def test_a_threshold_on_a_counter_whose_crossing_stop_is_stood_down():
+    """Issue #54's fixture: a rate law that turns on when a counter species
+    reaches ``sigma``. As written the run stops exactly on the crossing (issue
+    #443). With that stop stood down, which is how a crossing bngsim cannot
+    resolve reaches the integrator, the step size collapsed with the counter an
+    ulp short of ``sigma`` and the run ended in "CVODE made no progress". It is
+    now put across, and matches the run as written."""
+    from pathlib import Path
+
+    net = Path(__file__).resolve().parent.parent.parent / "tests" / "data"
+    net = net / "switch_discontinuity_stall.net"
+    as_written = bngsim.Simulator(bngsim.Model.from_net(str(net)), method="ode").run(
+        t_span=(0.0, 648.0), n_points=649
+    )
+    model = bngsim.Model.from_net(str(net))
+    assert model.time_discontinuity_conditions() == ("t>=sigma",)
+    model._derived_time_disc_conditions = ()
+    stood_down = bngsim.Simulator(model, method="ode").run(t_span=(0.0, 648.0), n_points=649)
+    want = np.asarray(as_written.species)
+    np.testing.assert_allclose(
+        np.asarray(stood_down.species), want, rtol=1e-9, atol=1e-9 * np.abs(want).max()
+    )
