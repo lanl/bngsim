@@ -5995,18 +5995,27 @@ static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
 // Where both branches are extended to the root, what a reader's flux changes by
-// there is a step or rounding (issue #917). Two kinds of rounding are allowed
-// for. The extension's own: this many times ε of the four readings, and never
-// more than the drive tolerance, so that a jump of 0.125 beside a constant of
-// 1e14 in the same rate law, 8 ulp of it, is still read under a slow
-// threshold. Each side is three readings of a flux that rounds by an ulp or
-// two, and 1.9 to 4.2 is what a saturating bystander at 1e11 leaves.
+// there is a step, or it is something a step is not: rounding, or the flux
+// bending (issue #917). The drive tolerance stands for all of that at once, and
+// is far too wide for it under a fast threshold. So the reading is held to a
+// bound on what is not a step, and to the drive tolerance where that is the
+// smaller: no reading is held to less than the drive tolerance held it to.
+//
+// The bound has three parts.
+//   - The extension's own rounding: this many times ε of the four readings.
+//   - What the flux bends by on either side of the surface, read from a third
+//     probe a side: a step shows only across the surface, and a law that turns
+//     on as (B − thr)² shows on its own side as well.
+//   - What one ulp of every species and every parameter moves the flux by, at
+//     the far probe on each side: a flux cannot be read to better than its
+//     inputs' rounding moves it, and `kbig*(P − Q)` with P ≈ Q rounds by P, not
+//     by its own value.
+// The last two are read only where the first does not settle it. A probe that
+// lands across some other surface makes the bound larger, and the reading is
+// then held to the drive tolerance.
 static constexpr double kStateSwitchExtendedRoundoff = 16.0;
-// And the operands': this many times what one ulp of each species the switch's
-// residual reads moves that flux by. A rate law that is a small difference of
-// its operands, `k*(Vx - 5)` at Vx = 5, rounds by its operands and not by its
-// value.
-static constexpr double kStateSwitchOperandRoundoff = 16.0;
+static constexpr double kStateSwitchBend = 8.0;
+static constexpr double kStateSwitchInputRoundoff = 64.0;
 // Issue #763: on the TANGENT path, a branch gap below this many ulps of the
 // switched reactions' gross flux (the absolute sum of their terms) is the final
 // rounding of the two sums it is read from, one per side, not a jump. There a
@@ -7237,30 +7246,64 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             const double step = 2.0 * dt * quantum / std::fabs(one.g_hi - one.g_lo);
             return std::isfinite(step) ? std::min(step, dt) : dt;
         };
-        // What one ulp of each species `one`'s residual reads moves its
-        // reactions' flux by. Read on the before-branch at −2δt, which
-        // is 512 ulp of the flow from the surface, so an ulp does not cross it.
-        auto operand_roundoff = [&](const Reader &one, std::vector<double> &out) {
+        // `one`'s reactions' flux at a state along the flow.
+        auto flux_at = [&](const Reader &one, const std::vector<double> &state, double t,
+                           std::vector<double> &out) {
+            sync(state, t);
             out.assign(n_sp, 0.0);
-            std::vector<double> far_state(n_sp, 0.0);
+            model.compute_flux_split(t, state.data(), one.rxns, out.data(), nullptr);
+        };
+        // What is not a step in `one`'s extended reading, beyond the rounding of
+        // the extension itself: see kStateSwitchBend and
+        // kStateSwitchInputRoundoff.
+        auto not_a_step = [&](const Reader &one, std::vector<double> &out) {
+            out.assign(n_sp, 0.0);
+            std::vector<double> state(n_sp, 0.0);
             std::vector<double> moved(n_sp, 0.0);
-            for (std::size_t u = 0; u < n_sp; ++u) {
-                far_state[u] = x[u] - 2.0 * dt * f0[u];
-            }
-            const double t_far = t_evt - 2.0 * dt;
-            auto read = [&](const std::vector<double> &state, double t) {
-                sync(state, t);
-                moved.assign(n_sp, 0.0);
-                model.compute_flux_split(t, state.data(), one.rxns, moved.data(), nullptr);
+            auto &live = const_cast<std::vector<Parameter> &>(model.parameters());
+            for (int side = 0; side < 2; ++side) {
+                const double sign = side == 0 ? -1.0 : 1.0;
+                const std::vector<double> &far_read = one.net[side == 0 ? 0 : 3];
+                const std::vector<double> &near_read = one.net[side == 0 ? 1 : 2];
+                // The bend, from a third probe on this side.
                 for (std::size_t u = 0; u < n_sp; ++u) {
-                    out[u] += std::fabs(moved[u] - one.net[0][u]);
+                    state[u] = x[u] + sign * 3.0 * dt * f0[u];
                 }
-            };
-            for (int j : one.sw->species) {
-                const auto uj = static_cast<std::size_t>(j);
-                xw.assign(far_state.begin(), far_state.end());
-                xw[uj] = std::nextafter(far_state[uj], std::numeric_limits<double>::infinity());
-                read(xw, t_far);
+                flux_at(one, state, t_evt + sign * 3.0 * dt, moved);
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    out[u] =
+                        std::max(out[u], kStateSwitchBend * std::fabs(moved[u] - 2.0 * far_read[u] +
+                                                                      near_read[u]));
+                }
+                // The inputs' rounding, at the far probe on this side.
+                const double t_far = t_evt + sign * 2.0 * dt;
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    state[u] = x[u] + sign * 2.0 * dt * f0[u];
+                }
+                std::vector<double> inputs(n_sp, 0.0);
+                for (std::size_t j = 0; j < n_sp; ++j) {
+                    const double kept = state[j];
+                    state[j] = std::nextafter(kept, std::numeric_limits<double>::infinity());
+                    flux_at(one, state, t_far, moved);
+                    state[j] = kept;
+                    for (std::size_t u = 0; u < n_sp; ++u) {
+                        inputs[u] += std::fabs(moved[u] - far_read[u]);
+                    }
+                }
+                for (Parameter &param : live) {
+                    const double kept = param.value;
+                    param.value = std::nextafter(kept, std::numeric_limits<double>::infinity());
+                    model.refresh_derived_params();
+                    flux_at(one, state, t_far, moved);
+                    param.value = kept;
+                    for (std::size_t u = 0; u < n_sp; ++u) {
+                        inputs[u] += std::fabs(moved[u] - far_read[u]);
+                    }
+                }
+                model.refresh_derived_params();
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    out[u] += kStateSwitchInputRoundoff * inputs[u];
+                }
             }
             sync(x, t_evt);
         };
@@ -7269,31 +7312,29 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             r.root = std::isfinite(root) ? std::clamp(root, -dt, dt) : 0.0;
             const double w_lo = (r.root + dt) / dt;
             const double w_hi = (dt - r.root) / dt;
-            double slack = -1.0;          // root_step(r), found only if a species needs it
-            std::vector<double> operands; // operand_roundoff(r), likewise
+            double slack = -1.0;        // root_step(r), found only if a species needs it
+            std::vector<double> smooth; // not_a_step(r), likewise
             for (std::size_t u = 0; u < n_sp; ++u) {
                 double change = r.net[1][u] - r.net[2][u];
                 // The drive tolerance is for the pair read as it stands, where
                 // a flux that vanishes on both branches differs across it by
                 // its slope times the crossing's speed. With both branches
-                // extended to the root that is out of the reading, and what is
-                // left besides a step is rounding: the extension's own, a few
-                // ulp of the readings, and the operands', allowed for below.
-                // Held to the drive there, a step of 3 under a threshold
-                // species moving at 5e6 read as continuous and its saltation
-                // term was dropped (issue #917).
-                double tol_u = tol;
+                // extended to the root that is out of the reading. Held to the
+                // drive there, a step of 3 under a threshold species moving at
+                // 5e6 read as continuous and its saltation term was dropped
+                // (issue #917).
+                double rounding = tol;
                 if (far_ok) {
                     const double before = r.net[1][u] + w_lo * (r.net[1][u] - r.net[0][u]);
                     const double after = r.net[2][u] + w_hi * (r.net[2][u] - r.net[3][u]);
                     change = before - after;
-                    tol_u = std::min(
-                        tol, kStateSwitchExtendedRoundoff * std::numeric_limits<double>::epsilon() *
-                                 std::max({std::fabs(r.net[0][u]), std::fabs(r.net[1][u]),
-                                           std::fabs(r.net[2][u]), std::fabs(r.net[3][u])}));
+                    rounding = kStateSwitchExtendedRoundoff *
+                               std::numeric_limits<double>::epsilon() *
+                               std::max({std::fabs(r.net[0][u]), std::fabs(r.net[1][u]),
+                                         std::fabs(r.net[2][u]), std::fabs(r.net[3][u])});
                 }
                 // Written so that a NaN reads as a jump.
-                if (!(std::fabs(change) <= tol_u)) {
+                if (!(std::fabs(change) <= std::min(tol, rounding))) {
                     if (far_ok) {
                         if (slack < 0.0) {
                             slack = kStateSwitchRootSlack * root_step(r);
@@ -7301,15 +7342,20 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         const double kink =
                             std::fabs((r.net[1][u] - r.net[0][u]) - (r.net[3][u] - r.net[2][u])) /
                             dt;
-                        if (std::fabs(change) <= tol_u + slack * kink) {
+                        if (std::fabs(change) <= std::min(tol, rounding) + slack * kink) {
                             continue;
                         }
-                        if (operands.empty()) {
-                            operand_roundoff(r, operands);
-                        }
-                        if (std::fabs(change) <=
-                            tol_u + slack * kink + kStateSwitchOperandRoundoff * operands[u]) {
-                            continue;
+                        // Between what the readings round by and the drive
+                        // tolerance: a step, unless the flux bends or rounds
+                        // by that much on its own. Past the drive tolerance
+                        // it is a step whatever the bound says.
+                        if (std::fabs(change) <= tol + slack * kink) {
+                            if (smooth.empty()) {
+                                not_a_step(r, smooth);
+                            }
+                            if (std::fabs(change) <= rounding + smooth[u] + slack * kink) {
+                                continue;
+                            }
                         }
                     }
                     r.jumps = true;

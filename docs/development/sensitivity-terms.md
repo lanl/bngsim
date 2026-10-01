@@ -181,15 +181,26 @@ no jump.
 Whether a state switch's branches meet is read from the flux of the reactions
 that read the switch alone (#763), at two probes on each side of the surface.
 Both branches are extended to the root, and the difference of the extensions is
-the branch change. It is a jump unless it is within rounding (#917): of where
-the root is; of the flux's operands, what one ulp of each species the residual
-reads moves that flux by; or of the extension itself, 16·ε of its four readings
-and never more than `1e-6` of the rate that drives the crossing. A flux that
-vanishes on both branches, the BNGL signed-rate idiom, is under the second; a
-continuous switch beside a large term that reads other species is under the
-third; a jump of 3 beside a constant of 1e14 in the same rate law is under
-none. Where the far probes cross another switch the near pair is read as it
-stands, against `1e-6` of the rate that drives the crossing.
+the branch change. It is a jump unless it is within `1e-6` of the rate that
+drives the crossing and also within a bound on what is not a step there
+(#917):
+
+- the root's own rounding, times how much the two slopes differ;
+- the extension's rounding, 16·ε of its four readings;
+- the flux bending on its own side of the surface, eight times the second
+  difference to a third probe a side: a law that turns on as `(B − thr)²` shows
+  on its own side what a line through two probes leaves at the root;
+- its inputs' rounding, 64 times what one ulp of every species and every
+  parameter moves the flux by at the far probe on each side: `kbig·(P − Q)` with
+  `P ≈ Q` rounds by an ulp of `P`, and `s() + off − thr` by an ulp of `off`.
+
+The last two are read only where the first two do not settle it. A jump of 3
+under a threshold species moving at 5e6 is within the drive tolerance and
+outside the bound, so it is read. A probe that lands across another surface
+makes the bound larger, never smaller, and the reading is then held to the
+drive tolerance as before. Where the far probes cross another switch of the
+same residual the near pair is read as it stands, against `1e-6` of the rate
+that drives the crossing.
 
 **An event and a switch at the same instant.** `f⁻` is the before-branch at
 `x⁻`, and `f⁺` is the after-branch at `x⁺`:
