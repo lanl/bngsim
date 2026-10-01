@@ -1984,6 +1984,17 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
     }
 }
 
+// One immediate fire of a same-instant event batch, in the order the batch
+// executed (issue #722). The sensitivity jump composes the batch from these.
+struct ExecutedEventFire {
+    int event_idx = -1;
+    // Its assignment values were frozen at the trigger time (SBML
+    // useValuesFromTriggerTime), so they read the pre-batch state. Otherwise
+    // they read the state the earlier fires of the batch left.
+    bool from_trigger_time = true;
+    std::vector<double> values; // what each assignment wrote, in declaration order
+};
+
 // Scratch for the issue #48 switch-time sensitivity jump: the RHS on either
 // branch at the crossing state, and the state copy whose clock gets nudged
 // across the threshold to select the branch. Owned by run() and sized once,
@@ -2350,9 +2361,11 @@ struct CvodeSimulator::Impl {
     // already satisfied when the run began: the fire is pinned to t_start
     // rather than located, so ∂t*/∂θ is 0 there and must not be differentiated
     // (the same reason issue #49's detector drops a crossing at or before
-    // t_start).
+    // t_start). `fired` is the batch the root located, which sets ∂t*/∂θ.
+    // `executed` is what the batch then did, in order (issue #722).
     void apply_event_sensitivity_jump(const SolverOptions &opts, void *cvode_mem, int ns,
                                       double t_evt, const std::vector<int> &fired,
+                                      const std::vector<ExecutedEventFire> &executed,
                                       const std::vector<double> &x_minus,
                                       const std::vector<std::vector<double>> &s_minus,
                                       SensitivityState &sens, bool at_run_start = false);
@@ -4776,6 +4789,7 @@ void CvodeSimulator::Impl::comoving_rhs_before_stops(double t, const double *y, 
     model.evaluate_functions(t);
     if (model.uses_rateof()) {
         model.refresh_rateof_derivs(t, y);
+        model.evaluate_functions(t);
     }
 }
 
@@ -5156,8 +5170,8 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
 
 void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     const SolverOptions &opts, void *cvode_mem, int ns, double t_evt, const std::vector<int> &fired,
-    const std::vector<double> &x_minus, const std::vector<std::vector<double>> &s_minus,
-    SensitivityState &sens, bool at_run_start) {
+    const std::vector<ExecutedEventFire> &executed, const std::vector<double> &x_minus,
+    const std::vector<std::vector<double>> &s_minus, SensitivityState &sens, bool at_run_start) {
     auto &eval_ref_outer = model.evaluator();
     auto &sp_vec_outer = const_cast<std::vector<Species> &>(model.species());
     const auto &events_outer = model.events();
@@ -5239,10 +5253,18 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // Pass 1 — the crossing times issue #49's Python detector resolved ahead of
     // the run. Its records carry the parameter columns only, so they are
     // widened with zero IC columns here.
+    // An event of the batch whose time no requested column moves. Beside one
+    // whose time does move it is the same ambiguity adopt_tau refuses, with
+    // one of the two vectors zero: the batch comes apart under the parameter,
+    // and the one shift was applied to both events' rows. `at (time >= 2)`
+    // beside `at (time >= T)` with T = 2 gave dY/dT = 2.06 for a row only the
+    // fixed event writes, where the truth is 0 (issue #722's review).
+    int fixed_event = -1;
     for (int ei : fired) {
         if (differentiated_here.count(ei) != 0) {
             continue;
         }
+        bool moves = false;
         for (const auto &et : opts.sensitivity.event_times) {
             if (et.event_idx0 != ei || et.dtstar_dp.size() != static_cast<size_t>(n_sens_p)) {
                 continue;
@@ -5254,6 +5276,10 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             std::vector<double> widened(static_cast<size_t>(n_sens), 0.0);
             std::copy(et.dtstar_dp.begin(), et.dtstar_dp.end(), widened.begin());
             adopt_tau(ei, widened);
+            moves = true;
+        }
+        if (!moves && fixed_event < 0) {
+            fixed_event = ei;
         }
     }
     const bool needs_flow = tau_nonzero || !state_dep_fired.empty();
@@ -5320,34 +5346,65 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             adopt_tau(ei, candidate);
         }
     }
-
-    // Rows the batch assigns take the ∂h/∂x·(…) + ∂h/∂p form below; every
-    // other row is continuous (h_k = x_k) and reduces to the issue #48 jump
-    // s⁺_k = s⁻_k + (f⁻_k − f⁺_k)·∂t*/∂p, applied here in place on yS_guard
-    // (which still holds s⁻). Done before the assigned rows are written so
-    // the two never see each other's output.
-    std::unordered_set<int> assigned_rows;
-    if (tau_nonzero) {
-        for (int ei : fired) {
-            for (const auto &asg : events_outer[ei].assignments) {
-                assigned_rows.insert(asg.first);
-            }
-        }
-        for (int c = 0; c < n_sens; ++c) {
-            if (tau[static_cast<size_t>(c)] == 0.0) {
-                continue;
-            }
-            double *col = N_VGetArrayPointer(yS_guard[c]);
-            for (int i = 0; i < ns; ++i) {
-                if (assigned_rows.count(i) == 0) {
-                    col[i] += (f_minus[i] - f_plus[i]) * tau[static_cast<size_t>(c)];
-                }
-            }
-        }
+    if (fixed_event >= 0 && tau_event >= 0 &&
+        std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; })) {
+        throw std::runtime_error(
+            "Forward sensitivity: events '" + events_outer[fixed_event].id + "' and '" +
+            events_outer[tau_event].id + "' fire at the same instant t=" + std::to_string(t_evt) +
+            " but their crossing times move differently with the requested "
+            "parameters: the first does not move and the second does. The "
+            "event-time sensitivity jump is ambiguous (issue #49). Separate the "
+            "trigger times, or drop the parameters that move them from "
+            "sensitivity_params.");
     }
 
-    for (int ei : fired) {
-        const auto &ev = events_outer[ei];
+    // ── The batch, in the order it executed (issue #722) ─────────────────────
+    // A same-instant batch is not one simultaneous map. process_firing_batch
+    // runs it one fire at a time: highest priority first, a tie broken at
+    // random, a useValuesFromTriggerTime=false assignment reading the state the
+    // earlier fires left, and a non-persistent instance cancelled when an
+    // earlier fire makes its trigger false. This jump used to walk the
+    // root-detected list in declaration order and take every derivative at the
+    // pre-batch x⁻ against s⁻. So two events assigning one species gave it the
+    // derivative of the event declared last, not the one that executed last; a
+    // useValuesFromTriggerTime=false value was differentiated at a state it
+    // never read; and a cancelled event still wrote its row. All silent, and
+    // reordering the declarations changed the gradient.
+    //
+    // What is carried through the batch is the TOTAL derivative of the running
+    // state at the moving fire time, D = d/dθ x(t*(θ)). Before the batch it is
+    // s⁻ + f⁻·∂t*/∂θ. A fire that writes x_k = h(x_read, p, t*) sets
+    //     D_k = Σ_j ∂h/∂x_j·D_read_j + ∂h/∂p + ∂h/∂t·∂t*/∂θ,
+    // where x_read and D_read are the pre-batch ones for a value frozen at the
+    // trigger time and the running ones otherwise. After the batch,
+    // s⁺ = D − f⁺·∂t*/∂θ. With one fire, or fires that neither share a target
+    // nor read each other, this is the jump as it always was, term for term.
+    std::vector<char> assigned(static_cast<size_t>(ns), 0);
+    std::vector<double> row_dcdt(static_cast<size_t>(ns), 0.0);
+    // row_base[c][k]: D_k without its ∂h/∂t·∂t*/∂θ term, for an assigned row k.
+    std::vector<std::vector<double>> row_base(static_cast<size_t>(n_sens));
+    if (!executed.empty()) {
+        for (auto &col : row_base) {
+            col.assign(static_cast<size_t>(ns), 0.0);
+        }
+    }
+    std::vector<double> xrun(x_minus.begin(), x_minus.end());
+    std::vector<double> xread;
+    struct RowResult {
+        int k = -1;
+        double dcdt = 0.0;
+        std::vector<double> base;
+    };
+    std::vector<RowResult> rows;
+
+    for (const ExecutedEventFire &fire : executed) {
+        const auto &ev = events_outer[fire.event_idx];
+        const bool at_trigger = fire.from_trigger_time;
+        // The state this fire's values were read at.
+        xread = at_trigger ? std::vector<double>(x_minus.begin(), x_minus.end()) : xrun;
+        xwork = xread;
+        sync_state();
+        rows.clear();
         for (const auto &asg : ev.assignments) {
             const int k = asg.first;      // assigned species (0-based)
             const int vexpr = asg.second; // value expression id
@@ -5369,7 +5426,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             // ∂c/∂x_j via central FD.
             std::vector<double> dcdx(static_cast<size_t>(ns), 0.0);
             for (int j : x_support) {
-                const double xj = x_minus[j];
+                const double xj = xread[j];
                 double h = 1e-6 * std::fabs(xj);
                 if (h == 0.0) {
                     h = 1e-9;
@@ -5383,7 +5440,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 xwork[j] = xj; // restore this component
                 dcdx[j] = (f_hi - f_lo) / (2.0 * h);
             }
-            sync_state(); // back to x⁻ for the parameter FD
+            sync_state(); // back to the read state for the parameter FD
 
             // ∂c/∂p for each parameter column (IC columns: ∂c/∂p ≡ 0).
             std::vector<double> dcdp(static_cast<size_t>(n_sens_p), 0.0);
@@ -5407,9 +5464,9 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 perturbed_sync(pidx, t_evt);
                 dcdp[col] = (f_hi - f_lo) / (2.0 * h);
             }
-            sync_state(); // restore evaluator state at (x⁻, p₀)
+            sync_state(); // restore evaluator state at (read state, p₀)
 
-            // ∂c/∂t at fixed (x⁻, p₀), for an assignment that reads `time`
+            // ∂c/∂t at fixed (state, p₀), for an assignment that reads `time`
             // (issue #735): `Tlast = time`, `END_M = time + 1000`. x⁺ =
             // h(x⁻(t*), p, t*(p)), so a fire time that moves with p moves the
             // assigned value by ∂h/∂t·∂t*/∂p as well. Only needed where some
@@ -5439,14 +5496,16 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 sync_state();
             }
 
-            // Assemble s⁺_k for every sensitivity column:
-            //     s⁺_k = Σ_j (∂h_k/∂x_j)·(s⁻_j + f⁻_j·∂t*/∂p)
-            //            + ∂h_k/∂p + ∂h_k/∂t·∂t*/∂p − f⁺_k·∂t*/∂p
-            // The pre-shift carries s⁻ along the pre-event flow by how far
-            // the event time moves, the event Jacobian maps it through the
-            // reset, and the post-shift carries it back along the
-            // post-event flow. With ∂t*/∂p = 0 both shifts vanish and this
-            // is the GH #212 jump unchanged.
+            // D_k for every column, without its ∂h/∂t·∂t*/∂θ term:
+            //     Σ_j (∂h_k/∂x_j)·D_read_j + ∂h_k/∂p.
+            // D_read_j is s⁻_j + f⁻_j·∂t*/∂p for a row the batch has not
+            // written (the pre-shift carries s⁻ along the pre-event flow by how
+            // far the event time moves), and the row's own D where an earlier
+            // fire wrote it and this value read that.
+            RowResult row;
+            row.k = k;
+            row.dcdt = dcdt;
+            row.base.assign(static_cast<size_t>(n_sens), 0.0);
             for (int c = 0; c < n_sens; ++c) {
                 // IC columns carry a shift only for a state-dependent trigger
                 // (issue #144); issue #49's detector leaves them at 0.
@@ -5454,17 +5513,61 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 double acc = 0.0;
                 const std::vector<double> &sm = s_minus[c];
                 for (int j = 0; j < ns; ++j) {
-                    if (dcdx[j] != 0.0) {
+                    if (dcdx[j] == 0.0) {
+                        continue;
+                    }
+                    if (at_trigger || assigned[static_cast<size_t>(j)] == 0) {
                         acc += dcdx[j] * (sm[j] + (tau_c != 0.0 ? f_minus[j] * tau_c : 0.0));
+                    } else {
+                        const auto uj = static_cast<size_t>(j);
+                        acc += dcdx[j] * (row_base[static_cast<size_t>(c)][uj] +
+                                          (tau_c != 0.0 ? row_dcdt[uj] * tau_c : 0.0));
                     }
                 }
                 if (c < n_sens_p) {
                     acc += dcdp[c];
                 }
+                row.base[static_cast<size_t>(c)] = acc;
+            }
+            rows.push_back(std::move(row));
+        }
+        // One fire's assignments are simultaneous: none reads another's value,
+        // so they are written only once all of them are formed.
+        for (const RowResult &row : rows) {
+            const auto uk = static_cast<size_t>(row.k);
+            assigned[uk] = 1;
+            row_dcdt[uk] = row.dcdt;
+            for (int c = 0; c < n_sens; ++c) {
+                row_base[static_cast<size_t>(c)][uk] = row.base[static_cast<size_t>(c)];
+            }
+        }
+        for (size_t a = 0; a < ev.assignments.size() && a < fire.values.size(); ++a) {
+            const int k = ev.assignments[a].first;
+            if (k >= 0 && k < ns) {
+                xrun[static_cast<size_t>(k)] = fire.values[a];
+            }
+        }
+    }
+
+    // s⁺ = D − f⁺·∂t*/∂θ. A row no fire wrote is continuous (h_k = x_k) and
+    // reduces to the issue #48 jump s⁺_k = s⁻_k + (f⁻_k − f⁺_k)·∂t*/∂p, applied
+    // in place on yS_guard (which still holds s⁻). A row the batch wrote takes
+    // the D of its last writer, the post-shift carrying it back along the
+    // post-event flow. With ∂t*/∂p = 0 both shifts vanish and this is the GH
+    // #212 jump unchanged.
+    for (int c = 0; c < n_sens; ++c) {
+        const double tau_c = tau[static_cast<size_t>(c)];
+        double *col = N_VGetArrayPointer(yS_guard[c]);
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<size_t>(i);
+            if (assigned[ui] != 0) {
+                double acc = row_base[static_cast<size_t>(c)][ui];
                 if (tau_c != 0.0) {
-                    acc += (dcdt - f_plus[k]) * tau_c;
+                    acc += (row_dcdt[ui] - f_plus[i]) * tau_c;
                 }
-                N_VGetArrayPointer(yS_guard[c])[k] = acc;
+                col[i] = acc;
+            } else if (tau_c != 0.0) {
+                col[i] += (f_minus[i] - f_plus[i]) * tau_c;
             }
         }
     }
@@ -5712,6 +5815,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     model.evaluate_functions(t_evt);
     if (model.uses_rateof()) {
         model.refresh_rateof_derivs(t_evt, y_data);
+        model.evaluate_functions(t_evt);
     }
 
     // s⁻ MUST be read before CVodeReInit — after it, CVodeGetSens no longer
@@ -6118,6 +6222,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         model.evaluate_functions(t);
         if (model.uses_rateof()) {
             model.refresh_rateof_derivs(t, state.data());
+            model.evaluate_functions(t);
         }
     };
 
@@ -7924,6 +8029,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         std::vector<double> frozen_values; // size = n_assignments when frozen
     };
     std::vector<PendingEvent> pending_events;
+    // The immediate fires of the batch being drained, in execution order, for
+    // the sensitivity jump (issue #722). Cleared by the caller that owns the
+    // batch; filled only in a sensitivity run.
+    std::vector<ExecutedEventFire> executed_fires;
 
     // ─── Helper: process a batch of rising-edge fires at time t ────────
     //
@@ -8152,6 +8261,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 sp_vec_outer[sp_idx0].concentration = nv[a];
             }
             any_immediate = true;
+            if (sens.n_total > 0) {
+                ExecutedEventFire fire;
+                fire.event_idx = queue[k].event_idx;
+                fire.from_trigger_time = ev.use_values_from_trigger_time;
+                fire.values = std::move(nv);
+                executed_fires.push_back(std::move(fire));
+            }
 
             // Refresh so the priority re-eval, cascade re-check, and any
             // rateOf-bearing trigger below see the post-fire state.
@@ -8159,6 +8275,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             model.evaluate_functions(t_now);
             if (model.uses_rateof()) {
                 model.refresh_rateof_derivs(t_now, y_data);
+                model.evaluate_functions(t_now);
             }
 
             // Re-check every trigger against `prev`: a rising edge is a
@@ -8269,6 +8386,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         model.evaluate_functions(t_now);
         if (model.uses_rateof()) {
             model.refresh_rateof_derivs(t_now, y_data);
+            model.evaluate_functions(t_now);
         }
         std::vector<int> risers;
         for (int ei = 0; ei < n_events; ++ei) {
@@ -8288,11 +8406,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             trigger_was_true[ei] = now_true;
         }
         if (!risers.empty()) {
-            // No sensitivity guard here: process_firing_batch's own drain
-            // subsumes every *immediate* same-instant rise and refuses it when
-            // sensitivities are active, so a riser reaching this point is one
-            // the drain left — a delayed event, which the upstream delay guard
-            // already refuses for sensitivities.
+            // process_firing_batch's own drain subsumes every *immediate*
+            // same-instant rise and refuses it when sensitivities are active,
+            // and the upstream delay guard refuses a delayed event. So a riser
+            // here, in a sensitivity run, is a trigger that went true without
+            // the root pass above seeing it. It would fire with no sensitivity
+            // jump and leave every column it moves stale, with no word of it
+            // (issue #910 reached this through a trigger the root pass read one
+            // rateOf probe behind). Refuse rather than fire it.
+            if (sens.n_total > 0) {
+                throw std::runtime_error(
+                    "Forward sensitivity: event '" + events_outer[risers.front()].id +
+                    "' was found triggered at t=" + std::to_string(t_now) +
+                    " after a root was handled, not as a crossing the integrator located. "
+                    "bngsim has no sensitivity jump for a fire it did not locate, so the "
+                    "columns it moves would be silently stale (GH #205, issue #910). Please "
+                    "report this model; dropping sensitivities for this run avoids it.");
+            }
             process_firing_batch(t_now, risers);
         }
     };
@@ -8418,6 +8548,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     cvode_mem, ns, static_cast<double>(times.t_start), sens, /*at_run_start=*/true);
             }
 
+            executed_fires.clear();
             bool t0_immediate_fired = process_firing_batch(times.t_start, t0_firing);
 
             if (t0_immediate_fired) {
@@ -8444,23 +8575,38 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // below its threshold, it is on it: `PIdeath > 0` with
             // PIdeath(t_start) = 0. Whether the first move off that surface is
             // a crossing the model locates, or an arbitrary consequence of
-            // where the first step landed, is decided by dg/dt along the flow
-            // at t_start — and only there, because once the solver has taken a
-            // step the residual is off zero and every trace of the coincidence
-            // is gone.
+            // where the first step landed, is decided at t_start — and only
+            // there, because once the solver has taken a step the residual is
+            // off zero and every trace of the coincidence is gone.
             //
-            //   dg/dt > 0 — the trajectory LEAVES the threshold into the
-            //     trigger's true side. `time > 0` is this, with dg/dt = 1: the
-            //     crossing is real and sits at t_start. Left alone, so those
-            //     events fire exactly as they did before.
-            //   dg/dt <= 0 — the trajectory does not leave. Any root the
-            //     solver then reports at t_start is the initial condition
-            //     being re-read, not a transition, and its time is set by the
-            //     step controller rather than by the model. BIOMD0000000285 is
-            //     this case: `PIdeath > 0` with the whole aggregation cascade
-            //     feeding PIdeath still at zero, so dg/dt is 0 exactly, yet
-            //     the root lands at t = 2.7e-27 and kills the cell before the
-            //     model has moved. Marked here and refused at the root below.
+            //   The trajectory LEAVES the threshold into the trigger's true
+            //     side. `time > 0` is this: the crossing is real and sits at
+            //     t_start. Left alone, so those events fire exactly as they
+            //     did before.
+            //   It does not. Any root the solver then reports at t_start is the
+            //     initial condition being re-read, not a transition, and its
+            //     time is set by the step controller rather than by the model.
+            //     BIOMD0000000285 is this case: `PIdeath > 0` with the whole
+            //     aggregation cascade feeding PIdeath still at zero, so the
+            //     state does not move at all, yet the root lands at
+            //     t = 2.7e-27 and kills the cell before the model has moved.
+            //     Marked here and refused at the root below.
+            //
+            // Which it is, is asked of the trigger itself, a small step along
+            // the flow. It used to be read off the sign of dg/dt for the
+            // residual g = lhs − rhs, taking positive for true. That is right
+            // for `>` and wrong for `<`: `at (A < 10)` with A(0) = 10 and A
+            // decaying never fired, where `at (10 > A)` fires at once. The
+            // gradient behind dg/dt was a difference with a step of 1e-9 at a
+            // species that is 0, which is past a pole or a root of the residual
+            // in a model whose own scale is smaller (`L/(Kd + L) > 0` from
+            // L = 0 with Kd = 1e-10). And a residual that moves to one side
+            // only (`floor(A) < 10`, `0 < max(0, A - 10)`) has no gradient to
+            // read at all. Stepping the state the residual reads by δ·f, with
+            // δ a millionth of the time the fastest of them takes to change by
+            // its own size, asks the question directly and in the model's own
+            // units. f is taken just past t_start, so a rate that is gated on
+            // `time > t_start` counts.
             //
             // This is the rule CVODE applies to its own root functions —
             // SUNDIALS deactivates any g_i that is identically zero at t0 and
@@ -8471,7 +8617,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (!on_threshold_at_start.empty()) {
                 std::vector<double> t0_f;
                 std::vector<double> t0_x;
-                std::vector<double> gx_scratch;
                 for (int ei = 0; ei < n_events; ++ei) {
                     if (trigger_was_true[ei]) {
                         continue;
@@ -8482,18 +8627,32 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     }
                     if (t0_f.empty()) {
                         t0_f.assign(static_cast<std::size_t>(ns), 0.0);
-                        model.compute_derivs(times.t_start, y_data, t0_f.data());
+                        model.compute_derivs(
+                            std::nextafter(times.t_start, std::numeric_limits<double>::infinity()),
+                            y_data, t0_f.data());
                         t0_x.assign(y_data, y_data + ns);
                     }
-                    double scale = 0.0;
-                    const double flow =
-                        impl_->residual_flow(gidx, model.event_trigger_residual_species(ei),
-                                             times.t_start, ns, t0_x, t0_f, gx_scratch, scale);
-                    on_threshold_at_start[ei] = (flow > 0.0) ? 0 : 1;
+                    const double horizon =
+                        std::max({t_out.back() - times.t_start, std::fabs(times.t_start), 1.0});
+                    double delta = 1e-6 * horizon;
+                    const std::vector<int> &support = model.event_trigger_residual_species(ei);
+                    for (int j : support) {
+                        const auto uj = static_cast<std::size_t>(j);
+                        if (t0_x[uj] != 0.0 && t0_f[uj] != 0.0) {
+                            delta = std::min(delta, 1e-6 * std::fabs(t0_x[uj] / t0_f[uj]));
+                        }
+                    }
+                    std::vector<double> x_probe(t0_x);
+                    for (int j : support) {
+                        const auto uj = static_cast<std::size_t>(j);
+                        x_probe[uj] += delta * t0_f[uj];
+                    }
+                    impl_->sync_model_at(times.t_start + delta, x_probe.data(), ns);
+                    const bool leaves_into_true =
+                        eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx) > 0.5;
+                    impl_->sync_model_at(times.t_start, t0_x.data(), ns);
+                    on_threshold_at_start[ei] = leaves_into_true ? 0 : 1;
                 }
-                // Nothing to undo: residual_flow's differences walk the model
-                // through perturbed states but leave it synced at (t_start, y),
-                // rateOf buffer included, which is where it was found.
             }
 
             // If a t=0 immediate event mutated the state vector, tell CVODE
@@ -8510,7 +8669,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // vectors (GH #212). No-op unless sensitivities are active.
                 impl_->apply_event_sensitivity_jump(opts, cvode_mem, ns,
                                                     static_cast<double>(times.t_start), t0_firing,
-                                                    t0_x_minus, t0_s_minus, sens,
+                                                    executed_fires, t0_x_minus, t0_s_minus, sens,
                                                     /*at_run_start=*/true);
             }
         }
@@ -8910,8 +9069,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // this the confirmation re-reads a stale derivative, the rising
                 // edge is missed, and the event silently never fires — erratically,
                 // depending on step size (01261/01293). No-op when !uses_rateof.
+                //
+                // The functions are evaluated again after it (issue #910). A
+                // trigger that reads rateOf through one (`r := rateOf(A)`, then
+                // `r > -thr`) otherwise confirms against the buffer the functions
+                // were evaluated with above, one probe behind. The rise is then
+                // missed here and found by the cascade re-check below, which
+                // fires the event with no sensitivity jump: every column came
+                // back 0, or not, by where the root happened to land.
                 if (model.uses_rateof()) {
                     model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                    model.evaluate_functions(static_cast<double>(t_ret));
                 }
 
                 // ─── First pass: identify rising-edge events ─────────────────
@@ -9005,6 +9173,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     }
                 }
 
+                executed_fires.clear();
                 bool any_event_fired = process_firing_batch(static_cast<double>(t_ret), firing);
 
                 // ─── Chatter guard: detect Zeno re-firing (GH #95) ───────────
@@ -9063,6 +9232,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // below sees a fresh rateOf buffer (GH #231). No-op otherwise.
                     if (model.uses_rateof()) {
                         model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                        model.evaluate_functions(static_cast<double>(t_ret));
                     }
                 }
 
@@ -9171,9 +9341,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             "rather than pick an order (issue #150). Separate the two times, or "
                             "drop sensitivities for this run.");
                     }
-                    impl_->apply_event_sensitivity_jump(opts, cvode_mem, ns,
-                                                        static_cast<double>(t_ret), firing,
-                                                        chatter_y_before, evt_s_minus, sens);
+                    impl_->apply_event_sensitivity_jump(
+                        opts, cvode_mem, ns, static_cast<double>(t_ret), firing, executed_fires,
+                        chatter_y_before, evt_s_minus, sens);
                 } else if (!evt_s_minus.empty()) {
                     // No event fired. The state is continuous across this root
                     // either way, but a state-switch crossing makes dx/dθ
@@ -9195,6 +9365,39 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         }
                         impl_->apply_state_switch_sensitivity_jump(
                             cvode_mem, y, ns, static_cast<double>(t_ret), batch, evt_s_minus, sens);
+                        // The jump restarts a probe step PAST the surface, and
+                        // an event whose trigger sits within that step is carried
+                        // across with it. CVODE then starts with that root
+                        // already on its far side and never reports it: the
+                        // event did not fire at all, in a sensitivity run only,
+                        // and the trajectory itself was wrong with no word of
+                        // it. `at (A < thr)` beside `piecewise(kb, A < thr, 0)`
+                        // is that case, the same threshold written twice. The
+                        // event's own crossing was not located, so it has no
+                        // sensitivity jump to take, and one could not be
+                        // composed with the switch's at one instant anyway
+                        // (issue #150). So a rise across the restart is refused
+                        // like the exact coincidence above. A fall only re-arms
+                        // the event.
+                        for (int ei = 0; ei < n_events; ++ei) {
+                            const bool now_true =
+                                eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx) > 0.5;
+                            if (now_true && !trigger_was_true[ei] && !event_dormant[ei]) {
+                                throw std::runtime_error(
+                                    "Forward sensitivity: a state-dependent rate-law switch "
+                                    "(residual '" +
+                                    batch.front()->residual_source + "') crosses at t=" +
+                                    std::to_string(t_ret) + ", and event '" + events_outer[ei].id +
+                                    "' triggers within the step the solver takes past that "
+                                    "crossing, so the event's own crossing is not located. bngsim "
+                                    "has no sensitivity jump for an event it did not locate, and "
+                                    "could not compose one with the switch's at what is the same "
+                                    "instant to the solver (issue #150). It refuses rather than "
+                                    "skip the event. Separate the two thresholds, or drop "
+                                    "sensitivities for this run.");
+                            }
+                            trigger_was_true[ei] = now_true;
+                        }
                     }
                     // The CVodeReInit above rewound the state stepper to t_ret
                     // while leaving CVODES' sensitivity history at the end of
@@ -9320,6 +9523,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // (a rateOf-bearing delayed-event trigger; GH #231). No-op otherwise.
                 if (model.uses_rateof()) {
                     model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                    model.evaluate_functions(static_cast<double>(t_ret));
                 }
 
                 // Cancel non-persistent pending events whose trigger has already
@@ -9398,6 +9602,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     model.evaluate_functions(static_cast<double>(t_ret));
                     if (model.uses_rateof()) {
                         model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                        model.evaluate_functions(static_cast<double>(t_ret));
                     }
                     cancel_lapsed_nonpersistent();
                     cascade_triggered_events(static_cast<double>(t_ret));

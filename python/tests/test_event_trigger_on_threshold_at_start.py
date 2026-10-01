@@ -22,6 +22,13 @@ residual is off zero and the coincidence has left no trace:
   initial condition being re-read rather than a transition, and does not fire.
   A later, genuine crossing of the same trigger is untouched.
 
+Which side is the true side, and whether the trajectory leaves into it, is asked
+of the trigger itself a small step along the flow (issue #910's review). Read
+off the sign of ``dg/dt`` for ``g = lhs - rhs``, with positive taken for true,
+``at (A < 10)`` from ``A(0) = 10`` never fired where ``at (10 > A)`` fired at
+once, and a residual with a pole or a root within 1e-9 of a species at 0, or one
+that moves to one side only, was misread too.
+
 This is the rule SUNDIALS applies to its own root functions (a ``g_i``
 identically zero at ``t0`` is deactivated until it moves away), which bngsim
 cannot inherit because the root it registers is the *boolean* trigger minus 0.5
@@ -245,3 +252,88 @@ def test_biomd285_forward_sensitivity_no_longer_hits_the_simultaneous_fire():
 
     sens = np.asarray(res.sensitivities)
     assert np.isfinite(sens).all()
+
+
+# ─── the true side, asked of the trigger (issue #910's review) ─────────────
+
+
+def _fires(dynamics: str, trigger: str, init: str = "A = 10") -> tuple[float, float]:
+    """(F at the end, B at the end): F is set by the event and B grows at F."""
+    text = (
+        f"species A, F, B; {init}; F = 0; B = 0\n"
+        f"{dynamics}\nJB: -> B; F\nE: at ({trigger}): F = 1\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode").run(
+        sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    x = np.asarray(run.species)[-1]
+    return float(x[names.index("F")]), float(x[names.index("B")])
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    ["A < 10", "10 > A", "2*A < 20", "A - 10 < 0", "0 > A - 10", "floor(A) < 10", "10 > floor(A)"],
+)
+def test_a_trigger_the_trajectory_leaves_into_fires_however_it_is_written(trigger):
+    """A decays from 10, so each of these is false at the start and true from
+    the first instant on: the event fires at once and B(2) = 2. The spellings
+    with ``<`` never fired."""
+    fired, b = _fires("J0: A -> ; 0.5*A", trigger)
+    assert fired == 1.0 and b == pytest.approx(2.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("trigger", ["A <= 10", "A > 10", "10 < A", "A >= 10.5"])
+def test_a_trigger_the_trajectory_does_not_leave_into_does_not_fire(trigger):
+    """``A <= 10`` is true at the start, so there is no rising edge. The others
+    are false at the start and A moves away from them."""
+    fired, b = _fires("J0: A -> ; 0.5*A", trigger)
+    assert fired == 0.0 and b == 0.0
+
+
+@pytest.mark.parametrize("trigger", ["A < 10", "10 > A"])
+def test_a_rate_gated_on_time_past_the_start_counts(trigger):
+    """A' is +1 at t = 0 exactly and -1 for every t > 0, so A leaves 10
+    downward. Read at t_start itself the flow points the other way."""
+    fired, b = _fires("J0: -> A; piecewise(-1, time > 0, 1)", trigger)
+    assert fired == 1.0 and b == pytest.approx(2.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("trigger", ["L/(Kd + L) > 0", "0 < L/(Kd + L)"])
+def test_a_species_at_zero_is_stepped_in_its_own_units(trigger):
+    """L starts at 0 and is made at 1e-10, in a model whose scale is
+    Kd = 1e-10. A finite difference with a step of 1e-9 at L = 0 reaches past
+    the pole at L = -Kd and read the gradient with the wrong sign, so the first
+    spelling never fired. Both fire at once."""
+    text = (
+        "species L, F, B; L = 0; F = 0; B = 0; Kd = 1e-10\n"
+        f"J0: -> L; 1e-10\nJB: -> B; F\nE: at ({trigger}): F = 1\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode").run(
+        sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-16
+    )
+    names = list(run.species_names)
+    x = np.asarray(run.species)[-1]
+    assert x[names.index("F")] == 1.0 and x[names.index("B")] == pytest.approx(2.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("trigger", ["abs(A - 9.5) < 0.5", "0.5 > abs(A - 9.5)"])
+def test_the_step_is_set_by_the_model_not_by_the_length_of_the_run(trigger):
+    """The trigger is true while A is between 9 and 10, which is the first 0.21
+    time units of a run that lasts a million. A step sized by the run alone
+    lands far past that window, reads the trigger false there, and the event
+    never fires."""
+    text = (
+        "species A, F, B; A = 10; F = 0; B = 0\n"
+        f"J0: A -> ; 0.5*A\nJB: -> B; F\nE: at ({trigger}): F = 1\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode").run(
+        sample_times=[0.0, 1.0, 1.0e6], rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    x = np.asarray(run.species)
+    assert x[1, names.index("F")] == 1.0
+    assert x[1, names.index("B")] == pytest.approx(1.0, rel=1e-6)
