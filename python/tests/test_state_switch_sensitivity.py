@@ -1517,6 +1517,238 @@ end groups
             got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()")]
             np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-6)
 
+    @pytest.mark.parametrize("k", [0, 600, -600])
+    def test_a_reaction_the_map_does_not_list_beside_a_mapped_jump(self, tmp_path, k):
+        """The same unlisted Michaelis-Menten law, switched at thr2, beside a
+        mapped jump of kb into Y at thr1. With thr2 only in the wider probe, the
+        whole right-hand side extended to the crossing took the unlisted jump in
+        from 2·δt away and gave it thr1's dt*/dθ: dP/d[thr1, thr2] = (-5, 5) for
+        a truth of (0, 5), where main is right. An empty map entry was taken to
+        mean nothing there can jump. With thr2 = thr1 the two are reported
+        together and the unlisted one was not asked to agree: (5, 0), where main
+        refuses (ninth review)."""
+        thr2 = float(2.0 * (1 - k * EPS))
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr1 2
+    4 thr2 {thr2!r}
+    5 kb 3
+    6 kc 5
+    7 kcat 0
+    8 Km 1
+end parameters
+begin functions
+    1 f1() if(Aobs<thr1,kb,0)
+    2 kcat() if(Aobs<thr2,kc,0)
+end functions
+begin species
+    1 A() A0
+    2 E() 1
+    3 S() 1e6
+    4 P() 0
+    5 Y() 0
+end species
+begin reactions
+    1 1 0 a
+    2 2,3 2,4 MM kcat Km
+    3 0 5 f1
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="mm_beside.net")
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr1", "thr2"])
+        try:
+            run = sim.run(t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12)
+        except SimulationError as e:
+            assert k == 0 and "cross at the same instant" in str(e)
+            return
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+        rate = 5.0 * 1e6 / (1.0 + 1e6)
+        np.testing.assert_allclose(s[names.index("P()")], [0.0, rate / (0.5 * thr2)], atol=1e-4)
+        np.testing.assert_allclose(s[names.index("Y()")], [3.0, 0.0], atol=1e-4)
+
+    def test_a_loss_in_fast_balance_with_a_clamped_source_is_not_a_missed_reaction(self, tmp_path):
+        """X is made at ``kbig*Aobs + clamp(thr1)`` and lost at kdeg·X by mass
+        action, with kbig = kdeg = 1e10, and a second clamp on thr2 = thr1 takes
+        B to C. Nothing jumps. Across the probe pair the loss moves by
+        2·δt·kdeg·|dX/dt|, which the source cancels in the whole right-hand
+        side. Read on its own, as what the listed reactions do not account for,
+        that passed the pre-#763 tolerance, the crossing went back to the
+        pre-#763 judgment, and its two switches were refused for not agreeing
+        on dt*/dθ, where main runs (ninth review). The fallback now also needs
+        the pre-#763 test itself to read a jump."""
+        kbig = 1e10
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr1 2
+    4 thr2 2
+    5 kbig {kbig!r}
+    6 kdeg {kbig!r}
+    7 X0 {(kbig * 10.0 + 1.0) / kbig!r}
+end parameters
+begin functions
+    1 f1() kbig*Aobs+if(Aobs<thr1,Aobs/thr1,1)
+    2 f2() 0.1*if(Aobs<thr2,Aobs/thr2,1)
+end functions
+begin species
+    1 A() A0
+    2 X() X0
+    3 B() 1000
+    4 C() 0
+end species
+begin reactions
+    1 1 0 a
+    2 0 2 f1
+    3 2 0 kdeg
+    4 3 4 f2
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="fast_balance.net")
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "thr1", "thr2"]).run(
+            t_span=(0.0, 6.0), n_points=3, rtol=1e-9, atol=1e-12
+        )
+        got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("B()")]
+
+        # B(T) = B0·exp(−0.1·t2 − (0.1/(a·thr2))·(thr2 − A(T))), t2 = ln(A0/thr2)/a.
+        def b_end(a, thr2):
+            t2 = np.log(10.0 / thr2) / a
+            return 1000.0 * np.exp(
+                -0.1 * t2 - (0.1 / (a * thr2)) * (thr2 - 10.0 * np.exp(-a * 6.0))
+            )
+
+        h = 1e-6
+        want_a = (b_end(0.5 + h, 2.0) - b_end(0.5 - h, 2.0)) / (2 * h)
+        want_thr2 = (b_end(0.5, 2.0 + h) - b_end(0.5, 2.0 - h)) / (2 * h)
+        np.testing.assert_allclose(got, [want_a, 0.0, want_thr2], rtol=1e-5, atol=1e-6)
+
+    @pytest.mark.parametrize("k", [1, 100])
+    def test_a_switch_under_its_floor_whose_crossing_the_jump_moves_has_to_agree(
+        self, tmp_path, k
+    ):
+        """The switch at thr1 doubles A's own decay, and thr2, just past it, is
+        read by a jump of kc into X under a 1e15 exchange, so under its floor.
+        Moved with its own dt*/dθ formed before the jump, kc gave
+        d(X+P)/d[thr1, thr2] = (0, 3). But past thr1 A falls twice as fast, so
+        thr2 is reached sooner for every thr1: the truth is (1.5, 1.5). Where
+        the jump moves a species such a switch's residual reads, the switch has
+        to agree like any other, and here it cannot (ninth review)."""
+        thr2 = float(2.0 * (1 - k * EPS))
+        text = f"""begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr1 2
+    4 thr2 {thr2!r}
+    5 kc 3
+    6 X0 1e15
+end parameters
+begin functions
+    1 fA() a*if(Aobs<thr1,2,1)
+    2 fX() if(Aobs<thr2,kc,0)
+    3 fc() if(Aobs<thr2,Aobs/thr2,1)
+end functions
+begin species
+    1 A() A0
+    2 X() X0
+    3 P() X0
+end species
+begin reactions
+    1 1 0 fA
+    2 0 2 fX
+    3 3 2 fc
+    4 2 3 fc
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="moved_crossing.net")
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr1", "thr2"])
+        try:
+            run = sim.run(t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12)
+        except SimulationError as e:
+            assert "cross at the same instant" in str(e)
+            return
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+        xp = s[names.index("X()")] + s[names.index("P()")]
+        np.testing.assert_allclose(xp, [1.5, 1.5], atol=0.05)
+
+    def test_two_switches_in_one_rate_law_under_the_floor_have_to_agree(self, tmp_path):
+        """``if(A<thr1,2,0) + if(A<thr2,3,0)`` into X, beside a 1e15 exchange
+        that both clamp, with thr2 = thr1. Each switch's reading is the whole
+        rate law's jump of 5, under the floor, and neither says whose it is. The
+        second was skipped and the 5 went to thr1: (5, 0) for a truth of (2, 3),
+        where main refuses (ninth review)."""
+        text = """begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr1 2
+    4 thr2 2
+    5 X0 1e15
+end parameters
+begin functions
+    1 fX() if(Aobs<thr1,2,0)+if(Aobs<thr2,3,0)
+    2 fc() if(Aobs<thr1,Aobs/thr1,1)*if(Aobs<thr2,Aobs/thr2,1)
+end functions
+begin species
+    1 A() A0
+    2 X() X0
+    3 P() X0
+end species
+begin reactions
+    1 1 0 a
+    2 0 2 fX
+    3 3 2 fc
+    4 2 3 fc
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="shared_law.net")
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr1", "thr2"])
+        try:
+            run = sim.run(t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12)
+        except SimulationError as e:
+            assert "cross at the same instant" in str(e)
+            return
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+        xp = s[names.index("X()")] + s[names.index("P()")]
+        np.testing.assert_allclose(xp, [2.0, 3.0], atol=0.05)
+
+    @pytest.mark.parametrize("k", [550, 650])
+    def test_a_steep_term_beside_a_second_jump_in_the_wider_probe(self, tmp_path, k):
+        """``kbig*Aobs + if(A<thr1,kb,0)`` at kbig = 1e12 into Y, and a second
+        jump into Z at thr2, which only the wider probe crosses. The whole
+        right-hand side then cannot be extended to the crossing, but Y's own
+        reaction can. Putting the extended reading into Y's entry and leaving A's
+        raw broke what makes the raw pair consistent, and dY/dthr1 came out 3.33
+        for a truth of 3 (ninth review; 2.97 with the pair left raw). Only the
+        root offset of a reader's reading is added now."""
+        thr2 = float(2.0 * (1 - k * EPS))
+        run = _hair(
+            tmp_path,
+            f"steep_far{k}.net",
+            thr2=thr2,
+            kbig=1e12,
+            fy="kbig*Aobs+if(Aobs<thr1,kb,0)",
+            fz="if(Aobs<thr2,kc,0)",
+        )
+        names = list(run.species_names)
+        s = np.asarray(run.sensitivities)[-1]
+        assert s[names.index("Y()"), 1] == pytest.approx(3.0, abs=0.1)
+        z = s[names.index("Z()")]
+        assert abs(z[1]) < 1e-6 and z[2] == pytest.approx(5.0 / (0.5 * thr2), rel=1e-6)
+
     def test_a_tangent_crossing_ignores_a_threshold_its_reactions_do_not_read(self, tmp_path):
         """The same crawl past thr2 = 2 + 3e-9, but there the rate law is a
         clamp, ``kc·(thr2 − Aobs)`` below it and 0 above, continuous at its own
