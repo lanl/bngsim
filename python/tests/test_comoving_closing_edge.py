@@ -299,11 +299,10 @@ def test_only_a_scale_the_numerator_reads_is_split():
     from bngsim import _codegen
 
     t, on, width, a = sp.symbols("t on D a")
-    values = {on: sp.Float(3.0), width: sp.Float(4.0), a: sp.Float(1.1)}
     opening = ((t - on) / width) ** (a - 1)
     closing = (1 - (t - on) / width) ** (a - 1)
-    assert _codegen._split_shared_scale(opening, {"t"}, values, sp) == opening
-    split = _codegen._split_shared_scale(closing, {"t"}, values, sp)
+    assert _codegen._split_shared_scale(opening, {"t"}, sp) == opening
+    split = _codegen._split_shared_scale(closing, {"t"}, sp)
     assert split != closing
     assert {factor.exp for factor in split.args} == {a - 1, 1 - a}
     point = {t: 5.5, on: 3.0, width: 4.0, a: 1.1}
@@ -322,13 +321,14 @@ def test_the_generator_marks_the_case_a_closing_edge_approaches(tmp_path):
         head = "int bngsim_codegen_comoving_approach(int case_idx, const double *p)"
         body = src.split(head)[1].split("\n}")[0]
         return sorted(
-            line.rsplit(" ? 1 : ", 1)[1] for line in body.splitlines() if "if (case_idx ==" in line
+            "(0) ? 2 : 0;" not in line for line in body.splitlines() if "if (case_idx ==" in line
         )
 
-    # on and D: the one singular power closes at the crossing each of them moves.
-    assert table("closing") == ["2;", "2;"]
+    # on and D: the one singular power closes at the crossing each of them
+    # moves, and each case can be of no use.
+    assert table("closing") == [True, True]
     # D as before; on moves the opening power's edge too, where its frame is of use.
-    assert table("both") == ["0;", "2;"]
+    assert table("both") == [False, True]
     # A window that only opens has no closing power.
     assert table("opening") == []
 
@@ -457,10 +457,9 @@ def test_an_exponent_far_above_the_singular_range(tmp_path):
 def test_a_split_power_is_evaluated_far_above_the_singular_range(tmp_path):
     """Control. Two windows of one width, [3e5, 1.3e6] and [8e5, 1.8e6], at
     a = 61. The width moves both closes at the same rate, and its case has
-    nothing but closing powers, none of them singular at this exponent, so its
-    column stays plain. Entered at the first close and kept to the second, with
-    the second window open, it would evaluate the split power at an exponent of
-    60, where N^60 and D^(-60) each overflow and their product does not."""
+    nothing but closing powers, each with an exponent of 60, so its column
+    stays plain. Entered at the first close and kept to the second, with the
+    second window open, it would evaluate the split power there."""
     text = (
         TWO.format(
             a=61,
@@ -787,3 +786,23 @@ def test_one_shift_is_one_case(tmp_path, shape, cases):
     src = _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
     body = src.split("int bngsim_codegen_comoving_case(")[1].split("\n}\n")[0]
     assert body.count("*c_out =") == cases
+
+
+def test_the_source_does_not_read_a_parameters_value(tmp_path):
+    """The generated source is cached under a key that leaves parameter values
+    out, so two models that differ only in a value share one artifact. A cut
+    that wrote the split power over the width's value, and split only where
+    that value was positive, emitted a source that the next model with the same
+    structure did not ask for."""
+    from bngsim import _codegen
+
+    def source(on, width, a):
+        text = NET.replace("    5 D     4.0", f"    5 D     {width!r}").format(
+            a=a, close="<=", shape=SHAPES["closing"][0], extra="", tmid=5.0, on=repr(on)
+        )
+        path = tmp_path / f"m_{on}_{width}_{a}.net"
+        path.write_text(text)
+        core = bngsim.Model.from_net(path)._core
+        return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
+
+    assert source(3.0, 4.0, 1.1) == source(1.2, 2.604, 2.5) == source(3.0, -4.0, 1.7)

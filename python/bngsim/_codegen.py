@@ -3327,7 +3327,7 @@ def _emit_sens_rhs_body(
     comoving_cases: list[tuple[int, int, str]] | None = None,
     comoving_clock_species: tuple[int, ...] = (),
     comoving_clock_lines: tuple[list[str], list[str]] | None = None,
-    comoving_approach: tuple[tuple[int, tuple[str, ...], bool], ...] = (),
+    comoving_approach: tuple[tuple[int, tuple[str, ...], str], ...] = (),
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -4140,14 +4140,16 @@ def _emit_sens_rhs_body(
         _emit("/* What a case's singular powers are doing at these parameter values, as bits.")
         _emit("   1: its crossing is approached through one (a closing edge), so the solver")
         _emit("      puts the column in its frame before the crossing.")
-        _emit("   2: every power it has closes and none is singular now, so the frame is of")
-        _emit("      no use and the column stays plain. (Issue #760) */")
+        _emit("   2: every power it has closes, with an exponent of 1 or more now, so the frame")
+        _emit("      is of no use and the column stays plain. (Issue #760) */")
         _emit(
             "BNGSIM_EXPORT int bngsim_codegen_comoving_approach(int case_idx, const double *p) {"
         )
-        for virtual, closing, opens in sorted(comoving_approach):
-            singular, idle = " || ".join(closing), 0 if opens else 2
-            _emit(f"    if (case_idx == {int(virtual)}) return ({singular}) ? 1 : {idle};")
+        for virtual, closing, idle in sorted(comoving_approach):
+            singular = " || ".join(closing)
+            _emit(
+                f"    if (case_idx == {int(virtual)}) return ({singular}) ? 1 : ({idle}) ? 2 : 0;"
+            )
         _emit("    (void)case_idx;")
         _emit("    (void)p;")
         _emit("    return 0;")
@@ -8383,9 +8385,10 @@ class _ComovingPlan(NamedTuple):
     # `(1-s)^(a-1)` falling to 0 at the end of its window, is approached through
     # its power, and such a column has to be in its frame before the crossing
     # as well (issue #760). Each with the C tests of those powers' exponents,
-    # any of which makes its power singular at the run's values, and whether
-    # the case has a power that opens at its crossing too.
-    approach: tuple[tuple[int, tuple[str, ...], bool], ...] = ()
+    # any of which makes its power singular at the run's values, and the C test
+    # of whether the case is of no use there: it has no power that opens at its
+    # crossing, and every closing one has an exponent of 1 or more.
+    approach: tuple[tuple[int, tuple[str, ...], str], ...] = ()
 
 
 def _pow_nodes_in_values(expr, sp):
@@ -8479,7 +8482,7 @@ def _clock_guard_cells(expr, clock_names: set[str], sp) -> list[tuple]:
     return out
 
 
-def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
+def _split_shared_scale(expr, clock_names: set[str], sp):
     """Write ``(N/D)^e`` as ``N^e·D^(-e)`` for each singular power whose scale
     ``D`` is a parameter expression that its numerator ``N`` reads too (issue
     #760).
@@ -8491,11 +8494,15 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
     derivative, and the singular power survives in what is emitted. Split, the
     numerator's power has no derivative at all and the scale's is smooth.
 
-    Only where the scale is positive at the model's parameter values, which is
-    when the two forms are the same number, and only where the numerator reads
-    the scale, so a base ``(t - on)/D`` is left as it is written. The values are
-    the ones the code is generated at: a scale whose sign a later ``set_param``
-    changes keeps the form it was given."""
+    Only where the numerator reads the scale, so a base ``(t - on)/D`` is left as
+    it is written.
+
+    Nothing here reads a parameter's value. The source this goes into is cached
+    under a key that leaves the values out (see ``compute_model_codegen_hash``),
+    so a form chosen by one model's values would be handed to the next model
+    with the same structure. The two forms are the same number for a positive
+    scale. For a negative one the split form is not a number, and a column that
+    enters that frame fails the run, where the unsplit form left it 0.4% off."""
     from bngsim._jacobian import _value_symbol_names
 
     def walk(node):
@@ -8511,39 +8518,36 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
             return node
         if not (scale.free_symbols & numerator.free_symbols):
             return node
-        at_nominal = scale.xreplace(values)
-        if not at_nominal.is_number or not bool(at_nominal > 0):
-            return node
-        # The two are evaluated only in a frame, and a frame of this case is
-        # in force only where the exponent is under 1 at the run's values, so
-        # neither factor can overflow where their product does not.
         return sp.Pow(numerator, node.exp) * sp.Pow(scale, -node.exp)
 
     return walk(expr)
 
 
-def _base_closes(base, clock_names: set[str], values: dict, sp) -> bool:
-    """Whether ``base`` falls toward 0 as a clock it reads advances, at the
-    model's parameter values: the base of a power that is live BEFORE its
-    crossing, like ``1 - (t - on)/D`` at the end of a window. True where that
-    cannot be told from the parameter values alone."""
+def _base_closes(base, clock_names: set[str], sp) -> bool:
+    """Whether ``base`` falls toward 0 as a clock it reads advances: the base of
+    a power that is live BEFORE its crossing, like ``1 - (t - on)/D`` at the end
+    of a window. With every parameter taken as positive, and true where that
+    does not settle it.
+
+    Not at the model's parameter values: the source this decides is cached under
+    a key that leaves the values out."""
     from bngsim._jacobian import _value_symbol_names
 
     for clock_name in sorted(_value_symbol_names(base, sp) & clock_names):
         slope = sp.diff(base, sp.Symbol(clock_name))
         if slope == 0:
             continue
-        slope = slope.xreplace(values)
-        if not slope.is_number:
-            return True
-        if bool(slope < 0):
+        positive = {
+            sym: sp.Symbol(sym.name, positive=True)
+            for sym in slope.free_symbols
+            if sym.name not in clock_names
+        }
+        if slope.xreplace(positive).is_positive is not True:
             return True
     return False
 
 
-def _comoving_coefficients(
-    expr, clock_names: set[str], axes, sp, values: dict | None = None
-) -> dict[str, dict]:
+def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, dict]:
     """``{param_alias: {c: exponents}}``: the shifts ``c = ∂t*/∂p`` at which a singular power
     of ``expr`` has its base vanish, read off that base's numerator ``N`` as
     ``-∂N/∂p ÷ ∂N/∂clock``. A value that still reads the clock is not a fixed
@@ -8572,7 +8576,7 @@ def _comoving_coefficients(
         # The power's exponent, and which way its base goes: ``close`` for one
         # the crossing is approached through, live before it, and ``open`` for
         # one that starts from 0 there (issue #760).
-        way = "close" if _base_closes(node.base, clock_names, values or {}, sp) else "open"
+        way = "close" if _base_closes(node.base, clock_names, sp) else "open"
         power = ((way, node.exp),)
         written = sp.numer(sp.together(node.base))
         for inline, aliases, allowed in axes(_value_symbol_names(written, sp)):
@@ -8829,15 +8833,9 @@ def _functional_comoving_plan(
         for node in _pow_nodes_in_values(parsed_laws[text], sp)
     ):
         return None
-    # The parameter values a base's scale and its slope in its clock are read at.
-    nominal: dict = {}
-    for name, value in zip(sw.param_names, sw.values, strict=False):
-        alias = alias_of_name.get(name)
-        if alias is not None:
-            nominal[sp.Symbol(alias)] = sp.Float(float(value))
     laws: dict[str, list[tuple]] = {
         text: [
-            (_split_shared_scale(on_cell, clock_names, nominal, sp), cond)
+            (_split_shared_scale(on_cell, clock_names, sp), cond)
             for on_cell, cond in _clock_guard_cells(parsed_laws[text], clock_names, sp)
         ]
         for text in rxns_of_law
@@ -8848,9 +8846,7 @@ def _functional_comoving_plan(
         for text in rxns_of_law:
             for on_cell, _cond in laws[text]:
                 _check_derivation_deadline(scope.deadline)
-                for p_alias, cs in _comoving_coefficients(
-                    on_cell, clock_names, axes, sp, nominal
-                ).items():
+                for p_alias, cs in _comoving_coefficients(on_cell, clock_names, axes, sp).items():
                     seen = found.setdefault(p_alias, {})
                     for c, powers in cs.items():
                         seen[c] = seen.get(c, ()) + powers
@@ -8858,7 +8854,7 @@ def _functional_comoving_plan(
 
     cases: list[tuple[int, int, str]] = []
     terms: dict[int, dict[int, str]] = {}
-    approach: list[tuple[int, tuple[str, ...], bool]] = []
+    approach: list[tuple[int, tuple[str, ...], str]] = []
 
     def derive(p_alias: str, shifts: dict) -> None:
         """The cases of one parameter, one per shift that removes a singular power."""
@@ -8924,15 +8920,22 @@ def _functional_comoving_plan(
             # ``a = 1.1``. A number is singular already (it is between 0 and 1,
             # or the power would not be here), and so is an exponent the
             # emitter cannot write.
-            tests = []
+            # A case with nothing but closing powers is of no use where every
+            # one of them has an exponent of 1 or more: nothing is unbounded
+            # before the crossing, and nothing is left after it. At 0 the power
+            # is the constant 1 and the frame is entered at the crossing, as it
+            # was before there were cases to enter ahead of.
+            tests, bounded = [], []
             for way, exponent in shifts[c]:
                 if way != "close":
                     continue
                 e_c = None if exponent.is_number else sympy_to_c(exponent, resolve_symbol)
                 tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
+                bounded.append("0" if e_c is None else f"(({e_c}) >= 1.0)")
             if tests:
                 opens = any(way == "open" for way, _exponent in shifts[c])
-                approach.append((virtual, tuple(dict.fromkeys(tests)), opens))
+                idle = "0" if opens else " && ".join(dict.fromkeys(bounded))
+                approach.append((virtual, tuple(dict.fromkeys(tests)), idle))
             for text, c_text in law_c.items():
                 for rxn_idx in rxns_of_law[text]:
                     slot = terms.setdefault(rxn_idx, {})

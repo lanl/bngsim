@@ -5073,9 +5073,10 @@ int CvodeSimulator::Impl::comoving_enter(SensitivityState &sens, int ns, double 
                 continue;
             }
             // A case whose every power closes at its crossing has nothing left
-            // to remove once the crossing is behind, and where none of them is
-            // singular at the run's values it had nothing before it either.
-            // The column stays plain, as it is without the case (issue #760):
+            // to remove once the crossing is behind, and where each of them has
+            // an exponent of 1 or more at the run's values it had nothing
+            // before it either. The column stays plain, as it is without the
+            // case (issue #760):
             // in the frame, the closing power is read at the crossing itself,
             // where rounding can leave its base under 0.
             const int doing = codegen_comoving_approach_fn != nullptr

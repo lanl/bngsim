@@ -129,8 +129,9 @@ using CodegenComovingClockFn = int (*)(int k);
 //      `(1-s)^(a-1)` with an exponent under 1 that is not 0. The forcing of the
 //      plain column is unbounded BEFORE that crossing, so the solver puts such a
 //      column in its frame at a stop it takes short of it.
-//   2: every power the case has closes at its crossing and none is singular at
-//      these values. The frame is of no use, and the column stays plain.
+//   2: every power the case has closes at its crossing, with an exponent of 1
+//      or more at these values. The frame is of no use, and the column stays
+//      plain.
 // Resolved with try_symbol; a .so without it enters only at the crossing.
 using CodegenComovingApproachFn = int (*)(int case_idx, const double *p);
 
