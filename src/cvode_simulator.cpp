@@ -1988,6 +1988,12 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
 // branch at the crossing state, and the state copy whose clock gets nudged
 // across the threshold to select the branch. Owned by run() and sized once,
 // before the integration loop, so a crossing itself allocates nothing.
+// How many ulp either side of a switch time the clock is nudged to read the
+// two branches there, and so how close two times have to be for the run to
+// treat them as one instant (issue #737). The Python detector groups crossings
+// by the same reach (`_switch_sensitivity._same_instant`).
+constexpr double kSwitchInstantUlps = 64.0;
+
 struct SwitchJumpScratch {
     std::vector<double> f_minus;
     std::vector<double> f_plus;
@@ -5562,10 +5568,16 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // threshold. eps_clock is a few ulp of the threshold: large enough that
     // threshold ± eps_clock are distinct doubles, small enough that the
     // smooth part of the RHS is unchanged to roundoff.
+    //
+    // A time clock is bracketed about the crossing's OWN t*, not about the time
+    // the run stopped at (issue #737). The two are one instant by the caller's
+    // test, but that is 64 ulp wide and so is this bracket: about a stop a few
+    // ulp short of t*, the far point could fall short of it too.
     std::copy(y_data, y_data + ns, sw_ywork.begin());
     const bool time_clock = (sw.clock_species_idx0 < 0);
-    const double eps_clock = 64.0 * std::numeric_limits<double>::epsilon() *
-                             std::max(std::fabs(time_clock ? t_evt : sw.threshold), 1.0);
+    const double t_cross = time_clock ? sw.t_star : t_evt;
+    const double eps_clock = kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+                             std::max(std::fabs(time_clock ? t_cross : sw.threshold), 1.0);
     auto rhs_on_branch = [&](double offset, std::vector<double> &out) {
         if (!time_clock) {
             sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] = sw.threshold + offset;
@@ -5576,7 +5588,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         for (int i = 0; i < ns; ++i) {
             sp_vec_outer[i].concentration = sw_ywork[i];
         }
-        model.compute_derivs(time_clock ? t_evt + offset : t_evt, sw_ywork.data(), out.data());
+        model.compute_derivs(time_clock ? t_cross + offset : t_evt, sw_ywork.data(), out.data());
     };
     rhs_on_branch(-eps_clock, sw_f_minus);
     rhs_on_branch(+eps_clock, sw_f_plus);
@@ -5673,7 +5685,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         if (!time_clock) {
             sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] = sw.threshold;
         }
-        comoving_rhs(t_evt, sw_ywork.data(), ns, f_instant);
+        comoving_rhs(t_cross, sw_ywork.data(), ns, f_instant);
     }
 
     // Land the clock ON its threshold rather than a few ulp short, so the
@@ -7363,9 +7375,22 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     }
     size_t next_switch = 0; // index into switch_list of the next crossing
-    // Time tolerance for "reached / already past" a crossing, scaled to the run
-    // horizon so it stays meaningful for both day-scale and second-scale models.
-    const double switch_t_eps = 1e-9 * std::max(1.0, std::fabs(t_out.back() - t_out.front()));
+    // Two times are one instant when the clock nudge that reads a crossing's
+    // two branches cannot tell them apart: within 64 ulp, the reach of
+    // apply_switch_sensitivity_jump's own bracket (issue #737). A crossing is
+    // reached when the run stands on ITS instant, and only then.
+    //
+    // This used to be a window of 1e-9 of the horizon, a billion times wider
+    // than the bracket. A return that fell inside it short of t* (an output
+    // time, an event root, another switch's stop) was taken for the crossing:
+    // the jump was read from a bracket that sat wholly on the before-branch, so
+    // it was 0, or a neighbouring switch's, and the crossing was marked done.
+    // The real one then passed with no jump. A switch that close after the
+    // start of the run was dropped outright as already behind.
+    auto same_instant = [](double a, double b) {
+        return std::fabs(a - b) <= kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+                                       std::max({std::fabs(a), std::fabs(b), 1.0});
+    };
     SwitchJumpScratch sw_scratch;
     if (!switch_list.empty()) {
         sw_scratch.resize(ns);
@@ -7385,7 +7410,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
         bool claimed_by_switch = false;
         for (const auto *sw : switch_list) {
-            if (std::fabs(sw->t_star - stop.t_star) <= switch_t_eps) {
+            if (same_instant(sw->t_star, stop.t_star)) {
                 claimed_by_switch = true;
                 break;
             }
@@ -7781,13 +7806,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             bool stop_at_crossing = false;
             double t_switch = 0.0;
             double t_crossing = 0.0;
+            // A crossing at or behind t_now cannot be stopped at: CVODE refuses
+            // a stop time it has reached. One that is still ahead is stopped at
+            // however close it is.
             while (next_switch < switch_list.size() &&
-                   switch_list[next_switch]->t_star <= static_cast<double>(t_now) + switch_t_eps) {
-                ++next_switch; // defensive: a crossing we are already past
+                   switch_list[next_switch]->t_star <= static_cast<double>(t_now)) {
+                ++next_switch;
             }
             while (next_crossing < crossing_stops.size() &&
-                   crossing_stops[next_crossing].t_star <=
-                       static_cast<double>(t_now) + switch_t_eps) {
+                   crossing_stops[next_crossing].t_star <= static_cast<double>(t_now)) {
                 ++next_crossing;
             }
             // Whichever comes first. Ties cannot happen: a crossing at a #48
@@ -8156,9 +8183,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         other_root = other_root || root_info[i] != 0;
                     }
                     const double t_root = static_cast<double>(t_ret);
-                    const bool at_stop =
-                        (stop_at_crossing && t_root >= t_crossing - switch_t_eps) ||
-                        (stop_at_switch && t_root >= t_switch - switch_t_eps);
+                    const bool at_stop = (stop_at_crossing && same_instant(t_root, t_crossing)) ||
+                                         (stop_at_switch && same_instant(t_root, t_switch));
                     if (!other_root && !at_stop) {
                         // The end of the step the root was found in, whose
                         // interpolant the resolution test samples.
@@ -8261,11 +8287,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // reached time rather than the flag so either is handled). Apply
             // every crossing scheduled at this instant; each is an independent
             // additive jump on the same unchanged state, so coincident switches
-            // simply sum.
-            if (stop_at_switch && static_cast<double>(t_ret) >= t_switch - switch_t_eps) {
-                while (next_switch < switch_list.size() &&
-                       switch_list[next_switch]->t_star <=
-                           static_cast<double>(t_ret) + switch_t_eps) {
+            // simply sum. A crossing a little further on is left for its own
+            // stop (issue #737).
+            if (stop_at_switch && same_instant(static_cast<double>(t_ret), t_switch)) {
+                while (
+                    next_switch < switch_list.size() &&
+                    (switch_list[next_switch]->t_star <= static_cast<double>(t_ret) ||
+                     same_instant(switch_list[next_switch]->t_star, static_cast<double>(t_ret)))) {
                     impl_->apply_switch_sensitivity_jump(
                         cvode_mem, y, ns, static_cast<double>(t_ret), *switch_list[next_switch],
                         sw_scratch, sens, root_watch);
@@ -8287,7 +8315,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // issue #146), so this runs only when none fired: an unconditional
             // second reinit would be harmless but wasteful, while skipping the
             // s⁻ capture/resume on the path where no root fires would not be.
-            if (stop_at_crossing && static_cast<double>(t_ret) >= t_crossing - switch_t_eps) {
+            if (stop_at_crossing && same_instant(static_cast<double>(t_ret), t_crossing)) {
                 // Issue #545: a comoving column leaves at every restart, against f
                 // on the branch it was integrated with — read before the clock is
                 // landed on the after side below.
@@ -8296,14 +8324,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     if (static_cast<double>(t_ret) == sens.comoving.t_entry) {
                         cross_f_before = sens.comoving.f_entry_after;
                     } else {
-                        impl_->comoving_rhs_before_stops(static_cast<double>(t_ret), y_data, ns,
-                                                         crossing_stops, next_crossing,
-                                                         switch_t_eps, cross_f_before);
+                        impl_->comoving_rhs_before_stops(
+                            static_cast<double>(t_ret), y_data, ns, crossing_stops, next_crossing,
+                            kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+                                std::max(std::fabs(static_cast<double>(t_ret)), 1.0),
+                            cross_f_before);
                     }
                 }
                 while (next_crossing < crossing_stops.size() &&
-                       crossing_stops[next_crossing].t_star <=
-                           static_cast<double>(t_ret) + switch_t_eps) {
+                       (crossing_stops[next_crossing].t_star <= static_cast<double>(t_ret) ||
+                        same_instant(crossing_stops[next_crossing].t_star,
+                                     static_cast<double>(t_ret)))) {
                     // A condition on a counter species reads a clock that is
                     // integrated, so at the stop it sits a couple of parts in
                     // 1e14 short of the threshold and still reads the branch
