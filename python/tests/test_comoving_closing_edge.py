@@ -311,22 +311,26 @@ def test_only_a_scale_the_numerator_reads_is_split():
 
 
 def test_the_generator_marks_the_case_a_closing_edge_approaches(tmp_path):
-    """The D column has a case only where the edge it moves is singular, and
-    that case is marked as one to enter ahead of."""
+    """A case with a power that closes at its crossing says whether to enter
+    ahead of it at the run's values, and, where it has nothing but closing
+    powers, that it is of no use when none of them is singular."""
     from bngsim import _codegen
 
-    def source(shape):
+    def table(shape):
         core = _model(tmp_path, shape, 1.1)._core
-        return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
-
-    def approach(src):
+        src = _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
         head = "int bngsim_codegen_comoving_approach(int case_idx, const double *p)"
-        return src.split(head)[1].split("\n}")[0].count("if (case_idx ==")
+        body = src.split(head)[1].split("\n}")[0]
+        return sorted(
+            line.rsplit(" ? 1 : ", 1)[1] for line in body.splitlines() if "if (case_idx ==" in line
+        )
 
-    assert "bngsim_codegen_comoving_approach" in source("closing")
-    assert approach(source("closing")) == 2  # on and D
-    assert approach(source("both")) == 2
-    assert approach(source("opening")) == 0
+    # on and D: the one singular power closes at the crossing each of them moves.
+    assert table("closing") == ["2;", "2;"]
+    # D as before; on moves the opening power's edge too, where its frame is of use.
+    assert table("both") == ["0;", "2;"]
+    # A window that only opens has no closing power.
+    assert table("opening") == []
 
 
 # ─── Other windows, and other roots ─────────────────────────────────────────
@@ -452,11 +456,11 @@ def test_an_exponent_far_above_the_singular_range(tmp_path):
 @pytest.mark.filterwarnings("ignore::scipy.integrate.IntegrationWarning")
 def test_a_split_power_is_evaluated_far_above_the_singular_range(tmp_path):
     """Control. Two windows of one width, [3e5, 1.3e6] and [8e5, 1.8e6], at
-    a = 61. The width moves both closes at the same rate, so its column enters
-    its frame at the first and keeps it to the second, with the second window
-    open: that is where the split power is evaluated at an exponent of 60. The
-    two factors are written over the width's own value, 1e6. Written over 1,
-    the sensitivity right-hand side was not finite."""
+    a = 61. The width moves both closes at the same rate, and its case has
+    nothing but closing powers, none of them singular at this exponent, so its
+    column stays plain. Entered at the first close and kept to the second, with
+    the second window open, it would evaluate the split power at an exponent of
+    60, where N^60 and D^(-60) each overflow and their product does not."""
     text = (
         TWO.format(
             a=61,
@@ -646,6 +650,37 @@ def test_a_run_that_starts_too_close_before_the_close_is_refused():
         sim.run(sample_times=[7.0 - 1e-10, 7.5, 8.0, 10.0], rtol=1e-8, atol=1e-10)
 
 
+# ─── A close that is not a round number ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("param", ["on", "D"])
+@pytest.mark.parametrize("a", [1.1, 2.01, 2.5])
+def test_a_close_that_does_not_round_onto_its_own_edge(tmp_path, a, param):
+    """on = 1.2 and D = 2.604, a window whose ``on + D`` is not where
+    ``(t − on)/D`` reaches 1 in floating point. Every other window here closes
+    on a time that is exact.
+
+    At a = 2.01 and 2.5 this is a control: main is right, and an earlier cut
+    failed the run. Nothing is singular there, but the exponent is a parameter,
+    so the width has a case all the same, and its column entered that frame at
+    the close, where the closing power's base rounds to just under 0 and a
+    power of it is not a number. A case with nothing but closing powers, none
+    of them singular at the run's values, is now left alone."""
+    on, width = 1.2, 2.604
+    text = NET.replace("    5 D     4.0", f"    5 D     {width!r}").format(
+        a=a, close="<=", shape=SHAPES["closing"][0], extra="", tmid=5.0, on=repr(on)
+    )
+    path = tmp_path / "m.net"
+    path.write_text(text)
+    times = sorted(
+        {0.0, 0.6, on + 0.03 * width, on + 0.5 * width, on + 0.9 * width, on + 0.9975 * width}
+        | {on + 1.0025 * width, on + width + 1.0, on + width + 3.0}
+    )
+    got = _column(bngsim.Model.from_net(path), param, times=times)
+    want = _exact("closing", a, param, on=on, times=times, width=width)
+    assert _worst(got, want) < 5e-6
+
+
 # ─── A crossing on the edge itself ──────────────────────────────────────────
 
 
@@ -672,13 +707,51 @@ def test_a_step_on_the_closing_edge_is_refused(tmp_path, shape, shift):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10)
 
 
+def test_a_step_on_an_edge_that_is_not_singular_runs(tmp_path):
+    """Control. The step on the close again, at a = 3. The closing power is
+    ``(1 − s)²`` there, and read a hair from its zero it is nothing, so the two
+    crossings are told apart as they are anywhere else. An earlier cut refused
+    every crossing that shares its instant with the edge of a window."""
+    text = NET.replace("    8 tmid  {tmid}", "    8 tmid  {tmid}\n    9 tj 7.0")
+    text = text.format(
+        a=3, close="<=", shape=SHAPES["closing"][0], extra="+if(t>=tj,1.5,0)", tmid=5.0, on=ON
+    )
+    path = tmp_path / "m.net"
+    path.write_text(text)
+    got = _column(bngsim.Model.from_net(path), "D")
+    assert _worst(got, _exact("closing", 3, "D")) < 5e-6
+
+
+@pytest.mark.parametrize("param", ["on1", "D1", "on2"])
+def test_abutting_windows_that_are_not_singular_run(tmp_path, param):
+    """Control. Windows [2, 5] and [5, 9] at a = 3: the first closes where the
+    second opens, and neither edge is singular. An earlier cut refused it."""
+    times = [0.0, 1.0, 3.0, 4.9, 5.1, 6.0, 8.0, 8.9, 9.1, 11.0, 13.0]
+    model = _two(tmp_path, "closing", a=3, on2=5, d2=4)
+
+    def total(t_end, by):
+        first = (
+            (2.0 + by, 3.0) if param == "on1" else (2.0, 3.0 + by) if param == "D1" else (2.0, 3.0)
+        )
+        second = 5.0 + by if param == "on2" else 5.0
+        return _pulse("closing", 3, t_end, first[0], first[1], 2.0) + _pulse(
+            "closing", 3, t_end, second, 4.0, 3.0
+        )
+
+    assert _worst(_column(model, param, times=times), _slope(total, times)) < 5e-6
+
+
 @pytest.mark.parametrize("shape", ["closing", "both", "opening"])
 def test_a_crossing_within_an_instant_of_the_onset_is_refused(shape):
     """A fixed crossing 2e-7 after an onset at t = 1e6 has the onset's twelve
-    digits, so the detector takes the two for one instant."""
+    digits, so the detector takes the two for one instant. Where the window
+    closes as a singular power that is a crossing on an edge the onset column
+    was entered ahead of. Where it only opens, it is a restart too soon after
+    the onset."""
     model, times, _t0 = _late(shape, 2e-7)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["on"])
-    with pytest.raises(Exception, match="issue #949"):
+    reason = "after a switch time.*issue #760" if shape == "opening" else "issue #949"
+    with pytest.raises(Exception, match=reason):
         sim.run(sample_times=times, rtol=1e-8, atol=1e-10)
 
 

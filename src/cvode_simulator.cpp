@@ -1843,9 +1843,9 @@ struct ComovingFrames {
     int n_active = 0;
     // The run's switch times, in order: what "the crossing still to come" is.
     const std::vector<const SwitchTimeSens *> *switches = nullptr;
-    // The restart that begins the stretch the run is on, where a frame is active
-    // or a column has to enter ahead of the next switch time. The run takes a
-    // stop for them short of the next crossing.
+    // The restart that begins the stretch the run is on. The run looks there at
+    // what the comoving columns need on it: a stop short of the next crossing
+    // to leave a frame at, or to enter one ahead of a switch time.
     double entry_request = std::numeric_limits<double>::quiet_NaN();
 };
 
@@ -2015,6 +2015,9 @@ constexpr double kSwitchInstantUlps = 64.0;
 // entered at a crossing is left there, and a column that enters ahead of its
 // own crossing does so there.
 constexpr double kComovingEntryFraction = 1.0 / 16.0;
+// The bits of bngsim_codegen_comoving_approach (see codegen_abi.hpp).
+constexpr int kComovingApproached = 1;
+constexpr int kComovingIdle = 2;
 // How long a frame entered at a crossing has to have run before the next restart,
 // and how long the stretch a column enters ahead on has to be, in ulp of the
 // time. A restart closer than this to a window edge that opens or closes as a
@@ -5013,7 +5016,8 @@ int CvodeSimulator::Impl::comoving_enter_ahead(SensitivityState &sens, int ns, d
                 if (case_idx < 0) {
                     break;
                 }
-                if (codegen_comoving_approach_fn(case_idx, frames.param_values) == 0 ||
+                if ((codegen_comoving_approach_fn(case_idx, frames.param_values) &
+                     kComovingApproached) == 0 ||
                     !(std::fabs(shift - moves) <= 1e-9 * std::max(1.0, std::fabs(shift)))) {
                     continue;
                 }
@@ -5066,6 +5070,18 @@ int CvodeSimulator::Impl::comoving_enter(SensitivityState &sens, int ns, double 
                 break;
             }
             if (!(std::fabs(shift - dtstar) <= rel_tol * std::max(1.0, std::fabs(shift)))) {
+                continue;
+            }
+            // A case whose every power closes at its crossing has nothing left
+            // to remove once the crossing is behind, and where none of them is
+            // singular at the run's values it had nothing before it either.
+            // The column stays plain, as it is without the case (issue #760):
+            // in the frame, the closing power is read at the crossing itself,
+            // where rounding can leave its base under 0.
+            const int doing = codegen_comoving_approach_fn != nullptr
+                                  ? codegen_comoving_approach_fn(case_idx, frames.param_values)
+                                  : 0;
+            if ((doing & kComovingIdle) != 0) {
                 continue;
             }
             for (int i = 0; i < ns; ++i) {
@@ -6088,22 +6104,35 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     for (int c = 0; c < n_sens_p; ++c) {
         sens_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(yS_guard[c]);
     }
+    // Whether this crossing is the edge a frame was entered ahead of: the
+    // closing edge of a power that is singular at the run's values.
+    bool singular_edge = false;
     if (sens.comoving.n_active > 0) {
+        for (int c = 0; c < n_sens_p && codegen_comoving_approach_fn != nullptr; ++c) {
+            const auto uc = static_cast<size_t>(c);
+            const int in_case = sens.comoving.plist[uc];
+            singular_edge = singular_edge ||
+                            (in_case >= 0 && dtstar_p[uc] != 0.0 &&
+                             (codegen_comoving_approach_fn(in_case, sens.comoving.param_values) &
+                              kComovingApproached) != 0);
+        }
         comoving_check_age(sens, t_evt);
         comoving_leave(sens, ns, sens_cols.data(),
                        t_evt == sens.comoving.t_entry ? sens.comoving.f_entry_after : sw_f_minus);
     }
-    const int framed = comoving_enter(sens, ns, sens_cols.data(), t_evt, sw_f_jump, sw_f_plus,
-                                      f_instant, dtstar_p, 1e-9);
+    comoving_enter(sens, ns, sens_cols.data(), t_evt, sw_f_jump, sw_f_plus, f_instant, dtstar_p,
+                   1e-9);
     // Issue #949: a crossing that shares its instant with another is read by
     // raising its own threshold a hair with the clock past the instant. For the
-    // edge of a window that opens or closes as a power, that reads the power a
+    // edge of a window that closes as a singular power, that reads the power a
     // hair from its zero, and (1e-14)^0.1 is 0.04: a jump of a few percent of
-    // the window's height where there is none. dX/dD came back 40% off.
-    if (framed > 0 && !sw.isolate_param_idx0.empty()) {
+    // the window's height where there is none. dX/dD came back 40% off. A
+    // power that is not singular at the run's values, a = 3, reads as nothing
+    // a hair from its zero, and one that opens at the instant is not yet on.
+    if (singular_edge && !sw.isolate_param_idx0.empty()) {
         throw std::runtime_error(
             "Forward sensitivity: the switch time at t=" + std::to_string(t_evt) +
-            " is the edge of a window that opens or closes as a power, and it shares its "
+            " is the edge of a window that closes as a singular power, and it shares its "
             "instant with another rate-law condition. Its jump cannot be read apart from the "
             "other's: read with its own threshold raised a hair, the power is not at its zero "
             "(issue #949). Separate the two times, or drop the parameters that move the window "
@@ -8734,15 +8763,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     if (!switch_list.empty()) {
         sw_scratch.resize(ns);
     }
-    // Issue #760: a column whose first switch time is approached through a
-    // singular power asks for the stop it enters its frame at.
+    // Issue #760: the run takes its stops for the comoving columns on the
+    // stretch it starts with.
     sens.comoving.switches = &switch_list;
     sens.comoving.entry_request = std::numeric_limits<double>::quiet_NaN();
     if (sens.comoving.enabled && n_sens_p > 0) {
-        std::vector<double *> cols(static_cast<size_t>(n_sens_p));
-        for (int c = 0; c < n_sens_p; ++c) {
-            cols[static_cast<size_t>(c)] = N_VGetArrayPointer(sens.yS[c]);
-        }
         impl_->comoving_ask(sens, times.t_start);
     }
     // Issue #545: S of the comoving columns at an output, which is not what yS holds.
@@ -9627,10 +9652,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     bool state_switch_root = false;
                     for (int j = 0; j < n_state_switch; ++j) {
                         state_switch_root |= root_info[n_events + n_disc + j] != 0;
-                    }
-                    std::vector<double *> cols(static_cast<size_t>(sens.n_p));
-                    for (int c = 0; c < sens.n_p; ++c) {
-                        cols[static_cast<size_t>(c)] = evt_s_minus[static_cast<size_t>(c)].data();
                     }
                     if (!state_switch_root && !switch_root) {
                         impl_->comoving_ask(sens, static_cast<double>(t_ret));

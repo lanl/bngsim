@@ -245,9 +245,11 @@ A window closing as `(1−s)^(a−1)` is singular on the *approach* to its cross
 the forcing of the column that moves the edge goes as `(1−s)^(a−2)` before it. A
 frame entered at the crossing has already integrated that. The generator marks
 such a case (`bngsim_codegen_comoving_approach`, asked at the run's parameter
-values: an exponent `a − 1` is singular below 1, so for `a < 2`), and a plain
-column whose next switch time moves at that case's `c` enters ahead of it
-(#760). `V = S + c·f` holds for any constant `c` anywhere, so entering early
+values: an exponent `a − 1` is singular below 1 and not at 0, so for `a < 2`),
+and a plain column whose next switch time moves at that case's `c` enters ahead
+of it (#760). A case with nothing but closing powers, none of them singular at
+the run's values, is not entered at all: the column is plain, as it is without
+the case. `V = S + c·f` holds for any constant `c` anywhere, so entering early
 changes only which column is integrated.
 
 A column is in its frame only next to a crossing it moves. In its frame it
@@ -276,7 +278,9 @@ and otherwise two reads just before the root extended to it.
 
 A crossing that shares its instant with another and is itself the edge of such
 a window is refused (#949): its jump is read by its isolation bump (#375), a
-hair from the power's zero.
+hair from the power's zero. Only on the edge a frame was entered ahead of,
+which is one whose power is singular at the run's values. A power that opens
+on the instant is not yet on when it is read that way.
 
 - **Open:** a closing edge whose crossing is not a switch time of the run (a
   state-dependent one) is still approached in the plain column.
@@ -290,6 +294,16 @@ hair from the power's zero.
   not split, and its closing edge is 0.4% off as before #760.
 - **Open:** a sensitivity to a counter clock's own initial value or rate has no
   frame (#948).
+- **Open:** a run that has an event keeps every column plain, so a closing edge
+  is 0.4% off there and a crossing on it is not refused (#958).
+- **Open:** the approach is asked per parameter and `c`, not per crossing, so
+  the onset column of a window that closes as a singular power enters ahead of
+  the window's opening too. Harmless, except that a stretch too short before
+  that opening, or a crossing on it, is refused where nothing is singular.
+- **Open:** a width written as a rate, `s = (t − on)·r`, has no case for `r`:
+  0.4% off, as before #760.
+- **Open:** a window narrower than about 1e-6 of the time: dX/dD is 3% off at a
+  width of 1e-6 at t = 3 and 33% at 1e-9, as before #760.
 
 ## Order at one instant
 

@@ -3327,7 +3327,7 @@ def _emit_sens_rhs_body(
     comoving_cases: list[tuple[int, int, str]] | None = None,
     comoving_clock_species: tuple[int, ...] = (),
     comoving_clock_lines: tuple[list[str], list[str]] | None = None,
-    comoving_approach: tuple[tuple[int, tuple[str, ...]], ...] = (),
+    comoving_approach: tuple[tuple[int, tuple[str, ...], bool], ...] = (),
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -4137,14 +4137,17 @@ def _emit_sens_rhs_body(
         _emit("    }")
         _emit("}")
         _emit("")
-        _emit("/* Whether a case's crossing is approached through a singular power (a closing")
-        _emit("   edge) at these parameter values: the solver then puts the column in its")
-        _emit("   frame before the crossing too. (Issue #760) */")
+        _emit("/* What a case's singular powers are doing at these parameter values, as bits.")
+        _emit("   1: its crossing is approached through one (a closing edge), so the solver")
+        _emit("      puts the column in its frame before the crossing.")
+        _emit("   2: every power it has closes and none is singular now, so the frame is of")
+        _emit("      no use and the column stays plain. (Issue #760) */")
         _emit(
             "BNGSIM_EXPORT int bngsim_codegen_comoving_approach(int case_idx, const double *p) {"
         )
-        for virtual, tests in sorted(comoving_approach):
-            _emit(f"    if (case_idx == {int(virtual)}) return {' || '.join(tests)};")
+        for virtual, closing, opens in sorted(comoving_approach):
+            singular, idle = " || ".join(closing), 0 if opens else 2
+            _emit(f"    if (case_idx == {int(virtual)}) return ({singular}) ? 1 : {idle};")
         _emit("    (void)case_idx;")
         _emit("    (void)p;")
         _emit("    return 0;")
@@ -8376,11 +8379,13 @@ class _ComovingPlan(NamedTuple):
     cases: list[tuple[int, int, str]]
     terms: dict[int, dict[int, str]]
     clock_species: tuple[int, ...]
-    # The cases whose crossing is approached through a singular power: a closing
-    # edge, `(1-s)^(a-1)` falling to 0 at the end of its window. Such a column
-    # has to be in its frame before the crossing as well (issue #760). Each
-    # with the C tests of its exponents, any of which makes it one.
-    approach: tuple[tuple[int, tuple[str, ...]], ...] = ()
+    # The cases with a power that closes at its crossing: a closing edge,
+    # `(1-s)^(a-1)` falling to 0 at the end of its window, is approached through
+    # its power, and such a column has to be in its frame before the crossing
+    # as well (issue #760). Each with the C tests of those powers' exponents,
+    # any of which makes its power singular at the run's values, and whether
+    # the case has a power that opens at its crossing too.
+    approach: tuple[tuple[int, tuple[str, ...], bool], ...] = ()
 
 
 def _pow_nodes_in_values(expr, sp):
@@ -8475,9 +8480,9 @@ def _clock_guard_cells(expr, clock_names: set[str], sp) -> list[tuple]:
 
 
 def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
-    """Write ``(N/D)^e`` as ``(N/u)^e·(D/u)^(-e)``, with ``u`` the value of ``D``,
-    for each singular power whose scale ``D`` is a parameter expression that its
-    numerator ``N`` reads too (issue #760).
+    """Write ``(N/D)^e`` as ``N^e·D^(-e)`` for each singular power whose scale
+    ``D`` is a parameter expression that its numerator ``N`` reads too (issue
+    #760).
 
     The closing edge of a window is ``(1 - s)^(a-1)`` with ``s = (t - on)/D``: the
     base is ``(on + D - t)/D``. Its crossing moves with ``D`` at c = 1, and along
@@ -8509,11 +8514,10 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
         at_nominal = scale.xreplace(values)
         if not at_nominal.is_number or not bool(at_nominal > 0):
             return node
-        # Both powers over the scale's own value, as a number: N^e and D^(-e)
-        # each overflow where their product does not (e = 60 with D = 1e6 is
-        # inf·0), and (N/D0)^e·(D/D0)^(-e) is the same product at any D.
-        unit = sp.Float(float(at_nominal))
-        return sp.Pow(numerator / unit, node.exp) * sp.Pow(scale / unit, -node.exp)
+        # The two are evaluated only in a frame, and a frame of this case is
+        # in force only where the exponent is under 1 at the run's values, so
+        # neither factor can overflow where their product does not.
+        return sp.Pow(numerator, node.exp) * sp.Pow(scale, -node.exp)
 
     return walk(expr)
 
@@ -8565,9 +8569,11 @@ def _comoving_coefficients(
     for node in _pow_nodes_in_values(expr, sp):
         if not _singular_power(node, clock_names, sp):
             continue
-        # ``closes``: the exponents of the powers the crossing is approached
-        # through, live before it (issue #760). Empty where the base opens.
-        closes = (node.exp,) if _base_closes(node.base, clock_names, values or {}, sp) else ()
+        # The power's exponent, and which way its base goes: ``close`` for one
+        # the crossing is approached through, live before it, and ``open`` for
+        # one that starts from 0 there (issue #760).
+        way = "close" if _base_closes(node.base, clock_names, values or {}, sp) else "open"
+        power = ((way, node.exp),)
         written = sp.numer(sp.together(node.base))
         for inline, aliases, allowed in axes(_value_symbol_names(written, sp)):
             numerator = written.xreplace(inline) if inline else written
@@ -8584,21 +8590,12 @@ def _comoving_coefficients(
                         if leaf.has(sp.Piecewise):
                             continue
                         leaf = sp.cancel(leaf)
-                        # One shift is one case. A base split over the value of
-                        # its scale (issue #760) carries that value as a float,
-                        # and the shift read off it is 1.0 where the opening
-                        # base of the same window gives 1: two keys, two cases
-                        # for one frame, and twice the source to derive.
-                        floats = leaf.atoms(sp.Float)
-                        if floats:
-                            exact = {f: sp.nsimplify(f, rational=True) for f in floats}
-                            leaf = sp.cancel(leaf.xreplace(exact))
                         if leaf == 0 or leaf.has(sp.nan, sp.zoo, sp.oo, -sp.oo):
                             continue
                         if not {s.name for s in leaf.free_symbols} <= allowed:
                             continue
                         seen = out.setdefault(p_alias, {})
-                        seen[leaf] = seen.get(leaf, ()) + closes
+                        seen[leaf] = seen.get(leaf, ()) + power
     return out
 
 
@@ -8855,13 +8852,13 @@ def _functional_comoving_plan(
                     on_cell, clock_names, axes, sp, nominal
                 ).items():
                     seen = found.setdefault(p_alias, {})
-                    for c, closes in cs.items():
-                        seen[c] = seen.get(c, ()) + closes
+                    for c, powers in cs.items():
+                        seen[c] = seen.get(c, ()) + powers
         return found
 
     cases: list[tuple[int, int, str]] = []
     terms: dict[int, dict[int, str]] = {}
-    approach: list[tuple[int, tuple[str, ...]]] = []
+    approach: list[tuple[int, tuple[str, ...], bool]] = []
 
     def derive(p_alias: str, shifts: dict) -> None:
         """The cases of one parameter, one per shift that removes a singular power."""
@@ -8916,26 +8913,26 @@ def _functional_comoving_plan(
                 continue
             virtual = n_params + len(cases)
             cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
-            if shifts[c]:
-                # Whether the approach is singular is asked of the exponent
-                # when the run asks, at the parameter values of that run. An
-                # exponent ``a - 1`` is a case whatever ``a`` is, since it can
-                # be set to anything, but at a = 3 nothing is unbounded, and a
-                # column in its frame reads back to the tolerance of c·f, not
-                # of itself. Below 1 the power's derivative is unbounded at a
-                # vanishing base, and below 0 the power is too: ``a = 0.9`` is
-                # as much a case as ``a = 1.1``. One the emitter cannot write
-                # is taken as singular.
-                tests = []
-                for exponent in dict.fromkeys(shifts[c]):
-                    if exponent.is_number:
-                        if bool(exponent < 1) and exponent != 0:
-                            tests.append("1")
-                        continue
-                    e_c = sympy_to_c(exponent, resolve_symbol)
-                    tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
-                if tests:
-                    approach.append((virtual, tuple(dict.fromkeys(tests))))
+
+            # Whether a power is singular is asked of its exponent when the
+            # run asks, at the parameter values of that run. An exponent
+            # ``a - 1`` is a case whatever ``a`` is, since it can be set to
+            # anything, but at a = 3 nothing is unbounded, and a column in its
+            # frame reads back to the tolerance of c·f, not of itself. Below 1
+            # the power's derivative is unbounded at a vanishing base, and
+            # below 0 the power is too: ``a = 0.9`` is as much a case as
+            # ``a = 1.1``. A number is singular already (it is between 0 and 1,
+            # or the power would not be here), and so is an exponent the
+            # emitter cannot write.
+            tests = []
+            for way, exponent in shifts[c]:
+                if way != "close":
+                    continue
+                e_c = None if exponent.is_number else sympy_to_c(exponent, resolve_symbol)
+                tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
+            if tests:
+                opens = any(way == "open" for way, _exponent in shifts[c])
+                approach.append((virtual, tuple(dict.fromkeys(tests)), opens))
             for text, c_text in law_c.items():
                 for rxn_idx in rxns_of_law[text]:
                     slot = terms.setdefault(rxn_idx, {})
