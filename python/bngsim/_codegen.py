@@ -8486,10 +8486,9 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
     derivative, and the singular power survives in what is emitted. Split, the
     numerator's power has no derivative at all and the scale's is smooth.
 
-    Only where the scale has a sign at the model's parameter values, and only
-    where the numerator reads the scale, so a base ``(t - on)/D`` is left as it
-    is written. A negative scale takes the numerator's sign with it: the base is
-    positive either way, and so is each of the two it is written as. The values are
+    Only where the scale is positive at the model's parameter values, which is
+    when the two forms are the same number, and only where the numerator reads
+    the scale, so a base ``(t - on)/D`` is left as it is written. The values are
     the ones the code is generated at: a scale whose sign a later ``set_param``
     changes keeps the form it was given."""
     from bngsim._jacobian import _value_symbol_names
@@ -8508,7 +8507,7 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
         if not (scale.free_symbols & numerator.free_symbols):
             return node
         at_nominal = scale.xreplace(values)
-        if not at_nominal.is_number or at_nominal.is_real is not True or at_nominal == 0:
+        if not at_nominal.is_number or not bool(at_nominal > 0):
             return node
         # Both powers over the scale's own value, as a number: N^e and D^(-e)
         # each overflow where their product does not (e = 60 with D = 1e6 is
@@ -8585,6 +8584,15 @@ def _comoving_coefficients(
                         if leaf.has(sp.Piecewise):
                             continue
                         leaf = sp.cancel(leaf)
+                        # One shift is one case. A base split over the value of
+                        # its scale (issue #760) carries that value as a float,
+                        # and the shift read off it is 1.0 where the opening
+                        # base of the same window gives 1: two keys, two cases
+                        # for one frame, and twice the source to derive.
+                        floats = leaf.atoms(sp.Float)
+                        if floats:
+                            exact = {f: sp.nsimplify(f, rational=True) for f in floats}
+                            leaf = sp.cancel(leaf.xreplace(exact))
                         if leaf == 0 or leaf.has(sp.nan, sp.zoo, sp.oo, -sp.oo):
                             continue
                         if not {s.name for s in leaf.free_symbols} <= allowed:
@@ -8914,15 +8922,18 @@ def _functional_comoving_plan(
                 # exponent ``a - 1`` is a case whatever ``a`` is, since it can
                 # be set to anything, but at a = 3 nothing is unbounded, and a
                 # column in its frame reads back to the tolerance of c·f, not
-                # of itself. One the emitter cannot write is taken as singular.
+                # of itself. Below 1 the power's derivative is unbounded at a
+                # vanishing base, and below 0 the power is too: ``a = 0.9`` is
+                # as much a case as ``a = 1.1``. One the emitter cannot write
+                # is taken as singular.
                 tests = []
                 for exponent in dict.fromkeys(shifts[c]):
                     if exponent.is_number:
-                        if bool(exponent > 0) and bool(exponent < 1):
+                        if bool(exponent < 1) and exponent != 0:
                             tests.append("1")
                         continue
                     e_c = sympy_to_c(exponent, resolve_symbol)
-                    tests.append("1" if e_c is None else f"(({e_c}) > 0.0 && ({e_c}) < 1.0)")
+                    tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
                 if tests:
                     approach.append((virtual, tuple(dict.fromkeys(tests))))
             for text, c_text in law_c.items():

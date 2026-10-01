@@ -245,32 +245,38 @@ A window closing as `(1−s)^(a−1)` is singular on the *approach* to its cross
 the forcing of the column that moves the edge goes as `(1−s)^(a−2)` before it. A
 frame entered at the crossing has already integrated that. The generator marks
 such a case (`bngsim_codegen_comoving_approach`, asked at the run's parameter
-values: an exponent `a − 1` is singular for `1 < a < 2` only), and a plain column
-whose next switch time moves at that case's `c` enters ahead of it (#760).
-`V = S + c·f` holds for any constant `c` anywhere, so entering early changes
-only which column is integrated.
+values: an exponent `a − 1` is singular below 1, so for `a < 2`), and a plain
+column whose next switch time moves at that case's `c` enters ahead of it
+(#760). `V = S + c·f` holds for any constant `c` anywhere, so entering early
+changes only which column is integrated.
 
 A column is in its frame only next to a crossing it moves. In its frame it
 carries `c·∂f/∂t` for everything `f` does, so a frame that reaches the closing
 edge of a window the column does not move meets that window's singular forcing.
-After every restart the run takes one stop, a sixteenth of the stretch short of
-the next crossing (`kComovingEntryFraction`):
+After a restart the run takes a stop a sixteenth of the stretch short of the
+next crossing (`kComovingEntryFraction`):
 
-- every frame is left there, so one entered at a crossing does not reach the
-  next;
+- frames are left there, unless every column in one moves the next switch time
+  at its frame's own `c` and no other crossing lies before it, or no crossing is
+  left ahead at all;
 - a column whose next switch time is approached through a singular power enters
-  there, where no other crossing lies between. One that was in that frame
-  already leaves and enters against one `f`.
+  there, where no other crossing lies between.
 
 Not sooner after the restart: a window that also opens as a power has an `f`
 whose slope is unbounded just past the opening, and the plain column of the
-parameter that moves it is no better there.
+parameter that moves it is no better there. A stretch too short to stand off
+from such an edge is refused (`kComovingMinStretch`, 8,192 of the root finder's
+read-backs): a restart that soon after the crossing a frame was entered at, or
+that soon before the switch time a column has to enter ahead of.
 
 A frame is left against `f` just before the stop. At one of the run's own stops
 that is `f` where it is. At a registered root it is `f` kept from the stop the
 frame entered at, when the root is within the root finder's reach of that stop,
-and otherwise two reads just before the root extended to it. A third read says
-whether they can be: a root a few reads past a power's onset is refused.
+and otherwise two reads just before the root extended to it.
+
+A crossing that shares its instant with another and is itself the edge of such
+a window is refused (#949): its jump is read by its isolation bump (#375), a
+hair from the power's zero.
 
 - **Open:** a closing edge whose crossing is not a switch time of the run (a
   state-dependent one) is still approached in the plain column.
@@ -280,9 +286,8 @@ whether they can be: a root a few reads past a power's onset is refused.
 - **Open:** a column in its frame reads back as `V − c·f`, to the tolerance of
   `c·f` and not of `S`. Beside a background flux 5000 times the pulse, dX/dD is
   9e-3 off at rtol 1e-6 (3e-3 before #760) and 3e-4 at rtol 1e-8 (4e-3 before).
-- **Open:** another crossing within about 1e-5 of a window's width after its
-  power-law opening leaves the onset column plain from there: 7e-5 to 2e-3 off.
-  Main raised, or was 20% to 60% off.
+- **Open:** a window whose width is written negative, `s = (t − on)/(−E)`, is
+  not split, and its closing edge is 0.4% off as before #760.
 - **Open:** a sensitivity to a counter clock's own initial value or rate has no
   frame (#948).
 
