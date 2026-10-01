@@ -294,6 +294,28 @@ def test_a_smooth_rate_law_late_in_time():
     assert got == pytest.approx(-0.5 * (1.0 + np.sin(30.0 * (t0 + 3.0))), rel=1e-5)
 
 
+def test_an_assignment_that_reads_a_row_late_in_time():
+    """Control. The same model with W set to 1e6·Y at the event. What the
+    clock's rounding leaves in Y's row at t = 1e6 goes through the assignment
+    at a gain of 1e6 into a row whose own rate is 0, and has to be allowed for
+    there too: dW/dtau = 1e6·Y'(tau)."""
+    t0 = 1.0e6
+    text = (
+        f"species X, Y, W; X = 1; Y = 0; W = 0; k = 0.5; tau = {t0 + 3.0!r}\n"
+        "J1: -> Y; k*X*(1 + sin(30*time))\n"
+        "E1: at (time >= tau): X = 2*X, W = 1e6*Y\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"]).run(
+        sample_times=[t0, t0 + 2.0, t0 + 5.0], rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    got = np.asarray(run.sensitivities)[-1, :, 0]
+    rate = 0.5 * (1.0 + np.sin(30.0 * (t0 + 3.0)))
+    assert got[names.index("W")] == pytest.approx(1e6 * rate, rel=1e-5)
+    assert got[names.index("Y")] == pytest.approx(-rate, rel=1e-5)
+
+
 def test_a_shift_that_is_rounding_is_not_a_disagreement():
     """Control. U = b·t reaches b·tau at tau whatever b is, so the trigger's
     time moves with tau and not with b. Its ∂t*/∂b is a finite difference and

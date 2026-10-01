@@ -5523,25 +5523,22 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         std::vector<double> noise;      // what the clock's own rounding leaves in them
     };
     std::vector<CommuteProbe> probes;
-    // Δ = f_before − f_after across a switch, at one state. The second
+    // Δ = f_before − f_after across a switch, at one state. It is the second
     // difference of f over the clock about the switch,
-    //     Δ(H) = −(2·(f(c+H) − f(c−H)) − (f(c+2H) − f(c−2H))),
-    // is what a step leaves and a smooth change, however fast, does not: a rate
-    // law that passes through zero at the instant, or oscillates, has none. A
-    // law that turns on as (t − c)², continuous with its slope, leaves 2·H² in
-    // it, which is no step. So it is taken at H = q and at 2q and carried to
-    // H = 0, (4·Δ(q) − Δ(2q))/3. q is a quarter of the nudge: the reads reach
-    // one instant either side of the switch and no further. `scale` is widened
-    // by what was read.
+    //     −(2·(f(c+q) − f(c−q)) − (f(c+2q) − f(c−2q))),
+    // which is what a step leaves and a smooth change, however fast, does not:
+    // a rate law that passes through zero at the instant, or oscillates, has
+    // none. q is a quarter of the nudge. `scale` is widened by what was read.
     //
-    // The clock rounds on the way. At t = 1e6 an offset of 1e-8 is taken to a
-    // few hundredths of itself, and sin(30·time) forms 30·t to one ulp of 3e7.
-    // Each leaves about ε·|c|·|∂f/∂c| in a read, ten of them in the sum with
-    // its weights. `noise` is sixteen, with the slope taken from the outer two
-    // reads on each side, which no step lies between. That is half of what the
-    // law changes by over the outer half of the reach: a step that small beside
-    // a law moving that fast is not seen, and a law that turns on as any power
-    // above the first stays under it.
+    // Two things are left in it that are no step, and `noise` allows for both.
+    // The clock rounds on the way: at t = 1e6 an offset of 1e-8 is taken to a
+    // few hundredths of itself, and sin(30·time) forms 30·t to one ulp of 3e7,
+    // each leaving about ε·|c|·|∂f/∂c| in a read. And a law that turns on as
+    // a power above the first, (t − c)², leaves 2·q² there. `noise` is half of
+    // what the law changes by between 2q and 4q from the switch, on either
+    // side, where no step lies: sixteen times the first and three times the
+    // second. A step that small beside a law moving that fast is not seen.
+    // The reads reach one instant either side of the switch and no further.
     auto jump_at = [&](const CommuteProbe &probe, const std::vector<double> &state,
                        std::vector<double> &jump, std::vector<double> &scale,
                        std::vector<double> &noise) {
@@ -5566,9 +5563,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             noise[ui] =
                 std::max(noise[ui], clock_ulps * std::max(std::fabs(at[4][ui] - at[2][ui]),
                                                           std::fabs(at[5][ui] - at[3][ui])));
-            const double inner = -(2.0 * (at[1][ui] - at[0][ui]) - (at[3][ui] - at[2][ui]));
-            const double outer = -(2.0 * (at[3][ui] - at[2][ui]) - (at[5][ui] - at[4][ui]));
-            jump[ui] = (4.0 * inner - outer) / 3.0;
+            jump[ui] = -(2.0 * (at[1][ui] - at[0][ui]) - (at[3][ui] - at[2][ui]));
             for (const auto &one : at) {
                 scale[ui] = std::max(scale[ui], std::fabs(one[ui]));
             }

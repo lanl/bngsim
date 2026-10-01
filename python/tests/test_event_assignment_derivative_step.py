@@ -195,3 +195,15 @@ def test_a_smooth_value_that_curves_inside_every_wide_step():
     )
     got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Z"), 0]
     assert got == pytest.approx(2 * k * k * left / (k * k + left * left) ** 2, rel=3e-5)
+
+
+def test_a_ripple_the_widest_step_straddles():
+    """Control. Z = D + X + 1e-5·sin(2π·(X − 1e-3)/1e-4) at X = 1e-3. The widest step,
+    1e-4, is one period of the ripple: the value is straight across its three
+    points and the difference over it is 1, where the slope at the state is
+    1 + 2π/10. That step is passed over because it does not agree with the
+    narrow difference, and the next one down, a hundredth of the period, is
+    kept: dZ/da = −3·(1 + 2π/10). Kept on straightness alone it was −3."""
+    text = RUN_DOWN + "E1: at (time >= 3): Z = D + X + 1e-5*sin(2*pi*(X - 1e-3)/1e-4)\n"
+    _z, s = _end_sens(text, ["a"], "Z", left=1e-3)
+    assert s[0] == pytest.approx(-3.0 * (1.0 + 2.0 * np.pi / 10.0), rel=1e-5)
