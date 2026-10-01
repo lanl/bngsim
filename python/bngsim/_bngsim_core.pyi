@@ -446,6 +446,11 @@ class NetworkModel:
     def species_names(self) -> list[str]:
         ...
     @property
+    def ssa_reads_clock(self) -> bool:
+        """
+        Whether a reaction rate or an event trigger reads the clock, or the model has a rate rule (whose target may be a clock): the SSA then needs the model's breakpoints (issue #719). Decided from the model's text.
+        """
+    @property
     def table_function_names(self) -> list[str]:
         ...
     @property
@@ -1068,6 +1073,10 @@ class SsaSimulator:
         Run PSA (Partial Scaling Algorithm) simulation.
         Lin, Feng, Hlavacek, J. Chem. Phys. 150, 244101 (2019).
         poplevel = N_c (critical population size, must be > 1). Releases GIL. timeout_seconds > 0 enables a wall-clock budget; on overrun, raises bngsim.SimulationTimeout.
+        """
+    def set_breakpoints(self, times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Issue #719: times at which a time-dependent rate may jump. The continuous (time-dependent) loop never steps across one. Applies to every later run; [] clears it.
         """
     def set_propensity_library(self, so_path: str) -> None:
         """

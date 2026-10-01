@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -245,6 +246,33 @@ class NetworkModel {
     // silent-zero shapes this exists to close.
     void expression_support(int expr_idx, std::vector<int> *species_out,
                             std::vector<int> *params_out) const;
+
+    // The species reaction `rxn_idx0`'s SSA propensity reads (issue #719): its
+    // reactants, the species its SSA falling factorial is taken over, a live
+    // compartment volume it divides by, and whatever
+    // expression_support() finds behind each of its rate parameters (the
+    // function or expression that writes it). Sorted, into `out`. Returns false
+    // when that cannot be decided — a table function indexed by an observable,
+    // whose species no expression names — and the caller must assume every species.
+    bool reaction_rate_species_support(int rxn_idx0, std::vector<int> &out) const;
+
+    // Does a rate parameter of reaction `rxn_idx0` take its value from a model
+    // function, directly or through a derived parameter (issue #719)? Such a
+    // rate moves with whatever the function reads, time included, whatever the
+    // reaction's rate-law type.
+    bool reaction_rate_reads_functions(int rxn_idx0) const;
+
+    // Does reaction `rxn_idx0`'s rate move with time between firings (issue
+    // #719)? Decided from the text of every function and derived parameter its
+    // rate reads, directly or through one another: a `time()` call, a call to a
+    // time-indexed table function, or a rate accessor (which reads the running
+    // derivatives) says yes. Never by probing values, which can alias (#654);
+    // it may over-report, which costs only time.
+    bool reaction_rate_reads_time(int rxn_idx0) const;
+
+    // Does event `event_idx0`'s trigger read the clock, through the same walk?
+    // A trigger that does not can change only when the state does.
+    bool event_trigger_reads_time(int event_idx0) const;
 
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //
@@ -684,11 +712,25 @@ class NetworkModel {
     /// (t / p[idx] / obs[idx]) at each tfun call site.
     std::vector<TableFunctionSpec> table_function_specs() const;
 
+    /// The knots of every time-indexed table function, sorted and unique: the
+    /// times at which such a function's value (step) or slope (linear) breaks.
+    std::vector<double> time_table_knots() const;
+
     // ─── Expression evaluator access ─────────────────────────────────────────
     ExpressionEvaluator &evaluator();
 
   private:
     std::unique_ptr<Impl> impl_;
+
+    // What a rate or a trigger reads through the model's definitions (#719).
+    struct RateDeps {
+        bool time = false;    // the clock, directly or through a definition
+        bool unknown = false; // something whose reads cannot be named
+        std::set<int> species;
+    };
+    RateDeps rate_dependencies_(std::vector<int> params,
+                                const std::vector<std::string> &texts) const;
+    RateDeps reaction_rate_dependencies_(int rxn_idx0) const;
     void set_load_warnings_(std::vector<std::string> warnings);
 
     /// The single-pass RHS body (GH #106). compute_derivs() and

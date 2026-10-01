@@ -19,6 +19,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -1343,6 +1344,220 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
     }
     impl_->expression_support_cache.emplace(expr_idx,
                                             std::make_pair(std::move(sp_out), std::move(pa_out)));
+}
+
+// The end of the number starting at e[i]: digits and a point, then an exponent
+// only when one is well formed (`1e-5`), so the `e` of `2exp(x)` is a name.
+static size_t skip_number(const std::string &e, size_t i) {
+    const auto digit = [&](size_t k) {
+        return k < e.size() && std::isdigit(static_cast<unsigned char>(e[k])) != 0;
+    };
+    while (i < e.size() && (digit(i) || e[i] == '.'))
+        ++i;
+    if (i < e.size() && (e[i] == 'e' || e[i] == 'E')) {
+        size_t j = i + 1;
+        if (j < e.size() && (e[j] == '+' || e[j] == '-'))
+            ++j;
+        if (digit(j)) {
+            i = j;
+            while (digit(i))
+                ++i;
+        }
+    }
+    return i;
+}
+
+// What a rate (or a trigger) depends on through the model's definitions
+// (issue #719): the species it reads and whether it reads the clock. A worklist
+// over parameters: each one's defining function or expression is read as text
+// (for the clock, a rate accessor, a table-function call) and through
+// expression_support() (for the addresses it reads, which names the species
+// behind each observable and every other parameter it reads, whose definitions
+// join the worklist). A table function's index is not in the text of its call,
+// so a call adds what the index reads: the clock, a parameter (whose definition
+// joins the worklist) or an observable's species.
+//
+// The clock is the call `time()`, and a bare `time` unless the model declares a
+// scalar of that name (issue #776): ExprTk calls a zero-argument function
+// without its parentheses.
+NetworkModel::RateDeps
+NetworkModel::rate_dependencies_(std::vector<int> params,
+                                 const std::vector<std::string> &texts) const {
+    RateDeps deps;
+    const auto &sd = *impl_->shared;
+    const int ns = static_cast<int>(impl_->species.size());
+    const int np = static_cast<int>(impl_->parameters.size());
+    const bool time_declared =
+        sd.param_name_to_idx.count("time") != 0 || sd.observable_name_to_idx.count("time") != 0;
+    std::unordered_map<std::string, const TableFunction *> tables;
+    for (const auto &tf : impl_->table_functions) {
+        tables.emplace(tf->name(), tf.get());
+        tables.emplace("tfun_" + tf->name(), tf.get());
+    }
+    std::vector<int> written_by(static_cast<std::size_t>(np), -1);
+    for (const auto &[func_idx, param_idx] : sd.var_param_bindings)
+        if (param_idx >= 0 && param_idx < np)
+            written_by[param_idx] = func_idx;
+    const auto add_obs = [&](int oi) {
+        for (const auto &entry : impl_->observables[oi].entries)
+            if (entry.species_index >= 1 && entry.species_index <= ns)
+                deps.species.insert(entry.species_index - 1);
+    };
+
+    std::vector<char> seen(static_cast<std::size_t>(np), 0);
+    const auto scan = [&](const std::string &e) {
+        if (e.find("rate_of__") != std::string::npos) {
+            deps.time = true; // the running derivatives: every species, at every time
+            deps.unknown = true;
+        }
+        for (size_t i = 0; i < e.size();) {
+            const unsigned char c = static_cast<unsigned char>(e[i]);
+            if (std::isdigit(c) || c == '.') {
+                // A number, exponent included, and no further: ExprTk reads
+                // `2time()` as 2*time(), so a name may follow a number directly.
+                i = skip_number(e, i);
+                continue;
+            }
+            if (!(std::isalpha(c) || c == '_')) {
+                ++i;
+                continue;
+            }
+            size_t j = i;
+            while (j < e.size() && (std::isalnum(static_cast<unsigned char>(e[j])) || e[j] == '_'))
+                ++j;
+            const std::string id = e.substr(i, j - i);
+            size_t k = j;
+            while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
+                ++k;
+            const bool call = k < e.size() && e[k] == '(';
+            if (id == "time" && (call || !time_declared))
+                deps.time = true;
+            auto tit = tables.find(id);
+            if (tit != tables.end()) {
+                const std::string &idx = tit->second->index_name();
+                const std::string key = strip_paren_suffix(idx);
+                if (is_time_index(idx)) {
+                    deps.time = true;
+                } else if (auto pit = sd.param_name_to_idx.find(key);
+                           pit != sd.param_name_to_idx.end()) {
+                    params.push_back(pit->second);
+                } else if (auto oit = sd.observable_name_to_idx.find(key);
+                           oit != sd.observable_name_to_idx.end()) {
+                    add_obs(oit->second);
+                } else {
+                    deps.unknown = true;
+                }
+            }
+            i = j;
+        }
+    };
+    for (const auto &t : texts)
+        scan(t);
+    std::vector<int> sp, pa;
+    while (!params.empty()) {
+        const int p = params.back();
+        params.pop_back();
+        if (p < 0 || p >= np || seen[p])
+            continue;
+        seen[p] = 1;
+        int eid = -1;
+        if (written_by[p] >= 0) {
+            const Function &f = impl_->functions[written_by[p]];
+            scan(f.expression);
+            scan(f.eval_expression);
+            eid = f.evaluator_id;
+        } else if (impl_->parameters[p].is_expression) {
+            scan(impl_->parameters[p].expression);
+            eid = impl_->parameters[p].evaluator_id;
+        }
+        if (eid < 0)
+            continue;
+        expression_support(eid, &sp, &pa);
+        deps.species.insert(sp.begin(), sp.end());
+        params.insert(params.end(), pa.begin(), pa.end());
+    }
+    return deps;
+}
+
+// A reaction's propensity, as compute_rxn_rate reads it: its reactants, the
+// species of its SSA falling factorial, a live compartment volume, and its
+// rate parameters' definitions.
+NetworkModel::RateDeps NetworkModel::reaction_rate_dependencies_(int rxn_idx0) const {
+    const Reaction &rxn = impl_->shared->reactions[rxn_idx0];
+    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+    RateDeps deps = rate_dependencies_(std::move(params), {});
+    const int ns = static_cast<int>(impl_->species.size());
+    const auto add = [&](int si) {
+        if (si >= 0 && si < ns)
+            deps.species.insert(si);
+    };
+    for (int ri : rxn.reactant_indices)
+        add(ri - 1);
+    for (const auto &[si, m] : rxn.ssa_falling_factorial)
+        add(si);
+    add(rxn.ssa_live_volume_idx0);
+    for (const auto &lt : rxn.ssa_live_volume_terms)
+        add(lt.live_idx0);
+    return deps;
+}
+
+bool NetworkModel::reaction_rate_species_support(int rxn_idx0, std::vector<int> &out) const {
+    out.clear();
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
+        return false;
+    const RateDeps deps = reaction_rate_dependencies_(rxn_idx0);
+    out.assign(deps.species.begin(), deps.species.end());
+    return !deps.unknown;
+}
+
+bool NetworkModel::reaction_rate_reads_functions(int rxn_idx0) const {
+    const auto &reactions = impl_->shared->reactions;
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(reactions.size()))
+        return false;
+    const Reaction &rxn = reactions[rxn_idx0];
+    const int np = static_cast<int>(impl_->parameters.size());
+    std::vector<char> written(static_cast<std::size_t>(np), 0);
+    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
+        if (param_idx >= 0 && param_idx < np)
+            written[param_idx] = 1;
+    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+    std::vector<int> support;
+    for (int pidx : params) {
+        if (pidx < 0 || pidx >= np)
+            continue;
+        if (written[pidx])
+            return true;
+        if (!impl_->parameters[pidx].is_expression)
+            continue;
+        expression_support(impl_->parameters[pidx].evaluator_id, nullptr, &support);
+        for (int q : support)
+            if (q >= 0 && q < np && written[q])
+                return true;
+    }
+    return false;
+}
+
+bool NetworkModel::reaction_rate_reads_time(int rxn_idx0) const {
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
+        return false;
+    return reaction_rate_dependencies_(rxn_idx0).time;
+}
+
+bool NetworkModel::event_trigger_reads_time(int event_idx0) const {
+    const auto &events = impl_->events;
+    if (event_idx0 < 0 || event_idx0 >= static_cast<int>(events.size()))
+        return false;
+    const Event &ev = events[event_idx0];
+    std::vector<int> params;
+    if (ev.trigger_expr_idx >= 0) {
+        std::vector<int> sp;
+        expression_support(ev.trigger_expr_idx, &sp, &params);
+    }
+    return rate_dependencies_(std::move(params), {ev.trigger_source}).time;
 }
 
 bool NetworkModel::event_trigger_is_state_dependent(int event_idx0) const {
@@ -3886,6 +4101,16 @@ double NetworkModel::evaluate_table_function_at(int tf_id, double x) const {
                                 std::to_string(impl_->table_functions.size()) + ")");
     }
     return impl_->table_functions[tf_id]->evaluate_at(x);
+}
+
+std::vector<double> NetworkModel::time_table_knots() const {
+    std::vector<double> out;
+    for (const auto &tf : impl_->table_functions)
+        if (is_time_index(tf->index_name()))
+            out.insert(out.end(), tf->xs().begin(), tf->xs().end());
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 std::vector<TableFunctionSpec> NetworkModel::table_function_specs() const {

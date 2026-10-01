@@ -1048,6 +1048,27 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly("functions_use_time", &bngsim::NetworkModel::functions_use_time,
                                "Whether any function's value can move with simulation time alone "
                                "(issue #654). Gates the SSA's time-dependent sub-stepping.")
+        .def_property_readonly(
+            "ssa_reads_clock",
+            [](const bngsim::NetworkModel &self) {
+                // A rate rule's target may be a clock (`T' = 1`) whose crossings
+                // the breakpoints place.
+                for (const auto &rx : self.reactions())
+                    if (rx.is_rate_rule_ode)
+                        return true;
+                if (!self.functions_use_time() && self.n_events() == 0)
+                    return false;
+                for (int r = 0; r < self.n_reactions(); ++r)
+                    if (self.reaction_rate_reads_time(r))
+                        return true;
+                for (int e = 0; e < self.n_events(); ++e)
+                    if (self.event_trigger_reads_time(e))
+                        return true;
+                return false;
+            },
+            "Whether a reaction rate or an event trigger reads the clock, or the model has "
+            "a rate rule (whose target may be a clock): the SSA then needs the model's "
+            "breakpoints (issue #719). Decided from the model's text.")
 
         // T1: RHS observable/function-eval gate instrumentation. For a pure
         // mass-action model the RHS skips update_observables + evaluate_functions
@@ -2305,7 +2326,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "(symbol bngsim_ssa_propensities). When set and the model is "
              "recompute-all eligible (pure mass-action exact SSA, no events, small "
              "nr), the run takes the RR-style recompute-all + flat-scan loop by "
-             "default. No-op for ineligible models; '' clears it.");
+             "default. No-op for ineligible models; '' clears it.")
+        .def("set_breakpoints", &bngsim::SsaSimulator::set_breakpoints, py::arg("times"),
+             "Issue #719: times at which a time-dependent rate may jump. The "
+             "continuous (time-dependent) loop never steps across one. Applies to "
+             "every later run; [] clears it.");
 
     // ─── NfsimSimulator (conditional on BNGSIM_HAS_NFSIM) ────────────────────
     //

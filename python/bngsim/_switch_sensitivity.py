@@ -2045,10 +2045,15 @@ def _crossing_time_of_condition(
             return None
         read.append(m.group(0))
 
+    # The window enters only as the scale the residual is probed over, and a
+    # linear crossing does not depend on it. A power of two at or above the
+    # window's reach keys it, so consecutive run_until legs (whose windows all
+    # differ) share an answer instead of each re-parsing the residual three
+    # times, which cost a leg ~1.5 ms of sympy.
+    scale = 2.0 ** math.ceil(math.log2(max(abs(t_start), abs(t_end), 1.0)))
     key = (
         flat,
-        t_start,
-        t_end,
+        scale,
         tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in set(read))),
     )
     if key in _CROSSING_CACHE:
@@ -2060,7 +2065,6 @@ def _crossing_time_of_condition(
         )
 
     def resolve() -> float | None:
-        scale = max(abs(t_start), abs(t_end), 1.0)
         r0, r1 = at(0.0), at(scale)
         if r0 is None or r1 is None:
             return None
