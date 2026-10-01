@@ -460,7 +460,22 @@ def _reused_after_override(term: Term, method: str) -> np.ndarray:
     return _column(term, r)
 
 
+def _chain_after_override(term: Term, method: str) -> np.ndarray:
+    """Issue #708 again, read on the column of the primary the pinned parameter
+    was derived from. With ``k2`` pinned, ``k1`` moves nothing."""
+    model = bngsim.Model.from_antimony_string(_STALE.format(k2="2*k1"))
+    sim = _simulator(term, model, method)
+    sim.run(sample_times=list(term.sample_times), rtol=term.rtol, atol=term.atol)
+    model.reset()
+    model.set_param("k2", 5.0)
+    model.reset()
+    r = sim.run(sample_times=list(term.sample_times), rtol=term.rtol, atol=term.atol)
+    return _column(term, r)
+
+
 _STALE = "species A = 10, B = 0; k1 = 1; k2 = {k2}; R1: A -> B; k2*A*A"
+# The same model with k2 pinned, for the reference runs of the k1 column.
+_STALE_PINNED = "species A = 10, B = 0; k1 = {k1}; k2 = 5.0; R1: A -> B; k2*A*A"
 _T = (0.0, 0.5, 1.0, 2.0, 3.0)
 _PULSE_T = (0.0, 1.0, 2.0, 4.0, 5.0, 6.0, 8.0, 10.0)  # off the onset (3) and close (7)
 _SWITCH_T = (0.0, 1.0, 2.0, 2.5, 4.0, 5.0, 6.0)  # off tau = 3 and tau + 0.5
@@ -578,19 +593,32 @@ TERMS: list = [
         ),
         marks=_xfail(707, "the DQ RHS sync re-derives the probed derived parameter"),
     ),
+    Term(
+        "override-between-runs-own-column",
+        "antimony",
+        _STALE,
+        "k2",
+        "5.0",
+        5.0,
+        tuple(np.linspace(0.0, 1.0, 11)),
+        ("A",),
+        param="k2",
+        analytic=_reused_after_override,
+        note="d/dk2 was 0: k2 reaches the rate through the derived _rateLaw (issue #912)",
+    ),
     pytest.param(
         Term(
             "stale-artifact-after-override",
             "antimony",
-            _STALE,
-            "k2",
-            "5.0",
-            5.0,
+            _STALE_PINNED,
+            "k1",
+            "1.0",
+            1.0,
             tuple(np.linspace(0.0, 1.0, 11)),
             ("A",),
-            param="k2",
-            analytic=_reused_after_override,
-            note="d/dk2 is 0 on the reused Simulator, whose sensitivity RHS still chains k2 to k1",
+            param="k1",
+            analytic=_chain_after_override,
+            note="d/dk1 is 2·d/dk2 on the reused Simulator, whose RHS still chains k2 to k1",
         ),
         marks=_xfail(708, "the compiled sensitivity RHS is reused after set_param"),
     ),
@@ -812,7 +840,6 @@ TERMS: list = [
             param="A0",
             note="dY/dA0 is 0 against -0.6: a 1e8 pool nearby makes the jump read as roundoff",
         ),
-        marks=_xfail(763, "the continuity test scales the jump by max|f| over every species"),
     ),
     # ── Counter clocks ───────────────────────────────────────────────────────
     Term(
