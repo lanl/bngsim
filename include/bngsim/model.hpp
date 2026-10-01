@@ -8,6 +8,7 @@
 #include "bngsim/types.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <set>
@@ -675,11 +676,15 @@ class NetworkModel {
     // so a trigger still true at a leg boundary does not fire again, and the
     // pending executions are queued again. Any other run is a fresh start.
     // Published at every run's state write-back; cleared by reset(); copied by
-    // clone(). The last kEventCarryHistory published carries are kept, so a
-    // caller that rolls the clock back to one of those times
-    // (rewind_event_carry: Simulator.set_state(x, time=t0), a predictor-
-    // corrector step) continues the events from there; a run is never matched
-    // to one implicitly, since its state need not be the one they went with.
+    // clone().
+    //
+    // The history is the current trajectory's leg ends, oldest first (at most
+    // kEventCarryHistory of them): a run that continues the carry appends to
+    // it, a fresh start replaces it. A caller that rolls the clock back to one
+    // of those times (rewind_event_carry: Simulator.set_state(x, time=t0), a
+    // predictor-corrector step) continues the events from there, and the leg
+    // ends after it are dropped. A run is never matched to a history entry
+    // implicitly, since its state need not be the one that entry went with.
     struct CarriedEventExecution {
         int event_idx = 0;
         double apply_time = 0.0;
@@ -693,13 +698,19 @@ class NetworkModel {
     };
     static constexpr std::size_t kEventCarryHistory = 64;
     const EventCarry &event_carry() const;
+    const std::deque<EventCarry> &event_carry_history() const;
+    // The newest leg end dropped from the full history, or -inf.
+    double event_carry_evicted_t() const;
     // Validated against this model's events (std::invalid_argument).
     void set_event_carry(EventCarry carry);
-    void publish_event_carry(EventCarry carry); // set, and keep in the history
-    void clear_event_carry();                   // the carry and the history
-    // Make the latest published carry at time t the current one; false, and
-    // nothing changed, when none was published at t.
-    bool rewind_event_carry(double t);
+    void set_event_carry_state(EventCarry carry, std::deque<EventCarry> history, double evicted_t);
+    // At a run's write-back; `continued`: the run started from the carry.
+    void publish_event_carry(EventCarry carry, bool continued);
+    void clear_event_carry(); // the carry and the history
+    // Roll the events back to the leg end at time t: 1 when there is one (the
+    // later ones are dropped), -1 when t is older than the retained history
+    // and leg ends were dropped from it, 0 otherwise; nothing changes unless 1.
+    int rewind_event_carry(double t);
     // The carry a run over n_events events starting at t_start continues, or
     // nullptr when that run is a fresh start.
     const EventCarry *event_carry_for(double t_start, int n_events) const;

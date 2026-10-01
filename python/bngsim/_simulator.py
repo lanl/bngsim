@@ -67,6 +67,10 @@ from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
 
+# How many leg ends a model keeps for a rollback to return its events to
+# (NetworkModel::kEventCarryHistory, issue #693).
+_EVENT_CARRY_HISTORY = 64
+
 try:
     from bngsim._bngsim_core import HAS_RULEMONKEY as _HAS_RULEMONKEY
 except (ImportError, AttributeError):
@@ -4430,7 +4434,7 @@ class Simulator:
             seed,
             list(core.pending_sensitivity_seed_param_names),
             bool(core.ic_state_dirty),
-            core.event_carry(),
+            core.event_carry_state(),
         )
 
     def _restore_carryover_state(
@@ -4444,7 +4448,7 @@ class Simulator:
         else:
             core.set_pending_sensitivity_seed(seed, names)
         core.ic_state_dirty = dirty
-        core.set_event_carry(events)
+        core.set_event_carry_state(events)
 
     def parameter_scan(
         self,
@@ -4675,7 +4679,7 @@ class Simulator:
             self._model._core.ic_state_dirty = False
             # Every point starts from the events' state at invocation too, not
             # from where the previous point's run left them (issue #693).
-            self._model._core.set_event_carry(invocation_sens[3])
+            self._model._core.set_event_carry_state(invocation_sens[3])
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
 
@@ -6880,7 +6884,7 @@ class Simulator:
             "params": param_state,
             # The triggers' truth and the pending delayed executions, so that
             # rewinding rewinds the events too (issue #693).
-            "events": self._model._core.event_carry(),
+            "events": self._model._core.event_carry_state(),
         }
         self._snapshot_stack.append(copy.deepcopy(snap))
         logger.debug(
@@ -6926,7 +6930,7 @@ class Simulator:
 
         # ...and the event state the snapshot's run left (issue #693). A
         # snapshot from before that existed has none: a fresh start.
-        self._model._core.set_event_carry(snapshot.get("events"))
+        self._model._core.set_event_carry_state(snapshot.get("events"))
 
         # Recreate simulator with restored state
         self._recreate_interactive_sim()
@@ -6998,7 +7002,15 @@ class Simulator:
         # clock: the next run continues the triggers and pending executions as
         # they were then (issue #693). At any other time it is a fresh start.
         self._current_time = t
-        self._model._core.rewind_event_carry(t)
+        if self._model._core.rewind_event_carry(t) < 0:
+            warnings.warn(
+                f"set_time({t!r}) rolls back past the last "
+                f"{_EVENT_CARRY_HISTORY} legs this simulation kept: the next run "
+                "starts its events afresh (each trigger from its initialValue), not "
+                "where they stood at that time. Take a snapshot() there to roll "
+                "back further (issue #693).",
+                stacklevel=3,
+            )
 
     # ─── Solver configuration (ODE) ────────────────────────────────
 

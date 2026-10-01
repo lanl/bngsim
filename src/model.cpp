@@ -145,6 +145,7 @@ NetworkModel NetworkModel::clone() const {
     // #693).
     copy.impl_->event_carry = impl_->event_carry;
     copy.impl_->event_carry_history = impl_->event_carry_history;
+    copy.impl_->event_carry_evicted_t = impl_->event_carry_evicted_t;
     // ...and whether that baseline is a saved state rather than the declared IC
     // (issue #79), or the clone's set_param() would re-resolve a parameter-named
     // IC over a baseline the original had already retired.
@@ -787,48 +788,81 @@ bool NetworkModel::ic_baseline_saved() const { return impl_->ic_baseline_saved; 
 
 const NetworkModel::EventCarry &NetworkModel::event_carry() const { return impl_->event_carry; }
 
-void NetworkModel::set_event_carry(EventCarry carry) {
-    if (carry.valid) {
-        const auto &evs = impl_->events;
-        if (carry.trigger.size() != evs.size())
-            throw std::invalid_argument("set_event_carry: " + std::to_string(carry.trigger.size()) +
-                                        " trigger values for a model with " +
-                                        std::to_string(evs.size()) + " events");
-        for (const auto &pe : carry.pending) {
-            if (pe.event_idx < 0 || pe.event_idx >= static_cast<int>(evs.size()))
-                throw std::invalid_argument("set_event_carry: no event " +
-                                            std::to_string(pe.event_idx));
-            const auto n = evs[static_cast<std::size_t>(pe.event_idx)].assignments.size();
-            if (!pe.frozen_values.empty() && pe.frozen_values.size() != n)
-                throw std::invalid_argument(
-                    "set_event_carry: " + std::to_string(pe.frozen_values.size()) +
-                    " frozen values for an event with " + std::to_string(n) + " assignments");
-        }
+const std::deque<NetworkModel::EventCarry> &NetworkModel::event_carry_history() const {
+    return impl_->event_carry_history;
+}
+
+double NetworkModel::event_carry_evicted_t() const { return impl_->event_carry_evicted_t; }
+
+namespace {
+void check_event_carry(const NetworkModel::EventCarry &carry, const std::vector<Event> &evs) {
+    if (!carry.valid)
+        return;
+    if (!std::isfinite(carry.t))
+        throw std::invalid_argument("set_event_carry: the time is not finite");
+    if (carry.trigger.size() != evs.size())
+        throw std::invalid_argument("set_event_carry: " + std::to_string(carry.trigger.size()) +
+                                    " trigger values for a model with " +
+                                    std::to_string(evs.size()) + " events");
+    for (const auto &pe : carry.pending) {
+        if (pe.event_idx < 0 || pe.event_idx >= static_cast<int>(evs.size()))
+            throw std::invalid_argument("set_event_carry: no event " +
+                                        std::to_string(pe.event_idx));
+        if (!std::isfinite(pe.apply_time))
+            throw std::invalid_argument("set_event_carry: an apply time is not finite");
+        const auto n = evs[static_cast<std::size_t>(pe.event_idx)].assignments.size();
+        if (!pe.frozen_values.empty() && pe.frozen_values.size() != n)
+            throw std::invalid_argument(
+                "set_event_carry: " + std::to_string(pe.frozen_values.size()) +
+                " frozen values for an event with " + std::to_string(n) + " assignments");
     }
+}
+} // namespace
+
+void NetworkModel::set_event_carry(EventCarry carry) {
+    check_event_carry(carry, impl_->events);
     impl_->event_carry = std::move(carry);
 }
 
-void NetworkModel::publish_event_carry(EventCarry carry) {
+void NetworkModel::set_event_carry_state(EventCarry carry, std::deque<EventCarry> history,
+                                         double evicted_t) {
+    check_event_carry(carry, impl_->events);
+    for (const auto &h : history)
+        check_event_carry(h, impl_->events);
+    impl_->event_carry = std::move(carry);
+    impl_->event_carry_history = std::move(history);
+    impl_->event_carry_evicted_t = evicted_t;
+}
+
+void NetworkModel::publish_event_carry(EventCarry carry, bool continued) {
     auto &h = impl_->event_carry_history;
+    if (!continued) {
+        h.clear();
+        impl_->event_carry_evicted_t = -std::numeric_limits<double>::infinity();
+    }
     h.push_back(carry);
-    if (h.size() > kEventCarryHistory)
+    if (h.size() > kEventCarryHistory) {
+        impl_->event_carry_evicted_t = h.front().t;
         h.pop_front();
+    }
     impl_->event_carry = std::move(carry);
 }
 
 void NetworkModel::clear_event_carry() {
     impl_->event_carry = EventCarry{};
     impl_->event_carry_history.clear();
+    impl_->event_carry_evicted_t = -std::numeric_limits<double>::infinity();
 }
 
-bool NetworkModel::rewind_event_carry(double t) {
-    const auto &h = impl_->event_carry_history;
+int NetworkModel::rewind_event_carry(double t) {
+    auto &h = impl_->event_carry_history;
     for (auto it = h.rbegin(); it != h.rend(); ++it)
         if (it->valid && it->t == t) {
-            impl_->event_carry = *it;
-            return true;
+            h.erase(it.base(), h.end());
+            impl_->event_carry = h.back();
+            return 1;
         }
-    return false;
+    return t <= impl_->event_carry_evicted_t ? -1 : 0;
 }
 
 const NetworkModel::EventCarry *NetworkModel::event_carry_for(double t_start, int n_events) const {

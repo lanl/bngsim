@@ -3036,7 +3036,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         carry.valid = true;
         carry.t = t;
         carry.trigger.assign(trigger_was_true.begin(), trigger_was_true.end());
-        model.publish_event_carry(std::move(carry));
+        const bool continued = model.event_carry_for(times.t_start, n_events) != nullptr;
+        model.publish_event_carry(std::move(carry), continued);
     }
 
     // Solver stats

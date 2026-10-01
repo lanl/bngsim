@@ -8572,6 +8572,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (model.uses_rateof()) {
                 model.compute_derivs(times.t_start, y_data, user_data.rateof_root_scratch.data());
             }
+            // A carried execution of a non-persistent event whose trigger is
+            // false here (an intervention between the legs made it so) is
+            // cancelled, as it would have been the moment the trigger fell.
+            if (carry != nullptr)
+                pending_events.erase(std::remove_if(pending_events.begin(), pending_events.end(),
+                                                    [&](const PendingEvent &pe) {
+                                                        const auto &ev = events_outer[pe.event_idx];
+                                                        return !ev.persistent &&
+                                                               eval_ref_outer.evaluate(
+                                                                   ev.trigger_expr_idx) <= 0.5;
+                                                    }),
+                                     pending_events.end());
 
             std::vector<int> t0_firing;
             t0_firing.reserve(n_events);
@@ -9882,7 +9894,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         for (auto &pe : pending_events)
             carry.pending.push_back(NetworkModel::CarriedEventExecution{
                 pe.event_idx, pe.apply_time, std::move(pe.frozen_values)});
-        model.publish_event_carry(std::move(carry));
+        const bool continued = model.event_carry_for(times.t_start, n_events) != nullptr;
+        model.publish_event_carry(std::move(carry), continued);
     }
 
     // ─── Cleanup ─────────────────────────────────────────────────────────────

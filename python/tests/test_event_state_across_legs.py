@@ -13,6 +13,8 @@ Oracles are closed forms: A decays at k1 = 0.1 from A(0) = 10.
 
 from __future__ import annotations
 
+import warnings
+
 import bngsim
 import numpy as np
 import pytest
@@ -228,3 +230,84 @@ def test_a_carry_is_checked_against_the_model():
         core.set_event_carry((t, [*trig, True], pend))
     core.set_event_carry((t, trig, pend))
     assert core.event_carry() == (t, trig, pend)
+
+
+def test_a_scan_leaves_no_leg_end_to_roll_back_to():
+    """The scan's points publish their own leg ends at 10; a rollback to 10 after
+    it must find the interactive run's, with its pending dose."""
+    s = _sim(DELAYED)
+    s.run_until(10)
+    s.parameter_scan("k1", [0.1, 0.2], t_span=(0, 10), n_points=2)
+    s.set_time(s.current_time)
+    assert _at(s.run_until(20), "A") == pytest.approx(DELAYED_A20, rel=1e-5)
+
+
+def test_replicates_leave_no_leg_end_to_roll_back_to():
+    s = _sim(DOSE, "ssa")
+    s.run_until(10, seed=1)
+    s.run_replicates(5, t_span=(0, 10), n_points=2, seed=3)
+    s.set_time(s.current_time)
+    assert _at(s.run_until(20, seed=2), "n") == 1
+
+
+def test_a_rollback_onto_an_abandoned_branch_is_a_fresh_start():
+    """Branch A queues a dose at 6 (applied at 7); restored to 4, branch B turns
+    the dose off. Rolling branch B back to 6 must not pick up A's queued dose."""
+    text = (
+        "species A = 10; species n = 0; k1 = 0.1; tf = 5; R1: A => ; k1*A;"
+        " D: at 2 after (time >= tf): A = A + 5, n = n + 1;"
+    )
+    s = _sim(text)
+    s.run_until(4)
+    s.snapshot()
+    s.run_until(6)
+    s.run_until(10)
+    s.restore()
+    s.intervene({"tf": 100.0})
+    r = s.run_until(10, n_points=7)
+    x6 = np.asarray(s.model.get_state()).copy()
+    x6[list(s.model.species_names).index("A")] = _at(r, "A", 2)
+    s.set_state(x6, time=6.0)
+    assert _at(s.run_until(10), "n") == 0
+
+
+def test_an_intervention_cancels_a_carried_non_persistent_execution():
+    """``A > 0.5`` queues an execution 1.5 later; setting A = 0 between the legs
+    makes the trigger fall, which cancels a non-persistent one, and its next rise
+    (at 1.5) queues the only execution that runs, at 3."""
+    text = (
+        "species A = 0; species n = 0; J: => A; 1;"
+        " D: at 1.5 after (A > 0.5), persistent = false, fromTrigger = false: n = n + 1;"
+    )
+    for n_points in (2, 5):
+        s2 = _sim(text)
+        s2.run_until(1)
+        s2.model.set_concentration("A", 0.0)
+        assert _at(s2.run_until(5, n_points=n_points), "n") == 1
+
+
+def test_a_rollback_past_the_kept_legs_warns():
+    s = _sim(DOSE)
+    s.run_until(2)
+    saved = s.get_state().copy()
+    for t in range(3, 3 + 70):
+        s.run_until(t)
+    with pytest.warns(UserWarning, match="rolls back past the last 64 legs"):
+        s.set_state(saved, time=2.0)
+    s2 = _sim(DOSE)
+    s2.run_until(2)
+    for t in range(3, 10):
+        s2.run_until(t)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        s2.set_state(saved, time=2.0)
+
+
+def test_a_carry_must_be_finite():
+    s = _sim(DELAYED)
+    s.run_until(10)
+    t, trig, pend = s.model._core.event_carry()
+    with pytest.raises(ValueError, match="not finite"):
+        s.model._core.set_event_carry((t, trig, [(0, float("nan"), [])]))
+    with pytest.raises(ValueError, match="not finite"):
+        s.model._core.set_event_carry((float("inf"), trig, pend))
