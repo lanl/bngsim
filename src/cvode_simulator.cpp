@@ -2382,6 +2382,13 @@ struct CvodeSimulator::Impl {
     // this, so all of them see the same picture of the model.
     void sync_model_at(double t, const double *x, int ns);
 
+    // Issue #928. Whether a run without sensitivities has stalled ON a
+    // state-switch surface, and if so, the state carried across it along the
+    // flow and the integrator restarted there. See the definition.
+    bool carry_across_stalled_state_switch(
+        void *cvode_mem, double t, N_Vector y, int ns,
+        const std::vector<const NetworkModel::StateSwitch *> &switches);
+
     // dg/dt along the flow at (t, x) — the denominator of dt*/dθ, and the test
     // for whether a trajectory LEAVES a threshold it starts on (issue #340).
     // Fills `gx_out` (∂g/∂x, sized ns, zero off `support`) and `scale_out`
@@ -6192,6 +6199,111 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, 
     return true;
 }
 
+// ─── A run pinned on a state-switch surface (issue #928) ────────────────────
+//
+// A run without sensitivities restarts at a state-switch root only where the
+// solver's own trajectory resolves the crossing (issue #897). A root found in a
+// step that the discontinuity has already collapsed is not resolved, so the run
+// steps on, and then it can neither cross nor pass: a step long enough to move
+// the threshold species by one ulp carries the rate law's jump into an error
+// test it fails, and a step short enough to pass leaves the species where it
+// is. `A <-> B` with `if(A < thr, …)` and `if(B > thrB, …)` on the one surface
+// sat with A on thr and B an ulp short of thrB, taking 500 steps per batch for
+// 1e-4 of time, until the wall clock ended the run.
+//
+// This acts only there: when CVODE has spent a whole batch of steps, a
+// residual is within a few ulp of zero, and the step is so short that the flow
+// moves the residual by no more than a few ulp across it. The state is then
+// carried along the flow just far enough to put each such residual on its far
+// side, as a restart past a crossing does for a run with sensitivities, and
+// the integrator restarts there. Only where the flow on the far side carries
+// on away from the surface: one that points back is a slide along it (#926),
+// which this leaves as it found it.
+static constexpr double kStalledSwitchUlps = 16.0;
+// How far in time the state may be carried, as a part of the time itself. A
+// flow too slow to cross a few ulp in that is not crossing.
+static constexpr double kStalledSwitchCarry = 1e-9;
+
+bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
+    void *cvode_mem, double t, N_Vector y, int ns,
+    const std::vector<const NetworkModel::StateSwitch *> &switches) {
+    double *y_data = N_VGetArrayPointer(y);
+    const std::vector<double> x(y_data, y_data + ns);
+    sunrealtype h_next = 0.0;
+    CVodeGetCurrentStep(cvode_mem, &h_next);
+    const double h = std::fabs(static_cast<double>(h_next));
+    auto &eval = model.evaluator();
+    std::vector<double> f0(static_cast<std::size_t>(ns), 0.0);
+    model.compute_derivs(t, x.data(), f0.data());
+
+    struct Stalled {
+        const NetworkModel::StateSwitch *sw;
+        double dir; // the sign the residual takes on the far side
+    };
+    std::vector<Stalled> stalled;
+    std::vector<double> gx;
+    double carry = 0.0;
+    for (const NetworkModel::StateSwitch *sw : switches) {
+        double scale = 0.0;
+        const double flow =
+            residual_flow(sw->residual_expr_idx, sw->species, t, ns, x, f0, gx, scale);
+        const double g = eval.evaluate(sw->residual_expr_idx);
+        double ulp = 0.0;
+        for (int j : sw->species) {
+            const auto uj = static_cast<std::size_t>(j);
+            const double size = std::fabs(x[uj]);
+            ulp += std::fabs(gx[uj]) *
+                   (std::nextafter(size, std::numeric_limits<double>::infinity()) - size);
+        }
+        if (!std::isfinite(g) || !std::isfinite(flow) || flow == 0.0 || !(ulp > 0.0)) {
+            continue;
+        }
+        const double reach = kStalledSwitchUlps * ulp;
+        if (std::fabs(g) > reach || h * std::fabs(flow) > reach) {
+            continue; // not on the surface, or the steps still move it
+        }
+        if (g != 0.0 && g * flow > 0.0) {
+            continue; // already past, and leaving
+        }
+        carry = std::max(carry, (std::fabs(g) + reach) / std::fabs(flow));
+        stalled.push_back({sw, flow > 0.0 ? 1.0 : -1.0});
+    }
+    sync_model_at(t, x.data(), ns);
+    if (stalled.empty() || !(carry <= kStalledSwitchCarry * std::max(std::fabs(t), 1.0))) {
+        return false;
+    }
+    std::vector<double> xc(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f1(static_cast<std::size_t>(ns), 0.0);
+    bool across = false;
+    for (int attempt = 0; attempt < 4 && !across; ++attempt, carry *= 4.0) {
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            xc[ui] = x[ui] + carry * f0[ui];
+        }
+        model.compute_derivs(t, xc.data(), f1.data());
+        across = true;
+        for (const Stalled &one : stalled) {
+            double scale = 0.0;
+            const double flow =
+                residual_flow(one.sw->residual_expr_idx, one.sw->species, t, ns, xc, f1, gx, scale);
+            const double g = eval.evaluate(one.sw->residual_expr_idx);
+            across = across && g * one.dir > 0.0 && flow * one.dir > 0.0;
+        }
+    }
+    if (!across) {
+        sync_model_at(t, x.data(), ns);
+        return false;
+    }
+    std::copy(xc.begin(), xc.end(), y_data);
+    sync_model_at(t, y_data, ns);
+    const int rf = reinit_cvode(cvode_mem, static_cast<sunrealtype>(t), y);
+    if (rf != CV_SUCCESS) {
+        throw std::runtime_error("CVodeReInit past a stalled state-switch crossing failed: " +
+                                 std::to_string(rf));
+    }
+    return true;
+}
+
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     void *cvode_mem, N_Vector y, int ns, double t_evt,
     const std::vector<const NetworkModel::StateSwitch *> &batch,
@@ -9016,6 +9128,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const bool one_step = step_for_floor && !stop_at_switch;
             sunrealtype t_ret;
             flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
+
+            // Issue #928: a whole batch of steps spent pinned on a state-switch
+            // surface. The state is carried across and the run goes on from
+            // there; anything else is left to the retry below.
+            if (flag == CV_TOO_MUCH_WORK && sens.n_total == 0 && n_state_switch > 0 &&
+                impl_->carry_across_stalled_state_switch(cvode_mem, static_cast<double>(t_ret), y,
+                                                         ns, state_switches)) {
+                std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
+                t_now = t_ret;
+                continue;
+            }
 
             // CV_TOO_MUCH_WORK is normally recoverable — max_steps is a batch
             // size per output point, not a ceiling on the run — so retry, but
