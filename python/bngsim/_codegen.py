@@ -8942,7 +8942,7 @@ def _functional_comoving_plan(
                     if c_text is not None:
                         slot[virtual] = c_text
 
-    def by_index(table: dict[str, set]) -> list[str]:
+    def by_index(table: dict[str, dict]) -> list[str]:
         return sorted(table, key=lambda a: scope.param_idx_by_name[scope.param_of_alias[a]])
 
     # The primaries first: exactly the cases the model had before issue #750.
