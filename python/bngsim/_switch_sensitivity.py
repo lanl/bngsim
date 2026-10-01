@@ -546,6 +546,22 @@ def _unit_rate_clock_species(core, ctx=None) -> dict[str, int]:
     clock_idx = _unit_rate_clock_indices(core)
     if not clock_idx:
         return {}
+    # What a rate law reads under a species' name is its amount when the species
+    # is declared in substance units: the stored value times its compartment's
+    # size. In a compartment of size 2 that moves at 2 per unit time and is no
+    # unit-rate clock, though the stored value is. Read as one, its threshold
+    # was crossed at the wrong time: an onset `T >= 3` was jumped at t = 3,
+    # where it is at 1.5.
+    from bngsim._codegen import _amount_volume_factors
+
+    try:
+        scaled, _live = _amount_volume_factors(core.codegen_data()["species"])
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("switch-time: species volumes unavailable: %s", exc)
+        return {}
+    clock_idx = frozenset(i for i in clock_idx if scaled.get(i, 1.0) == 1.0)
+    if not clock_idx:
+        return {}
 
     symbols: dict[str, int] = {}
     for i, name in enumerate(core.species_names):
