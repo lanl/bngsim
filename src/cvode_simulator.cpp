@@ -7776,6 +7776,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (budget.active())
                 budget.check();
 
+            // An output the run already stands past. CVODE returns a stop time
+            // in place of an output within its own roundoff of it, so a stop a
+            // few ulp after t_out[i-1] can leave t_now past t_out[i] as well.
+            // There is nothing to integrate, and asking for the output would be
+            // asking CVODE to step backwards, which it refuses while a later
+            // stop time is armed (issue #737: two outputs 200 and 59 ulp before
+            // a switch, and a second switch 141 ulp after it).
+            if (static_cast<double>(t_now) >= t_out[i]) {
+                break;
+            }
+
             // Pick the next stop: the earliest pending apply_time strictly
             // inside (t_now, t_out[i]], else t_out[i] itself.
             double t_target = t_out[i];

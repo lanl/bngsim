@@ -2596,7 +2596,7 @@ def _resolve_step_edge_stop_times(
                     jumps.append(tn)
         merged: list[float] = []
         for tn in sorted([*edges, *jumps]):
-            if not merged or tn - merged[-1] > 1e-12 * max(abs(tn), 1.0):
+            if not merged or not _same_instant(tn, merged[-1]):
                 merged.append(tn)
         edges = merged
 
@@ -2867,7 +2867,7 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
     found.sort(key=lambda stop: stop.time)
     out: list[CrossingStop] = []
     for stop in found:
-        if not out or abs(stop.time - out[-1].time) > 1e-12 * max(abs(stop.time), 1.0):
+        if not out or not _same_instant(stop.time, out[-1].time):
             out.append(stop)
         elif stop.clock_species_idx >= 0 and out[-1].clock_species_idx < 0:
             # Two conditions crossing at one instant, one on a counter and
@@ -4471,10 +4471,13 @@ _INSTANT_ULPS = 64.0
 def _same_instant(a: float, b: float) -> bool:
     """Whether the core's clock nudge about ``a`` can reach ``b`` (issue #737).
 
-    Twice the core's reach, so that a crossing time this module and the core
-    round differently by an ulp is still on the safe side.
+    The core's reach and a few ulp, so that a crossing time this module and the
+    core round differently in the last place is still on the safe side. Not
+    more: a pair grouped here has to be isolated, and two thresholds that share
+    their only parameter cannot be, so every pair grouped beyond the nudge's
+    reach is a run refused for nothing.
     """
-    return abs(a - b) <= 2.0 * _INSTANT_ULPS * _EPS * max(abs(a), abs(b), 1.0)
+    return abs(a - b) <= (_INSTANT_ULPS + 4.0) * _EPS * max(abs(a), abs(b), 1.0)
 
 
 def _instant_groups(found: Sequence[_Crossing]) -> list[list[_Crossing]]:

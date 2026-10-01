@@ -36,6 +36,34 @@ TWO = (
 )
 DAILY = [float(t) for t in range(101)]
 
+COUNTER = """\
+begin parameters
+    1 c0 1e6
+    2 thr1 1000001
+    3 thr2 {thr2!r}
+    4 k1 2
+    5 k2 3
+    6 one 1
+end parameters
+begin functions
+    1 f1() if(Cobs>=thr1,k1,0)
+    2 f2() if(Cobs>=thr2,k2,0)
+end functions
+begin species
+    1 C() c0
+    2 X() 0
+    3 Y() 0
+end species
+begin reactions
+    1 0 1 one
+    2 0 2 f1
+    3 0 3 f2
+end reactions
+begin groups
+    1 Cobs 1
+end groups
+"""
+
 
 def _sens(text, params, times, exact=None):
     """`exact` sets parameters to the double itself: a value written into the
@@ -136,6 +164,63 @@ def test_a_fixed_crossing_just_after_an_output_time(sens, k):
         np.testing.assert_allclose(s, [100.0 - tau, 0.0], rtol=1e-9, atol=1e-12)
 
 
+def test_two_outputs_just_before_a_switch_and_a_second_switch_just_after():
+    """Outputs 200 and 59 ulp before s1 = 35, and s2 141 ulp after it. CVODE
+    returns the stop at s1 in place of the first of those outputs, which is
+    within its roundoff of it, so the run then stands past the second output as
+    well. Asking for that output asked CVODE to step backwards with s2's stop
+    armed ahead, which it refuses (the review of this fix). Main takes both
+    switches at the first stop and loses s2's jump."""
+    text = (
+        "species X, Y; X = 0; Y = 0; k1 = 2; k2 = 3; s1 = 35; s2 = 35.000000000001\n"
+        "J1: -> Y; piecewise(k2, time > s2, 0)\n"
+        "J0: -> X; piecewise(k1, time > s1, 0)\n"
+    )
+    times = sorted([*(10.0 * i for i in range(11)), 35 - 1.42e-12, 35 - 4.19e-13])
+    s, _ = _sens(text, ["s1", "s2"], times)
+    np.testing.assert_allclose(s["X"][-1], [-2.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(s["Y"][-1], [0.0, -3.0], atol=1e-9)
+
+
+@pytest.mark.parametrize("gap", [2.7e-11, 4.5e-12])
+def test_two_fixed_crossings_a_hair_apart_each_get_a_stop(gap):
+    """Two rate laws that switch on at literal times 40.5 and 40.5 + gap. The
+    detector merged fixed crossings within 1e-12 of their size into one stop,
+    far wider than the core's instant, so the second jump had none and a plain
+    run ended in CVODE's no-progress error."""
+    text = (
+        "species X, Y; X = 0; Y = 0; k = 1000\n"
+        "J0: -> X; piecewise(k, time >= 40.5, 0)\n"
+        f"J1: -> Y; piecewise(k, time >= {40.5 + gap!r}, 0)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode").run(sample_times=DAILY, rtol=1e-10, atol=1e-12)
+    x = np.asarray(run.species)[-1]
+    np.testing.assert_allclose(x, [1000 * 59.5, 1000 * (59.5 - gap)], rtol=1e-9)
+
+
+@pytest.mark.parametrize("d", [1.85e-8, 2.84e-8])
+def test_two_counter_thresholds_on_one_parameter_outside_the_nudge(tmp_path, d):
+    """thr1 and thr1 + d on a counter that starts at 1e6, with d a little over
+    the nudge of 1.4e-8. The nudge about one does not reach the other, so they
+    need no isolation, and they have no private parameter to isolate on. A
+    grouping reach of twice the nudge refused this run, which is right on
+    main (the review of this fix)."""
+    path = tmp_path / "counter_shared.net"
+    path.write_text(
+        COUNTER.format(thr2=d)
+        .replace("3 thr2", "3 d")
+        .replace("if(Cobs>=thr2,k2,0)", "if(Cobs>=(thr1+d),k2,0)")
+    )
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["thr1", "d"]
+    ).run(t_span=(0.0, 4.0), n_points=5, rtol=1e-10, atol=1e-12)
+    names = list(run.species_names)
+    s = np.asarray(run.sensitivities)[-1]
+    np.testing.assert_allclose(s[names.index("X()")], [-2.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(s[names.index("Y()")], [-3.0, -3.0], atol=1e-9)
+
+
 # ─── what the nudge flips together is one group ─────────────────────────────
 
 
@@ -167,35 +252,6 @@ def test_two_switches_inside_the_nudge_below_t_equal_one():
     s, _ = _sens(TWO.format(s1=s1, s2=s2), ["s1", "s2"], DAILY)
     np.testing.assert_allclose(s["X"][-1], [-2.0, 0.0], atol=1e-9)
     np.testing.assert_allclose(s["Y"][-1], [0.0, -3.0], atol=1e-9)
-
-
-COUNTER = """\
-begin parameters
-    1 c0 1e6
-    2 thr1 1000001
-    3 thr2 {thr2!r}
-    4 k1 2
-    5 k2 3
-    6 one 1
-end parameters
-begin functions
-    1 f1() if(Cobs>=thr1,k1,0)
-    2 f2() if(Cobs>=thr2,k2,0)
-end functions
-begin species
-    1 C() c0
-    2 X() 0
-    3 Y() 0
-end species
-begin reactions
-    1 0 1 one
-    2 0 2 f1
-    3 0 3 f2
-end reactions
-begin groups
-    1 Cobs 1
-end groups
-"""
 
 
 @pytest.mark.parametrize("gap", [5e-9, 2e-10])
@@ -239,7 +295,7 @@ def test_the_grouping_is_by_the_reach_of_the_nudge():
     assert _q(35.0) == _q(35.0 + 1e-12) and not sw._same_instant(35.0, 35.0 + 1e-12)
     assert _sizes([_C(35.0), _C(35.0 + 1e-12)]) == [2]
     # Grouping chains: a-b and b-c within reach puts all three together.
-    step = 100 * np.spacing(35.0)
+    step = 60 * np.spacing(35.0)
     assert _sizes([_C(35.0), _C(35.0 + step), _C(35.0 + 2 * step)]) == [3]
 
 
