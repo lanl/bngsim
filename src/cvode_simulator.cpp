@@ -2027,8 +2027,8 @@ constexpr double kSwitchInstantUlps = 64.0;
 // Jacobian carries the switch's jump at the pre-event state onto its jump at the
 // post-event state (issue #767). The two are compared row by row, to what they
 // can be read to: this fraction of the jumps themselves, this many ulp of the
-// flows they were differenced from, and a jump that is this fraction of the
-// state per unit of time is no jump at all.
+// flows they were differenced from, and a jump that moves a row by under this
+// fraction of its state over the event time is no jump at all.
 constexpr double kEventJumpRelTol = 1e-8;
 constexpr double kEventJumpUlps = 1e3;
 constexpr double kEventJumpFloor = 1e-12;
@@ -5946,9 +5946,13 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             jump_at(probe, x_later, probe.jump_plus, probe.scale, probe.noise);
         }
     }
-    // What a jump in dx/dt has to exceed to be one: a fraction of the state per
-    // unit of time. A rate law that vanishes to second order at the instant
-    // leaves 1e-26 in the second difference, beside flows of the same size.
+    // What a jump in dx/dt has to exceed to be one, row by row: over the event
+    // time it has to move the row by 1e-12 of its own state, or by its absolute
+    // tolerance where the state is smaller than that (a species still at 0).
+    // A rate law that vanishes to second order at the instant leaves 1e-26 in
+    // the second difference, beside flows of the same size. The tolerance is
+    // capped at 1e-12 of the largest state, for a model whose states are all
+    // far below it.
     double state_size = 0.0;
     if (!probes.empty()) {
         for (int i = 0; i < ns; ++i) {
@@ -5956,7 +5960,14 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             state_size = std::max({state_size, std::fabs(x_minus[ui]), std::fabs(x_post[ui])});
         }
     }
-    const double jump_floor = kEventJumpFloor * state_size / time_size;
+    const double atol_all = (opts.atol > 0) ? opts.atol : this->atol;
+    const std::vector<double> &atol_each = resolve_atol_vec(opts);
+    auto jump_floor = [&](size_t ui) {
+        const double own = std::max(std::fabs(x_minus[ui]), std::fabs(x_post[ui]));
+        const double atol_row = atol_each.empty() ? atol_all : atol_each[ui];
+        return std::max(kEventJumpFloor * own, std::min(atol_row, kEventJumpFloor * state_size)) /
+               time_size;
+    };
     for (size_t q = 0; q < probes.size(); ++q) {
         const CommuteProbe &probe = probes[q];
         for (int i = 0; i < ns; ++i) {
@@ -5964,7 +5975,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             const double carried = assigned[ui] != 0 ? probe_image[q][ui] : probe.jump_minus[ui];
             const double tol =
                 kEventJumpRelTol * std::max(std::fabs(carried), std::fabs(probe.jump_plus[ui])) +
-                kEventJumpUlps * eps_d * probe.scale[ui] + jump_floor + probe.noise[ui] +
+                kEventJumpUlps * eps_d * probe.scale[ui] + jump_floor(ui) + probe.noise[ui] +
                 (assigned[ui] != 0 ? probe_noise[q][ui] : 0.0);
             if (std::fabs(carried - probe.jump_plus[ui]) <= tol) {
                 continue;

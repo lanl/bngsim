@@ -359,12 +359,13 @@ KINKS = {
         "E1: at (time >= tau): X = X + 2\n",
         "tau",
     ),
-    # A flux of 1e8 in another species: the jump is small beside it, not small.
+    # A flux of 1e14 in another species: the jump is small beside it, not small.
+    # Each row is held to the rounding of its own flows.
     "beside-a-large-flux": (
         "species X, Y, W; X = 0; Y = 0; W = 0; a = 2; k = 0.5; tau = 3\n"
         "J0: -> X; a\n"
         "J1: -> Y; piecewise(k*X, time >= 3, 0)\n"
-        "J2: -> W; 1e8\n"
+        "J2: -> W; 1e14\n"
         "E1: at (time >= tau): X = 0\n",
         "tau",
     ),
