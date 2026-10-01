@@ -119,13 +119,16 @@ def test_a_value_with_no_derivative_where_it_is_read_is_refused(kink):
     _refused(text, [param], 5.0, where)
 
 
-def test_a_bend_in_a_species_the_column_moves_is_refused():
-    """A decays through 1 at t = 1, where the event reads ``max(A − 1, 0)``:
-    dB/dkd is 0 from one side and −1 from the other. It came back −0.5."""
+@pytest.mark.parametrize("value", ["max(A - 1, 0)", "abs(A - 1)"])
+def test_a_bend_in_a_species_the_column_moves_is_refused(value):
+    """A decays through 1 at t = 1, where the event reads the value. For
+    ``max(A − 1, 0)`` dB/dkd is 0 from one side and −1 from the other, and it
+    came back −0.5. For ``abs(A − 1)`` it is +1 and −1, and it came back 0: the
+    difference across the bend is 0, which is not a reason to skip it."""
     text = (
         "species B, A; B = 0; A = 2.718281828459045; kd = 1\n"
         "J0: A -> ; kd*A\n"
-        "E1: at (time >= 1): B = max(A - 1, 0)\n"
+        f"E1: at (time >= 1): B = {value}\n"
     )
     _refused(text, ["kd"], 5.0, "the species 'A'")
 
