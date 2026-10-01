@@ -102,6 +102,34 @@ def test_a_switch_just_after_the_start_of_the_run(tau):
     np.testing.assert_allclose(s["X"][1:, 0], -2.0, rtol=1e-9)
 
 
+@pytest.mark.parametrize("sens", [False, True], ids=["plain", "sensitivities"])
+@pytest.mark.parametrize("k", [1e6, 1e12])
+def test_a_fixed_crossing_just_after_an_output_time(sens, k):
+    """The same window decided when a crossing no parameter moves had been
+    reached (issue #305's stop). With the jump in the rate law at 30.00000005
+    and an output at 30, the output's return was taken for the crossing, the
+    run restarted there, and the real jump 5e-8 later had no stop: the step
+    across it cannot pass the error test, and the run ended in CVODE's
+    no-progress error, with or without sensitivities."""
+    tau = 30.00000005
+    text = (
+        f"species X, Y; X = 0; Y = 1; k = {k!r}; d = 0.3\n"
+        f"J0: -> X; piecewise(k, time >= {tau!r}, 0)\n"
+        "J1: Y -> ; d*Y*X\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    kw = {"sensitivity_params": ["k", "d"]} if sens else {}
+    run = bngsim.Simulator(model, method="ode", **kw).run(
+        sample_times=DAILY, rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    x = np.asarray(run.species)[-1, names.index("X")]
+    assert x == pytest.approx(k * (100.0 - tau), rel=1e-9)
+    if sens:
+        s = np.asarray(run.sensitivities)[-1, names.index("X")]
+        np.testing.assert_allclose(s, [100.0 - tau, 0.0], rtol=1e-9, atol=1e-12)
+
+
 # ─── what the nudge flips together is one group ─────────────────────────────
 
 
@@ -134,6 +162,53 @@ def test_two_switches_inside_the_nudge_below_t_equal_one():
     s, _ = _sens(TWO.format(s1=s1, s2=s2), ["s1", "s2"], DAILY)
     np.testing.assert_allclose(s["X"][-1], [-2.0, 0.0], atol=1e-9)
     np.testing.assert_allclose(s["Y"][-1], [0.0, -3.0], atol=1e-9)
+
+
+COUNTER = """\
+begin parameters
+    1 c0 1e6
+    2 thr1 1000001
+    3 thr2 {thr2!r}
+    4 k1 2
+    5 k2 3
+    6 one 1
+end parameters
+begin functions
+    1 f1() if(Cobs>=thr1,k1,0)
+    2 f2() if(Cobs>=thr2,k2,0)
+end functions
+begin species
+    1 C() c0
+    2 X() 0
+    3 Y() 0
+end species
+begin reactions
+    1 0 1 one
+    2 0 2 f1
+    3 0 3 f2
+end reactions
+begin groups
+    1 Cobs 1
+end groups
+"""
+
+
+@pytest.mark.parametrize("gap", [5e-9, 2e-10])
+def test_two_thresholds_on_a_counter_clock_inside_its_nudge(tmp_path, gap):
+    """A counter that starts at 1e6 is nudged by 64 ulp of 1e6, about 1.4e-8,
+    to read a crossing. Two thresholds on it `gap` apart are both inside that,
+    while their crossing times, `gap` apart at t = 1, are two instants and two
+    12-digit keys. So neither was isolated and each column took both jumps:
+    d[X, Y]/dthr1 came out [-2, -3]."""
+    path = tmp_path / "counter.net"
+    path.write_text(COUNTER.format(thr2=1000001.0 + gap))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["thr1", "thr2"]
+    ).run(t_span=(0.0, 4.0), n_points=5, rtol=1e-10, atol=1e-12)
+    names = list(run.species_names)
+    s = np.asarray(run.sensitivities)[-1]
+    np.testing.assert_allclose(s[names.index("X()")], [-2.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(s[names.index("Y()")], [0.0, -3.0], atol=1e-9)
 
 
 class _C:
