@@ -1321,6 +1321,18 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     nv[a] = eval_ref.evaluate(assigns[a].second);
                 }
             }
+            // A concentration assigned to a species stored as amount/V_static
+            // in a moving compartment is stored as c·V_live/V_static, V_live as
+            // it stands when this event executes, before its own assignments
+            // (a resize among them included) apply (issue #741).
+            for (size_t a = 0; a < assigns.size(); ++a) {
+                const int sp = assigns[a].first;
+                if (sp < 0 || sp >= ns)
+                    continue;
+                const Species &sv = model.species()[static_cast<size_t>(sp)];
+                if (sv.ssa_live_volume_idx0 >= 0 && sv.ssa_live_volume_idx0 < ns)
+                    nv[a] *= conc[sv.ssa_live_volume_idx0] / sv.volume_factor;
+            }
             for (size_t a = 0; a < assigns.size(); ++a) {
                 // GH #81 (Tier 1): skip ODE-only assignments under SSA. The
                 // SBML loader marks the per-species `s := s·V_old/V_new`

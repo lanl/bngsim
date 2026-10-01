@@ -115,6 +115,10 @@ class ModelBuilder:
         """
         GH #231 (rateOf): mark a hasOnlySubstanceUnits=true species so its rateOf csymbol reports the amount-rate (volume_factor * stored-rate) instead of the stored d(conc)/dt. Correct for constant- and variable-volume compartments alike (the integrator stores amount/V_static). No-op if species_idx0 is out of range.
         """
+    def set_species_ssa_live_volume(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, live_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #741: under SSA/PSA, an event assignment of a concentration to this species is stored as value * conc[live_idx0] / volume_factor (V_live / V_static). No-op if species_idx0 is out of range.
+        """
     def set_species_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex, initial_amount: typing.SupportsFloat | typing.SupportsIndex = ...) -> None:
         """
         Issue #170: bind a species' storage convention to the compartment-size PARAMETER it came from, so set_param re-derives volume_factor (and, when initial_amount is given, the stored IC = amount/V) instead of leaving them at their load-time values. No-op if species_idx0 is out of range.

@@ -2739,6 +2739,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "species. compute_derivs divides this species's per-species accumulation by "
              "conc[live_idx0] (the promoted compartment species = V_live) instead of its "
              "static volume_factor. No-op if species_idx0 is out of range.")
+        .def("set_species_ssa_live_volume", &bngsim::ModelBuilder::set_species_ssa_live_volume,
+             py::arg("species_idx0"), py::arg("live_idx0"),
+             "Issue #741: under SSA/PSA, an event assignment of a concentration to this "
+             "species is stored as value * conc[live_idx0] / volume_factor (V_live / "
+             "V_static). No-op if species_idx0 is out of range.")
         .def("set_species_rateof_amount", &bngsim::ModelBuilder::set_species_rateof_amount,
              py::arg("species_idx0"),
              "GH #231 (rateOf): mark a hasOnlySubstanceUnits=true species so its rateOf "

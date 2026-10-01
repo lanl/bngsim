@@ -78,6 +78,15 @@ struct Species {
     // unaffected. Default -1 ⇒ use volume_factor (byte-identical to pre-#144).
     int ode_live_volume_idx0 = -1;
 
+    // Issue #741 — under SSA an hOSU=false species in a rate-rule or
+    // event-resized compartment is stored as amount/V_static (the count is
+    // conserved across a resize). An event assigning it a concentration c
+    // therefore stores c·V_live/V_static, V_live read just before the event's
+    // assignments apply. When >= 0, the 0-based index of the promoted
+    // compartment species holding V_live; volume_factor is V_static. Read only
+    // by the SSA/PSA event path.
+    int ssa_live_volume_idx0 = -1;
+
     // GH #231 (rateOf sub-cluster 3) — when true, the SBML ``rateOf`` csymbol for
     // this species reports d(amount)/dt, NOT the stored d(conc)/dt the rateOf
     // buffer holds by default. A hasOnlySubstanceUnits=true species's symbol

@@ -153,6 +153,11 @@ class ModelBuilder {
     /// No-op if species_idx0 is out of range.
     void set_species_ode_live_volume(int species_idx0, int live_idx0);
 
+    /// Issue #741: under SSA/PSA, an event assignment of a concentration to this
+    /// species is stored as value·conc[live_idx0]/volume_factor (V_live/V_static).
+    /// No-op if species_idx0 is out of range.
+    void set_species_ssa_live_volume(int species_idx0, int live_idx0);
+
     /// GH #231 (rateOf sub-cluster 3): mark a hasOnlySubstanceUnits=true species
     /// in a CONSTANT-volume compartment so its rateOf csymbol reports the
     /// amount-rate (volume_factor·d(conc)/dt) instead of the stored d(conc)/dt.

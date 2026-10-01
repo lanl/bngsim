@@ -7883,6 +7883,19 @@ def _build_model_from_sbml_doc(doc):
     # resolvable here, after §10. ODE: each varvol hOSU=false species divides by its
     # live compartment volume in compute_derivs. SSA: a per-compartment propensity
     # correction (V_static / V_live)^m_c.
+    # (#741) SSA: an event's assignment of a concentration to an hOSU=false
+    # species in a rate-rule or event-resized compartment, stored as
+    # amount/V_static under SSA, is stored as value·V_live/V_static.
+    for _sid, _cid in species_comp.items():
+        if (
+            _cid in (rate_rule_comps | event_resize_comps)
+            and _sid in species_idx
+            and not species_hosu.get(_sid, False)
+            and _sid not in rate_rule_targets
+            and _sid not in assignment_targets
+            and species_idx.get(_cid) is not None
+        ):
+            builder.set_species_ssa_live_volume(species_idx[_sid], species_idx[_cid])
     for _sp_idx, _comp_id in ode_xcomp_species_fixups:
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:

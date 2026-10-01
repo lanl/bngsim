@@ -1984,13 +1984,31 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
     }
 }
 
+// Issue #936 — the concentration rescale a compartment resize injects (ode_only,
+// GH #74) for a species the event does not assign itself conserves the amount
+// the species has when the resize EXECUTES. An earlier event of the same
+// instant may have assigned it since the batch was seeded, so it reads the
+// state at execution whatever the event's useValuesFromTriggerTime. (The
+// rescale of a species the event does assign carries that assignment's value,
+// and keeps its timing.)
+static bool rescale_reads_execution_state(const Event &ev, std::size_t a) {
+    if (a >= ev.assignment_ode_only.size() || !ev.assignment_ode_only[a])
+        return false;
+    const int sp = ev.assignments[a].first;
+    for (std::size_t b = 0; b < ev.assignments.size(); ++b)
+        if (b != a && ev.assignments[b].first == sp)
+            return false;
+    return true;
+}
+
 // One immediate fire of a same-instant event batch, in the order the batch
 // executed (issue #722). The sensitivity jump composes the batch from these.
 struct ExecutedEventFire {
     int event_idx = -1;
     // Its assignment values were frozen at the trigger time (SBML
     // useValuesFromTriggerTime), so they read the pre-batch state. Otherwise
-    // they read the state the earlier fires of the batch left.
+    // they read the state the earlier fires of the batch left, as a resize's
+    // rescale always does (rescale_reads_execution_state).
     bool from_trigger_time = true;
     std::vector<double> values; // what each assignment wrote, in declaration order
 };
@@ -5403,19 +5421,25 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     };
     std::vector<RowResult> rows;
 
+    const std::vector<double> xm(x_minus.begin(), x_minus.end());
     for (const ExecutedEventFire &fire : executed) {
         const auto &ev = events_outer[fire.event_idx];
-        const bool at_trigger = fire.from_trigger_time;
-        // The state this fire's values were read at.
-        xread = at_trigger ? std::vector<double>(x_minus.begin(), x_minus.end()) : xrun;
-        xwork = xread;
-        sync_state();
         rows.clear();
-        for (const auto &asg : ev.assignments) {
+        for (size_t a = 0; a < ev.assignments.size(); ++a) {
+            const auto &asg = ev.assignments[a];
             const int k = asg.first;      // assigned species (0-based)
             const int vexpr = asg.second; // value expression id
             if (k < 0 || k >= ns) {
                 continue;
+            }
+            // The state this value was read at: the pre-batch one for a value
+            // frozen at the trigger, else the one the earlier fires left.
+            const bool at_trigger = fire.from_trigger_time && !rescale_reads_execution_state(ev, a);
+            const std::vector<double> &want = at_trigger ? xm : xrun;
+            if (xread != want) {
+                xread = want;
+                xwork = xread;
+                sync_state();
             }
             // Restrict the FD to what the assignment value can actually be
             // moved by — species and parameters, each followed through the
@@ -8270,6 +8294,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             std::vector<double> nv(assigns.size());
             if (ev.use_values_from_trigger_time) {
                 nv = queue[k].snapshot_vals;
+                for (size_t a = 0; a < assigns.size(); ++a)
+                    if (rescale_reads_execution_state(ev, a))
+                        nv[a] = eval_ref_outer.evaluate(assigns[a].second);
             } else {
                 for (size_t a = 0; a < assigns.size(); ++a) {
                     nv[a] = eval_ref_outer.evaluate(assigns[a].second);
@@ -9638,9 +9665,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         // stale trigger-time amount, corrupting it by V_old/V_new
                         // at the wrong volume. Evaluating the rescale fresh here
                         // reproduces the (correct) UVFTT=false apply path exactly.
-                        const bool ode_only =
-                            a < ev_pe.assignment_ode_only.size() && ev_pe.assignment_ode_only[a];
-                        double nv = (use_frozen && !ode_only)
+                        // Not the rescale of a species the event assigns itself:
+                        // that carries the assigned value, frozen at the trigger
+                        // like the assignment (issue #936).
+                        double nv = (use_frozen && !rescale_reads_execution_state(ev_pe, a))
                                         ? pe.frozen_values[a]
                                         : eval_ref.evaluate(assigns[a].second);
                         y_data[sp_idx0] = nv;

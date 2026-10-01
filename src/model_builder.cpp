@@ -557,6 +557,12 @@ void ModelBuilder::set_species_ode_live_volume(int species_idx0, int live_idx0) 
     bimpl_->species[species_idx0].ode_live_volume_idx0 = live_idx0;
 }
 
+void ModelBuilder::set_species_ssa_live_volume(int species_idx0, int live_idx0) {
+    if (species_idx0 < 0 || species_idx0 >= static_cast<int>(bimpl_->species.size()))
+        return;
+    bimpl_->species[species_idx0].ssa_live_volume_idx0 = live_idx0;
+}
+
 void ModelBuilder::set_species_rateof_amount(int species_idx0) {
     if (species_idx0 < 0 || species_idx0 >= static_cast<int>(bimpl_->species.size()))
         return;
