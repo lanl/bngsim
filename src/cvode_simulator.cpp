@@ -5994,6 +5994,14 @@ static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
+// Where both branches are extended to the root, what a reader's flux changes by
+// there is a step or rounding (issue #917). The rounding allowed for is this
+// many times what one ulp of each species the switch's residual reads moves
+// that flux by: a rate law that is a small difference of its operands,
+// `k*(Vx - 5)` at Vx = 5, rounds by its operands and not by its value. A flux
+// that does not move with them, `ksyn + if(…, kb, 0)`, is allowed none, however
+// large ksyn is.
+static constexpr double kStateSwitchOperandRoundoff = 16.0;
 // Issue #763: on the TANGENT path, a branch gap below this many ulps of the
 // switched reactions' gross flux (the absolute sum of their terms) is the final
 // rounding of the two sums it is read from, one per side, not a jump. There a
@@ -7224,21 +7232,60 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             const double step = 2.0 * dt * quantum / std::fabs(one.g_hi - one.g_lo);
             return std::isfinite(step) ? std::min(step, dt) : dt;
         };
+        // What one ulp of each species `one`'s residual reads, and of the time,
+        // moves its reactions' flux by. Read on the before-branch at −2δt, which
+        // is 512 ulp of the flow from the surface, so an ulp does not cross it.
+        auto operand_roundoff = [&](const Reader &one, std::vector<double> &out) {
+            out.assign(n_sp, 0.0);
+            std::vector<double> far_state(n_sp, 0.0);
+            std::vector<double> moved(n_sp, 0.0);
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                far_state[u] = x[u] - 2.0 * dt * f0[u];
+            }
+            const double t_far = t_evt - 2.0 * dt;
+            auto read = [&](const std::vector<double> &state, double t) {
+                sync(state, t);
+                moved.assign(n_sp, 0.0);
+                model.compute_flux_split(t, state.data(), one.rxns, moved.data(), nullptr);
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    out[u] += std::fabs(moved[u] - one.net[0][u]);
+                }
+            };
+            for (int j : one.sw->species) {
+                const auto uj = static_cast<std::size_t>(j);
+                xw.assign(far_state.begin(), far_state.end());
+                xw[uj] = std::nextafter(far_state[uj], std::numeric_limits<double>::infinity());
+                read(xw, t_far);
+            }
+            read(far_state, std::nextafter(t_far, std::numeric_limits<double>::infinity()));
+            sync(x, t_evt);
+        };
         for (Reader &r : readers) {
             const double root = dt * (r.g_lo + r.g_hi) / (r.g_lo - r.g_hi);
             r.root = std::isfinite(root) ? std::clamp(root, -dt, dt) : 0.0;
             const double w_lo = (r.root + dt) / dt;
             const double w_hi = (dt - r.root) / dt;
-            double slack = -1.0; // root_step(r), found only if a species needs it
+            double slack = -1.0;          // root_step(r), found only if a species needs it
+            std::vector<double> operands; // operand_roundoff(r), likewise
             for (std::size_t u = 0; u < n_sp; ++u) {
                 double change = r.net[1][u] - r.net[2][u];
+                // The drive tolerance is for the pair read as it stands, where
+                // a flux that vanishes on both branches differs across it by
+                // its slope times the crossing's speed. With both branches
+                // extended to the root that is out of the reading, and what is
+                // left besides a step is the rounding of the flux's operands,
+                // allowed for below. Held to the drive there, a step of 3 under
+                // a threshold species moving at 5e6 read as continuous and its
+                // saltation term was dropped (issue #917).
+                double tol_u = tol;
                 if (far_ok) {
                     const double before = r.net[1][u] + w_lo * (r.net[1][u] - r.net[0][u]);
                     const double after = r.net[2][u] + w_hi * (r.net[2][u] - r.net[3][u]);
                     change = before - after;
+                    tol_u = 0.0;
                 }
                 // Written so that a NaN reads as a jump.
-                if (!(std::fabs(change) <= tol)) {
+                if (!(std::fabs(change) <= tol_u)) {
                     if (far_ok) {
                         if (slack < 0.0) {
                             slack = kStateSwitchRootSlack * root_step(r);
@@ -7246,7 +7293,14 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         const double kink =
                             std::fabs((r.net[1][u] - r.net[0][u]) - (r.net[3][u] - r.net[2][u])) /
                             dt;
-                        if (std::fabs(change) <= tol + slack * kink) {
+                        if (std::fabs(change) <= tol_u + slack * kink) {
+                            continue;
+                        }
+                        if (operands.empty()) {
+                            operand_roundoff(r, operands);
+                        }
+                        if (std::fabs(change) <=
+                            tol_u + slack * kink + kStateSwitchOperandRoundoff * operands[u]) {
                             continue;
                         }
                     }
