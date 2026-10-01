@@ -12,9 +12,12 @@ sensitivity that is not small. A dose into it lost that sensitivity whole.
 The derivative by a parameter was taken the same way, over a millionth of the
 parameter: ``X = D + q*Y`` with q = 1e-9 gave ∂c/∂q = 0 for Y.
 
-Each difference is now taken a second time over a millionth of the value and
-kept where the two agree to the first one's rounding. Where they do not, the
-assignment is not linear over the wide step and the narrow one stands.
+Where the narrow difference keeps fewer than nine digits it is now taken again
+over a wider step: a millionth of the value, then a hundredth of that, down to
+the narrow one. A wide one is kept only where the value is straight across it,
+the two halves of the difference agreeing to rounding, and it agrees with the
+narrow one to the narrow one's rounding. Where none is straight the narrow one
+stands.
 
 Every expected value is a closed form.
 """
@@ -28,14 +31,15 @@ import pytest
 TIMES = [0.0, 1.5, 3.0, 4.5, 6.0]
 
 
-def _end_sens(text, params, **values):
+def _end_sens(text, params, species="X", **values):
     model = bngsim.Model.from_antimony_string(text)
     for name, value in values.items():
         model.set_param(name, value)
     run = bngsim.Simulator(model, method="ode", sensitivity_params=params).run(
         sample_times=TIMES, rtol=1e-10, atol=1e-14
     )
-    return np.asarray(run.species)[-1, 0], np.asarray(run.sensitivities)[-1, 0, :]
+    row = list(run.species_names).index(species)
+    return np.asarray(run.species)[-1, row], np.asarray(run.sensitivities)[-1, row, :]
 
 
 DOSE = (
@@ -119,3 +123,87 @@ def test_a_value_not_linear_in_the_parameter_over_the_wide_step_keeps_the_narrow
     )
     _x, s = _end_sens(text, ["q"])
     assert s[0] == pytest.approx(100.0 * 1e-4 / (1.1e-3) ** 2 * np.exp(-0.3), rel=1e-6)
+
+
+# ─── A value that bends inside a wide step ──────────────────────────────────
+
+RUN_DOWN = "species X, Z; X = 0; Z = 0; a = 2; left = 0; D = 100\nX = 6 + left\nJ0: X -> ; a\n"
+
+
+@pytest.mark.parametrize(
+    ("value", "left"),
+    [
+        ("D + max(0, X - 1e-5)", 0.0),
+        ("D + max(0, X - 1e-5)", 1e-9),
+        ("D + piecewise(1, X > 1e-5, 0)", 0.0),
+    ],
+    ids=["a-kink-above-the-state", "the-same-with-1e-9-left", "a-step-above-the-state"],
+)
+def test_a_bend_inside_the_widest_step_is_not_differenced_through(value, left):
+    """Control. Z is set to D plus something that is 0 until X passes 1e-5, and X
+    is at rounding or 1e-9: Z(6) = D whatever a is. A millionth of the value is
+    1e-4, wider than the bend, and a first cut that took any wide difference
+    within the narrow one's rounding returned −1.35, or −15000 for the step.
+    The value is not straight across that step, and the next one down is."""
+    _z, s = _end_sens(RUN_DOWN + f"E1: at (time >= 3): Z = {value}\n", ["a"], "Z", left=left)
+    assert s[0] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_kink_just_below_the_state_leaves_a_narrower_step():
+    """X = D + max(0, X) with X(3) = 3e-8. The value is straight only within
+    3e-8 of the state, and the third step down, 1e-8, is inside that: dX/da is
+    −6. The narrow difference alone, over 3e-14, gave −5.84."""
+    text = (
+        "species X; X = 0; a = 2; left = 0; D = 100\n"
+        "X = 6 + left\n"
+        "J0: X -> ; a\n"
+        "E1: at (time >= 3): X = D + max(0, X)\n"
+    )
+    _x, s = _end_sens(text, ["a"], left=3e-8)
+    assert s[0] == pytest.approx(-6.0, rel=1e-5)
+
+
+def test_a_parameter_below_a_kink_of_its_own():
+    """Control. X = D + Y·max(0, q − 1e-5) at q = 1e-9: the value does not move
+    with q. A first cut differenced through the kink and returned 1."""
+    text = (
+        "species X, Y; X = 1; Y = 3; q = 1e-9; D = 100\n"
+        "J0: X -> ; 0.1*X\n"
+        "E1: at (time >= 3): X = D + Y*max(0, q - 1e-5)\n"
+    )
+    _x, s = _end_sens(text, ["q"])
+    assert s[0] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_smooth_value_that_curves_inside_every_wide_step():
+    """Control. Z = 1 + X²/(K² + X²) at X = 1.1e-4 with K = 7.3e-8 curves over
+    any step the narrow difference's rounding would call for, so none is
+    straight and the narrow one stands, five digits as before. A first cut had
+    three."""
+    k, left = 7.326280016296051e-08, 0.00011010973369364596
+    text = (
+        "species X, Z; X = 0; Z = 0; a = 2; left = 0; K = 1\n"
+        "X = 6 + left\n"
+        "J0: X -> ; a\n"
+        "E1: at (time >= 3): Z = 1 + X^2/(K^2 + X^2)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    model.set_param("K", k)
+    model.set_param("left", left)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["left"]).run(
+        sample_times=TIMES, rtol=1e-10, atol=1e-30
+    )
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Z"), 0]
+    assert got == pytest.approx(2 * k * k * left / (k * k + left * left) ** 2, rel=3e-5)
+
+
+def test_a_ripple_the_widest_step_straddles():
+    """Control. Z = D + X + 1e-5·sin(2π·(X − 1e-3)/1e-4) at X = 1e-3. The widest step,
+    1e-4, is one period of the ripple: the value is straight across its three
+    points and the difference over it is 1, where the slope at the state is
+    1 + 2π/10. That step is passed over because it does not agree with the
+    narrow difference, and the next one down, a hundredth of the period, is
+    kept: dZ/da = −3·(1 + 2π/10). Kept on straightness alone it was −3."""
+    text = RUN_DOWN + "E1: at (time >= 3): Z = D + X + 1e-5*sin(2*pi*(X - 1e-3)/1e-4)\n"
+    _z, s = _end_sens(text, ["a"], "Z", left=1e-3)
+    assert s[0] == pytest.approx(-3.0 * (1.0 + 2.0 * np.pi / 10.0), rel=1e-5)

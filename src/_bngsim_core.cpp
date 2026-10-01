@@ -366,6 +366,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
                         return a.t_star < b.t_star;
                     });
                 self.crossing_stops = std::move(out);
+                // The probes belong to a set of stops. A caller that sets only
+                // these has none.
+                self.crossing_probes.clear();
             },
             py::arg("stops"),
             "Set the model times a fixed time-dependent `piecewise`/`if()` "

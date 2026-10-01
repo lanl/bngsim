@@ -176,13 +176,19 @@ bngsim measures whether the event and the switch commute, and refuses the run
 where they do not. A pair that commutes runs: a bolus beside an infusion that
 starts at the same time.
 
-An event on, or within a few hundred ulp of, a switch time that shares its
-instant with another switch is refused as well: which side of the event each is
-on cannot be read by moving the clock. Some of those runs have a derivative.
+Switches that share an instant with each other are asked together: the event
+has to commute with what that instant does as a whole. Back-to-back infusions
+with a bolus on the boundary run. A fixed switch within a few hundred ulp of an
+event that moves is asked too, so a pair that does not commute is refused a
+little before the two times coincide, where the derivative still exists.
 
-Two coincidences are not detected, and return a number: a `floor` step beside a
-fitted switch (issue #944), and a state-dependent switch that crosses within the
-integration tolerance of the event (issue #945).
+What is not detected returns a number:
+
+- a `floor` step on a fitted switch (issue #944);
+- a state-dependent switch that crosses within the integration tolerance of the
+  event (issue #945);
+- a parameter that moves the event by under 1e-9 of its time per unit relative
+  change, which counts as not moving it.
 
 ### Landing on the crossing
 
@@ -241,6 +247,14 @@ switches back to `S`. `S = V − c·f` is what every output reports. A parameter
 that moves no such crossing keeps its plain column. A model with no such power
 emits the code it always did, and that includes a logistic onset
 `1/(1+exp(-k*(t-on)))`, whose base is never 0.
+
+`β` carries the clock's share for every rate that reads a counter clock, not
+only for a rate law that names it: mass action with the clock species as a
+reactant, a rate law multiplied by it, a rate law reading an observable that
+sums it with other species, and a Michaelis–Menten rate with the clock as its
+enzyme or its substrate (issue #749). A derived onset, `on = lam*1.0`, gets a comoving column of
+its own when it is requested, as each parameter it is defined from does
+(issue #750).
 
 The comoving column is used when:
 
