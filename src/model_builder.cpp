@@ -258,10 +258,11 @@ strongly_connected_components(int n, const std::vector<std::vector<int>> &reads)
     return out;
 }
 
-// Does `expr` call the clock, `time()`? A bare `time` is not the clock but a
-// declared scalar of that name (issue #776), so the test is for the call: the
-// identifier, not part of a longer one, followed by `(`.
-static bool calls_time(const std::string &expr) {
+// Does `expr` read the clock? The call `time()` does, and so does a bare `time`
+// unless the model declares a scalar of that name (issue #776): ExprTk calls a
+// zero-argument function without its parentheses, so `if(time > 5, k, 0)` in a
+// hand-written `.net` reads the clock.
+static bool calls_time(const std::string &expr, bool time_declared) {
     for (size_t pos = expr.find("time"); pos != std::string::npos;
          pos = expr.find("time", pos + 1)) {
         const auto word = [&](size_t k) {
@@ -274,7 +275,7 @@ static bool calls_time(const std::string &expr) {
             continue;
         while (j < expr.size() && std::isspace(static_cast<unsigned char>(expr[j])))
             ++j;
-        if (j < expr.size() && expr[j] == '(')
+        if ((j < expr.size() && expr[j] == '(') || !time_declared)
             return true;
     }
     return false;
@@ -1997,9 +1998,11 @@ NetworkModel ModelBuilder::build() {
             if (dit != derived_param_node.end() && dit->second != k)
                 deps.insert(dit->second);
         });
-        // Only the call is the clock: a bare `time` is a declared scalar of that
-        // name (issue #776), read like any other parameter.
-        if (moving.empty() && calls_time(pk.expression))
+        // A declared scalar named `time` (issue #776) is read like any other
+        // parameter; otherwise `time`, called or bare, is the clock.
+        if (moving.empty() &&
+            calls_time(pk.expression, sd->param_name_to_idx.count("time") != 0 ||
+                                          sd->observable_name_to_idx.count("time") != 0))
             moving = "time()";
         // A parameter defined in terms of itself (issue #617). There is no value
         // it denotes, so there is nothing to build: `s = s*2` has no solution

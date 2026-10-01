@@ -1346,23 +1346,132 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
                                             std::make_pair(std::move(sp_out), std::move(pa_out)));
 }
 
-bool NetworkModel::reaction_rate_species_support(int rxn_idx0, std::vector<int> &out) const {
-    out.clear();
-    const auto &reactions = impl_->shared->reactions;
-    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(reactions.size()))
-        return false;
-    // A table function indexed by an observable reads its species, and no
-    // expression names them: the call is all the text shows.
-    for (const auto &tf : impl_->table_functions)
-        if (impl_->shared->observable_name_to_idx.count(strip_paren_suffix(tf->index_name())))
-            return false;
-    const Reaction &rxn = reactions[rxn_idx0];
+// What a rate (or a trigger) depends on through the model's definitions
+// (issue #719): the species it reads and whether it reads the clock. A worklist
+// over parameters: each one's defining function or expression is read as text
+// (for the clock, a rate accessor, a table-function call) and through
+// expression_support() (for the addresses it reads, which names the species
+// behind each observable and every other parameter it reads, whose definitions
+// join the worklist). A table function's index is not in the text of its call,
+// so a call adds what the index reads: the clock, a parameter (whose definition
+// joins the worklist) or an observable's species.
+//
+// The clock is the call `time()`, and a bare `time` unless the model declares a
+// scalar of that name (issue #776): ExprTk calls a zero-argument function
+// without its parentheses.
+NetworkModel::RateDeps
+NetworkModel::rate_dependencies_(std::vector<int> params,
+                                 const std::vector<std::string> &texts) const {
+    RateDeps deps;
+    const auto &sd = *impl_->shared;
     const int ns = static_cast<int>(impl_->species.size());
     const int np = static_cast<int>(impl_->parameters.size());
-    std::set<int> sp;
-    auto add = [&](int si) {
+    const bool time_declared =
+        sd.param_name_to_idx.count("time") != 0 || sd.observable_name_to_idx.count("time") != 0;
+    std::unordered_map<std::string, const TableFunction *> tables;
+    for (const auto &tf : impl_->table_functions) {
+        tables.emplace(tf->name(), tf.get());
+        tables.emplace("tfun_" + tf->name(), tf.get());
+    }
+    std::vector<int> written_by(static_cast<std::size_t>(np), -1);
+    for (const auto &[func_idx, param_idx] : sd.var_param_bindings)
+        if (param_idx >= 0 && param_idx < np)
+            written_by[param_idx] = func_idx;
+    const auto add_obs = [&](int oi) {
+        for (const auto &entry : impl_->observables[oi].entries)
+            if (entry.species_index >= 1 && entry.species_index <= ns)
+                deps.species.insert(entry.species_index - 1);
+    };
+
+    std::vector<char> seen(static_cast<std::size_t>(np), 0);
+    const auto scan = [&](const std::string &e) {
+        if (e.find("rate_of__") != std::string::npos) {
+            deps.time = true; // the running derivatives: every species, at every time
+            deps.unknown = true;
+        }
+        for (size_t i = 0; i < e.size();) {
+            const unsigned char c = static_cast<unsigned char>(e[i]);
+            if (std::isdigit(c) || c == '.') { // a number, exponent included
+                while (i < e.size() &&
+                       (std::isalnum(static_cast<unsigned char>(e[i])) || e[i] == '.' ||
+                        ((e[i] == '+' || e[i] == '-') && (e[i - 1] == 'e' || e[i - 1] == 'E'))))
+                    ++i;
+                continue;
+            }
+            if (!(std::isalpha(c) || c == '_')) {
+                ++i;
+                continue;
+            }
+            size_t j = i;
+            while (j < e.size() && (std::isalnum(static_cast<unsigned char>(e[j])) || e[j] == '_'))
+                ++j;
+            const std::string id = e.substr(i, j - i);
+            size_t k = j;
+            while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
+                ++k;
+            const bool call = k < e.size() && e[k] == '(';
+            if (id == "time" && (call || !time_declared))
+                deps.time = true;
+            auto tit = tables.find(id);
+            if (tit != tables.end()) {
+                const std::string &idx = tit->second->index_name();
+                const std::string key = strip_paren_suffix(idx);
+                if (is_time_index(idx)) {
+                    deps.time = true;
+                } else if (auto pit = sd.param_name_to_idx.find(key);
+                           pit != sd.param_name_to_idx.end()) {
+                    params.push_back(pit->second);
+                } else if (auto oit = sd.observable_name_to_idx.find(key);
+                           oit != sd.observable_name_to_idx.end()) {
+                    add_obs(oit->second);
+                } else {
+                    deps.unknown = true;
+                }
+            }
+            i = j;
+        }
+    };
+    for (const auto &t : texts)
+        scan(t);
+    std::vector<int> sp, pa;
+    while (!params.empty()) {
+        const int p = params.back();
+        params.pop_back();
+        if (p < 0 || p >= np || seen[p])
+            continue;
+        seen[p] = 1;
+        int eid = -1;
+        if (written_by[p] >= 0) {
+            const Function &f = impl_->functions[written_by[p]];
+            scan(f.expression);
+            scan(f.eval_expression);
+            eid = f.evaluator_id;
+        } else if (impl_->parameters[p].is_expression) {
+            scan(impl_->parameters[p].expression);
+            eid = impl_->parameters[p].evaluator_id;
+        }
+        if (eid < 0)
+            continue;
+        expression_support(eid, &sp, &pa);
+        deps.species.insert(sp.begin(), sp.end());
+        params.insert(params.end(), pa.begin(), pa.end());
+    }
+    return deps;
+}
+
+// A reaction's propensity, as compute_rxn_rate reads it: its reactants, the
+// species of its SSA falling factorial, a live compartment volume, and its
+// rate parameters' definitions.
+NetworkModel::RateDeps NetworkModel::reaction_rate_dependencies_(int rxn_idx0) const {
+    const Reaction &rxn = impl_->shared->reactions[rxn_idx0];
+    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+    RateDeps deps = rate_dependencies_(std::move(params), {});
+    const int ns = static_cast<int>(impl_->species.size());
+    const auto add = [&](int si) {
         if (si >= 0 && si < ns)
-            sp.insert(si);
+            deps.species.insert(si);
     };
     for (int ri : rxn.reactant_indices)
         add(ri - 1);
@@ -1371,30 +1480,16 @@ bool NetworkModel::reaction_rate_species_support(int rxn_idx0, std::vector<int> 
     add(rxn.ssa_live_volume_idx0);
     for (const auto &lt : rxn.ssa_live_volume_terms)
         add(lt.live_idx0);
-    std::vector<int> params{rxn.rate_param_idx0};
-    for (int pi : rxn.rate_law_param_indices)
-        params.push_back(pi - 1);
-    params.push_back(rxn.ssa_volume_param_idx0);
-    std::vector<int> found;
-    for (int pidx : params) {
-        if (pidx < 0 || pidx >= np)
-            continue;
-        int eid = -1;
-        for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
-            if (param_idx == pidx) {
-                eid = impl_->functions[func_idx].evaluator_id;
-                break;
-            }
-        if (eid < 0 && impl_->parameters[pidx].is_expression)
-            eid = impl_->parameters[pidx].evaluator_id;
-        if (eid < 0)
-            continue;
-        expression_support(eid, &found, nullptr);
-        for (int si : found)
-            add(si);
-    }
-    out.assign(sp.begin(), sp.end());
-    return true;
+    return deps;
+}
+
+bool NetworkModel::reaction_rate_species_support(int rxn_idx0, std::vector<int> &out) const {
+    out.clear();
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
+        return false;
+    const RateDeps deps = reaction_rate_dependencies_(rxn_idx0);
+    out.assign(deps.species.begin(), deps.species.end());
+    return !deps.unknown;
 }
 
 bool NetworkModel::reaction_rate_reads_functions(int rxn_idx0) const {
@@ -1426,109 +1521,23 @@ bool NetworkModel::reaction_rate_reads_functions(int rxn_idx0) const {
     return false;
 }
 
-// Does `expr` call the clock, `time()`? A bare `time` is a declared scalar of
-// that name (issue #776), so the test is for the call.
-static bool expression_calls_time(const std::string &expr) {
-    const auto word = [&](size_t k) {
-        return std::isalnum(static_cast<unsigned char>(expr[k])) != 0 || expr[k] == '_';
-    };
-    for (size_t pos = expr.find("time"); pos != std::string::npos;
-         pos = expr.find("time", pos + 1)) {
-        if (pos > 0 && (word(pos - 1) || expr[pos - 1] == '.'))
-            continue;
-        size_t j = pos + 4;
-        if (j < expr.size() && word(j))
-            continue;
-        while (j < expr.size() && std::isspace(static_cast<unsigned char>(expr[j])))
-            ++j;
-        if (j < expr.size() && expr[j] == '(')
-            return true;
-    }
-    return false;
+bool NetworkModel::reaction_rate_reads_time(int rxn_idx0) const {
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
+        return false;
+    return reaction_rate_dependencies_(rxn_idx0).time;
 }
 
-bool NetworkModel::reaction_rate_reads_time(int rxn_idx0) const {
-    const auto &reactions = impl_->shared->reactions;
-    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(reactions.size()))
+bool NetworkModel::event_trigger_reads_time(int event_idx0) const {
+    const auto &events = impl_->events;
+    if (event_idx0 < 0 || event_idx0 >= static_cast<int>(events.size()))
         return false;
-    const Reaction &rxn = reactions[rxn_idx0];
-    const int np = static_cast<int>(impl_->parameters.size());
-    // A table function indexed by time, called as `tfun_<name>()` (what the
-    // builder rewrites its function to) or by its own name.
-    std::unordered_set<std::string> time_tables;
-    for (const auto &tf : impl_->table_functions)
-        if (is_time_index(tf->index_name())) {
-            time_tables.insert(tf->name());
-            time_tables.insert("tfun_" + tf->name());
-        }
-    const auto calls_time_table = [&](const std::string &e) {
-        if (time_tables.empty())
-            return false;
-        for (size_t i = 0; i < e.size();) {
-            const unsigned char c = static_cast<unsigned char>(e[i]);
-            if (!(std::isalpha(c) || c == '_')) {
-                ++i;
-                continue;
-            }
-            size_t j = i;
-            while (j < e.size() && (std::isalnum(static_cast<unsigned char>(e[j])) || e[j] == '_'))
-                ++j;
-            if (time_tables.count(e.substr(i, j - i)))
-                return true;
-            i = j;
-        }
-        return false;
-    };
-    const auto moves = [&](const std::string &e) {
-        return expression_calls_time(e) || e.find("rate_of__") != std::string::npos ||
-               calls_time_table(e);
-    };
-    std::vector<int> written_by(static_cast<std::size_t>(np), -1);
-    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
-        if (param_idx >= 0 && param_idx < np)
-            written_by[param_idx] = func_idx;
-    // The text that defines parameter p, and the evaluator it compiles to.
-    const auto definition = [&](int p, bool &found) -> int {
-        found = true;
-        if (written_by[p] >= 0) {
-            const Function &f = impl_->functions[written_by[p]];
-            if (moves(f.expression) || moves(f.eval_expression))
-                return -2;
-            return f.evaluator_id;
-        }
-        if (impl_->parameters[p].is_expression) {
-            if (moves(impl_->parameters[p].expression))
-                return -2;
-            return impl_->parameters[p].evaluator_id;
-        }
-        found = false;
-        return -1;
-    };
-    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
-    for (int pi : rxn.rate_law_param_indices)
-        params.push_back(pi - 1);
-    std::vector<int> support;
-    for (int pidx : params) {
-        if (pidx < 0 || pidx >= np)
-            continue;
-        bool found = false;
-        const int eid = definition(pidx, found);
-        if (eid == -2)
-            return true;
-        if (!found || eid < 0)
-            continue;
-        // Everything that expression reads, through functions and derived
-        // parameters alike: each of those definitions is checked as well.
-        expression_support(eid, nullptr, &support);
-        for (int q : support) {
-            if (q < 0 || q >= np)
-                continue;
-            bool f2 = false;
-            if (definition(q, f2) == -2)
-                return true;
-        }
+    const Event &ev = events[event_idx0];
+    std::vector<int> params;
+    if (ev.trigger_expr_idx >= 0) {
+        std::vector<int> sp;
+        expression_support(ev.trigger_expr_idx, &sp, &params);
     }
-    return false;
+    return rate_dependencies_(std::move(params), {ev.trigger_source}).time;
 }
 
 bool NetworkModel::event_trigger_is_state_dependent(int event_idx0) const {

@@ -1787,10 +1787,16 @@ class Simulator:
         harmless.
 
         Always sets the list, so a reused simulator cannot keep a previous
-        window's times. A model with no rate that reads time pays nothing.
+        window's times. A model whose rates and triggers read no clock pays
+        nothing (and no sympy import).
         """
         times: list[float] = []
-        if model._time_disc_conditions or model._core.functions_use_time:
+        reads_clock = getattr(model, "_ssa_reads_clock", None)
+        if reads_clock is None:
+            reads_clock = bool(getattr(model._core, "ssa_reads_clock", True))
+            with contextlib.suppress(AttributeError):
+                model._ssa_reads_clock = reads_clock
+        if reads_clock:
             conditions = model.time_discontinuity_conditions()
             if conditions:
                 from bngsim._switch_sensitivity import fixed_crossing_stops

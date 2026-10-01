@@ -1035,6 +1035,21 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly("functions_use_time", &bngsim::NetworkModel::functions_use_time,
                                "Whether any function's value can move with simulation time alone "
                                "(issue #654). Gates the SSA's time-dependent sub-stepping.")
+        .def_property_readonly(
+            "ssa_reads_clock",
+            [](const bngsim::NetworkModel &self) {
+                if (!self.functions_use_time() && self.n_events() == 0)
+                    return false;
+                for (int r = 0; r < self.n_reactions(); ++r)
+                    if (self.reaction_rate_reads_time(r))
+                        return true;
+                for (int e = 0; e < self.n_events(); ++e)
+                    if (self.event_trigger_reads_time(e))
+                        return true;
+                return false;
+            },
+            "Whether a reaction rate or an event trigger reads the clock (issue #719): "
+            "the SSA then needs the model's breakpoints. Decided from the model's text.")
 
         // T1: RHS observable/function-eval gate instrumentation. For a pure
         // mass-action model the RHS skips update_observables + evaluate_functions

@@ -153,3 +153,13 @@ def test_a_function_slot_seeded_by_an_expression_still_builds():
     m = bngsim.Model(_core=b.build())
     r = bngsim.Simulator(m, method="ode").run(t_span=(0, 2), n_points=2)
     assert np.asarray(r.species)[-1, 0] == pytest.approx(4.0, rel=1e-6)
+
+
+def test_a_bare_time_with_no_scalar_of_that_name_is_the_clock():
+    """ExprTk calls ``time`` without its parentheses, so ``2*time`` in a model
+    that declares no ``time`` reads the clock: it was neither refused nor
+    followed, and held 0 for the whole run."""
+    b = _builder([("k2", "2*time")])
+    b.add_reaction([], [0], "elementary", "k2")
+    with pytest.raises(RuntimeError, match="reads time"):
+        b.build()

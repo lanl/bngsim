@@ -2653,6 +2653,108 @@ _SSA_FF_MAX_POWER = 2**31 - 1
 _MASS_ACTION_MAX_POWER = 1000
 
 
+def _moving_assignment_rule_vars(sbml_model) -> tuple[dict, set[str]]:
+    """The assignment rules' math by variable, and the variables whose value
+    moves during a run: one that reads the clock, a species, a rate-rule or
+    event target, or another moving rule's variable. A rule over constants
+    (``C := 2``, ``C := p``) holds its value."""
+    rules = {}
+    rate_vars = set()
+    for j in range(sbml_model.getNumRules()):
+        r = sbml_model.getRule(j)
+        if r.isAssignment() and r.getMath() is not None:
+            rules[r.getVariable()] = r.getMath()
+        elif r.isRate():
+            rate_vars.add(r.getVariable())
+    event_vars = set()
+    for j in range(sbml_model.getNumEvents()):
+        ev = sbml_model.getEvent(j)
+        for k in range(ev.getNumEventAssignments()):
+            event_vars.add(ev.getEventAssignment(k).getVariable())
+    species_ids = {sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())}
+    memo: dict[str, bool] = {}
+
+    def math_moves(node, stack) -> bool:
+        if node is None:
+            return False
+        t = node.getType()
+        if t in (libsbml.AST_NAME_TIME, libsbml.AST_FUNCTION_DELAY, libsbml.AST_FUNCTION_RATE_OF):
+            return True
+        if t == libsbml.AST_NAME:
+            name = node.getName()
+            if name in species_ids or name in rate_vars or name in event_vars:
+                return True
+            if name in rules:
+                return var_moves(name, stack)
+        return any(math_moves(node.getChild(i), stack) for i in range(node.getNumChildren()))
+
+    def var_moves(var, stack) -> bool:
+        if var in memo:
+            return memo[var]
+        if var in stack:  # a cycle: take it as moving
+            return True
+        memo[var] = math_moves(rules[var], stack | {var})
+        return memo[var]
+
+    return rules, {v for v in rules if var_moves(v, frozenset())}
+
+
+def _ssa_moving_ar_comp_reads(
+    rxn, rules, moving_vars, moving_comps, species_comp, species_hosu, varvol_comps=frozenset()
+) -> tuple[list[str], list[str]]:
+    """The moving assignment-rule compartments holding a concentration-valued
+    species that reaction ``rxn`` changes or reads: one of its reactants,
+    products or modifiers, or one its kinetic law reads, directly or through the
+    assignment rules it reads. The size itself is read live, and an amount-valued
+    species is stored and read as an amount.
+
+    Second, the event-resized or rate-rule compartments (``varvol_comps``) whose
+    concentration-valued species the rate reads from outside them, or through an
+    assignment rule: the SSA's live-volume correction covers the species of the
+    compartment a reaction acts in, and no others."""
+    if not moving_comps and not varvol_comps:
+        return [], []
+    kl = rxn.getKineticLaw()
+    local = set()
+    if kl is not None:
+        for j in range(kl.getNumLocalParameters()):
+            local.add(kl.getLocalParameter(j).getId())
+        for j in range(kl.getNumParameters()):
+            local.add(kl.getParameter(j).getId())
+    hit: set[str] = set()
+    vv_hit: set[str] = set()
+    seen: set[str] = set()
+    acts_in = {
+        species_comp.get(lst.get(j).getSpecies())
+        for lst in (rxn.getListOfReactants(), rxn.getListOfProducts())
+        for j in range(lst.size())
+    }
+
+    def read(name, via_rule):
+        comp = species_comp.get(name)
+        conc = comp is not None and not species_hosu.get(name, False)
+        if conc and comp in moving_comps:
+            hit.add(comp)
+        if conc and comp in varvol_comps and (via_rule or comp not in acts_in):
+            vv_hit.add(comp)
+        if name in rules and name not in seen:
+            seen.add(name)
+            walk(rules[name], True)
+
+    def walk(node, via_rule):
+        if node is None:
+            return
+        if node.getType() == libsbml.AST_NAME and node.getName() not in local:
+            read(node.getName(), via_rule)
+        for i in range(node.getNumChildren()):
+            walk(node.getChild(i), via_rule)
+
+    walk(kl.getMath() if kl is not None else None, False)
+    for sid in _ssa_species_touched(rxn):
+        read(sid, False)
+    return sorted(hit), sorted(vv_hit)
+
+
 def _ssa_species_touched(rxn) -> set[str]:
     """Every species a reaction names: reactants, products and modifiers."""
     out = set()
@@ -6449,6 +6551,8 @@ def _build_model_from_sbml_doc(doc):
     # Continuous slots never take a falling factorial (see
     # _ssa_falling_factorial_terms); built once, not per reaction.
     _ssa_ff_continuous = set(assignment_targets) | set(rate_rule_targets)
+    _ar_rules, _ar_moving_vars = _moving_assignment_rule_vars(sbml_model)
+    _ar_moving_comps = ar_comp_targets & _ar_moving_vars
     for i in range(sbml_model.getNumReactions()):
         rxn = sbml_model.getReaction(i)
         rid = rxn.getId()
@@ -6459,25 +6563,47 @@ def _build_model_from_sbml_doc(doc):
         # stale by V_static/V(t), and the live divide on the law is never undone
         # by a live volume factor. `J: A => ; C*k*A` with `C := 1 + 0.5*time` ran
         # at 2x the ODE's A(2), and a mass-action `k*A` at 3x its A(4), silently.
-        # An amount-valued species is stored exactly and read as an amount, so a
-        # reaction touching only those runs.
-        _ar_conc = sorted(
-            {
-                species_comp[sid]
-                for sid in _ssa_species_touched(rxn)
-                if sid in species_comp
-                and species_comp[sid] in ar_comp_targets
-                and not species_hosu.get(sid, False)
-            }
+        # (Its reported concentration is the count over the load-time size too,
+        # #741.) A rule over constants holds its size, and an amount-valued
+        # species is stored exactly and read as an amount; the size itself, read
+        # by a law, is read live.
+        _ar_conc, _vv_read = _ssa_moving_ar_comp_reads(
+            rxn,
+            _ar_rules,
+            _ar_moving_vars,
+            _ar_moving_comps,
+            species_comp,
+            species_hosu,
+            varvol_ssa_comps,
         )
+        if _vv_read:
+            # (g): `J: => A; k*S*D` with S in C, C resized by an event, read
+            # [S] at C's load-time size and over-fired after the resize.
+            ssa_issues.append(
+                SsaIssue(
+                    severity="error",
+                    code="variable_compartment_read",
+                    message=(
+                        f"Reaction '{rid}' reads a concentration in a compartment "
+                        f"whose size changes during the run ({', '.join(_vv_read)}), "
+                        "from outside that compartment or through an assignment "
+                        "rule. SSA corrects a propensity for a changing volume only "
+                        "for the species of the compartment the reaction acts in, so "
+                        "this one would be wrong. Use method='ode', or declare the "
+                        'species hasOnlySubstanceUnits="true".'
+                    ),
+                    location=f"reaction:{rid}",
+                )
+            )
         if _ar_conc:
             ssa_issues.append(
                 SsaIssue(
                     severity="error",
                     code="assignment_rule_compartment",
                     message=(
-                        f"Reaction '{rid}' reads a concentration in a compartment "
-                        f"whose size an assignment rule sets ({', '.join(_ar_conc)}). "
+                        f"Reaction '{rid}' changes or reads a concentration in a "
+                        f"compartment whose size an assignment rule changes "
+                        f"({', '.join(_ar_conc)}). "
                         "SSA does not follow such a compartment's size, so this "
                         "reaction's propensity would be wrong. Use method='ode', "
                         "make the compartment's size constant or a rate rule, or "

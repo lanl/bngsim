@@ -1692,11 +1692,17 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // the window's end saw neither a trigger true between two looks nor one that
     // fell and rose again, so a periodic trigger fired once. Leaves the model
     // synced at t_lo.
+    // Only a trigger that reads the clock can change while the state holds; the
+    // rest change at a firing, where fire_rising_edges looks at every trigger.
+    std::vector<int> time_triggers;
+    for (int ei = 0; ei < n_events; ++ei)
+        if (model.event_trigger_reads_time(ei))
+            time_triggers.push_back(ei);
     std::vector<double> probe_pts;
     std::vector<char> probe_prev, probe_cur;
     auto probe_events_in_window = [&](double t_lo, double t_hi) -> double {
         double t_event = std::numeric_limits<double>::infinity();
-        if (n_events == 0 || !(t_hi > t_lo))
+        if (time_triggers.empty() || !(t_hi > t_lo))
             return t_event;
         probe_pts.clear();
         double a = t_lo;
@@ -1728,12 +1734,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 model.evaluate_functions(ts);
             first = false;
             bool changed = false;
-            for (int ei = 0; ei < n_events; ++ei) {
+            for (int ei : time_triggers) {
                 probe_cur[ei] = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
                 changed = changed || probe_cur[ei] != probe_prev[ei];
             }
             if (changed) {
-                for (int ei = 0; ei < n_events; ++ei)
+                for (int ei : time_triggers)
                     if (probe_cur[ei] != probe_prev[ei])
                         t_event =
                             std::min(t_event, bisect_trigger(ei, t_prev, ts, probe_prev[ei] != 0));
@@ -2493,10 +2499,18 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     // = 2e-14 at t = 3, where the floor is 4e-14): take that one by
                     // Euler, which crosses with an error of the floor times |f|.
                     if (m > 0 && err <= 1.0) {
+                        // "Should have moved": the first stage alone, which carries
+                        // the step's own damping of a stiff rule, moves y by several
+                        // ulps. Near any steady state, stiff or not, hh·k1 is under
+                        // an ulp of y and y not moving is right; at a jump the first
+                        // stage is the slope on this side and the second cancels it.
                         bool still = true, moving = false;
                         for (int i = 0; i < m; ++i) {
                             still = still && y1[i] == y[i];
-                            moving = moving || F0[i] != 0.0;
+                            const double a = std::fabs(y[i]);
+                            const double ulp =
+                                std::nextafter(a, std::numeric_limits<double>::infinity()) - a;
+                            moving = moving || std::fabs(hh * k1[i]) > 4.0 * ulp;
                         }
                         if (still && moving && hh > hmin) {
                             h = std::max(0.25 * hh, hmin);
@@ -2535,21 +2549,21 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     }
                     h = std::max(hh * fac, hmin);
                 }
-                // A run that makes no headway: panels this short, a million in
-                // a row, mean a rate rule flipping back and forth across a switch
-                // (`x' = piecewise(-1, x > 0, 1)`), or a singular rate. Refuse it
-                // rather than spin until a timeout, or for ever without one.
-                if (hh < 1e-8 * (times.t_end - times.t_start) && hh < t_stop - t) {
+                // A run that makes no headway: panels within a thousand ulps of t,
+                // a million in a row, advance it by a relative 1e-7 at most. A rate
+                // or rate rule that is singular there does that; refuse it rather
+                // than spin until a timeout, or for ever without one. (A fast
+                // forcing over a long horizon takes short panels, not these.)
+                if (hh < 1000.0 * hmin && hh < t_stop - t) {
                     if (++tiny_panels > MAX_TINY_PANELS) {
                         char buf[160];
                         std::snprintf(buf, sizeof buf,
                                       "%ld panels in a row shorter than %.3g at t = %.17g",
-                                      MAX_TINY_PANELS, 1e-8 * (times.t_end - times.t_start), t);
+                                      MAX_TINY_PANELS, 1000.0 * hmin, t);
                         throw std::runtime_error(
                             std::string(use_psa ? "PSA" : "SSA") +
                             ": the continuous part of the model makes no headway: " + buf +
-                            ". A rate rule switches back and forth there, or a rate is "
-                            "singular.");
+                            ". A rate or a rate rule is singular there.");
                     }
                 } else {
                     tiny_panels = 0;
@@ -2637,6 +2651,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 probe_prev.assign(trigger_was_true.begin(), trigger_was_true.end());
                 probe_cur.assign(static_cast<std::size_t>(n_events), 0);
                 double th_prev = th0;
+                // With rate rules any trigger may read a target that moves.
+                std::vector<int> all_triggers;
+                if (m > 0)
+                    for (int ei = 0; ei < n_events; ++ei)
+                        all_triggers.push_back(ei);
+                const std::vector<int> &watched = m > 0 ? all_triggers : time_triggers;
                 for (int q = 1; q <= 4 && th_ev > 1.0; ++q) {
                     const double thq = q == 4 ? 1.0 : th0 + (1.0 - th0) * 0.25 * q;
                     if (m > 0) {
@@ -2644,9 +2664,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         load_y(ytmp.data());
                     }
                     sync_state(q == 4 ? s1 : tp + thq * hh);
-                    for (int ei = 0; ei < n_events; ++ei)
+                    for (int ei : watched)
                         probe_cur[ei] = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
-                    for (int ei = 0; ei < n_events; ++ei) {
+                    for (int ei : watched) {
                         if (probe_cur[ei] == probe_prev[ei])
                             continue;
                         const bool at_lo = probe_prev[ei] != 0;

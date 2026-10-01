@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -268,6 +269,10 @@ class NetworkModel {
     // derivatives) says yes. Never by probing values, which can alias (#654);
     // it may over-report, which costs only time.
     bool reaction_rate_reads_time(int rxn_idx0) const;
+
+    // Does event `event_idx0`'s trigger read the clock, through the same walk?
+    // A trigger that does not can change only when the state does.
+    bool event_trigger_reads_time(int event_idx0) const;
 
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //
@@ -706,6 +711,16 @@ class NetworkModel {
 
   private:
     std::unique_ptr<Impl> impl_;
+
+    // What a rate or a trigger reads through the model's definitions (#719).
+    struct RateDeps {
+        bool time = false;    // the clock, directly or through a definition
+        bool unknown = false; // something whose reads cannot be named
+        std::set<int> species;
+    };
+    RateDeps rate_dependencies_(std::vector<int> params,
+                                const std::vector<std::string> &texts) const;
+    RateDeps reaction_rate_dependencies_(int rxn_idx0) const;
     void set_load_warnings_(std::vector<std::string> warnings);
 
     /// The single-pass RHS body (GH #106). compute_derivs() and

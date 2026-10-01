@@ -423,3 +423,117 @@ def test_amounts_in_an_assignment_rule_compartment_still_run():
         300, t_span=(0, 4), n_points=2, seed=3, squeeze=True
     )
     _near(_col(r, "A")[:, -1], _col(ode, "A")[-1])
+
+
+# ── what a rate reads, through definitions ──────────────────────────────────
+
+
+def _net_text(functions, reactions, species="    1 A() 0\n", groups="    1 Atot 1\n"):
+    return (
+        "begin parameters\n    1 k 1\nend parameters\n"
+        f"begin functions\n{functions}end functions\n"
+        f"begin species\n{species}end species\n"
+        f"begin reactions\n{reactions}end reactions\n"
+        f"begin groups\n{groups}end groups\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("functions", "want"),
+    [
+        pytest.param(
+            "    1 p() time()\n"
+            '    2 drive() tfun([0,5,10,100],[0,0,100,100],p,method=>"linear")\n',
+            250.0,
+            id="table-indexed-by-a-clock-function",
+        ),
+        pytest.param("    1 drive() if(time > 5, 10, 0)\n", 50.0, id="bare-time"),
+    ],
+)
+def test_a_rate_that_reads_the_clock_out_of_sight(tmp_path, functions, want):
+    """A table's index is not in the text of its call, and ExprTk calls
+    ``time`` without parentheses. Both rates were taken as constant and frozen
+    at their t = 0 value of 0."""
+    p = tmp_path / "m.net"
+    p.write_text(_net_text(functions, "    1 0 1 drive\n"))
+    reps = 200
+    r = bngsim.Simulator(bngsim.Model.from_net(str(p)), method="ssa").run_replicates(
+        reps, t_span=(0, 10), n_points=2, seed=3, squeeze=True
+    )
+    _within(np.asarray(r.observables)[:, -1, 0].mean(), want, reps)
+
+
+def test_a_firing_that_moves_a_table_index_rebuilds_the_panel(tmp_path):
+    """``g = tfun(…, q)`` with ``q() = Btot``: B's firings move what the dynamic
+    rate reads, though no text names B. Kept, the panel's stale hazard set the
+    firing times while fresh propensities chose the reaction, and the
+    unrelated ``0 -> D`` at 1e4 over-fired (z = 31)."""
+    p = tmp_path / "m.net"
+    p.write_text(
+        "begin parameters\n    1 k 2000\n    2 kd 10000\nend parameters\n"
+        "begin functions\n    1 q() Btot\n"
+        '    2 g() tfun([0,100],[0,100000],q,method=>"linear")\n'
+        "    3 f() g()*(1+1e-9*time())\nend functions\n"
+        "begin species\n    1 B() 100\n    2 C() 0\n    3 D() 0\nend species\n"
+        "begin reactions\n    1 1 0 k\n    2 0 2 f\n    3 0 3 kd\nend reactions\n"
+        "begin groups\n    1 Btot 1\n    2 Ctot 2\n    3 Dtot 3\nend groups\n"
+    )
+    reps = 60
+    r = bngsim.Simulator(bngsim.Model.from_net(str(p)), method="ssa").run_replicates(
+        reps, t_span=(0, 10), n_points=2, seed=3, squeeze=True
+    )
+    _within(np.asarray(r.observables)[:, -1, 2].mean(), 1e5, reps)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "x = 0; x' = 0.01*(1 - x); species N = 0; J: => N; 0.001*x;",
+        "x = 1; x' = 0.5*x*(1 - x/100); species N = 0; J: => N; 0.001*x;",
+        "x = 0; x' = 1e6*(1 - x); species N = 0; J: => N; 0.1*x;",
+    ],
+    ids=["slow", "logistic", "stiff"],
+)
+def test_a_rate_rule_at_its_steady_state_runs(text):
+    """Near a steady state a step moves y by less than an ulp, and y not moving
+    is right; the rule that shrinks a step stuck at a switch took it for one and
+    the run was refused."""
+    m = _ant(text)
+    r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 1e4), n_points=3, seed=1, timeout=60)
+    x = _col(r, "x")
+    assert abs(x[-1] - (100.0 if "x/100" in text else 1.0)) < 1e-6
+
+
+@pytest.mark.parametrize("rule", ["C := 2", "p = 2; C := p"])
+def test_an_assignment_rule_compartment_that_holds_still_runs(rule):
+    txt = f"compartment C = 2; {rule}; species A in C = 100; k = 0.3; J: A => ; C*k*A;"
+    m = _ant(txt)
+    assert m.validate_for_ssa() == []
+    ode = bngsim.Simulator(_ant(txt), method="ode").run(t_span=(0, 4), n_points=2)
+    r = bngsim.Simulator(m, method="ssa").run_replicates(
+        300, t_span=(0, 4), n_points=2, seed=3, squeeze=True
+    )
+    _near(_col(r, "A")[:, -1], _col(ode, "A")[-1])
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        pytest.param(
+            "compartment C = 1; C := 1 + 0.5*time; compartment D = 1; species S in C = 10;"
+            " species A in D = 0; q := S; k = 1; J: => A; k*q*D;",
+            "assignment_rule_compartment",
+            id="through-an-assignment-rule",
+        ),
+        pytest.param(
+            "compartment C = 1; compartment D = 1; species S in C = 10; species A in D = 0;"
+            " k = 1; J: => A; k*S*D; E: at (time > 2): C = 2;",
+            "variable_compartment_read",
+            id="event-resized-read-from-outside",
+        ),
+    ],
+)
+def test_a_concentration_read_in_a_moving_compartment_is_refused(text, code):
+    """Both read [S] at C's load-time size: z = +50 and +25 against the ODE."""
+    m = _ant(text)
+    assert code in [i.code for i in m.validate_for_ssa()]
