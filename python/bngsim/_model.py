@@ -2069,8 +2069,10 @@ class Model:
         factorial over its molecule count ``n`` when bngsim reads the reaction as
         mass action — ``A + A -> B`` fires at ``k·n(n−1)/2``, where the ODE rate
         is ``k·n²/2``, with ``n = x·V`` for a species stored as a concentration
-        in a compartment of size ``V`` (issue #692); an SBML law it does not read
-        as mass action is evaluated as written — and a reaction in a compartment
+        in a compartment of size ``V`` (issue #692). An SBML law it does not read
+        as mass action is evaluated as written, still with the falling factorial
+        when the law is a product of its species; one that writes its own
+        combinatorics (``k*X*(X-1)/2``) is left alone — and a reaction in a compartment
         of volume ``V`` is
         multiplied by ``V`` (``Reaction::ssa_volume_factor``, or the live value
         of the compartment-size parameter it names), converting the ODE's

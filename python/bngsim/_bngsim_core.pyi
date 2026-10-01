@@ -95,6 +95,10 @@ class ModelBuilder:
         """
         GH #81: set the SSA live-volume correction on an already-added reaction (rxn_idx0 = 0-based index from add_reaction). Used by the SBML loader to tag a variable-volume reaction once its event-resized compartment has been promoted to a species (which happens after reaction emission). No-op if rxn_idx0 is out of range.
         """
+    def set_reaction_ssa_falling_factorial(self, rxn_idx0: typing.SupportsInt | typing.SupportsIndex, terms: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex]]) -> None:
+        """
+        Give a Functional reaction an SSA falling factorial: terms is a list of (0-based species index, m) for each species its kinetic law holds to the power m >= 2, so the SSA propensity takes n(n-1)...(n-m+1) where the law has n^m. The ODE path ignores it. No-op if rxn_idx0 is out of range.
+        """
     def set_reaction_ssa_volume_param(self, rxn_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         Issue #170: bind a reaction's SSA propensity volume to a compartment-size parameter, so compute_rxn_rate reads the live value rather than the number baked at load. No-op if rxn_idx0 is out of range.

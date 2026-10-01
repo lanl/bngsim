@@ -363,6 +363,17 @@ struct Reaction {
     };
     std::vector<LiveVolumeTerm> ssa_live_volume_terms;
 
+    // SSA-only: the falling factorial for a species that appears m >= 2 times
+    // as a factor of a kinetic law evaluated as written (a Functional SBML
+    // reaction the loader could not read as mass action: a boundary reactant,
+    // reactants in compartments of different sizes, an assignment-rule
+    // compartment, a law divided by a volume). The law holds n^m for such a
+    // species; the SSA propensity multiplies by ∏_{j<m} (n − j)/n, so it holds
+    // n(n−1)…(n−m+1), as the Elementary path's species factor does, and as a
+    // `.net` reaction with the same reactants does. Pairs of (0-based species
+    // index, m). Empty for every other reaction; the ODE path ignores it.
+    std::vector<std::pair<int, int>> ssa_falling_factorial;
+
     // GH #81 (Tier 2) — an ODE-only reaction: excluded from SSA entirely
     // (neither fired as a channel nor integrated). The SBML loader emits the
     // #86 concentration-dilution term `-[S]·V̇/V` for an hOSU=false species in a
