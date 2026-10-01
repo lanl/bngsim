@@ -10150,12 +10150,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
                 // A pinned state is one a step has just failed its error test
                 // on. A batch in which none did is a model taking its steps,
-                // and the residuals are not read for it. A run that carries
-                // sensitivities is asked after every batch: its steps can fail
-                // on the sensitivities' own test.
+                // and the residuals are not read for it.
                 long failed = 0;
                 CVodeGetNumErrTestFails(cvode_mem, &failed);
-                if (!with_sens && failed == state_switch_pinned_fails) {
+                if (failed == state_switch_pinned_fails) {
                     return false;
                 }
                 state_switch_pinned_fails = failed;

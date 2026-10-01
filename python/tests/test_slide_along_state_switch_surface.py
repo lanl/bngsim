@@ -84,6 +84,17 @@ def test_a_run_that_ends_before_the_slide(tmp_path):
     np.testing.assert_allclose(np.asarray(run.sensitivities)[:, 0, 0], [0.0, 0.5, 0.9], rtol=1e-8)
 
 
+@pytest.mark.parametrize("max_steps", [1, 2, 20])
+def test_a_state_on_its_way_to_the_surface_is_not_a_slide(tmp_path, max_steps):
+    """Control. In batches of a step or two the run is asked about a slide while
+    S is still far from the surface it will slide along: at 0.5 with the
+    surface at 1. It is a slide only inside the tolerance's band of it."""
+    run = bngsim.Simulator(
+        _model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"]
+    ).run(sample_times=[0.0, 0.5, 0.9], rtol=1e-8, atol=1e-10, max_steps=max_steps)
+    np.testing.assert_allclose(np.asarray(run.sensitivities)[:, 0, 0], [0.0, 0.5, 0.9], rtol=1e-8)
+
+
 def test_the_trajectory_of_a_slide_without_sensitivities(tmp_path):
     """Control. S is held at 1 from t = 1 on."""
     run = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode").run(
