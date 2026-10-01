@@ -1992,6 +1992,13 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
 struct ClockCrossingsAtEvent {
     std::vector<const SwitchTimeSens *> pending;
     std::vector<const SwitchTimeSens *> applied;
+    // Fixed thresholds on a counter clock that are crossed on this instant. No
+    // column moves them, so they have no record; a nudge of the time does not
+    // move a counter either, so the event jump has to be told where they are.
+    std::vector<CrossingStop> fixed_counters;
+    // A record within the reach the event's jump searches for a fixed switch,
+    // on the instant or not. Its jump is its own, taken at its own stop.
+    bool record_near = false;
 };
 
 // One immediate fire of a same-instant event batch, in the order the batch
@@ -2014,9 +2021,11 @@ struct ExecutedEventFire {
 // treat them as one instant (issue #737). The Python detector groups crossings
 // by the same reach (`_switch_sensitivity._same_instant`).
 constexpr double kSwitchInstantUlps = 64.0;
-// A change of the right-hand side across an event's instant, at the pre-event
-// state, above this fraction of its size is a rate law switching there (issue
-// #767). Smooth time dependence moves it by 1e-13 of its rate of change.
+// An event and a rate-law switch on one instant commute when the event's
+// Jacobian carries the switch's jump at the pre-event state onto its jump at the
+// post-event state. The two are compared row by row, and differ when they are
+// further apart than this fraction of the flows they were read from (issue
+// #767).
 constexpr double kEventClockSwitchRelTol = 1e-6;
 // How many instants after a switch stop an event root still counts as on it.
 // CVODE places a root within 100·ε·(|t| + |h|) of where it is.
@@ -5341,29 +5350,95 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // Where the switch's jump was taken at a stop a few ulp back, the event is
     // the later of the two and t_evt is already past the switch: both flows
     // are read where the event fired.
-    const double clock_nudge = kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
-                               std::max(std::fabs(t_evt), 1.0);
+    const double eps_d = std::numeric_limits<double>::epsilon();
+    auto nudge_at = [eps_d](double t) {
+        return kSwitchInstantUlps * eps_d * std::max(std::fabs(t), 1.0);
+    };
+    const double clock_nudge = nudge_at(t_evt);
     auto reads_time = [](const std::vector<const SwitchTimeSens *> &records) {
         return std::any_of(records.begin(), records.end(),
                            [](const SwitchTimeSens *one) { return one->clock_species_idx0 < 0; });
     };
+    const std::string first_fired = events_outer[fired.front()].id;
     const bool time_pending = reads_time(clocks.pending);
     const bool time_applied = reads_time(clocks.applied);
     if (time_pending && time_applied) {
         throw std::runtime_error(
-            "Forward sensitivity: event '" + events_outer[fired.front()].id +
-            "' fires at t=" + std::to_string(t_evt) +
+            "Forward sensitivity: event '" + first_fired + "' fires at t=" + std::to_string(t_evt) +
             " between two rate-law switch times that are one instant to the solver, so the "
             "branch its jump has to be read on cannot be selected. bngsim refuses rather "
             "than pick one (issue #767). Separate the times, or drop sensitivities for this "
             "run.");
     }
-    const double t_flow = time_pending ? t_evt - clock_nudge : t_evt;
+    // A switch on this instant that shares it with another crossing (the
+    // detector isolates such a one by its own threshold's parameter, issue
+    // #375). Still to come, it cannot be put on its before-branch by moving the
+    // clock: the other crossing moves with it. A fixed switch one ulp before a
+    // fitted one that an event sits on had its flows read from before both, and
+    // the column of the fitted time took the fixed switch's jump (issue #767's
+    // review). Already taken, the stop took the other crossing with it (issue
+    // #737), whichever side of the event that one is really on.
+    std::vector<const SwitchTimeSens *> on_instant(clocks.pending);
+    on_instant.insert(on_instant.end(), clocks.applied.begin(), clocks.applied.end());
+    for (const SwitchTimeSens *one : on_instant) {
+        if (!one->isolate_param_idx0.empty()) {
+            throw std::runtime_error(
+                "Forward sensitivity: event '" + first_fired +
+                "' fires at t=" + std::to_string(t_evt) +
+                ", on a rate-law switch time that shares its instant with another switch. "
+                "Which side of the event each of them is on cannot be selected by moving the "
+                "clock, so bngsim refuses (issue #767). Separate the times, or drop "
+                "sensitivities for this run.");
+        }
+    }
+    // The before-branch of every pending switch. A time clock is read a nudge
+    // before the switch's own time, the bracket its jump is read in. A counter
+    // clock is put a hair short of its threshold: at the stop the integrated
+    // counter is within rounding of it, on either side.
+    //
+    // A counter switch whose jump the stop has already taken is put past its
+    // threshold. The stop lands a counter ON its threshold only where that does
+    // not step over a root, and the event's own root is one: the counter is
+    // then still a hair short when the event fires, and both flows came out on
+    // the branch that had ended. The time needs no such help: the event fires
+    // after the stop, and a time past the switch reads as past it.
+    double t_flow = t_evt;
+    for (const SwitchTimeSens *one : clocks.pending) {
+        if (one->clock_species_idx0 < 0) {
+            t_flow = std::min(t_flow, one->t_star - nudge_at(one->t_star));
+        }
+    }
+    auto counter_hair = [eps_d](double threshold) {
+        return kSwitchInstantUlps * eps_d * std::max(std::fabs(threshold), 1.0);
+    };
+    auto on_branch = [&](std::vector<double> &state) {
+        for (const SwitchTimeSens *one : clocks.pending) {
+            if (one->clock_species_idx0 >= 0 && one->clock_species_idx0 < ns) {
+                state[static_cast<size_t>(one->clock_species_idx0)] =
+                    one->threshold - counter_hair(one->threshold);
+            }
+        }
+        for (const SwitchTimeSens *one : clocks.applied) {
+            if (one->clock_species_idx0 >= 0 && one->clock_species_idx0 < ns) {
+                double &clock = state[static_cast<size_t>(one->clock_species_idx0)];
+                clock = std::max(clock, one->threshold + counter_hair(one->threshold));
+            }
+        }
+    };
+    // f at a state the evaluator is driven to first. The caller puts it back.
+    auto flow_at = [&](double t, const std::vector<double> &state, std::vector<double> &out) {
+        out.assign(static_cast<size_t>(ns), 0.0);
+        for (int i = 0; i < ns; ++i) {
+            sp_vec_outer[i].concentration = state[static_cast<size_t>(i)];
+        }
+        model.compute_derivs(t, state.data(), out.data());
+    };
     std::vector<double> f_minus, f_plus;
     if (needs_flow) {
-        f_plus.assign(static_cast<size_t>(ns), 0.0);
+        std::vector<double> x_read(x_post);
+        on_branch(x_read);
+        flow_at(t_flow, x_read, f_plus);
         f_minus.assign(static_cast<size_t>(ns), 0.0);
-        model.compute_derivs(t_flow, x_post.data(), f_plus.data());
     }
 
     std::vector<double> xwork(x_minus.begin(), x_minus.end());
@@ -5395,7 +5470,9 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     };
     sync_state();
     if (needs_flow) {
-        model.compute_derivs(t_flow, xwork.data(), f_minus.data());
+        std::vector<double> x_read(x_minus.begin(), x_minus.end());
+        on_branch(x_read);
+        flow_at(t_flow, x_read, f_minus);
         sync_state(); // compute_derivs may leave functions at its own state
     }
 
@@ -5419,16 +5496,80 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             "sensitivity_params.");
     }
 
-    // ── A clock crossing on this instant has to move with the batch (issue #767) ──
-    // The composition above is one event-and-switch crossing only if the two
-    // times move together. A switch time one column moves beside an event that
-    // column does not move (or the reverse) comes apart under it, and which of
-    // the two then happens first changes the answer: the same ambiguity
-    // adopt_tau refuses between two events.
-    std::vector<const SwitchTimeSens *> on_instant(clocks.pending);
-    on_instant.insert(on_instant.end(), clocks.applied.begin(), clocks.applied.end());
+    // ── A clock crossing on this instant that does not move with the batch (issue #767) ──
+    // The composition above is one event-and-switch crossing if the two times
+    // move together. Where a column moves one and not the other they come apart
+    // under it, and the two orders differ by
+    //     (H·Δ(x⁻) − Δ(x⁺))·(∂t_switch/∂p − ∂t_event/∂p),
+    // with H the batch's Jacobian and Δ = f_before − f_after the switch's jump.
+    // That is a kink in the parameter unless the event and the switch commute:
+    // a bolus beside an infusion that starts then, a reset of a species the
+    // switched law does not read. So Δ is read at both states, H·Δ(x⁻) is
+    // carried through the batch beside the columns, and the run is refused
+    // only where the two disagree.
+    struct CommuteProbe {
+        std::vector<double> jump_minus; // Δ(x⁻)
+        std::vector<double> jump_plus;  // Δ(x⁺)
+        std::vector<double> scale;      // the flows they were read from, per row
+        bool fixed = false;             // the switch has no record: no column moves it
+    };
+    std::vector<CommuteProbe> probes;
+    std::vector<double> x_plus_state(x_post);
+    std::vector<double> x_minus_state(x_minus.begin(), x_minus.end());
+    // Δ at one state from its two branches, widening `scale` by what was read.
+    auto jump_between = [&](const std::vector<double> &f_b, const std::vector<double> &f_a,
+                            std::vector<double> &jump, std::vector<double> &scale) {
+        jump.assign(static_cast<size_t>(ns), 0.0);
+        scale.resize(static_cast<size_t>(ns), 0.0);
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<size_t>(i);
+            jump[ui] = f_b[ui] - f_a[ui];
+            scale[ui] = std::max({scale[ui], std::fabs(f_b[ui]), std::fabs(f_a[ui])});
+        }
+    };
+    auto is_jump = [&](const CommuteProbe &probe) {
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<size_t>(i);
+            const double tol = kEventClockSwitchRelTol * probe.scale[ui];
+            if (std::fabs(probe.jump_minus[ui]) > tol || std::fabs(probe.jump_plus[ui]) > tol) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // A counter clock's two branches at `state`: the clock put either side of
+    // its threshold.
+    auto counter_probe = [&](int clock, double threshold, bool fixed) {
+        CommuteProbe probe;
+        probe.fixed = fixed;
+        const double hair = kSwitchInstantUlps * eps_d * std::max(std::fabs(threshold), 1.0);
+        std::vector<double> f_b, f_a, state;
+        for (int side = 0; side < 2; ++side) {
+            state = side == 0 ? x_minus_state : x_plus_state;
+            state[static_cast<size_t>(clock)] = threshold - hair;
+            flow_at(t_evt, state, f_b);
+            state[static_cast<size_t>(clock)] = threshold + hair;
+            flow_at(t_evt, state, f_a);
+            jump_between(f_b, f_a, side == 0 ? probe.jump_minus : probe.jump_plus, probe.scale);
+        }
+        return probe;
+    };
+
+    // What counts as the same shift: the columns' own size, so that a shift
+    // that is rounding beside the others (a finite-difference ∂t*/∂p of 1e-17
+    // against an exact 0) is not a disagreement.
+    double shift_size = 0.0;
+    for (double v : tau) {
+        shift_size = std::max(shift_size, std::fabs(v));
+    }
     for (const SwitchTimeSens *one : on_instant) {
-        for (int c = 0; c < n_sens; ++c) {
+        for (double v : one->dtstar_dp) {
+            shift_size = std::max(shift_size, std::fabs(v));
+        }
+    }
+    for (const SwitchTimeSens *one : on_instant) {
+        bool apart = false;
+        for (int c = 0; c < n_sens && !apart; ++c) {
             double d = c < n_sens_p && one->dtstar_dp.size() == static_cast<size_t>(n_sens_p)
                            ? one->dtstar_dp[static_cast<size_t>(c)]
                            : 0.0;
@@ -5437,51 +5578,78 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 // sensitivity (issue #725).
                 d -= s_minus[c][static_cast<size_t>(one->clock_species_idx0)];
             }
-            const double mine = tau[static_cast<size_t>(c)];
-            if (std::fabs(d - mine) > 1e-9 * std::max(std::fabs(d), std::fabs(mine))) {
-                const std::string who =
-                    tau_event >= 0 ? events_outer[tau_event].id : events_outer[fired.front()].id;
-                throw std::runtime_error(
-                    "Forward sensitivity: event '" + who + "' fires at t=" + std::to_string(t_evt) +
-                    ", the instant a rate-law switch time is crossed, and the two move "
-                    "differently with the requested parameters (dt*/dp " +
-                    std::to_string(mine) + " for the event, " + std::to_string(d) +
-                    " for the switch). Which of them comes first then depends on the "
-                    "parameter, and the sensitivity jump is ambiguous (issue #767). Separate "
-                    "the two times, or drop the parameters that move one of them from "
-                    "sensitivity_params.");
-            }
+            apart = std::fabs(d - tau[static_cast<size_t>(c)]) > 1e-9 * shift_size;
         }
+        if (!apart) {
+            continue;
+        }
+        if (one->clock_species_idx0 >= 0) {
+            if (one->clock_species_idx0 < ns) {
+                probes.push_back(counter_probe(one->clock_species_idx0, one->threshold, false));
+            }
+            continue;
+        }
+        CommuteProbe probe;
+        std::vector<double> f_b, f_a;
+        const double hair = nudge_at(one->t_star);
+        flow_at(one->t_star - hair, x_minus_state, f_b);
+        flow_at(one->t_star + hair, x_minus_state, f_a);
+        jump_between(f_b, f_a, probe.jump_minus, probe.scale);
+        flow_at(one->t_star - hair, x_plus_state, f_b);
+        flow_at(one->t_star + hair, x_plus_state, f_a);
+        jump_between(f_b, f_a, probe.jump_plus, probe.scale);
+        probes.push_back(std::move(probe));
     }
     // A rate law that switches at a FIXED time on this instant has no record: no
     // column moves it. An event whose time does move comes apart from it the
-    // same way. The stops the run knows of cannot say whether one is there (the
-    // event's own trigger time is one of them), so f is asked: read at x⁻ a
-    // nudge either side of the instant, it differs only if a rate law switches.
-    if (on_instant.empty() &&
+    // same way. f is asked whether one is there. Its jump across the instant is
+    // 2·(f(t+n) − f(t−n)) − (f(t+2n) − f(t−2n)): what a step leaves and a smooth
+    // change, however fast, does not. The reach n covers where a root can be
+    // reported, so a state-triggered event that lands on a literal switch time is
+    // seen too. A fixed threshold on a counter is not moved by the time, and is
+    // read from its own two sides.
+    if (!clocks.record_near &&
         std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; })) {
-        std::vector<double> f_before(static_cast<size_t>(ns), 0.0);
-        std::vector<double> f_after(static_cast<size_t>(ns), 0.0);
-        model.compute_derivs(t_evt - clock_nudge, x_minus.data(), f_before.data());
-        model.compute_derivs(t_evt + clock_nudge, x_minus.data(), f_after.data());
-        sync_state();
-        double gap = 0.0;
-        double scale = 0.0;
-        for (int i = 0; i < ns; ++i) {
-            gap = std::max(gap, std::fabs(f_before[i] - f_after[i]));
-            scale = std::max({scale, std::fabs(f_before[i]), std::fabs(f_after[i])});
+        const double reach = kEventRootSlack * clock_nudge;
+        CommuteProbe probe;
+        probe.fixed = true;
+        std::vector<double> lo1, hi1, lo2, hi2;
+        for (int side = 0; side < 2; ++side) {
+            const std::vector<double> &state = side == 0 ? x_minus_state : x_plus_state;
+            flow_at(t_evt - reach, state, lo1);
+            flow_at(t_evt + reach, state, hi1);
+            flow_at(t_evt - 2.0 * reach, state, lo2);
+            flow_at(t_evt + 2.0 * reach, state, hi2);
+            std::vector<double> &jump = side == 0 ? probe.jump_minus : probe.jump_plus;
+            jump.assign(static_cast<size_t>(ns), 0.0);
+            probe.scale.resize(static_cast<size_t>(ns), 0.0);
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                jump[ui] = -(2.0 * (hi1[ui] - lo1[ui]) - (hi2[ui] - lo2[ui]));
+                probe.scale[ui] = std::max({probe.scale[ui], std::fabs(lo1[ui]), std::fabs(hi1[ui]),
+                                            std::fabs(lo2[ui]), std::fabs(hi2[ui])});
+            }
         }
-        if (gap > kEventClockSwitchRelTol * scale) {
-            const std::string who =
-                tau_event >= 0 ? events_outer[tau_event].id : events_outer[fired.front()].id;
-            throw std::runtime_error(
-                "Forward sensitivity: event '" + who + "' fires at t=" + std::to_string(t_evt) +
-                ", the instant a rate law switches at a fixed time, and the event's time moves "
-                "with the requested parameters while the switch does not. Which of them comes "
-                "first then depends on the parameter, and the sensitivity jump is ambiguous "
-                "(issue #767). Separate the two times, or drop the parameters that move the "
-                "event from sensitivity_params.");
+        if (is_jump(probe)) {
+            probes.push_back(std::move(probe));
         }
+        for (const CrossingStop &stop : clocks.fixed_counters) {
+            if (stop.clock_species_idx0 < 0 || stop.clock_species_idx0 >= ns) {
+                continue;
+            }
+            CommuteProbe counter = counter_probe(stop.clock_species_idx0, stop.threshold, true);
+            if (is_jump(counter)) {
+                probes.push_back(std::move(counter));
+            }
+        }
+    }
+    if (!probes.empty()) {
+        sync_state(); // the probes left the evaluator at their own states
+    }
+    // probe_image[q][k]: row k of H·Δ(x⁻), for a row the batch has written.
+    std::vector<std::vector<double>> probe_image(probes.size());
+    for (auto &image : probe_image) {
+        image.assign(static_cast<size_t>(ns), 0.0);
     }
 
     // ── The batch, in the order it executed (issue #722) ─────────────────────
@@ -5520,6 +5688,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         int k = -1;
         double dcdt = 0.0;
         std::vector<double> base;
+        std::vector<double> image; // this row of H·Δ(x⁻), one per probe
     };
     std::vector<RowResult> rows;
 
@@ -5655,6 +5824,21 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 }
                 row.base[static_cast<size_t>(c)] = acc;
             }
+            // The same row of the batch's Jacobian applied to each probe: a
+            // column with no parameter part and no shift.
+            row.image.assign(probes.size(), 0.0);
+            for (size_t q = 0; q < probes.size(); ++q) {
+                double acc = 0.0;
+                for (int j = 0; j < ns; ++j) {
+                    if (dcdx[j] == 0.0) {
+                        continue;
+                    }
+                    const auto uj = static_cast<size_t>(j);
+                    acc += dcdx[j] * (at_trigger || assigned[uj] == 0 ? probes[q].jump_minus[uj]
+                                                                      : probe_image[q][uj]);
+                }
+                row.image[q] = acc;
+            }
             rows.push_back(std::move(row));
         }
         // One fire's assignments are simultaneous: none reads another's value,
@@ -5666,12 +5850,43 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             for (int c = 0; c < n_sens; ++c) {
                 row_base[static_cast<size_t>(c)][uk] = row.base[static_cast<size_t>(c)];
             }
+            for (size_t q = 0; q < probes.size(); ++q) {
+                probe_image[q][uk] = row.image[q];
+            }
         }
         for (size_t a = 0; a < ev.assignments.size() && a < fire.values.size(); ++a) {
             const int k = ev.assignments[a].first;
             if (k >= 0 && k < ns) {
                 xrun[static_cast<size_t>(k)] = fire.values[a];
             }
+        }
+    }
+
+    // The event and a switch that comes apart from it have to commute (issue
+    // #767): H·Δ(x⁻) against Δ(x⁺), row by row.
+    for (size_t q = 0; q < probes.size(); ++q) {
+        const CommuteProbe &probe = probes[q];
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<size_t>(i);
+            const double carried = assigned[ui] != 0 ? probe_image[q][ui] : probe.jump_minus[ui];
+            const double tol =
+                kEventClockSwitchRelTol * std::max(probe.scale[ui], std::fabs(carried));
+            if (std::fabs(carried - probe.jump_plus[ui]) <= tol) {
+                continue;
+            }
+            const std::string who = tau_event >= 0 ? events_outer[tau_event].id : first_fired;
+            throw std::runtime_error(
+                "Forward sensitivity: event '" + who + "' fires at t=" + std::to_string(t_evt) +
+                ", the instant a rate law switches" +
+                (probe.fixed
+                     ? std::string(" at a fixed time, and the event's time moves with the "
+                                   "requested parameters while the switch does not.")
+                     : std::string(", and the two times move differently with the requested "
+                                   "parameters.")) +
+                " The event changes what the switched rate law contributes, so which of them "
+                "comes first changes the result, and that order depends on the parameter: the "
+                "sensitivity does not exist there (issue #767). Separate the two times, or drop "
+                "the parameters that move one of them from sensitivity_params.");
         }
     }
 
@@ -9528,6 +9743,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                          std::numeric_limits<double>::epsilon() *
                                          std::max(std::fabs(static_cast<double>(t_ret)), 1.0)) {
                             clocks.applied = switches_applied;
+                        }
+                        const double near = kEventRootSlack * kSwitchInstantUlps *
+                                            std::numeric_limits<double>::epsilon() *
+                                            std::max(std::fabs(static_cast<double>(t_ret)), 1.0);
+                        clocks.record_near = !clocks.pending.empty() || !clocks.applied.empty();
+                        for (const SwitchTimeSens *one : switch_list) {
+                            if (std::fabs(one->t_star - static_cast<double>(t_ret)) <= 2.0 * near) {
+                                clocks.record_near = true;
+                            }
+                        }
+                        for (const CrossingStop &stop : crossing_stops) {
+                            if (stop.clock_species_idx0 >= 0 &&
+                                std::fabs(stop.t_star - static_cast<double>(t_ret)) <= near) {
+                                clocks.fixed_counters.push_back(stop);
+                            }
                         }
                     }
                     impl_->apply_event_sensitivity_jump(
