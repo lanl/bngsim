@@ -5085,10 +5085,7 @@ def compute_switch_time_sens(
     # what makes ∂f/∂p come out as the correct 0 and what keeps the probe from
     # displacing the switch into the approach (which stalls the integrator).
     switch_params = {
-        names[c]
-        for record in records
-        for c in range(len(names))
-        if record.dtstar[c] != 0.0
+        names[c] for record in records for c in range(len(names)) if record.dtstar[c] != 0.0
     }
     # A switch-time parameter is safe to pin only if EVERY crossing it moves is
     # compensated. One that also reads a condition nothing brackets — a dose

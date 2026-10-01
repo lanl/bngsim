@@ -1999,8 +1999,9 @@ struct ClockCrossingsAtEvent {
     // Every record within the reach of those, on the instant or not. Its jump is
     // its own, taken at its own stop, and would be read as a fixed switch's: a
     // fixed crossing within one instant of a record on the same clock is left
-    // to the record. So a `floor` step on a fitted switch is not seen (issue
-    // #944).
+    // to the record, which the detector has told of the fixed crossings it
+    // found there. One it did not find, a `floor` step on a fitted switch, is
+    // not seen (issue #944).
     std::vector<const SwitchTimeSens *> within_reach;
 };
 
@@ -5388,14 +5389,14 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             "run.");
     }
     // The records on this instant, and those within reach of it. One that shares
-    // its own instant with another crossing (the detector isolates such a one by
-    // its own threshold's parameter, issue #375) cannot be put on its
+    // its clock's instant with another crossing cannot be put on its
     // before-branch by moving the clock: the other crossing moves with it. A
     // fixed switch one ulp before a fitted one that an event sits on had its
     // flows read from before both, and the column of the fitted time took the
-    // fixed switch's jump (issue #767's review). Where the event commutes with
-    // everything on that instant the branch its flows are read on does not
-    // matter, so the group is asked for its jump below like any other switch.
+    // fixed switch's jump (issue #767's review). Where everything the clock
+    // flips there moves with the event, that is one crossing and the flows
+    // below are its. Where some of it does not, the event has to commute with
+    // all of it, and then the branch its flows are read on does not matter.
     std::vector<const SwitchTimeSens *> on_instant(clocks.pending);
     on_instant.insert(on_instant.end(), clocks.applied.begin(), clocks.applied.end());
     std::vector<const SwitchTimeSens *> crowded(on_instant);
@@ -5745,7 +5746,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // reach is asked for its jump. The event's own trigger time may be among
     // them, and has none. A record's own stop is among them too, and so is
     // anything fixed within one instant of a record on the same clock: those
-    // are the record's to answer for, above.
+    // are the record's to answer for, above, where the detector found them.
     bool event_moves = false;
     for (int c = 0; c < n_sens && !event_moves; ++c) {
         event_moves = moves(c, tau[static_cast<size_t>(c)]);

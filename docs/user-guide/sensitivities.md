@@ -176,11 +176,15 @@ bngsim measures whether the event and the switch commute, and refuses the run
 where they do not. A pair that commutes runs: a bolus beside an infusion that
 starts at the same time.
 
-Switches that share an instant with each other are asked together: the event
-has to commute with what that instant does as a whole. Back-to-back infusions
-with a bolus on the boundary run. A fixed switch within a few hundred ulp of an
-event that moves is asked too, so a pair that does not commute is refused a
-little before the two times coincide, where the derivative still exists.
+Several switches can share the event's instant. If all of them move with the
+event, two rate laws gated on the dose time, that is one crossing and it runs.
+If some do not, the event has to commute with what the instant does as a whole
+and with each fitted switch on it alone. Back-to-back infusions with a bolus on
+the boundary run; a rate law switched off at `tau` and on again at the literal
+3, with a reset at `tau = 3`, is refused. A fixed switch within a few hundred
+ulp of an event that moves is asked too, so a pair that does not commute is
+refused a little before the two times coincide, where the derivative still
+exists.
 
 What is not detected returns a number:
 
