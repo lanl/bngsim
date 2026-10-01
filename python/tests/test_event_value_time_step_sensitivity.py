@@ -133,6 +133,16 @@ def test_a_bend_in_a_species_the_column_moves_is_refused(value):
     _refused(text, ["kd"], 5.0, "the species 'A'")
 
 
+def test_a_bend_a_species_sits_exactly_on_is_refused():
+    """X is held at 3 by its initial value x0, and the event reads
+    ``abs(X − 3)``: dB/dx0 is +1 from one side and −1 from the other. The
+    difference across the bend is exactly 0, and the column came back 0."""
+    text = (
+        "species B, X; B = 0; x0 = 3; X = x0\nJ0: -> B; 0*x0\nE1: at (time >= 1): B = abs(X - 3)\n"
+    )
+    _refused(text, ["x0"], 5.0, "the species 'X'")
+
+
 TURNS = {
     # 98273.2 for 1e5: the difference is over 2.3e-6 either side, a quarter of
     # the width of the turn.
