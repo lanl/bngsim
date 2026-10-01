@@ -245,15 +245,35 @@ A window closing as `(1−s)^(a−1)` is singular on the *approach* to its cross
 the forcing of the column that moves the edge goes as `(1−s)^(a−2)` before it. A
 frame entered at the crossing has already integrated that. The generator marks
 such a case (`bngsim_codegen_comoving_approach`), and a plain column whose next
-switch time moves at that case's `c` enters ahead of it (#760): at the start of
-the run, at a state switch, or at a stop the run takes halfway from the clock
-crossing behind it. Not at that crossing. A window that also opens as a power has
-an `f` whose slope is unbounded just past the opening, and a frame entered there
-has that slope in its forcing. `V = S + c·f` holds for any constant `c` anywhere,
-so entering early changes only which column is integrated.
+switch time moves at that case's `c` enters ahead of it (#760). `V = S + c·f`
+holds for any constant `c` anywhere, so entering early changes only which column
+is integrated. Where it enters:
+
+- Only on the last stretch before that switch time, the one with no other
+  crossing stop of the run between. In its frame a column carries `c·∂f/∂t` for
+  everything `f` does, so a frame entered earlier meets the singular edges of
+  windows the column does not move.
+- At a stop the run takes for it a sixteenth of the way along that stretch
+  (`kComovingEntryFraction`), not at the crossing or the start that begins it. A
+  window that also opens as a power has an `f` whose slope is unbounded just
+  past the opening, and a frame entered there has that slope in its forcing.
+- A column already in a frame for another case leaves it and enters this one at
+  the same stop.
+
+A frame is left against `f` just before the crossing. At a registered root that
+is `f` kept from the stop the frame entered at, when the root is within the root
+finder's reach of that stop, and otherwise two reads just before the root
+extended to it. A single read back from the root is on the wrong side of a
+switch that close, and short of the limit of a power that reaches 0 there.
 
 - **Open:** a closing edge whose crossing is not a switch time of the run (a
   state-dependent one) is still approached in the plain column.
+- **Open:** a carried phase that starts exactly on a closing edge raises (the
+  clock lands on the threshold, where the split power is 0^(a−2)). Main returns
+  a value there.
+- **Open:** a column in its frame reads back as `V − c·f`, to the integration
+  tolerance and not exactly. Before the crossing it moves, an entered column is
+  rounding where a plain one is an exact 0.
 
 ## Order at one instant
 

@@ -2015,6 +2015,9 @@ struct ExecutedEventFire {
 // treat them as one instant (issue #737). The Python detector groups crossings
 // by the same reach (`_switch_sensitivity._same_instant`).
 constexpr double kSwitchInstantUlps = 64.0;
+// Where between a restart and the switch time ahead a comoving column enters
+// its frame (issue #760).
+constexpr double kComovingEntryFraction = 1.0 / 16.0;
 // Two times that are one instant to that nudge.
 inline bool one_switch_instant(double a, double b) {
     return std::fabs(a - b) <= kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
@@ -4863,16 +4866,19 @@ void CvodeSimulator::Impl::comoving_leave(SensitivityState &sens, int ns, double
 // is APPROACHED, so a column that enters its frame at the crossing has already
 // integrated the forcing no step resolves: 0.03% to 0.6% off, flat in rtol. The
 // generator marks such a case, and a plain column whose next switch time moves at
-// that case's c enters before it instead. V = S + c·f holds for any constant c
-// anywhere, so entering early changes nothing but which column is integrated. At
-// the crossing itself the column leaves and enters again against one f, which
-// cancels exactly.
+// that case's c enters before it instead. V = S + c·f holds for any constant c,
+// so the column it stands for is the same. Its forcing is not: in the frame it
+// is ∂f/∂p + c·∂f/∂t for everything f does, so the frame is right only over a
+// stretch where f does nothing singular that the column does not move.
 //
-// It enters where f is smooth: at the start of the run, at a state switch, or at
-// a stop the run takes for it halfway between the clock crossing behind it and
-// the switch time ahead. Not at that clock crossing itself. A window that opens
-// as a power too, s^(a-1)·(1-s)^(a-1), has an f whose slope is unbounded just
-// past the opening, and a frame entered there has that slope in its forcing.
+// So a column enters on the last stretch before its switch time and no earlier:
+// at a stop the run takes for it a sixteenth of the way from the last restart
+// to that switch time, and only when no other crossing lies between the two. A
+// window that closes as a power before then, in a column that does not move
+// it, stays in the plain column, where it costs nothing. Not at the restart
+// itself: a window that opens as a power too, s^(a-1)·(1-s)^(a-1), has an f
+// whose slope is unbounded just past the opening. At the crossing the column
+// leaves and enters again against one f, which cancels exactly.
 
 bool CvodeSimulator::Impl::comoving_wants_ahead(SensitivityState &sens, double *const *cols,
                                                 double t) {
@@ -6054,7 +6060,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // Issue #760: a column this crossing leaves plain, whose NEXT switch time is
     // approached through a singular power, enters its frame ahead of that one.
     // Not here, where f may be opening a power of its own: the run takes a stop
-    // for it halfway there.
+    // for it a little way on.
     if (comoving_wants_ahead(sens, sens_cols.data(), t_evt)) {
         sens.comoving.entry_request = t_evt;
     }
@@ -9142,8 +9148,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             bool stop_at_crossing = false;
             double t_switch = 0.0;
             double t_crossing = 0.0;
-            // Issue #760: a stop for a column to enter its frame at, halfway
-            // from the restart that asked to the switch time ahead. Only where
+            // Issue #760: a stop for a column to enter its frame at, a sixteenth
+            // of the way from the restart that asked to the switch time ahead:
+            // past whatever f does at the restart, and with as little of the
+            // approach left behind as that allows. Only where
             // no other crossing lies between the two: in its frame the column
             // carries c·∂f/∂t for everything f does, and another window's
             // closing power in there is the singular forcing over again, in a
@@ -9172,7 +9180,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
                 if (clear) {
                     const double to = switch_list[ahead]->t_star;
-                    const double t_mid = from + 0.5 * (to - from);
+                    const double t_mid = from + kComovingEntryFraction * (to - from);
                     if (t_mid > static_cast<double>(t_now) && !same_instant(t_mid, from) &&
                         !same_instant(t_mid, to)) {
                         auto at = std::lower_bound(
@@ -9478,8 +9486,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             // The root of the stop the columns entered at.
                             f_before = sens.comoving.f_entry_after;
                         } else {
+                            // Two reads, carried to the root: beside a closing
+                            // power f moves by a part in a thousand over the
+                            // read back itself.
+                            std::vector<double> f_further;
+                            impl_->comoving_rhs(static_cast<double>(t_ret) - 2.0 * root_back,
+                                                y_data, ns, f_further);
                             impl_->comoving_rhs(static_cast<double>(t_ret) - root_back, y_data, ns,
                                                 f_before);
+                            for (int i = 0; i < ns; ++i) {
+                                const auto ui = static_cast<size_t>(i);
+                                f_before[ui] += f_before[ui] - f_further[ui];
+                            }
                             model.update_observables(y_data);
                             model.evaluate_functions(static_cast<double>(t_ret));
                         }
