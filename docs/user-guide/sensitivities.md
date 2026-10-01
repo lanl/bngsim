@@ -192,11 +192,15 @@ the tolerance can resolve is therefore not guaranteed, as it is not in main.
 
 Stepping on can leave a run pinned on the threshold: a step long enough to move
 the state across by one ulp carries the rate law's jump into an error test it
-fails, and a shorter one leaves the state where it is. Where the solver has
-spent a whole batch of steps that way, the state is carried across the
-threshold along the flow and the run restarts there (issue #928). A state that
-slides along the threshold, with both branches pointing into it, is not
-carried.
+fails, and a shorter one leaves the state where it is. A slow approach does it
+with one condition: a species that rises by 1e-8 of itself a unit of time. Where
+the solver has spent a whole batch of steps that way, and the flow would have
+crossed in the time the state has been seen there, the species the threshold
+reads are moved the few ulp that put the state across and the run restarts
+there (issue #928). How late that is depends on how slow the approach is: the
+crossing time is known no better than the threshold species is, its tolerance
+over its rate. A state that slides along the threshold, with both branches
+pointing into it, is not moved.
 
 Issue #904 lists what this does not yet cover:
 - a comparison used as a number outside `if()`, such as `k*(X > 1)`;

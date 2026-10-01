@@ -13,8 +13,14 @@ enough to move A by an ulp carries the jump in Y' into an error test it fails,
 and one short enough to pass leaves A where it is. CVODE took 500 steps per
 batch for 1e-4 of time until the wall clock ended the run.
 
-Where a whole batch of steps has been spent that way, the state is now carried
-across the surface along the flow and the integrator restarts there.
+Where a whole batch of steps has been spent that way, and the flow would have
+carried the residual across in the time it has been seen there, the species
+the residual reads are now moved the few ulp that put it across, and the
+integrator restarts there.
+
+One switch does the same under a slow approach. ``if(A > thr, kb, 0)`` with A
+rising from 1 at 1e-8 a unit of time: a step that moves A by an ulp is 2e-8
+long, and the jump in Y' lets pass only a step of 3e-13.
 
 Every expected value is a closed form: A = Aeq + (A0 − Aeq)·e^(−(a+kback)·t)
 crosses thr at t*, and Y = kb·(T − t*), Z = kc·(T − t*).
@@ -137,3 +143,91 @@ def test_a_slide_along_the_surface_is_not_carried_across(tmp_path):
         sample_times=[0.0, 0.5, 1.5, 3.0], rtol=1e-6, atol=1e-8, timeout=60.0
     )
     np.testing.assert_allclose(np.asarray(run.species)[:, 0], [0.0, 0.5, 1.0, 1.0], atol=1e-5)
+
+
+SLOW = """begin parameters
+    1 eps {eps!r}
+    2 thr {thr!r}
+    3 kb 3
+    4 w 50
+end parameters
+begin functions
+    1 fY() if(Aobs>thr,kb,0)
+    2 fP() w*Qobs
+    3 fQ() -w*Pobs
+end functions
+begin species
+    1 A() 1
+    2 Y() 0
+    3 P() 0
+    4 Q() 1
+end species
+begin reactions
+    1 0 1 eps
+    2 0 2 fY
+    3 0 3 fP
+    4 0 4 fQ
+end reactions
+begin groups
+    1 Aobs 1
+    2 Pobs 3
+    3 Qobs 4
+end groups
+"""
+SLOW_END, SLOW_RTOL = 10.0, 1e-10
+
+
+def _slow(tmp_path, eps, thr, **run_options):
+    """A rises from 1 at ``eps`` and turns Y on past ``thr``, beside an
+    oscillator the switch does not read. Returns the state at the end."""
+    path = tmp_path / "slow.net"
+    path.write_text(SLOW.format(eps=eps, thr=thr))
+    run = bngsim.Simulator(bngsim.Model.from_net(path), method="ode").run(
+        t_span=(0.0, SLOW_END), n_points=2, rtol=SLOW_RTOL, atol=1e-12, timeout=5.0, **run_options
+    )
+    return np.asarray(run.species)[-1]
+
+
+@pytest.mark.parametrize("eps", [1e-7, 1e-8, 1e-9])
+def test_one_switch_under_a_slow_approach(tmp_path, eps):
+    """A reaches thr = 1 + 5·eps at t = 5. Each of these ended in the
+    wall-clock timeout, with A an ulp short of thr.
+
+    The crossing time is known only as well as A is: an error of rtol·A in A
+    moves it by rtol/eps, which is 1e-3 to 0.1 here. Y is held to a tenth of
+    that. The oscillator is not what was pinned, and it is held to what the
+    run's tolerances give it."""
+    thr = 1.0 + 5.0 * eps
+    a, y, p, q = _slow(tmp_path, eps, thr)
+    assert a == pytest.approx(1.0 + eps * SLOW_END, rel=0.0, abs=1e-3 * eps * SLOW_END)
+    assert y == pytest.approx(KB * (SLOW_END - (thr - 1.0) / eps), abs=0.1 * KB * SLOW_RTOL / eps)
+    assert p == pytest.approx(np.sin(50.0 * SLOW_END), abs=1e-6)
+    assert q == pytest.approx(np.cos(50.0 * SLOW_END), abs=1e-6)
+
+
+def test_a_pinned_state_seen_over_several_short_batches(tmp_path):
+    """With 20 steps to a batch, no one batch lasts as long as the flow needs
+    to cross the few ulp, so the first batch that finds the state pinned does
+    not move it. The time it has been seen there is counted from that batch
+    on."""
+    eps = 1e-9
+    thr = 1.0 + 5.0 * eps
+    a, y, p, q = _slow(tmp_path, eps, thr, max_steps=20)
+    assert a == pytest.approx(1.0 + eps * SLOW_END, rel=0.0, abs=1e-3 * eps * SLOW_END)
+    assert y == pytest.approx(KB * (SLOW_END - (thr - 1.0) / eps), abs=0.1 * KB * SLOW_RTOL / eps)
+    assert p == pytest.approx(np.sin(50.0 * SLOW_END), abs=1e-6)
+    assert q == pytest.approx(np.cos(50.0 * SLOW_END), abs=1e-6)
+
+
+def test_a_state_that_is_close_to_a_surface_is_not_pinned_on_it(tmp_path):
+    """Control. A starts four ulp short of thr and approaches it at 1e-20, so
+    it does not cross in this run. The oscillator uses up every batch of 50
+    steps, and each batch ends with the residual within a few ulp of zero and a
+    step far too short for the flow to move it. The flow would not have carried
+    it across in the time it has been seen there, so it is left where it is."""
+    thr = float(1.0 + 4 * np.finfo(float).eps)
+    a, y, p, q = _slow(tmp_path, 1e-20, thr, max_steps=50)
+    assert a == 1.0
+    assert y == 0.0
+    assert p == pytest.approx(np.sin(50.0 * SLOW_END), abs=1e-6)
+    assert q == pytest.approx(np.cos(50.0 * SLOW_END), abs=1e-6)
