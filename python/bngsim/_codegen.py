@@ -256,7 +256,12 @@ _compile_counter = itertools.count()
 # right-hand side, which folds the same way now. A cached v32 .so for a model
 # with a coefficient above 1 would keep serving the repeated updates and their
 # rounding. Invalidate v32.
-_CODEGEN_VERSION = "33"
+#
+# 33→34: issue #912 — a derived parameter that reaches a rate only through
+# another derived parameter (`Rt = 2*Q` with Q requested) had no ∂f/∂p term on
+# its own column. A cached v33 sensitivity .so for a model with nested derived
+# parameters would keep that column without its rate term. Invalidate v33.
+_CODEGEN_VERSION = "34"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -2273,6 +2278,7 @@ def _derived_param_jacobian_checked(
     deadline: float | None = None,
     cache: dict[str, tuple[dict[str, str] | None, str | None]] | None = None,
     name: str | None = None,
+    include_derived: bool = False,
 ) -> tuple[dict[str, str] | None, str | None]:
     """:func:`_compute_derived_param_jacobian`, plus the reason it gave up.
 
@@ -2303,6 +2309,14 @@ def _derived_param_jacobian_checked(
     when it is one: it puts the top-level result in that same cache, and starts
     the cycle guard's stack, so a loop over every derived parameter costs one
     derivation per DAG node rather than two.
+
+    ``include_derived`` (issue #912) also reports the partial with respect to
+    each *derived* parameter the walk passes through, keyed by its name. A
+    requested derived parameter is a sensitivity coordinate of its own: it is
+    held where it is set and everything defined from it follows. Its column
+    therefore needs ``∂expr/∂p_e`` for every ``expr`` that reaches ``p_e``, and
+    a table keyed by primaries alone left that column without its rate term. A
+    cache is good for one value of the flag only.
     """
     s = expr.strip()
     if not s:
@@ -2328,6 +2342,7 @@ def _derived_param_jacobian_checked(
         deadline,
         memo,
         () if name is None else (name,),
+        include_derived,
     )
     if name is not None:
         memo[name] = result
@@ -2342,6 +2357,7 @@ def _derived_param_jacobian_dag(
     deadline: float | None,
     cache: dict[str, tuple[dict[str, str] | None, str | None]],
     stack: tuple[str, ...],
+    include_derived: bool = False,
 ) -> tuple[dict[str, str] | None, str | None]:
     """``∂expr/∂primary`` for every primary ``expr`` reaches, by walking the
     derived-parameter DAG instead of flattening it (GH #99).
@@ -2377,6 +2393,10 @@ def _derived_param_jacobian_dag(
     Keys are sorted, and a single-level expression takes no composition at all,
     so a derived parameter already written in primaries emits byte-identical C
     to the pre-#99 flattening path.
+
+    With ``include_derived`` each derived parameter on the way is a key as
+    well: its own direct partial, plus the composition through whatever sits
+    between it and ``expr`` (issue #912).
     """
     direct, reason = _direct_derived_partials(
         expr, primary_names, derived_exprs.keys(), param_idx, deadline
@@ -2391,6 +2411,8 @@ def _derived_param_jacobian_dag(
             continue
         if name in stack:
             return None, f"reference cycle through the derived parameter {name!r}"
+        if include_derived:
+            terms.setdefault(name, []).append(d_c)
         hit = cache.get(name)
         if hit is None:
             hit = _derived_param_jacobian_dag(
@@ -2401,6 +2423,7 @@ def _derived_param_jacobian_dag(
                 deadline,
                 cache,
                 stack + (name,),
+                include_derived,
             )
             cache[name] = hit
         sub, why = hit
@@ -6709,6 +6732,7 @@ def _mm_dfdp_terms(data, plan_mm, param_idx_by_name, primary_param_names, derive
                 derived_exprs=derived_exprs,
                 cache=derived_jac_cache,
                 name=pname,
+                include_derived=True,
             )
             if why is not None:
                 return {}, (
@@ -8195,6 +8219,7 @@ def _functional_rate_law_partials(
             deadline=scope.deadline,
             cache=scope.derived_jac_cache,
             name=pname,
+            include_derived=True,
         )
         if why is not None:
             return None, (
@@ -9152,6 +9177,7 @@ def generate_sens_from_model(
                 deadline=deadline,
                 cache=derived_jac_cache,
                 name=p["name"],
+                include_derived=True,
             )
         except _DerivationBudgetExceeded:
             # GH #90: same budget as the Functional pass above, and the same
@@ -9862,6 +9888,7 @@ def _compute_output_sens_analysis(model, core) -> dict:
                 deadline=deadline,
                 cache=derived_jac_cache,
                 name=dname,
+                include_derived=True,
             )
         except _DerivationBudgetExceeded:
             budget_reason = _output_sens_budget_reason(
