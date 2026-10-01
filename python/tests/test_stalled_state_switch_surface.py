@@ -15,8 +15,9 @@ for 1e-4 of time until the wall clock ended the run.
 
 Where a whole batch of steps has been spent that way, and the flow would have
 carried the residual across in the time it has been seen there, the residual
-is now put the few ulp to its far side, by moving each species it reads as
-that species' own flow would, and the integrator restarts there.
+is now put the few ulp to its far side, by moving each species it reads that
+the flow moves by the same few ulp of its own, and the integrator restarts
+there.
 
 One switch does the same under a slow approach. ``if(A > thr, kb, 0)`` with A
 rising from 1 at 1e-8 a unit of time: a step that moves A by an ulp is 2e-8
@@ -293,8 +294,8 @@ def test_a_threshold_on_a_sum_moves_only_the_species_the_flow_moves(tmp_path, a2
     The residual reads both species, and an ulp of it is an ulp of A1: 1e-10.
     Spread over the two by the gradient, as a first cut did it, the move put
     A2 at 1e-3 + 1e-9, or at −1e-9 from 0, which a reaction that feeds on A2
-    grows from. Each species is moved as its own flow would move it, so A2 is
-    where it started, to the bit."""
+    grows from. Only a species the flow moves is moved, so A2 is where it
+    started, to the bit."""
     a1 = 1e6
     eps = (1.0 if rising else -1.0) * 1e-8 * a1
     thr = (a1 + a2) + 5.0 * eps
@@ -368,3 +369,61 @@ def test_a_state_that_comes_to_rest_short_of_a_surface_is_not_put_across(tmp_pat
     end = np.asarray(run.species)[-1]
     assert end[1] == 0.0
     assert end[0] <= thr
+
+
+TWO_MOVING = """begin parameters
+    1 thr {thr!r}
+    2 kb 3
+    3 fAv {fa!r}
+    4 fBv {fb!r}
+end parameters
+begin functions
+    1 fY() {cond}
+    2 fA() fAv
+    3 fB() fBv
+end functions
+begin species
+    1 A() {a0!r}
+    2 B() {b0!r}
+    3 Y() 0
+end species
+begin reactions
+    1 0 1 fA
+    2 0 2 fB
+    3 0 3 fY
+end reactions
+begin groups
+    1 Aobs 1
+    2 Bobs 2
+    3 Sobs 1,2
+end groups
+"""
+
+
+@pytest.mark.parametrize(
+    ("cond", "a0", "b0", "fa", "fb", "thr"),
+    [
+        ("if(Sobs>thr,kb,0)", 1.0, 3.0, 0.1, -0.1 + 1e-8, 4.0 + 5e-8),
+        ("if(Aobs>Bobs,kb,0)", 1.0, 1.0 + 5e-8, 0.1 + 1e-8, 0.1, 0.0),
+        ("if(Aobs-Bobs>thr,kb,0)", 2.0, 1.0, 1e-3 + 1e-8, 1e-3, 1.0 + 5e-8),
+    ],
+    ids=["a-sum-of-two-that-cancel", "one-overtaking-another", "a-difference"],
+)
+def test_two_species_that_move_under_one_threshold(tmp_path, cond, a0, b0, fa, fb, thr):
+    """A and B each move at 0.1 or 1e-3 a unit of time, and what the condition
+    reads of them moves at 1e-8: it crosses at t = 5. Each ended in the
+    wall-clock timeout.
+
+    Each species is a line in time, so its value at the end is known to
+    rounding. A cut that moved each species as its own flow would move it, in
+    proportion, moved A and B by 1e7 times what the residual needed: 5e-8 of
+    each. They are moved a few ulp of their own."""
+    path = tmp_path / "two.net"
+    path.write_text(TWO_MOVING.format(cond=cond, a0=a0, b0=b0, fa=fa, fb=fb, thr=thr))
+    run = bngsim.Simulator(bngsim.Model.from_net(path), method="ode").run(
+        t_span=(0.0, 10.0), n_points=2, rtol=1e-10, atol=1e-12, timeout=5.0
+    )
+    a, b, y = np.asarray(run.species)[-1]
+    assert a == pytest.approx(a0 + fa * 10.0, rel=1e-11)
+    assert b == pytest.approx(b0 + fb * 10.0, rel=1e-11)
+    assert y == pytest.approx(KB * 5.0, abs=0.1 * KB * 1e-10 * max(a0, b0) / 1e-8)

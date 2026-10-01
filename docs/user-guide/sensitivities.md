@@ -196,8 +196,8 @@ fails, and a shorter one leaves the state where it is. A slow approach does it
 with one condition: a species that rises by 1e-8 of itself a unit of time. Where
 the solver has spent a whole batch of steps that way, and the flow reaches the
 threshold and would have crossed in the time the state has been seen there,
-the state is put the few ulp across, each species the threshold reads moved as
-its own flow would move it, and the run restarts there (issue #928). This is
+the state is put the few ulp across, each species the threshold reads that the
+flow moves by a few ulp of its own, and the run restarts there (issue #928). This is
 for `.net` models: a `piecewise` condition on a species in an SBML model is not
 a state switch of a plain run, and such a run still stalls.
 

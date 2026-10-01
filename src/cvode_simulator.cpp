@@ -6238,11 +6238,14 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, 
 //     not pinned, whatever else has used the batch up.
 //
 // The residual is then put the few ulp to its far side, by moving each species
-// it reads as that species' own flow would: one the flow does not move, a
-// fixed species or a static term of a sum, stays where it is. Nothing else
-// moves, and the time does not. The integrator restarts there. Only where the
-// flow on the far side carries on away from the surface: one that points back
-// is a slide along it (#926), which this leaves as it found it.
+// it reads that the flow moves by the same few ulp of that species' own: one
+// the flow does not move, a fixed species or a static term of a sum, stays
+// where it is, and no species moves by more than rounding moves it. (Moved as
+// the flow would move them, two species of a sum that go opposite ways at 0.1
+// each, 1e-8 apart, each took 1e7 times the residual's own move.) Nothing
+// else moves, and the time does not. The integrator restarts there. Only
+// where the flow on the far side carries on away from the surface: one that
+// points back is a slide along it (#926), which this leaves as it found it.
 static constexpr double kStalledSwitchUlps = 16.0;
 
 bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
@@ -6259,10 +6262,12 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
 
     struct Stalled {
         const NetworkModel::StateSwitch *sw;
-        double dir;               // the sign the residual takes on the far side
-        double size;              // |g|, how far short of the surface it is
-        double reach;             // the few ulp, in the residual's units
-        std::vector<double> push; // each species' move per unit of residual, over sw->species
+        double dir;   // the sign the residual takes on the far side
+        double size;  // |g|, how far short of the surface it is
+        double reach; // the few ulp, in the residual's units
+        // Each species' move per unit of residual, over sw->species: its own
+        // ulp over the residual's, toward the side that raises the residual.
+        std::vector<double> push;
     };
     std::vector<Stalled> stalled;
     std::vector<double> gx;
@@ -6274,10 +6279,15 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         const double flow =
             residual_flow(sw->residual_expr_idx, sw->species, t, ns, x, f0, gx, scale);
         const double g = eval.evaluate(sw->residual_expr_idx);
+        // An ulp of the residual: what one ulp of each species the flow moves
+        // moves it by. And the part of the flow that is those species moving.
         double ulp = 0.0;
-        double carried = 0.0; // the part of the flow that is the species moving
+        double carried = 0.0;
         for (int j : sw->species) {
             const auto uj = static_cast<std::size_t>(j);
+            if (f0[uj] == 0.0) {
+                continue;
+            }
             const double size = std::fabs(x[uj]);
             ulp += std::fabs(gx[uj]) *
                    (std::nextafter(size, std::numeric_limits<double>::infinity()) - size);
@@ -6302,7 +6312,10 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         }
         Stalled one{sw, flow > 0.0 ? 1.0 : -1.0, std::fabs(g), reach, {}};
         for (int j : sw->species) {
-            one.push.push_back(f0[static_cast<std::size_t>(j)] / carried);
+            const auto uj = static_cast<std::size_t>(j);
+            const double size = std::fabs(x[uj]);
+            const double own = std::nextafter(size, std::numeric_limits<double>::infinity()) - size;
+            one.push.push_back(f0[uj] == 0.0 ? 0.0 : (gx[uj] > 0.0 ? own : -own) / ulp);
         }
         // Whether the flow reaches the surface: the same flow, read as far
         // back again as the residual is from its far side.
@@ -6328,7 +6341,7 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     std::vector<double> f1(static_cast<std::size_t>(ns), 0.0);
     bool across = false;
     double past = 1.0;
-    for (int attempt = 0; attempt < 4 && !across; ++attempt, past *= 4.0) {
+    for (int attempt = 0; attempt < 3 && !across; ++attempt, past *= 4.0) {
         xc = x;
         for (const Stalled &one : stalled) {
             const double by = one.dir * (one.size + past * one.reach);
