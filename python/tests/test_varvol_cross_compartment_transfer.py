@@ -16,6 +16,11 @@ load-time size, with no warning:
 With ``A -> B; k*A`` into a compartment growing from 2 at rate 1, [B](5) came
 back 0.284 for 0.196.
 
+A reaction that also changes a species in an assignment-rule compartment, or
+that mixes conversion factors, is written out one species at a time, each over
+its own compartment's live size. A species the reaction does not change, a
+catalyst, does not count as one it moves between compartments.
+
 The reference integrates the two amounts with scipy, which shares nothing with
 bngsim, and divides by the sizes at the output times.
 """
@@ -223,3 +228,145 @@ def test_the_ssa_still_refuses_what_it_cannot_correct(law):
     model = bngsim.Model.from_antimony_string(_text("product-side-rate-rule", law))
     with pytest.raises(Exception, match="variable-volume"):
         bngsim.Simulator(model, method="ssa").run(t_span=(0.0, 1.0), n_points=3)
+
+
+# ─── Three species, an assignment-rule compartment, conversion factors ──────
+
+
+def _final(flux, v_a, v_b, n_a, n_b, cf_a=1.0, cf_b=1.0):
+    """[A](5) and [B](5) from the amounts: A loses cf_a·flux, B gains cf_b·flux."""
+
+    def rhs(t, n):
+        j = flux(n[0] / v_a(t), n[1] / v_b(t), t)
+        return [-cf_a * j, cf_b * j]
+
+    n = solve_ivp(rhs, (0.0, 5.0), [n_a, n_b], rtol=1e-12, atol=1e-14).y[:, -1]
+    return np.array([n[0] / v_a(5.0), n[1] / v_b(5.0)])
+
+
+def _final_of(model) -> np.ndarray:
+    run = bngsim.Simulator(model, method="ode").run(
+        sample_times=[0.0, 2.5, 5.0], rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    x = np.asarray(run.species)[-1]
+    return np.array([x[names.index("A")], x[names.index("B")]])
+
+
+def _half(t):
+    return 2.0 + 0.5 * t
+
+
+def _one(t):
+    return 2.0 + t
+
+
+def test_a_catalyst_in_a_changing_compartment_is_not_a_species_it_moves():
+    """Control. A and B share an assignment-rule compartment and the catalyst E
+    sits in one that follows a rate rule. Nothing crosses a compartment: E is
+    left as it was found. The single divide by A and B's own compartment was
+    right, and a first cut of this fix took E for a changed species and sent the
+    reaction to the per-species divide, which for an assignment-rule compartment
+    is the load-time size (#745): [A](5) = 0.287 for 0.326."""
+    text = (
+        "compartment C1 = 2, C3 = 2; C1 := 2 + 0.5*time; C3' = 1;\n"
+        "species A in C1, B in C1, E in C3; A = 1; B = 0.2; E = 0.5; k = 0.7;\n"
+        "J1: A + E -> B + E; k*A*E;\n"
+    )
+    want = _final(lambda a, b, t: K * a * (1.0 / _one(t)), _half, _half, 2.0, 0.4)
+    model = bngsim.Model.from_antimony_string(text)
+    np.testing.assert_allclose(_final_of(model), want, rtol=1e-7)
+    # And it is still the one reaction it was, not one per species.
+    reactions = model._core.codegen_data()["reactions"]
+    assert len([r for r in reactions if "J1" in r.get("function_name", "")]) == 1
+
+
+def test_a_static_catalyst_beside_two_species_in_a_changing_compartment():
+    """The mirror image: the catalyst is in a static compartment and A and B in
+    one that grows. The reaction spans two compartments, so its rows took the
+    per-species divide, by the load-time size: [A](5) = 0.119 for 0.184."""
+    text = (
+        "compartment C1 = 1, C3 = 2; C3' = 1;\n"
+        "species E in C1, A in C3, B in C3; A = 1; B = 0.2; E = 0.5; k = 0.7;\n"
+        "J1: E + A -> E + B; k*A*E;\n"
+    )
+    want = _final(lambda a, b, t: K * a * 0.5, _one, _one, 2.0, 0.4)
+    got = _final_of(bngsim.Model.from_antimony_string(text))
+    np.testing.assert_allclose(got, want, rtol=1e-7)
+
+
+@pytest.mark.parametrize(
+    ("species", "law", "flux", "v_a", "v_b"),
+    [
+        ("A in C1, B in C3", "k*A", lambda a, b, t: K * a, _half, _one),
+        ("A in C3, B in C1", "k*A", lambda a, b, t: K * a, _one, _half),
+        ("A in C1, B in C3", "k*A - k2*B", lambda a, b, t: K * a - K2 * b, _half, _one),
+    ],
+    ids=["out-of-the-rule", "into-the-rule", "reversible-difference"],
+)
+def test_a_transfer_between_an_assignment_rule_and_a_rate_rule_compartment(
+    species, law, flux, v_a, v_b
+):
+    """C1 follows an assignment rule and C3 a rate rule, with the same size at
+    load. The single divide was by C1's live size for both species, so the one
+    in C3 was wrong: [B](5) = 0.302 for 0.251. Each row is now over its own
+    compartment's live size.
+
+    An irreversible monomial here is still divided by the load-time size of the
+    assignment-rule compartment (#745)."""
+    text = (
+        "compartment C1 = 2, C3 = 2; C1 := 2 + 0.5*time; C3' = 1;\n"
+        f"species {species}; A = 1; B = 0.2; k = {K}; k2 = {K2};\n"
+        f"J1: A -> B; {law};\n"
+    )
+    got = _final_of(bngsim.Model.from_antimony_string(text))
+    np.testing.assert_allclose(got, _final(flux, v_a, v_b, 2.0, 0.4), rtol=1e-7)
+
+
+@pytest.mark.parametrize(
+    ("rules", "v_a"),
+    [("C2' = 1;", lambda t: 2.0), ("C1' = 1; C2' = 1;", _one)],
+    ids=["one-changing", "both-in-step"],
+)
+def test_a_transfer_that_mixes_conversion_factors(tmp_path, rules, v_a):
+    """A loses 1.5 per unit of flux and B gains 0.5. With only C2 changing, [B]
+    was divided by the size at load: 0.212 for 0.145. With the two compartments
+    growing in step the single divide happened to be right, and that one is the
+    control: a first cut sent it to an emission that refuses mixed factors."""
+    import antimony
+    import libsbml
+
+    antimony.clearPreviousLoads()
+    antimony.loadAntimonyString(
+        f"compartment C1 = 2, C2 = 2; {rules}\n"
+        "species A in C1, B in C2; A = 1; B = 0.2; k = 0.7; cfA = 1.5; cfB = 0.5;\n"
+        "J1: A -> B; k*A;\n"
+    )
+    doc = libsbml.readSBMLFromString(antimony.getSBMLString(antimony.getMainModuleName()))
+    model = doc.getModel()
+    for pid in ("cfA", "cfB"):
+        model.getParameter(pid).setConstant(True)
+    model.getSpecies("A").setConversionFactor("cfA")
+    model.getSpecies("B").setConversionFactor("cfB")
+    path = tmp_path / "m.xml"
+    path.write_text(libsbml.writeSBMLToString(doc))
+
+    want = _final(lambda a, b, t: K * a, v_a, _one, 2.0, 0.4, cf_a=1.5, cf_b=0.5)
+    np.testing.assert_allclose(_final_of(bngsim.Model.from_sbml(str(path))), want, rtol=1e-7)
+
+
+def test_the_certified_monomial_keeps_the_emission_its_ssa_correction_is_for():
+    """Control. An irreversible monomial between the same two compartments is the
+    one shape the SSA can correct, and its correction is written for the
+    one-reaction emission. Written out one species at a time it would have no
+    SSA reading and no refusal either."""
+    text = (
+        "compartment C1 = 2, C3 = 2; C1 := 2 + 0.5*time; C3' = 1;\n"
+        "species A in C1, B in C3; A = 1; B = 0.2; k = 0.7;\n"
+        "J1: A => B; k*A;\n"
+    )
+    reactions = bngsim.Model.from_antimony_string(text)._core.codegen_data()["reactions"]
+    transfer = [r for r in reactions if r.get("function_name") == "J1"]
+    assert len(transfer) == 1
+    assert transfer[0]["per_species_volume_scaling"]
+    assert sorted(transfer[0]["reactants"]) != []

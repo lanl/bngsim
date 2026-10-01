@@ -6875,20 +6875,44 @@ def _build_model_from_sbml_doc(doc):
         # saturating law, or a monomial on a reaction flagged reversible, which
         # SBML L2 does by default and Antimony's `->` does. The classifier
         # certifies only the irreversible monomial, because only that one has an
-        # exact SSA propensity correction. The ODE row is `stoich·law/V_live`
-        # for all of them, and the single representative divide, like the static
-        # one below, is the load-time size.
+        # exact SSA propensity correction. The ODE row is `stoich·law/V_live` for
+        # all of them. The single divide is by one representative compartment,
+        # which is right only for the species in it, and the per-species divide
+        # below is by the load-time size.
+        #
+        # A species the reaction leaves as it found it (a catalyst, net 0) has no
+        # row to divide, and does not count: a reaction whose changed species all
+        # sit in one compartment keeps the single divide it is right with.
         _xc_varvol_species = (
             [
                 _sid
                 for _sid in net
-                if species_comp[_sid] in varvol_ssa_comps and not species_hosu.get(_sid, False)
+                if net[_sid] != 0
+                and species_comp[_sid] in varvol_ssa_comps
+                and not species_hosu.get(_sid, False)
             ]
             if len(_rxn_comps) > 1
             else []
         )
         if _xc_varvol_species:
             unified_ok = False
+        # Two kinds of such a reaction cannot take the per-species divide either.
+        # One that also changes a species in an assignment-rule compartment: that
+        # compartment is no state, so there is nothing to point its divide at
+        # (#745). One that mixes conversion factors, which that emission refuses.
+        # Both are written out one species at a time instead, each over its own
+        # compartment's live symbol and with its own factor, as a non-integer
+        # stoichiometry is. That form has no SSA reading, and these are refused
+        # under SSA already. The certified monomial keeps the per-species divide,
+        # which its SSA correction is written for.
+        _xc_by_function = (
+            bool(_xc_varvol_species)
+            and i not in ssa_varvol_xcompartment
+            and (
+                _cf_mixed_i
+                or any(net[_sid] != 0 and species_comp[_sid] in ar_comp_targets for _sid in net)
+            )
+        )
         # (#192) The same by-value hazard for a WRITABLE STATIC volume, which is
         # #170's territory rather than #144's and was never done. `involved_vs`
         # holds volume VALUES, so a reaction whose species span several
@@ -7112,7 +7136,7 @@ def _build_model_from_sbml_doc(doc):
         # ssa_volume_factor=1.0; the SSA fire step's per-species
         # 1/volume_factor divide already handles per-species amount→storage
         # scaling.
-        if not non_integer:
+        if not non_integer and not _xc_by_function:
             # GH #232: a cross-compartment reaction whose species carry DIFFERENT
             # conversion factors would need a per-cf-group split interleaved with
             # the per-species volume scaling below — not yet implemented. Refuse
