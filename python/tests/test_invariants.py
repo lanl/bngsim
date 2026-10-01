@@ -408,7 +408,6 @@ FIXTURES: tuple[Fixture, ...] = (
         sbml_events,
         t_end=20.0,
         write=("dose_amt", 3.0),
-        known=(("split_run", 693, AssertionError),),
     ),
     Fixture(
         "sbml_ar_ia",
@@ -416,10 +415,7 @@ FIXTURES: tuple[Fixture, ...] = (
         t_end=2.0,
         write=("p", 2.0),
         sens=("p", "k"),
-        known=(
-            ("run_batch_squeeze", 698, AssertionError),
-            ("set_param_vs_reload", 696, AssertionError),
-        ),
+        known=(("set_param_vs_reload", 696, AssertionError),),
     ),
     Fixture(
         "sbml_dimer",
@@ -427,10 +423,6 @@ FIXTURES: tuple[Fixture, ...] = (
         t_end=5.0,
         write=("V", 4.0),
         sens=("k",),
-        known=(
-            ("reuse_after_set_param", 697, AssertionError),
-            ("run_batch", 697, AssertionError),
-        ),
     ),
     Fixture(
         "sbml_cf_stoich",

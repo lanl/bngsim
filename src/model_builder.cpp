@@ -258,24 +258,49 @@ strongly_connected_components(int n, const std::vector<std::vector<int>> &reads)
     return out;
 }
 
-// Does `expr` call the clock, `time()`? A bare `time` is not the clock but a
-// declared scalar of that name (issue #776), so the test is for the call: the
-// identifier, not part of a longer one, followed by `(`.
-static bool calls_time(const std::string &expr) {
-    for (size_t pos = expr.find("time"); pos != std::string::npos;
-         pos = expr.find("time", pos + 1)) {
-        const auto word = [&](size_t k) {
-            return std::isalnum(static_cast<unsigned char>(expr[k])) != 0 || expr[k] == '_';
-        };
-        if (pos > 0 && (word(pos - 1) || expr[pos - 1] == '.'))
+// Does `expr` read the clock? The call `time()` does, and so does a bare `time`
+// unless the model declares a scalar of that name (issue #776): ExprTk calls a
+// zero-argument function without its parentheses, so `if(time > 5, k, 0)` in a
+// hand-written `.net` reads the clock.
+static bool calls_time(const std::string &expr, bool time_declared) {
+    // Token by token, as ExprTk reads it: `2time()` is 2*time(), so a name may
+    // follow a number directly, and `x2time` is one name.
+    const size_t n = expr.size();
+    const auto digit = [&](size_t k) {
+        return k < n && std::isdigit(static_cast<unsigned char>(expr[k])) != 0;
+    };
+    for (size_t i = 0; i < n;) {
+        const unsigned char c = static_cast<unsigned char>(expr[i]);
+        if (std::isdigit(c) || (c == '.' && digit(i + 1))) {
+            while (i < n && (digit(i) || expr[i] == '.'))
+                ++i;
+            if (i < n && (expr[i] == 'e' || expr[i] == 'E')) {
+                size_t j = i + 1;
+                if (j < n && (expr[j] == '+' || expr[j] == '-'))
+                    ++j;
+                if (digit(j)) {
+                    i = j;
+                    while (digit(i))
+                        ++i;
+                }
+            }
             continue;
-        size_t j = pos + 4;
-        if (j < expr.size() && word(j))
+        }
+        if (!(std::isalpha(c) || c == '_')) {
+            ++i;
             continue;
-        while (j < expr.size() && std::isspace(static_cast<unsigned char>(expr[j])))
+        }
+        size_t j = i;
+        while (j < n && (std::isalnum(static_cast<unsigned char>(expr[j])) || expr[j] == '_'))
             ++j;
-        if (j < expr.size() && expr[j] == '(')
-            return true;
+        if (expr.compare(i, j - i, "time") == 0) {
+            size_t k = j;
+            while (k < n && std::isspace(static_cast<unsigned char>(expr[k])))
+                ++k;
+            if ((k < n && expr[k] == '(') || !time_declared)
+                return true;
+        }
+        i = j;
     }
     return false;
 }
@@ -351,6 +376,9 @@ struct ModelBuilder::BuilderImpl {
         std::string trigger_expr;
         std::vector<std::pair<int, std::string>> assignments; // (species_idx0, value_expr)
         std::vector<bool> assignment_ode_only;                // GH #81; parallel to assignments
+        // Issue #936; parallel to assignments, "" / -1 for a non-rescale.
+        std::vector<std::string> assignment_rescale_size;
+        std::vector<int> assignment_rescale_base;
         double delay = 0.0;
         std::string delay_expr; // optional; takes precedence when non-empty
         int priority = 0;
@@ -532,6 +560,12 @@ void ModelBuilder::set_species_ode_live_volume(int species_idx0, int live_idx0) 
     bimpl_->species[species_idx0].ode_live_volume_idx0 = live_idx0;
 }
 
+void ModelBuilder::set_species_ssa_live_volume(int species_idx0, int live_idx0) {
+    if (species_idx0 < 0 || species_idx0 >= static_cast<int>(bimpl_->species.size()))
+        return;
+    bimpl_->species[species_idx0].ssa_live_volume_idx0 = live_idx0;
+}
+
 void ModelBuilder::set_species_rateof_amount(int species_idx0) {
     if (species_idx0 < 0 || species_idx0 >= static_cast<int>(bimpl_->species.size()))
         return;
@@ -651,6 +685,22 @@ void ModelBuilder::add_event(const std::string &id, const std::string &trigger_e
     spec.initial_value = initial_value;
     spec.use_values_from_trigger_time = use_values_from_trigger_time;
     bimpl_->event_specs.push_back(std::move(spec));
+}
+
+void ModelBuilder::set_last_event_assignment_rescale(int assign_idx0, const std::string &size_expr,
+                                                     int base_assign_idx0) {
+    if (bimpl_->event_specs.empty())
+        throw std::runtime_error("ModelBuilder: set_last_event_assignment_rescale with no event");
+    auto &spec = bimpl_->event_specs.back();
+    const auto n = spec.assignments.size();
+    if (assign_idx0 < 0 || static_cast<std::size_t>(assign_idx0) >= n ||
+        base_assign_idx0 >= static_cast<int>(n))
+        throw std::runtime_error("ModelBuilder: event '" + spec.id +
+                                 "': rescale assignment index out of range");
+    spec.assignment_rescale_size.resize(n);
+    spec.assignment_rescale_base.resize(n, -1);
+    spec.assignment_rescale_size[static_cast<std::size_t>(assign_idx0)] = size_expr;
+    spec.assignment_rescale_base[static_cast<std::size_t>(assign_idx0)] = base_assign_idx0;
 }
 
 void ModelBuilder::add_discontinuity_trigger(const std::string &condition_expr) {
@@ -1997,9 +2047,11 @@ NetworkModel ModelBuilder::build() {
             if (dit != derived_param_node.end() && dit->second != k)
                 deps.insert(dit->second);
         });
-        // Only the call is the clock: a bare `time` is a declared scalar of that
-        // name (issue #776), read like any other parameter.
-        if (moving.empty() && calls_time(pk.expression))
+        // A declared scalar named `time` (issue #776) is read like any other
+        // parameter; otherwise `time`, called or bare, is the clock.
+        if (moving.empty() &&
+            calls_time(pk.expression, sd->param_name_to_idx.count("time") != 0 ||
+                                          sd->observable_name_to_idx.count("time") != 0))
             moving = "time()";
         // A parameter defined in terms of itself (issue #617). There is no value
         // it denotes, so there is nothing to build: `s = s*2` has no solution
@@ -2496,6 +2548,23 @@ NetworkModel ModelBuilder::build() {
                 // the spec omitted it, so every existing event is unchanged).
                 ev.assignment_ode_only.push_back(ai < espec.assignment_ode_only.size() &&
                                                  espec.assignment_ode_only[ai]);
+                // Issue #936: a resize rescale's size expression and base.
+                int size_id = -1;
+                int base = -1;
+                if (ai < espec.assignment_rescale_size.size() &&
+                    !espec.assignment_rescale_size[ai].empty()) {
+                    try {
+                        size_id = eval.compile(espec.assignment_rescale_size[ai]);
+                    } catch (const std::exception &e) {
+                        throw std::runtime_error(
+                            "ModelBuilder: failed to compile the compartment size of event '" +
+                            espec.id + "': " + espec.assignment_rescale_size[ai] + " — " +
+                            e.what());
+                    }
+                    base = espec.assignment_rescale_base[ai];
+                }
+                ev.assignment_rescale_size_expr.push_back(size_id);
+                ev.assignment_rescale_base.push_back(base);
             }
 
             impl.events.push_back(std::move(ev));

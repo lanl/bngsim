@@ -8,8 +8,10 @@
 #include "bngsim/types.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -245,6 +247,38 @@ class NetworkModel {
     // silent-zero shapes this exists to close.
     void expression_support(int expr_idx, std::vector<int> *species_out,
                             std::vector<int> *params_out) const;
+
+    // The species reaction `rxn_idx0`'s SSA propensity reads (issue #719): its
+    // reactants, the species its SSA falling factorial is taken over, a live
+    // compartment volume it divides by, and whatever
+    // expression_support() finds behind each of its rate parameters (the
+    // function or expression that writes it). Sorted, into `out`. Returns false
+    // when that cannot be decided — a table function indexed by an observable,
+    // whose species no expression names — and the caller must assume every species.
+    bool reaction_rate_species_support(int rxn_idx0, std::vector<int> &out) const;
+
+    // Does a rate parameter of reaction `rxn_idx0` take its value from a model
+    // function, directly or through a derived parameter (issue #719)? Such a
+    // rate moves with whatever the function reads, time included, whatever the
+    // reaction's rate-law type.
+    bool reaction_rate_reads_functions(int rxn_idx0) const;
+
+    // Does reaction `rxn_idx0`'s rate move with time between firings (issue
+    // #719)? Decided from the text of every function and derived parameter its
+    // rate reads, directly or through one another: a `time()` call, a call to a
+    // time-indexed table function, or a rate accessor (which reads the running
+    // derivatives) says yes. Never by probing values, which can alias (#654);
+    // it may over-report, which costs only time.
+    //
+    // `pc_functions` (indexed like functions()) marks functions known to be
+    // constant between the run's breakpoints: their own clock reads are not
+    // counted (issue #719 follow-up).
+    bool reaction_rate_reads_time(int rxn_idx0,
+                                  const std::vector<char> *pc_functions = nullptr) const;
+
+    // Does event `event_idx0`'s trigger read the clock, through the same walk?
+    // A trigger that does not can change only when the state does.
+    bool event_trigger_reads_time(int event_idx0) const;
 
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //
@@ -638,6 +672,55 @@ class NetworkModel {
     // clone(). Exposed for introspection and for the clone contract test.
     bool ic_baseline_saved() const;
 
+    // ─── Event state carried between runs (issue #693) ──────────────────────
+    // What a run leaves for the next one to continue from, beside the species
+    // and the clock: each event trigger's last recorded truth, and the delayed
+    // executions not yet applied. A run starting at the carried time continues
+    // it: its trigger baselines are the carried ones, not each event's
+    // initialValue (which describes a trigger before the simulation starts),
+    // so a trigger still true at a leg boundary does not fire again, and the
+    // pending executions are queued again. Any other run is a fresh start.
+    // Published at every run's state write-back; cleared by reset(); copied by
+    // clone().
+    //
+    // The history is the current trajectory's leg ends, oldest first (at most
+    // kEventCarryHistory of them): a run that continues the carry appends to
+    // it (after dropping the leg ends past its start: a branch it left), a
+    // fresh start replaces it. A caller that rolls the clock back to one of
+    // those times (rewind_event_carry: Simulator.set_state(x, time=t0), a
+    // predictor-corrector step) continues the events from there. A run is
+    // never matched to a history entry implicitly, since its state need not be
+    // the one that entry went with.
+    struct CarriedEventExecution {
+        int event_idx = 0;
+        double apply_time = 0.0;
+        std::vector<double> frozen_values; // empty unless frozen at the trigger
+    };
+    struct EventCarry {
+        bool valid = false;
+        double t = 0.0;
+        std::vector<char> trigger;
+        std::vector<CarriedEventExecution> pending;
+    };
+    static constexpr std::size_t kEventCarryHistory = 64;
+    const EventCarry &event_carry() const;
+    const std::deque<EventCarry> &event_carry_history() const;
+    // The newest leg end dropped from the full history, or -inf.
+    double event_carry_evicted_t() const;
+    // Validated against this model's events (std::invalid_argument).
+    void set_event_carry(EventCarry carry);
+    void set_event_carry_state(EventCarry carry, std::deque<EventCarry> history, double evicted_t);
+    // At a run's write-back; `continued`: the run started from the carry.
+    void publish_event_carry(EventCarry carry, bool continued);
+    void clear_event_carry(); // the carry and the history
+    // Roll the events back (or forward) to the leg end at time t: 1 when there
+    // is one, -1 when t is older than the retained history and leg ends were
+    // dropped from it, 0 otherwise; nothing changes unless 1.
+    int rewind_event_carry(double t);
+    // The carry a run over n_events events starting at t_start continues, or
+    // nullptr when that run is a fresh start.
+    const EventCarry *event_carry_for(double t_start, int n_events) const;
+
     // ─── Table functions ────────────────────────────────────────────────────
 
     /// Add a table function from a .tfun file.
@@ -684,11 +767,26 @@ class NetworkModel {
     /// (t / p[idx] / obs[idx]) at each tfun call site.
     std::vector<TableFunctionSpec> table_function_specs() const;
 
+    /// The knots of every time-indexed table function, sorted and unique: the
+    /// times at which such a function's value (step) or slope (linear) breaks.
+    std::vector<double> time_table_knots() const;
+
     // ─── Expression evaluator access ─────────────────────────────────────────
     ExpressionEvaluator &evaluator();
 
   private:
     std::unique_ptr<Impl> impl_;
+
+    // What a rate or a trigger reads through the model's definitions (#719).
+    struct RateDeps {
+        bool time = false;    // the clock, directly or through a definition
+        bool unknown = false; // something whose reads cannot be named
+        std::set<int> species;
+    };
+    RateDeps rate_dependencies_(std::vector<int> params, const std::vector<std::string> &texts,
+                                const std::vector<char> *pc_functions = nullptr) const;
+    RateDeps reaction_rate_dependencies_(int rxn_idx0,
+                                         const std::vector<char> *pc_functions = nullptr) const;
     void set_load_warnings_(std::vector<std::string> warnings);
 
     /// The single-pass RHS body (GH #106). compute_derivs() and

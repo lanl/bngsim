@@ -112,6 +112,8 @@ class Model:
         "_time_disc_conditions",
         "_derived_time_disc_conditions",
         "_state_switch_root_conditions",
+        "_ssa_reads_clock",
+        "_ssa_clock_functions",
         "_want_output_sens",
         "_output_sens_analysis",
         "_named_conc_states",
@@ -120,6 +122,7 @@ class Model:
         "_ic_write_log",
         "_guarded_functions",
         "_stoich_coo",
+        "_volume_factors_memo",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -258,6 +261,9 @@ class Model:
         # sensitivities roots on, derived on first ask and cached like the line
         # above. See state_switch_root_conditions().
         self._state_switch_root_conditions: tuple[str, ...] | None = None
+        # Issue #719: whether an SSA run needs breakpoints; structural, so once.
+        self._ssa_reads_clock: bool | None = None
+        self._ssa_clock_functions: list[tuple[str, str]] | None = None
         # Issue #11: named saved concentration states. Maps a user label to a
         # snapshot of the full live species-concentration vector (a copy of
         # get_state(), ordered like species_names). This is the multi-slot
@@ -300,6 +306,11 @@ class Model:
         self._guarded_functions: list[tuple[str, str, str]] = _guard_function_expressions(_core)
         # Issue #523: the 0-based COO form of the stoichiometry, converted once.
         self._stoich_coo: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        # Issues #697, #743: (compartment size names, their values, the reported
+        # volume factors read at them), for Simulator._get_volume_factors.
+        self._volume_factors_memo: (
+            tuple[tuple[str, ...], tuple[float, ...], list[float]] | None
+        ) = None
 
     # ─── Factory methods ──────────────────────────────────────────────────
 
@@ -1021,6 +1032,11 @@ class Model:
         m._time_disc_conditions = self._time_disc_conditions
         m._derived_time_disc_conditions = self._derived_time_disc_conditions
         m._state_switch_root_conditions = self._state_switch_root_conditions
+        m._ssa_reads_clock = self._ssa_reads_clock
+        m._ssa_clock_functions = self._ssa_clock_functions
+        # Keyed on the sizes it was read at, so a clone that writes one reads it
+        # again (issue #743).
+        m._volume_factors_memo = self._volume_factors_memo
         # Issue #11: carry named concentration snapshots to the clone, each a
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)

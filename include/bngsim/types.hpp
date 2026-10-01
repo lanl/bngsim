@@ -78,6 +78,15 @@ struct Species {
     // unaffected. Default -1 ⇒ use volume_factor (byte-identical to pre-#144).
     int ode_live_volume_idx0 = -1;
 
+    // Issue #741 — under SSA an hOSU=false species in a rate-rule or
+    // event-resized compartment is stored as amount/V_static (the count is
+    // conserved across a resize). An event assigning it a concentration c
+    // therefore stores c·V_live/V_static, V_live read just before the event's
+    // assignments apply. When >= 0, the 0-based index of the promoted
+    // compartment species holding V_live; volume_factor is V_static. Read only
+    // by the SSA/PSA event path.
+    int ssa_live_volume_idx0 = -1;
+
     // GH #231 (rateOf sub-cluster 3) — when true, the SBML ``rateOf`` csymbol for
     // this species reports d(amount)/dt, NOT the stored d(conc)/dt the rateOf
     // buffer holds by default. A hasOnlySubstanceUnits=true species's symbol
@@ -899,6 +908,15 @@ struct Event {
     // injected rescales. Empty (the default) ⇒ every assignment applies in both
     // modes — byte-identical for `.net` and every non-resize event.
     std::vector<bool> assignment_ode_only;
+    // Issue #936 — for an injected resize rescale, parallel to `assignments`:
+    // the compiled size expression of the compartment, and the index of this
+    // event's own assignment to the same species (-1: none). Such an entry is
+    // not applied from its expression: the engine reads the size before and
+    // after the event's other assignments apply and stores base·before/after,
+    // the base being that assignment's value or else the species' value at
+    // execution. Empty, or -1 per entry, for every other assignment.
+    std::vector<int> assignment_rescale_size_expr;
+    std::vector<int> assignment_rescale_base;
     double delay = 0.0;         // delay (used iff delay_expr_idx == -1)
     int delay_expr_idx = -1;    // optional compiled delay expression
     int priority = 0;           // static fallback priority
@@ -995,6 +1013,10 @@ struct SwitchTimeSens {
     // the run outright when no parameter is private to one of the crossings.
     std::vector<int> isolate_param_idx0;
     std::vector<double> isolate_delta; // parallel to isolate_param_idx0
+    // A crossing no requested column moves is on this one's clock and within
+    // one instant of it (issue #767). It has no record, and flips with every
+    // nudge of the clock that reads this one.
+    bool fixed_on_instant = false;
 };
 
 // One event whose crossing time moves with the sensitivity parameters (issue
@@ -1427,6 +1449,12 @@ struct SolverOptions {
     // half, and CVodeSetStopTime is what supplies it — the same mechanism
     // issue #48 uses for a crossing that a fitted parameter moves.
     std::vector<CrossingStop> crossing_stops;
+    // The same crossings before the ones on one instant are merged to a single
+    // stop: one entry per (time, clock, threshold), sorted by time. The loop
+    // stops once at an instant; the event jump asks each fixed switch on it
+    // for its own jump (issue #767), and two counters crossing their
+    // thresholds together are two. Empty falls back to crossing_stops.
+    std::vector<CrossingStop> crossing_probes;
 
     // ─── Per-species absolute tolerance (issue #196) ─────────────────────────
     // Empty (the default) leaves the scalar `atol` above on CVodeSStolerances,
@@ -1612,6 +1640,12 @@ struct TimeSpec {
         for (int i = 0; i < n_points; ++i) {
             t_out[i] = t_start + i * dt;
         }
+        // The last point is t_end itself, as np.linspace makes it: the state a
+        // run writes back is t_end's, and a run that continues it starts from
+        // the last time reported (issue #693), which t_start + (n-1)·dt can
+        // miss by an ulp (0 + 73·0.1 = 7.300000000000001).
+        if (n_points > 1)
+            t_out.back() = t_end;
         return t_out;
     }
 
