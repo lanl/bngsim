@@ -619,9 +619,7 @@ def _switched_source(thr, ksw, col):
 #   ramp   ``size·(thr_i − Aobs)`` into Y_i below the threshold, continuous;
 #   clamp  B_i (= size) -> C_i at ``0.1·min(Aobs/thr_i, 1)``, continuous.
 UNIT_KB = (3.0, 5.0, 7.0)
-UNIT_REFUSED = re.compile(
-    "cross at the same instant|and its jump applied there|lands exactly on the surface"
-)
+UNIT_REFUSED = re.compile("cross at the same instant|and its jump applied there")
 
 
 def _units_sens(tmp_path, units, name):
@@ -2191,27 +2189,63 @@ end groups
         np.testing.assert_allclose(s[names.index("B()")], [want, 0.0], rtol=1e-5, atol=1e-6)
         np.testing.assert_allclose(s[names.index("D()")], [0.0, want], rtol=1e-5, atol=1e-6)
 
-    def test_a_restart_that_lands_on_another_surface_is_refused(self, tmp_path):
-        """Two jumps a few hundred ulps apart. The run stops at the first and
-        restarts a probe step past it. For one spacing in a few hundred that
-        point is exactly on the second threshold: its residual is 0.0 there,
-        CVODE sets a root that is zero at a restart aside, and the second
-        crossing is never reported. Every column of the first jump came back 0,
-        on main too (eleventh review; -412 ulps on this machine). Which spacing
-        it is depends on the last bits of the arithmetic, so a range is run and
-        each case has to be right or refused."""
+    @pytest.mark.parametrize("around", [-412, -824])
+    def test_no_probe_point_lands_on_another_surface(self, tmp_path, around):
+        """Two jumps a few hundred ulps apart. The run stops at the first, reads
+        the state a probe step and two either side of it, and restarts a probe
+        step past it. For one spacing in a few hundred one of those points is
+        exactly on the second threshold, its residual 0.0 there.
+
+        At the restart point CVODE sets a root that is zero aside, so the second
+        crossing was never reported and every column of the first jump came back
+        0, on main too (-412 ulps on the machine this was found on). Two steps
+        back, a strict condition still reads its old branch on the surface, and
+        the second jump was taken in with the first's dt*/dθ: dY1/dthr0 = -5 for
+        0, where main is right (-824). Which spacing it is depends on the last
+        bits of the arithmetic, so a range is run and each case has to be right,
+        or refused as two jumps in one probe step. The step is stretched off a
+        landing."""
         refused = 0
-        for k in range(-424, -399):
+        spacings = range(around - 30, around + 31)
+        for k in spacings:
             units = [("jump", 0, 0.0), ("jump", k, 0.0)]
             try:
                 s = _units_sens(tmp_path, units, f"lands_on{k}.net")
             except SimulationError as e:
-                assert UNIT_REFUSED.search(str(e))
+                assert "cross at the same instant" in str(e), f"k = {k}"
                 refused += 1
                 continue
             np.testing.assert_allclose(s["Y0"][2:], [3.0, 0.0], atol=1e-5, err_msg=f"k = {k}")
             np.testing.assert_allclose(s["Y1"][2:], [0.0, 5.0], atol=1e-5, err_msg=f"k = {k}")
-        assert refused < 25, "every spacing was refused, so the range shows nothing"
+        assert refused < len(spacings), "every spacing was refused, so the range shows nothing"
+
+    @pytest.mark.parametrize(
+        "units",
+        [
+            [("jump", 0, 0.0), ("clamp", 412, 1e9)],
+            [("clamp", 0, 1e9), ("clamp", 412, 1e9)],
+            [("jump", 0, 0.0), ("clamp", 474, 1e9)],
+        ],
+        ids=["jump-clamp-412", "clamp-clamp-412", "jump-clamp-474"],
+    )
+    def test_a_landing_on_a_clamp_is_not_refused(self, tmp_path, units):
+        """The same landings on a clamp's threshold. A first cut refused every
+        landing, and these run on main (twelfth review). The third is one of
+        the #763 cases main gets wrong: its jump column came back 0 there."""
+        s = _units_sens(tmp_path, units, "lands_on_clamp.net")
+        if units[0][0] == "jump":
+            np.testing.assert_allclose(s["Y0"][2:], [3.0, 0.0], atol=1e-5)
+        # B1(T) = B0·exp(−0.1·t1 − (0.1/(a·thr1))·(thr1 − A(T))), t1 = ln(A0/thr1)/a.
+        thr1 = float(2.0 * (1 - units[1][1] * EPS))
+
+        def b_end(thr):
+            return 1e9 * np.exp(
+                -0.1 * np.log(10.0 / thr) / 0.5 - (0.2 / thr) * (thr - 10.0 * np.exp(-4.0))
+            )
+
+        h = 1e-6
+        want = (b_end(thr1 + h) - b_end(thr1 - h)) / (2 * h)
+        assert s["B1"][3] == pytest.approx(want, rel=1e-5)
 
     def test_a_tangent_crossing_ignores_a_threshold_its_reactions_do_not_read(self, tmp_path):
         """The same crawl past thr2 = 2 + 3e-9, but there the rate law is a
@@ -2789,6 +2823,37 @@ class TestAResidualThatIsIdenticallyZeroIsNotACrossing:
         got = np.asarray(run.sensitivities)[-1, 1, :]
         assert got[0] == pytest.approx(db_dk, rel=1e-6)
         assert got[1] == pytest.approx(db_dgain, rel=1e-6)
+
+    def test_a_jump_crossed_inside_the_plateau_is_not_a_landing(self, tmp_path):
+        """A second switch, ``C < thrC`` on a species that decays, is crossed at
+        t = 37.9 while ``tail()`` sits on its plateau. The probe points about
+        that crossing all read the plateau's residual as 0.0. That is not a
+        probe point landing on its surface, which issue #763 stretches the step
+        to avoid: it is zero at every one of them."""
+        text = PLATEAU.replace(
+            "    3 gain  1.0  # Constant\n",
+            "    3 gain  1.0\n    4 a 0.05\n    5 thrC 1.5\n    6 kb 3\n",
+        )
+        text = text.replace(
+            "    2 _rateLaw1() if((tail()>0),tail(),0)\n",
+            "    2 _rateLaw1() if((tail()>0),tail(),0)\n    3 fY() if(C<thrC,kb,0)\n",
+        )
+        text = text.replace("    2 Bb() 0\n", "    2 Bb() 0\n    3 Cc() 10\n    4 Yy() 0\n")
+        text = text.replace(
+            "    2 0 2 _rateLaw1 #_R2\n", "    2 0 2 _rateLaw1 #_R2\n    3 3 0 a\n    4 0 4 fY\n"
+        )
+        text = text.replace(
+            "    2 B                    2\n", "    2 B                    2\n    3 C 3\n"
+        )
+        model = _model(tmp_path, text, "jump_in_plateau.net")
+        assert len(sw.state_switch_conditions(model._core)) == 2
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "thrC"]).run(
+            t_span=(0.0, PLATEAU_T_END), n_points=7, rtol=1e-9, atol=1e-12
+        )
+        got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Yy()")]
+        # C = 10·exp(−a·t) crosses thrC at ln(10/thrC)/a, and Y = kb·(T − that).
+        want = [3.0 * np.log(10.0 / 1.5) / 0.05**2, 3.0 / (0.05 * 1.5)]
+        np.testing.assert_allclose(got, want, rtol=1e-6)
 
     def test_a_pair_of_plateaus_is_not_refused_as_coincident(self, tmp_path):
         """Two residuals reaching the same plateau on the same step arrive as an

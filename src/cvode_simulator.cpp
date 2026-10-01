@@ -5901,6 +5901,10 @@ static constexpr double kStateSwitchSumRoundoff = 2.0;
 // is sound. One that shares a reaction with another reader, or whose residual
 // reads a species the rest of the jump moves, has to agree after all.
 static constexpr double kStateSwitchAgreeRoundoff = 16.0;
+// When a probe point lands exactly on another switch's surface the probe step
+// is stretched by this factor, at most this many times (issue #763).
+static constexpr double kStateSwitchLandingStretch = 1.25;
+static constexpr int kStateSwitchLandingTries = 4;
 // For how many probe steps of time a jump applied at one stop is remembered, so
 // that a stop that follows closely cannot read it again (issue #763).
 static constexpr double kStateSwitchRememberSteps = 64.0;
@@ -6154,6 +6158,15 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         return n;
     };
 
+    // Every other registered switch. One whose residual the probes below also
+    // carry across zero crosses here too, and its jump shows in what they read.
+    std::vector<const NetworkModel::StateSwitch *> others;
+    for (const NetworkModel::StateSwitch *other : state_switch_all) {
+        if (std::find(batch.begin(), batch.end(), other) == batch.end()) {
+            others.push_back(other);
+        }
+    }
+
     const double t_scale = std::max(std::fabs(t_evt), 1.0);
     const double dt0 = kStateSwitchNudgeStart * std::numeric_limits<double>::epsilon() * t_scale;
     double dt = dt0;
@@ -6169,6 +6182,75 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             dt_used = dt;
             break;
         }
+    }
+
+    // ── No probe point exactly on another switch's surface (issue #763) ──────
+    // The state is read at x ± δt·f and x ± 2δt·f, and the run restarts at
+    // x + δt·f. Thresholds a few hundred ulps apart make it a matter of the
+    // last bits whether one of those points IS another switch's surface, its
+    // residual 0.0 there. At the restart point CVODE sets a root that is zero
+    // aside, so that crossing was never reported: two jumps 412 ulps apart gave
+    // every column of the second as 0, on main too (eleventh review). At −2δt a
+    // strict condition still reads its old branch at the surface while the
+    // residual says nothing has been crossed, and the extension of the
+    // before-branch took that switch's jump in (824 ulps apart, twelfth
+    // review). So the step is stretched until no point lands. A residual that
+    // is 0.0 at all four points is a plateau (issue #154), not a landing.
+    if (dt_used != 0.0 && !others.empty()) {
+        auto lands = [&](double step) {
+            static constexpr double kPoint[4] = {-2.0, -1.0, 1.0, 2.0};
+            std::vector<char> zero(others.size(), 0);
+            std::vector<char> nonzero(others.size(), 0);
+            for (double point : kPoint) {
+                for (int i = 0; i < ns; ++i) {
+                    xw[static_cast<std::size_t>(i)] =
+                        x[static_cast<std::size_t>(i)] +
+                        point * step * f0[static_cast<std::size_t>(i)];
+                }
+                sync(xw, t_evt + point * step);
+                for (std::size_t o = 0; o < others.size(); ++o) {
+                    const double g = eval.evaluate(others[o]->residual_expr_idx);
+                    if (g == 0.0) {
+                        zero[o] = 1;
+                    } else if (std::isfinite(g)) {
+                        nonzero[o] = 1;
+                    }
+                }
+            }
+            for (std::size_t o = 0; o < others.size(); ++o) {
+                if (zero[o] != 0 && nonzero[o] != 0) {
+                    return others[o];
+                }
+            }
+            return static_cast<const NetworkModel::StateSwitch *>(nullptr);
+        };
+        const NetworkModel::StateSwitch *landed = lands(dt_used);
+        for (int stretch = 0; landed != nullptr; ++stretch) {
+            const double longer = dt_used * kStateSwitchLandingStretch;
+            if (stretch < kStateSwitchLandingTries) {
+                probe(-longer, g_before);
+                probe(+longer, g_after);
+            }
+            if (stretch >= kStateSwitchLandingTries || n_straddled() != nb) {
+                sync(x, t_evt);
+                std::ostringstream msg;
+                msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
+                    << sw.residual_source << "' crosses at t=" << t_evt << ", and a probe step of "
+                    << dt_used
+                    << " along the flow lands exactly on the surface of the switch with "
+                       "residual '"
+                    << landed->residual_source
+                    << "', where its branch cannot be read. bngsim refuses rather than lose "
+                       "that crossing's jump (issue #763). Separate the thresholds, or drop "
+                       "sensitivities for this run.";
+                throw std::runtime_error(msg.str());
+            }
+            dt_used = longer;
+            landed = lands(dt_used);
+        }
+        // Leave the batch's residuals and the evaluator as the ladder did.
+        probe(-dt_used, g_before);
+        probe(+dt_used, g_after);
     }
     // Whether the two branches are one function here is asked of the flux of
     // the reactions whose rate law reads the conditions that cross, species by
@@ -6206,14 +6288,6 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     std::vector<int> residual_support;
     for (const NetworkModel::StateSwitch *one : batch) {
         residual_support.insert(residual_support.end(), one->species.begin(), one->species.end());
-    }
-    // Every other registered switch. One whose residual the probes below also
-    // carry across zero crosses here too, and its jump shows in what they read.
-    std::vector<const NetworkModel::StateSwitch *> others;
-    for (const NetworkModel::StateSwitch *other : state_switch_all) {
-        if (std::find(batch.begin(), batch.end(), other) == batch.end()) {
-            others.push_back(other);
-        }
     }
     auto straddles = [](double lo, double hi) {
         return std::isfinite(lo) && std::isfinite(hi) && lo != 0.0 && hi != 0.0 &&
@@ -6674,31 +6748,6 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 state_switch_consumed.end());
             for (std::size_t o = 0; o < others.size(); ++o) {
                 other_near[o] = straddles(g_side[0][o], g_side[1][o]);
-                // The step past this crossing lands exactly ON another switch's
-                // surface: its residual is 0.0 at +δt and was not at −δt. CVODE
-                // sets a root that is zero at a restart aside, so that crossing
-                // would never be reported. And at the surface itself a strict
-                // condition still reads its old branch, so the pair does not
-                // show the jump either: two jumps 412 ulps apart gave every
-                // column of the second as 0 (eleventh review; on main too).
-                // A condition that already reads its new branch there puts its
-                // jump into the pair unasked. Neither can be read from here.
-                if (!other_near[o] && g_side[1][o] == 0.0 && std::isfinite(g_side[0][o]) &&
-                    g_side[0][o] != 0.0) {
-                    sync(x, t_evt);
-                    std::ostringstream msg;
-                    msg << "Forward sensitivity: the state-dependent rate-law switch with "
-                           "residual '"
-                        << sw.residual_source << "' crosses at t=" << t_evt << ", and the step of "
-                        << dt
-                        << " that the run restarts past it lands exactly on the surface of "
-                           "the switch with residual '"
-                        << others[o]->residual_source
-                        << "'. That crossing would not be located and its jump would be "
-                           "lost, so bngsim refuses (issue #763). Separate the thresholds, "
-                           "or drop sensitivities for this run.";
-                    throw std::runtime_error(msg.str());
-                }
                 if (!other_near[o]) {
                     continue;
                 }
