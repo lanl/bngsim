@@ -123,6 +123,12 @@ using CodegenSensTermScaleFn = int (*)(int Ns, double t, double *y, int iS, doub
 // .so that lacks any of them keeps every column plain.
 using CodegenComovingCaseFn = int (*)(int iP, int k, const double *p, double *c_out);
 using CodegenComovingClockFn = int (*)(int k);
+// Issue #760: bngsim_codegen_comoving_approach(case) is 1 for a case whose
+// crossing is approached through a singular power, the closing edge of a window
+// `(1-s)^(a-1)`. The forcing of the plain column is unbounded BEFORE that
+// crossing, so the solver puts such a column in its frame at the restart before
+// it. Resolved with try_symbol; a .so without it enters only at the crossing.
+using CodegenComovingApproachFn = int (*)(int case_idx);
 
 // Dense analytical Jacobian into an n×n COLUMN-MAJOR buffer
 // (jac[j*n + i] = ∂f_i/∂x_j). The emitted C memsets the buffer itself.

@@ -266,7 +266,11 @@ _compile_counter = itertools.count()
 # an observable that sums one), and a derived onset parameter gets a comoving case
 # of its own. A cached v34 .so has neither, and would keep returning the column
 # without those terms. Invalidate v34.
-_CODEGEN_VERSION = "35"
+# v36: lanl/bngsim #760 — the sensitivity source says which comoving cases are
+# approached through a singular power (bngsim_codegen_comoving_approach), and the
+# solver enters those before the crossing. A cached v35 .so has no such table,
+# and its closing-edge columns would stay 0.03% to 0.6% off. Invalidate v35.
+_CODEGEN_VERSION = "36"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -3323,6 +3327,7 @@ def _emit_sens_rhs_body(
     comoving_cases: list[tuple[int, int, str]] | None = None,
     comoving_clock_species: tuple[int, ...] = (),
     comoving_clock_lines: tuple[list[str], list[str]] | None = None,
+    comoving_approach: tuple[int, ...] = (),
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -4130,6 +4135,16 @@ def _emit_sens_rhs_body(
         _emit("    default:")
         _emit("        return -1;")
         _emit("    }")
+        _emit("}")
+        _emit("")
+        _emit("/* Whether a case's crossing is approached through a singular power (a closing")
+        _emit("   edge): the solver then puts the column in its frame before the crossing too.")
+        _emit("   (Issue #760) */")
+        _emit("BNGSIM_EXPORT int bngsim_codegen_comoving_approach(int case_idx) {")
+        for virtual in sorted(set(comoving_approach)):
+            _emit(f"    if (case_idx == {int(virtual)}) return 1;")
+        _emit("    (void)case_idx;")
+        _emit("    return 0;")
         _emit("}")
         _emit("")
         _emit("/* The k-th unit-rate clock species, whose rows a comoving column keeps at zero;")
@@ -8358,6 +8373,10 @@ class _ComovingPlan(NamedTuple):
     cases: list[tuple[int, int, str]]
     terms: dict[int, dict[int, str]]
     clock_species: tuple[int, ...]
+    # The cases whose crossing is approached through a singular power: a closing
+    # edge, `(1-s)^(a-1)` falling to 0 at the end of its window. Such a column
+    # has to be in its frame before the crossing as well (issue #760).
+    approach: tuple[int, ...] = ()
 
 
 def _pow_nodes_in_values(expr, sp):
@@ -8451,8 +8470,66 @@ def _clock_guard_cells(expr, clock_names: set[str], sp) -> list[tuple]:
     return out
 
 
-def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, set]:
-    """``{param_alias: {c}}``: the shifts ``c = ∂t*/∂p`` at which a singular power
+def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
+    """Write ``(N/D)^e`` as ``N^e·D^(-e)`` for each singular power whose scale ``D``
+    is a parameter expression that its numerator ``N`` reads too (issue #760).
+
+    The closing edge of a window is ``(1 - s)^(a-1)`` with ``s = (t - on)/D``: the
+    base is ``(on + D - t)/D``. Its crossing moves with ``D`` at c = 1, and along
+    that shift the numerator does not change, but the scale does. Left as one
+    power, the derivative along the shift is ``e·base^(e-1)`` times the base's own
+    derivative, and the singular power survives in what is emitted. Split, the
+    numerator's power has no derivative at all and the scale's is smooth.
+
+    Only where the scale is positive at the model's parameter values, which is
+    when the two forms are the same number, and only where the numerator reads
+    the scale, so a base ``(t - on)/D`` is left as it is written."""
+    from bngsim._jacobian import _value_symbol_names
+
+    def walk(node):
+        if isinstance(node, sp.Piecewise):
+            return sp.Piecewise(*[(walk(value), cond) for value, cond in node.args])
+        if not node.args:
+            return node
+        node = node.func(*[walk(arg) for arg in node.args])
+        if not isinstance(node, sp.Pow) or not _singular_power(node, clock_names, sp):
+            return node
+        numerator, scale = sp.fraction(sp.together(node.base))
+        if scale == 1 or _value_symbol_names(scale, sp) & clock_names:
+            return node
+        if not (scale.free_symbols & numerator.free_symbols):
+            return node
+        at_nominal = scale.xreplace(values)
+        if not at_nominal.is_number or not bool(at_nominal > 0):
+            return node
+        return sp.Pow(numerator, node.exp) * sp.Pow(scale, -node.exp)
+
+    return walk(expr)
+
+
+def _base_closes(base, clock_names: set[str], values: dict, sp) -> bool:
+    """Whether ``base`` falls toward 0 as a clock it reads advances, at the
+    model's parameter values: the base of a power that is live BEFORE its
+    crossing, like ``1 - (t - on)/D`` at the end of a window. True where that
+    cannot be told from the parameter values alone."""
+    from bngsim._jacobian import _value_symbol_names
+
+    for clock_name in sorted(_value_symbol_names(base, sp) & clock_names):
+        slope = sp.diff(base, sp.Symbol(clock_name))
+        if slope == 0:
+            continue
+        slope = slope.xreplace(values)
+        if not slope.is_number:
+            return True
+        if bool(slope < 0):
+            return True
+    return False
+
+
+def _comoving_coefficients(
+    expr, clock_names: set[str], axes, sp, values: dict | None = None
+) -> dict[str, dict]:
+    """``{param_alias: {c: closes}}``: the shifts ``c = ∂t*/∂p`` at which a singular power
     of ``expr`` has its base vanish, read off that base's numerator ``N`` as
     ``-∂N/∂p ÷ ∂N/∂clock``. A value that still reads the clock is not a fixed
     crossing and is dropped, as is 0 (``p`` does not move this base).
@@ -8473,10 +8550,12 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, s
     could not cancel anyway."""
     from bngsim._jacobian import _value_symbol_names
 
-    out: dict[str, set] = {}
+    out: dict[str, dict] = {}
     for node in _pow_nodes_in_values(expr, sp):
         if not _singular_power(node, clock_names, sp):
             continue
+        # ``closes``: the crossing is approached with the power live (issue #760).
+        closes = _base_closes(node.base, clock_names, values or {}, sp)
         written = sp.numer(sp.together(node.base))
         for inline, aliases, allowed in axes(_value_symbol_names(written, sp)):
             numerator = written.xreplace(inline) if inline else written
@@ -8497,7 +8576,8 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, s
                             continue
                         if not {s.name for s in leaf.free_symbols} <= allowed:
                             continue
-                        out.setdefault(p_alias, set()).add(leaf)
+                        seen = out.setdefault(p_alias, {})
+                        seen[leaf] = seen.get(leaf, False) or closes
     return out
 
 
@@ -8731,23 +8811,38 @@ def _functional_comoving_plan(
         for node in _pow_nodes_in_values(parsed_laws[text], sp)
     ):
         return None
+    # The parameter values a base's scale and its slope in its clock are read at.
+    nominal: dict = {}
+    for name, value in zip(sw.param_names, sw.values, strict=False):
+        alias = alias_of_name.get(name)
+        if alias is not None:
+            nominal[sp.Symbol(alias)] = sp.Float(float(value))
     laws: dict[str, list[tuple]] = {
-        text: _clock_guard_cells(parsed_laws[text], clock_names, sp) for text in rxns_of_law
+        text: [
+            (_split_shared_scale(on_cell, clock_names, nominal, sp), cond)
+            for on_cell, cond in _clock_guard_cells(parsed_laws[text], clock_names, sp)
+        ]
+        for text in rxns_of_law
     }
 
-    def shifts_of(axes) -> dict[str, set]:
-        found: dict[str, set] = {}
+    def shifts_of(axes) -> dict[str, dict]:
+        found: dict[str, dict] = {}
         for text in rxns_of_law:
             for on_cell, _cond in laws[text]:
                 _check_derivation_deadline(scope.deadline)
-                for p_alias, cs in _comoving_coefficients(on_cell, clock_names, axes, sp).items():
-                    found.setdefault(p_alias, set()).update(cs)
+                for p_alias, cs in _comoving_coefficients(
+                    on_cell, clock_names, axes, sp, nominal
+                ).items():
+                    seen = found.setdefault(p_alias, {})
+                    for c, closes in cs.items():
+                        seen[c] = seen.get(c, False) or closes
         return found
 
     cases: list[tuple[int, int, str]] = []
     terms: dict[int, dict[int, str]] = {}
+    approach: list[int] = []
 
-    def derive(p_alias: str, shifts: set) -> None:
+    def derive(p_alias: str, shifts: dict) -> None:
         """The cases of one parameter, one per shift that removes a singular power."""
         p_name = scope.param_of_alias[p_alias]
         # A primary's column carries each derived parameter's share of the shift.
@@ -8800,6 +8895,8 @@ def _functional_comoving_plan(
                 continue
             virtual = n_params + len(cases)
             cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
+            if shifts[c]:
+                approach.append(virtual)
             for text, c_text in law_c.items():
                 for rxn_idx in rxns_of_law[text]:
                     slot = terms.setdefault(rxn_idx, {})
@@ -8835,7 +8932,7 @@ def _functional_comoving_plan(
     for rxn_ids in rxns_of_law.values():
         for rxn_idx in rxn_ids:
             terms.setdefault(rxn_idx, {})
-    return _ComovingPlan(cases, terms, tuple(sorted(clock_species)))
+    return _ComovingPlan(cases, terms, tuple(sorted(clock_species)), tuple(approach))
 
 
 def _observable_volume_weights(species, observables, alias) -> dict[str, dict[int, str]]:
@@ -9660,6 +9757,7 @@ def generate_sens_from_model(
         comoving_cases=comoving_plan.cases if comoving_plan is not None else None,
         comoving_clock_species=comoving_plan.clock_species if comoving_plan is not None else (),
         comoving_clock_lines=comoving_clock_lines,
+        comoving_approach=comoving_plan.approach if comoving_plan is not None else (),
     )
     if src is None and functional_terms:
         # Every Functional rate law differentiated, but the emitter could not give
