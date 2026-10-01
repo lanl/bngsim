@@ -40,8 +40,10 @@ def _columns(tmp_path, text, params, species=0):
     return np.asarray(_run(tmp_path, text, params).sensitivities)[:, species, :]
 
 
-def _fd(tmp_path, text, param, species=0, rel=1e-6):
-    """Central difference of plain runs with `param` overridden."""
+def _fd(tmp_path, text, param, species=0, rel=1e-3):
+    """Central difference of plain runs with `param` overridden, at two steps
+    and extrapolated. A step of 1e-6 left the solver's own error, 1e-12 of the
+    state over the step, at the size of the tolerance it was compared within."""
 
     def at(value):
         net = tmp_path / "fd.net"
@@ -56,8 +58,12 @@ def _fd(tmp_path, text, param, species=0, rel=1e-6):
     net = tmp_path / "fd0.net"
     net.write_text(text)
     v = bngsim.Model.from_net(net).get_param(param)
+
+    def central(h):
+        return (at(v + h) - at(v - h)) / (2 * h)
+
     h = rel * abs(v)
-    return (at(v + h) - at(v - h)) / (2 * h)
+    return (4.0 * central(h / 2) - central(h)) / 3.0
 
 
 # Rt = 1 sets B(0) and is the production rate; B decays at kd = 0.5. Per unit of
