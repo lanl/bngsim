@@ -258,6 +258,28 @@ strongly_connected_components(int n, const std::vector<std::vector<int>> &reads)
     return out;
 }
 
+// Does `expr` call the clock, `time()`? A bare `time` is not the clock but a
+// declared scalar of that name (issue #776), so the test is for the call: the
+// identifier, not part of a longer one, followed by `(`.
+static bool calls_time(const std::string &expr) {
+    for (size_t pos = expr.find("time"); pos != std::string::npos;
+         pos = expr.find("time", pos + 1)) {
+        const auto word = [&](size_t k) {
+            return std::isalnum(static_cast<unsigned char>(expr[k])) != 0 || expr[k] == '_';
+        };
+        if (pos > 0 && (word(pos - 1) || expr[pos - 1] == '.'))
+            continue;
+        size_t j = pos + 4;
+        if (j < expr.size() && word(j))
+            continue;
+        while (j < expr.size() && std::isspace(static_cast<unsigned char>(expr[j])))
+            ++j;
+        if (j < expr.size() && expr[j] == '(')
+            return true;
+    }
+    return false;
+}
+
 // Issue #227 — does `expr` name anything in this model whose value can move
 // after load? That, and only that, is what makes a parameter *derived*: an
 // expression that names another parameter carries `∂p_d/∂θ` into every rate law
@@ -1912,49 +1934,45 @@ NetworkModel ModelBuilder::build() {
         derived_param_idx.push_back(pi);
     }
     const int nd = static_cast<int>(derived_param_idx.size());
+    // A species whose initial value a parameter names, by that parameter: the
+    // refusal below speaks of the initial value, not of a helper parameter the
+    // front end synthesized for it (`.net`'s `_InitialConc<N>`).
+    std::unordered_map<std::string, std::string> ic_species_of;
+    for (const auto &ref : bimpl_->species_param_refs)
+        if (ref.species_idx0 >= 0 && ref.species_idx0 < static_cast<int>(impl.species.size()))
+            ic_species_of.emplace(ref.param_name, impl.species[ref.species_idx0].name);
     std::vector<std::vector<int>> p_successors(nd); // node -> derived params reading it
     std::vector<int> p_in_degree(nd, 0);
     for (int k = 0; k < nd; ++k) {
         const Parameter &pk = impl.parameters[derived_param_idx[k]];
         std::unordered_set<int> deps;
         bool self_reference = false;
-        std::string moving; // the first symbol read that moves during a run
+        std::string moving; // the first symbol read that a run moves
         for_each_identifier(pk.expression, [&](const std::string &token) {
             if (token == pk.name) {
                 self_reference = true;
                 return;
             }
-            if (moving.empty()) {
-                if (token == "time")
-                    moving = "time()";
-                else if (token.rfind("rate_of__", 0) == 0)
-                    moving = "the rate accessor '" + token + "'";
-                else if (sd->observable_name_to_idx.count(token))
-                    moving = "the observable '" + token + "'";
-            }
             auto it = sd->param_name_to_idx.find(token);
-            if (it == sd->param_name_to_idx.end())
+            const bool declared = it != sd->param_name_to_idx.end();
+            if (moving.empty()) {
+                if (sd->observable_name_to_idx.count(token))
+                    moving = "the observable '" + token + "'";
+                else if (declared && function_bound.count(it->second))
+                    moving = "the function '" + token + "'";
+                else if (!declared && token.rfind("rate_of__", 0) == 0)
+                    moving = "the rate accessor '" + token + "'";
+            }
+            if (!declared)
                 return;
-            if (moving.empty() && function_bound.count(it->second))
-                moving = "the function '" + token + "'";
             auto dit = derived_param_node.find(it->second);
             if (dit != derived_param_node.end() && dit->second != k)
                 deps.insert(dit->second);
         });
-        // A parameter that reads something a run moves: time, a function (whose
-        // slot evaluate_functions() rewrites every step), an observable, or a
-        // rate accessor. A derived parameter is re-evaluated only when a
-        // parameter is written, so it held whatever that symbol read at build
-        // (a function slot's seed, 0) for the whole run: `k2 = 0.5*kf` with
-        // `kf = c + time()` ran at k2 = 0 under ODE and SSA alike. A quantity
-        // that moves with time is a function, so say so.
-        if (!moving.empty())
-            throw std::runtime_error(
-                "ModelBuilder: parameter '" + pk.name + "' = " + pk.expression + " reads " +
-                moving +
-                ", which changes during a run, but a parameter is evaluated only when a "
-                "parameter is set. Define '" +
-                pk.name + "' as a function instead.");
+        // Only the call is the clock: a bare `time` is a declared scalar of that
+        // name (issue #776), read like any other parameter.
+        if (moving.empty() && calls_time(pk.expression))
+            moving = "time()";
         // A parameter defined in terms of itself (issue #617). There is no value
         // it denotes, so there is nothing to build: `s = s*2` has no solution
         // unless s is 0, and what bngsim used to do with it was quieter than a
@@ -1970,6 +1988,30 @@ NetworkModel ModelBuilder::build() {
                                      pk.expression +
                                      ". A parameter's expression cannot read the parameter it "
                                      "defines — there is no value that satisfies it.");
+        // A parameter that reads something a run evaluates as it goes: time(), a
+        // function (whose slot evaluate_functions() rewrites every step), an
+        // observable, or a rate accessor. A derived parameter is evaluated only
+        // when a parameter is set, so it held what that symbol read at build (a
+        // function slot's seed, an observable's 0) for the whole run: `k2 =
+        // 0.5*kf` with `kf = c + time()` ran at k2 = 0 under ODE and SSA alike,
+        // and a later same-value write moved it to whatever the last run left in
+        // the slot. A quantity that moves with time is a function.
+        if (!moving.empty()) {
+            auto ic = ic_species_of.find(pk.name);
+            if (ic != ic_species_of.end())
+                throw std::runtime_error(
+                    "ModelBuilder: the initial value of species '" + ic->second + "' (" +
+                    pk.expression + ") reads " + moving +
+                    ", which a run evaluates as it goes; an initial value is set once, before "
+                    "the run starts. Write the value it takes at the start.");
+            throw std::runtime_error(
+                "ModelBuilder: parameter '" + pk.name + "' = " + pk.expression + " reads " +
+                moving +
+                ". A run evaluates that as it goes, but a parameter is evaluated only when a "
+                "parameter is set, so '" +
+                pk.name + "' would keep the value it had before the run. Define '" + pk.name +
+                "' as a function instead.");
+        }
         for (int d : deps) {
             p_successors[d].push_back(k);
             ++p_in_degree[k];

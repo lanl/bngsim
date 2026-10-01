@@ -84,8 +84,10 @@ _NETS = sorted(
 #
 # `k_const` is the `gamma 1/7` shape: arithmetic that names nothing. `k_der` is
 # the `_rateLaw{N} = chi*kon` shape that the whole derived-parameter machinery
-# exists for. `pi_`, `t_dep` and `obs_ref` are the three ways an expression can
-# fail to be a load-time constant, one of which (`pi_`) is not one.
+# exists for. `pi_` reads a built-in of a literal, which is still a literal. (An
+# expression that reads an observable or calls `time()` used to be the other way
+# to fail to be a load-time constant; the builder now refuses it as a parameter,
+# test_parameter_reads_moving_symbol.py.)
 
 
 def _mixed_model() -> bngsim.Model:
@@ -99,8 +101,6 @@ def _mixed_model() -> bngsim.Model:
     b.add_reaction([a], [], "elementary", "k_const")
     b.add_reaction([s_b], [], "elementary", "k_der")
     b.add_observable("Atot", [(a, 1.0)])
-    b.add_parameter("obs_ref", 0.0, expression="2*Atot", is_expression=True)
-    b.add_parameter("t_dep", 0.0, expression="2*time()", is_expression=True)
     return bngsim.Model(b.build())
 
 
@@ -148,20 +148,26 @@ def test_a_referenceless_expression_is_a_primary_and_holds_its_value():
 
 
 def test_a_reference_is_what_makes_a_parameter_derived():
-    """The three ways an expression can name something that moves.
+    """``k_der`` names a parameter — the chain rule the derived machinery exists
+    for — so it is derived, and not a knob.
 
-    ``k_der`` names a parameter — the chain rule the derived machinery exists
-    for. ``obs_ref`` names an observable and ``t_dep`` names the clock; neither
-    is a load-time constant, so neither may be folded into one even though
-    neither has a *parameter* underneath it either.
+    An expression that names an observable or calls the clock is not a
+    load-time constant either, and was flagged derived too. It is not a
+    parameter at all: it held its build-time value for the whole run, and the
+    builder now refuses it (test_parameter_reads_moving_symbol.py).
     """
     m = _mixed_model()
     kinds = dict(zip(m.param_names, m.param_is_expression, strict=True))
-    primary = set(m.primary_param_names)
+    assert kinds["k_der"] is True
+    assert "k_der" not in set(m.primary_param_names)
 
-    for name in ("k_der", "obs_ref", "t_dep"):
-        assert kinds[name] is True, f"{name} references a live symbol"
-        assert name not in primary
+    for expr in ("2*Atot", "2*time()"):
+        b = ModelBuilder()
+        a = b.add_species("A", 100.0)
+        b.add_observable("Atot", [(a, 1.0)])
+        b.add_parameter("moving", 0.0, expression=expr, is_expression=True)
+        with pytest.raises(RuntimeError, match="as a function instead"):
+            b.build()
 
 
 def test_the_omitted_knob_reaches_the_trajectory():
