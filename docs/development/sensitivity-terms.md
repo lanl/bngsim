@@ -179,34 +179,42 @@ no jump.
   `state-switch-beside-a-large-pool`.
 
 Whether a state switch's branches meet is read from the flux of the reactions
-that read the switch alone (#763), at two probes on each side of the surface.
-Both branches are extended to the root, and the difference of the extensions is
-the branch change. It is a jump unless it is within `1e-6` of the rate that
-drives the crossing and also within a bound on what is not a step there
-(#917):
+that read the switch alone (#763), at two probes on each side of the surface
+along the flow. Both branches are extended to the root, and the difference of
+the extensions is the branch change. Under the rounding of its four readings,
+16·ε of them, it is no jump. Past `1e-6` of the rate that drives the crossing it
+is one. That tolerance is for a flux that vanishes on both branches and differs
+across a pair of probes by its slope times the crossing's speed; it is far too
+wide for a step under a fast threshold species, where a jump of 3 under a pool
+moving at 5e6 was dropped (#917).
 
-- the root's own rounding, times how much the two slopes differ;
-- the extension's rounding, 16·ε of its four readings;
-- the flux bending on its own side of the surface, eight times the second
-  difference to a third probe a side: a law that turns on as `(B − thr)²` shows
-  on its own side what a line through two probes leaves at the root;
-- a tread, where the flux rounds as a staircase: `s() + off − thr` with
-  `s() = B − off` moves in steps of an ulp of `off`, as wide as the probes are
-  apart once `off` is a few hundred times `B`. A flux that reads the same an
-  eighth of a step from its far probe as at it is on a tread, and is followed to
-  the next: at the probe beside it, or further out along the flow, where it has
-  to move a second time to count;
-- its inputs' rounding, 64 times what one ulp of every species and every
-  parameter moves the flux by at the far probe on each side: `kbig·(P − Q)` with
-  `P ≈ Q` rounds by an ulp of `P`, and `s() + off − thr` by an ulp of `off`.
+Between the two, the branches are read at one state: the state on the surface,
+with only the species the residual reads moved a few ulp to either side of it,
+16 ulp of the residual and more where that does not flip its sign. Every term
+that does not switch is the same in both readings, whatever it rounds by, so
+their difference is the step, and it is a jump unless it is within
 
-The last three are read only where the first two do not settle it. A jump of 3
-under a threshold species moving at 5e6 is within the drive tolerance and
-outside the bound, so it is read. A probe that lands across another surface
-makes the bound larger, never smaller, and the reading is then held to the
-drive tolerance as before. Where the far probes cross another switch of the
-same residual the near pair is read as it stands, against `1e-6` of the rate
-that drives the crossing.
+- the rounding of the two readings, 16·ε of them;
+- eight times what the flux does on its own over as far again on each side: a
+  term that reads the residual's species moves with them;
+- eight times a tread, where the flux rounds as a staircase: `s() + off − thr`
+  with `s() = B − off` moves in steps of an ulp of `off`. A side that reads the
+  same further out is followed to where it moves, and it has to move a second
+  time to count, so that another switch of the same rate law out there is not
+  taken for a tread.
+
+Where the two sides cannot be reached by moving those species, the reading
+stands as the drive tolerance has it.
+
+The same reading takes back a jump past the drive tolerance that is not the
+switch's. A term beside a continuous switch that rounds as a staircase and does
+not read the switch steps between the probes, and its tread went into the column
+as a jump: −2029.6 for 4.42. The crossing is continuous where the two branches
+at one state are within the drive tolerance, both as they stand and with each
+side carried to the surface along its own slope, and within the bound above. A
+term that reads the threshold species moves between the two sides and can take
+a jump of 80 of its ulp out of the difference as it stands, which is what the
+second reading is for.
 
 **An event and a switch at the same instant.** `f⁻` is the before-branch at
 `x⁻`, and `f⁺` is the after-branch at `x⁺`:

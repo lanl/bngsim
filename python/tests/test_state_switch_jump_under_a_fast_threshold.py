@@ -8,12 +8,14 @@ the crossing time came back 0, with no warning.
 
 The drive is there for a switched flux that vanishes on both branches, the BNGL
 signed-rate idiom: across a pair of probes it differs by its slope times the
-crossing's speed. Where both branches are extended to the root from two probes
-each, that is out of the reading already. What is left besides a step is the
-rounding of the readings, the flux bending on its own side of the surface, and
-what an ulp of its inputs moves it by. The extended reading is now held to a
-bound on those three, and to the drive tolerance where that is the smaller, so
-it is never held to less than it was.
+crossing's speed. Under that tolerance the two branches are now read at one
+state, the state on the surface with only the species the condition reads moved
+a few ulp to either side. Every term that does not switch is the same in both
+readings, so what is left is the step, or the rounding of the two readings and
+what the flux does on its own over those few ulp.
+
+The same reading takes back a jump that is not the switch's: a term beside a
+continuous switch that rounds as a staircase steps between the probes.
 
 Every expected value is a closed form. B = B0·e^(−kdeg·t) reaches thr at
 t* = ln(B0/thr)/kdeg.
@@ -571,3 +573,157 @@ def test_a_jump_beside_a_large_term_that_moves(tmp_path, kb):
     t_star = np.log(2.0) / KDEG
     want = [kb * t_star / KDEG, kb / (KDEG * 5e7), -kb / (KDEG * 1e8)]
     np.testing.assert_allclose(got, want, rtol=6e-4 / kb)
+
+
+BESIDE_A_STAIRCASE = """begin parameters
+    1 kb {kb!r}
+    2 thr 5e7
+    3 kdeg 0.1
+    4 B0 1e8
+    5 kbig {kbig!r}
+    6 kdP {kdP!r}
+    7 P0 {P0!r}
+    8 Q0 {Q0!r}
+    9 kdQ 0.2
+    10 off {off!r}
+end parameters
+begin functions
+    1 ramp() kb*(thr-Bobs)/thr
+    2 sP() Pobs-off
+    3 fY() {beside}+if(Bobs<thr,ramp(),0)
+end functions
+begin species
+    1 B() B0
+    2 Y() 0
+    3 P() P0
+    4 Q() Q0
+    5 D() off
+end species
+begin reactions
+    1 1 0 kdeg
+    2 0 2 fY
+    3 3 0 kdP
+    4 4 0 kdQ
+end reactions
+begin groups
+    1 Bobs 1
+    2 Pobs 3
+    3 Qobs 4
+    4 PD 3,5
+    5 QD 4,5
+end groups
+"""
+
+# kb, kbig, kdP, Q0, the offset over the pools, how far apart the pools are at
+# the crossing, and the term beside the ramp.
+STAIRCASES = {
+    "through-a-function": (
+        0.07654195096766644,
+        3759.1379884560324,
+        0.3536612938510687,
+        77985043982.31714,
+        1351.7330454198013,
+        2.615418575883961e-07,
+        "kbig*(sP()+off-Qobs)",
+    ),
+    "through-a-species": (
+        1.2224545360710726,
+        27218.08064422743,
+        0.4,
+        2.59e11,
+        616.7022937579026,
+        1.9245609074859466e-07,
+        "kbig*(PD-QD)",
+    ),
+    "two-pools": (
+        1.4811783897186779,
+        740992.6140522596,
+        0.3,
+        9.13e10,
+        1.0,
+        1.7071886536920877e-07,
+        "kbig*(Pobs-Qobs)",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STAIRCASES))
+def test_a_continuous_switch_beside_a_term_that_rounds_as_a_staircase(tmp_path, case):
+    """``kbig·(P − Q)`` with P and Q a part in 1e7 apart, written through an
+    offset a thousand times their size, moves in treads of an ulp of the offset:
+    22 here, under a drive of 5e6 and so over its tolerance of 5. It does not
+    read the switch. Between two probes it stepped by a tread, which was read as
+    the switch's jump: dY/dkdeg came back −2029.6 for 4.42. The switch is a ramp
+    that vanishes at the surface, and at one state the term beside it is the
+    same on both sides."""
+    kb, kbig, kdP, Q0, over, gap, beside = STAIRCASES[case]
+    t_star = np.log(2.0) / KDEG
+    pools = Q0 * np.exp(-0.2 * t_star)
+    path = tmp_path / "m.net"
+    path.write_text(
+        BESIDE_A_STAIRCASE.format(
+            kb=kb,
+            kbig=kbig,
+            kdP=kdP,
+            P0=Q0 * float(np.exp((kdP - 0.2) * t_star)) * (1 + gap),
+            Q0=Q0,
+            off=float(over * pools),
+            beside=beside,
+        )
+    )
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["kdeg", "thr", "B0"]
+    ).run(sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
+    pool, thr, tail = 1e8, 5e7, np.exp(-KDEG * T_END)
+    want = [
+        kb * t_star / KDEG
+        + (kb / KDEG**2) * (1 - (pool / thr) * tail)
+        - (kb / KDEG) * (pool / thr) * T_END * tail,
+        kb / (KDEG * thr) - (kb / KDEG) * (pool / thr**2) * tail,
+        -kb / (KDEG * pool) + (kb / KDEG) * tail / thr,
+    ]
+    np.testing.assert_allclose(got, want, rtol=1e-6)
+
+
+STEEP = """begin parameters
+    1 kb 0.06
+    2 thr 5e7
+    3 kdeg 1e-3
+    4 B0 1e8
+    5 kbig 1e5
+end parameters
+begin functions
+    1 fY() kbig*Bobs+if(Bobs<thr,kb,0)
+end functions
+begin species
+    1 B() B0
+    2 Y() 0
+end species
+begin reactions
+    1 1 0 kdeg
+    2 0 2 fY
+end reactions
+begin groups
+    1 Bobs 1
+end groups
+"""
+
+
+def test_a_jump_of_eighty_ulp_of_a_steep_term_that_reads_the_threshold_species(tmp_path):
+    """Control. ``kbig·B + if(B < thr, kb, 0)`` with kb at 80 ulp of kbig·B and
+    just over the drive tolerance, so it is a jump as it always was. The steep
+    term moves between the two sides of the surface by 32 of its ulp and more,
+    which takes most of the jump out of their difference as it stands: read that
+    way alone, the jump was taken back and dY/dthr came back 0. Carried to the
+    surface along each side's slope it is 80 ulp again. The column is the jump
+    to the 3% that 80 ulp can be read to."""
+    path = tmp_path / "m.net"
+    path.write_text(STEEP)
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["thr"]
+    ).run(sample_times=[0.0, 500.0, 1500.0], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), 0]
+    # dY/dthr = kbig·dB-integral's part is 0 (the smooth term does not read thr)
+    # plus the jump's kb/(kdeg·thr).
+    assert got == pytest.approx(0.06 / (1e-3 * 5e7), rel=0.05)

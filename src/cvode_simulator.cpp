@@ -43,6 +43,7 @@
 #include "bngsim/sundials_guards.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -5995,33 +5996,27 @@ static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
 // Where both branches are extended to the root, what a reader's flux changes by
-// there is a step, or it is something a step is not: rounding, or the flux
-// bending (issue #917). The drive tolerance stands for all of that at once, and
-// is far too wide for it under a fast threshold. So the reading is held to a
-// bound on what is not a step, and to the drive tolerance where that is the
-// smaller: no reading is held to less than the drive tolerance held it to.
+// there is a step, or it is something a step is not: rounding, the flux
+// bending, a term beside the switched one that rounds by more than the step
+// (issue #917). The drive tolerance stands for all of that at once, and is far
+// too wide for it under a fast threshold. A reading under the extension's own
+// rounding, this many times ε of the four readings, is no step. Past the drive
+// tolerance it is one, as it always was. In between, the two branches are read
+// at one state: the state on the surface, with only the species the residual
+// reads moved a few ulp to either side of it. Every term that does not switch
+// is the same on both, whatever it rounds by, and what is left is the step.
 //
-// The bound has three parts.
-//   - The extension's own rounding: this many times ε of the four readings.
-//   - What the flux bends by on either side of the surface, read from a third
-//     probe a side: a step shows only across the surface, and a law that turns
-//     on as (B − thr)² shows on its own side as well. A flux that rounds as a
-//     staircase is followed from the tread it is on to the next.
-//   - What one ulp of every species and every parameter moves the flux by, at
-//     the far probe on each side: a flux cannot be read to better than its
-//     inputs' rounding moves it, and `kbig*(P − Q)` with P ≈ Q rounds by P, not
-//     by its own value.
-// The last two are read only where the first does not settle it. A probe that
-// lands across some other surface makes the bound larger, and the reading is
-// then held to the drive tolerance.
+// What is allowed there without a step: the rounding of the two readings, and
+// what the flux does on its own as far again from the surface, for a term that
+// reads the residual's species. Where the two sides cannot be reached by moving
+// those species, the reading stands as the drive tolerance had it.
 static constexpr double kStateSwitchExtendedRoundoff = 16.0;
 static constexpr double kStateSwitchBend = 8.0;
-static constexpr double kStateSwitchInputRoundoff = 64.0;
-// How far out along the flow a flux that is on one tread at all its probes is
-// followed to find the next: this many doublings, and no further than this
-// part of the time.
-static constexpr int kStateSwitchTreadDoublings = 24;
-static constexpr double kStateSwitchTreadReach = 1e-6;
+// How many ulp of the residual each side is taken past the surface.
+static constexpr double kStateSwitchApartUlps = 16.0;
+// How far out a flux that is on one tread at both of its readings is followed
+// to find the next: this many times a factor of four.
+static constexpr int kStateSwitchTreadDoublings = 16;
 // Issue #763: on the TANGENT path, a branch gap below this many ulps of the
 // switched reactions' gross flux (the absolute sum of their terms) is the final
 // rounding of the two sums it is read from, one per side, not a jump. There a
@@ -7259,69 +7254,152 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             out.assign(n_sp, 0.0);
             model.compute_flux_split(t, state.data(), one.rxns, out.data(), nullptr);
         };
-        // What is not a step in `one`'s extended reading, beyond the rounding of
-        // the extension itself: see kStateSwitchBend and
-        // kStateSwitchInputRoundoff.
-        auto not_a_step = [&](const Reader &one, std::vector<double> &out) {
-            out.assign(n_sp, 0.0);
-            std::vector<double> state(n_sp, 0.0);
-            std::vector<double> moved(n_sp, 0.0);
-            auto &live = const_cast<std::vector<Parameter> &>(model.parameters());
-            for (int side = 0; side < 2; ++side) {
-                const double sign = side == 0 ? -1.0 : 1.0;
-                const std::vector<double> &far_read = one.net[side == 0 ? 0 : 3];
-                const std::vector<double> &near_read = one.net[side == 0 ? 1 : 2];
-                // The bend, from a third probe on this side.
-                for (std::size_t u = 0; u < n_sp; ++u) {
-                    state[u] = x[u] + sign * 3.0 * dt * f0[u];
+        // `one`'s two branches read at one state (issue #917): the state on its
+        // surface, with only the species its residual reads moved a few ulp to
+        // either side. `apart` is what its reactions' flux differs by between
+        // the two, and `allowed` is what that may be without a step.
+        struct Sides {
+            int read = -1;       // 1 where both sides were reached, 0 where not, −1 not asked
+            bool treads = false; // the staircase has been looked for
+            double t_on = 0.0;
+            double steps = 0.0;  // how many ulp each side is from the surface
+            double before = 1.0; // the residual's sign before the crossing
+            std::vector<double> on;
+            std::vector<double> ulp;
+            std::vector<double> flux[2]; // before, after
+            std::vector<double> further[2];
+            std::vector<double> apart;
+            std::vector<double> allowed;
+            // The same difference with each side carried to the surface along
+            // its own slope first.
+            std::vector<double> step;
+        };
+        // `one`'s flux with the residual's species `by` ulp to side `k` of the
+        // surface.
+        auto moved_out = [&](const Reader &one, const Sides &a, int k, double by,
+                             std::vector<double> &out) {
+            const double sign = k == 0 ? a.before : -a.before;
+            xw = a.on;
+            for (std::size_t i = 0; i < one.sw->species.size(); ++i) {
+                const auto uj = static_cast<std::size_t>(one.sw->species[i]);
+                xw[uj] = a.on[uj] + sign * by * a.ulp[i];
+            }
+            flux_at(one, xw, a.t_on, out);
+        };
+        // True where the two sides could be reached by moving those species.
+        auto read_apart = [&](const Reader &one, Sides &a) {
+            if (a.read >= 0) {
+                return a.read == 1;
+            }
+            a.read = 0;
+            const int gidx = one.sw->residual_expr_idx;
+            a.t_on = t_evt + one.root;
+            a.on.assign(n_sp, 0.0);
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                a.on[u] = x[u] + one.root * f0[u];
+            }
+            sync(a.on, a.t_on);
+            const double g_on = eval.evaluate(gidx);
+            // One ulp of each species the residual reads, signed by the way it
+            // moves the residual, and what all of them together move it by.
+            a.ulp.assign(one.sw->species.size(), 0.0);
+            double ulp_g = 0.0;
+            std::vector<double> state(a.on);
+            for (std::size_t i = 0; i < one.sw->species.size(); ++i) {
+                const auto uj = static_cast<std::size_t>(one.sw->species[i]);
+                const double size = std::fabs(a.on[uj]);
+                const double own =
+                    std::nextafter(size, std::numeric_limits<double>::infinity()) - size;
+                // The way it moves the residual, over a step wide enough to
+                // show it where the residual rounds as a staircase.
+                const double wide = std::max(1e-6 * size, 4096.0 * own);
+                state[uj] = a.on[uj] + wide;
+                sync(state, a.t_on);
+                const double up = eval.evaluate(gidx);
+                state[uj] = a.on[uj] - wide;
+                sync(state, a.t_on);
+                const double down = eval.evaluate(gidx);
+                state[uj] = a.on[uj];
+                const double slope = (up - down) / (2.0 * wide);
+                if (!std::isfinite(slope) || slope == 0.0) {
+                    continue;
                 }
-                flux_at(one, state, t_evt + sign * 3.0 * dt, moved);
-                for (std::size_t u = 0; u < n_sp; ++u) {
-                    out[u] =
-                        std::max(out[u], kStateSwitchBend * std::fabs(moved[u] - 2.0 * far_read[u] +
-                                                                      near_read[u]));
+                a.ulp[i] = slope > 0.0 ? own : -own;
+                ulp_g += std::fabs(slope) * own;
+            }
+            a.before = one.g_lo > 0.0 ? 1.0 : -1.0;
+            bool reached = false;
+            if (std::isfinite(g_on) && ulp_g > 0.0) {
+                double out_by = kStateSwitchApartUlps;
+                for (int attempt = 0; attempt < 4 && !reached; ++attempt, out_by *= 4.0) {
+                    a.steps = std::fabs(g_on) / ulp_g + out_by;
+                    double g_side[2] = {0.0, 0.0};
+                    for (int k = 0; k < 2; ++k) {
+                        const double sign = k == 0 ? a.before : -a.before;
+                        for (std::size_t i = 0; i < one.sw->species.size(); ++i) {
+                            const auto uj = static_cast<std::size_t>(one.sw->species[i]);
+                            state[uj] = a.on[uj] + sign * a.steps * a.ulp[i];
+                        }
+                        sync(state, a.t_on);
+                        g_side[k] = eval.evaluate(gidx);
+                    }
+                    reached = g_side[0] * a.before > 0.0 && g_side[1] * a.before < 0.0;
                 }
-                // A staircase. `s() + off − thr` with `s() = B − off` moves in
-                // steps of an ulp of `off`, and once `off` is a few hundred
-                // times B a tread is as wide as the probes are apart, or
-                // wider. Three probes that land on consecutive treads show no
-                // bend, three on one tread show nothing at all, and what the
-                // extension leaves at the root is a tread either way. A flux
-                // that reads the same an eighth of a step from the far probe
-                // as at it is on a tread there, or is constant. It is then
-                // followed to where it moves: the probe next to it, or
-                // further out along the flow, away from the surface, where
-                // it has to move again to count.
-                std::vector<double> third(moved);
-                for (std::size_t u = 0; u < n_sp; ++u) {
-                    state[u] = x[u] + sign * 2.125 * dt * f0[u];
-                }
-                flux_at(one, state, t_evt + sign * 2.125 * dt, moved);
+            }
+            if (!reached) {
+                sync(x, t_evt);
+                return false;
+            }
+            // What the flux does on its own over as far again, on each side:
+            // a term that reads the residual's species moves with them, and a
+            // step is what it does not do there.
+            for (int k = 0; k < 2; ++k) {
+                moved_out(one, a, k, a.steps, a.flux[k]);
+                moved_out(one, a, k, 3.0 * a.steps, a.further[k]);
+            }
+            a.apart.assign(n_sp, 0.0);
+            a.allowed.assign(n_sp, 0.0);
+            a.step.assign(n_sp, 0.0);
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                a.apart[u] = a.flux[0][u] - a.flux[1][u];
+                a.step[u] = (1.5 * a.flux[0][u] - 0.5 * a.further[0][u]) -
+                            (1.5 * a.flux[1][u] - 0.5 * a.further[1][u]);
+                a.allowed[u] =
+                    kStateSwitchExtendedRoundoff * std::numeric_limits<double>::epsilon() *
+                        std::max(std::fabs(a.flux[0][u]), std::fabs(a.flux[1][u])) +
+                    kStateSwitchBend * std::max(std::fabs(a.further[0][u] - a.flux[0][u]),
+                                                std::fabs(a.further[1][u] - a.flux[1][u]));
+            }
+            sync(x, t_evt);
+            a.read = 1;
+            return true;
+        };
+        // A side that reads the same further out is constant there, or it is
+        // on one tread of a staircase: `s() + off − thr` with `s() = B − off`
+        // moves in steps of an ulp of `off`, and the first tread past the
+        // surface is what the two sides differ by. It is followed out to where
+        // it moves, and it has to move again to count: a flux that has moved
+        // once and is no further on at three times the distance has met
+        // another switch of the same rate law.
+        auto allow_treads = [&](const Reader &one, Sides &a) {
+            a.treads = true;
+            std::vector<double> first;
+            std::vector<double> again;
+            for (int k = 0; k < 2; ++k) {
                 std::vector<std::size_t> flat;
                 for (std::size_t u = 0; u < n_sp; ++u) {
-                    if (far_read[u] == 0.0 || moved[u] != far_read[u]) {
-                        continue;
-                    }
-                    const double tread = near_read[u] != far_read[u] ? near_read[u] - far_read[u]
-                                                                     : third[u] - far_read[u];
-                    if (tread != 0.0) {
-                        out[u] = std::max(out[u], kStateSwitchBend * std::fabs(tread));
-                    } else {
+                    if (a.apart[u] != 0.0 && a.flux[k][u] != 0.0 &&
+                        a.further[k][u] == a.flux[k][u]) {
                         flat.push_back(u);
                     }
                 }
-                double out_to = 6.0;
-                for (int doubling = 0;
-                     doubling < kStateSwitchTreadDoublings && !flat.empty() &&
-                     out_to * dt <= kStateSwitchTreadReach * std::max(std::fabs(t_evt), 1.0);
-                     ++doubling, out_to *= 2.0) {
-                    for (std::size_t u = 0; u < n_sp; ++u) {
-                        state[u] = x[u] + sign * out_to * dt * f0[u];
-                    }
-                    flux_at(one, state, t_evt + sign * out_to * dt, moved);
+                double out_to = 12.0 * a.steps;
+                for (int doubling = 0; doubling < kStateSwitchTreadDoublings && !flat.empty();
+                     ++doubling, out_to *= 4.0) {
+                    moved_out(one, a, k, out_to, first);
                     std::vector<std::size_t> stepped;
                     for (auto it = flat.begin(); it != flat.end();) {
-                        if (moved[*it] != far_read[*it]) {
+                        if (first[*it] != a.flux[k][*it]) {
                             stepped.push_back(*it);
                             it = flat.erase(it);
                         } else {
@@ -7331,61 +7409,35 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     if (stepped.empty()) {
                         continue;
                     }
-                    // A tread is followed by another. A flux that has moved
-                    // once and is no further on at three times the distance
-                    // has met something else out there, another switch of the
-                    // same rate law, and that says nothing of this one.
-                    const std::vector<double> first(moved);
-                    for (std::size_t u = 0; u < n_sp; ++u) {
-                        state[u] = x[u] + sign * 3.0 * out_to * dt * f0[u];
-                    }
-                    flux_at(one, state, t_evt + sign * 3.0 * out_to * dt, moved);
+                    moved_out(one, a, k, 3.0 * out_to, again);
                     for (std::size_t u : stepped) {
-                        const double tread = first[u] - far_read[u];
-                        if ((moved[u] - far_read[u]) / tread >= 1.5) {
-                            out[u] = std::max(out[u], kStateSwitchBend * std::fabs(tread));
+                        const double tread = first[u] - a.flux[k][u];
+                        if ((again[u] - a.flux[k][u]) / tread >= 1.5) {
+                            a.allowed[u] =
+                                std::max(a.allowed[u], kStateSwitchBend * std::fabs(tread));
                         }
                     }
                 }
-                // The inputs' rounding, at the far probe on this side.
-                const double t_far = t_evt + sign * 2.0 * dt;
-                for (std::size_t u = 0; u < n_sp; ++u) {
-                    state[u] = x[u] + sign * 2.0 * dt * f0[u];
-                }
-                std::vector<double> inputs(n_sp, 0.0);
-                for (std::size_t j = 0; j < n_sp; ++j) {
-                    const double kept = state[j];
-                    state[j] = std::nextafter(kept, std::numeric_limits<double>::infinity());
-                    flux_at(one, state, t_far, moved);
-                    state[j] = kept;
-                    for (std::size_t u = 0; u < n_sp; ++u) {
-                        inputs[u] += std::fabs(moved[u] - far_read[u]);
-                    }
-                }
-                for (Parameter &param : live) {
-                    const double kept = param.value;
-                    param.value = std::nextafter(kept, std::numeric_limits<double>::infinity());
-                    model.refresh_derived_params();
-                    flux_at(one, state, t_far, moved);
-                    param.value = kept;
-                    for (std::size_t u = 0; u < n_sp; ++u) {
-                        inputs[u] += std::fabs(moved[u] - far_read[u]);
-                    }
-                }
-                model.refresh_derived_params();
-                for (std::size_t u = 0; u < n_sp; ++u) {
-                    out[u] += kStateSwitchInputRoundoff * inputs[u];
-                }
             }
             sync(x, t_evt);
+        };
+        // Written so that a NaN reads as a step.
+        auto no_step = [&](const Reader &one, Sides &a, std::size_t u) {
+            if (std::fabs(a.apart[u]) <= a.allowed[u]) {
+                return true;
+            }
+            if (!a.treads) {
+                allow_treads(one, a);
+            }
+            return std::fabs(a.apart[u]) <= a.allowed[u];
         };
         for (Reader &r : readers) {
             const double root = dt * (r.g_lo + r.g_hi) / (r.g_lo - r.g_hi);
             r.root = std::isfinite(root) ? std::clamp(root, -dt, dt) : 0.0;
             const double w_lo = (r.root + dt) / dt;
             const double w_hi = (dt - r.root) / dt;
-            double slack = -1.0;        // root_step(r), found only if a species needs it
-            std::vector<double> smooth; // not_a_step(r), likewise
+            double slack = -1.0; // root_step(r), found only if a species needs it
+            Sides sides;         // read_apart(r), likewise
             for (std::size_t u = 0; u < n_sp; ++u) {
                 double change = r.net[1][u] - r.net[2][u];
                 // The drive tolerance is for the pair read as it stands, where
@@ -7418,16 +7470,27 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                             continue;
                         }
                         // Between what the readings round by and the drive
-                        // tolerance: a step, unless the flux bends or rounds
-                        // by that much on its own. Past the drive tolerance
-                        // it is a step whatever the bound says.
+                        // tolerance, the two branches are read at one state,
+                        // and where they cannot be the reading stands as the
+                        // drive tolerance had it.
                         if (std::fabs(change) <= tol + slack * kink) {
-                            if (smooth.empty()) {
-                                not_a_step(r, smooth);
-                            }
-                            if (std::fabs(change) <= rounding + smooth[u] + slack * kink) {
+                            if (!read_apart(r, sides) || no_step(r, sides, u)) {
                                 continue;
                             }
+                        } else if (read_apart(r, sides) && std::fabs(sides.apart[u]) <= tol &&
+                                   std::fabs(sides.step[u]) <= tol && no_step(r, sides, u)) {
+                            // Past the drive tolerance it is a step, unless the
+                            // two branches at one state are within it, as they
+                            // stand and carried to the surface: what the probes
+                            // differ by is then not this switch's. A term
+                            // beside it that rounds as a staircase stepped
+                            // between them, and its tread went into the column
+                            // as a jump (−2029.6 for 4.42). Carried to the
+                            // surface as well, because a term that reads the
+                            // threshold species moves between the two sides and
+                            // can take a jump of 80 of its ulp out of the
+                            // difference as it stands.
+                            continue;
                         }
                     }
                     r.jumps = true;
