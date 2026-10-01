@@ -7503,23 +7503,38 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // below its threshold, it is on it: `PIdeath > 0` with
             // PIdeath(t_start) = 0. Whether the first move off that surface is
             // a crossing the model locates, or an arbitrary consequence of
-            // where the first step landed, is decided by dg/dt along the flow
-            // at t_start — and only there, because once the solver has taken a
-            // step the residual is off zero and every trace of the coincidence
-            // is gone.
+            // where the first step landed, is decided at t_start — and only
+            // there, because once the solver has taken a step the residual is
+            // off zero and every trace of the coincidence is gone.
             //
-            //   dg/dt > 0 — the trajectory LEAVES the threshold into the
-            //     trigger's true side. `time > 0` is this, with dg/dt = 1: the
-            //     crossing is real and sits at t_start. Left alone, so those
-            //     events fire exactly as they did before.
-            //   dg/dt <= 0 — the trajectory does not leave. Any root the
-            //     solver then reports at t_start is the initial condition
-            //     being re-read, not a transition, and its time is set by the
-            //     step controller rather than by the model. BIOMD0000000285 is
-            //     this case: `PIdeath > 0` with the whole aggregation cascade
-            //     feeding PIdeath still at zero, so dg/dt is 0 exactly, yet
-            //     the root lands at t = 2.7e-27 and kills the cell before the
-            //     model has moved. Marked here and refused at the root below.
+            //   The trajectory LEAVES the threshold into the trigger's true
+            //     side. `time > 0` is this: the crossing is real and sits at
+            //     t_start. Left alone, so those events fire exactly as they
+            //     did before.
+            //   It does not. Any root the solver then reports at t_start is the
+            //     initial condition being re-read, not a transition, and its
+            //     time is set by the step controller rather than by the model.
+            //     BIOMD0000000285 is this case: `PIdeath > 0` with the whole
+            //     aggregation cascade feeding PIdeath still at zero, so the
+            //     state does not move at all, yet the root lands at
+            //     t = 2.7e-27 and kills the cell before the model has moved.
+            //     Marked here and refused at the root below.
+            //
+            // Which it is, is asked of the trigger itself, a small step along
+            // the flow. It used to be read off the sign of dg/dt for the
+            // residual g = lhs − rhs, taking positive for true. That is right
+            // for `>` and wrong for `<`: `at (A < 10)` with A(0) = 10 and A
+            // decaying never fired, where `at (10 > A)` fires at once. The
+            // gradient behind dg/dt was a difference with a step of 1e-9 at a
+            // species that is 0, which is past a pole or a root of the residual
+            // in a model whose own scale is smaller (`L/(Kd + L) > 0` from
+            // L = 0 with Kd = 1e-10). And a residual that moves to one side
+            // only (`floor(A) < 10`, `0 < max(0, A - 10)`) has no gradient to
+            // read at all. Stepping the state the residual reads by δ·f, with
+            // δ a millionth of the time the fastest of them takes to change by
+            // its own size, asks the question directly and in the model's own
+            // units. f is taken just past t_start, so a rate that is gated on
+            // `time > t_start` counts.
             //
             // This is the rule CVODE applies to its own root functions —
             // SUNDIALS deactivates any g_i that is identically zero at t0 and
@@ -7530,7 +7545,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (!on_threshold_at_start.empty()) {
                 std::vector<double> t0_f;
                 std::vector<double> t0_x;
-                std::vector<double> gx_scratch;
                 for (int ei = 0; ei < n_events; ++ei) {
                     if (trigger_was_true[ei]) {
                         continue;
@@ -7541,53 +7555,32 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     }
                     if (t0_f.empty()) {
                         t0_f.assign(static_cast<std::size_t>(ns), 0.0);
-                        model.compute_derivs(times.t_start, y_data, t0_f.data());
+                        model.compute_derivs(
+                            std::nextafter(times.t_start, std::numeric_limits<double>::infinity()),
+                            y_data, t0_f.data());
                         t0_x.assign(y_data, y_data + ns);
                     }
-                    double scale = 0.0;
+                    const double horizon =
+                        std::max({t_out.back() - times.t_start, std::fabs(times.t_start), 1.0});
+                    double delta = 1e-6 * horizon;
                     const std::vector<int> &support = model.event_trigger_residual_species(ei);
-                    const double flow = impl_->residual_flow(gidx, support, times.t_start, ns, t0_x,
-                                                             t0_f, gx_scratch, scale);
-                    // The residual is lhs − rhs whatever the comparison, so its
-                    // positive side is the trigger's true side for `>` and its
-                    // FALSE side for `<`. Taking positive for true left
-                    // `at (A < 10)` with A(0) = 10 and A decaying marked as not
-                    // leaving, and it never fired, where `at (10 > A)` fires at
-                    // once. So the side is read off the trigger: step each
-                    // coordinate the residual reads (and the clock, if it reads
-                    // that) the way that raises it, and ask the trigger there.
-                    double g_t = flow;
-                    for (int j : support) {
-                        g_t -= gx_scratch[static_cast<std::size_t>(j)] *
-                               t0_f[static_cast<std::size_t>(j)];
-                    }
-                    std::vector<double> x_up(t0_x);
                     for (int j : support) {
                         const auto uj = static_cast<std::size_t>(j);
-                        double h = 1e-6 * std::fabs(t0_x[uj]);
-                        if (h == 0.0) {
-                            h = 1e-9;
-                        }
-                        if (gx_scratch[uj] != 0.0) {
-                            x_up[uj] += gx_scratch[uj] > 0.0 ? h : -h;
+                        if (t0_x[uj] != 0.0 && t0_f[uj] != 0.0) {
+                            delta = std::min(delta, 1e-6 * std::fabs(t0_x[uj] / t0_f[uj]));
                         }
                     }
-                    const double h_t = 1e-6 * std::max(std::fabs(times.t_start), 1.0);
-                    const double t_up =
-                        times.t_start + (g_t > 0.0 ? h_t : (g_t < 0.0 ? -h_t : 0.0));
-                    impl_->sync_model_at(t_up, x_up.data(), ns);
-                    const double g_up = eval_ref_outer.evaluate(gidx);
-                    const bool true_up =
+                    std::vector<double> x_probe(t0_x);
+                    for (int j : support) {
+                        const auto uj = static_cast<std::size_t>(j);
+                        x_probe[uj] += delta * t0_f[uj];
+                    }
+                    impl_->sync_model_at(times.t_start + delta, x_probe.data(), ns);
+                    const bool leaves_into_true =
                         eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx) > 0.5;
                     impl_->sync_model_at(times.t_start, t0_x.data(), ns);
-                    // Where the step did not raise the residual, positive is
-                    // taken for true, as before.
-                    const bool true_is_positive = !(g_up > 0.0) || true_up;
-                    on_threshold_at_start[ei] = ((true_is_positive ? flow : -flow) > 0.0) ? 0 : 1;
+                    on_threshold_at_start[ei] = leaves_into_true ? 0 : 1;
                 }
-                // Nothing to undo: residual_flow's differences walk the model
-                // through perturbed states but leave it synced at (t_start, y),
-                // rateOf buffer included, which is where it was found.
             }
 
             // If a t=0 immediate event mutated the state vector, tell CVODE
