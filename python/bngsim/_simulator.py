@@ -684,8 +684,6 @@ class Simulator:
         "_sensitivity_params",
         "_sensitivity_ic",
         "_sensitivity_method",
-        # Per-species V_c cache for Result.as_roadrunner; lazily filled.
-        "_volume_factors_cache",
         # GH #198 — memoized expression output-sensitivity support map; lazily filled.
         "_expr_sens_support_memo",
     )
@@ -971,7 +969,6 @@ class Simulator:
         self._force_dense_linear_solver = bool(force_dense_linear_solver)
         self._force_sparse_linear_solver = bool(force_sparse_linear_solver)
         self._jax_jac_evaluator = None
-        self._volume_factors_cache: list[float] | None = None
 
         # Registered stop conditions.
         self._stop_conditions: list[_StopCondition] = []
@@ -1234,32 +1231,45 @@ class Simulator:
             model,
         )
 
-    def _get_volume_factors(self) -> list[float]:
-        """Return per-species V_c, cached on the simulator.
+    def _get_volume_factors(self, model: Model | None = None) -> list[float]:
+        """Return per-species V_c of *model* (default: this Simulator's), as of now.
 
         Used to stamp every public-facing :class:`Result` so
         :meth:`Result.as_roadrunner` can convert stored concentrations
         back to amounts when an `X` selector is requested. Returns an
         empty list if the model can't expose codegen_data (extremely
         unlikely; .net and SBML loaders both populate it).
+
+        Kept on the model with the compartment sizes it was read at, and read
+        again when one has moved: a compartment size is a writable parameter
+        (#170), so the first run's sizes go stale at the first write, and a
+        batch row's sizes are its own clone's (issues #697, #743). A model with
+        no compartment size parameter (every ``.net``) reads it once.
         """
-        if self._volume_factors_cache is None:
-            try:
-                # T7: narrow C++ accessor returns V_c for reported species in
-                # reported-species order — the same list the old
-                # codegen_data()["species"] filter produced, but without
-                # building a full per-parameter/species/observable/function
-                # Python dict just to read one field. The reported filter
-                # (GH #71) lives in the accessor so the V_c list aligns with the
-                # projected Result.species columns; `reported` defaults True so
-                # .net and ordinary SBML models are unaffected.
-                self._volume_factors_cache = [
-                    float(v) for v in self._model._core.reported_volume_factors()
-                ]
-            except Exception as e:  # pragma: no cover - defensive
-                logger.debug("volume_factors unavailable: %s", e)
-                self._volume_factors_cache = []
-        return self._volume_factors_cache
+        m = model or self._model
+        core = m._core
+        memo = m._volume_factors_memo
+        if memo is not None:
+            names, sizes, vf = memo
+            if tuple(core.get_param(n) for n in names) == sizes:
+                return vf
+        else:
+            names = tuple(m.compartment_size_params)
+        try:
+            # T7: narrow C++ accessor returns V_c for reported species in
+            # reported-species order — the same list the old
+            # codegen_data()["species"] filter produced, but without
+            # building a full per-parameter/species/observable/function
+            # Python dict just to read one field. The reported filter
+            # (GH #71) lives in the accessor so the V_c list aligns with the
+            # projected Result.species columns; `reported` defaults True so
+            # .net and ordinary SBML models are unaffected.
+            vf = [float(v) for v in core.reported_volume_factors()]
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("volume_factors unavailable: %s", e)
+            return []
+        m._volume_factors_memo = (names, tuple(core.get_param(n) for n in names), vf)
+        return vf
 
     def _unwritable_compartment_size_params(self) -> set[str]:
         """Names of the compartment sizes this model refuses to *write* (#170).
@@ -2324,9 +2334,16 @@ class Simulator:
         *,
         seed: int | None = None,
         ic_seed: dict[str, dict[str, float]] | None = None,
+        model: Model | None = None,
     ) -> Result:
-        """Attach per-species V_c, stochastic seed and ∂x(0)/∂θ to *result*."""
-        vf = self._get_volume_factors()
+        """Attach per-species V_c, stochastic seed and ∂x(0)/∂θ to *result*.
+
+        *model* is the model the result was integrated on, when that is not this
+        Simulator's: a batch row runs on its own clone, whose compartment sizes
+        the row may have written, and every report remap below reads them
+        (issue #743).
+        """
+        vf = self._get_volume_factors(model)
         if vf:
             result._species_volume_factors = vf
         if seed is not None:
@@ -2337,17 +2354,19 @@ class Simulator:
         # two ways, so both passes take the ONE resolved map (GH #221) — a second
         # place that recomputes `vdiv` is a place the two can drift apart, which
         # is exactly how the #170 writable-volume divisor went stale on one side.
-        ar_map, ar_blocked = self._ar_sensitivity_metadata()
+        ar_map, ar_blocked = self._ar_sensitivity_metadata(model)
         self._apply_ar_report_map(result, ar_map)
-        self._apply_varvol_conc_map(result)
-        self._apply_varvol_ar_conc_map(result)
-        self._apply_varvol_event_resize_map(result)
+        self._apply_varvol_conc_map(result, model)
+        self._apply_varvol_ar_conc_map(result, model)
+        self._apply_varvol_event_resize_map(result, model)
         result._ar_sens_map = ar_map
         result._ar_sens_blocked = ar_blocked
         self._apply_ar_sensitivity_map(result, ar_map, ar_blocked)
         return result
 
-    def _ar_sensitivity_metadata(self) -> tuple[dict[str, tuple[str, str, float]], frozenset[str]]:
+    def _ar_sensitivity_metadata(
+        self, model: Model | None = None
+    ) -> tuple[dict[str, tuple[str, str, float]], frozenset[str]]:
         """AR-species output-sensitivity redirect map + blocked set (GH #205).
 
         The redirect map is the same ``_ar_report_map`` the value path uses to
@@ -2372,14 +2391,16 @@ class Simulator:
         V=1 load, the value column divided by 3 and the selector's derivative did
         not, putting the two out by exactly that factor.
         """
-        amap = getattr(self._model, "_ar_report_map", None) or {}
+        model = model or self._model
+        amap = getattr(model, "_ar_report_map", None) or {}
         if not amap:
             return {}, frozenset()
-        vc = getattr(self._model, "_varvol_conc_map", None) or {}
-        vac = getattr(self._model, "_varvol_ar_conc_map", None) or {}
+        vc = getattr(model, "_varvol_conc_map", None) or {}
+        vac = getattr(model, "_varvol_ar_conc_map", None) or {}
         blocked = frozenset(name for name in amap if name in vc or name in vac)
         resolved = {
-            name: (entry[0], entry[1], self._ar_report_vdiv(entry)) for name, entry in amap.items()
+            name: (entry[0], entry[1], self._ar_report_vdiv(entry, model))
+            for name, entry in amap.items()
         }
         return resolved, blocked
 
@@ -2405,10 +2426,9 @@ class Simulator:
         species_names = result._species_names
         if not species_names:
             return
-        # Only the 2D (n_times, n_species) layout (single run / PSA mean) is
-        # column-addressable here. squeezed run_batch results are 3D
-        # (n_reps, n_times, n_species); skip the cosmetic report-remap there —
-        # the dynamics fix (classifier reroute) already applies per replicate.
+        # Only the 2D (n_times, n_species) layout is column-addressable here.
+        # Every stacked result is stacked from rows already stamped, one by one
+        # (issues #698, #743), so a 3-D one has nothing left to remap.
         if result._species.ndim != 2:
             return
         sp_idx = {n: i for i, n in enumerate(species_names)}
@@ -2501,8 +2521,8 @@ class Simulator:
         expression's own output sensitivity (GH #198).
 
         Applies to both sensitivity axes (parameter and IC) and is a no-op for
-        .net / non-AR models, for runs without sensitivities, and for the 3-D
-        batch layout the value pass skips as well.
+        .net / non-AR models, for runs without sensitivities, and for a 3-D
+        stack, whose rows were remapped before stacking.
         """
         if not amap:
             return
@@ -2578,7 +2598,7 @@ class Simulator:
                 stacklevel=2,
             )
 
-    def _apply_varvol_conc_map(self, result: Result) -> None:
+    def _apply_varvol_conc_map(self, result: Result, model: Model | None = None) -> None:
         """Report species in variable-volume compartments at amount/V_live(t).
 
         bngsim stores every species as ``amount / V_static`` (the compartment
@@ -2596,19 +2616,19 @@ class Simulator:
         ``result._varvol_live_vol`` so :meth:`Result.as_roadrunner` can recover
         the amount (``conc * V_live``) for a bare-id selector instead of the now
         meaningless ``conc * V_static``. No-op for .net and static models (empty
-        map) and for the 3-D batch layout (the dynamics fix already applies per
-        replicate; the cosmetic report-remap, like the AR remap, only addresses
-        the 2-D single-run / PSA-mean layout). GH #85.
+        map) and for a 3-D stack, whose rows were remapped before stacking.
+        GH #85.
         """
-        vmap = getattr(self._model, "_varvol_conc_map", None)
-        amap = getattr(self._model, "_varvol_amount_map", None)
+        model = model or self._model
+        vmap = getattr(model, "_varvol_conc_map", None)
+        amap = getattr(model, "_varvol_amount_map", None)
         if not vmap and not amap:
             return
         species_names = result._species_names
         if not species_names or result._species.ndim != 2:
             return
         sp_idx = {n: i for i, n in enumerate(species_names)}
-        vf = self._get_volume_factors()
+        vf = self._get_volume_factors(model)
         # SSA/PSA preserve molecule counts across a volume change (the ODE
         # dilution / event concentration-rescale are ``ode_only`` and skipped),
         # so a stochastic result stores ``amount/V_static`` where the ODE result
@@ -2690,7 +2710,7 @@ class Simulator:
             if conc_factor:
                 result._varvol_conc_factor = conc_factor
 
-    def _apply_varvol_ar_conc_map(self, result: Result) -> None:
+    def _apply_varvol_ar_conc_map(self, result: Result, model: Model | None = None) -> None:
         """Report species in ASSIGNMENT-RULE compartments at amount/V_live(t).
 
         Companion to :meth:`_apply_varvol_conc_map` for compartments whose size
@@ -2706,14 +2726,15 @@ class Simulator:
         column — an AR compartment has no ODE state. It is read from the
         compartment's own assignment-rule **expression** column (the loader emits
         a function named after the compartment). No-op for .net and models without
-        an assignment-rule compartment (empty map), and for the 3-D batch layout.
-        GH #87.
+        an assignment-rule compartment (empty map), and for a 3-D stack, whose
+        rows were remapped before stacking. GH #87.
         """
-        amap = getattr(self._model, "_varvol_ar_conc_map", None)
+        model = model or self._model
+        amap = getattr(model, "_varvol_ar_conc_map", None)
         # (#234) hOSU=false counterpart: a diluted species' stored column is already
         # amount/V_live, so only its bare-id amount selector needs V_live (read from
         # the AR expression column) — no column rescale. Handled in the same pass.
-        amount_map = getattr(self._model, "_varvol_ar_amount_map", None)
+        amount_map = getattr(model, "_varvol_ar_amount_map", None)
         if not amap and not amount_map:
             return
         species_names = result._species_names
@@ -2760,7 +2781,7 @@ class Simulator:
             if recorded:
                 result._varvol_amount_factor = amount_factor
 
-    def _apply_varvol_event_resize_map(self, result: Result) -> None:
+    def _apply_varvol_event_resize_map(self, result: Result, model: Model | None = None) -> None:
         """Report species in EVENT-RESIZED compartments at amount/V_live(t).
 
         An event assignment changes a compartment's size discretely. The right
@@ -2784,9 +2805,10 @@ class Simulator:
         The event-promoted compartment is hidden from species output (GH #71) but
         is emitted as a same-named OBSERVABLE, so V_live(t) is read from there.
         Neither path rescales the raw column. No-op for .net / static /
-        event-resize-free models (empty map) and for the 3-D batch layout. GH #131.
+        event-resize-free models (empty map) and for a 3-D stack, whose rows were
+        remapped before stacking. GH #131.
         """
-        emap = getattr(self._model, "_varvol_event_resize_map", None)
+        emap = getattr(model or self._model, "_varvol_event_resize_map", None)
         if not emap:
             return
         species_names = result._species_names
@@ -3852,9 +3874,10 @@ class Simulator:
 
         logger.info("Batch complete: %d results", len(results))
 
+        # Each row is stamped already, against its own clone (issues #698, #743).
         if squeeze:
-            return self._stamp(Result.squeeze(results))
-        return [self._stamp(r) for r in results]
+            return Result.squeeze(results)
+        return results
 
     def run_replicates(
         self,
@@ -3951,7 +3974,7 @@ class Simulator:
                 cr = sim.run_psa(times, used, self._poplevel, eff_timeout)
             else:
                 cr = sim.run(times, used, eff_timeout)
-            r = self._stamp(Result(cr), seed=used)
+            r = self._stamp(Result(cr), seed=used, model=model)
             self._warn_ssa_boundary(r)
             return r
 
@@ -4007,8 +4030,10 @@ class Simulator:
                 self._model.set_state(invocation_state)
                 self._restore_carryover_state(invocation_carry)
 
+        # Every row is stamped already; stamping the stack again would replace
+        # the rows' own report metadata with the parent's (issue #743).
         if squeeze:
-            return self._stamp(Result.squeeze(results))
+            return Result.squeeze(results)
         return results
 
     # ─── Parameter scan / bifurcation (issue #11) ──────────────────
@@ -4779,8 +4804,10 @@ class Simulator:
             self._restore_carryover_state(invocation_sens)
             self._recreate_interactive_sim()
 
+        # Every row is stamped already; stamping the stack again would replace
+        # the rows' own report metadata with the parent's (issue #743).
         if squeeze:
-            return self._stamp(Result.squeeze(results))
+            return Result.squeeze(results)
         return results
 
     def bifurcate(
@@ -4962,7 +4989,12 @@ class Simulator:
         if self._method == "ode" and (self._sensitivity_params or self._sensitivity_ic):
             result._expression_sens_support = self._expression_sens_support()
             result._ic_sensitivity_seed = row_ic_seed
-        return result
+        # Stamped here, against the clone the row ran on and while it is still
+        # 2-D: a row that writes a compartment size reports through its own
+        # size, not the parent's (issue #743), and a squeezed batch is stacked
+        # from rows already remapped, where stamping the stack skipped every
+        # remap (issue #698).
+        return self._stamp(result, model=clone)
 
     # ─── Parallel sensitivity ───────────────────────────────────────
 

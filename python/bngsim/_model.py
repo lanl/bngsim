@@ -122,6 +122,7 @@ class Model:
         "_ic_write_log",
         "_guarded_functions",
         "_stoich_coo",
+        "_volume_factors_memo",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -305,6 +306,11 @@ class Model:
         self._guarded_functions: list[tuple[str, str, str]] = _guard_function_expressions(_core)
         # Issue #523: the 0-based COO form of the stoichiometry, converted once.
         self._stoich_coo: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+        # Issues #697, #743: (compartment size names, their values, the reported
+        # volume factors read at them), for Simulator._get_volume_factors.
+        self._volume_factors_memo: (
+            tuple[tuple[str, ...], tuple[float, ...], list[float]] | None
+        ) = None
 
     # ─── Factory methods ──────────────────────────────────────────────────
 
@@ -1028,6 +1034,9 @@ class Model:
         m._state_switch_root_conditions = self._state_switch_root_conditions
         m._ssa_reads_clock = self._ssa_reads_clock
         m._ssa_clock_functions = self._ssa_clock_functions
+        # Keyed on the sizes it was read at, so a clone that writes one reads it
+        # again (issue #743).
+        m._volume_factors_memo = self._volume_factors_memo
         # Issue #11: carry named concentration snapshots to the clone, each a
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)
