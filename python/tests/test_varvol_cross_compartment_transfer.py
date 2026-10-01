@@ -355,6 +355,61 @@ def test_a_transfer_that_mixes_conversion_factors(tmp_path, rules, v_a):
     np.testing.assert_allclose(_final_of(bngsim.Model.from_sbml(str(path))), want, rtol=1e-7)
 
 
+@pytest.mark.parametrize(
+    ("stoich_b", "factors"),
+    [(1.0, {"A": 2.0, "B": 3.0, "H": 1.5}), (1.5, {})],
+    ids=["mixed-conversion-factors", "non-integer-stoichiometry"],
+)
+def test_a_concentration_and_an_amount_changed_in_one_changing_compartment(
+    tmp_path, stoich_b, factors
+):
+    """B is a concentration and H an amount, both in C2, which grows, and one
+    reaction makes both. Written out one species at a time, B's row is divided
+    by C2's live size and H's by its size at load. The two functions were
+    registered under one name and the second was dropped, so both rows divided
+    by the same one: [B](5) = 0.6154 for 0.5624 with a stoichiometry of 1.5.
+    With mixed conversion factors the model did not load before this fix, and
+    a first cut of it gave 0.6196 for 0.5802.
+
+    H is reported over the size C2 has, like every species."""
+    import antimony
+    import libsbml
+
+    antimony.clearPreviousLoads()
+    antimony.loadAntimonyString(
+        "compartment C1 = 1, C2 = 2; C2' = 0.4;\n"
+        "species A in C1; species B in C2; substanceOnly species H in C2;\n"
+        "A = 1; B = 0.6; H = 0.4; k = 0.7; k2 = 0.3;\n"
+        f"J1: A -> {stoich_b!r} B + H; k*A - k2*B*H;\n"
+    )
+    doc = libsbml.readSBMLFromString(antimony.getSBMLString(antimony.getMainModuleName()))
+    model = doc.getModel()
+    for sid, value in factors.items():
+        factor = model.createParameter()
+        factor.setId(f"cf{sid}")
+        factor.setValue(value)
+        factor.setConstant(True)
+        model.getSpecies(sid).setConversionFactor(f"cf{sid}")
+    path = tmp_path / "m.xml"
+    path.write_text(libsbml.writeSBMLToString(doc))
+
+    def rhs(t, n):
+        flux = 0.7 * n[0] - 0.3 * (n[1] / (2.0 + 0.4 * t)) * n[2]
+        return [
+            -factors.get("A", 1.0) * flux,
+            stoich_b * factors.get("B", 1.0) * flux,
+            factors.get("H", 1.0) * flux,
+        ]
+
+    n = solve_ivp(rhs, (0.0, 5.0), [1.0, 1.2, 0.4], rtol=1e-12, atol=1e-14).y[:, -1]
+    run = bngsim.Simulator(bngsim.Model.from_sbml(str(path)), method="ode").run(
+        sample_times=[0.0, 2.5, 5.0], rtol=1e-10, atol=1e-12
+    )
+    names = list(run.species_names)
+    got = [np.asarray(run.species)[-1][names.index(sid)] for sid in "ABH"]
+    np.testing.assert_allclose(got, [n[0], n[1] / 4.0, n[2] / 4.0], rtol=1e-7)
+
+
 def test_the_certified_monomial_keeps_the_emission_its_ssa_correction_is_for():
     """Control. An irreversible monomial between the same two compartments is the
     one shape the SSA can correct, and its correction is written for the

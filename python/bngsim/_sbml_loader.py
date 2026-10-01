@@ -7231,11 +7231,17 @@ def _build_model_from_sbml_doc(doc):
                 # (#170) A static V=1 compartment that is a writable PARAMETER
                 # also gets the divide, so the write reaches this path; ÷1.0 is
                 # exact, so no number moves at the nominal point.
+                # One function per divisor. A reaction that changes a
+                # concentration and an amount-valued species in the same
+                # changing compartment needs both, and under one name the
+                # second registration was dropped: both rows then divided by
+                # whichever came first.
                 if comp in vstatic_divide_comps and species_hosu.get(sid, False):
                     divisor = repr(float(vol))
+                    vf_name = f"_vds_{rid}_{comp}"
                 else:
                     divisor = _safe_name(comp)
-                vf_name = f"_vd_{rid}_{comp}"
+                    vf_name = f"_vd_{rid}_{comp}"
                 with contextlib.suppress(RuntimeError):
                     builder.add_function(vf_name, f"{base_func}/{divisor}")
                 use_func = vf_name
