@@ -7,6 +7,9 @@
   whose term is a small part of the value (`D + q*Y`, `q = 1e-9`) gave 0 for
   `Y`. Where the narrow difference keeps fewer than nine digits it is now taken
   again over wider steps, up to a millionth of the value, for as long as the
-  value is straight across each and each agrees with the one before. A value
-  that bends inside every wider step (`D + max(0, X - K)` near `K`, a
-  saturating law, a staircase) keeps the narrow difference, as before.
+  value is straight across each, the difference over half of it is the same,
+  and it agrees with the one before. The step kept is the last a wider one
+  agreed with. A value that bends inside every wider step
+  (`D + max(0, X - K)` near `K`, a saturating law) keeps the narrow
+  difference, as before, and so does a staircase with a tread over about 16
+  ulp of the value. A finer staircase is read as its slope.

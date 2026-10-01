@@ -17,7 +17,9 @@ over wider steps, climbing from the narrow one by factors of a hundred to a
 millionth of the value. A step passes where the value is straight across it,
 the difference over half the step is the same, and it agrees with the step
 before it, each to rounding. The climb ends at the first step that fails, and
-the one kept is the last that the step after it agreed with.
+the one kept is the last that the step after it agreed with. The slope kept is
+then asked at the finest steps it can show at, a few ulp of the value, and
+where it does not show there the narrow difference stands.
 
 Every expected value is a closed form.
 """
@@ -144,7 +146,7 @@ def test_a_bend_inside_the_widest_step_is_not_differenced_through(value, left):
     is at rounding or 1e-9: Z(6) = D whatever a is. A millionth of the value is
     1e-4, wider than the bend, and a first cut that took any wide difference
     within the narrow one's rounding returned −1.35, or −15000 for the step.
-    The value is not straight across that step, and the next one down is."""
+    The value is not straight across that step, so the climb ends under it."""
     _z, s = _end_sens(RUN_DOWN + f"E1: at (time >= 3): Z = {value}\n", ["a"], "Z", left=left)
     assert s[0] == pytest.approx(0.0, abs=1e-9)
 
@@ -202,9 +204,9 @@ def test_a_ripple_the_widest_step_straddles():
     """Control. Z = D + X + 1e-5·sin(2π·(X − 1e-3)/1e-4) at X = 1e-3. The widest step,
     1e-4, is one period of the ripple: the value is straight across its three
     points and the difference over it is 1, where the slope at the state is
-    1 + 2π/10. That step is passed over because it does not agree with the
-    narrow difference, and the next one down, a hundredth of the period, is
-    kept: dZ/da = −3·(1 + 2π/10). Kept on straightness alone it was −3."""
+    1 + 2π/10. That step fails because it does not agree with the step before
+    it, and the one kept is the last a wider one agreed with:
+    dZ/da = −3·(1 + 2π/10). Kept on straightness alone it was −3."""
     text = RUN_DOWN + "E1: at (time >= 3): Z = D + X + 1e-5*sin(2*pi*(X - 1e-3)/1e-4)\n"
     _z, s = _end_sens(text, ["a"], "Z", left=1e-3)
     assert s[0] == pytest.approx(-3.0 * (1.0 + 2.0 * np.pi / 10.0), rel=1e-5)
@@ -228,6 +230,9 @@ READ = (
         ("D + 0.5*X*abs(X)", 1e-9, 1e9),
         ("D + 0.5*X*abs(X)", 1e-9, 2e9),
         ("D + X^3", 0.0, 1e5),
+        ("D + 1e-5*floor(X/1e-5 + 0.5)", 0.0, 1e9),
+        ("D + floor(X + 0.5)", 0.0, 1e14),
+        ("D + max(0, X - 1e-5) - max(0, -X - 1e-5)", 0.0, 1e9),
     ],
     ids=[
         "staircase",
@@ -236,6 +241,9 @@ READ = (
         "odd-square",
         "odd-square-2",
         "cube",
+        "tread-on-the-ladder",
+        "tread-of-64-ulp",
+        "deadband-of-84-ulp",
     ],
 )
 def test_a_staircase_or_an_odd_term_is_not_taken_for_a_slope(value, x0, D):
@@ -244,7 +252,14 @@ def test_a_staircase_or_an_odd_term_is_not_taken_for_a_slope(value, x0, D):
     straight across that step and agrees with a narrow difference that kept no
     digits: ``D + floor(X)`` came back 1, and ``D + X·|X|/2`` came back 500. An
     odd term is straight too, and is caught by the difference over half the
-    step, or by the step after."""
+    step, or by the step after.
+
+    Climbed from below, a staircase whose tread lies on the ladder is flat at
+    every step under the tread, where it agrees with anything, and is its slope
+    at every step from the tread up: ``D + K·floor(X/K + 0.5)`` with K = 1e-5,
+    84 ulp of D, came back 1 from a later cut. So did a tread of 64 ulp, and a
+    deadband. The slope kept is asked at the finest steps it can show at, and
+    a tread wider than about 16 ulp of the value does not show there."""
     _z, s = _end_sens(READ.format(value=value, x0=x0, D=D), ["x0"], "Z")
     assert s[0] == pytest.approx(0.0, abs=1e-6)
 

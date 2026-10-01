@@ -5746,7 +5746,9 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // reach is asked for its jump. The event's own trigger time may be among
     // them, and has none. A record's own stop is among them too, and so is
     // anything fixed within one instant of a record on the same clock: those
-    // are the record's to answer for, above, where the detector found them.
+    // are the record's to answer for, above, where the detector found them. A
+    // fixed crossing exactly a nudge from a record is taken for the record's
+    // too, and is not asked.
     bool event_moves = false;
     for (int c = 0; c < n_sens && !event_moves; ++c) {
         event_moves = moves(c, tau[static_cast<size_t>(c)]);
@@ -5833,6 +5835,15 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // difference that kept no digits at all: `D + floor(X)` with D = 1e9 came
     // back 1 for 0.
     //
+    // Climbed from below, a staircase is still straight where its tread lies
+    // on the ladder: `D + K·floor(X/K + 0.5)` with K = 1e-5 is flat at every
+    // step under K, where it reads 0 and agrees with anything, and is its
+    // slope at every step from K up. So the difference kept is asked once more
+    // at the finest steps it can show at, a few ulp of the value: a line shows
+    // there, and a tread wider than that does not. Where it does not show, the
+    // narrow difference stands. A staircase finer than about 16 ulp of the
+    // value is its slope as far as the value can be read.
+    //
     // `value_at(offset)` evaluates the value with the variable moved by the
     // offset, and leaves the evaluator there.
     auto widen_difference = [&](const std::function<double(double)> &value_at, double h,
@@ -5841,6 +5852,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             return;
         }
         const double eps = std::numeric_limits<double>::epsilon();
+        const double narrow = d;
+        const double narrow_rounding = rounding;
         std::vector<double> steps;
         for (double wide = 1e-6 * value_size; wide > 4.0 * h; wide *= 1e-2) {
             steps.push_back(wide);
@@ -5848,6 +5861,9 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         // The last step to pass, which the next has still to agree with.
         double last = d;
         double last_rounding = rounding;
+        double last_width = h;
+        double width = h; // of the difference kept
+        bool climbed = true;
         for (auto step = steps.rbegin(); step != steps.rend(); ++step) {
             const double wide = *step;
             const double w_hi = value_at(wide);
@@ -5861,15 +5877,35 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             if (!(std::isfinite(d_wide) && std::fabs(bend) <= 16.0 * eps * value_size &&
                   std::fabs(d_wide - d_half) <= half_rounding + 1e-9 * std::fabs(d_wide) &&
                   std::fabs(d_wide - last) <= last_rounding + 1e-9 * std::fabs(d_wide))) {
-                return;
+                climbed = false;
+                break;
             }
             d = last;
             rounding = last_rounding;
+            width = last_width;
             last = d_wide;
             last_rounding = 2.0 * eps * value_size / wide;
+            last_width = wide;
         }
-        d = last;
-        rounding = last_rounding;
+        if (climbed) {
+            d = last;
+            rounding = last_rounding;
+            width = last_width;
+        }
+        if (d == narrow || d == 0.0) {
+            return;
+        }
+        // The slope kept, at the finest steps it can show at.
+        const double unit = eps * value_size;
+        const double fine = 4.0 * unit / std::fabs(d);
+        for (int k = 1; k <= 4 && 4.0 * fine < width; ++k) {
+            const double seen = value_at(k * fine) - value_at(-k * fine);
+            if (!(std::fabs(seen - 2.0 * k * fine * d) <= 8.0 * unit)) {
+                d = narrow;
+                rounding = narrow_rounding;
+                return;
+            }
+        }
     };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;

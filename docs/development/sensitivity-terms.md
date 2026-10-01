@@ -205,8 +205,9 @@ read by its isolation bump (#375). The run is refused where either disagrees.
 
 - Oracle: `event-beside-clock-switch`, `event-coincident-with-clock-switch`.
 - **Open:** a `floor` step on a fitted switch (#944), a state-dependent switch
-  within the integration tolerance of an event (#945), and a state-dependent
-  switch and a time switch on one instant (#946).
+  within the integration tolerance of an event (#945), a state-dependent
+  switch and a time switch on one instant (#946), and two time switches of one
+  rate law on one instant with no event (#951).
 
 ## 6. A counter clock
 

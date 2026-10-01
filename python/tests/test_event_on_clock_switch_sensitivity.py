@@ -63,7 +63,7 @@ def test_a_reset_and_a_switched_rate_law_on_one_time(cmp, trig, keep):
         X(T) = c·a·tau + a·u        Y(T) = k·(c·a·tau·u + a·u²/2)
 
     With ``>=`` in both, dY/dtau came out 0 for −3 at keep = 0 and −1.5 for −3
-    at keep = 0.5. The other three spellings were already right: with ``>`` in
+    at keep = 0.5. The other three spellings are controls, already right: with ``>`` in
     the rate law the flows happened to be read on the before-branch, and with
     ``>`` in the trigger the switch's stop is taken first and the event fires a
     few ulp later, past it."""
@@ -621,9 +621,9 @@ def test_back_to_back_infusions_with_a_bolus_on_the_boundary(params):
 def test_an_onset_of_second_order_under_a_dose_from_zero():
     """Control. The rate law turns on at the literal 3 as k·X·(time − 3)², and
     X is 0 until a dose at tau = 3. Nothing steps: dY/dtau = −k·D·(tau − 3)² = 0.
-    The second difference of the law is 0 before the dose and 2·k·D·q² after,
-    all of it the onset's curvature, and it has to stay under what the outer
-    reads allow."""
+    After the dose the law reads k·D·q² a distance q past the switch, all of it
+    the onset's curvature. The three reads on that side close in on the switch
+    by a factor of four each, and the limit they are carried to is 0."""
     text = (
         "species X, Y; X = 0; Y = 0; k = 0.5; tau = 3\n"
         "J1: -> Y; piecewise(k*X*(time - 3)^2, time >= 3, 0)\n"
