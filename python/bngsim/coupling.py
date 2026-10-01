@@ -949,6 +949,15 @@ def make_subset_model(
                 "make_subset_model cannot reconstruct amount_valued species "
                 f"({s['name']!r}, GH #75); build the subset with ModelBuilder"
             )
+    if getattr(core, "has_baseline_sensitivity_seed", False):
+        # reset() on the model restores that dx/dθ with the state; the subset
+        # would reset to the state with dx/dθ = 0, a fresh start it is not.
+        raise NotImplementedError(
+            "make_subset_model cannot carry the forward-sensitivity seed saved with "
+            "this model's baseline (save_concentrations() after a sensitivity "
+            "pre-equilibration, issue #81); build the subset before saving, or with "
+            "ModelBuilder"
+        )
 
     params = cgd["parameters"]
     species = cgd["species"]
@@ -976,22 +985,58 @@ def make_subset_model(
     b = ModelBuilder()
     b.set_compute_conservation_laws(compute_conservation_laws)
 
-    for p in params:
+    # What a write to a parameter does, parallel to `params`. Without these a
+    # compartment write reached the subset's rate laws but not its storage
+    # convention or its initialAmount divide (the model it came from re-derives
+    # both), and a write the model refuses went through.
+    n_p = len(params)
+    comp_size = list(getattr(core, "param_is_compartment_size", [False] * n_p))
+    internal = list(getattr(core, "param_is_internal", [False] * n_p))
+    refused = list(getattr(core, "param_volume_write_refused", [False] * n_p))
+    if not (len(comp_size) == len(internal) == len(refused) == n_p):
+        raise RuntimeError("make_subset_model: parameter flags do not match codegen_data")
+    for j, p in enumerate(params):
         b.add_parameter(
-            p["name"], float(p["value"]), p.get("expression", ""), not p.get("is_const", True)
+            p["name"],
+            float(p["value"]),
+            p.get("expression", ""),
+            not p.get("is_const", True),
+            is_compartment_size=bool(comp_size[j]),
+            is_internal=bool(internal[j]),
         )
+        if refused[j]:
+            b.set_param_volume_write_refused(p["name"])
     for i, s in enumerate(species):
         b.add_species(
             s["name"],
             float(init[i]),
             bool(s.get("fixed", False)) or s["name"] in fixed_set,
             float(s.get("volume_factor", 1.0)),
+            reported=bool(s.get("reported", True)),
         )
+        # What else a species carries into the engine. Dropping these ran a
+        # subset differently from the model it came from, silently: a rate
+        # constant an event assigns (a continuous slot) rounded to a whole
+        # number under SSA again, and a compartment write left the storage
+        # convention, and an initialAmount's amount/V, at the load-time size.
+        if s.get("continuous", False):
+            b.set_species_continuous(i)
+        if int(s.get("volume_param_idx0", -1)) >= 0:
+            b.set_species_volume_param(
+                i, int(s["volume_param_idx0"]), float(s.get("initial_amount", float("nan")))
+            )
+        if int(s.get("ode_live_volume_idx0", -1)) >= 0:
+            b.set_species_ode_live_volume(i, int(s["ode_live_volume_idx0"]))
+        if s.get("report_rateof_amount", False):
+            b.set_species_rateof_amount(i)
+    # A species whose initial value names a parameter (#79) follows a write to it.
+    for si, pi in getattr(core, "species_ic_param_refs", []):
+        b.add_species_param_ref(int(si), params[int(pi)]["name"])
     for f in functions:
         b.add_function(f["name"], f["expression"])
 
     param_names = [p["name"] for p in params]
-    for ri in kept_idx:
+    for k_new, ri in enumerate(kept_idx):
         r = reactions[ri]
         rtype = r["type"]
         if rtype not in _REBUILDABLE_RXN_TYPES:
@@ -1042,7 +1087,39 @@ def make_subset_model(
             # excluded from SSA entirely).
             bool(r.get("ode_only", False)),
         )
+        # (#170) The SSA propensity reads the compartment size live; and the SSA
+        # falling factorial of a law evaluated as written. Both are exported
+        # only when set.
+        if int(r.get("ssa_volume_param_idx0", -1)) >= 0:
+            b.set_reaction_ssa_volume_param(k_new, int(r["ssa_volume_param_idx0"]))
+        if r.get("ssa_falling_factorial"):
+            b.set_reaction_ssa_falling_factorial(
+                k_new, [(int(si), int(mm)) for si, mm in r["ssa_falling_factorial"]]
+            )
     for o in observables:
         b.add_observable(o["name"], [(int(i), float(f)) for i, f in o["entries"]])
 
-    return Model(_core=b.build())
+    new_core = b.build()
+    if getattr(core, "ic_baseline_saved", False):
+        # save_concentrations() made the current state what reset() returns to,
+        # and stopped a parameter or compartment write re-deriving the initial
+        # values from their declarations. The builder resolves each declaration
+        # afresh (A() A0 back to A0), so save the model's baseline over it.
+        new_core.set_state(np.asarray(init, dtype=np.float64))
+        new_core.save_concentrations()
+    sub = Model(_core=new_core)
+    # What the loader recorded about the model that the engine does not hold:
+    # the SSA/ODE refusals (SsaIssue; a reaction the subset drops still refuses,
+    # which errs loudly), and the report maps, which are keyed by species and
+    # every species is kept.
+    sub._ssa_issues = list(getattr(m, "_ssa_issues", []) or [])
+    for attr in (
+        "_ar_report_map",
+        "_varvol_conc_map",
+        "_varvol_amount_map",
+        "_varvol_ar_conc_map",
+        "_varvol_ar_amount_map",
+        "_varvol_event_resize_map",
+    ):
+        setattr(sub, attr, dict(getattr(m, attr, {}) or {}))
+    return sub

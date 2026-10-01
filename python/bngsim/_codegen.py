@@ -10374,6 +10374,9 @@ def _canon_update(h, obj) -> None:
 # by which a value *can* still reach the emitted source — the issue #68
 # switch-condition gate — is carried as a verdict by switch_gate_cache_digest.
 _CODEGEN_KEY_DROPPED_PARAM_FIELDS = ("value",)
+# A declared initialAmount is exported for make_subset_model; no emitter reads
+# it, and as a value it would split one source into a key per initial condition.
+_CODEGEN_KEY_DROPPED_SPECIES_FIELDS = ("initial_amount",)
 
 
 def compute_model_codegen_hash(
@@ -10394,7 +10397,8 @@ def compute_model_codegen_hash(
     it calls read off the model:
 
     * ``codegen_data()`` minus each parameter's current *value* (see
-      ``_CODEGEN_KEY_DROPPED_PARAM_FIELDS``) — this carries the attachment
+      ``_CODEGEN_KEY_DROPPED_PARAM_FIELDS``) and each species' declared
+      ``initial_amount`` (``_CODEGEN_KEY_DROPPED_SPECIES_FIELDS``) — this carries the attachment
       vector ``is_const``, which is live state a ``set_param`` on a derived
       parameter moves (issue #188) and which the source genuinely depends on;
     * ``codegen_jacobian_plan()`` — including ``available``, so a model whose
@@ -10424,6 +10428,10 @@ def compute_model_codegen_hash(
     data["parameters"] = [
         {k: v for k, v in p.items() if k not in _CODEGEN_KEY_DROPPED_PARAM_FIELDS}
         for p in data["parameters"]
+    ]
+    data["species"] = [
+        {k: v for k, v in sp.items() if k not in _CODEGEN_KEY_DROPPED_SPECIES_FIELDS}
+        for sp in data["species"]
     ]
     ctx = core.functional_jacobian_context()
     plan = core.codegen_jacobian_plan()

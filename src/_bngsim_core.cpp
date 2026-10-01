@@ -2067,6 +2067,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     // write `p[k]` where it used to write the number. -1 ⇒ no
                     // parameter (a `.net` species, or a promoted compartment).
                     sd["volume_param_idx0"] = s.volume_param_idx0;
+                    // The declared amount a volume write re-divides (#170). Only
+                    // when set, so a model without one keeps its codegen key.
+                    if (!std::isnan(s.initial_amount))
+                        sd["initial_amount"] = s.initial_amount;
                     sp_list.append(sd);
                 }
                 d["species"] = sp_list;
@@ -2140,6 +2144,16 @@ PYBIND11_MODULE(_bngsim_core, m) {
                         live_terms.append(td);
                     }
                     rd["ssa_live_volume_terms"] = live_terms;
+                    // Exported only when set, so a model without them keeps its
+                    // structural codegen key (the key hashes this whole dict).
+                    if (r.ssa_volume_param_idx0 >= 0)
+                        rd["ssa_volume_param_idx0"] = r.ssa_volume_param_idx0; // #170
+                    if (!r.ssa_falling_factorial.empty()) {
+                        py::list ff;
+                        for (const auto &[si, m] : r.ssa_falling_factorial)
+                            ff.append(py::make_tuple(si, m));
+                        rd["ssa_falling_factorial"] = ff;
+                    }
                     rd["ode_only"] = r.ode_only;
                     // Convert 1-based indices to 0-based, filter nulls (0 in 1-based)
                     py::list reactants;
@@ -2703,6 +2717,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "parameter or compartment, or an assignment- or rate-rule target) rather than a "
              "molecule count, so SSA/PSA do not round it to a whole number. No-op if "
              "species_idx0 is out of range.")
+        .def("set_reaction_ssa_falling_factorial",
+             &bngsim::ModelBuilder::set_reaction_ssa_falling_factorial, py::arg("rxn_idx0"),
+             py::arg("terms"),
+             "Give a Functional reaction an SSA falling factorial: terms is a list of "
+             "(0-based species index, m) for each species its kinetic law holds to the "
+             "power m >= 2, so the SSA propensity takes n(n-1)...(n-m+1) where the law has "
+             "n^m. The ODE path ignores it. No-op if rxn_idx0 is out of range.")
         .def("add_reaction_live_volume_term", &bngsim::ModelBuilder::add_reaction_live_volume_term,
              py::arg("rxn_idx0"), py::arg("live_idx0"), py::arg("v_static"), py::arg("exp"),
              "GH #144 (case 4): append a cross-compartment SSA live-volume term to a "

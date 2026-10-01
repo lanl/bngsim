@@ -82,7 +82,10 @@ ODE one. Two things differ from the ODE rate of the same reaction:
   concentration in a compartment of size `V`, and `n = x` for a `.net` model.
   An SBML kinetic law that bngsim does not read as mass action (a boundary
   reactant, a law across compartments of different sizes, an assignment-rule
-  compartment) is evaluated as written, with no falling factorial;
+  compartment) is evaluated as written, but when it is a product of its
+  species a species it reads `m ≥ 2` times still takes the falling factorial.
+  A law that writes its own combinatorics (`k*X*(X-1)/2`) or reads a species
+  anywhere but as a factor is left exactly as written;
 - a reaction in a compartment of volume `V` is multiplied by `V`, converting
   the ODE's storage-units rate to a per-event rate.
 
