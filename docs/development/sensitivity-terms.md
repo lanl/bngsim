@@ -175,12 +175,18 @@ no jump.
   within `switch_t_eps = 1e-9·max(1, horizon)`.
 - State crossings: `state_switch_conditions` (`_switch_sensitivity.py`) finds
   them, and `apply_state_switch_sensitivity_jump` applies them.
-- Oracle: `time-switch`, `state-switch`.
-- **Open:** a switch that lies within that window after an output time or other
-  stop is jumped at the wrong instant (#737,
-  `time-switch-just-after-an-output`). The branches-meet test compares the jump
-  with `1e-6·max|f|` over *every* species, so one large, unrelated flux makes a
-  real jump read as continuous (#763, `state-switch-beside-a-large-pool`).
+- Oracle: `time-switch`, `time-switch-just-after-an-output`, `state-switch`,
+  `state-switch-beside-a-large-pool`.
+
+Whether a state switch's branches meet is read from the flux of the reactions
+that read the switch alone (#763), at two probes on each side of the surface.
+Both branches are extended to the root, and the difference of the extensions is
+the branch change. It is a jump unless it is within the rounding of where the
+root is, or of the flux's operands: what one ulp of each species the residual
+reads moves that flux by (#917). A flux that vanishes on both branches, the BNGL
+signed-rate idiom, is under that; a jump of 3 beside a constant of 1e14 in the
+same rate law is not. Where the far probes cross another switch the near pair is
+read as it stands, against `1e-6` of the rate that drives the crossing.
 
 **An event and a switch at the same instant.** `f⁻` is the before-branch at
 `x⁻`, and `f⁺` is the after-branch at `x⁺`:
