@@ -156,7 +156,7 @@ def test_a_pair_that_tau_pulls_apart_is_refused(event, switch):
     ("event", "switch"), [("3", "tau"), ("tau", "3")], ids=["fixed-event", "fixed-switch"]
 )
 def test_the_same_pair_runs_for_a_column_that_moves_neither(event, switch):
-    """With only `a` requested, nothing moves either time, and
+    """Control. With only `a` requested, nothing moves either time, and
     Y(T) = k·a·(T − tau)²/2."""
     x, s = _sens(APART.format(event=event, switch=switch), ["a"])
     assert x["Y"] == pytest.approx(0.5 * 2.0 * 9.0 / 2, rel=1e-8)
@@ -214,6 +214,36 @@ def test_a_pair_that_commutes_runs(bolus, infusion, want):
     assert s["X"][0] == pytest.approx(want, rel=1e-6)
 
 
+TROUGH = (
+    "species X; X = {x0}; kd = 0.004; R = 1.5; D = 100; tau = 3\n"
+    "J0: X -> ; kd*X\n"
+    "J1: -> X; piecewise(R, time >= {infusion}, 0)\n"
+    "E1: at (time >= {bolus}): X = X + D\n"
+)
+
+
+@pytest.mark.parametrize("x0", ["0", "0.001"])
+@pytest.mark.parametrize(
+    ("bolus", "infusion", "want"),
+    [
+        ("3", "tau", -1.5 * np.exp(-0.004 * 3.0)),
+        ("tau", "3", 100.0 * 0.004 * np.exp(-0.004 * 3.0)),
+    ],
+    ids=["fixed-bolus", "fixed-infusion-start"],
+)
+def test_a_bolus_into_an_empty_compartment_commutes_too(x0, bolus, infusion, want):
+    """The same pair with a dose of 100 into a compartment holding nothing, or
+    0.001. An earlier cut carried the switch's jump through the event by a
+    Jacobian differenced over a millionth of the state, which at a state near
+    zero beside a dose of 100 left 1e-5 of the dose in it, and refused.
+
+    The fixed bolus is a control. The moving one was off by 1e-5 before: the
+    event's own jump differenced the dose the same way (see
+    test_event_assignment_derivative_step.py)."""
+    _x, s = _sens(TROUGH.format(x0=x0, bolus=bolus, infusion=infusion), ["tau"])
+    assert s["X"][0] == pytest.approx(want, rel=1e-6)
+
+
 SMOOTH = (
     "species X, Y; X = 1; Y = 0; k = 0.5; tau = 3\n"
     "J1: -> Y; {law}\n"
@@ -228,8 +258,10 @@ SMOOTH = (
         ("k*X*sin(time)", -0.5 * np.sin(3.0)),
         ("k*X*(1 + sin(200*time))", -0.5 * (1.0 + np.sin(600.0))),
         ("piecewise(k*(time - 3), time >= 3, 0)", 0.0),
+        ("piecewise(k*X*(time - 3)^2, time >= 3, 0)", 0.0),
+        ("k*X*max(0, time - 3)^2", 0.0),
     ],
-    ids=["through-zero", "sine", "fast-sine", "continuous-ramp"],
+    ids=["through-zero", "sine", "fast-sine", "continuous-ramp", "square-onset", "max-onset"],
 )
 def test_a_smooth_rate_law_is_not_taken_for_a_switch(law, want):
     """Control. Nothing jumps at the event's instant: a rate law that passes
@@ -238,7 +270,9 @@ def test_a_smooth_rate_law_is_not_taken_for_a_switch(law, want):
 
     An earlier cut read the right-hand side a nudge either side of the instant
     and refused where it changed by more than 1e-6 of its size, which a rate
-    near zero or a fast one does."""
+    near zero or a fast one does. A later one compared against the flows it
+    had read, which an onset of second order leaves at 1e-26: rounding beside
+    rounding."""
     _x, s = _sens(SMOOTH.format(law=law), ["tau"])
     assert s["Y"][0] == pytest.approx(want, rel=1e-5, abs=1e-7)
 
@@ -279,6 +313,43 @@ def test_a_shift_that_is_rounding_is_not_a_disagreement():
     assert s["Y"][1] == pytest.approx(0.0, abs=1e-7)
 
 
+def test_a_trigger_time_no_requested_parameter_moves():
+    """Control. The same trigger beside a rate law that switches at the literal
+    3, with only b requested. Nothing requested moves either time, the event's
+    1e-17 is no shift, and Y does not depend on b. An earlier cut took any
+    nonzero shift for a moving event and refused."""
+    text = (
+        "species X, Y, U; X = 0; Y = 0; U = 0; a = 2; k = 0.5; b = 1.5; tau = 3\n"
+        "J0: -> X; a\n"
+        "JU: -> U; b\n"
+        "J1: -> Y; piecewise(k*X, time >= 3, 0)\n"
+        "E1: at (U >= b*tau): X = 0.5*X\n"
+    )
+    x, s = _sens(text, ["b"])
+    a, k, tau, c = 2.0, 0.5, 3.0, 0.5
+    u = T - tau
+    assert x["Y"] == pytest.approx(k * (c * a * tau * u + a * u * u / 2), rel=1e-8)
+    assert s["Y"][0] == pytest.approx(0.0, abs=1e-7)
+
+
+def test_a_trigger_time_differenced_beside_values_near_a_thousand():
+    """Control. U starts at 1000 and the trigger is U >= b·tau + 1000, so the
+    event is at tau and its ∂t*/∂tau is a difference of values near 1000: 1 to
+    about nine digits, beside the switch's exact 1. An earlier cut held the
+    two to 1e-9 of each other and refused."""
+    text = (
+        "species X, Y, U; X = 0; Y = 0; U = 1000; a = 2; k = 0.5; b = 1.5; tau = 3\n"
+        "J0: -> X; a\n"
+        "JU: -> U; b\n"
+        "J1: -> Y; piecewise(k*X, time >= tau, 0)\n"
+        "E1: at (U >= b*tau + 1000): X = 0.5*X\n"
+    )
+    _x, s = _sens(text, ["tau"])
+    a, k, tau, c = 2.0, 0.5, 3.0, 0.5
+    u = T - tau
+    assert s["Y"][0] == pytest.approx(k * (c * a * u - c * a * tau - a * u), rel=1e-5)
+
+
 KINKS = {
     # The rate law reads X and switches at the literal 3. X is 0 before the
     # dose, so the switch's jump is 0 at the pre-event state and k·D after.
@@ -295,6 +366,27 @@ KINKS = {
         "J1: -> Y; piecewise(k*X, time >= 3, 0)\n"
         "J2: -> W; 1e8\n"
         "E1: at (time >= tau): X = 0\n",
+        "tau",
+    ),
+    # The same flux in the switched law's own row.
+    "beside-a-large-flux-in-its-row": (
+        "species X, Y; X = 0; Y = 0; a = 2; k = 0.5; tau = 3\n"
+        "J0: -> X; a\n"
+        "J1: -> Y; 1e8 + piecewise(k*X, time >= 3, 0)\n"
+        "E1: at (time >= tau): X = 0\n",
+        "tau",
+    ),
+    # Two counters cross their thresholds together. The run stops there once,
+    # for the first; the second is the one the event does not commute with.
+    "second-of-two-fixed-counters": (
+        "species X, Y, W, C1, C2; X = 0; Y = 0; W = 0; C1 = 0; C2 = 1\n"
+        "a = 2; k = 0.5; q = 0.7; tau = 3\n"
+        "J0: -> X; a\n"
+        "Jc1: -> C1; 1\n"
+        "Jc2: -> C2; 1\n"
+        "J1: -> Y; piecewise(k, C1 >= 3, 0)\n"
+        "J2: -> W; piecewise(q*X, C2 >= 4, 0)\n"
+        "E1: at (time >= tau): X = 0.5*X\n",
         "tau",
     ),
     "strict-trigger": (
@@ -365,6 +457,66 @@ def test_a_fixed_switch_an_ulp_before_the_shared_time_is_refused(cmp):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["t1"])
     with pytest.raises(Exception, match="shares its instant with another switch"):
         sim.run(sample_times=[0.0, 0.2, 0.5, 0.75], rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("ulps", [-700, -300, 150, 300, 700])
+def test_a_fitted_switch_near_the_event_does_not_hide_a_fixed_one(ulps):
+    """A fixed switch at the literal 3 on W, the event at tau = 3, and a fitted
+    switch on Y a few hundred ulp away that moves with the event. The fixed one
+    is a kink in tau: X is halved before W's law turns on, or after. An earlier
+    cut skipped the search for a fixed switch wherever a fitted one was in
+    reach, and returned dW/dtau from one side."""
+    text = (
+        "species X, Y, W; X = 0; Y = 0; W = 0; a = 2; k = 0.5; q = 0.7; tau = 3; off = 0\n"
+        "J0: -> X; a\n"
+        "J1: -> Y; piecewise(k*X, time >= tau + off, 0)\n"
+        "J2: -> W; piecewise(q*X, time >= 3, 0)\n"
+        "E1: at (time >= tau): X = 0.5*X\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    model.set_param("off", ulps * float(np.spacing(3.0)))
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(Exception, match="shares its instant with another switch"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("switch", "event"),
+    [("tau + 1e10*z", "3 + 1e10*z"), ("3 + 1e10*z", "tau + 1e10*z")],
+    ids=["tau-moves-the-switch", "tau-moves-the-event"],
+)
+def test_one_column_with_a_large_shift_does_not_hide_another(switch, event):
+    """z = 0 moves both times by 1e10 per unit and tau moves one of them by 1.
+    Under tau they come apart, and that is a kink. An earlier cut compared two
+    shifts against the largest shift of any column, where 1 beside 0 is nothing
+    beside 1e10, and returned a number."""
+    text = (
+        "species X, Y; X = 0; Y = 0; a = 2; k = 0.5; tau = 3; z = 0\n"
+        "J0: -> X; a\n"
+        f"J1: -> Y; piecewise(k*X, time >= {switch}, 0)\n"
+        f"E1: at (time >= {event}): X = 0\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau", "z"])
+    with pytest.raises(Exception, match="issue #767"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("tau", [1e-3, 1e-9])
+def test_a_fixed_switch_under_an_event_early_in_time_is_refused(tau):
+    """The same kink at t = 1e-3 and 1e-9. Whether a time moves is asked against
+    the time itself: per unit relative change of tau the event moves by tau,
+    which is small only beside a time unit."""
+    text = (
+        f"species X, Y; X = 0; Y = 0; a = 2; k = 0.5; tau = {tau!r}\n"
+        "J0: -> X; a\n"
+        f"J1: -> Y; piecewise(k*X, time >= {tau!r}, 0)\n"
+        "E1: at (time >= tau): X = 0\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(Exception, match="at a fixed time.*issue #767"):
+        sim.run(sample_times=[0.0, 0.5 * tau, 2.0 * tau, 3.0 * tau], rtol=1e-10, atol=1e-30)
 
 
 COUNTER = (

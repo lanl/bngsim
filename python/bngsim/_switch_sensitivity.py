@@ -2829,6 +2829,19 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
     window in one phase and outside it in another, and stopping at a time that
     phase has no crossing at is a pure perturbation of its stepping.
     """
+    return merge_crossing_stops(all_fixed_crossings(core, t_start, t_end, conditions))
+
+
+def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> list[CrossingStop]:
+    """Every crossing :func:`fixed_crossing_stops` resolves, before the ones that
+    share an instant are merged to one stop: one entry per condition and
+    crossing, in time order.
+
+    The integration loop stops once at an instant, so it takes the merged list.
+    The event sensitivity jump asks each fixed switch on an event's instant for
+    its own jump (issue #767), and two conditions that cross together, one on
+    each of two counters, are two switches.
+    """
     if not conditions:
         return []
     ctx = core.functional_jacobian_context()
@@ -2860,11 +2873,18 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
             found.append(
                 CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
             )
-    # Merge the stops that land on one instant. In time order each needs only
-    # the last one kept: comparing each against every one kept was quadratic,
-    # and a step of time can put thousands of stops in a window (issue #869).
-    # The sort is stable, so among equal times the first condition's stop wins.
+    # The sort is stable, so among equal times the conditions keep their order.
     found.sort(key=lambda stop: stop.time)
+    return found
+
+
+def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
+    """Merge the time-ordered stops that land on one instant.
+
+    In time order each needs only the last one kept: comparing each against
+    every one kept was quadratic, and a step of time can put thousands of stops
+    in a window (issue #869). Among equal times the first condition's stop wins.
+    """
     out: list[CrossingStop] = []
     for stop in found:
         if not out or not _same_instant(stop.time, out[-1].time):

@@ -1746,10 +1746,11 @@ class Simulator:
         conditions = model.time_discontinuity_conditions()
         if not conditions:
             return
-        from bngsim._switch_sensitivity import fixed_crossing_stops
+        from bngsim._switch_sensitivity import all_fixed_crossings, merge_crossing_stops
 
         try:
-            stops = fixed_crossing_stops(model._core, float(t_start), float(t_end), conditions)
+            crossings = all_fixed_crossings(model._core, float(t_start), float(t_end), conditions)
+            stops = merge_crossing_stops(crossings)
         except Exception as e:  # pragma: no cover - defensive
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than
@@ -1768,6 +1769,13 @@ class Simulator:
             opts.set_crossing_stops(
                 [(stop.time, stop.clock_species_idx, stop.threshold) for stop in stops]
             )
+            # Where some instant has more than one crossing, the loop stops
+            # there once and the event sensitivity jump asks each for its own
+            # jump (issue #767). Identical entries are one switch to it.
+            probes = dict.fromkeys(
+                (stop.time, stop.clock_species_idx, stop.threshold) for stop in crossings
+            )
+            opts.set_crossing_probes(list(probes) if len(probes) > len(stops) else [])
 
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
