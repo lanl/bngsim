@@ -865,6 +865,26 @@ def test_a_switch_on_a_counter_beside_a_fixed_gate_on_the_time():
     assert s["Y"][0] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_two_fitted_switches_on_two_clocks_at_one_instant():
+    """Control. A law that reads X is gated on a counter at tau, a zero-order
+    gate turns on at t2 = 3 on the time, and X is reset at tau = 3. The two
+    switches are records on different clocks, each alone on its own: the first
+    moves with the reset, and the second, which comes apart from it under
+    either parameter, commutes with it.
+
+        dW/dtau = −a·k        dY/dt2 = −r        dW/dt2 = dY/dtau = 0."""
+    text = (
+        "species X, Y, W, Cl; X = 2; Y = 0; W = 0; Cl = 0; k = 1; a = 5; tau = 3; t2 = 3; r = 1\n"
+        "Jc: -> Cl; 1\n"
+        "J1: -> Y; piecewise(r, time >= t2, 0)\n"
+        "J2: -> W; piecewise(k*X, Cl >= tau, 0)\n"
+        "E1: at (time >= tau): X = a\n"
+    )
+    _x, s = _sens(text, ["tau", "t2"])
+    np.testing.assert_allclose(s["W"], [-5.0, 0.0], rtol=1e-7, atol=1e-9)
+    np.testing.assert_allclose(s["Y"], [0.0, -1.0], rtol=1e-7, atol=1e-9)
+
+
 # ─── A law that turns on as a power is no step ──────────────────────────────
 
 
