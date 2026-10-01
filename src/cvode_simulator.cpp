@@ -4762,6 +4762,7 @@ void CvodeSimulator::Impl::comoving_rhs_before_stops(double t, const double *y, 
     model.evaluate_functions(t);
     if (model.uses_rateof()) {
         model.refresh_rateof_derivs(t, y);
+        model.evaluate_functions(t);
     }
 }
 
@@ -5698,6 +5699,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     model.evaluate_functions(t_evt);
     if (model.uses_rateof()) {
         model.refresh_rateof_derivs(t_evt, y_data);
+        model.evaluate_functions(t_evt);
     }
 
     // s⁻ MUST be read before CVodeReInit — after it, CVodeGetSens no longer
@@ -6057,6 +6059,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         model.evaluate_functions(t);
         if (model.uses_rateof()) {
             model.refresh_rateof_derivs(t, state.data());
+            model.evaluate_functions(t);
         }
     };
 
@@ -7201,6 +7204,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             model.evaluate_functions(t_now);
             if (model.uses_rateof()) {
                 model.refresh_rateof_derivs(t_now, y_data);
+                model.evaluate_functions(t_now);
             }
 
             // Re-check every trigger against `prev`: a rising edge is a
@@ -7311,6 +7315,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         model.evaluate_functions(t_now);
         if (model.uses_rateof()) {
             model.refresh_rateof_derivs(t_now, y_data);
+            model.evaluate_functions(t_now);
         }
         std::vector<int> risers;
         for (int ei = 0; ei < n_events; ++ei) {
@@ -7330,11 +7335,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             trigger_was_true[ei] = now_true;
         }
         if (!risers.empty()) {
-            // No sensitivity guard here: process_firing_batch's own drain
-            // subsumes every *immediate* same-instant rise and refuses it when
-            // sensitivities are active, so a riser reaching this point is one
-            // the drain left — a delayed event, which the upstream delay guard
-            // already refuses for sensitivities.
+            // process_firing_batch's own drain subsumes every *immediate*
+            // same-instant rise and refuses it when sensitivities are active,
+            // and the upstream delay guard refuses a delayed event. So a riser
+            // here, in a sensitivity run, is a trigger that went true without
+            // the root pass above seeing it. It would fire with no sensitivity
+            // jump and leave every column it moves stale, with no word of it
+            // (issue #910 reached this through a trigger the root pass read one
+            // rateOf probe behind). Refuse rather than fire it.
+            if (sens.n_total > 0) {
+                throw std::runtime_error(
+                    "Forward sensitivity: event '" + events_outer[risers.front()].id +
+                    "' was found triggered at t=" + std::to_string(t_now) +
+                    " after a root was handled, not as a crossing the integrator located. "
+                    "bngsim has no sensitivity jump for a fire it did not locate, so the "
+                    "columns it moves would be silently stale (GH #205, issue #910). Please "
+                    "report this model; dropping sensitivities for this run avoids it.");
+            }
             process_firing_batch(t_now, risers);
         }
     };
@@ -7952,8 +7969,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // this the confirmation re-reads a stale derivative, the rising
                 // edge is missed, and the event silently never fires — erratically,
                 // depending on step size (01261/01293). No-op when !uses_rateof.
+                //
+                // The functions are evaluated again after it (issue #910). A
+                // trigger that reads rateOf through one (`r := rateOf(A)`, then
+                // `r > -thr`) otherwise confirms against the buffer the functions
+                // were evaluated with above, one probe behind. The rise is then
+                // missed here and found by the cascade re-check below, which
+                // fires the event with no sensitivity jump: every column came
+                // back 0, or not, by where the root happened to land.
                 if (model.uses_rateof()) {
                     model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                    model.evaluate_functions(static_cast<double>(t_ret));
                 }
 
                 // ─── First pass: identify rising-edge events ─────────────────
@@ -8105,6 +8131,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // below sees a fresh rateOf buffer (GH #231). No-op otherwise.
                     if (model.uses_rateof()) {
                         model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                        model.evaluate_functions(static_cast<double>(t_ret));
                     }
                 }
 
@@ -8237,6 +8264,37 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         }
                         impl_->apply_state_switch_sensitivity_jump(
                             cvode_mem, y, ns, static_cast<double>(t_ret), batch, evt_s_minus, sens);
+                        // The jump restarts a probe step PAST the surface, and
+                        // an event whose trigger sits within that step is carried
+                        // across with it. CVODE then starts with that root
+                        // already on its far side and never reports it: the
+                        // event did not fire at all, in a sensitivity run only,
+                        // and the trajectory itself was wrong with no word of
+                        // it. `at (A < thr)` beside `piecewise(kb, A < thr, 0)`
+                        // is that case, the same threshold written twice. The
+                        // switch jump and the event jump cannot be composed at
+                        // one instant (issue #150), so a rise across the restart
+                        // is refused like the exact coincidence above. A fall
+                        // only re-arms the event.
+                        for (int ei = 0; ei < n_events; ++ei) {
+                            const bool now_true =
+                                eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx) > 0.5;
+                            if (now_true && !trigger_was_true[ei] && !event_dormant[ei]) {
+                                throw std::runtime_error(
+                                    "Forward sensitivity: a state-dependent rate-law switch "
+                                    "(residual '" +
+                                    batch.front()->residual_source + "') crosses at t=" +
+                                    std::to_string(t_ret) + ", and event '" + events_outer[ei].id +
+                                    "' triggers within the step the solver takes past that "
+                                    "crossing. The event jump differentiates at the pre-event "
+                                    "state and the switch jump differentiates the branch of f at "
+                                    "what is the same instant to the solver, so composing them is "
+                                    "ambiguous and bngsim refuses rather than pick an order or "
+                                    "skip the event (issue #150). Separate the two thresholds, or "
+                                    "drop sensitivities for this run.");
+                            }
+                            trigger_was_true[ei] = now_true;
+                        }
                     }
                     // The CVodeReInit above rewound the state stepper to t_ret
                     // while leaving CVODES' sensitivity history at the end of
@@ -8362,6 +8420,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // (a rateOf-bearing delayed-event trigger; GH #231). No-op otherwise.
                 if (model.uses_rateof()) {
                     model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                    model.evaluate_functions(static_cast<double>(t_ret));
                 }
 
                 // Cancel non-persistent pending events whose trigger has already
@@ -8440,6 +8499,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     model.evaluate_functions(static_cast<double>(t_ret));
                     if (model.uses_rateof()) {
                         model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                        model.evaluate_functions(static_cast<double>(t_ret));
                     }
                     cancel_lapsed_nonpersistent();
                     cascade_triggered_events(static_cast<double>(t_ret));
