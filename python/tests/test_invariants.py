@@ -408,7 +408,6 @@ FIXTURES: tuple[Fixture, ...] = (
         sbml_events,
         t_end=20.0,
         write=("dose_amt", 3.0),
-        known=(("split_run", 693, AssertionError),),
     ),
     Fixture(
         "sbml_ar_ia",

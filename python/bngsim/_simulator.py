@@ -67,6 +67,10 @@ from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
 
+# How many leg ends a model keeps for a rollback to return its events to
+# (NetworkModel::kEventCarryHistory, issue #693).
+_EVENT_CARRY_HISTORY = 64
+
 try:
     from bngsim._bngsim_core import HAS_RULEMONKEY as _HAS_RULEMONKEY
 except (ImportError, AttributeError):
@@ -4472,27 +4476,34 @@ class Simulator:
         plus, minus = out
         return (plus - minus) / (2.0 * h), np.maximum(np.abs(plus), np.abs(minus))
 
-    def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool]:
-        """Snapshot the model's carry-over sensitivity state (issue #81)."""
+    def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool, Any]:
+        """Snapshot the model's carry-over state: the sensitivity seed (issue #81)
+        and the event state a continuing run starts from (issue #693)."""
         core = self._model._core
         seed = (
             np.array(core.pending_sensitivity_seed(), dtype=np.float64)
             if core.has_pending_sensitivity_seed
             else None
         )
-        return seed, list(core.pending_sensitivity_seed_param_names), bool(core.ic_state_dirty)
+        return (
+            seed,
+            list(core.pending_sensitivity_seed_param_names),
+            bool(core.ic_state_dirty),
+            core.event_carry_state(),
+        )
 
     def _restore_carryover_state(
-        self, snapshot: tuple[np.ndarray | None, list[str], bool]
+        self, snapshot: tuple[np.ndarray | None, list[str], bool, Any]
     ) -> None:
         """Put back what :meth:`_capture_carryover_state` captured."""
-        seed, names, dirty = snapshot
+        seed, names, dirty, events = snapshot
         core = self._model._core
         if seed is None:
             core.set_pending_sensitivity_seed(np.zeros((0, 0), dtype=np.float64), [])
         else:
             core.set_pending_sensitivity_seed(seed, names)
         core.ic_state_dirty = dirty
+        core.set_event_carry_state(events)
 
     def parameter_scan(
         self,
@@ -4721,6 +4732,9 @@ class Simulator:
             # here; the pre-equilibration carry (#81) is reset_conc=False and must
             # keep its marker.
             self._model._core.ic_state_dirty = False
+            # Every point starts from the events' state at invocation too, not
+            # from where the previous point's run left them (issue #693).
+            self._model._core.set_event_carry_state(invocation_sens[3])
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
 
@@ -6930,6 +6944,9 @@ class Simulator:
             "current_time": self._current_time,
             "species": species_state,
             "params": param_state,
+            # The triggers' truth and the pending delayed executions, so that
+            # rewinding rewinds the events too (issue #693).
+            "events": self._model._core.event_carry_state(),
         }
         self._snapshot_stack.append(copy.deepcopy(snap))
         logger.debug(
@@ -6973,6 +6990,10 @@ class Simulator:
             with contextlib.suppress(Exception):
                 self._model.set_concentration(name, value)
 
+        # ...and the event state the snapshot's run left (issue #693). A
+        # snapshot from before that existed has none: a fresh start.
+        self._model._core.set_event_carry_state(snapshot.get("events"))
+
         # Recreate simulator with restored state
         self._recreate_interactive_sim()
 
@@ -7012,7 +7033,7 @@ class Simulator:
         t = None if time is None else _finite_time(time)
         self._model.set_state(state)
         if t is not None:
-            self._current_time = t
+            self._set_clock(t)
 
     def set_time(self, t: float) -> None:
         """Set :attr:`current_time`, the time the stored state is at.
@@ -7036,7 +7057,22 @@ class Simulator:
         ValueError
             If ``t`` is not finite.
         """
-        self._current_time = _finite_time(t)
+        self._set_clock(_finite_time(t))
+
+    def _set_clock(self, t: float) -> None:
+        # Rolled back to where an earlier run ended, the events go back with the
+        # clock: the next run continues the triggers and pending executions as
+        # they were then (issue #693). At any other time it is a fresh start.
+        self._current_time = t
+        if self._model._core.rewind_event_carry(t) < 0:
+            warnings.warn(
+                f"set_time({t!r}) rolls back past the last "
+                f"{_EVENT_CARRY_HISTORY} legs this simulation kept: the next run "
+                "starts its events afresh (each trigger from its initialValue), not "
+                "where they stood at that time. Take a snapshot() there to roll "
+                "back further (issue #693).",
+                stacklevel=3,
+            )
 
     # ─── Solver configuration (ODE) ────────────────────────────────
 

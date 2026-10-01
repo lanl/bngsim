@@ -8,6 +8,7 @@
 #include "bngsim/types.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <set>
@@ -670,6 +671,55 @@ class NetworkModel {
     // a pre-equilibrated baseline. Latching, per model instance; carried by
     // clone(). Exposed for introspection and for the clone contract test.
     bool ic_baseline_saved() const;
+
+    // ─── Event state carried between runs (issue #693) ──────────────────────
+    // What a run leaves for the next one to continue from, beside the species
+    // and the clock: each event trigger's last recorded truth, and the delayed
+    // executions not yet applied. A run starting at the carried time continues
+    // it: its trigger baselines are the carried ones, not each event's
+    // initialValue (which describes a trigger before the simulation starts),
+    // so a trigger still true at a leg boundary does not fire again, and the
+    // pending executions are queued again. Any other run is a fresh start.
+    // Published at every run's state write-back; cleared by reset(); copied by
+    // clone().
+    //
+    // The history is the current trajectory's leg ends, oldest first (at most
+    // kEventCarryHistory of them): a run that continues the carry appends to
+    // it (after dropping the leg ends past its start: a branch it left), a
+    // fresh start replaces it. A caller that rolls the clock back to one of
+    // those times (rewind_event_carry: Simulator.set_state(x, time=t0), a
+    // predictor-corrector step) continues the events from there. A run is
+    // never matched to a history entry implicitly, since its state need not be
+    // the one that entry went with.
+    struct CarriedEventExecution {
+        int event_idx = 0;
+        double apply_time = 0.0;
+        std::vector<double> frozen_values; // empty unless frozen at the trigger
+    };
+    struct EventCarry {
+        bool valid = false;
+        double t = 0.0;
+        std::vector<char> trigger;
+        std::vector<CarriedEventExecution> pending;
+    };
+    static constexpr std::size_t kEventCarryHistory = 64;
+    const EventCarry &event_carry() const;
+    const std::deque<EventCarry> &event_carry_history() const;
+    // The newest leg end dropped from the full history, or -inf.
+    double event_carry_evicted_t() const;
+    // Validated against this model's events (std::invalid_argument).
+    void set_event_carry(EventCarry carry);
+    void set_event_carry_state(EventCarry carry, std::deque<EventCarry> history, double evicted_t);
+    // At a run's write-back; `continued`: the run started from the carry.
+    void publish_event_carry(EventCarry carry, bool continued);
+    void clear_event_carry(); // the carry and the history
+    // Roll the events back (or forward) to the leg end at time t: 1 when there
+    // is one, -1 when t is older than the retained history and leg ends were
+    // dropped from it, 0 otherwise; nothing changes unless 1.
+    int rewind_event_carry(double t);
+    // The carry a run over n_events events starting at t_start continues, or
+    // nullptr when that run is a fresh start.
+    const EventCarry *event_carry_for(double t_start, int n_events) const;
 
     // ─── Table functions ────────────────────────────────────────────────────
 
