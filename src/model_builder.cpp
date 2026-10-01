@@ -1918,18 +1918,43 @@ NetworkModel ModelBuilder::build() {
         const Parameter &pk = impl.parameters[derived_param_idx[k]];
         std::unordered_set<int> deps;
         bool self_reference = false;
+        std::string moving; // the first symbol read that moves during a run
         for_each_identifier(pk.expression, [&](const std::string &token) {
             if (token == pk.name) {
                 self_reference = true;
                 return;
             }
+            if (moving.empty()) {
+                if (token == "time")
+                    moving = "time()";
+                else if (token.rfind("rate_of__", 0) == 0)
+                    moving = "the rate accessor '" + token + "'";
+                else if (sd->observable_name_to_idx.count(token))
+                    moving = "the observable '" + token + "'";
+            }
             auto it = sd->param_name_to_idx.find(token);
             if (it == sd->param_name_to_idx.end())
                 return;
+            if (moving.empty() && function_bound.count(it->second))
+                moving = "the function '" + token + "'";
             auto dit = derived_param_node.find(it->second);
             if (dit != derived_param_node.end() && dit->second != k)
                 deps.insert(dit->second);
         });
+        // A parameter that reads something a run moves: time, a function (whose
+        // slot evaluate_functions() rewrites every step), an observable, or a
+        // rate accessor. A derived parameter is re-evaluated only when a
+        // parameter is written, so it held whatever that symbol read at build
+        // (a function slot's seed, 0) for the whole run: `k2 = 0.5*kf` with
+        // `kf = c + time()` ran at k2 = 0 under ODE and SSA alike. A quantity
+        // that moves with time is a function, so say so.
+        if (!moving.empty())
+            throw std::runtime_error(
+                "ModelBuilder: parameter '" + pk.name + "' = " + pk.expression + " reads " +
+                moving +
+                ", which changes during a run, but a parameter is evaluated only when a "
+                "parameter is set. Define '" +
+                pk.name + "' as a function instead.");
         // A parameter defined in terms of itself (issue #617). There is no value
         // it denotes, so there is nothing to build: `s = s*2` has no solution
         // unless s is 0, and what bngsim used to do with it was quieter than a
