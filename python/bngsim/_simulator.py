@@ -1236,11 +1236,21 @@ class Simulator:
         empty list if the model can't expose codegen_data (extremely
         unlikely; .net and SBML loaders both populate it).
 
-        Read at every stamp, not cached: a compartment size is a writable
-        parameter (#170), so the first run's sizes go stale at the first write,
-        and a batch row's sizes are its own clone's, not this Simulator's model's
-        (issues #697, #743).
+        Kept on the model with the compartment sizes it was read at, and read
+        again when one has moved: a compartment size is a writable parameter
+        (#170), so the first run's sizes go stale at the first write, and a
+        batch row's sizes are its own clone's (issues #697, #743). A model with
+        no compartment size parameter (every ``.net``) reads it once.
         """
+        m = model or self._model
+        core = m._core
+        memo = m._volume_factors_memo
+        if memo is not None:
+            names, sizes, vf = memo
+            if tuple(core.get_param(n) for n in names) == sizes:
+                return vf
+        else:
+            names = tuple(m.compartment_size_params)
         try:
             # T7: narrow C++ accessor returns V_c for reported species in
             # reported-species order — the same list the old
@@ -1250,10 +1260,12 @@ class Simulator:
             # (GH #71) lives in the accessor so the V_c list aligns with the
             # projected Result.species columns; `reported` defaults True so
             # .net and ordinary SBML models are unaffected.
-            return [float(v) for v in (model or self._model)._core.reported_volume_factors()]
+            vf = [float(v) for v in core.reported_volume_factors()]
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("volume_factors unavailable: %s", e)
             return []
+        m._volume_factors_memo = (names, tuple(core.get_param(n) for n in names), vf)
+        return vf
 
     def _unwritable_compartment_size_params(self) -> set[str]:
         """Names of the compartment sizes this model refuses to *write* (#170).
@@ -2372,10 +2384,9 @@ class Simulator:
         species_names = result._species_names
         if not species_names:
             return
-        # Only the 2D (n_times, n_species) layout (single run / PSA mean) is
-        # column-addressable here. squeezed run_batch results are 3D
-        # (n_reps, n_times, n_species); skip the cosmetic report-remap there —
-        # the dynamics fix (classifier reroute) already applies per replicate.
+        # Only the 2D (n_times, n_species) layout is column-addressable here.
+        # Every stacked result is stacked from rows already stamped, one by one
+        # (issues #698, #743), so a 3-D one has nothing left to remap.
         if result._species.ndim != 2:
             return
         sp_idx = {n: i for i, n in enumerate(species_names)}
@@ -2468,8 +2479,8 @@ class Simulator:
         expression's own output sensitivity (GH #198).
 
         Applies to both sensitivity axes (parameter and IC) and is a no-op for
-        .net / non-AR models, for runs without sensitivities, and for the 3-D
-        batch layout the value pass skips as well.
+        .net / non-AR models, for runs without sensitivities, and for a 3-D
+        stack, whose rows were remapped before stacking.
         """
         if not amap:
             return
@@ -2563,9 +2574,8 @@ class Simulator:
         ``result._varvol_live_vol`` so :meth:`Result.as_roadrunner` can recover
         the amount (``conc * V_live``) for a bare-id selector instead of the now
         meaningless ``conc * V_static``. No-op for .net and static models (empty
-        map) and for the 3-D batch layout (the dynamics fix already applies per
-        replicate; the cosmetic report-remap, like the AR remap, only addresses
-        the 2-D single-run / PSA-mean layout). GH #85.
+        map) and for a 3-D stack, whose rows were remapped before stacking.
+        GH #85.
         """
         model = model or self._model
         vmap = getattr(model, "_varvol_conc_map", None)
@@ -2674,8 +2684,8 @@ class Simulator:
         column — an AR compartment has no ODE state. It is read from the
         compartment's own assignment-rule **expression** column (the loader emits
         a function named after the compartment). No-op for .net and models without
-        an assignment-rule compartment (empty map), and for the 3-D batch layout.
-        GH #87.
+        an assignment-rule compartment (empty map), and for a 3-D stack, whose
+        rows were remapped before stacking. GH #87.
         """
         model = model or self._model
         amap = getattr(model, "_varvol_ar_conc_map", None)
@@ -2753,7 +2763,8 @@ class Simulator:
         The event-promoted compartment is hidden from species output (GH #71) but
         is emitted as a same-named OBSERVABLE, so V_live(t) is read from there.
         Neither path rescales the raw column. No-op for .net / static /
-        event-resize-free models (empty map) and for the 3-D batch layout. GH #131.
+        event-resize-free models (empty map) and for a 3-D stack, whose rows were
+        remapped before stacking. GH #131.
         """
         emap = getattr(model or self._model, "_varvol_event_resize_map", None)
         if not emap:
