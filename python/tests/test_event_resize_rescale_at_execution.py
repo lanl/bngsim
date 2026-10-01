@@ -163,14 +163,83 @@ def test_a_dividing_cell_keeps_its_amounts():
     assert _amount(r, "Y", 4) == pytest.approx(4.0, rel=1e-6)
 
 
-def test_the_sensitivity_through_a_composition_it_cannot_differentiate_is_refused():
-    """The second resize reads a size an earlier fire of the instant changed:
-    the value is right, and its derivative is refused, not approximated."""
-    text = (
+REFUSED = {
+    # The second resize reads a size an earlier fire of the instant changed.
+    "two_resizes": (
         "compartment Cc = 1; species Y in Cc; Y = 1; k = 1; J: Y => ; k*Y;"
         " E1: at (time >= 2), priority = 2: Cc = 2;"
-        " E2: at (time >= 2), priority = 1: Cc = 2*Cc"
-    )
-    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), sensitivity_params=["k"])
+        " E2: at (time >= 2), priority = 1: Cc = 2*Cc",
+        "k",
+    ),
+    # An earlier fire writes what the new size reads.
+    "new_size_reads_a_parameter_written_earlier": (
+        "compartment C = 1; species Y in C = 1; species X in C = 0; p = 1; q = 2; k = 0.3;"
+        " J: Y => X; k*Y; E1: at time >= 2, priority = 2: q = 2*p;"
+        " E2: at time >= 2, priority = 1: C = q",
+        "p",
+    ),
+    # A reset to the value it holds moves no value but does move the
+    # derivative, which a comparison of values cannot see.
+    "a_reset_to_the_value_held": (
+        "compartment C = 2; species Y in C = 1; q0 = 1; q = 1; k = 0.3; J: Y => ; k*Y;"
+        " E1: at time >= 2, priority = 2: q = q0; E2: at time >= 2, priority = 1: C = q",
+        "q0",
+    ),
+    # An own assignment after an earlier fire moved the size (main got this
+    # one silently wrong too).
+    "an_own_assignment_after_a_resize": (
+        "compartment C = 1; species Y in C = 1; p = 0.5; k = 0.3; J: Y => ; k*Y;"
+        " E1: at time >= 2, priority = 2: C = 2*p;"
+        " E2: at time >= 2, priority = 1: Y = 5, C = 4",
+        "p",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(REFUSED))
+def test_the_sensitivity_through_a_composition_it_cannot_differentiate_is_refused(name):
+    """The values are right; their derivative through such a batch is refused,
+    not approximated."""
+    text, p = REFUSED[name]
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), sensitivity_params=[p])
     with pytest.raises(Exception, match="issue #936"):
         sim.run(t_span=(0, 4), n_points=5)
+
+
+def test_a_resize_to_zero_with_an_amount_in_it_is_refused():
+    text = (
+        "compartment C = 1; species Y in C = 1;"
+        " E1: at (time >= 2), priority = 2: C = 0; E2: at (time >= 2), priority = 1: C = 2"
+    )
+    with pytest.raises(Exception, match="resizes a compartment to 0"):
+        bngsim.Simulator(bngsim.Model.from_antimony_string(text)).run(t_span=(0, 4), n_points=5)
+
+
+@pytest.mark.parametrize(
+    ("text", "conc"),
+    [
+        # Issue #740: frozen at the trigger (t = 1, X = 1), applied at 2; the
+        # amount 10 is kept, so [S] = 10/2.
+        (
+            "compartment C = 1; species S in C = 10; X = 0; X' = 1;"
+            " E: at 1 after (time >= 1): C = 1 + X;",
+            5.0,
+        ),
+        (
+            "compartment C; C := k; k = 1; species S in C = 10; X = 0; X' = 1;"
+            " E: at 1 after (time >= 1): k = 1 + X;",
+            5.0,
+        ),
+        # S = X(1) = 1 in the old volume, then C = 4.
+        (
+            "compartment C = 1; species S in C = 10; X = 0; X' = 1;"
+            " E: at 1 after (time >= 1): C = 4, S = X;",
+            0.25,
+        ),
+    ],
+)
+def test_a_delayed_resize_uses_its_trigger_time_size(text, conc):
+    r = bngsim.Simulator(bngsim.Model.from_antimony_string(text)).run(
+        t_span=(0, 3), n_points=4, rtol=1e-10, atol=1e-12
+    )
+    assert _conc(r, "S", 3) == pytest.approx(conc, rel=1e-6)

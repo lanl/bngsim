@@ -5446,10 +5446,28 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             // derivative of the composition is not implemented, so refuse it
             // rather than differentiate a different quantity.
             if (is_resize_rescale(ev, a) && a < fire.values.size()) {
+                // Structurally: under trigger-time values, what is read at the
+                // other state must be something no earlier fire wrote (a value
+                // can stay put while its derivative moves, as a reset to the
+                // value it holds does). With no base of its own the rescale is
+                // read at the running state but divides by a new size frozen
+                // before the batch; with one, it is read before the batch but
+                // multiplies by the size at execution.
+                bool moved = false;
+                if (fire.from_trigger_time) {
+                    std::vector<int> sup;
+                    const bool own = ev.assignment_rescale_base[a] >= 0;
+                    model.expression_support(own ? ev.assignment_rescale_size_expr[a] : vexpr, &sup,
+                                             nullptr);
+                    for (int j : sup)
+                        if (j >= 0 && j < ns && assigned[static_cast<size_t>(j)] != 0 &&
+                            (own || j != k))
+                            moved = true;
+                }
                 const double v_expr = eval_ref_outer.evaluate(vexpr);
                 const double v = fire.values[a];
-                if (!(std::fabs(v_expr - v) <=
-                      1e-9 * std::max({1.0, std::fabs(v), std::fabs(v_expr)}))) {
+                if (moved || !(std::fabs(v_expr - v) <=
+                               1e-9 * std::max({1.0, std::fabs(v), std::fabs(v_expr)}))) {
                     const std::string id = ev.id.empty() ? std::to_string(fire.event_idx) : ev.id;
                     throw std::runtime_error(
                         "forward sensitivity through event '" + id +
@@ -8156,17 +8174,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // Write one event's values into the state (issue #936). nv holds them as
     // the caller formed them, frozen at the trigger or read now; a resize's
     // rescale is formed here instead, from the compartment's size before and
-    // after the event's other assignments, and written back into nv.
+    // after the event's other assignments, and written back into nv. The model
+    // holds the state on entry (the batch's values were read from it).
     auto write_event_values = [&](const Event &ev, std::vector<double> &nv, double t_now) {
         const auto &assigns = ev.assignments;
         std::vector<std::pair<std::size_t, double>> rescales;
         for (std::size_t a = 0; a < assigns.size(); ++a) {
             if (!is_resize_rescale(ev, a))
                 continue;
-            if (rescales.empty()) {
-                model.update_observables(y_data);
-                model.evaluate_functions(t_now);
-            }
             const int b = ev.assignment_rescale_base[a];
             const double base = b >= 0 ? nv[static_cast<std::size_t>(b)] : y_data[assigns[a].first];
             rescales.emplace_back(
@@ -8184,7 +8199,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         model.update_observables(y_data);
         model.evaluate_functions(t_now);
         for (const auto &[a, num] : rescales) {
-            const double v = num / eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]);
+            const double size = eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]);
+            // An amount in no volume has no concentration: refuse it by name
+            // rather than carry an inf (or 0·inf) into the integrator.
+            if (num != 0.0 && !(std::isfinite(size) && size != 0.0)) {
+                const std::string id = ev.id.empty() ? std::string("?") : ev.id;
+                throw std::runtime_error(
+                    "event '" + id + "' at t=" + diag_number(t_now) + " resizes a compartment to " +
+                    diag_number(size) +
+                    " while a species in it holds a nonzero amount, whose concentration is "
+                    "then undefined");
+            }
+            const double v = num == 0.0 ? 0.0 : num / size;
             const int sp_idx0 = assigns[a].first;
             y_data[sp_idx0] = v;
             sp_vec_outer[sp_idx0].concentration = v;
