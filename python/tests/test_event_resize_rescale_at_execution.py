@@ -243,3 +243,30 @@ def test_a_delayed_resize_uses_its_trigger_time_size(text, conc):
         t_span=(0, 3), n_points=4, rtol=1e-10, atol=1e-12
     )
     assert _conc(r, "S", 3) == pytest.approx(conc, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("text", "t_end", "conc", "amount"),
+    [
+        # An event-resized rule-sized compartment: the amount 10 stays, in 2.
+        (
+            "compartment D; D := k; k = 1; species W in D = 10; E1: at time >= 1: k = 2",
+            4.0,
+            5.0,
+            10.0,
+        ),
+        # A rule-sized compartment that grows with time: 10 in 1 + 2.
+        ("compartment D; D := 1 + time; species W in D = 10", 2.0, 10 / 3, 10.0),
+    ],
+)
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_a_species_only_an_output_reads_in_a_rule_sized_compartment(
+    text, t_end, conc, amount, method
+):
+    """Under SSA the stored value is the conserved amount/V_static; it is
+    reported as amount/V_live, with its amount, as under ODE (issue #741)."""
+    r = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method=method).run(
+        t_span=(0, t_end), n_points=3, seed=1
+    )
+    assert _conc(r, "W", 2) == pytest.approx(conc, rel=1e-6)
+    assert _amount(r, "W", 2) == pytest.approx(amount, rel=1e-6)

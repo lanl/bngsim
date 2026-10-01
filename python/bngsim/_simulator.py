@@ -2741,16 +2741,33 @@ class Simulator:
         # the volume factor would give. The concentration column is left untouched.
         if amount_map:
             amount_factor = result._varvol_amount_factor or {}
+            conc_factor = result._varvol_conc_factor or {}
+            # Under SSA/PSA the dilution term is ODE-only, so the stored value stays
+            # the conserved amount/V_static: the [S] selector needs V_static/V_live,
+            # and the bare amount is the stored value times V_static, the volume
+            # factor (issue #741). (A species a reaction or rule touches is refused
+            # under SSA; this is one only an output reads.)
+            stochastic = self._method in ("ssa", "psa")
+            vf = self._get_volume_factors() if stochastic else []
             recorded = False
             for s_name, comp_name in amount_map.items():
                 j = sp_idx.get(s_name)
                 k = expr_idx.get(comp_name)
                 if j is None or k is None:
                     continue
-                amount_factor[j] = result._expressions[:, k]
+                v_live = result._expressions[:, k]
+                if stochastic:
+                    v_static = vf[j] if j < len(vf) else 1.0
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        conc_factor[j] = np.where(v_live != 0.0, v_static / v_live, 1.0)
+                else:
+                    amount_factor[j] = v_live
                 recorded = True
             if recorded:
-                result._varvol_amount_factor = amount_factor
+                if amount_factor:
+                    result._varvol_amount_factor = amount_factor
+                if conc_factor:
+                    result._varvol_conc_factor = conc_factor
 
     def _apply_varvol_event_resize_map(self, result: Result) -> None:
         """Report species in EVENT-RESIZED compartments at amount/V_live(t).
