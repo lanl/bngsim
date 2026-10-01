@@ -2849,6 +2849,19 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
     window in one phase and outside it in another, and stopping at a time that
     phase has no crossing at is a pure perturbation of its stepping.
     """
+    return merge_crossing_stops(all_fixed_crossings(core, t_start, t_end, conditions))
+
+
+def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> list[CrossingStop]:
+    """Every crossing :func:`fixed_crossing_stops` resolves, before the ones that
+    share an instant are merged to one stop: one entry per condition and
+    crossing, in time order.
+
+    The integration loop stops once at an instant, so it takes the merged list.
+    The event sensitivity jump asks each fixed switch on an event's instant for
+    its own jump (issue #767), and two conditions that cross together, one on
+    each of two counters, are two switches.
+    """
     if not conditions:
         return []
     ctx = core.functional_jacobian_context()
@@ -2880,11 +2893,18 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
             found.append(
                 CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
             )
-    # Merge the stops that land on one instant. In time order each needs only
-    # the last one kept: comparing each against every one kept was quadratic,
-    # and a step of time can put thousands of stops in a window (issue #869).
-    # The sort is stable, so among equal times the first condition's stop wins.
+    # The sort is stable, so among equal times the conditions keep their order.
     found.sort(key=lambda stop: stop.time)
+    return found
+
+
+def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
+    """Merge the time-ordered stops that land on one instant.
+
+    In time order each needs only the last one kept: comparing each against
+    every one kept was quadratic, and a step of time can put thousands of stops
+    in a window (issue #869). Among equal times the first condition's stop wins.
+    """
     out: list[CrossingStop] = []
     for stop in found:
         if not out or not _same_instant(stop.time, out[-1].time):
@@ -4405,6 +4425,12 @@ class SwitchCrossing(NamedTuple):
     stays on its after-branch. Empty — the overwhelmingly common case — means no
     other condition crosses here and the plain ``f⁻ − f⁺`` is this crossing's
     jump on its own.
+
+    ``fixed_on_instant`` says a crossing no requested column moves is on this
+    one's clock and within one instant of it (issue #767). That one emits no
+    record, so the core cannot see it, and it flips with every nudge of the
+    clock that reads this one. An event on the instant comes apart from it
+    under any parameter that moves the event.
     """
 
     t_star: float
@@ -4413,6 +4439,7 @@ class SwitchCrossing(NamedTuple):
     dtstar: list[float]
     isolate_param_idx0: list[int]
     isolate_delta: list[float]
+    fixed_on_instant: bool = False
 
 
 class _Crossing(NamedTuple):
@@ -4743,14 +4770,24 @@ def _emit_switch_records(
     for cross in found:
         thresholds_on_clock.setdefault(cross.clock_idx0, set()).add(cross.threshold)
 
+    def emits(cross: _Crossing) -> bool:
+        # No requested column moves a crossing that does not emit: not its
+        # threshold, and not the clock it is read on (issue #725). One on a
+        # moved clock is kept even inside a coinciding group, isolated below by
+        # its own threshold's parameters like any other member.
+        return any(v != 0.0 for v in cross.dtstar) or cross.clock_idx0 in moved_clocks
+
+    def one_nudge(a: _Crossing, b: _Crossing) -> bool:
+        if a.clock_idx0 != b.clock_idx0:
+            return False
+        if a.clock_idx0 >= 0:
+            return _same_instant(a.threshold, b.threshold)
+        return _same_instant(a.t_star, b.t_star)
+
     records: list[SwitchCrossing] = []
     for group in _instant_groups(found):
         for cross in group:
-            if not any(v != 0.0 for v in cross.dtstar) and cross.clock_idx0 not in moved_clocks:
-                # No requested column moves this crossing: not its threshold,
-                # and not the clock it is read on (issue #725). One on a moved
-                # clock is kept even inside a coinciding group, isolated below
-                # by its own threshold's parameters like any other member.
+            if not emits(cross):
                 continue
             if len(group) > 1:
                 idx0, delta = _isolation_bump(
@@ -4767,6 +4804,10 @@ def _emit_switch_records(
                     dtstar=cross.dtstar,
                     isolate_param_idx0=isolate_idx,
                     isolate_delta=isolate_delta,
+                    fixed_on_instant=any(
+                        other is not cross and not emits(other) and one_nudge(other, cross)
+                        for other in group
+                    ),
                 )
             )
     records.sort(key=lambda r: r.t_star)
@@ -5168,10 +5209,7 @@ def compute_switch_time_sens(
     # what makes ∂f/∂p come out as the correct 0 and what keeps the probe from
     # displacing the switch into the approach (which stalls the integrator).
     switch_params = {
-        names[c]
-        for _t, _ci, _thr, dtstar, _ii, _id in records
-        for c in range(len(names))
-        if dtstar[c] != 0.0
+        names[c] for record in records for c in range(len(names)) if record.dtstar[c] != 0.0
     }
     # A switch-time parameter is safe to pin only if EVERY crossing it moves is
     # compensated. One that also reads a condition nothing brackets — a dose
