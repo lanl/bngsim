@@ -112,6 +112,8 @@ class Model:
         "_time_disc_conditions",
         "_derived_time_disc_conditions",
         "_state_switch_root_conditions",
+        "_ssa_reads_clock",
+        "_ssa_clock_functions",
         "_want_output_sens",
         "_output_sens_analysis",
         "_named_conc_states",
@@ -258,6 +260,9 @@ class Model:
         # sensitivities roots on, derived on first ask and cached like the line
         # above. See state_switch_root_conditions().
         self._state_switch_root_conditions: tuple[str, ...] | None = None
+        # Issue #719: whether an SSA run needs breakpoints; structural, so once.
+        self._ssa_reads_clock: bool | None = None
+        self._ssa_clock_functions: list[tuple[str, str]] | None = None
         # Issue #11: named saved concentration states. Maps a user label to a
         # snapshot of the full live species-concentration vector (a copy of
         # get_state(), ordered like species_names). This is the multi-slot
@@ -1021,6 +1026,8 @@ class Model:
         m._time_disc_conditions = self._time_disc_conditions
         m._derived_time_disc_conditions = self._derived_time_disc_conditions
         m._state_switch_root_conditions = self._state_switch_root_conditions
+        m._ssa_reads_clock = self._ssa_reads_clock
+        m._ssa_clock_functions = self._ssa_clock_functions
         # Issue #11: carry named concentration snapshots to the clone, each a
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)

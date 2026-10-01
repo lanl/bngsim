@@ -195,6 +195,41 @@ static py::array_t<double> matrix_to_ndarray_2d_rows(const std::vector<double> &
         vec->data(), capsule);
 }
 
+// Issue #693 — NetworkModel::EventCarry to and from Python: None, or
+// (t, [trigger truth], [(event index, apply time, [frozen values])]).
+static py::object event_carry_to_py(const bngsim::NetworkModel::EventCarry &c) {
+    if (!c.valid)
+        return py::none();
+    py::list trig, pend;
+    for (char v : c.trigger)
+        trig.append(py::bool_(v != 0));
+    for (const auto &pe : c.pending)
+        pend.append(py::make_tuple(pe.event_idx, pe.apply_time, pe.frozen_values));
+    return py::make_tuple(c.t, trig, pend);
+}
+
+static bngsim::NetworkModel::EventCarry event_carry_from_py(const py::object &carry) {
+    bngsim::NetworkModel::EventCarry c;
+    if (carry.is_none())
+        return c;
+    auto tup = carry.cast<py::tuple>();
+    if (tup.size() != 3)
+        throw py::value_error("an event carry is None or (t, triggers, pending)");
+    c.valid = true;
+    c.t = tup[0].cast<double>();
+    for (auto v : tup[1].cast<py::list>())
+        c.trigger.push_back(v.cast<bool>() ? 1 : 0);
+    for (auto pe : tup[2].cast<py::list>()) {
+        auto p = pe.cast<py::tuple>();
+        if (p.size() != 3)
+            throw py::value_error(
+                "a pending execution is (event index, apply time, frozen values)");
+        c.pending.push_back(bngsim::NetworkModel::CarriedEventExecution{
+            p[0].cast<int>(), p[1].cast<double>(), p[2].cast<std::vector<double>>()});
+    }
+    return c;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Module definition
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1085,6 +1120,27 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly("functions_use_time", &bngsim::NetworkModel::functions_use_time,
                                "Whether any function's value can move with simulation time alone "
                                "(issue #654). Gates the SSA's time-dependent sub-stepping.")
+        .def_property_readonly(
+            "ssa_reads_clock",
+            [](const bngsim::NetworkModel &self) {
+                // A rate rule's target may be a clock (`T' = 1`) whose crossings
+                // the breakpoints place.
+                for (const auto &rx : self.reactions())
+                    if (rx.is_rate_rule_ode)
+                        return true;
+                if (!self.functions_use_time() && self.n_events() == 0)
+                    return false;
+                for (int r = 0; r < self.n_reactions(); ++r)
+                    if (self.reaction_rate_reads_time(r))
+                        return true;
+                for (int e = 0; e < self.n_events(); ++e)
+                    if (self.event_trigger_reads_time(e))
+                        return true;
+                return false;
+            },
+            "Whether a reaction rate or an event trigger reads the clock, or the model has "
+            "a rate rule (whose target may be a clock): the SSA then needs the model's "
+            "breakpoints (issue #719). Decided from the model's text.")
 
         // T1: RHS observable/function-eval gate instrumentation. For a pure
         // mass-action model the RHS skips update_observables + evaluate_functions
@@ -1374,6 +1430,60 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "re-resolving parameter-named species ICs (issue #79) rather than overwrite a "
             "pre-equilibrated baseline; use set_concentration() to dose such a protocol. "
             "Latching — there is no un-save — and carried by clone().")
+        // ── Event state carried between runs (issue #693) ────────────────────
+        .def(
+            "event_carry",
+            [](const bngsim::NetworkModel &self) { return event_carry_to_py(self.event_carry()); },
+            "The event state the last run left for a run that continues it (issue "
+            "#693): None, or (t, trigger truth per event, [(event index, apply time, "
+            "frozen values)] for the delayed executions not yet applied). A run "
+            "starting at t continues it; any other run is a fresh start.")
+        .def(
+            "set_event_carry",
+            [](bngsim::NetworkModel &self, py::object carry) {
+                self.set_event_carry(event_carry_from_py(carry));
+            },
+            py::arg("carry"),
+            "Install a carry in event_carry()'s form (None: a fresh start). Checked "
+            "against this model's events.")
+        .def(
+            "event_carry_state",
+            [](const bngsim::NetworkModel &self) -> py::object {
+                const auto &h = self.event_carry_history();
+                if (!self.event_carry().valid && h.empty())
+                    return py::none();
+                py::list hist;
+                for (const auto &c : h)
+                    hist.append(event_carry_to_py(c));
+                return py::make_tuple(event_carry_to_py(self.event_carry()), hist,
+                                      self.event_carry_evicted_t());
+            },
+            "The carry together with the trajectory's leg ends a rollback can return "
+            "to (issue #693), opaque, for set_event_carry_state: what a protocol "
+            "primitive that rewinds the state and the clock saves and puts back.")
+        .def(
+            "set_event_carry_state",
+            [](bngsim::NetworkModel &self, py::object state) {
+                if (state.is_none()) {
+                    self.clear_event_carry();
+                    return;
+                }
+                auto tup = state.cast<py::tuple>();
+                if (tup.size() != 3)
+                    throw py::value_error("set_event_carry_state expects what "
+                                          "event_carry_state() returned");
+                std::deque<bngsim::NetworkModel::EventCarry> hist;
+                for (auto c : tup[1].cast<py::list>())
+                    hist.push_back(event_carry_from_py(py::reinterpret_borrow<py::object>(c)));
+                self.set_event_carry_state(event_carry_from_py(tup[0]), std::move(hist),
+                                           tup[2].cast<double>());
+            },
+            py::arg("state"), "Put back what event_carry_state() returned (None clears).")
+        .def("rewind_event_carry", &bngsim::NetworkModel::rewind_event_carry, py::arg("t"),
+             "Move the events to the trajectory's leg end at time t, for a caller that "
+             "rolls the clock there (issue #693): 1 when there is one, -1 when t is "
+             "older than the retained leg ends and some were dropped, 0 otherwise. "
+             "Nothing changes unless 1.")
         .def_property_readonly(
             "has_pending_sensitivity_seed",
             [](const bngsim::NetworkModel &self) { return !self.pending_sens_seed().empty(); },
@@ -2342,7 +2452,16 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "(symbol bngsim_ssa_propensities). When set and the model is "
              "recompute-all eligible (pure mass-action exact SSA, no events, small "
              "nr), the run takes the RR-style recompute-all + flat-scan loop by "
-             "default. No-op for ineligible models; '' clears it.");
+             "default. No-op for ineligible models; '' clears it.")
+        .def("set_breakpoints", &bngsim::SsaSimulator::set_breakpoints, py::arg("times"),
+             "Issue #719: times at which a time-dependent rate may jump. The "
+             "continuous (time-dependent) loop never steps across one. Applies to "
+             "every later run; [] clears it.")
+        .def("set_piecewise_constant_functions",
+             &bngsim::SsaSimulator::set_piecewise_constant_functions, py::arg("names"),
+             "Functions, by name, constant in time between the breakpoints: a rate that "
+             "reads the clock only through them is held constant and re-read at each "
+             "breakpoint. Applies to every later run; [] clears it.");
 
     // ─── NfsimSimulator (conditional on BNGSIM_HAS_NFSIM) ────────────────────
     //

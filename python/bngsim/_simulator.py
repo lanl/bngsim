@@ -67,6 +67,10 @@ from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
 
+# How many leg ends a model keeps for a rollback to return its events to
+# (NetworkModel::kEventCarryHistory, issue #693).
+_EVENT_CARRY_HISTORY = 64
+
 try:
     from bngsim._bngsim_core import HAS_RULEMONKEY as _HAS_RULEMONKEY
 except (ImportError, AttributeError):
@@ -1777,6 +1781,82 @@ class Simulator:
             )
             opts.set_crossing_probes(list(probes) if len(probes) > len(stops) else [])
 
+    @staticmethod
+    def _apply_ssa_breakpoints(sims, model, t_start, t_end) -> None:
+        """Hand the SSA/PSA continuous loop each fixed time discontinuity (#719).
+
+        A model whose rates read time runs on a loop that integrates each
+        dynamic propensity over a step. The step is adaptive, but a jump inside
+        it is only resolved by shrinking around it, and a pulse narrower than a
+        step is not seen at all: the quadrature nodes can fall either side of
+        it. The same crossings :meth:`_apply_crossing_stops` stops CVODE on are
+        places the loop must not step across, so it ends a step on each.
+
+        A crossing on a counter species is placed too. Where the counter is
+        integrated (an SBML rate rule) it is exactly where the rate jumps; where
+        it fires stochastically (a BNGL ``0 -> Time()``) the jump comes with a
+        firing, which the loop handles already, and the extra step end is
+        harmless.
+
+        Always sets the list, so a reused simulator cannot keep a previous
+        window's times. A model whose rates and triggers read no clock pays
+        nothing (and no sympy import).
+        """
+        times: list[float] = []
+        pc_names: list[str] = []
+        reads_clock = getattr(model, "_ssa_reads_clock", None)
+        if reads_clock is None:
+            reads_clock = bool(getattr(model._core, "ssa_reads_clock", True))
+            with contextlib.suppress(AttributeError):
+                model._ssa_reads_clock = reads_clock
+        if reads_clock:
+            conditions = model.time_discontinuity_conditions()
+            if conditions:
+                from bngsim._switch_sensitivity import fixed_crossing_stops
+
+                try:
+                    stops = fixed_crossing_stops(
+                        model._core, float(t_start), float(t_end), conditions
+                    )
+                    times = [float(stop.time) for stop in stops]
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Discontinuity crossing resolution failed (%s); the SSA "
+                        "continuous loop will step without breakpoints (issue #719).",
+                        e,
+                    )
+                if times:
+                    pc_names = Simulator._ssa_piecewise_constant(model, t_start, t_end, conditions)
+        for sim in sims:
+            sim.set_breakpoints(times)
+            sim.set_piecewise_constant_functions(pc_names)
+
+    @staticmethod
+    def _ssa_piecewise_constant(model, t_start, t_end, conditions) -> list[str]:
+        """The functions an SSA run may hold constant between breakpoints
+        (:func:`bngsim._switch_sensitivity.piecewise_constant_time_functions`).
+        Best-effort: on any failure none is, which keeps every rate integrated."""
+        from bngsim._switch_sensitivity import _ANY_CLOCK, piecewise_constant_time_functions
+
+        clock_fns = getattr(model, "_ssa_clock_functions", None)
+        if clock_fns is None:
+            clock_fns = [
+                (f["name"], f["expression"])
+                for f in model._core.codegen_data()["functions"]
+                if _ANY_CLOCK.search(f["expression"])
+            ]
+            with contextlib.suppress(AttributeError):
+                model._ssa_clock_functions = clock_fns
+        if not clock_fns:
+            return []
+        try:
+            return piecewise_constant_time_functions(
+                model._core, float(t_start), float(t_end), conditions, clock_fns
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Piecewise-constant classification unavailable (%s)", e)
+            return []
+
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
 
@@ -3465,8 +3545,10 @@ class Simulator:
 
                 core_result = self._run_ode_with_jacobian_fallback(times, opts)
             elif self._method == "ssa":
+                self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
             elif self._method == "psa":
+                self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
                 core_result = self._sim.run_psa(times, used_seed, self._poplevel, timeout_seconds)
             elif self._method == "nfsim" or self._method == "rulemonkey":
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
@@ -3886,6 +3968,7 @@ class Simulator:
                     local.sim = SsaSimulator(local.model._core)
                     if self._reaction_stats:
                         local.sim.set_record_reaction_stats(True)
+                    self._apply_ssa_breakpoints([local.sim], local.model, t_start, t_end)
                     local.times = _make_times()
                     sim = local.sim
                 return _run_one(sim, local.model, local.times, i)
@@ -3917,6 +4000,7 @@ class Simulator:
             invocation_state = self._model.get_state()
             invocation_carry = self._capture_carryover_state()
             times = _make_times()
+            self._apply_ssa_breakpoints([self._sim], self._model, t_start, t_end)
             try:
                 results = [_run_one(self._sim, self._model, times, i) for i in range(n_replicates)]
             finally:
@@ -4375,27 +4459,34 @@ class Simulator:
         plus, minus = out
         return (plus - minus) / (2.0 * h), np.maximum(np.abs(plus), np.abs(minus))
 
-    def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool]:
-        """Snapshot the model's carry-over sensitivity state (issue #81)."""
+    def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool, Any]:
+        """Snapshot the model's carry-over state: the sensitivity seed (issue #81)
+        and the event state a continuing run starts from (issue #693)."""
         core = self._model._core
         seed = (
             np.array(core.pending_sensitivity_seed(), dtype=np.float64)
             if core.has_pending_sensitivity_seed
             else None
         )
-        return seed, list(core.pending_sensitivity_seed_param_names), bool(core.ic_state_dirty)
+        return (
+            seed,
+            list(core.pending_sensitivity_seed_param_names),
+            bool(core.ic_state_dirty),
+            core.event_carry_state(),
+        )
 
     def _restore_carryover_state(
-        self, snapshot: tuple[np.ndarray | None, list[str], bool]
+        self, snapshot: tuple[np.ndarray | None, list[str], bool, Any]
     ) -> None:
         """Put back what :meth:`_capture_carryover_state` captured."""
-        seed, names, dirty = snapshot
+        seed, names, dirty, events = snapshot
         core = self._model._core
         if seed is None:
             core.set_pending_sensitivity_seed(np.zeros((0, 0), dtype=np.float64), [])
         else:
             core.set_pending_sensitivity_seed(seed, names)
         core.ic_state_dirty = dirty
+        core.set_event_carry_state(events)
 
     def parameter_scan(
         self,
@@ -4624,6 +4715,9 @@ class Simulator:
             # here; the pre-equilibration carry (#81) is reset_conc=False and must
             # keep its marker.
             self._model._core.ic_state_dirty = False
+            # Every point starts from the events' state at invocation too, not
+            # from where the previous point's run left them (issue #693).
+            self._model._core.set_event_carry_state(invocation_sens[3])
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
 
@@ -4840,6 +4934,8 @@ class Simulator:
                 from bngsim._bngsim_core import SsaSimulator
 
                 sim = SsaSimulator(clone._core)
+                # This row's parameters place its crossings, so resolve on the clone.
+                self._apply_ssa_breakpoints([sim], clone, t_span[0], t_span[1])
                 if self._method == "psa":
                     core_result = sim.run_psa(
                         times, base_seed + index, self._poplevel, timeout_seconds
@@ -6824,6 +6920,9 @@ class Simulator:
             "current_time": self._current_time,
             "species": species_state,
             "params": param_state,
+            # The triggers' truth and the pending delayed executions, so that
+            # rewinding rewinds the events too (issue #693).
+            "events": self._model._core.event_carry_state(),
         }
         self._snapshot_stack.append(copy.deepcopy(snap))
         logger.debug(
@@ -6867,6 +6966,10 @@ class Simulator:
             with contextlib.suppress(Exception):
                 self._model.set_concentration(name, value)
 
+        # ...and the event state the snapshot's run left (issue #693). A
+        # snapshot from before that existed has none: a fresh start.
+        self._model._core.set_event_carry_state(snapshot.get("events"))
+
         # Recreate simulator with restored state
         self._recreate_interactive_sim()
 
@@ -6906,7 +7009,7 @@ class Simulator:
         t = None if time is None else _finite_time(time)
         self._model.set_state(state)
         if t is not None:
-            self._current_time = t
+            self._set_clock(t)
 
     def set_time(self, t: float) -> None:
         """Set :attr:`current_time`, the time the stored state is at.
@@ -6930,7 +7033,22 @@ class Simulator:
         ValueError
             If ``t`` is not finite.
         """
-        self._current_time = _finite_time(t)
+        self._set_clock(_finite_time(t))
+
+    def _set_clock(self, t: float) -> None:
+        # Rolled back to where an earlier run ended, the events go back with the
+        # clock: the next run continues the triggers and pending executions as
+        # they were then (issue #693). At any other time it is a fresh start.
+        self._current_time = t
+        if self._model._core.rewind_event_carry(t) < 0:
+            warnings.warn(
+                f"set_time({t!r}) rolls back past the last "
+                f"{_EVENT_CARRY_HISTORY} legs this simulation kept: the next run "
+                "starts its events afresh (each trigger from its initialValue), not "
+                "where they stood at that time. Take a snapshot() there to roll "
+                "back further (issue #693).",
+                stacklevel=3,
+            )
 
     # ─── Solver configuration (ODE) ────────────────────────────────
 
