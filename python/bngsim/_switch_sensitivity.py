@@ -2898,6 +2898,162 @@ def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> li
     return found
 
 
+# How many crossings of one periodic condition are placed; past this the
+# condition is left to the integrator as before, with a warning.
+_PERIODIC_STOP_BUDGET = 1_000_000
+_POLY_MAX_DEGREE = 16
+# The evaluator's named constants, as the loaders spell them (SBML <pi/> is
+# `_pi`), read as numbers when no parameter has the name.
+_EVALUATOR_CONSTANTS = {"_pi": math.pi, "pi": math.pi, "_e": math.e, "exponentiale": math.e}
+
+
+def periodic_crossing_times(core, t_start: float, t_end: float, conditions=()) -> list[float]:
+    """Crossings in ``(t_start, t_end]`` of the conditions on time whose residual
+    is a sinusoid ``a·sin(ω·t + φ) + c`` (or a cosine) or a polynomial in time:
+    ``sin(10*time()) > 0.99``, ``(time - 3)^2 < 4e-4``.
+
+    Such a condition is not monotone in time, so none of the resolvers behind
+    :func:`fixed_crossing_stops` places it, and a window narrower than one
+    integrator step, or than one panel of the SSA's continuous loop, can lie
+    wholly between two of their nodes and be stepped over without a trace. Its
+    crossing times are constants of the run all the same, solved here in closed
+    form. Kept apart from :func:`all_fixed_crossings`, which also feeds the
+    event sensitivity jump: these are only places to stop on.
+
+    The parameters are read at their current values; a condition reading any
+    state, or of any other shape, is left out, as before.
+    """
+    if not conditions:
+        return []
+    ctx = core.functional_jacobian_context()
+    scope = switch_condition_scope(core, ctx)
+    bodies = _function_slot_bodies(ctx)
+    out: set[float] = set()
+    for cond in conditions:
+        rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
+        if rewrite is None:
+            continue
+        text, clock_idx, _ = rewrite
+        if clock_idx >= 0:
+            continue
+        try:
+            times = _sinusoid_or_polynomial_crossings(text, scope, t_start, t_end, bodies)
+        except Exception as e:  # sympy can raise anything on odd input
+            logger.debug("periodic crossing stops: %r declined: %s", cond, e)
+            continue
+        if times is None:
+            continue
+        if len(times) > _PERIODIC_STOP_BUDGET:
+            logger.warning(
+                "The condition %r crosses %d times in (%g, %g], more than the %d "
+                "stops placed for one condition; the integrator approaches the rest "
+                "unclamped and can step over a narrow window.",
+                cond,
+                len(times),
+                t_start,
+                t_end,
+                _PERIODIC_STOP_BUDGET,
+            )
+            continue
+        out.update(times)
+    return sorted(out)
+
+
+def _sinusoid_or_polynomial_crossings(cond, scope, t_start, t_end, bodies) -> list[float] | None:
+    """The crossing times of one condition (see :func:`periodic_crossing_times`),
+    or ``None`` when its residual is not of either shape."""
+    import numpy as np
+    import sympy as sp
+
+    split = _relational_split(_strip_redundant_parens(cond.strip()))
+    if split is None:
+        return None
+    lhs, rhs = split
+    residual = _inline_function_slots(f"({lhs})-({rhs})", bodies)
+    flat = _inline_derived_param_refs(residual, scope.derived_exprs) or residual
+    if not _TIME_REF.search(flat):
+        return None
+    # Every other name is a parameter (a value for this run), or a call to a
+    # builtin; anything else (a species, an observable, a model function) moves.
+    probe = _TIME_REF.sub(" 0 ", flat)
+    params: set[str] = set()
+    constants: set[str] = set()
+    for m in _IDENTIFIER.finditer(probe):
+        name = m.group(0)
+        if probe[m.end() :].lstrip().startswith("("):
+            if name in scope.function_names or name in bodies:
+                return None
+            continue
+        if name in _EVALUATOR_CONSTANTS and name not in scope.param_idx:
+            constants.add(name)
+            continue
+        if name not in scope.param_idx or name in bodies:
+            return None
+        params.add(name)
+    text = _TIME_REF.sub(" bngsim_clock_t ", flat)
+    for name in params:
+        value = scope.values[scope.param_idx[name]]
+        text = scope.param_pats[name].sub(f"({value!r})", text)
+    for name in constants:
+        text = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])",
+            f"({_EVALUATOR_CONSTANTS[name]!r})",
+            text,
+        )
+    expr, _ = _parse_clock_expr(text)
+    t = sp.Symbol("bngsim_clock_t")
+    if expr.free_symbols != {t}:
+        return None
+
+    lo, hi = float(t_start), float(t_end)
+    try:
+        poly = sp.Poly(expr, t)
+    except sp.PolynomialError:
+        poly = None
+    if poly is not None:
+        if not 1 <= poly.degree() <= _POLY_MAX_DEGREE:
+            return None
+        coeffs = [float(c) for c in poly.all_coeffs()]
+        if not all(np.isfinite(coeffs)):
+            return None
+        roots = np.roots(coeffs)
+        return sorted(
+            float(r.real)
+            for r in roots
+            if abs(r.imag) <= 1e-9 * max(1.0, abs(r)) and lo < r.real <= hi
+        )
+
+    a, w, ph, c = (sp.Wild(n, exclude=[t]) for n in ("a", "w", "ph", "c"))
+    for fn in (sp.sin, sp.cos):
+        fit = expr.match(a * fn(w * t + ph) + c)
+        if not fit or not all(fit.get(k) is not None and fit[k].is_number for k in (a, w, ph, c)):
+            continue
+        av, wv, pv, cv = (float(fit[k]) for k in (a, w, ph, c))
+        if av == 0.0 or wv == 0.0 or not all(np.isfinite((av, wv, pv, cv))):
+            continue
+        v = -cv / av
+        if abs(v) > 1.0:
+            return []  # never reaches its threshold: no crossing
+        if fn is sp.sin:
+            bases = (np.arcsin(v), np.pi - np.arcsin(v))
+        else:
+            bases = (np.arccos(v), -np.arccos(v))
+        two_pi = 2.0 * np.pi
+        times: list[float] = []
+        for th in bases:
+            # t = (th + 2πk − φ)/ω for integer k, inside (lo, hi].
+            ends = sorted(((wv * lo + pv - th) / two_pi, (wv * hi + pv - th) / two_pi))
+            k0, k1 = int(np.floor(ends[0])), int(np.ceil(ends[1]))
+            if k1 - k0 > 2 * _PERIODIC_STOP_BUDGET:
+                return list(range(k1 - k0))  # over budget: the caller declines it
+            for k in range(k0, k1 + 1):
+                tk = (th + two_pi * k - pv) / wv
+                if lo < tk <= hi:
+                    times.append(float(tk))
+        return sorted(times)
+    return None
+
+
 def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
     """Merge the time-ordered stops that land on one instant.
 
