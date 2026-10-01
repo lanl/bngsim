@@ -99,9 +99,15 @@ struct CvodeUserData;
 static std::string nonfinite_witness_suffix(CvodeUserData &data); // defined below
 static std::string sensitivity_restart_hint(double t_now, const CvodeUserData &data); // likewise
 
+//
+// `handled`, where given, is asked after every batch that ends the same way,
+// with the time the batch started at. If it answers true the caller has dealt
+// with the stall itself (issue #928) and the retry ends, the flag left as it
+// is.
 static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vector y,
                                   sunrealtype *t_ret, int &flag, const char *context,
-                                  CvodeUserData &data, const std::function<void()> &check_budget) {
+                                  CvodeUserData &data, const std::function<void()> &check_budget,
+                                  const std::function<bool(double)> &handled = nullptr) {
     while (flag == CV_TOO_MUCH_WORK) {
         if (check_budget)
             check_budget();
@@ -111,6 +117,8 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
 
         flag = CVode(cvode_mem, t_target, y, t_ret, CV_NORMAL);
         if (flag != CV_TOO_MUCH_WORK)
+            return;
+        if (handled && handled(static_cast<double>(t_before)))
             return;
 
         sunrealtype t_after = 0.0;
@@ -1985,6 +1993,21 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
     }
 }
 
+// Issue #936 — the concentration rescale a compartment resize injects (GH #74),
+// marked by the loader with the compartment's size and its base. It is stored
+// as base·(size before)/(size after the event's other assignments), not from
+// its expression: the amount is the one the species has when the resize
+// executes, and the new size the one the compartment takes.
+static bool is_resize_rescale(const Event &ev, std::size_t a) {
+    return a < ev.assignment_rescale_size_expr.size() && ev.assignment_rescale_size_expr[a] >= 0;
+}
+
+// ...and its base is the species' value at execution, not a value of the
+// event's own, frozen with the others at the trigger.
+static bool rescale_reads_execution_state(const Event &ev, std::size_t a) {
+    return is_resize_rescale(ev, a) && ev.assignment_rescale_base[a] < 0;
+}
+
 // The clock crossings that share an event batch's instant (issue #767): the
 // issue #48 records there, switch times a requested column moves. `pending`
 // have their jump still to come, after the event's. `applied` took theirs at a
@@ -2012,7 +2035,8 @@ struct ExecutedEventFire {
     int event_idx = -1;
     // Its assignment values were frozen at the trigger time (SBML
     // useValuesFromTriggerTime), so they read the pre-batch state. Otherwise
-    // they read the state the earlier fires of the batch left.
+    // they read the state the earlier fires of the batch left, as a resize's
+    // rescale always does (rescale_reads_execution_state).
     bool from_trigger_time = true;
     std::vector<double> values; // what each assignment wrote, in declaration order
 };
@@ -2429,6 +2453,15 @@ struct CvodeSimulator::Impl {
     // #106). Every finite difference of a trigger residual is taken through
     // this, so all of them see the same picture of the model.
     void sync_model_at(double t, const double *x, int ns);
+
+    // Issue #928. Whether a run without sensitivities is pinned on a
+    // state-switch surface, and if so, the state put across it and the
+    // integrator restarted there. `t_batch` is where the batch of steps that
+    // has just ended started. `since` is the run's, one entry per switch: the
+    // time from which a residual has been seen pinned. See the definition.
+    bool carry_across_stalled_state_switch(
+        void *cvode_mem, double t, double t_batch, N_Vector y, int ns,
+        const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since);
 
     // dg/dt along the flow at (t, x) — the denominator of dt*/dθ, and the test
     // for whether a trajectory LEAVES a threshold it starts on (issue #340).
@@ -5919,19 +5952,64 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     };
     std::vector<RowResult> rows;
 
+    const std::vector<double> xm(x_minus.begin(), x_minus.end());
     for (const ExecutedEventFire &fire : executed) {
         const auto &ev = events_outer[fire.event_idx];
-        const bool at_trigger = fire.from_trigger_time;
-        // The state this fire's values were read at.
-        xread = at_trigger ? std::vector<double>(x_minus.begin(), x_minus.end()) : xrun;
-        xwork = xread;
-        sync_state();
         rows.clear();
-        for (const auto &asg : ev.assignments) {
+        for (size_t a = 0; a < ev.assignments.size(); ++a) {
+            const auto &asg = ev.assignments[a];
             const int k = asg.first;      // assigned species (0-based)
             const int vexpr = asg.second; // value expression id
             if (k < 0 || k >= ns) {
                 continue;
+            }
+            // The state this value was read at: the pre-batch one for a value
+            // frozen at the trigger, else the one the earlier fires left.
+            const bool at_trigger = fire.from_trigger_time && !rescale_reads_execution_state(ev, a);
+            const std::vector<double> &want = at_trigger ? xm : xrun;
+            if (xread != want) {
+                xread = want;
+                xwork = xread;
+                sync_state();
+            }
+            // A resize's rescale was formed from the compartment's size before
+            // and after the fire (issue #936). Its expression, differentiated
+            // below, reads the same value only when no earlier fire of the
+            // batch moved that size or what the new size reads; past that the
+            // derivative of the composition is not implemented, so refuse it
+            // rather than differentiate a different quantity.
+            if (is_resize_rescale(ev, a) && a < fire.values.size()) {
+                // Structurally: under trigger-time values, what is read at the
+                // other state must be something no earlier fire wrote (a value
+                // can stay put while its derivative moves, as a reset to the
+                // value it holds does). With no base of its own the rescale is
+                // read at the running state but divides by a new size frozen
+                // before the batch; with one, it is read before the batch but
+                // multiplies by the size at execution.
+                bool moved = false;
+                if (fire.from_trigger_time) {
+                    std::vector<int> sup;
+                    const bool own = ev.assignment_rescale_base[a] >= 0;
+                    model.expression_support(own ? ev.assignment_rescale_size_expr[a] : vexpr, &sup,
+                                             nullptr);
+                    for (int j : sup)
+                        if (j >= 0 && j < ns && assigned[static_cast<size_t>(j)] != 0 &&
+                            (own || j != k))
+                            moved = true;
+                }
+                const double v_expr = eval_ref_outer.evaluate(vexpr);
+                const double v = fire.values[a];
+                if (moved || !(std::fabs(v_expr - v) <=
+                               1e-9 * std::max({1.0, std::fabs(v), std::fabs(v_expr)}))) {
+                    const std::string id = ev.id.empty() ? std::to_string(fire.event_idx) : ev.id;
+                    throw std::runtime_error(
+                        "forward sensitivity through event '" + id +
+                        "' is not supported: it resizes a compartment after an earlier event "
+                        "of the same instant changed the compartment's size or what its new "
+                        "size reads, and the derivative of that composition is not "
+                        "implemented (issue #936). The trajectory itself is unaffected; run "
+                        "without sensitivities, or give the events different times.");
+                }
             }
             // Restrict the FD to what the assignment value can actually be
             // moved by — species and parameters, each followed through the
@@ -6926,6 +7004,170 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, 
                flow2 * static_cast<double>(dir) > 0.0;
     }
     sync_model_at(t, x, ns);
+    return true;
+}
+
+// ─── A run pinned on a state-switch surface (issue #928) ────────────────────
+//
+// A run without sensitivities restarts at a state-switch root only where the
+// solver's own trajectory resolves the crossing (issue #897). A root found in a
+// step that the discontinuity has already collapsed is not resolved, so the run
+// steps on, and then it can neither cross nor pass: a step long enough to move
+// the threshold species by one ulp carries the rate law's jump into an error
+// test it fails, and a step short enough to pass leaves the species where it
+// is. `A <-> B` with `if(A < thr, …)` and `if(B > thrB, …)` on the one surface
+// sat with A on thr and B an ulp short of thrB, taking a batch of steps for
+// 1e-4 of time, until the wall clock ended the run. One switch does the same
+// under a slow enough approach: `if(A > thr, …)` with A rising at 1e-8 a unit
+// of time cannot move A by an ulp in a step the jump lets pass.
+//
+// This acts only there: when CVODE has spent a whole batch of steps in which
+// some step failed its error test, and for a residual
+//   - that is within a few ulp of zero on the side the flow comes from;
+//   - that the flow moves by no more than those few ulp over the step, which
+//     is that short;
+//   - whose flow reaches the surface: read a little further back and carried
+//     to the surface as a line, it keeps at least half of itself. A state
+//     that comes to rest just short of a threshold, `k·(Ainf − A)` with thr a
+//     few ulp past Ainf, has a flow there too, held by rounding, and it runs
+//     out before the surface;
+//   - that the flow would have carried across in the time it has been seen
+//     there. A residual four ulp short of a surface it approaches at 1e-20 is
+//     not pinned, whatever else has used the batch up.
+//
+// The residual is then put the few ulp to its far side, by moving each species
+// it reads that the flow moves by the same few ulp of that species' own: one
+// the flow does not move, a fixed species or a static term of a sum, stays
+// where it is, and no species moves by more than rounding moves it. (Moved as
+// the flow would move them, two species of a sum that go opposite ways at 0.1
+// each, 1e-8 apart, each took 1e7 times the residual's own move.) Nothing
+// else moves, and the time does not. The integrator restarts there. Only
+// where the flow on the far side carries on away from the surface: one that
+// points back is a slide along it (#926), which this leaves as it found it.
+static constexpr double kStalledSwitchUlps = 16.0;
+
+bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
+    void *cvode_mem, double t, double t_batch, N_Vector y, int ns,
+    const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since) {
+    double *y_data = N_VGetArrayPointer(y);
+    const std::vector<double> x(y_data, y_data + ns);
+    sunrealtype h_next = 0.0;
+    CVodeGetCurrentStep(cvode_mem, &h_next);
+    const double h = std::fabs(static_cast<double>(h_next));
+    auto &eval = model.evaluator();
+    std::vector<double> f0(static_cast<std::size_t>(ns), 0.0);
+    model.compute_derivs(t, x.data(), f0.data());
+
+    struct Stalled {
+        const NetworkModel::StateSwitch *sw;
+        double dir;   // the sign the residual takes on the far side
+        double size;  // |g|, how far short of the surface it is
+        double reach; // the few ulp, in the residual's units
+        // Each species' move per unit of residual, over sw->species: its own
+        // ulp over the residual's, toward the side that raises the residual.
+        std::vector<double> push;
+    };
+    std::vector<Stalled> stalled;
+    std::vector<double> gx;
+    std::vector<double> xb(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> fb(static_cast<std::size_t>(ns), 0.0);
+    for (std::size_t k = 0; k < switches.size(); ++k) {
+        const NetworkModel::StateSwitch *sw = switches[k];
+        double scale = 0.0;
+        const double flow =
+            residual_flow(sw->residual_expr_idx, sw->species, t, ns, x, f0, gx, scale);
+        const double g = eval.evaluate(sw->residual_expr_idx);
+        // An ulp of the residual: what one ulp of each species the flow moves
+        // moves it by. And the part of the flow that is those species moving.
+        double ulp = 0.0;
+        double carried = 0.0;
+        for (int j : sw->species) {
+            const auto uj = static_cast<std::size_t>(j);
+            if (f0[uj] == 0.0) {
+                continue;
+            }
+            const double size = std::fabs(x[uj]);
+            ulp += std::fabs(gx[uj]) *
+                   (std::nextafter(size, std::numeric_limits<double>::infinity()) - size);
+            carried += gx[uj] * f0[uj];
+        }
+        const double reach = kStalledSwitchUlps * ulp;
+        const bool pinned = std::isfinite(g) && std::isfinite(flow) && std::isfinite(carried) &&
+                            ulp > 0.0 && carried * flow > 0.0 && std::fabs(g) <= reach &&
+                            h * std::fabs(flow) <= reach      // or the steps still move it
+                            && !(g != 0.0 && g * flow > 0.0); // or it is past, and leaving
+        if (!pinned) {
+            since[k] = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        // The clock runs from the start of the first batch that ended with the
+        // residual here, for as long as every batch since has.
+        if (std::isnan(since[k])) {
+            since[k] = t_batch;
+        }
+        if (!(std::fabs(flow) * (t - since[k]) >= std::fabs(g) + reach)) {
+            continue; // the flow would not have brought it across yet
+        }
+        Stalled one{sw, flow > 0.0 ? 1.0 : -1.0, std::fabs(g), reach, {}};
+        for (int j : sw->species) {
+            const auto uj = static_cast<std::size_t>(j);
+            const double size = std::fabs(x[uj]);
+            const double own = std::nextafter(size, std::numeric_limits<double>::infinity()) - size;
+            one.push.push_back(f0[uj] == 0.0 ? 0.0 : (gx[uj] > 0.0 ? own : -own) / ulp);
+        }
+        // Whether the flow reaches the surface: the same flow, read as far
+        // back again as the residual is from its far side.
+        xb = x;
+        for (std::size_t i = 0; i < sw->species.size(); ++i) {
+            xb[static_cast<std::size_t>(sw->species[i])] -=
+                one.dir * (one.size + reach) * one.push[i];
+        }
+        model.compute_derivs(t, xb.data(), fb.data());
+        const double flow_back =
+            residual_flow(sw->residual_expr_idx, sw->species, t, ns, xb, fb, gx, scale);
+        const double at_surface = flow + (flow - flow_back) * one.size / (one.size + reach);
+        if (!(at_surface * one.dir >= 0.5 * std::fabs(flow))) {
+            continue; // it runs out before the surface: the state is coming to rest
+        }
+        stalled.push_back(std::move(one));
+    }
+    sync_model_at(t, x.data(), ns);
+    if (stalled.empty()) {
+        return false;
+    }
+    std::vector<double> xc(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f1(static_cast<std::size_t>(ns), 0.0);
+    bool across = false;
+    double past = 1.0;
+    for (int attempt = 0; attempt < 3 && !across; ++attempt, past *= 4.0) {
+        xc = x;
+        for (const Stalled &one : stalled) {
+            const double by = one.dir * (one.size + past * one.reach);
+            for (std::size_t i = 0; i < one.sw->species.size(); ++i) {
+                xc[static_cast<std::size_t>(one.sw->species[i])] += by * one.push[i];
+            }
+        }
+        model.compute_derivs(t, xc.data(), f1.data());
+        across = true;
+        for (const Stalled &one : stalled) {
+            double scale = 0.0;
+            const double flow =
+                residual_flow(one.sw->residual_expr_idx, one.sw->species, t, ns, xc, f1, gx, scale);
+            const double g = eval.evaluate(one.sw->residual_expr_idx);
+            across = across && g * one.dir > 0.0 && flow * one.dir > 0.0;
+        }
+    }
+    if (!across) {
+        sync_model_at(t, x.data(), ns);
+        return false;
+    }
+    std::copy(xc.begin(), xc.end(), y_data);
+    sync_model_at(t, y_data, ns);
+    const int rf = reinit_cvode(cvode_mem, static_cast<sunrealtype>(t), y);
+    if (rf != CV_SUCCESS) {
+        throw std::runtime_error("CVodeReInit past a stalled state-switch crossing failed: " +
+                                 std::to_string(rf));
+    }
     return true;
 }
 
@@ -8723,6 +8965,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<const NetworkModel::StateSwitch *> state_switches;
     std::vector<int> state_switch_roots;
     std::vector<double> state_switch_zero_hold;
+    // Issue #928: from when each residual has been seen pinned, and CVODE's
+    // count of failed error tests when the residuals were last read.
+    std::vector<double> state_switch_pinned_since;
+    long state_switch_pinned_fails = 0;
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
     impl_->state_switch_consumed.clear();
@@ -8846,6 +9092,53 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // Guard against a same-instant algebraic loop (mutually-arming events).
     // Far above any legitimate cascade depth (00978 fires ~11; 01533 ~106).
     constexpr int CASCADE_LIMIT = 100000;
+
+    // Write one event's values into the state (issue #936). nv holds them as
+    // the caller formed them, frozen at the trigger or read now; a resize's
+    // rescale is formed here instead, from the compartment's size before and
+    // after the event's other assignments, and written back into nv. The model
+    // holds the state on entry (the batch's values were read from it).
+    auto write_event_values = [&](const Event &ev, std::vector<double> &nv, double t_now) {
+        const auto &assigns = ev.assignments;
+        std::vector<std::pair<std::size_t, double>> rescales;
+        for (std::size_t a = 0; a < assigns.size(); ++a) {
+            if (!is_resize_rescale(ev, a))
+                continue;
+            const int b = ev.assignment_rescale_base[a];
+            const double base = b >= 0 ? nv[static_cast<std::size_t>(b)] : y_data[assigns[a].first];
+            rescales.emplace_back(
+                a, base * eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]));
+        }
+        for (std::size_t a = 0; a < assigns.size(); ++a) {
+            if (is_resize_rescale(ev, a))
+                continue;
+            const int sp_idx0 = assigns[a].first;
+            y_data[sp_idx0] = nv[a];
+            sp_vec_outer[sp_idx0].concentration = nv[a];
+        }
+        if (rescales.empty())
+            return;
+        model.update_observables(y_data);
+        model.evaluate_functions(t_now);
+        for (const auto &[a, num] : rescales) {
+            const double size = eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]);
+            // An amount in no volume has no concentration: refuse it by name
+            // rather than carry an inf (or 0·inf) into the integrator.
+            if (num != 0.0 && !(std::isfinite(size) && size != 0.0)) {
+                const std::string id = ev.id.empty() ? std::string("?") : ev.id;
+                throw std::runtime_error(
+                    "event '" + id + "' at t=" + diag_number(t_now) + " resizes a compartment to " +
+                    diag_number(size) +
+                    " while a species in it holds a nonzero amount, whose concentration is "
+                    "then undefined");
+            }
+            const double v = num == 0.0 ? 0.0 : num / size;
+            const int sp_idx0 = assigns[a].first;
+            y_data[sp_idx0] = v;
+            sp_vec_outer[sp_idx0].concentration = v;
+            nv[a] = v;
+        }
+    };
 
     auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
         if (firing_in.empty())
@@ -9012,11 +9305,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     nv[a] = eval_ref_outer.evaluate(assigns[a].second);
                 }
             }
-            for (size_t a = 0; a < assigns.size(); ++a) {
-                int sp_idx0 = assigns[a].first;
-                y_data[sp_idx0] = nv[a];
-                sp_vec_outer[sp_idx0].concentration = nv[a];
-            }
+            write_event_values(ev, nv, t_now);
             any_immediate = true;
             if (sens.n_total > 0) {
                 ExecutedEventFire fire;
@@ -9807,6 +10096,35 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             sunrealtype t_ret;
             flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
 
+            // Issue #928: a whole batch of steps spent pinned on a state-switch
+            // surface. The state is put across and the run goes on from there;
+            // anything else is left to the retry below, which asks again after
+            // each batch it spends.
+            bool carried = false;
+            auto carry_if_pinned = [&](double t_batch) {
+                if (sens.n_total != 0 || n_state_switch == 0) {
+                    return false;
+                }
+                // A pinned state is one a step has just failed its error test
+                // on. A batch in which none did is a model taking its steps,
+                // and the residuals are not read for it.
+                long failed = 0;
+                CVodeGetNumErrTestFails(cvode_mem, &failed);
+                if (failed == state_switch_pinned_fails) {
+                    return false;
+                }
+                state_switch_pinned_fails = failed;
+                state_switch_pinned_since.resize(state_switches.size(),
+                                                 std::numeric_limits<double>::quiet_NaN());
+                carried = impl_->carry_across_stalled_state_switch(
+                    cvode_mem, static_cast<double>(t_ret), t_batch, y, ns, state_switches,
+                    state_switch_pinned_since);
+                return carried;
+            };
+            if (flag == CV_TOO_MUCH_WORK) {
+                carry_if_pinned(static_cast<double>(t_now));
+            }
+
             // CV_TOO_MUCH_WORK is normally recoverable — max_steps is a batch
             // size per output point, not a ceiling on the run — so retry, but
             // only while the integrator is actually advancing. See
@@ -9814,12 +10132,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // collapsed step size at a discontinuity, where retrying forever is
             // what made this never return (issue #54). The wall-clock budget is
             // still re-checked between batches.
-            retry_while_advancing(cvode_mem, t_target, y, &t_ret, flag,
-                                  "while integrating to the next output point", user_data,
-                                  [&budget] {
-                                      if (budget.active())
-                                          budget.check();
-                                  });
+            if (!carried) {
+                retry_while_advancing(
+                    cvode_mem, t_target, y, &t_ret, flag,
+                    "while integrating to the next output point", user_data,
+                    [&budget] {
+                        if (budget.active())
+                            budget.check();
+                    },
+                    carry_if_pinned);
+            }
+            if (carried) {
+                std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
+                t_now = t_ret;
+                continue;
+            }
 
             if (flag < 0) {
                 rethrow_pending_callback_error(user_data);
@@ -10465,8 +10792,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     const auto &ev_pe = events[pe.event_idx];
                     const auto &assigns = ev_pe.assignments;
                     const bool use_frozen = !pe.frozen_values.empty();
+                    std::vector<double> pe_nv(assigns.size());
                     for (size_t a = 0; a < assigns.size(); ++a) {
-                        int sp_idx0 = assigns[a].first;
                         // The injected compartment-resize concentration rescale
                         // (ode_only, GH #74) conserves each contained species'
                         // *amount* across the resize, which physically happens at
@@ -10479,14 +10806,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         // stale trigger-time amount, corrupting it by V_old/V_new
                         // at the wrong volume. Evaluating the rescale fresh here
                         // reproduces the (correct) UVFTT=false apply path exactly.
+                        // (A rescale the loader marked is formed from the sizes
+                        // before and after instead, by write_event_values: issue
+                        // #936.)
                         const bool ode_only =
                             a < ev_pe.assignment_ode_only.size() && ev_pe.assignment_ode_only[a];
-                        double nv = (use_frozen && !ode_only)
-                                        ? pe.frozen_values[a]
-                                        : eval_ref.evaluate(assigns[a].second);
-                        y_data[sp_idx0] = nv;
-                        sp_vec[sp_idx0].concentration = nv;
+                        pe_nv[a] = (use_frozen && !ode_only) ? pe.frozen_values[a]
+                                                             : eval_ref.evaluate(assigns[a].second);
                     }
+                    write_event_values(ev_pe, pe_nv, static_cast<double>(t_ret));
                     delayed_applied = true;
 
                     model.update_observables(y_data);

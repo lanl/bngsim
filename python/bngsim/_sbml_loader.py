@@ -7811,6 +7811,12 @@ def _build_model_from_sbml_doc(doc):
             # in both modes. Empty/all-False ⇒ byte-identical for non-resize
             # events.
             assignment_ode_only = [False] * len(assignments)
+            # (#936) Each rescale's (assignment index, compartment size, index of
+            # the event's own assignment to the species or -1): the engine stores
+            # base·size before/size after the event's other assignments, so the
+            # amount is the one the species has when the resize executes and the
+            # new size the one the compartment takes.
+            rescale_meta: list[tuple[int, str, int]] = []
             if resized_comps:
                 explicitly_assigned = {sp_i for sp_i, _ in assignments}
                 for comp_id, new_size_expr in resized_comps:
@@ -7834,12 +7840,19 @@ def _build_model_from_sbml_doc(doc):
                             # amount from that explicit assignment is conserved.
                             value_expr = explicit_species_assignment_expr[sp_i]
                             rescale_expr = f"({value_expr}) * ({comp_safe}) / ({new_size_expr})"
+                            base_idx = next(
+                                i
+                                for i, (j, _) in enumerate(assignments)
+                                if j == sp_i and not assignment_ode_only[i]
+                            )
+                            rescale_meta.append((len(assignments), comp_safe, base_idx))
                             assignments.append((sp_i, rescale_expr))
                             assignment_ode_only.append(True)
                             continue
                         if sp_i in explicitly_assigned:
                             continue
                         rescale_expr = f"{_safe_name(sid)} * ({comp_safe}) / ({new_size_expr})"
+                        rescale_meta.append((len(assignments), comp_safe, -1))
                         assignments.append((sp_i, rescale_expr))
                         assignment_ode_only.append(True)
 
@@ -7860,6 +7873,8 @@ def _build_model_from_sbml_doc(doc):
                 priority_expr=priority_expr,
                 assignment_ode_only=assignment_ode_only,
             )
+            for _ai, _size, _base in rescale_meta:
+                builder.set_last_event_assignment_rescale(_ai, _size, _base)
 
     # (#81) Apply the deferred SSA live-volume tags. §9 recorded each mass-action
     # varvol reaction as (rxn_idx, comp_id, exp); the compartment's promoted
@@ -7883,6 +7898,19 @@ def _build_model_from_sbml_doc(doc):
     # resolvable here, after §10. ODE: each varvol hOSU=false species divides by its
     # live compartment volume in compute_derivs. SSA: a per-compartment propensity
     # correction (V_static / V_live)^m_c.
+    # (#741) SSA: an event's assignment of a concentration to an hOSU=false
+    # species in a rate-rule or event-resized compartment, stored as
+    # amount/V_static under SSA, is stored as value·V_live/V_static.
+    for _sid, _cid in species_comp.items():
+        if (
+            _cid in (rate_rule_comps | event_resize_comps)
+            and _sid in species_idx
+            and not species_hosu.get(_sid, False)
+            and _sid not in rate_rule_targets
+            and _sid not in assignment_targets
+            and species_idx.get(_cid) is not None
+        ):
+            builder.set_species_ssa_live_volume(species_idx[_sid], species_idx[_cid])
     for _sp_idx, _comp_id in ode_xcomp_species_fixups:
         _live_idx0 = species_idx.get(_comp_id)
         if _live_idx0 is None:
