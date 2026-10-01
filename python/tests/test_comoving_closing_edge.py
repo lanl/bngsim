@@ -430,9 +430,9 @@ def test_two_windows_that_share_a_width(tmp_path, shape):
 @pytest.mark.filterwarnings("ignore::scipy.integrate.IntegrationWarning")
 def test_an_exponent_far_above_the_singular_range(tmp_path):
     """Control. a = 61 with a width of 1e6: nothing is singular, but the
-    exponent is a parameter, so the power is split all the same, and N^60 and
-    D^(-60) each overflow where their product does not. A first cut raised. The
-    two are written over the width's own value."""
+    exponent is a parameter, so the power is split all the same. Neither column
+    is entered ahead, and a first cut, which entered the width's, raised: N^60
+    and D^(-60) each overflow where their product does not."""
     text = (
         NET.replace("    4 on    {on}", "    4 on    3e5")
         .replace("    5 D     4.0", "    5 D     1e6")
@@ -442,12 +442,46 @@ def test_an_exponent_far_above_the_singular_range(tmp_path):
     path = tmp_path / "m.net"
     path.write_text(text)
     times = [0.0, 1e5, 4e5, 8e5, 1.2e6, 1.29e6, 1.31e6, 1.5e6, 2e6]
-    # The onset column is in its frame inside the window, where the split power
-    # is evaluated. Its bar is the oracle's: main is 1.9e-5 from it too.
+    # The onset column's bar is the oracle's: main is 1.9e-5 from it too.
     for param, bar in (("D", 5e-6), ("on", 5e-5)):
         got = _column(bngsim.Model.from_net(path), param, times=times)
         want = _exact("closing", 61, param, on=3e5, times=times, width=1e6, kdeg=3e-6)
         assert _worst(got, want) < bar
+
+
+@pytest.mark.filterwarnings("ignore::scipy.integrate.IntegrationWarning")
+def test_a_split_power_is_evaluated_far_above_the_singular_range(tmp_path):
+    """Control. Two windows of one width, [3e5, 1.3e6] and [8e5, 1.8e6], at
+    a = 61. The width moves both closes at the same rate, so its column enters
+    its frame at the first and keeps it to the second, with the second window
+    open: that is where the split power is evaluated at an exponent of 60. The
+    two factors are written over the width's own value, 1e6. Written over 1,
+    the sensitivity right-hand side was not finite."""
+    text = (
+        TWO.format(
+            a=61,
+            on2="8e5",
+            D2=4,
+            start2="on2",
+            width2="D1",
+            p1=NET_SHAPES["closing"].format(s="s1()"),
+            p2=NET_SHAPES["closing"].format(s="s2()"),
+        )
+        .replace("    3 on1 2", "    3 on1 3e5")
+        .replace("    4 D1 3", "    4 D1 1e6")
+        .replace("    9 kdeg 0.3", "    9 kdeg 3e-6")
+    )
+    path = tmp_path / "two.net"
+    path.write_text(text)
+    times = [0.0, 1e5, 6e5, 1.0e6, 1.29e6, 1.31e6, 1.5e6, 1.79e6, 1.81e6, 2.2e6]
+
+    def total(t_end, by):
+        return _pulse("closing", 61, t_end, 3e5, 1e6 + by, 2.0, 3e-6) + _pulse(
+            "closing", 61, t_end, 8e5, 1e6 + by, 3.0, 3e-6
+        )
+
+    got = _column(bngsim.Model.from_net(path), "D1", times=times)
+    assert _worst(got, _slope(total, times, h=1e2)) < 5e-6
 
 
 # ─── A frame does not reach a crossing that is not the column's own ─────────
