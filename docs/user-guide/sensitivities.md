@@ -319,6 +319,17 @@ sets a switch time and acts inside a branch is answered on the analytic path,
 which adds the in-branch term to the jump (issue #358), and rejected on the
 fallback, which cannot.
 
+An event that assigns a value which is not smooth at the point the event reads
+it is refused. The jump needs the value's derivative in each parameter, in the
+state, and in the fire time, and takes each as a central difference over a
+millionth of what it moves. Across a step, a bend, or a value that turns inside
+that span, the difference is not a derivative: `u := piecewise(5, time >= T0 + 1, 0)`
+assigned at `time >= T0 + 1` gave dB/dT0 in the millions, for 0 (issue #915). The
+error names the event, the species, and what the value is not smooth in. Move
+the step away from the event, or leave the parameters that reach it out of
+`sensitivity_params`. A step or a bend that moves exactly with the event does
+have a derivative, and is refused all the same.
+
 A decline is never silent. Ask the Simulator directly:
 
 ```python

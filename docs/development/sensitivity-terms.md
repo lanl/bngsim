@@ -111,12 +111,17 @@ has to refresh the `rateOf` buffer.
   refreshes the `rateOf` buffer and re-evaluates the functions after it, and a
   `rateOf` read counts every parameter as support (#764,
   `event-assignment-reads-rateof`).
-- **Covered:** an assignment that reads a step in time exactly at the fire
-  instant (`u := piecewise(5, time >= T0 + 1, 0)`, `B = u`, fired at
-  `time >= T0 + 1`). A value that reads the time is differenced along each
-  column's own direction, the parameter and the fire time together, which a step
-  the fire time carries never crosses. A step it does not carry is a kink in the
-  parameter and is refused (#915, `test_event_value_time_step_sensitivity.py`).
+- **Refused:** an assignment whose value is not smooth where the event reads it:
+  a step in time at the fire instant (`u := piecewise(5, time >= T0 + 1, 0)`,
+  `B = u`, fired at `time >= T0 + 1`), a step in a parameter at the parameter's
+  own value, a bend, or a value that turns inside a millionth of what it reads.
+  `∂h/∂p`, `∂h/∂x` and `∂h/∂t` are central differences, and across any of these
+  a central difference is not a derivative. The value is taken as smooth where
+  the difference over half the step agrees to a part in 1e4 and the second
+  difference about the point is no more than 3/8 as large there; a species is
+  asked only where a column carries something through it (#915,
+  `test_event_value_time_step_sensitivity.py`). A step or a bend that moves
+  with the event has a derivative, and is refused with the rest.
 
 **At `t_start`.** An SBML event with `initialValue=false` whose trigger is already
 true at `t_start` fires there. Then `τ = 0`, and `s⁻` is the seed that is already

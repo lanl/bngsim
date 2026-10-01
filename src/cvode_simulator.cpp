@@ -43,7 +43,6 @@
 #include "bngsim/sundials_guards.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -2065,6 +2064,10 @@ constexpr double kEventLimitRatio = 0.9;
 // of the state or parameter. Where that keeps fewer digits than this, the
 // difference is taken again over a wider step (see apply_event_sensitivity_jump).
 constexpr double kAssignedDerivativeRelTol = 1e-9;
+// That difference is no derivative where the value steps, bends or turns inside
+// it, and the run is refused there (issue #915). A value is taken as smooth
+// across the step where the difference over half of it agrees to this fraction.
+constexpr double kAssignedSmoothRelTol = 1e-4;
 // Two shifts ∂t*/∂p are one when they agree to this fraction, or when their
 // difference moves the time by under this fraction of itself per unit relative
 // change of the parameter. A shift under the second is no shift: a
@@ -5941,6 +5944,48 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             }
         }
     };
+    // A central difference says nothing where the value steps or bends inside
+    // it (issue #915). `u := piecewise(5, time >= T0 + 1, 0)` assigned by an
+    // event at `time >= T0 + 1` steps in the time and in T0 at the instant it
+    // is read: ∂h/∂T0 and ∂h/∂t·∂t*/∂T0 were each 5 over the width of a
+    // difference, and dB/dT0 came back −1.9e6 for 0. A bend, `max(time − 2.3,
+    // 0)` read at 2.3, came back as the mean of its two slopes.
+    //
+    // Across a smooth value the difference over half the step is the same, and
+    // the second difference about the point is a quarter as large there. A
+    // step doubles the first or loses it. A bend at the point leaves the first
+    // alone and halves the second. `lo` and `hi` are the value at −h and +h,
+    // `value_at(offset)` reads it anywhere between, and `scale` is the size of
+    // what is moved. False where the value is not smooth across the step.
+    //
+    // A value straight across the step to rounding is asked no further unless
+    // `always`: that is every constant and every linear value, at no cost. A
+    // value odd about the point, tanh((time − 2.3)/1e-5) read at 2.3, is
+    // straight to that reading and turns inside the step, so the time and the
+    // parameters, where a step is written at the fire instant, are always
+    // asked.
+    auto smooth_across = [&](const std::function<double(double)> &value_at, double h, double lo,
+                             double here, double hi, double scale, bool always) {
+        const double eps = std::numeric_limits<double>::epsilon();
+        const double whole_d = (hi - lo) / (2.0 * h);
+        // What the readings round by: their own last digits, and the last
+        // digit of what is moved, which each of them reads.
+        const double rounding = 16.0 * eps *
+                                (std::max({std::fabs(lo), std::fabs(here), std::fabs(hi)}) +
+                                 scale * std::fabs(whole_d));
+        const double whole = (hi - here) - (here - lo);
+        if (!std::isfinite(whole) || (!always && std::fabs(whole) <= rounding)) {
+            return true; // a value that is not finite is refused elsewhere
+        }
+        const double half_hi = value_at(0.5 * h);
+        const double half_lo = value_at(-0.5 * h);
+        const double half_d = (half_hi - half_lo) / h;
+        const double half = (half_hi - here) - (here - half_lo);
+        return std::fabs(whole_d - half_d) <=
+                   kAssignedSmoothRelTol * std::max(std::fabs(whole_d), std::fabs(half_d)) +
+                       rounding / h &&
+               std::fabs(half) <= 0.375 * std::fabs(whole) + rounding;
+    };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;
     struct RowResult {
@@ -6022,11 +6067,26 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             std::vector<int> x_support, p_support;
             model.expression_support(vexpr, &x_support, &p_support);
             const std::unordered_set<int> p_support_set(p_support.begin(), p_support.end());
+            // Called with the evaluator back at the read state and p₀.
+            auto refuse_not_smooth = [&](const std::string &in) {
+                throw std::runtime_error(
+                    "Forward sensitivity: the value event '" + ev.id + "' assigns to '" +
+                    model.species()[static_cast<size_t>(k)].name +
+                    "' at t=" + std::to_string(t_evt) + " is not smooth in " + in +
+                    " where it is read: it steps, bends or turns within a part in a million of "
+                    "that point, so the derivative the sensitivity needs is not defined there, or "
+                    "is not what a difference across it gives (issue #915). Move the step away "
+                    "from the event, or drop the parameters that reach it from "
+                    "sensitivity_params.");
+            };
 
             // ∂c/∂x_j via central FD.
             const double value_here = eval_ref_outer.evaluate(vexpr);
             std::vector<double> dcdx(static_cast<size_t>(ns), 0.0);
             std::vector<double> dcdx_rounding(static_cast<size_t>(ns), 0.0);
+            // A species the value is not smooth in. Refused only where a
+            // column carries something through it.
+            std::vector<char> rough_x(static_cast<size_t>(ns), 0);
             for (int j : x_support) {
                 const double xj = xread[j];
                 double h = 1e-6 * std::fabs(xj);
@@ -6042,14 +6102,16 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 dcdx[j] = (f_hi - f_lo) / (2.0 * h);
                 const double value_size = std::max(std::fabs(f_hi), std::fabs(f_lo));
                 dcdx_rounding[j] = 2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
+                const std::function<double(double)> value_at = [&](double offset) {
+                    xwork[j] = xj + offset;
+                    sync_state();
+                    return eval_ref_outer.evaluate(vexpr);
+                };
+                rough_x[static_cast<size_t>(j)] =
+                    smooth_across(value_at, h, f_lo, value_here, f_hi, std::fabs(xj), false) ? 0
+                                                                                             : 1;
                 // Taken again over wider steps where it keeps too few digits.
-                widen_difference(
-                    [&](double offset) {
-                        xwork[j] = xj + offset;
-                        sync_state();
-                        return eval_ref_outer.evaluate(vexpr);
-                    },
-                    h, value_here, value_size, dcdx[j], dcdx_rounding[j]);
+                widen_difference(value_at, h, value_here, value_size, dcdx[j], dcdx_rounding[j]);
                 xwork[j] = xj; // restore this component
             }
             sync_state(); // back to the read state for the parameter FD
@@ -6078,31 +6140,33 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 // ∂c/∂q = 0 for Y.
                 const double value_size = std::max(std::fabs(f_hi), std::fabs(f_lo));
                 double rounding = 2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
-                widen_difference(
-                    [&](double offset) {
-                        params[pidx].value = p0 + offset;
-                        perturbed_sync(pidx, t_evt);
-                        return eval_ref_outer.evaluate(vexpr);
-                    },
-                    h, value_here, value_size, dcdp[col], rounding);
+                const std::function<double(double)> value_at = [&](double offset) {
+                    params[pidx].value = p0 + offset;
+                    perturbed_sync(pidx, t_evt);
+                    return eval_ref_outer.evaluate(vexpr);
+                };
+                const bool smooth =
+                    smooth_across(value_at, h, f_lo, value_here, f_hi, std::fabs(p0), true);
+                if (smooth) {
+                    widen_difference(value_at, h, value_here, value_size, dcdp[col], rounding);
+                }
                 params[pidx].value = p0; // restore
                 perturbed_sync(pidx, t_evt);
+                if (!smooth) {
+                    sync_state();
+                    refuse_not_smooth("the parameter '" + params[pidx].name + "'");
+                }
             }
             sync_state(); // restore evaluator state at (read state, p₀)
 
             // ∂c/∂t at fixed (state, p₀), for an assignment that reads `time`
             // (issue #735): `Tlast = time`, `END_M = time + 1000`. x⁺ =
             // h(x⁻(t*), p, t*(p)), so a fire time that moves with p moves the
-            // assigned value by ∂h/∂t·∂t*/∂p as well. A central difference, so a
-            // value linear in time is exact. Needed where some column's fire
-            // time moves, and, to know that the value reads the time at all,
-            // where a requested parameter is one the value reads (issue #915).
-            bool reads_requested = false;
-            for (int col = 0; col < n_sens_p && !reads_requested; ++col) {
-                reads_requested = p_support_set.count(sens_param_indices[col]) != 0;
-            }
+            // assigned value by ∂h/∂t·∂t*/∂p as well. Only needed where some
+            // column's fire time moves; a central difference, so a value linear
+            // in time is exact.
             double dcdt = 0.0;
-            if (tau_nonzero || reads_requested) {
+            if (tau_nonzero) {
                 // Relative to the fire time itself, not floored at one time
                 // unit: a model timed in microseconds would otherwise take a
                 // step the size of its own dynamics.
@@ -6122,120 +6186,14 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 const double c_hi = value_at(t_evt + ht);
                 const double c_lo = value_at(t_evt - ht);
                 dcdt = (c_hi - c_lo) / (2.0 * ht);
-                sync_state();
-            }
-
-            // A value that reads the time is differentiated along each column's
-            // own direction, the parameter and the fire time moving together
-            // (issue #915). ∂h/∂p and ∂h/∂t·∂t*/∂p taken apart are each a
-            // difference across a step when the value has one at the fire
-            // instant, `u := piecewise(5, time >= T0, 0)` assigned by an event at
-            // T0, and they cancel only where the two steps happen to be equal.
-            // Along the direction, a step the fire time carries is never
-            // crossed. Both points are read a nudge late, where the event fires,
-            // which costs a smooth value nothing.
-            //
-            // A step the fire time does not carry is a kink in the parameter: a
-            // fixed `time >= 1.3` read by an event at T0 = 1.3, or a threshold
-            // that moves at another rate. The increment along the direction is
-            // then the same at half the step, where a smooth value's halves, and
-            // the run is refused. The two separate differences gave 1.9e6 for
-            // the first and 0 for the second. So is a step a parameter moves
-            // across an event that parameter does not move, where ∂h/∂p alone
-            // is the difference across it.
-            //
-            // direction_fix[c] is what this adds to ∂h/∂p + ∂h/∂t·∂t*/∂p.
-            std::vector<double> direction_fix(static_cast<size_t>(n_sens), 0.0);
-            if (dcdt != 0.0) {
-                const double ht = std::max(1e-6 * std::fabs(t_evt), 1e-12);
-                auto value_along = [&](int pidx, double p0, double dp, double t) {
-                    if (pidx >= 0) {
-                        params[pidx].value = p0 + dp;
-                    }
-                    auto at_time = [&]() {
-                        for (int i = 0; i < ns; ++i) {
-                            sp_vec_outer[i].concentration = xwork[i];
-                        }
-                        model.update_observables(xwork.data());
-                        model.evaluate_functions(t);
-                        if (model.uses_rateof()) {
-                            model.refresh_rateof_derivs(t, xwork.data());
-                            model.evaluate_functions(t);
-                        }
-                    };
-                    at_time();
-                    if (pidx >= 0) {
-                        model.refresh_derived_params(pidx);
-                        at_time();
-                    }
-                    return eval_ref_outer.evaluate(vexpr);
+                const std::function<double(double)> at_offset = [&](double offset) {
+                    return value_at(t_evt + offset);
                 };
-                for (int c = 0; c < n_sens; ++c) {
-                    const double tau_c = tau[static_cast<size_t>(c)];
-                    int pidx = -1;
-                    if (c < n_sens_p && p_support_set.count(sens_param_indices[c]) != 0) {
-                        pidx = sens_param_indices[c];
-                    }
-                    if (tau_c == 0.0 && pidx < 0) {
-                        continue; // the column moves neither the value nor the event
-                    }
-                    const double p0 = pidx >= 0 ? params[pidx].value : 0.0;
-                    // One unit of the column: `step` of it moves the parameter by
-                    // `step` and the time by `step·τ`.
-                    double step = tau_c != 0.0 ? ht / std::fabs(tau_c)
-                                               : std::numeric_limits<double>::infinity();
-                    if (pidx >= 0) {
-                        double dp = 1e-6 * std::fabs(p0);
-                        if (dp == 0.0) {
-                            dp = 1e-9;
-                        }
-                        step = std::min(step, dp);
-                    }
-                    const double late = std::max(clock_nudge, 1e-4 * step * std::fabs(tau_c));
-                    auto increment = [&](double by) {
-                        const double hi =
-                            value_along(pidx, p0, pidx >= 0 ? by : 0.0, t_evt + by * tau_c + late);
-                        const double lo =
-                            value_along(pidx, p0, pidx >= 0 ? -by : 0.0, t_evt - by * tau_c + late);
-                        return std::array<double, 3>{hi - lo, std::fabs(hi), std::fabs(lo)};
-                    };
-                    const auto whole = increment(step);
-                    const auto half = increment(0.5 * step);
-                    if (pidx >= 0) {
-                        params[pidx].value = p0;
-                        perturbed_sync(pidx, t_evt);
-                    }
-                    sync_state();
-                    const double size = std::max({whole[1], whole[2], half[1], half[2]});
-                    if (std::fabs(whole[0]) > 64.0 * eps_d * size &&
-                        std::fabs(half[0] - 0.5 * whole[0]) > 0.25 * std::fabs(whole[0])) {
-                        throw std::runtime_error(
-                            "Forward sensitivity: the value event '" + ev.id + "' assigns to '" +
-                            model.species()[static_cast<size_t>(k)].name +
-                            "' steps in time at t=" + std::to_string(t_evt) +
-                            ", the instant the event fires, and a requested parameter moves the "
-                            "event and the step apart. The assigned value jumps as the parameter "
-                            "carries one across the other, so the sensitivity does not exist "
-                            "there (issue #915). Separate the two times, or drop the parameters "
-                            "that move one of them from sensitivity_params.");
-                    }
-                    if (tau_c == 0.0) {
-                        continue; // ∂h/∂p as it was: the points above only looked for a step
-                    }
-                    const double separate =
-                        (c < n_sens_p ? dcdp[static_cast<size_t>(c)] : 0.0) + dcdt * tau_c;
-                    // Kept only where the two differ by more than the rounding
-                    // of the difference along the direction. A step the fire
-                    // time carries shows as a disagreement far beyond that. A
-                    // smooth value does not, and its separate derivatives may
-                    // have been taken over wider steps than this one (see
-                    // ∂c/∂p above): a parameter of 1e-9 that moves the fire
-                    // time gives a step of 1e-15 here, under one ulp of the
-                    // time, and the difference along it is rounding.
-                    const double along = whole[0] / (2.0 * step);
-                    if (std::fabs(along - separate) > 4.0 * eps_d * size / step) {
-                        direction_fix[static_cast<size_t>(c)] = along - separate;
-                    }
+                const bool smooth =
+                    smooth_across(at_offset, ht, c_lo, value_here, c_hi, std::fabs(t_evt), true);
+                sync_state();
+                if (!smooth) {
+                    refuse_not_smooth("the time");
                 }
             }
 
@@ -6256,21 +6214,27 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 double acc = 0.0;
                 const std::vector<double> &sm = s_minus[c];
                 for (int j = 0; j < ns; ++j) {
-                    if (dcdx[j] == 0.0) {
+                    if (dcdx[j] == 0.0 && rough_x[static_cast<size_t>(j)] == 0) {
                         continue;
                     }
+                    double through = 0.0; // what the column carries through species j
                     if (at_trigger || assigned[static_cast<size_t>(j)] == 0) {
-                        acc += dcdx[j] * (sm[j] + (tau_c != 0.0 ? f_minus[j] * tau_c : 0.0));
+                        through = sm[j] + (tau_c != 0.0 ? f_minus[j] * tau_c : 0.0);
                     } else {
                         const auto uj = static_cast<size_t>(j);
-                        acc += dcdx[j] * (row_base[static_cast<size_t>(c)][uj] +
-                                          (tau_c != 0.0 ? row_dcdt[uj] * tau_c : 0.0));
+                        through = row_base[static_cast<size_t>(c)][uj] +
+                                  (tau_c != 0.0 ? row_dcdt[uj] * tau_c : 0.0);
                     }
+                    if (rough_x[static_cast<size_t>(j)] != 0 && through != 0.0) {
+                        refuse_not_smooth("the species '" +
+                                          model.species()[static_cast<size_t>(j)].name + "'");
+                    }
+                    acc += dcdx[j] * through;
                 }
                 if (c < n_sens_p) {
                     acc += dcdp[c];
                 }
-                row.base[static_cast<size_t>(c)] = acc + direction_fix[static_cast<size_t>(c)];
+                row.base[static_cast<size_t>(c)] = acc;
             }
             // The same row of the batch's Jacobian applied to each probe: a
             // column with no parameter part and no shift. Its rounding is
