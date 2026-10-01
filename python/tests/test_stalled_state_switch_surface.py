@@ -10,13 +10,13 @@ solver's own trajectory resolves the crossing (issue #897). Here the roots are
 found in steps the discontinuity has already collapsed, none is resolved, and
 the run steps on with A exactly on thr and B one ulp short of thrB. A step long
 enough to move A by an ulp carries the jump in Y' into an error test it fails,
-and one short enough to pass leaves A where it is. CVODE took 500 steps per
-batch for 1e-4 of time until the wall clock ended the run.
+and one short enough to pass leaves A where it is. CVODE took a batch of steps
+for 1e-4 of time until the wall clock ended the run.
 
 Where a whole batch of steps has been spent that way, and the flow would have
-carried the residual across in the time it has been seen there, the species
-the residual reads are now moved the few ulp that put it across, and the
-integrator restarts there.
+carried the residual across in the time it has been seen there, the residual
+is now put the few ulp to its far side, by moving each species it reads as
+that species' own flow would, and the integrator restarts there.
 
 One switch does the same under a slow approach. ``if(A > thr, kb, 0)`` with A
 rising from 1 at 1e-8 a unit of time: a step that moves A by an ulp is 2e-8
@@ -191,7 +191,7 @@ def _slow(tmp_path, eps, thr, **run_options):
 @pytest.mark.parametrize("eps", [1e-7, 1e-8, 1e-9])
 def test_one_switch_under_a_slow_approach(tmp_path, eps):
     """A reaches thr = 1 + 5·eps at t = 5. Each of these ended in the
-    wall-clock timeout, with A an ulp short of thr.
+    wall-clock timeout, with A held on thr.
 
     The crossing time is known only as well as A is: an error of rtol·A in A
     moves it by rtol/eps, which is 1e-3 to 0.1 here. Y is held to a tenth of
@@ -255,3 +255,116 @@ def test_a_threshold_on_a_counter_whose_crossing_stop_is_stood_down():
     np.testing.assert_allclose(
         np.asarray(stood_down.species), want, rtol=1e-9, atol=1e-9 * np.abs(want).max()
     )
+
+
+SUM = """begin parameters
+    1 eps {eps!r}
+    2 thr {thr!r}
+    3 kb 3
+end parameters
+begin functions
+    1 fY() if(Sobs{op}thr,kb,0)
+end functions
+begin species
+    1 A1() {a1!r}
+    2 {fixed}A2() {a2!r}
+    3 Y() 0
+end species
+begin reactions
+    1 0 1 eps
+    2 0 3 fY
+end reactions
+begin groups
+    1 Sobs 1,2
+end groups
+"""
+
+
+@pytest.mark.parametrize(
+    ("a2", "rising", "fixed"),
+    [(1e-3, True, ""), (0.0, False, ""), (1e-3, True, "$"), (0.0, False, "$")],
+    ids=["small", "zero", "fixed-small", "fixed-zero"],
+)
+def test_a_threshold_on_a_sum_moves_only_the_species_the_flow_moves(tmp_path, a2, rising, fixed):
+    """``if(A1 + A2 > thr, kb, 0)`` with A1 = 1e6 moving at 1e-8 of itself and
+    A2 a species nothing moves, small or 0, free or fixed. Each ended in the
+    wall-clock timeout.
+
+    The residual reads both species, and an ulp of it is an ulp of A1: 1e-10.
+    Spread over the two by the gradient, as a first cut did it, the move put
+    A2 at 1e-3 + 1e-9, or at −1e-9 from 0, which a reaction that feeds on A2
+    grows from. Each species is moved as its own flow would move it, so A2 is
+    where it started, to the bit."""
+    a1 = 1e6
+    eps = (1.0 if rising else -1.0) * 1e-8 * a1
+    thr = (a1 + a2) + 5.0 * eps
+    path = tmp_path / "sum.net"
+    path.write_text(
+        SUM.format(eps=eps, thr=thr, a1=a1, a2=a2, op=">" if rising else "<", fixed=fixed)
+    )
+    run = bngsim.Simulator(bngsim.Model.from_net(path), method="ode").run(
+        t_span=(0.0, 10.0), n_points=2, rtol=1e-10, atol=1e-12, timeout=5.0
+    )
+    end = np.asarray(run.species)[-1]
+    assert end[1] == a2
+    assert end[0] == pytest.approx(a1 + eps * 10.0, rel=1e-12)
+    assert end[2] == pytest.approx(KB * 5.0, abs=0.1 * KB * 1e-10 * a1 / abs(eps))
+
+
+REST = """begin parameters
+    1 k 1.0
+    2 Ainf 1.0
+    3 thr {thr!r}
+    4 kf 1.0
+    5 kb 3
+    6 w 0.5
+end parameters
+begin functions
+    1 fA() k*(Ainf-Aobs)+if(Aobs>thr,kf,0)
+    2 fY() if(Aobs>thr,kb,0)
+    3 fP() w*Qobs
+    4 fQ() -w*Pobs
+end functions
+begin species
+    1 A() 0.5
+    2 Y() 0
+    3 P() 0
+    4 Q() 1
+end species
+begin reactions
+    1 0 1 fA
+    2 0 2 fY
+    3 0 3 fP
+    4 0 4 fQ
+end reactions
+begin groups
+    1 Aobs 1
+    2 Pobs 3
+    3 Qobs 4
+end groups
+"""
+
+
+@pytest.mark.parametrize("ulps", [0, 1, 8])
+@pytest.mark.parametrize("rtol", [1e-8, 1e-10])
+def test_a_state_that_comes_to_rest_short_of_a_surface_is_not_put_across(tmp_path, ulps, rtol):
+    """Control. A relaxes to Ainf = 1 and thr is Ainf, or an ulp or eight past
+    it, so A never reaches it and Y stays 0. Past thr a feedback switches on,
+    which would carry A on to 2.
+
+    A ends a few ulp short of Ainf, held there by rounding with a flow that is
+    not 0, and over 1e5 units of time that flow would have covered the few ulp
+    many times. A first cut put it across: Y = 3e5 and A = 2. The flow has to
+    reach the surface, and this one runs out before it: read as far back again,
+    it is larger in proportion to the distance from Ainf."""
+    thr = 1.0
+    for _ in range(ulps):
+        thr = float(np.nextafter(thr, np.inf))
+    path = tmp_path / "rest.net"
+    path.write_text(REST.format(thr=thr))
+    run = bngsim.Simulator(bngsim.Model.from_net(path), method="ode").run(
+        t_span=(0.0, 1e5), n_points=2, rtol=rtol, atol=rtol * 1e-2, timeout=60.0
+    )
+    end = np.asarray(run.species)[-1]
+    assert end[1] == 0.0
+    assert end[0] <= thr

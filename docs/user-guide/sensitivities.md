@@ -194,13 +194,19 @@ Stepping on can leave a run pinned on the threshold: a step long enough to move
 the state across by one ulp carries the rate law's jump into an error test it
 fails, and a shorter one leaves the state where it is. A slow approach does it
 with one condition: a species that rises by 1e-8 of itself a unit of time. Where
-the solver has spent a whole batch of steps that way, and the flow would have
-crossed in the time the state has been seen there, the species the threshold
-reads are moved the few ulp that put the state across and the run restarts
-there (issue #928). How late that is depends on how slow the approach is: the
-crossing time is known no better than the threshold species is, its tolerance
-over its rate. A state that slides along the threshold, with both branches
-pointing into it, is not moved.
+the solver has spent a whole batch of steps that way, and the flow reaches the
+threshold and would have crossed in the time the state has been seen there,
+the state is put the few ulp across, each species the threshold reads moved as
+its own flow would move it, and the run restarts there (issue #928). This is
+for `.net` models: a `piecewise` condition on a species in an SBML model is not
+a state switch of a plain run, and such a run still stalls.
+
+How late the crossing is depends on how slow the approach is and on
+`max_steps`. The crossing time is known no better than the threshold species
+is, its tolerance over its rate, and a pinned run spends a batch of
+`max_steps` steps before it is put across. A state that slides along the
+threshold, with both branches pointing into it, is not moved, and neither is
+one that comes to rest just short of it.
 
 Issue #904 lists what this does not yet cover:
 - a comparison used as a number outside `if()`, such as `k*(X > 1)`;

@@ -6218,24 +6218,31 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, 
 // the threshold species by one ulp carries the rate law's jump into an error
 // test it fails, and a step short enough to pass leaves the species where it
 // is. `A <-> B` with `if(A < thr, …)` and `if(B > thrB, …)` on the one surface
-// sat with A on thr and B an ulp short of thrB, taking 500 steps per batch for
+// sat with A on thr and B an ulp short of thrB, taking a batch of steps for
 // 1e-4 of time, until the wall clock ended the run. One switch does the same
 // under a slow enough approach: `if(A > thr, …)` with A rising at 1e-8 a unit
 // of time cannot move A by an ulp in a step the jump lets pass.
 //
-// This acts only there: when CVODE has spent a whole batch of steps, a residual
-// is within a few ulp of zero on the side the flow comes from, the step is so
-// short that the flow moves the residual by no more than those few ulp across
-// it, and the flow would have carried the residual across in the time it has
-// been seen there. That last is what tells a pinned state from one that is
-// merely close: a residual four ulp short of a surface it approaches at 1e-20
-// is not pinned, whatever else has used the batch up.
+// This acts only there: when CVODE has spent a whole batch of steps in which
+// some step failed its error test, and for a residual
+//   - that is within a few ulp of zero on the side the flow comes from;
+//   - that the flow moves by no more than those few ulp over the step, which
+//     is that short;
+//   - whose flow reaches the surface: read a little further back and carried
+//     to the surface as a line, it keeps at least half of itself. A state
+//     that comes to rest just short of a threshold, `k·(Ainf − A)` with thr a
+//     few ulp past Ainf, has a flow there too, held by rounding, and it runs
+//     out before the surface;
+//   - that the flow would have carried across in the time it has been seen
+//     there. A residual four ulp short of a surface it approaches at 1e-20 is
+//     not pinned, whatever else has used the batch up.
 //
-// The species the residual reads are then moved the few ulp that put it on its
-// far side, and the integrator restarts there. Nothing else moves, and the time
-// does not: the state is changed by rounding, which is what kept it. Only where
-// the flow on the far side carries on away from the surface: one that points
-// back is a slide along it (#926), which this leaves as it found it.
+// The residual is then put the few ulp to its far side, by moving each species
+// it reads as that species' own flow would: one the flow does not move, a
+// fixed species or a static term of a sum, stays where it is. Nothing else
+// moves, and the time does not. The integrator restarts there. Only where the
+// flow on the far side carries on away from the surface: one that points back
+// is a slide along it (#926), which this leaves as it found it.
 static constexpr double kStalledSwitchUlps = 16.0;
 
 bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
@@ -6255,10 +6262,12 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         double dir;               // the sign the residual takes on the far side
         double size;              // |g|, how far short of the surface it is
         double reach;             // the few ulp, in the residual's units
-        std::vector<double> push; // per unit of residual, over sw->species
+        std::vector<double> push; // each species' move per unit of residual, over sw->species
     };
     std::vector<Stalled> stalled;
     std::vector<double> gx;
+    std::vector<double> xb(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> fb(static_cast<std::size_t>(ns), 0.0);
     for (std::size_t k = 0; k < switches.size(); ++k) {
         const NetworkModel::StateSwitch *sw = switches[k];
         double scale = 0.0;
@@ -6266,17 +6275,17 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
             residual_flow(sw->residual_expr_idx, sw->species, t, ns, x, f0, gx, scale);
         const double g = eval.evaluate(sw->residual_expr_idx);
         double ulp = 0.0;
-        double norm = 0.0;
+        double carried = 0.0; // the part of the flow that is the species moving
         for (int j : sw->species) {
             const auto uj = static_cast<std::size_t>(j);
             const double size = std::fabs(x[uj]);
             ulp += std::fabs(gx[uj]) *
                    (std::nextafter(size, std::numeric_limits<double>::infinity()) - size);
-            norm += gx[uj] * gx[uj];
+            carried += gx[uj] * f0[uj];
         }
         const double reach = kStalledSwitchUlps * ulp;
-        const bool pinned = std::isfinite(g) && std::isfinite(flow) && flow != 0.0 && ulp > 0.0 &&
-                            std::isfinite(norm) && std::fabs(g) <= reach &&
+        const bool pinned = std::isfinite(g) && std::isfinite(flow) && std::isfinite(carried) &&
+                            ulp > 0.0 && carried * flow > 0.0 && std::fabs(g) <= reach &&
                             h * std::fabs(flow) <= reach      // or the steps still move it
                             && !(g != 0.0 && g * flow > 0.0); // or it is past, and leaving
         if (!pinned) {
@@ -6293,7 +6302,21 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         }
         Stalled one{sw, flow > 0.0 ? 1.0 : -1.0, std::fabs(g), reach, {}};
         for (int j : sw->species) {
-            one.push.push_back(gx[static_cast<std::size_t>(j)] / norm);
+            one.push.push_back(f0[static_cast<std::size_t>(j)] / carried);
+        }
+        // Whether the flow reaches the surface: the same flow, read as far
+        // back again as the residual is from its far side.
+        xb = x;
+        for (std::size_t i = 0; i < sw->species.size(); ++i) {
+            xb[static_cast<std::size_t>(sw->species[i])] -=
+                one.dir * (one.size + reach) * one.push[i];
+        }
+        model.compute_derivs(t, xb.data(), fb.data());
+        const double flow_back =
+            residual_flow(sw->residual_expr_idx, sw->species, t, ns, xb, fb, gx, scale);
+        const double at_surface = flow + (flow - flow_back) * one.size / (one.size + reach);
+        if (!(at_surface * one.dir >= 0.5 * std::fabs(flow))) {
+            continue; // it runs out before the surface: the state is coming to rest
         }
         stalled.push_back(std::move(one));
     }
@@ -8131,8 +8154,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<const NetworkModel::StateSwitch *> state_switches;
     std::vector<int> state_switch_roots;
     std::vector<double> state_switch_zero_hold;
-    // Issue #928: from when each residual has been seen pinned.
+    // Issue #928: from when each residual has been seen pinned, and CVODE's
+    // count of failed error tests when the residuals were last read.
     std::vector<double> state_switch_pinned_since;
+    long state_switch_pinned_fails = 0;
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
     impl_->state_switch_consumed.clear();
@@ -9173,6 +9198,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 if (sens.n_total != 0 || n_state_switch == 0) {
                     return false;
                 }
+                // A pinned state is one a step has just failed its error test
+                // on. A batch in which none did is a model taking its steps,
+                // and the residuals are not read for it.
+                long failed = 0;
+                CVodeGetNumErrTestFails(cvode_mem, &failed);
+                if (failed == state_switch_pinned_fails) {
+                    return false;
+                }
+                state_switch_pinned_fails = failed;
                 state_switch_pinned_since.resize(state_switches.size(),
                                                  std::numeric_limits<double>::quiet_NaN());
                 carried = impl_->carry_across_stalled_state_switch(
@@ -9183,11 +9217,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (flag == CV_TOO_MUCH_WORK) {
                 carry_if_pinned(static_cast<double>(t_now));
             }
-            if (carried) {
-                std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
-                t_now = t_ret;
-                continue;
-            }
 
             // CV_TOO_MUCH_WORK is normally recoverable — max_steps is a batch
             // size per output point, not a ceiling on the run — so retry, but
@@ -9196,14 +9225,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // collapsed step size at a discontinuity, where retrying forever is
             // what made this never return (issue #54). The wall-clock budget is
             // still re-checked between batches.
-            retry_while_advancing(
-                cvode_mem, t_target, y, &t_ret, flag, "while integrating to the next output point",
-                user_data,
-                [&budget] {
-                    if (budget.active())
-                        budget.check();
-                },
-                carry_if_pinned);
+            if (!carried) {
+                retry_while_advancing(
+                    cvode_mem, t_target, y, &t_ret, flag,
+                    "while integrating to the next output point", user_data,
+                    [&budget] {
+                        if (budget.active())
+                            budget.check();
+                    },
+                    carry_if_pinned);
+            }
             if (carried) {
                 std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
                 t_now = t_ret;
