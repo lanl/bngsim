@@ -129,3 +129,26 @@ def test_a_fire_time_that_moves_much_faster_than_its_parameter():
     t_fire = 100.0 * (1.0 - 0.99)
     want = 50.0 * np.cos(50.0 * t_fire) * 100.0 + 1.0
     assert _sens(text, ["T0"], 3.0)[0] == pytest.approx(want, rel=1e-6)
+
+
+@pytest.mark.parametrize("q", [1.0, 1e-6, 1e-9, 1e-12])
+def test_a_parameter_far_smaller_than_the_time_it_moves(q):
+    """Control. The event fires at 3 + q and assigns D + q·Y + 2·time, so
+    dB/dq = Y + 2 whatever q is. A step along the column's direction is sized
+    by the parameter, and at q = 1e-9 it moves the time by 1e-15, under one ulp
+    of 3: the difference along it is rounding. It is kept only where it differs
+    from the two separate derivatives by more than its own rounding, which a
+    step in the value does and a smooth value does not. A first cut of this fix
+    returned 7.1 at q = 1e-9 and 0 at 1e-12."""
+    text = (
+        "species B, Y; B = 0; Y = 3; q = 1; D = 100\n"
+        "J0: -> B; 0\n"
+        "E1: at (time >= 3 + q): B = D + q*Y + 2*time\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    model.set_param("q", q)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["q"]).run(
+        sample_times=[0.0, 2.0, 5.0], rtol=1e-10, atol=1e-12
+    )
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("B"), 0]
+    assert got == pytest.approx(5.0, rel=1e-6)

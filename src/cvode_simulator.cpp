@@ -5989,7 +5989,18 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     }
                     const double separate =
                         (c < n_sens_p ? dcdp[static_cast<size_t>(c)] : 0.0) + dcdt * tau_c;
-                    direction_fix[static_cast<size_t>(c)] = whole[0] / (2.0 * step) - separate;
+                    // Kept only where the two differ by more than the rounding
+                    // of the difference along the direction. A step the fire
+                    // time carries shows as a disagreement far beyond that. A
+                    // smooth value does not, and its separate derivatives may
+                    // have been taken over wider steps than this one (see
+                    // ∂c/∂p above): a parameter of 1e-9 that moves the fire
+                    // time gives a step of 1e-15 here, under one ulp of the
+                    // time, and the difference along it is rounding.
+                    const double along = whole[0] / (2.0 * step);
+                    if (std::fabs(along - separate) > 4.0 * eps_d * size / step) {
+                        direction_fix[static_cast<size_t>(c)] = along - separate;
+                    }
                 }
             }
 
