@@ -38,7 +38,7 @@ NET = """begin parameters
     1 k0    0.1
     2 k1    2.0
     3 a     {a}
-    4 on    3.0
+    4 on    {on}
     5 D     4.0
     6 kdeg  0.3
     7 _rateLaw1 1
@@ -69,8 +69,8 @@ SHAPES = {
 }
 
 
-def _model(tmp_path, shape, a, close="<=", extra="", tmid=5.0, state_switch=None):
-    text = NET.format(a=a, close=close, shape=SHAPES[shape][0], extra=extra, tmid=tmid)
+def _model(tmp_path, shape, a, close="<=", extra="", tmid=5.0, state_switch=None, on=ON):
+    text = NET.format(a=a, close=close, shape=SHAPES[shape][0], extra=extra, tmid=tmid, on=on)
     if state_switch is not None:
         # A third species whose rate switches where X crosses a level. It feeds
         # nothing back: the run restarts there and X's columns are what they were.
@@ -87,7 +87,7 @@ def _model(tmp_path, shape, a, close="<=", extra="", tmid=5.0, state_switch=None
     return bngsim.Model.from_net(path)
 
 
-def _exact(shape, a, param):
+def _exact(shape, a, param, on=ON, times=T):
     """dX(t)/dparam at every sample time."""
     pulse = SHAPES[shape][1]
 
@@ -106,10 +106,10 @@ def _exact(shape, a, param):
         return value
 
     def moved(t_end, by):
-        return x_of(t_end, ON + by, WIDTH) if param == "on" else x_of(t_end, ON, WIDTH + by)
+        return x_of(t_end, on + by, WIDTH) if param == "on" else x_of(t_end, on, WIDTH + by)
 
     out = []
-    for t_end in T:
+    for t_end in times:
         h = 1e-4
         coarse = (moved(t_end, h) - moved(t_end, -h)) / (2 * h)
         fine = (moved(t_end, h / 2) - moved(t_end, -h / 2)) / h
@@ -117,9 +117,9 @@ def _exact(shape, a, param):
     return np.array(out)
 
 
-def _column(model, param, rtol=1e-8, atol=1e-10):
+def _column(model, param, rtol=1e-8, atol=1e-10, times=T):
     run = bngsim.Simulator(model, method="ode", sensitivity_params=[param]).run(
-        sample_times=T, rtol=rtol, atol=atol
+        sample_times=list(times), rtol=rtol, atol=atol
     )
     return np.asarray(run.sensitivities)[:, 0, 0]
 
@@ -146,6 +146,31 @@ def test_the_same_column_at_a_looser_tolerance(tmp_path, shape, a):
     1.2e-4 to 7e-3."""
     got = _column(_model(tmp_path, shape, a), "D", rtol=1e-6, atol=1e-8)
     assert _worst(got, _exact(shape, a, "D")) < 6e-5
+
+
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_both_edges_requested_together(tmp_path, shape):
+    """With `on` requested too, the opening edge is a switch record and not a
+    fixed crossing, and it is the record's jump that asks for the stop the D
+    column enters at. A window that opens as a power is the one where entering
+    at the opening itself fails: f has an unbounded slope just past it."""
+    run = bngsim.Simulator(
+        _model(tmp_path, shape, 1.1), method="ode", sensitivity_params=["on", "D"]
+    ).run(sample_times=T, rtol=1e-8, atol=1e-10)
+    got = np.asarray(run.sensitivities)[:, 0, :]
+    assert _worst(got[:, 0], _exact(shape, 1.1, "on")) < 5e-6
+    assert _worst(got[:, 1], _exact(shape, 1.1, "D")) < 5e-6
+
+
+@pytest.mark.parametrize("a", [1.05, 1.1, 1.2])
+def test_a_window_already_open_at_the_start(tmp_path, a):
+    """With on = 0 the window is open when the run starts and the close, at
+    D = 4, is the first switch time ahead. The D column enters its frame at the
+    start, where f is smooth."""
+    times = [0.0, 1.0, 2.0, 3.0, 3.99, 4.01, 5.0, 8.0]
+    got = _column(_model(tmp_path, "closing", a, on=0.0), "D", times=times)
+    assert got[0] == 0.0
+    assert _worst(got, _exact("closing", a, "D", on=0.0, times=times)) < 5e-6
 
 
 @pytest.mark.parametrize("tmid", [4.0, 5.0, 6.9])

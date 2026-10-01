@@ -9431,16 +9431,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 //
                 // Unless the root is a switch time's own (issue #760): an SBML
                 // `time <= on + D` is registered as a root and is a switch record
-                // as well. Where the record's jump is still to come, it leaves
-                // and enters against one f, which cancels, and nothing is done
-                // here. Where the root is reported after the record's stop, the
-                // read 1e-9 back is before that switch: a window closing as
-                // (1-s)^0.1 is still 0.13 of its height there, and the onset
-                // column came out 30% off past the close.
-                const bool switch_root =
-                    next_switch < switch_list.size() &&
-                    same_instant(switch_list[next_switch]->t_star, static_cast<double>(t_ret));
-                if (sens.comoving.n_active > 0 && !evt_s_minus.empty() && !switch_root) {
+                // as well, and the root is reported a few ulp after the record's
+                // stop. The read 1e-9 back is then before that switch: a window
+                // closing as (1-s)^0.1 is still 0.13 of its height there, and
+                // the onset column came out 30% off past the close.
+                if (sens.comoving.n_active > 0 && !evt_s_minus.empty()) {
                     bool state_switch_root = false;
                     for (int j = 0; j < n_state_switch; ++j) {
                         state_switch_root |= root_info[n_events + n_disc + j] != 0;
@@ -9480,9 +9475,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     for (int c = 0; c < sens.n_p; ++c) {
                         cols[static_cast<size_t>(c)] = evt_s_minus[static_cast<size_t>(c)].data();
                     }
-                    if (!state_switch_root && !switch_root &&
-                        impl_->comoving_wants_ahead(sens, cols.data(),
-                                                    static_cast<double>(t_ret))) {
+                    if (!state_switch_root && impl_->comoving_wants_ahead(
+                                                  sens, cols.data(), static_cast<double>(t_ret))) {
                         sens.comoving.entry_request = static_cast<double>(t_ret);
                     }
                 }
