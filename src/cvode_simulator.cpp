@@ -351,8 +351,9 @@ struct CvodeUserData {
     // hundreds of them is most of an RHS call's cost. Only when
     // snapshot_restore_ok: every attached derived parameter reads nothing but
     // parameters, so re-deriving at the nominal point always reproduces these
-    // values bit for bit (a `time()`-reading one would not, and keeps the
-    // re-derivation).
+    // values bit for bit (one that calls a built-in the check does not list,
+    // such as `erf`, keeps the re-derivation; a `time()`-reading one is refused
+    // at build).
     bool snapshot_restore_ok = false;
     std::vector<double> params_nominal_snapshot;
 
@@ -3933,7 +3934,8 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     // rather than re-derive (CvodeUserData::params_nominal_snapshot), but only
     // if re-deriving there is a function of the parameters alone
     // (reads_only_parameters). One derived parameter that reads anything else
-    // (`time()`, a table function) keeps the re-derivation for the whole run.
+    // (a built-in the check does not list, such as `erf`) keeps the
+    // re-derivation for the whole run.
     {
         std::unordered_map<std::string, int> param_index;
         param_index.reserve(params.size());
