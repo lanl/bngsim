@@ -128,6 +128,9 @@ CLOCK_READERS = {
         same=False,
     ),
     "michaelis-menten-clock-enzyme": dict(extra="    4 2,1 2,3 MM kcat Km\n", same=False),
+    # The clock in the substrate's place, and returned, so it stays a clock. X is
+    # the enzyme and the product.
+    "michaelis-menten-clock-substrate": dict(extra="    4 1,2 1,2,1 MM kcat Km\n", same=False),
 }
 
 
@@ -231,3 +234,137 @@ def test_a_shift_other_than_one_scales_the_clock_terms(tmp_path, reader):
     _close(cols[:, 0], _fd(tmp_path, text, "on"), 1e-5)
     _close(cols[:, 1], _fd(tmp_path, text, "lam"), 1e-5)
     _close(cols[:, 1], 2.0 * cols[:, 0], 1e-6)
+
+
+def test_the_primaries_keep_their_cases_when_the_derived_axes_run_out_of_budget(
+    tmp_path, monkeypatch
+):
+    """There is one derived axis per derived parameter a singular base reaches,
+    so that is where a build's derivation budget goes. A first cut derived them
+    in the same pass as the primaries, and an expiry there took the primary's
+    case with it: its column fell back to the plain one, 15% off at rtol 1e-4
+    with a thousand derived parameters feeding one onset.
+
+    The emitted source is read directly. Nothing is compiled, so the build this
+    test starves is not left in the cache for another test to find."""
+    from bngsim import _codegen
+    from bngsim._jacobian import _DerivationBudgetExceeded
+
+    model = _model(tmp_path, _net(chain=CHAINS["on = 2*lam"][0]))
+
+    def cases():
+        source = _codegen.generate_sens_from_model(
+            model._core, functional=True, emit_term_scale=True
+        )
+        return source.count("*c_out =")
+
+    assert cases() == 2  # lam's and the derived onset's own
+
+    def out_of_budget(*_args, **_kwargs):
+        raise _DerivationBudgetExceeded
+
+    monkeypatch.setattr(_codegen, "_comoving_derived_axes", out_of_budget)
+    assert cases() == 1
+
+
+# ─── The same through SBML, where a species can be an amount ────────────────
+
+SBML_T = [0.0, 1.0, 2.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+SBML_PULSE = (
+    "k0 + piecewise(piecewise(k1*(({clock}-on)/D)^(a-1)*(1-({clock}-on)/D), "
+    "{clock} <= on + D, 0), {clock} >= on, 0)"
+)
+COUNTER = """
+model counter
+  compartment C = {size};
+  substanceOnly species T in C;
+  species X in C{more};
+  X = 0; T = 0;
+  {rule}
+  k0 = 0.1; k1 = 2; a = {a}; on = 3; D = 4; kdeg = 0.3; k2 = 0.5; kd2 = 0.05;
+  Jt: -> T; C;
+  J1: -> X; {pulse};
+  J2: X -> ; kdeg*X;
+  {extra}
+end
+"""
+
+
+def _counter(a, size="1", more="", rule="", extra=""):
+    return COUNTER.format(
+        a=a, size=size, more=more, rule=rule, extra=extra, pulse=SBML_PULSE.format(clock="T")
+    )
+
+
+def _sbml_column(text, times=SBML_T):
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["on"]).run(
+        sample_times=list(times), rtol=1e-8, atol=1e-10
+    )
+    return np.asarray(run.sensitivities)[:, list(run.species_names).index("X"), 0]
+
+
+def _sbml_fd(text, times=SBML_T):
+    def at(value):
+        model = bngsim.Model.from_antimony_string(text)
+        model.set_param("on", value)
+        run = bngsim.Simulator(model, method="ode").run(
+            sample_times=list(times), rtol=1e-12, atol=1e-14
+        )
+        return np.asarray(run.species)[:, list(run.species_names).index("X")]
+
+    def central(h):
+        return (at(3.0 + h) - at(3.0 - h)) / (2 * h)
+
+    return (4.0 * central(1.5e-3) - central(3e-3)) / 3.0
+
+
+@pytest.mark.parametrize("a", ["1.8", "3.0"])
+@pytest.mark.parametrize("extra", ["", "J3: T -> T + X; k2*T;"], ids=["alone", "with-a-reader"])
+def test_an_amount_in_a_compartment_of_size_two_is_not_a_unit_rate_clock(a, extra):
+    """T is declared in substance units and made at C per unit time, so what a
+    rate law reads under its name is 2·t. Its stored value moves at 1, and that
+    was taken for the clock: the onset `T >= 3` was jumped at t = 3, where it is
+    crossed at 1.5, and the column was wrong with or without a second reader."""
+    text = _counter(a, size="2", extra=extra)
+    _close(_sbml_column(text), _sbml_fd(text), 1e-5)
+
+
+def test_a_rate_law_that_reads_a_sum_whose_weight_is_a_live_size():
+    """Tot := T + X with T an amount in a compartment whose size is a parameter:
+    T's weight in Tot is that size, which a shift has no number for. A rate law
+    reads Tot, so the model gets no comoving case and the plain column answers.
+    With the case and without the term the column was 15% off at a = 3."""
+    text = _counter("3.0", more=", Tot in C", rule="Tot := T + X;", extra="J3: X -> ; kd2*X*Tot;")
+    _close(_sbml_column(text), _sbml_fd(text), 1e-5)
+
+
+def test_a_sum_no_rate_law_reads_does_not_cost_the_model_its_case():
+    """Control. The same Tot with nothing reading it. At a = 1.5 the pulse's
+    onset column needs its comoving case at this tolerance, and keeps it: a
+    first cut dropped the plan for any such observable, read or not, and the
+    run stalled at the onset."""
+    text = _counter("1.5", more=", Tot in C", rule="Tot := T + X;")
+    _close(_sbml_column(text), _sbml_fd(text), 1e-5)
+
+
+def test_a_row_divided_by_a_compartment_that_is_the_clock():
+    """The pulse is gated on a compartment that grows at 1, and a transfer puts
+    X's row over that compartment's live size. The row moves with the clock in
+    a way no comoving case writes, so the model gets none. With one, the column
+    was 46% off at rtol 1e-8."""
+    text = """
+model growing
+  compartment C1 = 1, C2 = 2;
+  C1' = 1;
+  species X in C1, Y in C2;
+  X = 0; Y = 1;
+  k0 = 0.1; k1 = 2; a = 3.0; on = 3; D = 4; kdeg = 0.3; kt = 0.4;
+  Jx: Y => X; kt*Y;
+  J1: -> X; {pulse};
+  J2: X -> ; kdeg*X;
+end
+""".format(pulse=SBML_PULSE.format(clock="C1"))
+    # C1 = 1 + t crosses the onset at t = 2 and the close at t = 6: off both.
+    times = [0.0, 1.0, 2.5, 4.0, 5.0, 6.5, 8.0, 10.0]
+    _close(_sbml_column(text, times), _sbml_fd(text, times), 1e-5)

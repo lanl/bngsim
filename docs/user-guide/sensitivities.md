@@ -226,7 +226,7 @@ emits the code it always did, and that includes a logistic onset
 only for a rate law that names it: mass action with the clock species as a
 reactant, a rate law multiplied by it, a rate law reading an observable that
 sums it with other species, and a Michaelis–Menten rate with the clock as its
-enzyme (issue #749). A derived onset, `on = lam*1.0`, gets a comoving column of
+enzyme or its substrate (issue #749). A derived onset, `on = lam*1.0`, gets a comoving column of
 its own when it is requested, as each parameter it is defined from does
 (issue #750).
 

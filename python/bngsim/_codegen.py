@@ -8457,9 +8457,10 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, s
     ``-∂N/∂p ÷ ∂N/∂clock``. A value that still reads the clock is not a fixed
     crossing and is dropped, as is 0 (``p`` does not move this base).
 
-    ``axes(names)`` yields ``(inline, aliases)`` for a numerator that reads
-    ``names``: the derived parameters to write out, and the columns read off the
-    result. The primaries are one axis, with every derived parameter written out.
+    ``axes(names)`` yields ``(inline, aliases, allowed)`` for a numerator that
+    reads ``names``: the derived parameters to write out, the columns read off
+    the result, and the symbols a shift may be written in. The primaries are one
+    axis, with every derived parameter written out.
     A derived parameter is an axis of its own (issue #750): its column holds it
     where it is set, so it stays a symbol there and only what is defined from it
     is written out.
@@ -8548,6 +8549,15 @@ def _comoving_shifted_partial(
     return _finish_zero_bases(sp.diff(prepared, eps)).subs(eps, 0)
 
 
+def _comoving_derived_axes(names: set[str], upstream, inline_map, derived_aliases: dict, allowed):
+    """The axes of the derived parameters a numerator reaches (issue #750): each
+    kept as a symbol, with what is defined from it written out."""
+    return [
+        (inline_map(derived_aliases[alias]), {alias}, allowed | {alias})
+        for alias in upstream(names)
+    ]
+
+
 def _functional_comoving_plan(
     reactions,
     frxn_by_idx: dict,
@@ -8555,6 +8565,7 @@ def _functional_comoving_plan(
     clock_names: set[str],
     n_params: int,
     observable_clock_weights: dict[str, float] | None = None,
+    unshiftable: frozenset[str] = frozenset(),
 ) -> _ComovingPlan | None:
     """The comoving cases of a model whose plain ``∂f/∂p`` has already derived
     (see the note above), or ``None`` when it has none. Never declines the model:
@@ -8563,11 +8574,13 @@ def _functional_comoving_plan(
 
     ``observable_clock_weights`` is ``{aliased observable: weight}`` for every
     observable that sums a clock species without being the clock's own name
-    (issue #749)."""
+    (issue #749). ``unshiftable`` names the ones whose weight has no number: a
+    model with a rate law that reads one gets no case."""
     import sympy as sp
 
     from bngsim._jacobian import (
         _TIME_SYM,
+        _DerivationBudgetExceeded,
         _exprtk_to_sympy,
         _inline_functions,
         sympy_to_c,
@@ -8602,6 +8615,8 @@ def _functional_comoving_plan(
     # symbol: the axis of its own column (issue #750).
     derived_parsed: dict[str, object | None] = {}
     derived_expr: dict[tuple[str, str | None], object | None] = {}
+    derived_reads: dict[str, frozenset[str]] = {}
+    derived_above: dict[str, frozenset[str]] = {}
 
     def parse_derived(name: str):
         if name not in derived_parsed:
@@ -8609,7 +8624,32 @@ def _functional_comoving_plan(
             derived_parsed[name] = _exprtk_to_sympy(text) if text else None
         return derived_parsed[name]
 
+    def reads(name: str) -> frozenset[str]:
+        """The derived parameters ``name`` is written in."""
+        if name not in derived_reads:
+            parsed = parse_derived(name)
+            symbols = () if parsed is None else parsed.free_symbols
+            derived_reads[name] = frozenset(
+                scope.param_of_alias.get(sym.name, sym.name) for sym in symbols
+            ) & frozenset(derived_names)
+        return derived_reads[name]
+
+    def above(name: str) -> frozenset[str]:
+        """Every derived parameter ``name`` is defined from, through any depth."""
+        if name not in derived_above:
+            found: set[str] = set()
+            stack = list(reads(name))
+            while stack:
+                one = stack.pop()
+                if one not in found:
+                    found.add(one)
+                    stack.extend(reads(one))
+            derived_above[name] = frozenset(found)
+        return derived_above[name]
+
     def inline_derived(name: str, keep: str | None = None, stack: tuple[str, ...] = ()):
+        if keep is not None and keep not in above(name):
+            keep = None  # nothing `name` is defined from is held: the plain form
         key = (name, keep)
         if key in derived_expr:
             return derived_expr[key]
@@ -8649,26 +8689,16 @@ def _functional_comoving_plan(
     derived_inline = inline_map(None)
     primary_aliases = {a for a in param_aliases if scope.param_of_alias[a] in primary}
     derived_aliases = {alias_of_name[n]: n for n in derived_names if n in alias_of_name}
+    allowed = primary_aliases | set(_MATH_CONSTANT_C)
 
     def upstream(names: set[str]) -> list[str]:
         """The derived parameters a numerator reads, directly or through another."""
-        found: list[str] = []
-        stack = sorted(names & set(derived_aliases))
-        while stack:
-            alias = stack.pop()
-            if alias in found:
-                continue
-            found.append(alias)
-            parsed = parse_derived(derived_aliases[alias])
-            if parsed is not None:
-                stack.extend(sorted({s.name for s in parsed.free_symbols} & set(derived_aliases)))
-        return sorted(found)
-
-    def axes(names: set[str]):
-        allowed = primary_aliases | set(_MATH_CONSTANT_C)
-        yield derived_inline, primary_aliases, allowed
-        for alias in upstream(names):
-            yield inline_map(derived_aliases[alias]), {alias}, allowed | {alias}
+        found: set[str] = set()
+        for alias in names & set(derived_aliases):
+            name = derived_aliases[alias]
+            found.add(name)
+            found |= above(name)
+        return sorted(alias_of_name[n] for n in found if n in alias_of_name)
 
     parsed_laws: dict[str, object | None] = {}  # rate-law text -> sympy, clock-dependent only
     rxns_of_law: dict[str, list[int]] = {}
@@ -8685,8 +8715,10 @@ def _functional_comoving_plan(
             parsed = _exprtk_to_sympy(inlined) if inlined is not None else None
             if parsed is None:
                 return None
-            clocked = {s.name for s in parsed.free_symbols} & set(clock_weights)
-            parsed_laws[text] = parsed if clocked else None
+            names = {s.name for s in parsed.free_symbols}
+            if names & unshiftable:
+                return None
+            parsed_laws[text] = parsed if names & set(clock_weights) else None
         if parsed_laws[text] is not None:
             rxns_of_law.setdefault(text, []).append(rxn_idx)
     if not rxns_of_law:
@@ -8703,30 +8735,39 @@ def _functional_comoving_plan(
         text: _clock_guard_cells(parsed_laws[text], clock_names, sp) for text in rxns_of_law
     }
 
-    coefficients: dict[str, set] = {}
-    for text in rxns_of_law:
-        for on_cell, _cond in laws[text]:
-            _check_derivation_deadline(scope.deadline)
-            for p_alias, cs in _comoving_coefficients(on_cell, clock_names, axes, sp).items():
-                coefficients.setdefault(p_alias, set()).update(cs)
+    def shifts_of(axes) -> dict[str, set]:
+        found: dict[str, set] = {}
+        for text in rxns_of_law:
+            for on_cell, _cond in laws[text]:
+                _check_derivation_deadline(scope.deadline)
+                for p_alias, cs in _comoving_coefficients(on_cell, clock_names, axes, sp).items():
+                    found.setdefault(p_alias, set()).update(cs)
+        return found
 
     cases: list[tuple[int, int, str]] = []
     terms: dict[int, dict[int, str]] = {}
-    for p_alias in sorted(
-        coefficients, key=lambda a: scope.param_idx_by_name[scope.param_of_alias[a]]
-    ):
+
+    def derive(p_alias: str, shifts: set) -> None:
+        """The cases of one parameter, one per shift that removes a singular power."""
         p_name = scope.param_of_alias[p_alias]
         # A primary's column carries each derived parameter's share of the shift.
         # A derived parameter's own column holds it fixed, so only what is defined
         # from it follows.
-        inline = derived_inline if p_name in primary else inline_map(p_name)
+        if p_name in primary:
+            inline = derived_inline
+        else:
+            inline = {
+                d_sym: inlined
+                for d_sym, inlined in inline_map(p_name).items()
+                if p_name in above(scope.param_of_alias[d_sym.name])
+            }
         p_sym = sp.Symbol(p_alias)
         derived_shift = {}
         for d_sym, inlined in inline.items():
             rate = sp.diff(inlined, p_sym)
             if rate != 0:
                 derived_shift[d_sym] = rate
-        for c in sorted(coefficients[p_alias], key=sp.srepr):
+        for c in sorted(shifts, key=sp.srepr):
             c_c = sympy_to_c(c, resolve_symbol)
             if c_c is None:
                 continue
@@ -8764,6 +8805,29 @@ def _functional_comoving_plan(
                     slot = terms.setdefault(rxn_idx, {})
                     if c_text is not None:
                         slot[virtual] = c_text
+
+    def by_index(table: dict[str, set]) -> list[str]:
+        return sorted(table, key=lambda a: scope.param_idx_by_name[scope.param_of_alias[a]])
+
+    # The primaries first: exactly the cases the model had before issue #750.
+    coefficients = shifts_of(lambda names: [(derived_inline, primary_aliases, allowed)])
+    for p_alias in by_index(coefficients):
+        derive(p_alias, coefficients[p_alias])
+    # Then each derived parameter as an axis of its own (issue #750). There is one
+    # per derived parameter a singular base reaches, so on a model with many this
+    # is where the derivation budget goes. What it has built when the budget runs
+    # out stands: the primaries keep their cases, and a derived column without one
+    # is the plain column it was.
+    try:
+        derived = shifts_of(
+            lambda names: _comoving_derived_axes(
+                names, upstream, inline_map, derived_aliases, allowed
+            )
+        )
+        for p_alias in by_index(derived):
+            derive(p_alias, derived[p_alias])
+    except _DerivationBudgetExceeded:
+        logger.debug("issue #750: the derived comoving axes ran out of derivation budget")
     if not cases:
         return None
     # A clock-dependent law with no term in a case is a zero comoving ∂func/∂p there,
@@ -9032,10 +9096,12 @@ def _functional_dfdp_terms(
         clock_names = {_alias(name) for name in switch_scope.clocks}
         # Issue #749: an observable that sums a clock species with others moves with
         # the clock too, by its weight on it. One whose weight is a live compartment
-        # size has no number to shift by, and the model then gets no case.
+        # size has no number to shift by: a model with a rate law that reads it
+        # gets no case.
         clock_species = set(switch_scope.clocks.values())
         av_factor, av_param = _amount_volume_factors(data["species"])
-        weights: dict[str, float] | None = {}
+        weights: dict[str, float] = {}
+        unshiftable: set[str] = set()
         for o in observables:
             name = _alias(o["name"])
             if name in clock_names:
@@ -9045,19 +9111,21 @@ def _functional_dfdp_terms(
                 if int(si) not in clock_species:
                     continue
                 if int(si) in av_param:
-                    weights = None
-                    break
+                    unshiftable.add(name)
                 weight += float(factor) * av_factor.get(int(si), 1.0)
-            if weights is None:
-                break
-            if weight != 0.0:
+            if weight != 0.0 and name not in unshiftable:
                 weights[name] = weight
-        if weights is not None:
-            comoving_out.append(
-                lambda: _functional_comoving_plan(
-                    reactions, frxn_by_idx, scope, clock_names, len(params), weights
-                )
+        comoving_out.append(
+            lambda: _functional_comoving_plan(
+                reactions,
+                frxn_by_idx,
+                scope,
+                clock_names,
+                len(params),
+                weights,
+                frozenset(unshiftable),
             )
+        )
     return out, None
 
 
