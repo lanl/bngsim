@@ -155,3 +155,28 @@ def test_the_same_pair_runs_for_a_column_that_moves_neither(event, switch):
     x, s = _sens(APART.format(event=event, switch=switch), ["a"])
     assert x["Y"] == pytest.approx(0.5 * 2.0 * 9.0 / 2, rel=1e-8)
     assert s["Y"][0] == pytest.approx(0.5 * 9.0 / 2, rel=1e-6)
+
+
+def test_an_event_between_two_switch_times_one_instant_apart_is_refused():
+    """Switch times at tau and 140 ulp later, and an event 50 ulp after tau.
+    The stop at tau has taken the first switch's jump, the second's is still
+    to come, and the event is within one instant of both. Its flows would have
+    to be read after the one and before the other, which no nudge of the clock
+    selects.
+
+    The three times are set as doubles: written into the model text they keep
+    15 significant digits."""
+    tau = 3.0
+    step = float(np.spacing(tau))
+    text = (
+        "species X, Y; X = 0; Y = 0; a = 2; k = 0.5; tau = 3; tau2 = 3; te = 3\n"
+        "J0: -> X; a\n"
+        "J1: -> Y; piecewise(k*X, time >= tau, 0) + piecewise(k, time >= tau2, 0)\n"
+        "E1: at (time >= te): X = 0\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    model.set_param("tau2", tau + 140 * step)
+    model.set_param("te", tau + 50 * step)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau", "tau2", "te"])
+    with pytest.raises(Exception, match="between two rate-law switch times"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)

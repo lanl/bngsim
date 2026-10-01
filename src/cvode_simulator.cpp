@@ -2018,6 +2018,9 @@ constexpr double kSwitchInstantUlps = 64.0;
 // state, above this fraction of its size is a rate law switching there (issue
 // #767). Smooth time dependence moves it by 1e-13 of its rate of change.
 constexpr double kEventClockSwitchRelTol = 1e-6;
+// How many instants after a switch stop an event root still counts as on it.
+// CVODE places a root within 100·ε·(|t| + |h|) of where it is.
+constexpr double kEventRootSlack = 4.0;
 
 struct SwitchJumpScratch {
     std::vector<double> f_minus;
@@ -5324,7 +5327,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // A counter clock needs no nudge: at the stop the integrated counter still
     // sits a hair short of its threshold and reads the before-branch.
     // Where the switch's jump was taken at a stop a few ulp back, the event is
-    // the later of the two, and both flows are read a nudge AFTER the instant.
+    // the later of the two and t_evt is already past the switch: both flows
+    // are read where the event fired.
     const double clock_nudge = kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
                                std::max(std::fabs(t_evt), 1.0);
     auto reads_time = [](const std::vector<const SwitchTimeSens *> &records) {
@@ -5342,8 +5346,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             "than pick one (issue #767). Separate the times, or drop sensitivities for this "
             "run.");
     }
-    const double t_flow =
-        time_pending ? t_evt - clock_nudge : (time_applied ? t_evt + clock_nudge : t_evt);
+    const double t_flow = time_pending ? t_evt - clock_nudge : t_evt;
     std::vector<double> f_minus, f_plus;
     if (needs_flow) {
         f_plus.assign(static_cast<size_t>(ns), 0.0);
@@ -8540,7 +8543,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 clocks.pending.push_back(switch_list[k]);
                             }
                         }
-                        if (same_instant(switches_applied_t, static_cast<double>(t_ret))) {
+                        // An event root is located only to CVODE's own root
+                        // tolerance, 100 ulp-scale, so a trigger that rises ON
+                        // a switch time is reported up to that long after the
+                        // stop there.
+                        const double since = static_cast<double>(t_ret) - switches_applied_t;
+                        if (since >= 0.0 &&
+                            since <= kEventRootSlack * kSwitchInstantUlps *
+                                         std::numeric_limits<double>::epsilon() *
+                                         std::max(std::fabs(static_cast<double>(t_ret)), 1.0)) {
                             clocks.applied = switches_applied;
                         }
                     }
