@@ -8486,9 +8486,10 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
     derivative, and the singular power survives in what is emitted. Split, the
     numerator's power has no derivative at all and the scale's is smooth.
 
-    Only where the scale is positive at the model's parameter values, which is
-    when the two forms are the same number, and only where the numerator reads
-    the scale, so a base ``(t - on)/D`` is left as it is written. The values are
+    Only where the scale has a sign at the model's parameter values, and only
+    where the numerator reads the scale, so a base ``(t - on)/D`` is left as it
+    is written. A negative scale takes the numerator's sign with it: the base is
+    positive either way, and so is each of the two it is written as. The values are
     the ones the code is generated at: a scale whose sign a later ``set_param``
     changes keeps the form it was given."""
     from bngsim._jacobian import _value_symbol_names
@@ -8507,7 +8508,7 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
         if not (scale.free_symbols & numerator.free_symbols):
             return node
         at_nominal = scale.xreplace(values)
-        if not at_nominal.is_number or not bool(at_nominal > 0):
+        if not at_nominal.is_number or at_nominal.is_real is not True or at_nominal == 0:
             return node
         # Both powers over the scale's own value, as a number: N^e and D^(-e)
         # each overflow where their product does not (e = 60 with D = 1e6 is

@@ -428,6 +428,7 @@ def test_two_windows_that_share_a_width(tmp_path, shape):
     assert _worst(got, _slope(total, times)) < 5e-6
 
 
+@pytest.mark.filterwarnings("ignore::scipy.integrate.IntegrationWarning")
 def test_an_exponent_far_above_the_singular_range(tmp_path):
     """Control. a = 61 with a width of 1e6: nothing is singular, but the
     exponent is a parameter, so the power is split all the same, and N^60 and
@@ -442,20 +443,26 @@ def test_an_exponent_far_above_the_singular_range(tmp_path):
     path = tmp_path / "m.net"
     path.write_text(text)
     times = [0.0, 1e5, 4e5, 8e5, 1.2e6, 1.29e6, 1.31e6, 1.5e6, 2e6]
-    got = _column(bngsim.Model.from_net(path), "D", times=times)
-    want = _exact("closing", 61, "D", on=3e5, times=times, width=1e6, kdeg=3e-6)
-    assert _worst(got, want) < 5e-6
+    # The onset column is in its frame inside the window, where the split power
+    # is evaluated. Its bar is the oracle's: main is 1.9e-5 from it too.
+    for param, bar in (("D", 5e-6), ("on", 5e-5)):
+        got = _column(bngsim.Model.from_net(path), param, times=times)
+        want = _exact("closing", 61, param, on=3e5, times=times, width=1e6, kdeg=3e-6)
+        assert _worst(got, want) < bar
 
 
+@pytest.mark.parametrize("after", [5e-4, 5e-5])
 @pytest.mark.parametrize("shape", ["closing", "both", "opening"])
-def test_a_root_just_after_the_onset_late_in_time(shape):
-    """A window at t = 1e6 and a fixed root 5e-4 after its onset. A read 1e-9·t
-    back from that root is 1e-3 back, before the onset: the frame was left
-    against f from the other side of it, and the onset column was 30% to 64%
-    off or raised. The read back is four times the root finder's tolerance."""
+def test_a_root_just_after_the_onset_late_in_time(shape, after):
+    """A window at t = 1e6 and a fixed crossing 5e-4 or 5e-5 after its onset.
+    A read 1e-9·t back from there is 1e-3 back, before the onset: the frame
+    was left against f from the other side of it, and the onset column was 30%
+    to 64% off or raised. The frame is left at a stop of the run's own just
+    before the crossing, against f where it is: read a nudge back, 1.4e-8 at
+    this time, it was 1.3e-5 off at the nearer of the two."""
     t0 = 1.0e6
     times = [t0 - 1.0, t0 + 1.0, t0 + 2.5, t0 + 3.5, t0 + 3.99, t0 + 4.01, t0 + 5.0, t0 + 7.0]
-    model = _sbml(shape, 1.1, extra=" + 0*piecewise(1, time >= 1000000.0005, 0)", on=t0)
+    model = _sbml(shape, 1.1, extra=f" + 0*piecewise(1, time >= {t0 + after!r}, 0)", on=t0)
     got = _column(model, "on", times=times)
     assert _worst(got, _exact(shape, 1.1, "on", on=t0, times=times)) < 5e-6
 
@@ -535,3 +542,72 @@ def test_a_root_within_reach_of_the_onset_is_refused(shape):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["on"])
     with pytest.raises(Exception, match="singular in time.*issue #760"):
         sim.run(sample_times=[t0 - 1.0, t0 + 1.0, t0 + 5.0], rtol=1e-8, atol=1e-10)
+
+
+# ─── Other ways to write the window ─────────────────────────────────────────
+
+
+def _written(tmp_path, shape, s, close, window):
+    text = NET.replace("    4 on    {on}\n    5 D     4.0\n", window)
+    text = text.replace("    1 s() (t-on)/D", f"    1 s() {s}")
+    text = text.replace("if(t{close}(on+D)", "if(t{close}" + close)
+    text = text.format(a=1.1, close="<=", shape=SHAPES[shape][0], extra="", tmid=5.0)
+    path = tmp_path / "m.net"
+    path.write_text(text)
+    return bngsim.Model.from_net(path)
+
+
+@pytest.mark.parametrize("param", ["on", "off"])
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_a_window_written_from_on_to_off(tmp_path, shape, param):
+    """``s = (t − on)/(off − on)``: the closing edge moves with `off` alone, and
+    the opening with `on` alone, which also stretches the window. Each column is
+    in its frame at one edge and has to be out of it, or in another, at the
+    other. dX/d(off) was 0.3% off, and dX/d(on) 0.3% off for the window that
+    opens as a power too. (The closing shape's onset column is a control.)"""
+    window = "    4 on    3.0\n    5 off   7.0\n"
+    model = _written(tmp_path, shape, "(t-on)/(off-on)", "off", window)
+    got = _column(model, param)
+
+    def moved(t_end, by):
+        on, off = (ON + by, ON + WIDTH) if param == "on" else (ON, ON + WIDTH + by)
+        return _pulse(shape, 1.1, t_end, on, off - on)
+
+    assert _worst(got, _slope(moved, T)) < 5e-6
+
+
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_a_window_whose_width_is_written_negative(tmp_path, shape):
+    """``s = (t − on)/(−E)`` with E = −4. The closing base is split into two
+    powers only where its scale has a sign, and a first cut asked for a
+    positive one: this window was left as one power, and dX/dE was 0.37% off
+    as before."""
+    window = "    4 on    3.0\n    5 E     -4.0\n"
+    model = _written(tmp_path, shape, "(t-on)/(-E)", "(on-E)", window)
+    got = _column(model, "E")
+    assert _worst(got, -_exact(shape, 1.1, "D")) < 5e-6
+
+
+@pytest.mark.parametrize("param", ["D2", "on2"])
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_another_windows_close_just_before_the_columns_own(tmp_path, shape, param):
+    """Windows [2, 10.9] and [7, 11]. The second window's columns would enter
+    a sixteenth of the stretch from 7 short of 11, at 10.75, and the first
+    window closes at 10.9, between the two. A column entered there carries the
+    first window's closing power to 10.9: 0.2% to 0.3% off, or the solver's
+    error. It enters on the stretch from 10.9 instead."""
+    times = [0.0, 1.0, 5.0, 8.0, 10.5, 10.8, 10.95, 11.05, 12.0, 14.0]
+    text = TWO.replace("    4 D1 3", "    4 D1 8.9").format(
+        a=1.1,
+        on2=7,
+        D2=4,
+        start2="on2",
+        width2="D2",
+        p1=NET_SHAPES[shape].format(s="s1()"),
+        p2=NET_SHAPES[shape].format(s="s2()"),
+    )
+    path = tmp_path / "two.net"
+    path.write_text(text)
+    got = _column(bngsim.Model.from_net(path), param, times=times)
+    which = {"D2": "D", "on2": "on"}[param]
+    assert _worst(got, _exact(shape, 1.1, which, 7.0, times, 4.0, 3.0)) < 5e-6
