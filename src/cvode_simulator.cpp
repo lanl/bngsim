@@ -1992,6 +1992,21 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
     }
 }
 
+// Issue #936 — the concentration rescale a compartment resize injects (GH #74),
+// marked by the loader with the compartment's size and its base. It is stored
+// as base·(size before)/(size after the event's other assignments), not from
+// its expression: the amount is the one the species has when the resize
+// executes, and the new size the one the compartment takes.
+static bool is_resize_rescale(const Event &ev, std::size_t a) {
+    return a < ev.assignment_rescale_size_expr.size() && ev.assignment_rescale_size_expr[a] >= 0;
+}
+
+// ...and its base is the species' value at execution, not a value of the
+// event's own, frozen with the others at the trigger.
+static bool rescale_reads_execution_state(const Event &ev, std::size_t a) {
+    return is_resize_rescale(ev, a) && ev.assignment_rescale_base[a] < 0;
+}
+
 // The clock crossings that share an event batch's instant (issue #767): the
 // issue #48 records there, switch times a requested column moves. `pending`
 // have their jump still to come, after the event's. `applied` took theirs at a
@@ -2019,7 +2034,8 @@ struct ExecutedEventFire {
     int event_idx = -1;
     // Its assignment values were frozen at the trigger time (SBML
     // useValuesFromTriggerTime), so they read the pre-batch state. Otherwise
-    // they read the state the earlier fires of the batch left.
+    // they read the state the earlier fires of the batch left, as a resize's
+    // rescale always does (rescale_reads_execution_state).
     bool from_trigger_time = true;
     std::vector<double> values; // what each assignment wrote, in declaration order
 };
@@ -5935,19 +5951,64 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     };
     std::vector<RowResult> rows;
 
+    const std::vector<double> xm(x_minus.begin(), x_minus.end());
     for (const ExecutedEventFire &fire : executed) {
         const auto &ev = events_outer[fire.event_idx];
-        const bool at_trigger = fire.from_trigger_time;
-        // The state this fire's values were read at.
-        xread = at_trigger ? std::vector<double>(x_minus.begin(), x_minus.end()) : xrun;
-        xwork = xread;
-        sync_state();
         rows.clear();
-        for (const auto &asg : ev.assignments) {
+        for (size_t a = 0; a < ev.assignments.size(); ++a) {
+            const auto &asg = ev.assignments[a];
             const int k = asg.first;      // assigned species (0-based)
             const int vexpr = asg.second; // value expression id
             if (k < 0 || k >= ns) {
                 continue;
+            }
+            // The state this value was read at: the pre-batch one for a value
+            // frozen at the trigger, else the one the earlier fires left.
+            const bool at_trigger = fire.from_trigger_time && !rescale_reads_execution_state(ev, a);
+            const std::vector<double> &want = at_trigger ? xm : xrun;
+            if (xread != want) {
+                xread = want;
+                xwork = xread;
+                sync_state();
+            }
+            // A resize's rescale was formed from the compartment's size before
+            // and after the fire (issue #936). Its expression, differentiated
+            // below, reads the same value only when no earlier fire of the
+            // batch moved that size or what the new size reads; past that the
+            // derivative of the composition is not implemented, so refuse it
+            // rather than differentiate a different quantity.
+            if (is_resize_rescale(ev, a) && a < fire.values.size()) {
+                // Structurally: under trigger-time values, what is read at the
+                // other state must be something no earlier fire wrote (a value
+                // can stay put while its derivative moves, as a reset to the
+                // value it holds does). With no base of its own the rescale is
+                // read at the running state but divides by a new size frozen
+                // before the batch; with one, it is read before the batch but
+                // multiplies by the size at execution.
+                bool moved = false;
+                if (fire.from_trigger_time) {
+                    std::vector<int> sup;
+                    const bool own = ev.assignment_rescale_base[a] >= 0;
+                    model.expression_support(own ? ev.assignment_rescale_size_expr[a] : vexpr, &sup,
+                                             nullptr);
+                    for (int j : sup)
+                        if (j >= 0 && j < ns && assigned[static_cast<size_t>(j)] != 0 &&
+                            (own || j != k))
+                            moved = true;
+                }
+                const double v_expr = eval_ref_outer.evaluate(vexpr);
+                const double v = fire.values[a];
+                if (moved || !(std::fabs(v_expr - v) <=
+                               1e-9 * std::max({1.0, std::fabs(v), std::fabs(v_expr)}))) {
+                    const std::string id = ev.id.empty() ? std::to_string(fire.event_idx) : ev.id;
+                    throw std::runtime_error(
+                        "forward sensitivity through event '" + id +
+                        "' is not supported: it resizes a compartment after an earlier event "
+                        "of the same instant changed the compartment's size or what its new "
+                        "size reads, and the derivative of that composition is not "
+                        "implemented (issue #936). The trajectory itself is unaffected; run "
+                        "without sensitivities, or give the events different times.");
+                }
             }
             // Restrict the FD to what the assignment value can actually be
             // moved by — species and parameters, each followed through the
@@ -8912,6 +8973,53 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // Far above any legitimate cascade depth (00978 fires ~11; 01533 ~106).
     constexpr int CASCADE_LIMIT = 100000;
 
+    // Write one event's values into the state (issue #936). nv holds them as
+    // the caller formed them, frozen at the trigger or read now; a resize's
+    // rescale is formed here instead, from the compartment's size before and
+    // after the event's other assignments, and written back into nv. The model
+    // holds the state on entry (the batch's values were read from it).
+    auto write_event_values = [&](const Event &ev, std::vector<double> &nv, double t_now) {
+        const auto &assigns = ev.assignments;
+        std::vector<std::pair<std::size_t, double>> rescales;
+        for (std::size_t a = 0; a < assigns.size(); ++a) {
+            if (!is_resize_rescale(ev, a))
+                continue;
+            const int b = ev.assignment_rescale_base[a];
+            const double base = b >= 0 ? nv[static_cast<std::size_t>(b)] : y_data[assigns[a].first];
+            rescales.emplace_back(
+                a, base * eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]));
+        }
+        for (std::size_t a = 0; a < assigns.size(); ++a) {
+            if (is_resize_rescale(ev, a))
+                continue;
+            const int sp_idx0 = assigns[a].first;
+            y_data[sp_idx0] = nv[a];
+            sp_vec_outer[sp_idx0].concentration = nv[a];
+        }
+        if (rescales.empty())
+            return;
+        model.update_observables(y_data);
+        model.evaluate_functions(t_now);
+        for (const auto &[a, num] : rescales) {
+            const double size = eval_ref_outer.evaluate(ev.assignment_rescale_size_expr[a]);
+            // An amount in no volume has no concentration: refuse it by name
+            // rather than carry an inf (or 0·inf) into the integrator.
+            if (num != 0.0 && !(std::isfinite(size) && size != 0.0)) {
+                const std::string id = ev.id.empty() ? std::string("?") : ev.id;
+                throw std::runtime_error(
+                    "event '" + id + "' at t=" + diag_number(t_now) + " resizes a compartment to " +
+                    diag_number(size) +
+                    " while a species in it holds a nonzero amount, whose concentration is "
+                    "then undefined");
+            }
+            const double v = num == 0.0 ? 0.0 : num / size;
+            const int sp_idx0 = assigns[a].first;
+            y_data[sp_idx0] = v;
+            sp_vec_outer[sp_idx0].concentration = v;
+            nv[a] = v;
+        }
+    };
+
     auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
         if (firing_in.empty())
             return false;
@@ -9077,11 +9185,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     nv[a] = eval_ref_outer.evaluate(assigns[a].second);
                 }
             }
-            for (size_t a = 0; a < assigns.size(); ++a) {
-                int sp_idx0 = assigns[a].first;
-                y_data[sp_idx0] = nv[a];
-                sp_vec_outer[sp_idx0].concentration = nv[a];
-            }
+            write_event_values(ev, nv, t_now);
             any_immediate = true;
             if (sens.n_total > 0) {
                 ExecutedEventFire fire;
@@ -10568,8 +10672,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     const auto &ev_pe = events[pe.event_idx];
                     const auto &assigns = ev_pe.assignments;
                     const bool use_frozen = !pe.frozen_values.empty();
+                    std::vector<double> pe_nv(assigns.size());
                     for (size_t a = 0; a < assigns.size(); ++a) {
-                        int sp_idx0 = assigns[a].first;
                         // The injected compartment-resize concentration rescale
                         // (ode_only, GH #74) conserves each contained species'
                         // *amount* across the resize, which physically happens at
@@ -10582,14 +10686,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         // stale trigger-time amount, corrupting it by V_old/V_new
                         // at the wrong volume. Evaluating the rescale fresh here
                         // reproduces the (correct) UVFTT=false apply path exactly.
+                        // (A rescale the loader marked is formed from the sizes
+                        // before and after instead, by write_event_values: issue
+                        // #936.)
                         const bool ode_only =
                             a < ev_pe.assignment_ode_only.size() && ev_pe.assignment_ode_only[a];
-                        double nv = (use_frozen && !ode_only)
-                                        ? pe.frozen_values[a]
-                                        : eval_ref.evaluate(assigns[a].second);
-                        y_data[sp_idx0] = nv;
-                        sp_vec[sp_idx0].concentration = nv;
+                        pe_nv[a] = (use_frozen && !ode_only) ? pe.frozen_values[a]
+                                                             : eval_ref.evaluate(assigns[a].second);
                     }
+                    write_event_values(ev_pe, pe_nv, static_cast<double>(t_ret));
                     delayed_applied = true;
 
                     model.update_observables(y_data);

@@ -83,6 +83,10 @@ class ModelBuilder:
         """
         Enable/disable conservation-law detection in build() (GH #102). The detector is dense O(n_species^3) Gaussian elimination consumed only by the steady-state solver; disable it to keep setup O(reactions) for very large ODE-only networks (~100K species). Default True preserves existing behavior.
         """
+    def set_last_event_assignment_rescale(self, assign_idx0: typing.SupportsInt | typing.SupportsIndex, size_expr: str, base_assign_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #936: mark an assignment of the most recently added event as the concentration rescale a compartment resize injects. size_expr is the compartment's size; base_assign_idx0 the event's own assignment to the same species, or -1. The engine stores base * size before / size after the event's other assignments rather than the assignment's expression.
+        """
     def set_net_file_dir(self, dir: str) -> None:
         """
         Set the directory a relative table-function path resolves against — the source .net file's own directory, which is where BNG writes the .tfun beside it. Empty leaves a relative path to resolve against the process's working directory.
@@ -114,6 +118,10 @@ class ModelBuilder:
     def set_species_rateof_amount(self, species_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         GH #231 (rateOf): mark a hasOnlySubstanceUnits=true species so its rateOf csymbol reports the amount-rate (volume_factor * stored-rate) instead of the stored d(conc)/dt. Correct for constant- and variable-volume compartments alike (the integrator stores amount/V_static). No-op if species_idx0 is out of range.
+        """
+    def set_species_ssa_live_volume(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, live_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #741: under SSA/PSA, an event assignment of a concentration to this species is stored as value * conc[live_idx0] / volume_factor (V_live / V_static). No-op if species_idx0 is out of range.
         """
     def set_species_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex, initial_amount: typing.SupportsFloat | typing.SupportsIndex = ...) -> None:
         """

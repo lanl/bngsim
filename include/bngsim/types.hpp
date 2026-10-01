@@ -78,6 +78,15 @@ struct Species {
     // unaffected. Default -1 ⇒ use volume_factor (byte-identical to pre-#144).
     int ode_live_volume_idx0 = -1;
 
+    // Issue #741 — under SSA an hOSU=false species in a rate-rule or
+    // event-resized compartment is stored as amount/V_static (the count is
+    // conserved across a resize). An event assigning it a concentration c
+    // therefore stores c·V_live/V_static, V_live read just before the event's
+    // assignments apply. When >= 0, the 0-based index of the promoted
+    // compartment species holding V_live; volume_factor is V_static. Read only
+    // by the SSA/PSA event path.
+    int ssa_live_volume_idx0 = -1;
+
     // GH #231 (rateOf sub-cluster 3) — when true, the SBML ``rateOf`` csymbol for
     // this species reports d(amount)/dt, NOT the stored d(conc)/dt the rateOf
     // buffer holds by default. A hasOnlySubstanceUnits=true species's symbol
@@ -899,6 +908,15 @@ struct Event {
     // injected rescales. Empty (the default) ⇒ every assignment applies in both
     // modes — byte-identical for `.net` and every non-resize event.
     std::vector<bool> assignment_ode_only;
+    // Issue #936 — for an injected resize rescale, parallel to `assignments`:
+    // the compiled size expression of the compartment, and the index of this
+    // event's own assignment to the same species (-1: none). Such an entry is
+    // not applied from its expression: the engine reads the size before and
+    // after the event's other assignments apply and stores base·before/after,
+    // the base being that assignment's value or else the species' value at
+    // execution. Empty, or -1 per entry, for every other assignment.
+    std::vector<int> assignment_rescale_size_expr;
+    std::vector<int> assignment_rescale_base;
     double delay = 0.0;         // delay (used iff delay_expr_idx == -1)
     int delay_expr_idx = -1;    // optional compiled delay expression
     int priority = 0;           // static fallback priority
