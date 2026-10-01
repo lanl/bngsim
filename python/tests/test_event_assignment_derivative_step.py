@@ -13,11 +13,11 @@ The derivative by a parameter was taken the same way, over a millionth of the
 parameter: ``X = D + q*Y`` with q = 1e-9 gave ∂c/∂q = 0 for Y.
 
 Where the narrow difference keeps fewer than nine digits it is now taken again
-over a wider step: a millionth of the value, then a hundredth of that, down to
-the narrow one. A wide one is kept only where the value is straight across it,
-the two halves of the difference agreeing to rounding, and it agrees with the
-narrow one to the narrow one's rounding. Where none is straight the narrow one
-stands.
+over wider steps, climbing from the narrow one by factors of a hundred to a
+millionth of the value. A step passes where the value is straight across it,
+the difference over half the step is the same, and it agrees with the step
+before it, each to rounding. The climb ends at the first step that fails, and
+the one kept is the last that the step after it agreed with.
 
 Every expected value is a closed form.
 """
@@ -151,8 +151,9 @@ def test_a_bend_inside_the_widest_step_is_not_differenced_through(value, left):
 
 def test_a_kink_just_below_the_state_leaves_a_narrower_step():
     """X = D + max(0, X) with X(3) = 3e-8. The value is straight only within
-    3e-8 of the state, and the third step down, 1e-8, is inside that: dX/da is
-    −6. The narrow difference alone, over 3e-14, gave −5.84."""
+    3e-8 of the state. The step of 1e-8 is inside that and the one of 1e-6 is
+    not, so the one kept is 1e-10, the last a wider one agreed with: dX/da is
+    −6 to five digits. The narrow difference alone, over 3e-14, gave −5.84."""
     text = (
         "species X; X = 0; a = 2; left = 0; D = 100\n"
         "X = 6 + left\n"
@@ -160,7 +161,7 @@ def test_a_kink_just_below_the_state_leaves_a_narrower_step():
         "E1: at (time >= 3): X = D + max(0, X)\n"
     )
     _x, s = _end_sens(text, ["a"], left=3e-8)
-    assert s[0] == pytest.approx(-6.0, rel=1e-5)
+    assert s[0] == pytest.approx(-6.0, rel=1e-4)
 
 
 def test_a_parameter_below_a_kink_of_its_own():
@@ -207,3 +208,51 @@ def test_a_ripple_the_widest_step_straddles():
     text = RUN_DOWN + "E1: at (time >= 3): Z = D + X + 1e-5*sin(2*pi*(X - 1e-3)/1e-4)\n"
     _z, s = _end_sens(text, ["a"], "Z", left=1e-3)
     assert s[0] == pytest.approx(-3.0 * (1.0 + 2.0 * np.pi / 10.0), rel=1e-5)
+
+
+READ = (
+    "species X, Y, Z; X = 0; Y = 0; Z = 0; x0 = {x0!r}; D = {D!r}\n"
+    "X = x0\n"
+    "Y = 3\n"
+    "J1: Y -> ; 0.2*Y\n"
+    "E1: at (time >= 3): Z = {value}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("value", "x0", "D"),
+    [
+        ("D + floor(X)", 0.3, 1e9),
+        ("D + floor(X + 0.5)", 0.0, 3e6),
+        ("D + floor(X/1e-5)", 1e-14, 100.0),
+        ("D + 0.5*X*abs(X)", 1e-9, 1e9),
+        ("D + 0.5*X*abs(X)", 1e-9, 2e9),
+        ("D + X^3", 0.0, 1e5),
+    ],
+    ids=[
+        "staircase",
+        "staircase-on-an-edge",
+        "fine-staircase",
+        "odd-square",
+        "odd-square-2",
+        "cube",
+    ],
+)
+def test_a_staircase_or_an_odd_term_is_not_taken_for_a_slope(value, x0, D):
+    """Control. X is constant at x0, so dZ/dx0 is ∂Z/∂X, which is 0 to nine
+    digits in each of these. Taken from the widest step down, a staircase is
+    straight across that step and agrees with a narrow difference that kept no
+    digits: ``D + floor(X)`` came back 1, and ``D + X·|X|/2`` came back 500. An
+    odd term is straight too, and is caught by the difference over half the
+    step, or by the step after."""
+    _z, s = _end_sens(READ.format(value=value, x0=x0, D=D), ["x0"], "Z")
+    assert s[0] == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.parametrize(("x0", "D", "slope"), [(1e-9, 100.0, 1.0), (1e-3, 1e6, 3.0)])
+def test_a_slope_read_through_an_initial_assignment(x0, D, slope):
+    """Z = D + slope·X with X held at x0: dZ/dx0 is the slope. It came back 0
+    at x0 = 1e-9, and 3.027 for 3 at x0 = 1e-3 beside a D of 1e6."""
+    value = "D + X" if slope == 1.0 else "D + 3*X"
+    _z, s = _end_sens(READ.format(value=value, x0=x0, D=D), ["x0"], "Z")
+    assert s[0] == pytest.approx(slope, rel=1e-8)

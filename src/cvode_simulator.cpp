@@ -2001,7 +2001,7 @@ struct ClockCrossingsAtEvent {
     // fixed crossing within one instant of a record on the same clock is left
     // to the record. So a `floor` step on a fitted switch is not seen (issue
     // #944).
-    std::vector<const SwitchTimeSens *> near;
+    std::vector<const SwitchTimeSens *> within_reach;
 };
 
 // One immediate fire of a same-instant event batch, in the order the batch
@@ -2031,6 +2031,10 @@ constexpr double kSwitchInstantUlps = 64.0;
 // the flows they were differenced from.
 constexpr double kEventJumpRelTol = 1e-8;
 constexpr double kEventJumpUlps = 1e3;
+// A side of a switch is carried to it from three reads where they close in as a
+// geometric sequence with a ratio up to this. Above it the law is turning on as
+// a power under 0.15, which 64 ulp out is a step to any tolerance.
+constexpr double kEventLimitRatio = 0.9;
 // The derivative of an event's assigned value is a difference over a millionth
 // of the state or parameter. Where that keeps fewer digits than this, the
 // difference is taken again over a wider step (see apply_event_sensitivity_jump).
@@ -5395,7 +5399,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     std::vector<const SwitchTimeSens *> on_instant(clocks.pending);
     on_instant.insert(on_instant.end(), clocks.applied.begin(), clocks.applied.end());
     std::vector<const SwitchTimeSens *> crowded(on_instant);
-    crowded.insert(crowded.end(), clocks.near.begin(), clocks.near.end());
+    crowded.insert(crowded.end(), clocks.within_reach.begin(), clocks.within_reach.end());
     // The before-branch of every pending switch. A time clock is read a nudge
     // before the switch's own time, the bracket its jump is read in. A counter
     // clock is put a hair short of its threshold: at the stop the integrated
@@ -5513,69 +5517,121 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // carried through the batch beside the columns, and the run is refused
     // only where the two disagree.
     struct CommuteProbe {
-        int clock = -1;                 // the counter species, or -1 for the time
-        double at = 0.0;                // the switch's time, or the counter's threshold
-        bool fixed = false;             // the switch has no record: no column moves it
-        bool grouped = false;           // a record that shares its instant with another
+        int clock = -1;       // the counter species, or -1 for the time
+        double at = 0.0;      // the switch's time, or the counter's threshold
+        bool fixed = false;   // the switch has no record: no column moves it
+        bool grouped = false; // a record that shares its instant with another
+        // One record's own jump, read by its isolation bump with the clock held
+        // past the instant, rather than everything the clock flips there.
+        const SwitchTimeSens *isolated = nullptr;
         std::vector<double> jump_minus; // Δ(x⁻)
         std::vector<double> jump_plus;  // Δ(x⁺)
         std::vector<double> scale;      // the flows they were read from, per row
         std::vector<double> noise;      // what the clock's own rounding leaves in them
     };
     std::vector<CommuteProbe> probes;
-    // Δ = f_before − f_after across a switch, at one state. It is the second
-    // difference of f over the clock about the switch,
-    //     −(2·(f(c+q) − f(c−q)) − (f(c+2q) − f(c−2q))),
-    // which is what a step leaves and a smooth change, however fast, does not:
-    // a rate law that passes through zero at the instant, or oscillates, has
-    // none. q is a quarter of the nudge. `scale` is widened by what was read.
+    // Δ = f_before − f_after across a switch, at one state: the limit of f from
+    // before the instant less its limit from after. Each is read at one, two
+    // and four nudges from the switch and carried to it. The nearest reads are
+    // a whole nudge out, where the flows themselves are read, so that
+    // everything the instant flips lies between them: a condition written
+    // `time + 300 >= 303` flips 40 ulp before 3.
     //
-    // Two things are left in it that are no step, and `noise` allows for both.
-    // The clock rounds on the way: at t = 1e6 an offset of 1e-8 is taken to a
-    // few hundredths of itself, and sin(30·time) forms 30·t to one ulp of 3e7,
-    // each leaving about ε·|c|·|∂f/∂c| in a read. And a law that turns on as
-    // a power above the first, (t − c)², leaves 2·q² there. `noise` is half of
-    // what the law changes by between 2q and 4q from the switch, on either
-    // side, where no step lies: sixteen times the first and three times the
-    // second. A step that small beside a law moving that fast is not seen.
-    // The reads reach one instant either side of the switch and no further.
+    // Three reads a side are carried to the switch as a geometric sequence
+    // (Aitken's Δ²), which is exact for a law that changes as any one power of
+    // the distance: a drift, a law passing through zero, an onset as (t − c)²
+    // or as sqrt(t − c). None of those is a step. A side whose reads do not
+    // close in on the switch that way has another step among them, 64 to 256
+    // ulp off, which is not this instant's: its nearest read stands.
+    //
+    // `noise` is what the clock's own rounding leaves in a limit that was
+    // carried. An offset of 64 ulp is placed to within an ulp, so each
+    // increment is good to a few parts in a hundred, and the limit to a quarter
+    // of what it was carried by. A step smaller than that beside a law moving
+    // that fast is not seen.
     auto jump_at = [&](const CommuteProbe &probe, const std::vector<double> &state,
                        std::vector<double> &jump, std::vector<double> &scale,
                        std::vector<double> &noise) {
-        std::vector<double> at[6];
-        std::vector<double> moved(state);
-        const double q = 0.25 * (probe.clock >= 0 ? counter_hair(probe.at) : nudge_at(probe.at));
-        const double offsets[6] = {-q, q, -2.0 * q, 2.0 * q, -4.0 * q, 4.0 * q};
-        for (int k = 0; k < 6; ++k) {
-            if (probe.clock >= 0) {
-                moved[static_cast<size_t>(probe.clock)] = probe.at + offsets[k];
-                flow_at(t_evt, moved, at[k]);
-            } else {
-                flow_at(probe.at + offsets[k], state, at[k]);
-            }
-        }
         jump.assign(static_cast<size_t>(ns), 0.0);
         scale.resize(static_cast<size_t>(ns), 0.0);
         noise.resize(static_cast<size_t>(ns), 0.0);
-        const double clock_ulps = 8.0 * eps_d * std::fabs(probe.at) / q;
+        std::vector<double> moved(state);
+        const double reach = probe.clock >= 0 ? counter_hair(probe.at) : nudge_at(probe.at);
+        if (probe.isolated != nullptr) {
+            // This record alone: with the clock past the instant, its own
+            // threshold raised puts it back on its before-branch (issue #375).
+            const SwitchTimeSens &sw = *probe.isolated;
+            double t_read = t_evt;
+            if (probe.clock >= 0) {
+                moved[static_cast<size_t>(probe.clock)] = probe.at + reach;
+            } else {
+                t_read = probe.at + reach;
+            }
+            std::vector<double> after, before;
+            flow_at(t_read, moved, after);
+            std::vector<double> saved;
+            for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                const auto pi = static_cast<size_t>(sw.isolate_param_idx0[k]);
+                saved.push_back(params[pi].value);
+                params[pi].value += sw.isolate_delta[k];
+            }
+            model.refresh_derived_params();
+            flow_at(t_read, moved, before);
+            for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                params[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
+            }
+            model.refresh_derived_params();
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                jump[ui] = before[ui] - after[ui];
+                scale[ui] = std::max({scale[ui], std::fabs(before[ui]), std::fabs(after[ui])});
+            }
+            return;
+        }
+        std::vector<double> side[2][3]; // [before, after][one, two, four nudges out]
+        for (int k = 0; k < 3; ++k) {
+            const double out = reach * static_cast<double>(1 << k);
+            for (int after = 0; after < 2; ++after) {
+                const double offset = after != 0 ? out : -out;
+                if (probe.clock >= 0) {
+                    moved[static_cast<size_t>(probe.clock)] = probe.at + offset;
+                    flow_at(t_evt, moved, side[after][k]);
+                } else {
+                    flow_at(probe.at + offset, state, side[after][k]);
+                }
+            }
+        }
+        const double clock_noise = 0.25 * std::fabs(probe.at) / std::max(std::fabs(probe.at), 1.0);
         for (int i = 0; i < ns; ++i) {
             const auto ui = static_cast<size_t>(i);
-            noise[ui] =
-                std::max(noise[ui], clock_ulps * std::max(std::fabs(at[4][ui] - at[2][ui]),
-                                                          std::fabs(at[5][ui] - at[3][ui])));
-            jump[ui] = -(2.0 * (at[1][ui] - at[0][ui]) - (at[3][ui] - at[2][ui]));
-            for (const auto &one : at) {
-                scale[ui] = std::max(scale[ui], std::fabs(one[ui]));
+            double limit[2];
+            double rough = 0.0;
+            for (int after = 0; after < 2; ++after) {
+                const double nearest = side[after][0][ui];
+                const double d1 = nearest - side[after][1][ui];
+                const double d2 = side[after][1][ui] - side[after][2][ui];
+                double carried = 0.0;
+                if (d1 != 0.0 && d1 / d2 > 0.0 && d1 / d2 <= kEventLimitRatio) {
+                    carried = d1 * d1 / (d1 - d2);
+                }
+                limit[after] = nearest - carried;
+                rough += clock_noise * std::fabs(carried);
+                for (int k = 0; k < 3; ++k) {
+                    scale[ui] = std::max(scale[ui], std::fabs(side[after][k][ui]));
+                }
             }
+            jump[ui] = limit[0] - limit[1];
+            noise[ui] = std::max(noise[ui], rough);
         }
     };
     std::vector<double> x_minus_state; // filled by the first probe
-    auto add_probe = [&](int clock, double where, bool fixed, bool grouped) {
+    auto add_probe = [&](int clock, double where, bool fixed, bool grouped,
+                         const SwitchTimeSens *isolated = nullptr) {
         if (clock >= ns) {
             return;
         }
         for (CommuteProbe &seen : probes) {
-            if (seen.clock == clock && seen.at == where) {
+            if (seen.clock == clock && seen.at == where && seen.isolated == isolated) {
                 seen.grouped = seen.grouped || grouped;
                 return;
             }
@@ -5588,6 +5644,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         probe.at = where;
         probe.fixed = fixed;
         probe.grouped = grouped;
+        probe.isolated = isolated;
         jump_at(probe, x_minus_state, probe.jump_minus, probe.scale, probe.noise);
         probes.push_back(std::move(probe));
     };
@@ -5617,29 +5674,69 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         return std::fabs(a - b) <=
                kSwitchInstantUlps * eps_d * std::max({std::fabs(a), std::fabs(b), 1.0});
     };
-    for (const SwitchTimeSens *one : crowded) {
-        const bool counter = one->clock_species_idx0 >= 0;
-        // A record that shares its instant with another crossing is asked for
-        // what that instant does together, whether or not it moves with the
-        // event: which of them the event falls between is not known.
-        const bool grouped = !one->isolate_param_idx0.empty();
-        bool apart = false;
-        if (!grouped && std::find(on_instant.begin(), on_instant.end(), one) != on_instant.end()) {
-            for (int c = 0; c < n_sens && !apart; ++c) {
-                double d = c < n_sens_p && one->dtstar_dp.size() == static_cast<size_t>(n_sens_p)
-                               ? one->dtstar_dp[static_cast<size_t>(c)]
-                               : 0.0;
-                if (counter) {
-                    // A counter clock's crossing also moves with the clock's own
-                    // sensitivity (issue #725).
-                    d -= s_minus[c][static_cast<size_t>(one->clock_species_idx0)];
-                }
-                apart = !same_shift(c, d, tau[static_cast<size_t>(c)]);
+    auto place_of = [](const SwitchTimeSens *one) {
+        return one->clock_species_idx0 >= 0 ? one->threshold : one->t_star;
+    };
+    // Whether a record is on the instant and moves with the event in every column.
+    auto with_event = [&](const SwitchTimeSens *one) {
+        if (std::find(on_instant.begin(), on_instant.end(), one) == on_instant.end()) {
+            return false;
+        }
+        for (int c = 0; c < n_sens; ++c) {
+            double d = c < n_sens_p && one->dtstar_dp.size() == static_cast<size_t>(n_sens_p)
+                           ? one->dtstar_dp[static_cast<size_t>(c)]
+                           : 0.0;
+            if (one->clock_species_idx0 >= 0) {
+                // A counter clock's crossing also moves with the clock's own
+                // sensitivity (issue #725).
+                d -= s_minus[c][static_cast<size_t>(one->clock_species_idx0)];
+            }
+            if (!same_shift(c, d, tau[static_cast<size_t>(c)])) {
+                return false;
             }
         }
-        if (grouped || apart) {
-            add_probe(one->clock_species_idx0, counter ? one->threshold : one->t_star, false,
-                      grouped);
+        return true;
+    };
+    for (const SwitchTimeSens *one : crowded) {
+        const bool here = std::find(on_instant.begin(), on_instant.end(), one) != on_instant.end();
+        // What flips with this record when its clock is nudged: another record
+        // on the same clock within one instant, or a fixed crossing there, which
+        // has no record and which only the detector saw. A crossing on another
+        // clock does not: the time and a counter are moved one at a time.
+        bool shares = one->fixed_on_instant;
+        bool together = !one->fixed_on_instant && with_event(one);
+        for (const SwitchTimeSens *other : crowded) {
+            if (other == one || other->clock_species_idx0 != one->clock_species_idx0 ||
+                !one_instant(place_of(other), place_of(one))) {
+                continue;
+            }
+            shares = true;
+            together = together && !other->fixed_on_instant && with_event(other);
+        }
+        if (!shares) {
+            // Alone on its instant. It is asked where the event comes apart
+            // from it; one that moves with the event is the crossing the flows
+            // were read for.
+            if (here && !with_event(one)) {
+                add_probe(one->clock_species_idx0, place_of(one), false, false);
+            }
+            continue;
+        }
+        if (together) {
+            // Everything the clock flips there moves with the event: one
+            // crossing, whose before-branch the flows were read on.
+            continue;
+        }
+        // Some of what the clock flips there comes apart from the event, or from
+        // the rest. Which side of the event each is on cannot be selected by
+        // moving the clock, so the event has to commute with all of it: with
+        // what the instant does as a whole, and with each record on it alone.
+        // A whole that commutes says nothing of its parts: a law switched off
+        // at tau and on again at the literal 3 has no jump at tau = 3, and a
+        // reset there is a kink in tau.
+        add_probe(one->clock_species_idx0, place_of(one), false, true);
+        if (here && !one->isolate_param_idx0.empty()) {
+            add_probe(one->clock_species_idx0, place_of(one), false, true, one);
         }
     }
     // A rate law that switches at a FIXED time on this instant has no record: no
@@ -5710,6 +5807,69 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             col.assign(static_cast<size_t>(ns), 0.0);
         }
     }
+    // A central difference of an assigned value that keeps too few digits is
+    // taken again over wider steps. A value far larger than the state it reads
+    // leaves little of the narrow step in the difference: `X + D` with D = 100
+    // moves by 2e-15 at X = 1e-9, under one ulp of 100, and ∂c/∂X came back 0
+    // for 1; at X = 1e-3 it was off by 1e-5.
+    //
+    // The steps climb from the narrow one by factors of a hundred, to a
+    // millionth of the value. A step passes where
+    //   - the value is straight across it, the two halves of the difference
+    //     agreeing to rounding;
+    //   - the difference over half the step is the same, to that one's
+    //     rounding, which a term odd about the point, X·|X| or X³, is not;
+    //   - it agrees with the step before it, to that one's rounding.
+    // The climb ends at the first step that fails, and the difference kept is
+    // the last one the step after it agreed with, or the widest of all. A step
+    // that only just resolves a term cannot tell a slope from a curve: at the
+    // first step where `D + X·|X|/2` with D = 1e9 shows at all it reads 5e-4,
+    // within its own rounding, and the next reads 0.05.
+    //
+    // `D + max(0, X − K)` bends inside a step wider than K, and `D + floor(X)`
+    // jumps inside one wider than the distance to the next integer. Taken from
+    // the widest step down, a staircase is straight and agrees with a narrow
+    // difference that kept no digits at all: `D + floor(X)` with D = 1e9 came
+    // back 1 for 0.
+    //
+    // `value_at(offset)` evaluates the value with the variable moved by the
+    // offset, and leaves the evaluator there.
+    auto widen_difference = [&](const std::function<double(double)> &value_at, double h,
+                                double value_here, double value_size, double &d, double &rounding) {
+        if (!std::isfinite(d) || !(rounding > kAssignedDerivativeRelTol * std::fabs(d))) {
+            return;
+        }
+        const double eps = std::numeric_limits<double>::epsilon();
+        std::vector<double> steps;
+        for (double wide = 1e-6 * value_size; wide > 4.0 * h; wide *= 1e-2) {
+            steps.push_back(wide);
+        }
+        // The last step to pass, which the next has still to agree with.
+        double last = d;
+        double last_rounding = rounding;
+        for (auto step = steps.rbegin(); step != steps.rend(); ++step) {
+            const double wide = *step;
+            const double w_hi = value_at(wide);
+            const double w_lo = value_at(-wide);
+            const double h_hi = value_at(0.5 * wide);
+            const double h_lo = value_at(-0.5 * wide);
+            const double d_wide = (w_hi - w_lo) / (2.0 * wide);
+            const double d_half = (h_hi - h_lo) / wide;
+            const double bend = (w_hi - value_here) - (value_here - w_lo);
+            const double half_rounding = 4.0 * eps * value_size / wide;
+            if (!(std::isfinite(d_wide) && std::fabs(bend) <= 16.0 * eps * value_size &&
+                  std::fabs(d_wide - d_half) <= half_rounding + 1e-9 * std::fabs(d_wide) &&
+                  std::fabs(d_wide - last) <= last_rounding + 1e-9 * std::fabs(d_wide))) {
+                return;
+            }
+            d = last;
+            rounding = last_rounding;
+            last = d_wide;
+            last_rounding = 2.0 * eps * value_size / wide;
+        }
+        d = last;
+        rounding = last_rounding;
+    };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;
     struct RowResult {
@@ -5766,40 +5926,14 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 dcdx[j] = (f_hi - f_lo) / (2.0 * h);
                 const double value_size = std::max(std::fabs(f_hi), std::fabs(f_lo));
                 dcdx_rounding[j] = 2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
-                // A value far larger than the state it reads leaves little of
-                // that step in the difference. `X + D` with D = 100 moves by
-                // 2e-15 at X = 1e-9, under one ulp of 100, and ∂c/∂X came back
-                // 0 for 1; at X = 1e-3 it was off by 1e-5. Where the narrow
-                // difference keeps fewer than nine digits it is taken again
-                // over a wider step: a millionth of the value, then a hundredth
-                // of that, down to the narrow one. A wide one is kept only
-                // where the value is straight across it, the two halves of the
-                // difference agreeing to rounding, and it agrees with the
-                // narrow one to the narrow one's rounding. `D + max(0, X - K)`
-                // bends inside a step wider than K, and that step is passed
-                // over. Where none is straight the narrow one stands.
-                if (std::isfinite(dcdx[j]) &&
-                    dcdx_rounding[j] > kAssignedDerivativeRelTol * std::fabs(dcdx[j])) {
-                    for (double wide = 1e-6 * value_size; wide > 4.0 * h; wide *= 1e-2) {
-                        xwork[j] = xj + wide;
+                // Taken again over wider steps where it keeps too few digits.
+                widen_difference(
+                    [&](double offset) {
+                        xwork[j] = xj + offset;
                         sync_state();
-                        const double w_hi = eval_ref_outer.evaluate(vexpr);
-                        xwork[j] = xj - wide;
-                        sync_state();
-                        const double w_lo = eval_ref_outer.evaluate(vexpr);
-                        const double d_wide = (w_hi - w_lo) / (2.0 * wide);
-                        const double bend = (w_hi - value_here) - (value_here - w_lo);
-                        if (std::isfinite(d_wide) &&
-                            std::fabs(bend) <=
-                                16.0 * std::numeric_limits<double>::epsilon() * value_size &&
-                            std::fabs(d_wide - dcdx[j]) <=
-                                dcdx_rounding[j] + 1e-9 * std::fabs(d_wide)) {
-                            dcdx[j] = d_wide;
-                            dcdx_rounding[j] *= h / wide;
-                            break;
-                        }
-                    }
-                }
+                        return eval_ref_outer.evaluate(vexpr);
+                    },
+                    h, value_here, value_size, dcdx[j], dcdx_rounding[j]);
                 xwork[j] = xj; // restore this component
             }
             sync_state(); // back to the read state for the parameter FD
@@ -5827,28 +5961,14 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 // part of the value: `D + q*Y` with D = 100 and q = 1e-9 gave
                 // ∂c/∂q = 0 for Y.
                 const double value_size = std::max(std::fabs(f_hi), std::fabs(f_lo));
-                const double rounding =
-                    2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
-                if (std::isfinite(dcdp[col]) &&
-                    rounding > kAssignedDerivativeRelTol * std::fabs(dcdp[col])) {
-                    for (double wide = 1e-6 * value_size; wide > 4.0 * h; wide *= 1e-2) {
-                        params[pidx].value = p0 + wide;
+                double rounding = 2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
+                widen_difference(
+                    [&](double offset) {
+                        params[pidx].value = p0 + offset;
                         perturbed_sync(pidx, t_evt);
-                        const double w_hi = eval_ref_outer.evaluate(vexpr);
-                        params[pidx].value = p0 - wide;
-                        perturbed_sync(pidx, t_evt);
-                        const double w_lo = eval_ref_outer.evaluate(vexpr);
-                        const double d_wide = (w_hi - w_lo) / (2.0 * wide);
-                        const double bend = (w_hi - value_here) - (value_here - w_lo);
-                        if (std::isfinite(d_wide) &&
-                            std::fabs(bend) <=
-                                16.0 * std::numeric_limits<double>::epsilon() * value_size &&
-                            std::fabs(d_wide - dcdp[col]) <= rounding + 1e-9 * std::fabs(d_wide)) {
-                            dcdp[col] = d_wide;
-                            break;
-                        }
-                    }
-                }
+                        return eval_ref_outer.evaluate(vexpr);
+                    },
+                    h, value_here, value_size, dcdp[col], rounding);
                 params[pidx].value = p0; // restore
                 perturbed_sync(pidx, t_evt);
             }
@@ -9869,12 +9989,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                          std::max(std::fabs(static_cast<double>(t_ret)), 1.0)) {
                             clocks.applied = switches_applied;
                         }
-                        const double near = kEventRootSlack * kSwitchInstantUlps *
-                                            std::numeric_limits<double>::epsilon() *
-                                            std::max(std::fabs(static_cast<double>(t_ret)), 1.0);
+                        const double reach = kEventRootSlack * kSwitchInstantUlps *
+                                             std::numeric_limits<double>::epsilon() *
+                                             std::max(std::fabs(static_cast<double>(t_ret)), 1.0);
                         for (const SwitchTimeSens *one : switch_list) {
-                            if (std::fabs(one->t_star - static_cast<double>(t_ret)) <= 2.0 * near) {
-                                clocks.near.push_back(one);
+                            if (std::fabs(one->t_star - static_cast<double>(t_ret)) <=
+                                2.0 * reach) {
+                                clocks.within_reach.push_back(one);
                             }
                         }
                         // Every fixed crossing on this instant: two thresholds
@@ -9884,10 +10005,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                                      ? opts.crossing_stops
                                                                      : opts.crossing_probes;
                         auto stop = std::lower_bound(
-                            asked.begin(), asked.end(), static_cast<double>(t_ret) - near,
+                            asked.begin(), asked.end(), static_cast<double>(t_ret) - reach,
                             [](const CrossingStop &one, double t) { return one.t_star < t; });
                         for (; stop != asked.end() &&
-                               stop->t_star <= static_cast<double>(t_ret) + near;
+                               stop->t_star <= static_cast<double>(t_ret) + reach;
                              ++stop) {
                             clocks.fixed_stops.push_back(*stop);
                         }

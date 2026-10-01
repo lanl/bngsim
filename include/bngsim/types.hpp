@@ -995,6 +995,10 @@ struct SwitchTimeSens {
     // the run outright when no parameter is private to one of the crossings.
     std::vector<int> isolate_param_idx0;
     std::vector<double> isolate_delta; // parallel to isolate_param_idx0
+    // A crossing no requested column moves is on this one's clock and within
+    // one instant of it (issue #767). It has no record, and flips with every
+    // nudge of the clock that reads this one.
+    bool fixed_on_instant = false;
 };
 
 // One event whose crossing time moves with the sensitivity parameters (issue

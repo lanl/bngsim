@@ -488,7 +488,8 @@ def test_a_fitted_switch_near_the_event_does_not_hide_a_fixed_one(ulps):
     switch on Y a few hundred ulp away that moves with the event. The fixed one
     is a kink in tau: X is halved before W's law turns on, or after. An earlier
     cut skipped the search for a fixed switch wherever a fitted one was in
-    reach, and returned dW/dtau from one side."""
+    reach, and returned dW/dtau from one side. The fitted switch is on another
+    instant, so the fixed one is asked on its own."""
     text = (
         "species X, Y, W; X = 0; Y = 0; W = 0; a = 2; k = 0.5; q = 0.7; tau = 3; off = 0\n"
         "J0: -> X; a\n"
@@ -499,7 +500,7 @@ def test_a_fitted_switch_near_the_event_does_not_hide_a_fixed_one(ulps):
     model = bngsim.Model.from_antimony_string(text)
     model.set_param("off", ulps * float(np.spacing(3.0)))
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
-    with pytest.raises(Exception, match="shares its instant with another switch"):
+    with pytest.raises(Exception, match="at a fixed time.*issue #767"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
@@ -603,8 +604,8 @@ def test_back_to_back_infusions_with_a_bolus_on_the_boundary(params):
         dX/d(t1)  = R1·(e^(−kd·u) − e^(−kd·v))
         dX/d(t2)  = (D·kd − R2)·e^(−kd·u)
 
-    An earlier cut refused every event on a group of switches. The group is
-    asked for its jump now, like any other switch."""
+    An earlier cut refused every event on a group of switches. The instant is
+    asked for its jump as a whole, and each fitted switch on it for its own."""
     kd, r1, r2, dose = 0.3, 1.5, 0.7, 20.0
     end = 6.0
     u, v = end - 5.0, end - 3.0
@@ -689,9 +690,9 @@ def test_a_switch_on_a_counter_clock(trigger, tau):
 
 def test_a_second_fitted_switch_on_the_instant_that_does_not_move_with_the_event():
     """Two fitted switch times with the same value, and an event on the first.
-    Under tb the second switch comes apart from the event. Its own jump cannot
-    be read apart from the first's by moving the clock, so whether the pair
-    commutes cannot be measured, and the run is refused."""
+    Under tb the second switch comes apart from the event, and X is halved
+    before W's law turns on, or after: a kink in tb. What the instant does as a
+    whole does not commute with the event, and neither does either switch."""
     text = (
         "species X, Y, W; X = 0; Y = 0; W = 0; a = 2; k = 0.5; q = 0.7; ta = 3; tb = 3\n"
         "J0: -> X; a\n"
@@ -763,3 +764,144 @@ def test_an_event_that_records_its_own_time_is_not_a_fixed_switch(text, param, w
     (BIOMD0000000675 records the time of START)."""
     _x, s = _sens(text, [param])
     assert s["Y"][0] == pytest.approx(want, rel=1e-6)
+
+
+# ─── What shares the instant with the switch the event is on ────────────────
+
+BESIDE_A_FIXED_GATE = (
+    "species X, Y, W; X = 2; Y = 0; W = 0; k = 1; r = 1; dose = 3; tau = 3\n"
+    "J1: -> Y; piecewise(k*X, {gate}, 0)\n"
+    "J2: -> W; piecewise(r, time >= tau, 0)\n"
+    "E1: at (time >= tau): X = X + dose\n"
+)
+
+
+@pytest.mark.parametrize("units", [10, 34, 40, 56, 80, 200])
+def test_a_fixed_switch_a_few_ulp_before_a_fitted_one_under_the_event(units):
+    """The dose and a zero-order gate are at tau, and a law that reads X turns
+    on at the literal 3, a few ulp earlier: dY/dtau = k·(X⁻ − X⁺) = −3, which
+    main returns. The flows are read a nudge before tau, 64 of these units, and
+    the fixed switch is inside that: both came out with the law still off, and
+    dY/dtau was 0, with no warning, wherever the jump read across the instant
+    reached less far than the flows did. It reaches as far now, the fixed
+    switch does not commute with the dose, and the run is refused. Past one
+    instant the fixed switch is asked on its own."""
+    model = bngsim.Model.from_antimony_string(BESIDE_A_FIXED_GATE.format(gate="time >= 3"))
+    model.set_param("tau", 3.0 + units * 3.0 * float(np.finfo(float).eps))
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(Exception, match="issue #767"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+def test_a_fixed_condition_that_rounds_to_before_its_time():
+    """``time + 300 >= 303`` turns true 40 ulp before 3, where the sum rounds
+    up. With the dose at tau = 3 that is the same model as the one above, by
+    rounding alone."""
+    text = BESIDE_A_FIXED_GATE.format(gate="time + 300 >= 303")
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(Exception, match="shares its instant with another switch"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("second", "params"),
+    [("3", ["tau"]), ("t2", ["tau", "t2"])],
+    ids=["fixed", "fitted"],
+)
+def test_a_law_switched_off_and_on_again_at_one_instant_under_a_reset(second, params):
+    """One law in two abutting windows, off at tau and on again at 3, and a
+    reset at tau = 3. What the instant does as a whole is nothing, so the whole
+    commutes with anything. But under tau the two switches come apart, with the
+    reset on one of them: dY/dtau is 2 from below and −1 from above. An earlier
+    cut asked only the whole, and returned one side. Each fitted switch on a
+    shared instant is asked for its own jump as well."""
+    text = (
+        "species X, Y; X = 2; Y = 0; k = 1; a = 5; tau = 3; t2 = 3\n"
+        f"J1: -> Y; k*X*(piecewise(1, time < tau, 0) + piecewise(1, time >= {second}, 0))\n"
+        "E1: at (time >= tau): X = a\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
+    with pytest.raises(Exception, match="shares its instant with another switch"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+def test_two_switches_and_the_event_all_on_one_fitted_time():
+    """Control for the refusals above. Two laws turn on at tau + z1 and
+    tau + z2, both 0, and X is halved at tau: three crossings on one instant
+    that all move with tau, so nothing comes apart and nothing is asked.
+    X = a·t until tau, and with u = T − tau
+
+        dY/dtau = −k·a·T/2        dW/dtau = −q·a·T/2."""
+    text = (
+        "species X, Y, W; X = 0; Y = 0; W = 0; a = 2; k = 0.5; q = 0.7; tau = 3; z1 = 0; z2 = 0\n"
+        "J0: -> X; a\n"
+        "J1: -> Y; piecewise(k*X, time >= tau + z1, 0)\n"
+        "J2: -> W; piecewise(q*X, time >= tau + z2, 0)\n"
+        "E1: at (time >= tau): X = 0.5*X\n"
+    )
+    _x, s = _sens(text, ["tau"])
+    assert s["Y"][0] == pytest.approx(-0.5 * 2.0 * T / 2, rel=1e-7)
+    assert s["W"][0] == pytest.approx(-0.7 * 2.0 * T / 2, rel=1e-7)
+
+
+def test_a_switch_on_a_counter_beside_a_fixed_gate_on_the_time():
+    """Control. The law that reads X is gated on a counter at tau, the reset is
+    at tau, and a zero-order gate turns on at the literal 3: dW/dtau = −a·k.
+    The detector groups the two switches, which cross at one time. But one is
+    on the counter and one on the time, and the two clocks are moved one at a
+    time, so each is read on its own. An earlier cut asked the counter switch
+    to commute with the reset because it was grouped, and refused."""
+    text = (
+        "species X, Y, W, Cl; X = 2; Y = 0; W = 0; Cl = 0; k = 1; a = 5; tau = 3; r = 1\n"
+        "Jc: -> Cl; 1\n"
+        "J1: -> Y; piecewise(r, time >= 3, 0)\n"
+        "J2: -> W; piecewise(k*X, Cl >= tau, 0)\n"
+        "E1: at (time >= tau): X = a\n"
+    )
+    _x, s = _sens(text, ["tau"])
+    assert s["W"][0] == pytest.approx(-5.0, rel=1e-7)
+    assert s["Y"][0] == pytest.approx(0.0, abs=1e-9)
+
+
+# ─── A law that turns on as a power is no step ──────────────────────────────
+
+
+@pytest.mark.parametrize("onset", [3.0, 0.5, 0.34, 0.3, 0.05, 1e3, 1e6])
+def test_an_onset_of_second_order_at_any_time(onset):
+    """Control. ``k·X·(time − c)²`` from c on, with X dosed from 0 at tau = c:
+    dY/dtau = 0. Read as a second difference the onset left 2·k·D·q², which an
+    allowance sized by the clock's rounding covered only where c was above a
+    third. Each side of the switch is carried to it as a power now, and a
+    power leaves nothing."""
+    text = (
+        f"species X, Y; X = 0; Y = 0; k = 0.5; tau = {onset!r}\n"
+        f"J1: -> Y; piecewise(k*X*(time - {onset!r})^2, time >= {onset!r}, 0)\n"
+        "E1: at (time >= tau): X = X + 2\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"]).run(
+        sample_times=[0.0, onset / 2, onset, 2 * onset], rtol=1e-10, atol=1e-12
+    )
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y"), 0]
+    assert got == pytest.approx(0.0, abs=1e-7 * max(1.0, onset**2))
+
+
+@pytest.mark.parametrize("onset", [3.0, 0.3, 1e4])
+def test_an_onset_as_a_square_root(onset):
+    """Control. ``k·X·sqrt(time − c)`` from c on, with X reset from 2 to 5 at
+    tau = c: dY/dtau = (2 − 5)·k·sqrt(tau − c) = 0. A square root 64 ulp past
+    its onset is 2e-7 of its scale, which a difference across the instant
+    reads as a step, and the run was refused."""
+    text = (
+        f"species X, Y; X = 2; Y = 0; k = 1; a = 5; tau = {onset!r}\n"
+        f"J1: -> Y; piecewise(k*X*sqrt(time - {onset!r}), time >= {onset!r}, 0)\n"
+        "E1: at (time >= tau): X = a\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"]).run(
+        sample_times=[0.0, onset / 2, onset, 1.5 * onset, 2 * onset], rtol=1e-10, atol=1e-12
+    )
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y"), 0]
+    assert got == pytest.approx(0.0, abs=1e-5 * max(1.0, onset**0.5))

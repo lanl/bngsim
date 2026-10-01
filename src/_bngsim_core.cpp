@@ -475,7 +475,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "set_switch_time_sens",
             [](bngsim::SolverOptions &self,
                const std::vector<std::tuple<double, int, double, std::vector<double>,
-                                            std::vector<int>, std::vector<double>>> &records) {
+                                            std::vector<int>, std::vector<double>, bool>>
+                   &records) {
                 self.sensitivity.switch_times.clear();
                 self.sensitivity.switch_times.reserve(records.size());
                 for (const auto &r : records) {
@@ -486,6 +487,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     sw.dtstar_dp = std::get<3>(r);
                     sw.isolate_param_idx0 = std::get<4>(r);
                     sw.isolate_delta = std::get<5>(r);
+                    sw.fixed_on_instant = std::get<6>(r);
                     if (sw.isolate_param_idx0.size() != sw.isolate_delta.size()) {
                         throw std::invalid_argument(
                             "set_switch_time_sens: isolate_param_idx0 and isolate_delta must be "
@@ -502,7 +504,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::arg("records"),
             "Set the switch-time crossings to stop at and jump across, as "
             "(t_star, clock_species_idx0, threshold, [∂t*/∂p per param column], "
-            "[isolate_param_idx0], [isolate_delta]) records (issue #48). A "
+            "[isolate_param_idx0], [isolate_delta], fixed_on_instant) records (issue "
+            "#48). A "
             "switch time is a fitted parameter that sets "
             "WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset "
             "time. Its whole gradient is the jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p at "
@@ -513,7 +516,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "only while f⁻ is read, so that a crossing sharing its instant with "
             "another falls back to its before-branch alone and is charged only "
             "its own jump (issue #375); both empty — every model with distinct "
-            "switch times — reads the plain f⁻ − f⁺. Detection and the chain "
+            "switch times — reads the plain f⁻ − f⁺. fixed_on_instant says a "
+            "crossing no requested column moves shares this one's clock and "
+            "instant (issue #767). Detection and the chain "
             "rule to fitted primaries are done by bngsim._switch_sensitivity; "
             "empty records (the default) leave the integration loop untouched.")
         .def(
