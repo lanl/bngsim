@@ -85,8 +85,10 @@ is still true at a boundary does not fire again there, and a delayed execution
 pending across the boundary is applied in the next leg (issue #693). An
 intervention that makes a trigger true between legs fires it at the start of
 the next leg. `snapshot()` and `restore()` save and rewind the events with the
-state. A run from another start time, or after `model.reset()`, is a fresh
-start: each trigger starts from its `initialValue`.
+state, and so does rolling the clock back to where an earlier leg ended with
+`set_state(x, time=t)` or `set_time(t)` (below). A run from any other start
+time, or after `model.reset()`, is a fresh start: each trigger starts from its
+`initialValue`.
 
 ### Rolling a step back
 

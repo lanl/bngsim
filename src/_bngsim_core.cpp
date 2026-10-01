@@ -1362,64 +1362,53 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(
             "event_carry",
             [](const bngsim::NetworkModel &self) -> py::object {
-                auto one = [](const bngsim::NetworkModel::EventCarry &c) -> py::object {
-                    if (!c.valid)
-                        return py::none();
-                    py::list trig, pend;
-                    for (char v : c.trigger)
-                        trig.append(py::bool_(v != 0));
-                    for (const auto &pe : c.pending)
-                        pend.append(py::make_tuple(pe.event_idx, pe.apply_time, pe.frozen_values));
-                    return py::make_tuple(c.t, trig, pend);
-                };
-                const auto &end = self.event_carry();
-                const auto &start = self.event_carry_start();
-                if (!end.valid && !start.valid)
+                const auto &c = self.event_carry();
+                if (!c.valid)
                     return py::none();
-                return py::make_tuple(one(end), one(start));
+                py::list trig, pend;
+                for (char v : c.trigger)
+                    trig.append(py::bool_(v != 0));
+                for (const auto &pe : c.pending)
+                    pend.append(py::make_tuple(pe.event_idx, pe.apply_time, pe.frozen_values));
+                return py::make_tuple(c.t, trig, pend);
             },
-            "The event state a run that continues the last one starts from (issue "
-            "#693): None, or (end, start), each None or (t, trigger truth per event, "
-            "[(event index, apply time, frozen values)] for the delayed executions not "
-            "yet applied). end is where the last run left the events, start what that "
-            "run itself started from. A run starting at either's t continues it; any "
-            "other run is a fresh start. Opaque: pass it back to set_event_carry.")
+            "The event state the last run left for a run that continues it (issue "
+            "#693): None, or (t, trigger truth per event, [(event index, apply time, "
+            "frozen values)] for the delayed executions not yet applied). A run "
+            "starting at t continues it; any other run is a fresh start.")
         .def(
             "set_event_carry",
             [](bngsim::NetworkModel &self, py::object carry) {
-                if (carry.is_none()) {
-                    self.clear_event_carry();
-                    return;
-                }
-                auto one = [](py::handle h) {
-                    bngsim::NetworkModel::EventCarry c;
-                    if (h.is_none())
-                        return c;
-                    auto tup = h.cast<py::tuple>();
+                bngsim::NetworkModel::EventCarry c;
+                if (!carry.is_none()) {
+                    auto tup = carry.cast<py::tuple>();
                     if (tup.size() != 3)
                         throw py::value_error(
-                            "set_event_carry: each half is None or (t, triggers, pending)");
+                            "set_event_carry expects None or (t, triggers, pending)");
                     c.valid = true;
                     c.t = tup[0].cast<double>();
                     for (auto v : tup[1].cast<py::list>())
                         c.trigger.push_back(v.cast<bool>() ? 1 : 0);
                     for (auto pe : tup[2].cast<py::list>()) {
                         auto p = pe.cast<py::tuple>();
+                        if (p.size() != 3)
+                            throw py::value_error("set_event_carry: a pending execution is "
+                                                  "(event index, apply time, frozen values)");
                         c.pending.push_back(bngsim::NetworkModel::CarriedEventExecution{
                             p[0].cast<int>(), p[1].cast<double>(),
                             p[2].cast<std::vector<double>>()});
                     }
-                    return c;
-                };
-                auto pair = carry.cast<py::tuple>();
-                if (pair.size() != 2)
-                    throw py::value_error("set_event_carry expects None or (end, start)");
-                self.set_event_carry(one(pair[0]), one(pair[1]));
+                }
+                self.set_event_carry(std::move(c));
             },
             py::arg("carry"),
-            "Install what event_carry() returned (None clears it), so a protocol "
-            "primitive that rewinds the state and the clock rewinds the events with "
-            "them (issue #693).")
+            "Install what event_carry() returned (None: a fresh start), so a "
+            "protocol primitive that rewinds the state and the clock rewinds the "
+            "events with them (issue #693). Checked against this model's events.")
+        .def("rewind_event_carry", &bngsim::NetworkModel::rewind_event_carry, py::arg("t"),
+             "Continue the events from the latest carry a run published at time t, "
+             "for a caller that rolls the clock back there (issue #693). False, and "
+             "nothing changed, when no run ended at t.")
         .def_property_readonly(
             "has_pending_sensitivity_seed",
             [](const bngsim::NetworkModel &self) { return !self.pending_sens_seed().empty(); },

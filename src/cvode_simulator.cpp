@@ -8049,9 +8049,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         std::vector<double> frozen_values; // size = n_assignments when frozen
     };
     std::vector<PendingEvent> pending_events;
-    // The event state this run continues, if it continues one (issue #693),
-    // published beside where it ends.
-    NetworkModel::EventCarry started_from;
     // The immediate fires of the batch being drained, in execution order, for
     // the sensitivity jump (issue #722). Cleared by the caller that owns the
     // batch; filled only in a sensitivity run.
@@ -8558,7 +8555,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         {
             const NetworkModel::EventCarry *carry = model.event_carry_for(times.t_start, n_events);
             if (carry != nullptr) {
-                started_from = *carry;
                 for (const auto &ce : carry->pending) {
                     if (ce.event_idx < 0 || ce.event_idx >= n_events)
                         continue;
@@ -8886,15 +8882,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 break;
             }
 
-            // Pick the next stop: the earliest pending apply_time strictly
-            // inside (t_now, t_out[i]], else t_out[i] itself.
+            // Pick the next stop: the earliest pending apply_time inside
+            // (t_now, t_out[i]], else t_out[i] itself. One due at t_now or
+            // within roundoff of it (an execution carried into a leg that
+            // starts an ulp short of it, issue #693; an output point that
+            // landed an ulp short) is stopped for a few ulps ahead, the
+            // nearest stop CVODE takes, rather than passed over to the next
+            // output point.
             double t_target = t_out[i];
             bool target_is_event = false;
             if (n_events > 0) {
+                const double t_min = static_cast<double>(t_now) +
+                                     8.0 * std::numeric_limits<double>::epsilon() *
+                                         std::max(1.0, std::fabs(static_cast<double>(t_now)));
                 for (const auto &pe : pending_events) {
-                    if (pe.apply_time > static_cast<double>(t_now) + 1e-15 &&
-                        pe.apply_time < t_target) {
-                        t_target = pe.apply_time;
+                    const double ta = std::max(pe.apply_time, t_min);
+                    if (ta < t_target) {
+                        t_target = ta;
                         target_is_event = true;
                     }
                 }
@@ -9878,7 +9882,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         for (auto &pe : pending_events)
             carry.pending.push_back(NetworkModel::CarriedEventExecution{
                 pe.event_idx, pe.apply_time, std::move(pe.frozen_values)});
-        model.set_event_carry(std::move(carry), std::move(started_from));
+        model.publish_event_carry(std::move(carry));
     }
 
     // ─── Cleanup ─────────────────────────────────────────────────────────────

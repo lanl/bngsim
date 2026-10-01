@@ -156,3 +156,75 @@ def test_a_step_rolled_back_and_redone(method):
     assert _at(r, "n") == 1
     if method == "ode":
         assert _at(r, "A") == pytest.approx((10 * E(-0.5) + 5) * E(-0.5), rel=1e-5)
+
+
+@pytest.mark.parametrize("method", ["ode", "ssa"])
+def test_a_leg_ending_off_the_grid(method):
+    """0 + 73·0.1 is 7.300000000000001: the last output time is t_end itself, so
+    the next leg starts where the carry was left."""
+    s = _sim(DOSE, method)
+    kw = {"seed": 1} if method != "ode" else {}
+    r = s.run_until(7.3, **kw)
+    assert r.time[-1] == 7.3 == s.current_time
+    r = s.run_until(20, **kw)
+    assert _at(r, "n") == 1
+    if method == "ode":
+        assert _at(r, "A") == pytest.approx(DOSE_A20, rel=1e-5)
+
+
+def test_a_rerun_of_the_same_span_is_a_fresh_start():
+    """After ``run_until(10)``, ``run(t_span=(10, 20))`` three times: the second and
+    third start at 10 from the state the first left at 20, which is no state the
+    events were carried for, so each is a fresh start, as on main."""
+    text = "species A = 10; species n = 0; R1: A => ; 0.1*A; E: at (A < 3): n = n + 1;"
+    s = _sim(text)
+    s.run_until(10)
+    for _ in range(3):
+        assert _at(s.run(t_span=(10, 20), n_points=3), "n") == 1
+
+
+@pytest.mark.parametrize(("T", "d", "L"), [(15.3, 1.1, 16.4), (6.9, 1.3, 8.2)])
+@pytest.mark.parametrize("n_points", [None, 2])
+def test_a_carried_execution_due_an_ulp_into_the_next_leg(T, d, L, n_points):
+    """T + d is one ulp past the leg end L: the execution is carried, due an ulp
+    after the next leg starts, and is applied there, not refused (CV_TOO_CLOSE)
+    or deferred to the next output point."""
+    text = (
+        "species A = 10; species n = 0; k1 = 0.1; R1: A => ; k1*A;"
+        f" D: at {d} after (time >= {T}): A = A + 5, n = n + 1;"
+    )
+    s = _sim(text)
+    s.run_until(L)
+    r = s.run_until(L + 5, n_points=n_points) if n_points else s.run_until(L + 5)
+    assert _at(r, "n") == 1
+    exact = (10 * E(-0.1 * T) + 5) * E(-0.1 * (L + 5 - (T + d)))
+    assert _at(r, "A") == pytest.approx(exact, rel=1e-5)
+
+
+def test_a_rollback_past_the_last_leg():
+    """Back two legs (6 → 8 → 10, then to 6): the events go back to where the
+    leg ending at 6 left them."""
+    s = _sim(DOSE)
+    s.run_until(6)
+    saved = s.get_state().copy()
+    s.run_until(8)
+    s.run_until(10)
+    s.set_state(saved, time=6)
+    r = s.run_until(10)
+    assert _at(r, "n") == 1
+    assert _at(r, "A") == pytest.approx((10 * E(-0.5) + 5) * E(-0.5), rel=1e-5)
+
+
+def test_a_carry_is_checked_against_the_model():
+    s = _sim(DELAYED)
+    s.run_until(10)
+    t, trig, pend = s.model._core.event_carry()
+    core = s.model._core
+    with pytest.raises(ValueError, match="frozen values"):
+        core.set_event_carry((t, trig, [(0, 11.0, [1.0, 2.0, 3.0])]))
+    with pytest.raises(ValueError, match="no event"):
+        core.set_event_carry((t, trig, [(5, 11.0, [])]))
+    with pytest.raises(ValueError, match="trigger values"):
+        core.set_event_carry((t, [*trig, True], pend))
+    core.set_event_carry((t, trig, pend))
+    assert core.event_carry() == (t, trig, pend)

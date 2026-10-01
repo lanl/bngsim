@@ -673,11 +673,13 @@ class NetworkModel {
     // it: its trigger baselines are the carried ones, not each event's
     // initialValue (which describes a trigger before the simulation starts),
     // so a trigger still true at a leg boundary does not fire again, and the
-    // pending executions are queued again. The carry that run itself started
-    // from is kept too, so a leg rolled back to its start and run again (a
-    // predictor-corrector step: set_state(x, time=t0)) continues the same
-    // events. Any other run is a fresh start. Set at every run's state
-    // write-back; cleared by reset(); copied by clone().
+    // pending executions are queued again. Any other run is a fresh start.
+    // Published at every run's state write-back; cleared by reset(); copied by
+    // clone(). The last kEventCarryHistory published carries are kept, so a
+    // caller that rolls the clock back to one of those times
+    // (rewind_event_carry: Simulator.set_state(x, time=t0), a predictor-
+    // corrector step) continues the events from there; a run is never matched
+    // to one implicitly, since its state need not be the one they went with.
     struct CarriedEventExecution {
         int event_idx = 0;
         double apply_time = 0.0;
@@ -689,12 +691,17 @@ class NetworkModel {
         std::vector<char> trigger;
         std::vector<CarriedEventExecution> pending;
     };
-    const EventCarry &event_carry() const;       // where the last run ended
-    const EventCarry &event_carry_start() const; // what it started from
-    void set_event_carry(EventCarry end, EventCarry start);
-    void clear_event_carry();
-    // The carry a run over n_events events starting at t_start continues (the
-    // end, else the start), or nullptr when that run is a fresh start.
+    static constexpr std::size_t kEventCarryHistory = 64;
+    const EventCarry &event_carry() const;
+    // Validated against this model's events (std::invalid_argument).
+    void set_event_carry(EventCarry carry);
+    void publish_event_carry(EventCarry carry); // set, and keep in the history
+    void clear_event_carry();                   // the carry and the history
+    // Make the latest published carry at time t the current one; false, and
+    // nothing changed, when none was published at t.
+    bool rewind_event_carry(double t);
+    // The carry a run over n_events events starting at t_start continues, or
+    // nullptr when that run is a fresh start.
     const EventCarry *event_carry_for(double t_start, int n_events) const;
 
     // ─── Table functions ────────────────────────────────────────────────────

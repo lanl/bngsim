@@ -11,6 +11,7 @@
 #include "bngsim/types.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -294,7 +295,7 @@ struct NetworkModel::Impl {
 
     // Event state carried between runs (issue #693; NetworkModel::event_carry).
     NetworkModel::EventCarry event_carry;
-    NetworkModel::EventCarry event_carry_start;
+    std::deque<NetworkModel::EventCarry> event_carry_history;
 
     // ── Has save_concentrations() redefined the IC baseline? (issue #79) ──────
     // set_param() re-resolves every species IC that names the written parameter

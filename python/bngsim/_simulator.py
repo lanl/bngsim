@@ -6967,7 +6967,7 @@ class Simulator:
         t = None if time is None else _finite_time(time)
         self._model.set_state(state)
         if t is not None:
-            self._current_time = t
+            self._set_clock(t)
 
     def set_time(self, t: float) -> None:
         """Set :attr:`current_time`, the time the stored state is at.
@@ -6991,7 +6991,14 @@ class Simulator:
         ValueError
             If ``t`` is not finite.
         """
-        self._current_time = _finite_time(t)
+        self._set_clock(_finite_time(t))
+
+    def _set_clock(self, t: float) -> None:
+        # Rolled back to where an earlier run ended, the events go back with the
+        # clock: the next run continues the triggers and pending executions as
+        # they were then (issue #693). At any other time it is a fresh start.
+        self._current_time = t
+        self._model._core.rewind_event_carry(t)
 
     # ─── Solver configuration (ODE) ────────────────────────────────
 

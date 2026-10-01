@@ -173,7 +173,7 @@ class NetworkModel:
         """
     def event_carry(self) -> typing.Any:
         """
-        The event state a run that continues the last one starts from (issue #693): None, or (end, start), each None or (t, trigger truth per event, [(event index, apply time, frozen values)] for the delayed executions not yet applied). end is where the last run left the events, start what that run itself started from. A run starting at either's t continues it; any other run is a fresh start. Opaque: pass it back to set_event_carry.
+        The event state the last run left for a run that continues it (issue #693): None, or (t, trigger truth per event, [(event index, apply time, frozen values)] for the delayed executions not yet applied). A run starting at t continues it; any other run is a fresh start.
         """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
@@ -243,6 +243,10 @@ class NetworkModel:
         """
         Reset the RHS instrumentation counters to zero.
         """
+    def rewind_event_carry(self, t: typing.SupportsFloat | typing.SupportsIndex) -> bool:
+        """
+        Continue the events from the latest carry a run published at time t, for a caller that rolls the clock back there (issue #693). False, and nothing changed, when no run ended at t.
+        """
     def save_concentrations(self) -> None:
         """
         Snapshot current concentrations as new initial state
@@ -253,7 +257,7 @@ class NetworkModel:
         """
     def set_event_carry(self, carry: typing.Any) -> None:
         """
-        Install what event_carry() returned (None clears it), so a protocol primitive that rewinds the state and the clock rewinds the events with them (issue #693).
+        Install what event_carry() returned (None: a fresh start), so a protocol primitive that rewinds the state and the clock rewinds the events with them (issue #693). Checked against this model's events.
         """
     def set_function_eval_expression(self, name: str, expression: str) -> bool:
         """

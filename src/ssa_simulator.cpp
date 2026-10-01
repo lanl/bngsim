@@ -1004,8 +1004,6 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // (NetworkModel::event_delay_is_fixed_zero; delay support under SSA/PSA is
     // issue #526).
     std::vector<bool> trigger_was_true(n_events, false);
-    // The event state this run continues, if it continues one (issue #693).
-    NetworkModel::EventCarry started_from;
     auto &eval_ref = model.evaluator();
     auto &sp_vec_ref = const_cast<std::vector<Species> &>(model.species());
 
@@ -1443,8 +1441,6 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         sync_state(times.t_start);
 
         const NetworkModel::EventCarry *carry = model.event_carry_for(times.t_start, n_events);
-        if (carry != nullptr)
-            started_from = *carry;
         std::vector<int> t0_firing;
         t0_firing.reserve(n_events);
         for (int i = 0; i < n_events; ++i) {
@@ -3040,7 +3036,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         carry.valid = true;
         carry.t = t;
         carry.trigger.assign(trigger_was_true.begin(), trigger_was_true.end());
-        model.set_event_carry(std::move(carry), std::move(started_from));
+        model.publish_event_carry(std::move(carry));
     }
 
     // Solver stats
