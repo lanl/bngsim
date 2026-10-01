@@ -2653,6 +2653,15 @@ _SSA_FF_MAX_POWER = 2**31 - 1
 _MASS_ACTION_MAX_POWER = 1000
 
 
+def _ssa_species_touched(rxn) -> set[str]:
+    """Every species a reaction names: reactants, products and modifiers."""
+    out = set()
+    for lst in (rxn.getListOfReactants(), rxn.getListOfProducts(), rxn.getListOfModifiers()):
+        for j in range(lst.size()):
+            out.add(lst.get(j).getSpecies())
+    return out
+
+
 def _ssa_falling_factorial_terms(rxn, species_idx, continuous_ids) -> list[tuple[int, int]]:
     """The SSA falling factorial a kinetic law evaluated as written needs.
 
@@ -6443,6 +6452,40 @@ def _build_model_from_sbml_doc(doc):
     for i in range(sbml_model.getNumReactions()):
         rxn = sbml_model.getReaction(i)
         rid = rxn.getId()
+
+        # A compartment whose size an assignment rule sets moves with the run,
+        # and the SSA does not follow it (#81 left it out of scope): a count is
+        # stored over the load-time size, so a concentration the law reads is
+        # stale by V_static/V(t), and the live divide on the law is never undone
+        # by a live volume factor. `J: A => ; C*k*A` with `C := 1 + 0.5*time` ran
+        # at 2x the ODE's A(2), and a mass-action `k*A` at 3x its A(4), silently.
+        # An amount-valued species is stored exactly and read as an amount, so a
+        # reaction touching only those runs.
+        _ar_conc = sorted(
+            {
+                species_comp[sid]
+                for sid in _ssa_species_touched(rxn)
+                if sid in species_comp
+                and species_comp[sid] in ar_comp_targets
+                and not species_hosu.get(sid, False)
+            }
+        )
+        if _ar_conc:
+            ssa_issues.append(
+                SsaIssue(
+                    severity="error",
+                    code="assignment_rule_compartment",
+                    message=(
+                        f"Reaction '{rid}' reads a concentration in a compartment "
+                        f"whose size an assignment rule sets ({', '.join(_ar_conc)}). "
+                        "SSA does not follow such a compartment's size, so this "
+                        "reaction's propensity would be wrong. Use method='ode', "
+                        "make the compartment's size constant or a rate rule, or "
+                        'declare the species hasOnlySubstanceUnits="true".'
+                    ),
+                    location=f"reaction:{rid}",
+                )
+            )
 
         # conversionFactor (GH #232): the factor for this reaction. For a
         # uniform reaction it multiplies the emitted stat_factor so the rate —

@@ -7,6 +7,7 @@
   only moved at output times (#751). The loop now integrates each time-varying
   propensity over adaptive panels and fires at the root of the integrated
   hazard, with rate rules on an L-stable Rosenbrock method. It never steps
-  across a time at which a rate jumps, so a pulse narrower than a step is no
-  longer skipped. Rates that are constant between firings run the loop they
-  always did.
+  across a time at which a rate jumps (a resolved `if()` condition, a
+  time-indexed table's knot), so a pulse narrower than a step is no longer
+  skipped. A function of time that feeds no rate no longer moves a model off
+  the discrete loop.

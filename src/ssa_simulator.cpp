@@ -1407,15 +1407,18 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // Enough halvings to take any finite window down to one ulp; the
     // no-progress exit below normally ends it long before.
     constexpr int BISECT_MAX_ITERS = 1100;
-    auto bisect_trigger = [&](int ei, double lo, double hi) -> double {
+    // Where in (lo, hi] trigger ei stops reading `at_lo`: a rise when at_lo is
+    // false, a fall (which re-arms it) when true. Returns the first time with
+    // the new value, to bisection precision.
+    auto bisect_trigger = [&](int ei, double lo, double hi, bool at_lo) -> double {
         // State is unchanged during the τ-step; only time advances.
         for (int iter = 0; iter < BISECT_MAX_ITERS && hi - lo > bisect_tol(hi); ++iter) {
             double mid = 0.5 * (lo + hi);
             if (mid <= lo || mid >= hi)
                 break; // lo and hi are adjacent doubles: nothing left to split
             model.evaluate_functions(mid);
-            double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-            if (v > 0.5) {
+            const bool v = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
+            if (v != at_lo) {
                 hi = mid;
             } else {
                 lo = mid;
@@ -1482,7 +1485,19 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // check cannot alias. It can over-report — a function that names `time` but
     // is constant over this window now sub-steps — and that direction costs
     // only time.
-    bool time_dependent_rates = model.functions_use_time();
+    //
+    // Per reaction since issue #719: a function that reads time but feeds no
+    // rate (an output, a trigger) leaves every propensity constant between
+    // firings, and a Functional rate that reads no time is constant too.
+    std::vector<char> rate_reads_time(nr, 0);
+    bool time_dependent_rates = false;
+    if (model.functions_use_time())
+        for (int r = 0; r < nr; ++r)
+            if (!reactions[r].is_rate_rule_ode && !reactions[r].ode_only &&
+                model.reaction_rate_reads_time(r)) {
+                rate_reads_time[r] = 1;
+                time_dependent_rates = true;
+            }
 
     // Leave the function-bound parameters holding their t_start values, which is
     // where the probe this replaced left them. Nothing above has necessarily
@@ -1500,11 +1515,10 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     if (has_rate_rules)
         time_dependent_rates = true;
     // Issues #719/#751/#753 — such a model runs on the continuous loop below.
-    // Its dynamic reactions (see is_dyn) are the Functional ones, which may read
-    // time or a rate-rule target, any other whose rate parameter a function
-    // writes, and those whose rate reads a rate-rule target (a reactant, or a
-    // live compartment volume); every other propensity is constant between
-    // firings.
+    // Its dynamic reactions (see is_dyn) are those whose rate reads time
+    // (rate_reads_time) or a rate-rule target (a reactant, a live compartment
+    // volume, or anything a function reads); every other propensity is constant
+    // between firings and stays in the selection tree.
     if (time_dependent_rates) {
         std::vector<char> is_cont(ns, 0);
         for (const auto &rr : rate_rule_odes)
@@ -1514,16 +1528,18 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             const auto &rx = reactions[r];
             if (rx.is_rate_rule_ode || rx.ode_only)
                 continue;
-            bool d = rx.rate_law_type == RateLawType::Functional ||
-                     model.reaction_rate_reads_functions(r);
+            bool d = rate_reads_time[r] != 0;
             // A rate-rule target anywhere in what the rate reads: a reactant, or
-            // the live compartment volume a mass-action rate divides by.
-            if (!d && !model.reaction_rate_species_support(r, sup))
-                d = true;
-            if (!d)
-                for (int si : sup)
-                    if (is_cont[si])
-                        d = true;
+            // the live compartment volume a mass-action rate divides by. A rate
+            // whose reads cannot be decided is taken to read one.
+            if (!d && has_rate_rules) {
+                if (!model.reaction_rate_species_support(r, sup))
+                    d = true;
+                else
+                    for (int si : sup)
+                        if (is_cont[si])
+                            d = true;
+            }
             if (d) {
                 is_dyn[r] = 1;
                 dyn.push_back(r);
@@ -1651,57 +1667,82 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     int next_output = 1;
     long total_steps = 0;
 
-    // Helper: probe currently-false triggers within (t_lo, t_hi]. Returns
-    // {t_event, firing_indices}: t_event is the earliest crossing (∞ if
-    // none), firing_indices are events whose t_cross is at or within
-    // bisect_tol(t_event) of t_event. Leaves model time at t_lo afterwards.
-    auto probe_events_in_window = [&](double t_lo,
-                                      double t_hi) -> std::pair<double, std::vector<int>> {
+    // Times at which a rate or a trigger may jump: those the caller resolved
+    // (set_breakpoints, from the model's time conditions) and the knots of every
+    // time-indexed table function, whose value or slope breaks there. Sorted and
+    // unique; read by both loops.
+    std::vector<double> bps = impl_->breakpoints;
+    for (double x : model.time_table_knots())
+        bps.push_back(x);
+    std::sort(bps.begin(), bps.end());
+    bps.erase(std::unique(bps.begin(), bps.end()), bps.end());
+
+    // The resolution at which a trigger that moves with time is watched where
+    // nothing else bounds it: no gap between two looks exceeds this, which is
+    // the frozen-rate sub-step the loop used to take.
+    const double ev_dt = (times.t_end - times.t_start) / 1000.0;
+
+    // The first time in (t_lo, t_hi] at which any trigger changes value, with
+    // the discrete state held where it is (∞ if none): a rise is an event, a
+    // fall re-arms the trigger (fire_rising_edges records both). Each trigger
+    // is looked at on every breakpoint in the window, between each pair of them
+    // (a trigger such as `time > 37.3 && time < 37.5` is false on both edges of
+    // its window), and on a grid no coarser than ev_dt; the first interval in
+    // which any trigger differs from its recorded truth is bisected. Probing only
+    // the window's end saw neither a trigger true between two looks nor one that
+    // fell and rose again, so a periodic trigger fired once. Leaves the model
+    // synced at t_lo.
+    std::vector<double> probe_pts;
+    std::vector<char> probe_prev, probe_cur;
+    auto probe_events_in_window = [&](double t_lo, double t_hi) -> double {
         double t_event = std::numeric_limits<double>::infinity();
-        std::vector<int> firing_at_event;
-        if (n_events == 0)
-            return {t_event, firing_at_event};
+        if (n_events == 0 || !(t_hi > t_lo))
+            return t_event;
+        probe_pts.clear();
+        double a = t_lo;
+        bool a_is_bp = std::binary_search(bps.begin(), bps.end(), t_lo);
+        // Between two breakpoints at least one interior look: a time-only
+        // condition the breakpoints resolve is constant inside, so one suffices.
+        auto fill = [&](double b, bool b_is_bp) {
+            const int n =
+                std::max(a_is_bp && b_is_bp ? 2 : 1, static_cast<int>(std::ceil((b - a) / ev_dt)));
+            for (int k = 1; k < n; ++k)
+                probe_pts.push_back(a + (b - a) * k / n);
+            probe_pts.push_back(b);
+            a = b;
+            a_is_bp = b_is_bp;
+        };
+        for (auto it = std::upper_bound(bps.begin(), bps.end(), t_lo);
+             it != bps.end() && *it < t_hi; ++it)
+            fill(*it, true);
+        fill(t_hi, std::binary_search(bps.begin(), bps.end(), t_hi));
 
-        // Probe each currently-false trigger at t_hi.
-        sync_state(t_hi);
-        std::vector<int> potential;
-        for (int ei = 0; ei < n_events; ++ei) {
-            if (trigger_was_true[ei])
-                continue;
-            double v = eval_ref.evaluate(events[ei].trigger_expr_idx);
-            if (v > 0.5) {
-                potential.push_back(ei);
+        probe_prev.assign(trigger_was_true.begin(), trigger_was_true.end());
+        probe_cur.assign(static_cast<std::size_t>(n_events), 0);
+        double t_prev = t_lo;
+        bool first = true;
+        for (double ts : probe_pts) {
+            if (first)
+                sync_state(ts);
+            else
+                model.evaluate_functions(ts);
+            first = false;
+            bool changed = false;
+            for (int ei = 0; ei < n_events; ++ei) {
+                probe_cur[ei] = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
+                changed = changed || probe_cur[ei] != probe_prev[ei];
             }
+            if (changed) {
+                for (int ei = 0; ei < n_events; ++ei)
+                    if (probe_cur[ei] != probe_prev[ei])
+                        t_event =
+                            std::min(t_event, bisect_trigger(ei, t_prev, ts, probe_prev[ei] != 0));
+                break;
+            }
+            t_prev = ts;
         }
-
-        if (!potential.empty()) {
-            std::vector<double> t_cross_per(potential.size(),
-                                            std::numeric_limits<double>::infinity());
-            for (size_t i = 0; i < potential.size(); ++i) {
-                int ei = potential[i];
-                model.evaluate_functions(t_lo);
-                double v_lo = eval_ref.evaluate(events[ei].trigger_expr_idx);
-                if (v_lo > 0.5) {
-                    t_cross_per[i] = t_lo;
-                    continue;
-                }
-                t_cross_per[i] = bisect_trigger(ei, t_lo, t_hi);
-            }
-            double t_min = std::numeric_limits<double>::infinity();
-            for (double tc : t_cross_per) {
-                if (tc < t_min)
-                    t_min = tc;
-            }
-            t_event = t_min;
-            for (size_t i = 0; i < potential.size(); ++i) {
-                if (t_cross_per[i] <= t_event + bisect_tol(t_event)) {
-                    firing_at_event.push_back(potential[i]);
-                }
-            }
-        }
-
         sync_state(t_lo); // restore
-        return {t_event, firing_at_event};
+        return t_event;
     };
 
     // Wall-clock check is hoisted out of the per-reaction hot loop with a
@@ -2053,12 +2094,34 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     fire_keeps_panel[r] = keeps;
                 }
         }
+        // ...and whether that firing's refresh can skip the observables and
+        // functions: only when no static propensity it moves reads a function
+        // (a Functional rate that reads no time is static, and reads them).
+        std::vector<char> lean_ok(nr, 1);
+        {
+            std::vector<char> static_reads_fn(nr, 0);
+            for (int r = 0; r < nr; ++r)
+                static_reads_fn[r] =
+                    !is_dyn[r] && (reactions[r].rate_law_type == RateLawType::Functional ||
+                                   model.reaction_rate_reads_functions(r));
+            for (int r = 0; r < nr; ++r)
+                for (int a : dep_graph.affected_reactions(r))
+                    if (static_reads_fn[a])
+                        lean_ok[r] = 0;
+        }
 
         std::vector<double> y(m), y1(m), ytmp(m), F0(m), F1(m), F2(m), Tt(m);
         std::vector<double> k1(m), k2(m), k3(m), J(static_cast<std::size_t>(m) * m);
         std::vector<double> W(static_cast<std::size_t>(m) * m);
         std::vector<int> piv(m);
-        // Dynamic propensities at the panel's five nodes θ = 0, ¼, ½, ¾, 1.
+        // The panel's five nodes: Gauss–Lobatto, θ = 0, ½ ∓ √(3/7)/2, ½, 1. Equally
+        // spaced nodes aliased a rate periodic in their spacing: at its cap of
+        // ev_dt a panel's quarter points are whole periods of a rate of period
+        // ev_dt/4, which read as constant (E[N] came out twice the truth, z = 106).
+        // The Lobatto gaps are incommensurate, so no period lines up with them.
+        const double NODE[5] = {0.0, 0.5 - 0.5 * std::sqrt(3.0 / 7.0), 0.5,
+                                0.5 + 0.5 * std::sqrt(3.0 / 7.0), 1.0};
+        // Dynamic propensities at those nodes.
         std::vector<std::vector<double>> dnv(5, std::vector<double>(need_dyn_nodes ? nd : 0));
         std::vector<double> dnow(nd);
         for (int i = 0; i < m; ++i)
@@ -2169,11 +2232,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // A2), the Rosenbrock stages k1, k2 for the dense y.
         double Av[5] = {0.0, 0.0, 0.0, 0.0, 0.0}, hh = 0.0;
         double &A0 = Av[0];
-        double h = (times.t_end - times.t_start) * 1e-3;
+        // No panel longer than ev_dt: a stretch where the rate reads 0 at every
+        // node has no error to measure, and a step left to grow 5× a panel would
+        // walk over a bump or pulse between two nodes.
+        const double hmax = ev_dt;
+        double h = hmax;
         bool fresh = true;   // F0/A0 must be evaluated at (t, y)
         bool synced = false; // ...and the model already holds the state at t
         bool jac_ok = false; // J and ∂f/∂t are for the current panel start
-        const auto &bps = impl_->breakpoints;
         std::size_t next_bp = 0;
 
         auto dense_y = [&](double th, double *out) {
@@ -2182,14 +2248,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             for (int i = 0; i < m; ++i)
                 out[i] = y[i] + hh * (c1 * k1[i] + c2 * k2[i]);
         };
-        // The quartic through five values at θ = 0, ¼, ½, ¾, 1 in the monomial
+        // The quartic through five values at the panel's nodes in the monomial
         // basis: c = V⁻¹ v, V[i][k] = θ_i^k, inverted once here.
         double Vinv[5][5];
         {
             double V[5][10];
             for (int i = 0; i < 5; ++i)
                 for (int k = 0; k < 10; ++k)
-                    V[i][k] = k < 5 ? std::pow(0.25 * i, k) : (k - 5 == i ? 1.0 : 0.0);
+                    V[i][k] = k < 5 ? std::pow(NODE[i], k) : (k - 5 == i ? 1.0 : 0.0);
             for (int c = 0; c < 5; ++c) {
                 int p = c;
                 for (int r2 = c + 1; r2 < 5; ++r2)
@@ -2292,6 +2358,10 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // step the panel's error test proposed for the next one.
         double tp = t, th0 = 0.0, s1p = t, h_next_p = h;
         bool carry = false;
+        constexpr int MAX_FLOOR_STEPS = 100;
+        int floor_steps = 0; // panels accepted at hmin in a row
+        constexpr long MAX_TINY_PANELS = 1000000;
+        long tiny_panels = 0;
 
         while (t < times.t_end) {
             if (budget.active() && ++steps_since_timeout_check >= TIMEOUT_CHECK_STRIDE) {
@@ -2333,6 +2403,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
                 // One error-controlled panel.
                 double h_next = h;
+                h = std::min(h, hmax);
                 while (true) {
                     const bool to_stop = h >= t_stop - t;
                     hh = to_stop ? t_stop - t : h;
@@ -2373,48 +2444,115 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                                 err = std::max(err, std::fabs(e) / sc);
                             }
                             for (int q = 1; q <= 3; ++q) {
-                                dense_y(0.25 * q, ytmp.data());
-                                Av[q] = eval_cont(t + 0.25 * q * hh, ytmp.data(), nullptr,
+                                dense_y(NODE[q], ytmp.data());
+                                Av[q] = eval_cont(t + NODE[q] * hh, ytmp.data(), nullptr,
                                                   need_dyn_nodes ? dnv[q].data() : nullptr, true);
                             }
                         }
                     } else {
                         for (int q = 1; q <= 3; ++q)
-                            Av[q] = eval_cont(t + 0.25 * q * hh, nullptr, nullptr,
+                            Av[q] = eval_cont(t + NODE[q] * hh, nullptr, nullptr,
                                               need_dyn_nodes ? dnv[q].data() : nullptr, true);
                         Av[4] = eval_cont(s1, nullptr, nullptr,
                                           need_dyn_nodes ? dnv[4].data() : nullptr, true);
                     }
                     if (err < 1e10) {
-                        // Simpson over the panel against Simpson over its halves: the
-                        // difference over 15 estimates the error of the latter (and
-                        // the quartic's integral, Boole's rule, is better still).
-                        const double s_whole = hh / 6.0 * (Av[0] + 4.0 * Av[2] + Av[4]);
-                        const double s_halves =
-                            hh / 12.0 * (Av[0] + 4.0 * Av[1] + 2.0 * Av[2] + 4.0 * Av[3] + Av[4]);
-                        err = std::max(err, std::fabs(s_halves - s_whole) / 15.0 /
-                                                (ATOL_H + RTOL_H * std::fabs(s_halves)));
+                        // The 5-point Lobatto rule (the quartic's own integral, exact to
+                        // degree 7) against Simpson on its nodes 0, ½, 1: the difference
+                        // is Simpson's error, and a sixteenth of it the error of
+                        // Simpson on the halves, the level the quartic's partial
+                        // integrals, which place the firings, are held to.
+                        const double s_lob =
+                            hh * ((Av[0] + Av[4]) / 20.0 + (Av[1] + Av[3]) * 49.0 / 180.0 +
+                                  Av[2] * 16.0 / 45.0);
+                        const double s_simp = hh / 6.0 * (Av[0] + 4.0 * Av[2] + Av[4]);
+                        err = std::max(err, std::fabs(s_lob - s_simp) / 16.0 /
+                                                (ATOL_H + RTOL_H * std::fabs(s_lob)));
                     }
+                    if (!(err <= 1e10))
+                        err = 1e10; // non-finite (an overflowing stage): shrink
                     // Local orders: 3 for the Rosenbrock y error, 5 for the quadrature's.
                     const double fac =
                         err > 0.0
                             ? std::clamp(0.9 * (m > 0 ? 1.0 / std::cbrt(err) : std::pow(err, -0.2)),
                                          0.2, 5.0)
                             : 5.0;
-                    if (err <= 1.0) {
-                        h_next = to_stop ? std::max(h, hh * fac) : hh * fac;
+                    // A step at the floor that still fails is a jump in a rate or a
+                    // rate rule's right-hand side (`x' = piecewise(-1, x > 0, 0)` at
+                    // x = 0): no step resolves it, and one of hmin, a few ulps of t,
+                    // crosses it with an error of that order. Accepted, a bounded
+                    // number of times in a row; past that the right-hand side is
+                    // singular, not discontinuous, and the run is refused.
+                    // A step that leaves y exactly where it was while the rate rules
+                    // say it moves has a stage on the far side of a jump in their
+                    // right-hand side: `x' = piecewise(-1, x > 0, 0)` with x = 1e-9
+                    // and the midpoint at x < 0, where the slope is 0. Its error
+                    // estimate can still pass, at a step that then never moves x, so
+                    // the run crawled forward a few ns a panel for ever. Shrink it
+                    // until a stage stays on this side. At the floor no step can (x
+                    // = 2e-14 at t = 3, where the floor is 4e-14): take that one by
+                    // Euler, which crosses with an error of the floor times |f|.
+                    if (m > 0 && err <= 1.0) {
+                        bool still = true, moving = false;
+                        for (int i = 0; i < m; ++i) {
+                            still = still && y1[i] == y[i];
+                            moving = moving || F0[i] != 0.0;
+                        }
+                        if (still && moving && hh > hmin) {
+                            h = std::max(0.25 * hh, hmin);
+                            continue;
+                        }
+                        if (still && moving) {
+                            for (int i = 0; i < m; ++i) {
+                                k1[i] = k2[i] = F0[i]; // dense y: the straight line
+                                y1[i] = y[i] + hh * F0[i];
+                            }
+                            Av[4] = eval_cont(s1, y1.data(), F2.data(),
+                                              need_dyn_nodes ? dnv[4].data() : nullptr, true);
+                            for (int q = 1; q <= 3; ++q) {
+                                dense_y(NODE[q], ytmp.data());
+                                Av[q] = eval_cont(t + NODE[q] * hh, ytmp.data(), nullptr,
+                                                  need_dyn_nodes ? dnv[q].data() : nullptr, true);
+                            }
+                        }
+                    }
+                    const bool at_floor = hh <= hmin && err < 1e10;
+                    if (err <= 1.0 || (at_floor && floor_steps < MAX_FLOOR_STEPS)) {
+                        floor_steps = err <= 1.0 ? 0 : floor_steps + 1;
+                        h_next = std::min(hmax, to_stop ? std::max(h, hh * fac) : hh * fac);
                         break;
                     }
-                    h = hh * fac;
-                    if (h < hmin)
+                    if (hh <= hmin) {
+                        char buf[96];
+                        std::snprintf(buf, sizeof buf, "t = %.17g: %d steps of %.3g in a row", t,
+                                      MAX_FLOOR_STEPS, hmin);
                         throw std::runtime_error(
                             std::string(use_psa ? "PSA" : "SSA") +
                             ": the continuous part of the model (time-dependent rates or rate "
-                            "rules) "
-                            "cannot be integrated past t=" +
-                            std::to_string(t) + ": the step size fell below " +
-                            std::to_string(hmin) +
-                            ". A rate or a rate rule may be discontinuous or singular there.");
+                            "rules) cannot be integrated past " +
+                            buf +
+                            " failed the error test. A rate or a rate rule is singular there.");
+                    }
+                    h = std::max(hh * fac, hmin);
+                }
+                // A run that makes no headway: panels this short, a million in
+                // a row, mean a rate rule flipping back and forth across a switch
+                // (`x' = piecewise(-1, x > 0, 1)`), or a singular rate. Refuse it
+                // rather than spin until a timeout, or for ever without one.
+                if (hh < 1e-8 * (times.t_end - times.t_start) && hh < t_stop - t) {
+                    if (++tiny_panels > MAX_TINY_PANELS) {
+                        char buf[160];
+                        std::snprintf(buf, sizeof buf,
+                                      "%ld panels in a row shorter than %.3g at t = %.17g",
+                                      MAX_TINY_PANELS, 1e-8 * (times.t_end - times.t_start), t);
+                        throw std::runtime_error(
+                            std::string(use_psa ? "PSA" : "SSA") +
+                            ": the continuous part of the model makes no headway: " + buf +
+                            ". A rate rule switches back and forth there, or a rate is "
+                            "singular.");
+                    }
+                } else {
+                    tiny_panels = 0;
                 }
                 s1p = (hh == t_stop - t) ? t_stop : t + hh;
                 h_next_p = h_next;
@@ -2483,34 +2621,51 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             }
             double th_ev = 2.0;
             if (n_events > 0) {
-                if (m > 0)
-                    load_y(y1.data());
-                sync_state(s1);
-                for (int ei = 0; ei < n_events; ++ei) {
-                    if (trigger_was_true[ei] ||
-                        eval_ref.evaluate(events[ei].trigger_expr_idx) <= 0.5)
-                        continue;
-                    // Rising somewhere in (t, s1]: locate it on the dense y.
-                    double lo = th0, hi = 1.0;
-                    for (int it = 0; it < 200; ++it) {
-                        const double mid = 0.5 * (lo + hi);
-                        const double tmid = tp + mid * hh;
-                        if (mid <= lo || mid >= hi || hh * (hi - lo) <= bisect_tol(tmid))
-                            break;
-                        if (m > 0) {
-                            dense_y(mid, ytmp.data());
-                            load_y(ytmp.data());
-                        }
-                        sync_state(tmid);
-                        if (eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5)
-                            hi = mid;
-                        else
-                            lo = mid;
+                // Each trigger at the remaining quarter points of the panel, on the
+                // dense y: the first interval in which any trigger leaves its
+                // recorded truth is bisected (a rise fires, a fall re-arms).
+                // Looking only at the panel's end missed a trigger true inside
+                // it, and a panel can end on both edges of a time window.
+                auto trigger_at = [&](double th, int ei) {
+                    if (m > 0) {
+                        dense_y(th, ytmp.data());
+                        load_y(ytmp.data());
                     }
-                    th_ev = std::min(th_ev, hi);
+                    sync_state(th >= 1.0 ? s1 : tp + th * hh);
+                    return eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
+                };
+                probe_prev.assign(trigger_was_true.begin(), trigger_was_true.end());
+                probe_cur.assign(static_cast<std::size_t>(n_events), 0);
+                double th_prev = th0;
+                for (int q = 1; q <= 4 && th_ev > 1.0; ++q) {
+                    const double thq = q == 4 ? 1.0 : th0 + (1.0 - th0) * 0.25 * q;
+                    if (m > 0) {
+                        dense_y(thq, ytmp.data());
+                        load_y(ytmp.data());
+                    }
+                    sync_state(q == 4 ? s1 : tp + thq * hh);
+                    for (int ei = 0; ei < n_events; ++ei)
+                        probe_cur[ei] = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
+                    for (int ei = 0; ei < n_events; ++ei) {
+                        if (probe_cur[ei] == probe_prev[ei])
+                            continue;
+                        const bool at_lo = probe_prev[ei] != 0;
+                        double lo = th_prev, hi = thq;
+                        for (int it = 0; it < 200; ++it) {
+                            const double mid = 0.5 * (lo + hi);
+                            const double tmid = tp + mid * hh;
+                            if (mid <= lo || mid >= hi || hh * (hi - lo) <= bisect_tol(tmid))
+                                break;
+                            if (trigger_at(mid, ei) != at_lo)
+                                hi = mid;
+                            else
+                                lo = mid;
+                        }
+                        th_ev = std::min(th_ev, hi);
+                    }
+                    th_prev = thq;
                 }
             }
-
             const bool event_first = th_ev <= 1.0 && th_ev <= th_fire;
             const bool fire_first = !event_first && th_fire <= 1.0;
             const double th_cut = event_first ? th_ev : (fire_first ? th_fire : 1.0);
@@ -2611,12 +2766,16 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (n_events == 0 && th_cut < 1.0 && fire_keeps_panel[selected]) {
                 // Nothing a dynamic propensity reads moved, and no trigger is
                 // watching: stay in this panel. The static propensities the
-                // firing moved are all that need refreshing, and none of them
-                // reads a function (a rate that does is dynamic), so the
-                // observables and functions wait for the next sync.
-                refresh_jit_propensities();
-                for (int r : dep_graph.affected_reactions(selected))
-                    set_propensity(r);
+                // firing moved are all that need refreshing; when none of them
+                // reads a function, the observables and functions wait for the
+                // next sync.
+                if (lean_ok[selected]) {
+                    refresh_jit_propensities();
+                    for (int r : dep_graph.affected_reactions(selected))
+                        set_propensity(r);
+                } else {
+                    refresh_after_firing(selected);
+                }
                 carry = true;
                 fresh = false;
                 th0 = th_cut;
@@ -2675,7 +2834,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (a0 <= 0.0) {
                 if (n_events > 0) {
                     // Only the time: the batch is taken from every trigger below.
-                    const double t_event_idle = probe_events_in_window(t, times.t_end).first;
+                    const double t_event_idle = probe_events_in_window(t, times.t_end);
                     if (std::isfinite(t_event_idle) && t_event_idle <= times.t_end) {
                         // Record any samples strictly before t_event_idle.
                         while (next_output < n_out && t_event_idle > t_out[next_output] &&
@@ -2748,7 +2907,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             //    State-dependent triggers (no time component) cannot flip during
             //    τ — those are handled post-fire below.
             // Only the time: the batch is taken from every trigger below.
-            const double t_event = probe_events_in_window(t, t_proposed).first;
+            const double t_event = probe_events_in_window(t, t_proposed);
 
             bool event_wins = std::isfinite(t_event) && t_event < t_proposed;
             double t_advance = event_wins ? t_event : t_proposed;

@@ -1351,8 +1351,11 @@ bool NetworkModel::reaction_rate_species_support(int rxn_idx0, std::vector<int> 
     const auto &reactions = impl_->shared->reactions;
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(reactions.size()))
         return false;
-    if (!impl_->table_functions.empty())
-        return false;
+    // A table function indexed by an observable reads its species, and no
+    // expression names them: the call is all the text shows.
+    for (const auto &tf : impl_->table_functions)
+        if (impl_->shared->observable_name_to_idx.count(strip_paren_suffix(tf->index_name())))
+            return false;
     const Reaction &rxn = reactions[rxn_idx0];
     const int ns = static_cast<int>(impl_->species.size());
     const int np = static_cast<int>(impl_->parameters.size());
@@ -1363,6 +1366,8 @@ bool NetworkModel::reaction_rate_species_support(int rxn_idx0, std::vector<int> 
     };
     for (int ri : rxn.reactant_indices)
         add(ri - 1);
+    for (const auto &[si, m] : rxn.ssa_falling_factorial)
+        add(si);
     add(rxn.ssa_live_volume_idx0);
     for (const auto &lt : rxn.ssa_live_volume_terms)
         add(lt.live_idx0);
@@ -1417,6 +1422,111 @@ bool NetworkModel::reaction_rate_reads_functions(int rxn_idx0) const {
         for (int q : support)
             if (q >= 0 && q < np && written[q])
                 return true;
+    }
+    return false;
+}
+
+// Does `expr` call the clock, `time()`? A bare `time` is a declared scalar of
+// that name (issue #776), so the test is for the call.
+static bool expression_calls_time(const std::string &expr) {
+    const auto word = [&](size_t k) {
+        return std::isalnum(static_cast<unsigned char>(expr[k])) != 0 || expr[k] == '_';
+    };
+    for (size_t pos = expr.find("time"); pos != std::string::npos;
+         pos = expr.find("time", pos + 1)) {
+        if (pos > 0 && (word(pos - 1) || expr[pos - 1] == '.'))
+            continue;
+        size_t j = pos + 4;
+        if (j < expr.size() && word(j))
+            continue;
+        while (j < expr.size() && std::isspace(static_cast<unsigned char>(expr[j])))
+            ++j;
+        if (j < expr.size() && expr[j] == '(')
+            return true;
+    }
+    return false;
+}
+
+bool NetworkModel::reaction_rate_reads_time(int rxn_idx0) const {
+    const auto &reactions = impl_->shared->reactions;
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(reactions.size()))
+        return false;
+    const Reaction &rxn = reactions[rxn_idx0];
+    const int np = static_cast<int>(impl_->parameters.size());
+    // A table function indexed by time, called as `tfun_<name>()` (what the
+    // builder rewrites its function to) or by its own name.
+    std::unordered_set<std::string> time_tables;
+    for (const auto &tf : impl_->table_functions)
+        if (is_time_index(tf->index_name())) {
+            time_tables.insert(tf->name());
+            time_tables.insert("tfun_" + tf->name());
+        }
+    const auto calls_time_table = [&](const std::string &e) {
+        if (time_tables.empty())
+            return false;
+        for (size_t i = 0; i < e.size();) {
+            const unsigned char c = static_cast<unsigned char>(e[i]);
+            if (!(std::isalpha(c) || c == '_')) {
+                ++i;
+                continue;
+            }
+            size_t j = i;
+            while (j < e.size() && (std::isalnum(static_cast<unsigned char>(e[j])) || e[j] == '_'))
+                ++j;
+            if (time_tables.count(e.substr(i, j - i)))
+                return true;
+            i = j;
+        }
+        return false;
+    };
+    const auto moves = [&](const std::string &e) {
+        return expression_calls_time(e) || e.find("rate_of__") != std::string::npos ||
+               calls_time_table(e);
+    };
+    std::vector<int> written_by(static_cast<std::size_t>(np), -1);
+    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings)
+        if (param_idx >= 0 && param_idx < np)
+            written_by[param_idx] = func_idx;
+    // The text that defines parameter p, and the evaluator it compiles to.
+    const auto definition = [&](int p, bool &found) -> int {
+        found = true;
+        if (written_by[p] >= 0) {
+            const Function &f = impl_->functions[written_by[p]];
+            if (moves(f.expression) || moves(f.eval_expression))
+                return -2;
+            return f.evaluator_id;
+        }
+        if (impl_->parameters[p].is_expression) {
+            if (moves(impl_->parameters[p].expression))
+                return -2;
+            return impl_->parameters[p].evaluator_id;
+        }
+        found = false;
+        return -1;
+    };
+    std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
+    for (int pi : rxn.rate_law_param_indices)
+        params.push_back(pi - 1);
+    std::vector<int> support;
+    for (int pidx : params) {
+        if (pidx < 0 || pidx >= np)
+            continue;
+        bool found = false;
+        const int eid = definition(pidx, found);
+        if (eid == -2)
+            return true;
+        if (!found || eid < 0)
+            continue;
+        // Everything that expression reads, through functions and derived
+        // parameters alike: each of those definitions is checked as well.
+        expression_support(eid, nullptr, &support);
+        for (int q : support) {
+            if (q < 0 || q >= np)
+                continue;
+            bool f2 = false;
+            if (definition(q, f2) == -2)
+                return true;
+        }
     }
     return false;
 }
@@ -3887,6 +3997,16 @@ double NetworkModel::evaluate_table_function_at(int tf_id, double x) const {
                                 std::to_string(impl_->table_functions.size()) + ")");
     }
     return impl_->table_functions[tf_id]->evaluate_at(x);
+}
+
+std::vector<double> NetworkModel::time_table_knots() const {
+    std::vector<double> out;
+    for (const auto &tf : impl_->table_functions)
+        if (is_time_index(tf->index_name()))
+            out.insert(out.end(), tf->xs().begin(), tf->xs().end());
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 std::vector<TableFunctionSpec> NetworkModel::table_function_specs() const {

@@ -41,6 +41,14 @@ def _within(got, want, reps, z=4.5):
     assert abs(got - want) <= z * se, (got, want, se)
 
 
+def _near(samples, want, z=4.5):
+    """The sample mean against `want`, by the samples' own standard error (a
+    PSA count is far from Poisson: each firing moves m_r molecules)."""
+    samples = np.asarray(samples, dtype=float)
+    se = samples.std(ddof=1) / np.sqrt(len(samples))
+    assert abs(samples.mean() - want) <= z * se + 1e-12, (samples.mean(), want, se)
+
+
 SINE = "species N = 0; J: => N; 5*(1 + sin(time));"
 
 
@@ -59,19 +67,23 @@ def test_a_periodic_rate_over_a_long_horizon(method):
     )
     n = _col(r, "N")
     for t in (50.0, 995.0, 4321.0):
-        _within(n[:, int(t)].mean(), _sine_mean(t), reps)
+        _near(n[:, int(t)], _sine_mean(t))
 
 
 def test_the_answer_does_not_depend_on_the_horizon():
-    """The same seed, two horizons: the counts at t = 50 agree."""
+    """Two horizons, independent seeds: the counts at t = 50 agree with each
+    other and with the exact mean. The frozen sub-step was (t_end − t_start)/
+    1000, so the answer at t = 50 used to move with t_end."""
     out = []
-    for t_end in (100, 1000):
+    for t_end, seed in ((100, 11), (5000, 12)):
         r = bngsim.Simulator(_ant(SINE), method="ssa").run_replicates(
-            50, t_span=(0, t_end), n_points=t_end + 1, seed=11, squeeze=True
+            100, t_span=(0, t_end), n_points=t_end // 50 + 1, seed=seed, squeeze=True
         )
-        out.append(_col(r, "N")[:, 50])
-    _within(out[0].mean(), _sine_mean(50.0), 50)
-    _within(out[1].mean(), _sine_mean(50.0), 50)
+        out.append(_col(r, "N")[:, 1])
+    for o in out:
+        _near(o, _sine_mean(50.0))
+    se = np.sqrt(out[0].var(ddof=1) / 100 + out[1].var(ddof=1) / 100)
+    assert abs(out[0].mean() - out[1].mean()) <= 4.5 * se
 
 
 def test_a_step_in_the_rate():
@@ -211,3 +223,203 @@ def test_the_integrated_propensity_of_a_dynamic_reaction():
     t = np.asarray(r.time)
     np.testing.assert_allclose(integ[:, 0], _sine_mean(t) - _sine_mean(0.0), rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(integ[:, 1], 3.0 * t, rtol=1e-12)
+
+
+def test_carry_with_a_slow_forcing():
+    """A forcing that barely moves runs long panels, so a firing that wrongly
+    kept its panel would show. The decay's firings keep it (the forcing reads
+    only time), and the mean is the ODE's."""
+    _mean_vs_ode(
+        "species M = 0; J1: => M; 50*(1 + 0.001*sin(time)); J2: M => ; 0.5*M;", "M", 20.0, 200
+    )
+
+
+def test_no_carry_with_a_slow_forcing_that_reads_the_state():
+    _mean_vs_ode(
+        "species M = 20; J1: M => 2 M; 0.1*(1 + 0.001*sin(time))*M; J2: M => ; 0.15*M;",
+        "M",
+        10.0,
+        300,
+    )
+
+
+TFUN = """begin parameters
+    1 k0 0
+end parameters
+begin functions
+    1 drive() tfun([XS],[YS],time,method=>"step")
+end functions
+begin species
+    1 A() 0
+end species
+begin reactions
+    1 0 1 drive
+end reactions
+begin groups
+    1 Atot 1
+end groups
+"""
+
+
+@pytest.mark.parametrize(
+    ("xs", "ys", "area"),
+    [("0,50,50.01,100", "0,1000,0,0", 10.0), ("0,37.3,42.3,100", "0,100,0,0", 500.0)],
+    ids=["narrow", "wide"],
+)
+def test_a_table_function_pulse(tmp_path, xs, ys, area):
+    """A time-indexed table's knots are breakpoints, and no panel outgrows
+    (t_end − t_start)/1000: over a stretch where the rate reads 0 at every node
+    the step had nothing to measure and grew 5× a panel, so both pulses were
+    stepped over and every replicate reported 0."""
+    p = tmp_path / "tfun.net"
+    p.write_text(TFUN.replace("XS", xs).replace("YS", ys))
+    reps = 200
+    r = bngsim.Simulator(bngsim.Model.from_net(str(p)), method="ssa").run_replicates(
+        reps, t_span=(0, 100), n_points=2, seed=3, squeeze=True
+    )
+    _within(np.asarray(r.observables)[:, -1, 0].mean(), area, reps)
+
+
+def test_a_smooth_bump_no_breakpoint_covers():
+    """``10·exp(−(t−50)²)``, area 10·√π, and 0 to double precision over most
+    of the run."""
+    reps = 200
+    m = _ant("species N = 0; J: => N; 10*exp(-((time - 50)^2));")
+    r = bngsim.Simulator(m, method="ssa").run_replicates(
+        reps, t_span=(0, 100), n_points=2, seed=3, squeeze=True
+    )
+    _within(_col(r, "N")[:, -1].mean(), 10 * np.sqrt(np.pi), reps)
+
+
+def test_a_rate_periodic_in_the_node_spacing():
+    """Period 0.025 over (0, 100): at the step cap of 0.1, equally spaced
+    nodes are whole periods apart and read the rate as constant (E[N] was
+    twice the truth). The Lobatto nodes are not commensurate with any period."""
+    reps = 200
+    m = _ant("species N = 0; J: => N; 1 + sin(2*pi*time/0.025 + pi/2);")
+    r = bngsim.Simulator(m, method="ssa").run_replicates(
+        reps, t_span=(0, 100), n_points=2, seed=3, squeeze=True
+    )
+    _within(_col(r, "N")[:, -1].mean(), 100.0, reps)
+
+
+@pytest.mark.parametrize(
+    "rate", ["0.001", "0.001*(1 + 0.001*sin(time))"], ids=["discrete-loop", "continuous-loop"]
+)
+def test_an_event_true_only_inside_a_window(rate):
+    """``time > 37.3 && time < 37.5`` is false at both ends of its window, which
+    are breakpoints; a trigger looked at only at those ends never fired."""
+    txt = (
+        f"species c = 0; species N = 0; J: => N; {rate};"
+        " E: at (time > 37.3 && time < 37.5): c = c + 1;"
+    )
+    for seed in range(5):
+        r = bngsim.Simulator(_ant(txt), method="ssa").run(t_span=(0, 100), n_points=2, seed=seed)
+        assert _col(r, "c")[-1] == 1.0, seed
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["species D = 0;", "species N = 0; J: => N; 0.001*(1 + sin(time));"],
+    ids=["discrete-loop", "continuous-loop"],
+)
+def test_a_periodic_trigger_rearms(extra):
+    """``sin(time) > 0.9`` rises 8 times in (0, 50). With nothing firing between
+    rises its fall was never seen, so it fired once."""
+    txt = f"species c = 0; {extra} E: at (sin(time) > 0.9): c = c + 1;"
+    r = bngsim.Simulator(_ant(txt), method="ssa").run(t_span=(0, 50), n_points=2, seed=1)
+    assert _col(r, "c")[-1] == 8.0
+
+
+@pytest.mark.parametrize("t0", [0.0, 1e4, 1e6])
+def test_a_rate_rule_that_stops_itself(t0):
+    """``x' = piecewise(-1, x > 0, 0)`` reaches 0 at t0 + 3 and stays. A step
+    whose midpoint stage fell past 0 read a slope of 0 and left x where it was;
+    its error test still passed, so the run crawled forward a few ns at a time
+    for ever (and, near a large t0, threw at the minimum step)."""
+    m = _ant("species A = 10; J: A => ; 1e-6*A; x = 3; x' = piecewise(-1, x > 0, 0);")
+    r = bngsim.Simulator(m, method="ssa").run(
+        t_span=(t0, t0 + 10), n_points=11, seed=1, timeout=60
+    )
+    x = _col(r, "x")
+    np.testing.assert_allclose(x[:3], [3.0, 2.0, 1.0], atol=1e-8)
+    assert np.all(np.abs(x[3:]) < 1e-8)
+
+
+def test_breakpoints_follow_run_until_legs(tmp_path):
+    p = tmp_path / "pulse.net"
+    p.write_text(NET_PULSE)
+    reps = 300
+    a = []
+    for k in range(reps):
+        m = bngsim.Model.from_net(str(p))
+        sim = bngsim.Simulator(m, method="ssa")
+        for t in (2.0, 4.99, 100.0):
+            sim.run_until(t, n_points=2, seed=1000 + 3 * k + int(t))
+        a.append(np.asarray(m.get_state())[0])
+    _within(np.mean(a), 1.0, reps)
+
+
+def test_breakpoints_follow_each_run_batch_row(tmp_path):
+    """Each row's ``t_on`` places its own pulse."""
+    p = tmp_path / "pulse_param.net"
+    p.write_text(
+        NET_PULSE.replace("    1 k 1000\n", "    1 k 1000\n    2 t_on 5\n").replace(
+            "time()>5 && time()<5.001", "time()>t_on && time()<t_on+0.001"
+        )
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(p)), method="ssa")
+    rows = [{"t_on": v} for v in (37.123, 88.8) for _ in range(150)]
+    res = sim.run_batch(t_span=(0, 100), n_points=2, params=rows, seed=4)
+    a = np.array([np.asarray(r.observables)[-1, 0] for r in res])
+    _within(a[:150].mean(), 1.0, 150)
+    _within(a[150:].mean(), 1.0, 150)
+
+
+def test_a_time_function_that_feeds_no_rate_changes_nothing(tmp_path):
+    """A function of time read by nothing but the output leaves every
+    propensity constant between firings: the run is the discrete loop's,
+    replicate for replicate."""
+    base = (
+        "begin parameters\n    1 k 1\nend parameters\n"
+        "begin species\n    1 A() 50\n    2 B() 0\nend species\n"
+        "begin reactions\n    1 1 2 k\n    2 2 1 k\nend reactions\n"
+        "begin groups\n    1 Btot 2\nend groups\n"
+    )
+    plain = tmp_path / "plain.net"
+    plain.write_text(base)
+    clock = tmp_path / "clock.net"
+    clock.write_text(base + "begin functions\n    1 clock() 2*time()\nend functions\n")
+    rs = []
+    for path in (plain, clock):
+        r = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ssa").run(
+            t_span=(0, 20), n_points=11, seed=5
+        )
+        rs.append(np.asarray(r.species))
+        assert r.solver_stats["n_steps"] > 0
+    np.testing.assert_array_equal(rs[0], rs[1])
+
+
+AR_COMP = "compartment C; C := 1 + 0.5*time; species A in C = 100; k = 0.3; J: A => ; {law};"
+
+
+@pytest.mark.parametrize("law", ["C*k*A", "k*A"])
+def test_an_assignment_rule_compartment_is_refused(law):
+    """SSA does not follow a compartment an assignment rule sizes: a count is
+    stored over the load-time size, so the concentration a law reads is stale
+    (A(4) came out 3x the ODE's), and the run is refused rather than wrong."""
+    m = _ant(AR_COMP.format(law=law))
+    assert "assignment_rule_compartment" in [i.code for i in m.validate_for_ssa()]
+    with pytest.raises(bngsim.SsaValidationError, match="assignment rule"):
+        bngsim.Simulator(m, method="ssa").run(t_span=(0, 1), n_points=2, seed=1)
+
+
+def test_amounts_in_an_assignment_rule_compartment_still_run():
+    txt = AR_COMP.format(law="k*A").replace("species A", "substanceOnly species A")
+    m = _ant(txt)
+    assert m.validate_for_ssa() == []
+    ode = bngsim.Simulator(_ant(txt), method="ode").run(t_span=(0, 4), n_points=2)
+    r = bngsim.Simulator(m, method="ssa").run_replicates(
+        300, t_span=(0, 4), n_points=2, seed=3, squeeze=True
+    )
+    _near(_col(r, "A")[:, -1], _col(ode, "A")[-1])
