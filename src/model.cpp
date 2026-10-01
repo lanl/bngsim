@@ -1484,8 +1484,12 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
     // crossing time ALSO tripped the delay / persistence checks — and in every
     // one of those cases the delay was a literal 0. A zero delay is not a
     // delay: process_firing_batch takes the immediate path for `delay_now <=
-    // 0`, so nothing is queued and there is no trigger-time-to-execution-time
-    // window at all. Normalize it here rather than in the builder, so the
+    // 0`, so nothing is queued and no time passes between trigger and
+    // execution. There is still an ORDER within the instant: an earlier fire
+    // of the same batch can change what a useValuesFromTriggerTime=false
+    // assignment reads, or cancel a non-persistent instance. The sensitivity
+    // jump composes the batch in the order it executed (issue #722), so that
+    // needs no refusal here. Normalize it here rather than in the builder, so the
     // runtime's own delay handling is untouched. A delay *expression* counts as
     // vacuous when it reads only fixed parameters, none of them a requested
     // sensitivity parameter, and evaluates to 0 now; those parameter values can
