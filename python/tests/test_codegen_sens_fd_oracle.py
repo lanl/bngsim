@@ -770,29 +770,25 @@ TERMS: list = [
         scale=1.0,
         note="s⁺ = s⁻ + (f⁻ − f⁺)·∂t*/∂p at a crossing known a priori (#48)",
     ),
-    pytest.param(
-        Term(
-            "time-switch-just-after-an-output",
-            "net",
-            _TIME_SWITCH_NET,
-            "tau",
-            "30.00000005",
-            30.00000005,
-            # The core takes a switch as reached within 1e-9·max(1, horizon) of
-            # it, so the horizon of 100 makes that window 1e-7, and the crossing
-            # 5e-8 past the output at t=30 falls inside it. At a horizon of 40 it
-            # would not, and the column comes out right.
-            tuple(float(t) for t in range(0, 101, 5)),
-            ("X()",),
-            param="tau",
-            scale=1.0,
-            # t=30 itself sits 5e-8 before the crossing, inside every step the
-            # difference can take, so it is a kink cell; the defect shows at every
-            # sample past it.
-            compare=tuple(i for i in range(21) if i != 6),
-            note="dX/dtau is 0 at every sample against -k = -2",
-        ),
-        marks=_xfail(737, "a switch within 1e-9·horizon after an output is taken at the output"),
+    Term(
+        "time-switch-just-after-an-output",
+        "net",
+        _TIME_SWITCH_NET,
+        "tau",
+        "30.00000005",
+        30.00000005,
+        # The core used to take a switch as reached within 1e-9·max(1, horizon)
+        # of it. The horizon of 100 made that window 1e-7, and the crossing 5e-8
+        # past the output at t=30 fell inside it (issue #737).
+        tuple(float(t) for t in range(0, 101, 5)),
+        ("X()",),
+        param="tau",
+        scale=1.0,
+        # t=30 itself sits 5e-8 before the crossing, inside every step the
+        # difference can take, so it is a kink cell; the defect showed at every
+        # sample past it.
+        compare=tuple(i for i in range(21) if i != 6),
+        note="dX/dtau was 0 at every sample against -k = -2 (issue #737)",
     ),
     Term(
         "state-switch",
