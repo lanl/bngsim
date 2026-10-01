@@ -376,6 +376,9 @@ struct ModelBuilder::BuilderImpl {
         std::string trigger_expr;
         std::vector<std::pair<int, std::string>> assignments; // (species_idx0, value_expr)
         std::vector<bool> assignment_ode_only;                // GH #81; parallel to assignments
+        // Issue #936; parallel to assignments, "" / -1 for a non-rescale.
+        std::vector<std::string> assignment_rescale_size;
+        std::vector<int> assignment_rescale_base;
         double delay = 0.0;
         std::string delay_expr; // optional; takes precedence when non-empty
         int priority = 0;
@@ -682,6 +685,22 @@ void ModelBuilder::add_event(const std::string &id, const std::string &trigger_e
     spec.initial_value = initial_value;
     spec.use_values_from_trigger_time = use_values_from_trigger_time;
     bimpl_->event_specs.push_back(std::move(spec));
+}
+
+void ModelBuilder::set_last_event_assignment_rescale(int assign_idx0, const std::string &size_expr,
+                                                     int base_assign_idx0) {
+    if (bimpl_->event_specs.empty())
+        throw std::runtime_error("ModelBuilder: set_last_event_assignment_rescale with no event");
+    auto &spec = bimpl_->event_specs.back();
+    const auto n = spec.assignments.size();
+    if (assign_idx0 < 0 || static_cast<std::size_t>(assign_idx0) >= n ||
+        base_assign_idx0 >= static_cast<int>(n))
+        throw std::runtime_error("ModelBuilder: event '" + spec.id +
+                                 "': rescale assignment index out of range");
+    spec.assignment_rescale_size.resize(n);
+    spec.assignment_rescale_base.resize(n, -1);
+    spec.assignment_rescale_size[static_cast<std::size_t>(assign_idx0)] = size_expr;
+    spec.assignment_rescale_base[static_cast<std::size_t>(assign_idx0)] = base_assign_idx0;
 }
 
 void ModelBuilder::add_discontinuity_trigger(const std::string &condition_expr) {
@@ -2529,6 +2548,23 @@ NetworkModel ModelBuilder::build() {
                 // the spec omitted it, so every existing event is unchanged).
                 ev.assignment_ode_only.push_back(ai < espec.assignment_ode_only.size() &&
                                                  espec.assignment_ode_only[ai]);
+                // Issue #936: a resize rescale's size expression and base.
+                int size_id = -1;
+                int base = -1;
+                if (ai < espec.assignment_rescale_size.size() &&
+                    !espec.assignment_rescale_size[ai].empty()) {
+                    try {
+                        size_id = eval.compile(espec.assignment_rescale_size[ai]);
+                    } catch (const std::exception &e) {
+                        throw std::runtime_error(
+                            "ModelBuilder: failed to compile the compartment size of event '" +
+                            espec.id + "': " + espec.assignment_rescale_size[ai] + " — " +
+                            e.what());
+                    }
+                    base = espec.assignment_rescale_base[ai];
+                }
+                ev.assignment_rescale_size_expr.push_back(size_id);
+                ev.assignment_rescale_base.push_back(base);
             }
 
             impl.events.push_back(std::move(ev));

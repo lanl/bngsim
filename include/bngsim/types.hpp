@@ -908,6 +908,15 @@ struct Event {
     // injected rescales. Empty (the default) ⇒ every assignment applies in both
     // modes — byte-identical for `.net` and every non-resize event.
     std::vector<bool> assignment_ode_only;
+    // Issue #936 — for an injected resize rescale, parallel to `assignments`:
+    // the compiled size expression of the compartment, and the index of this
+    // event's own assignment to the same species (-1: none). Such an entry is
+    // not applied from its expression: the engine reads the size before and
+    // after the event's other assignments apply and stores base·before/after,
+    // the base being that assignment's value or else the species' value at
+    // execution. Empty, or -1 per entry, for every other assignment.
+    std::vector<int> assignment_rescale_size_expr;
+    std::vector<int> assignment_rescale_base;
     double delay = 0.0;         // delay (used iff delay_expr_idx == -1)
     int delay_expr_idx = -1;    // optional compiled delay expression
     int priority = 0;           // static fallback priority

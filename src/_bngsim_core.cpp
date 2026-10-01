@@ -2806,6 +2806,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "override the constant delay/priority. assignment_ode_only (GH #81) is a "
             "parallel bool list; true entries apply under ODE only and are skipped under "
             "SSA (the compartment-resize concentration rescale that must not perturb counts).")
+        .def("set_last_event_assignment_rescale",
+             &bngsim::ModelBuilder::set_last_event_assignment_rescale, py::arg("assign_idx0"),
+             py::arg("size_expr"), py::arg("base_assign_idx0"),
+             "Issue #936: mark an assignment of the most recently added event as the "
+             "concentration rescale a compartment resize injects. size_expr is the "
+             "compartment's size; base_assign_idx0 the event's own assignment to the same "
+             "species, or -1. The engine stores base * size before / size after the event's "
+             "other assignments rather than the assignment's expression.")
         .def("set_compute_conservation_laws", &bngsim::ModelBuilder::set_compute_conservation_laws,
              py::arg("enabled"),
              "Enable/disable conservation-law detection in build() (GH #102). The "

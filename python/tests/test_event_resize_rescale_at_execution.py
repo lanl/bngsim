@@ -94,3 +94,83 @@ def test_a_delayed_assignment_beside_its_own_resize_keeps_its_frozen_value():
         t_span=(0, 4), n_points=5, rtol=1e-10, atol=1e-12
     )
     assert _conc(r, "Y", 3) == pytest.approx(1.0, rel=1e-6)
+
+
+# Each against libRoadRunner 2.9.2 on the same model: [Y] after the events.
+CASES = {
+    # The new size reads what an earlier fire of the instant changed; the
+    # compartment takes the size frozen at the trigger.
+    "new_size_reads_a_parameter_set_earlier": (
+        "compartment Cc = 1; species Y in Cc; Y = 1; q = 2;"
+        " Eset: at (time >= 2), priority = 2: q = 4; Egrow: at (time >= 2), priority = 1: Cc = q",
+        0.5,
+    ),
+    "two_resizes_the_second_reading_the_size": (
+        "compartment Cc = 1; species Y in Cc; Y = 1;"
+        " E1: at (time >= 2), priority = 2: Cc = 2;"
+        " E2: at (time >= 2), priority = 1: Cc = 2*Cc",
+        0.5,
+    ),
+    "a_rule_sized_compartment": (
+        "compartment D; D := k; k = 1; q = 2; species Y in D = 1;"
+        " E1: at time >= 2, priority = 2: q = 3; E2: at time >= 2, priority = 1: k = q",
+        0.5,
+    ),
+    "new_size_reads_the_species_assigned_earlier": (
+        "compartment Cc = 1; species Y in Cc; Y = 1;"
+        " Eset: at (time >= 2), priority = 2: Y = 4; Egrow: at (time >= 2), priority = 1: Cc = Y",
+        4.0,
+    ),
+    "an_own_assignment_after_an_earlier_resize": (
+        "compartment Cc = 1; species Y in Cc; Y = 1;"
+        " E1: at (time >= 2), priority = 2: Cc = 2;"
+        " E2: at (time >= 2), priority = 1: Y = 5, Cc = 4",
+        2.5,
+    ),
+    # Delayed: the amount at the apply, the sizes frozen at the trigger.
+    "delayed_own_assignment_with_the_size_changed_meanwhile": (
+        "compartment Cc = 1; species Y in Cc; Y = 1;"
+        " E1: at 1 after (time >= 1): Y = 5, Cc = 4; E2: at (time >= 1.5): Cc = 2",
+        2.5,
+    ),
+    "delayed_new_size_reads_a_parameter_changed_meanwhile": (
+        "compartment Cc = 1; species Y in Cc; Y = 1; q = 2;"
+        " E1: at 1 after (time >= 1): Cc = q; E2: at (time >= 1.5): q = 4",
+        0.5,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_against_libroadrunner(name):
+    text, want = CASES[name]
+    r = bngsim.Simulator(bngsim.Model.from_antimony_string(text)).run(
+        sample_times=[0, 1, 2.25, 3], rtol=1e-10, atol=1e-12
+    )
+    assert _conc(r, "Y", 2) == pytest.approx(want, rel=1e-6)
+
+
+def test_a_dividing_cell_keeps_its_amounts():
+    """``Cc' = 0.5``, and half a time unit after reaching 2 the cell divides:
+    Y, which the division does not assign, keeps its amount of 4."""
+    text = (
+        "compartment Cc = 1; Cc' = 0.5; species Y in Cc = 4; species S in Cc = 8;"
+        " E: at 0.5 after (Cc >= 2): Cc = Cc/2, S = S/2;"
+    )
+    r = bngsim.Simulator(bngsim.Model.from_antimony_string(text)).run(
+        t_span=(0, 4), n_points=5, rtol=1e-10, atol=1e-12
+    )
+    assert _amount(r, "Y", 4) == pytest.approx(4.0, rel=1e-6)
+
+
+def test_the_sensitivity_through_a_composition_it_cannot_differentiate_is_refused():
+    """The second resize reads a size an earlier fire of the instant changed:
+    the value is right, and its derivative is refused, not approximated."""
+    text = (
+        "compartment Cc = 1; species Y in Cc; Y = 1; k = 1; J: Y => ; k*Y;"
+        " E1: at (time >= 2), priority = 2: Cc = 2;"
+        " E2: at (time >= 2), priority = 1: Cc = 2*Cc"
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), sensitivity_params=["k"])
+    with pytest.raises(Exception, match="issue #936"):
+        sim.run(t_span=(0, 4), n_points=5)

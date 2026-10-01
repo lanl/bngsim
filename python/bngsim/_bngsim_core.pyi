@@ -83,6 +83,10 @@ class ModelBuilder:
         """
         Enable/disable conservation-law detection in build() (GH #102). The detector is dense O(n_species^3) Gaussian elimination consumed only by the steady-state solver; disable it to keep setup O(reactions) for very large ODE-only networks (~100K species). Default True preserves existing behavior.
         """
+    def set_last_event_assignment_rescale(self, assign_idx0: typing.SupportsInt | typing.SupportsIndex, size_expr: str, base_assign_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #936: mark an assignment of the most recently added event as the concentration rescale a compartment resize injects. size_expr is the compartment's size; base_assign_idx0 the event's own assignment to the same species, or -1. The engine stores base * size before / size after the event's other assignments rather than the assignment's expression.
+        """
     def set_net_file_dir(self, dir: str) -> None:
         """
         Set the directory a relative table-function path resolves against — the source .net file's own directory, which is where BNG writes the .tfun beside it. Empty leaves a relative path to resolve against the process's working directory.

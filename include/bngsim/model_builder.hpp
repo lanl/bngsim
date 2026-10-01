@@ -297,6 +297,14 @@ class ModelBuilder {
                    const std::string &priority_expr = "",
                    const std::vector<bool> &assignment_ode_only = {});
 
+    /// Issue #936: mark assignment `assign_idx0` of the most recently added event
+    /// as the concentration rescale a compartment resize injects: `size_expr` is
+    /// the compartment's size, `base_assign_idx0` the event's own assignment to
+    /// the same species (-1: none). The engine stores base·size before/size after
+    /// the event's other assignments, rather than the assignment's expression.
+    void set_last_event_assignment_rescale(int assign_idx0, const std::string &size_expr,
+                                           int base_assign_idx0);
+
     // ─── Discontinuity triggers (GH #72) ───────────────────────────────────
 
     /// Register a time-dependent inequality condition (e.g. "time()<=0.125")
