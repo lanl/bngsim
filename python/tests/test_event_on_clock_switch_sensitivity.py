@@ -617,6 +617,21 @@ def test_back_to_back_infusions_with_a_bolus_on_the_boundary(params):
     np.testing.assert_allclose(s["X"], [want[p] for p in params], rtol=1e-6)
 
 
+def test_an_onset_of_second_order_under_a_dose_from_zero():
+    """Control. The rate law turns on at the literal 3 as k·X·(time − 3)², and
+    X is 0 until a dose at tau = 3. Nothing steps: dY/dtau = −k·D·(tau − 3)² = 0.
+    The second difference of the law is 0 before the dose and 2·k·D·q² after,
+    all of it the onset's curvature, and it has to stay under what the outer
+    reads allow."""
+    text = (
+        "species X, Y; X = 0; Y = 0; k = 0.5; tau = 3\n"
+        "J1: -> Y; piecewise(k*X*(time - 3)^2, time >= 3, 0)\n"
+        "E1: at (time >= tau): X = X + 2\n"
+    )
+    _x, s = _sens(text, ["tau"])
+    assert s["Y"][0] == pytest.approx(0.0, abs=1e-7)
+
+
 def test_an_onset_of_second_order_at_a_tolerance_of_1e_30():
     """Control. The square onset of the smooth cases, with an absolute tolerance
     far under anything in the model. A floor that read the tolerance refused
