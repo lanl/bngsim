@@ -282,9 +282,8 @@ def test_a_window_that_only_opens_as_a_power_is_as_it_was(tmp_path, a):
 
 @pytest.mark.parametrize("param", ["on", "D"])
 def test_nothing_enters_ahead_of_a_window_that_only_opens_as_a_power(tmp_path, param):
-    """Control. A column in its frame reads back as V − c·f, which is rounding
-    where the plain column is an exact 0. Only a case the generator marks is
-    entered ahead, so before this window opens both columns are plain."""
+    """Control. Before this window opens neither column has moved, and both
+    are exactly 0."""
     times = [0.0, 0.5, 1.0, 2.0, 2.9]
     got = _column(_model(tmp_path, "opening", 1.1), param, times=times)
     assert np.all(got == 0.0)
