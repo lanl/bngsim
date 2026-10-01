@@ -2899,6 +2899,126 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
     return out
 
 
+# A clock reference anywhere in a text, read generously: `2time()` (ExprTk's
+# 2*time()) included, and an identifier that merely ends in `time` after a digit
+# too. Taking too much for a clock only costs speed below.
+_ANY_CLOCK = re.compile(r"(?<![A-Za-z_])time(?![A-Za-z0-9_])")
+
+
+def _condition_resolves_exactly(core, cond, scope, t_start, t_end, bodies) -> bool:
+    """True when *cond* holds one truth value between consecutive breakpoints
+    of this window, because the one time it flips is one of them.
+
+    Stricter than :func:`fixed_crossing_stops`, whose stops cost nothing when
+    wrong: here a wrong one would freeze a rate. Only a comparison of the bare
+    clock with a threshold that reads no clock, on literal time (a counter
+    crosses when something fires, not at a time), whose crossing
+    :func:`_crossing_time_of_condition` solves: ``time() > 10``,
+    ``time() < t_on + 0.5``. A schedule or a step call (``mod``, ``floor``) is
+    left a function of time: between its listed edges it need not be constant
+    (a sawtooth), and the resolvers do not promise every edge.
+    """
+    rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
+    if rewrite is None:
+        return False
+    text, clock_idx, _ = rewrite
+    if clock_idx >= 0:
+        return False
+    split = _relational_split(_strip_redundant_parens(text.strip()))
+    if split is None:
+        return False
+    lhs, rhs = (_strip_redundant_parens(x.strip()) for x in split)
+    for clock, other in ((lhs, rhs), (rhs, lhs)):
+        if not re.fullmatch(r"time\s*\(\s*\)", clock):
+            continue
+        # The threshold as the model evaluates it: a function slot or derived
+        # parameter that reads the clock (`T := time > 0.5`) moves it.
+        flat = _inline_function_slots(other, bodies)
+        flat = _inline_derived_param_refs(flat, scope.derived_exprs) or flat
+        if _ANY_CLOCK.search(flat) or any(
+            m.group(0) in bodies or m.group(0) in scope.function_names
+            for m in _IDENTIFIER.finditer(flat)
+        ):
+            return False
+        return _crossing_time_of_condition(text, scope, t_start, t_end, bodies) is not None
+    return False
+
+
+# What may stand next to a whole condition in an expression: a bracket, a comma,
+# a logical operator, or the text's end. `time()>5` is not a whole condition in
+# `time()>5*A`.
+_ATOM_LEFT = re.compile(r"(?:^|[(,!&|]|\b(?:and|or|not))\s*$")
+_ATOM_RIGHT = re.compile(r"^\s*(?:$|[),&|]|(?:and|or)\b)")
+
+
+def _remove_whole_atoms(expr: str, atom: str) -> str:
+    """*expr* with each occurrence of *atom* that stands as a whole condition
+    replaced by `` 0 ``; an occurrence that is part of a larger operand stays."""
+    out, i = [], 0
+    while True:
+        j = expr.find(atom, i)
+        if j < 0:
+            out.append(expr[i:])
+            return "".join(out)
+        k = j + len(atom)
+        if _ATOM_LEFT.search(expr[:j]) and _ATOM_RIGHT.match(expr[k:]):
+            out.append(expr[i:j] + " 0 ")
+        else:
+            out.append(expr[i:k])
+        i = k
+
+
+def piecewise_constant_time_functions(
+    core, t_start: float, t_end: float, conditions=(), clock_functions=None
+) -> list[str]:
+    """Functions that read the clock only inside conditions resolved exactly over
+    ``(t_start, t_end]`` (:func:`_condition_resolves_exactly`), so are constant
+    between the window's breakpoints. The SSA holds a rate that reads the clock
+    only through these constant and re-reads it at each breakpoint, rather than
+    integrating it (issue #719 follow-up): ``if((time()>10) && (time()<150),
+    2.6, 0)`` is a step, not a curve.
+
+    A function qualifies when removing every exactly resolved condition that
+    stands as a whole condition in its text leaves no clock reference.
+    Anything left over (a clock in arithmetic, a condition no resolver placed
+    exactly, a condition that is part of a larger operand) keeps it a function
+    of time. ``clock_functions`` is ``[(name, expression)]`` for the functions
+    whose text reads the clock, when the caller has it.
+    """
+    if not conditions:
+        return []
+    if clock_functions is None:
+        clock_functions = [
+            (f["name"], f["expression"])
+            for f in core.codegen_data()["functions"]
+            if _ANY_CLOCK.search(f["expression"])
+        ]
+    if not clock_functions:
+        return []
+    ctx = core.functional_jacobian_context()
+    scope = switch_condition_scope(core, ctx)
+    bodies = _function_slot_bodies(ctx)
+    exact = sorted(
+        (
+            c
+            for c in conditions
+            if _condition_resolves_exactly(core, c, scope, t_start, t_end, bodies)
+        ),
+        key=len,
+        reverse=True,
+    )
+    if not exact:
+        return []
+    out = []
+    for name, expr in clock_functions:
+        rest = expr
+        for c in exact:
+            rest = _remove_whole_atoms(rest, c)
+        if not _ANY_CLOCK.search(rest):
+            out.append(name)
+    return out
+
+
 def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> list[float]:
     """Just the times from :func:`fixed_crossing_stops`, in order."""
     return [stop.time for stop in fixed_crossing_stops(core, t_start, t_end, conditions)]

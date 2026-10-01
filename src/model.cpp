@@ -1380,9 +1380,14 @@ static size_t skip_number(const std::string &e, size_t i) {
 // The clock is the call `time()`, and a bare `time` unless the model declares a
 // scalar of that name (issue #776): ExprTk calls a zero-argument function
 // without its parentheses.
+//
+// A function in `pc_functions` (by index) reads the clock only inside
+// conditions whose crossings are breakpoints, so it is constant between them:
+// its own text's clock is not counted (a table or a rate accessor it calls
+// still is).
 NetworkModel::RateDeps
-NetworkModel::rate_dependencies_(std::vector<int> params,
-                                 const std::vector<std::string> &texts) const {
+NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std::string> &texts,
+                                 const std::vector<char> *pc_functions) const {
     RateDeps deps;
     const auto &sd = *impl_->shared;
     const int ns = static_cast<int>(impl_->species.size());
@@ -1405,7 +1410,7 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
     };
 
     std::vector<char> seen(static_cast<std::size_t>(np), 0);
-    const auto scan = [&](const std::string &e) {
+    const auto scan = [&](const std::string &e, bool clock = true) {
         if (e.find("rate_of__") != std::string::npos) {
             deps.time = true; // the running derivatives: every species, at every time
             deps.unknown = true;
@@ -1430,7 +1435,7 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
             while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
                 ++k;
             const bool call = k < e.size() && e[k] == '(';
-            if (id == "time" && (call || !time_declared))
+            if (clock && id == "time" && (call || !time_declared))
                 deps.time = true;
             auto tit = tables.find(id);
             if (tit != tables.end()) {
@@ -1463,8 +1468,12 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
         int eid = -1;
         if (written_by[p] >= 0) {
             const Function &f = impl_->functions[written_by[p]];
-            scan(f.expression);
-            scan(f.eval_expression);
+            const bool clock =
+                !(pc_functions && written_by[p] < static_cast<int>(pc_functions->size()) &&
+                  (*pc_functions)[written_by[p]]);
+            scan(f.expression, clock);
+            scan(f.eval_expression); // a guarded form (#333) is not what was classified
+
             eid = f.evaluator_id;
         } else if (impl_->parameters[p].is_expression) {
             scan(impl_->parameters[p].expression);
@@ -1482,12 +1491,14 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
 // A reaction's propensity, as compute_rxn_rate reads it: its reactants, the
 // species of its SSA falling factorial, a live compartment volume, and its
 // rate parameters' definitions.
-NetworkModel::RateDeps NetworkModel::reaction_rate_dependencies_(int rxn_idx0) const {
+NetworkModel::RateDeps
+NetworkModel::reaction_rate_dependencies_(int rxn_idx0,
+                                          const std::vector<char> *pc_functions) const {
     const Reaction &rxn = impl_->shared->reactions[rxn_idx0];
     std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
     for (int pi : rxn.rate_law_param_indices)
         params.push_back(pi - 1);
-    RateDeps deps = rate_dependencies_(std::move(params), {});
+    RateDeps deps = rate_dependencies_(std::move(params), {}, pc_functions);
     const int ns = static_cast<int>(impl_->species.size());
     const auto add = [&](int si) {
         if (si >= 0 && si < ns)
@@ -1541,10 +1552,11 @@ bool NetworkModel::reaction_rate_reads_functions(int rxn_idx0) const {
     return false;
 }
 
-bool NetworkModel::reaction_rate_reads_time(int rxn_idx0) const {
+bool NetworkModel::reaction_rate_reads_time(int rxn_idx0,
+                                            const std::vector<char> *pc_functions) const {
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
         return false;
-    return reaction_rate_dependencies_(rxn_idx0).time;
+    return reaction_rate_dependencies_(rxn_idx0, pc_functions).time;
 }
 
 bool NetworkModel::event_trigger_reads_time(int event_idx0) const {

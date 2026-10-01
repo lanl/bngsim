@@ -1791,6 +1791,7 @@ class Simulator:
         nothing (and no sympy import).
         """
         times: list[float] = []
+        pc_names: list[str] = []
         reads_clock = getattr(model, "_ssa_reads_clock", None)
         if reads_clock is None:
             reads_clock = bool(getattr(model._core, "ssa_reads_clock", True))
@@ -1812,8 +1813,37 @@ class Simulator:
                         "continuous loop will step without breakpoints (issue #719).",
                         e,
                     )
+                if times:
+                    pc_names = Simulator._ssa_piecewise_constant(model, t_start, t_end, conditions)
         for sim in sims:
             sim.set_breakpoints(times)
+            sim.set_piecewise_constant_functions(pc_names)
+
+    @staticmethod
+    def _ssa_piecewise_constant(model, t_start, t_end, conditions) -> list[str]:
+        """The functions an SSA run may hold constant between breakpoints
+        (:func:`bngsim._switch_sensitivity.piecewise_constant_time_functions`).
+        Best-effort: on any failure none is, which keeps every rate integrated."""
+        from bngsim._switch_sensitivity import _ANY_CLOCK, piecewise_constant_time_functions
+
+        clock_fns = getattr(model, "_ssa_clock_functions", None)
+        if clock_fns is None:
+            clock_fns = [
+                (f["name"], f["expression"])
+                for f in model._core.codegen_data()["functions"]
+                if _ANY_CLOCK.search(f["expression"])
+            ]
+            with contextlib.suppress(AttributeError):
+                model._ssa_clock_functions = clock_fns
+        if not clock_fns:
+            return []
+        try:
+            return piecewise_constant_time_functions(
+                model._core, float(t_start), float(t_end), conditions, clock_fns
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Piecewise-constant classification unavailable (%s)", e)
+            return []
 
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
