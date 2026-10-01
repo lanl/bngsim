@@ -3282,6 +3282,21 @@ compute_rxn_rate(const Reaction &rxn, const std::vector<Parameter> &params, cons
                     rate *= std::pow(lt.v_static / v_live, lt.exp);
                 }
             }
+            // A law evaluated as written holds n^m for a species it reads m
+            // times; the SSA's count of distinct m-tuples is n(n−1)…(n−m+1).
+            // Each factor (c − j/V)/c is (n − j)/n in storage units, formed with
+            // the j/V a count is stored by, so it is exactly 0 at n = j. At
+            // c = 0 the law's own c^m has made the rate 0 already.
+            for (const auto &[si, m] : rxn.ssa_falling_factorial) {
+                const double c = conc[si];
+                if (c == 0.0)
+                    continue;
+                const double vf = species_list[si].volume_factor;
+                // Stops at the first zero factor (j = n): past it every term
+                // would only repeat the 0, m − n times over.
+                for (int j = 1; j < m && rate != 0.0; ++j)
+                    rate *= (c - static_cast<double>(j) / vf) / c;
+            }
         }
         break;
     }
