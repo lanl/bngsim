@@ -1038,6 +1038,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly(
             "ssa_reads_clock",
             [](const bngsim::NetworkModel &self) {
+                // A rate rule's target may be a clock (`T' = 1`) whose crossings
+                // the breakpoints place.
+                for (const auto &rx : self.reactions())
+                    if (rx.is_rate_rule_ode)
+                        return true;
                 if (!self.functions_use_time() && self.n_events() == 0)
                     return false;
                 for (int r = 0; r < self.n_reactions(); ++r)
@@ -1048,8 +1053,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
                         return true;
                 return false;
             },
-            "Whether a reaction rate or an event trigger reads the clock (issue #719): "
-            "the SSA then needs the model's breakpoints. Decided from the model's text.")
+            "Whether a reaction rate or an event trigger reads the clock, or the model has "
+            "a rate rule (whose target may be a clock): the SSA then needs the model's "
+            "breakpoints (issue #719). Decided from the model's text.")
 
         // T1: RHS observable/function-eval gate instrumentation. For a pure
         // mass-action model the RHS skips update_observables + evaluate_functions

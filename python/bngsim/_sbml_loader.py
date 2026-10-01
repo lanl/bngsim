@@ -2693,7 +2693,13 @@ def _moving_assignment_rule_vars(sbml_model) -> tuple[dict, set[str]]:
         ev = sbml_model.getEvent(j)
         for k in range(ev.getNumEventAssignments()):
             sources.add(ev.getEventAssignment(k).getVariable())
-    sources |= {sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())}
+    # A species moves unless declared constant (a boundary species moves only
+    # through a rule or an event, which name it among the sources already).
+    sources |= {
+        sp.getId()
+        for sp in (sbml_model.getSpecies(j) for j in range(sbml_model.getNumSpecies()))
+        if not sp.getConstant() and not sp.getBoundaryCondition()
+    }
     changed = True
     while changed:  # to the fixed point: a rule over a moving rule moves
         changed = False
@@ -2704,8 +2710,70 @@ def _moving_assignment_rule_vars(sbml_model) -> tuple[dict, set[str]]:
     return reads, moving
 
 
+def _ssa_rule_event_conc_reads(
+    sbml_model, rules, moving_comps, species_comp, species_hosu, rule_targets=frozenset()
+) -> list[tuple[str, list[str]]]:
+    """Rate rules and events that read a concentration-valued species in a
+    compartment whose size moves (``moving_comps``: assignment-rule, event- or
+    rate-rule-resized), directly or through assignment rules: the SSA stores a
+    count over the load-time size, so such a read is stale. ``x' = S`` with S in
+    ``C := 1 + 0.5*time`` integrated 40 against the ODE's 22, and ``at S < 6``
+    never fired. Returns ``[(location, [compartments])]``."""
+    if not moving_comps:
+        return []
+
+    def hits(math) -> list[str]:
+        out: set[str] = set()
+        work = list(_math_names(math)[0]) if math is not None else []
+        seen: set[str] = set()
+        while work:
+            name = work.pop()
+            comp = species_comp.get(name)
+            if (
+                comp in moving_comps
+                and not species_hosu.get(name, False)
+                and name not in rule_targets
+            ):
+                out.add(comp)
+            if name in rules and name not in seen:
+                seen.add(name)
+                work.extend(rules[name])
+        return sorted(out)
+
+    found = []
+    for j in range(sbml_model.getNumRules()):
+        r = sbml_model.getRule(j)
+        if r.isRate():
+            h = hits(r.getMath())
+            if h:
+                found.append((f"rule:{r.getVariable()}", h))
+    for j in range(sbml_model.getNumEvents()):
+        ev = sbml_model.getEvent(j)
+        maths = []
+        if ev.isSetTrigger():
+            maths.append(ev.getTrigger().getMath())
+        if ev.isSetDelay():
+            maths.append(ev.getDelay().getMath())
+        if ev.isSetPriority():
+            maths.append(ev.getPriority().getMath())
+        maths.extend(
+            ev.getEventAssignment(k).getMath() for k in range(ev.getNumEventAssignments())
+        )
+        h = sorted({c for m in maths for c in hits(m)})
+        if h:
+            found.append((f"event:{ev.getId() or j}", h))
+    return found
+
+
 def _ssa_moving_ar_comp_reads(
-    rxn, rules, moving_vars, moving_comps, species_comp, species_hosu, varvol_comps=frozenset()
+    rxn,
+    rules,
+    moving_vars,
+    moving_comps,
+    species_comp,
+    species_hosu,
+    varvol_comps=frozenset(),
+    rule_targets=frozenset(),
 ) -> tuple[list[str], list[str]]:
     """The moving assignment-rule compartments holding a concentration-valued
     species that reaction ``rxn`` changes or reads: one of its reactants,
@@ -2718,7 +2786,9 @@ def _ssa_moving_ar_comp_reads(
     assignment rule: the SSA's live-volume correction covers the species of the
     compartment a reaction acts in, and no others.
 
-    ``rules`` maps each assignment rule's variable to the names it reads."""
+    ``rules`` maps each assignment rule's variable to the names it reads. A
+    species a rule sets (``rule_targets``) holds the value its rule gives it,
+    not a count over a size, so reading it is not stale."""
     if not moving_comps and not varvol_comps:
         return [], []
     kl = rxn.getKineticLaw()
@@ -2736,13 +2806,40 @@ def _ssa_moving_ar_comp_reads(
         for j in range(lst.size())
     }
     law_names = _math_names(kl.getMath())[0] - local if kl is not None and kl.getMath() else set()
+    # A reaction across compartments, one of them resized: the live-volume
+    # correction is a power of V_static/V_live per compartment, exact only when
+    # the law reads each concentration there as a reactant, once per unit of its
+    # stoichiometry. A modifier (`k*X*S*C`), a reactant read again (`k*X*X*C`
+    # for X -> P) or a power is not that shape, and ran 16-24 sigma off the ODE.
+    if len(acts_in - {None}) >= 2 and acts_in & set(varvol_comps) and kl is not None:
+        stoich: dict[str, float] = {}
+        for j in range(rxn.getNumReactants()):
+            r = rxn.getReactant(j)
+            stoich[r.getSpecies()] = stoich.get(r.getSpecies(), 0.0) + r.getStoichiometry()
+        counts: dict[str, int] = {}
+        powered: set[str] = set()
+        stack = [kl.getMath()] if kl.getMath() is not None else []
+        while stack:
+            nd = stack.pop()
+            t = nd.getType()
+            if t == libsbml.AST_NAME and nd.getName() not in local:
+                counts[nd.getName()] = counts.get(nd.getName(), 0) + 1
+            if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+                powered |= _math_names(nd)[0]
+            stack.extend(nd.getChild(i) for i in range(nd.getNumChildren()))
+        for sid, cnt in counts.items():
+            comp = species_comp.get(sid)
+            if comp not in varvol_comps or species_hosu.get(sid, False) or sid in rule_targets:
+                continue
+            if sid not in stoich or sid in powered or cnt != stoich[sid]:
+                vv_hit.add(comp)
     # (name, read through a rule); the touched species are read directly.
     work = [(n, False) for n in law_names | _ssa_species_touched(rxn)]
     seen_rules: set[str] = set()
     while work:
         name, via_rule = work.pop()
         comp = species_comp.get(name)
-        conc = comp is not None and not species_hosu.get(name, False)
+        conc = comp is not None and not species_hosu.get(name, False) and name not in rule_targets
         if conc and comp in moving_comps:
             hit.add(comp)
         if conc and comp in varvol_comps and (via_rule or comp not in acts_in):
@@ -6573,6 +6670,7 @@ def _build_model_from_sbml_doc(doc):
             species_comp,
             species_hosu,
             varvol_ssa_comps,
+            _ssa_ff_continuous,
         )
         if _vv_read:
             # (g): `J: => A; k*S*D` with S in C, C resized by an event, read
@@ -7365,6 +7463,29 @@ def _build_model_from_sbml_doc(doc):
                 # mixes conversion factors across species.
                 stat_factor=float(coeff) * species_cf.get(sid, 1.0),
             )
+
+    for _loc, _comps in _ssa_rule_event_conc_reads(
+        sbml_model,
+        _ar_rules,
+        _ar_moving_comps | varvol_ssa_comps,
+        species_comp,
+        species_hosu,
+        _ssa_ff_continuous,
+    ):
+        ssa_issues.append(
+            SsaIssue(
+                severity="error",
+                code="variable_compartment_read",
+                message=(
+                    f"{_loc.split(':', 1)[0].capitalize()} '{_loc.split(':', 1)[1]}' reads a "
+                    "concentration in a compartment whose size changes during the run "
+                    f"({', '.join(_comps)}). SSA stores a count over the compartment's "
+                    "load-time size, so the value it reads would be wrong. Use "
+                    "method='ode', or declare the species hasOnlySubstanceUnits=\"true\"."
+                ),
+                location=_loc,
+            )
+        )
 
     # ── 10. SBML Events ──────────────────────────────────────────────
     # Parse <listOfEvents> and call builder.add_event() for each.

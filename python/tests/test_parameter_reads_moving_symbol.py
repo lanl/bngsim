@@ -163,3 +163,12 @@ def test_a_bare_time_with_no_scalar_of_that_name_is_the_clock():
     b.add_reaction([], [0], "elementary", "k2")
     with pytest.raises(RuntimeError, match="reads time"):
         b.build()
+
+
+@pytest.mark.parametrize("expr", ["2time()", "2time", "0.5time()*4"])
+def test_implicit_multiplication_by_the_clock_is_refused(expr):
+    """ExprTk reads ``2time()`` as 2*time()."""
+    b = _builder([("k2", expr)])
+    b.add_reaction([], [0], "elementary", "k2")
+    with pytest.raises(RuntimeError, match="reads time"):
+        b.build()

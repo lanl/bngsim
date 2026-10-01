@@ -263,20 +263,44 @@ strongly_connected_components(int n, const std::vector<std::vector<int>> &reads)
 // zero-argument function without its parentheses, so `if(time > 5, k, 0)` in a
 // hand-written `.net` reads the clock.
 static bool calls_time(const std::string &expr, bool time_declared) {
-    for (size_t pos = expr.find("time"); pos != std::string::npos;
-         pos = expr.find("time", pos + 1)) {
-        const auto word = [&](size_t k) {
-            return std::isalnum(static_cast<unsigned char>(expr[k])) != 0 || expr[k] == '_';
-        };
-        if (pos > 0 && (word(pos - 1) || expr[pos - 1] == '.'))
+    // Token by token, as ExprTk reads it: `2time()` is 2*time(), so a name may
+    // follow a number directly, and `x2time` is one name.
+    const size_t n = expr.size();
+    const auto digit = [&](size_t k) {
+        return k < n && std::isdigit(static_cast<unsigned char>(expr[k])) != 0;
+    };
+    for (size_t i = 0; i < n;) {
+        const unsigned char c = static_cast<unsigned char>(expr[i]);
+        if (std::isdigit(c) || (c == '.' && digit(i + 1))) {
+            while (i < n && (digit(i) || expr[i] == '.'))
+                ++i;
+            if (i < n && (expr[i] == 'e' || expr[i] == 'E')) {
+                size_t j = i + 1;
+                if (j < n && (expr[j] == '+' || expr[j] == '-'))
+                    ++j;
+                if (digit(j)) {
+                    i = j;
+                    while (digit(i))
+                        ++i;
+                }
+            }
             continue;
-        size_t j = pos + 4;
-        if (j < expr.size() && word(j))
+        }
+        if (!(std::isalpha(c) || c == '_')) {
+            ++i;
             continue;
-        while (j < expr.size() && std::isspace(static_cast<unsigned char>(expr[j])))
+        }
+        size_t j = i;
+        while (j < n && (std::isalnum(static_cast<unsigned char>(expr[j])) || expr[j] == '_'))
             ++j;
-        if ((j < expr.size() && expr[j] == '(') || !time_declared)
-            return true;
+        if (expr.compare(i, j - i, "time") == 0) {
+            size_t k = j;
+            while (k < n && std::isspace(static_cast<unsigned char>(expr[k])))
+                ++k;
+            if ((k < n && expr[k] == '(') || !time_declared)
+                return true;
+        }
+        i = j;
     }
     return false;
 }

@@ -2514,19 +2514,20 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         // ulps. Near any steady state, stiff or not, hh·k1 is under
                         // an ulp of y and y not moving is right; at a jump the first
                         // stage is the slope on this side and the second cancels it.
-                        bool still = true, moving = false;
+                        // Per component: a clamp beside a rule that keeps moving
+                        // (`z' = 1`) is stuck all the same.
+                        bool stuck = false;
                         for (int i = 0; i < m; ++i) {
-                            still = still && y1[i] == y[i];
                             const double a = std::fabs(y[i]);
                             const double ulp =
                                 std::nextafter(a, std::numeric_limits<double>::infinity()) - a;
-                            moving = moving || std::fabs(hh * k1[i]) > 4.0 * ulp;
+                            stuck = stuck || (y1[i] == y[i] && std::fabs(hh * k1[i]) > 4.0 * ulp);
                         }
-                        if (still && moving && hh > hmin) {
+                        if (stuck && hh > hmin) {
                             h = std::max(0.25 * hh, hmin);
                             continue;
                         }
-                        if (still && moving) {
+                        if (stuck) {
                             for (int i = 0; i < m; ++i) {
                                 k1[i] = k2[i] = F0[i]; // dense y: the straight line
                                 y1[i] = y[i] + hh * F0[i];
@@ -2559,17 +2560,17 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     }
                     h = std::max(hh * fac, hmin);
                 }
-                // A run that makes no headway: panels within a thousand ulps of t,
-                // a million in a row, advance it by a relative 1e-7 at most. A rate
+                // A run that makes no headway: panels at the floor (two hmin, a
+                // hundred-odd ulps of t), a million in a row. A rate
                 // or rate rule that is singular there does that; refuse it rather
                 // than spin until a timeout, or for ever without one. (A fast
                 // forcing over a long horizon takes short panels, not these.)
-                if (hh < 1000.0 * hmin && hh < t_stop - t) {
+                if (hh <= 2.0 * hmin && hh < t_stop - t) {
                     if (++tiny_panels > MAX_TINY_PANELS) {
                         char buf[160];
                         std::snprintf(buf, sizeof buf,
                                       "%ld panels in a row shorter than %.3g at t = %.17g",
-                                      MAX_TINY_PANELS, 1000.0 * hmin, t);
+                                      MAX_TINY_PANELS, 2.0 * hmin, t);
                         throw std::runtime_error(
                             std::string(use_psa ? "PSA" : "SSA") +
                             ": the continuous part of the model makes no headway: " + buf +

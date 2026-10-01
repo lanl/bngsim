@@ -537,3 +537,102 @@ def test_a_concentration_read_in_a_moving_compartment_is_refused(text, code):
     """Both read [S] at C's load-time size: z = +50 and +25 against the ODE."""
     m = _ant(text)
     assert code in [i.code for i in m.validate_for_ssa()]
+
+
+def test_a_rate_on_a_rate_rule_clock_keeps_its_breakpoints():
+    """``T' = 1`` is a clock no text calls ``time``: its pulse's edges still
+    have to bound the panels, or a 1 ms pulse is stepped over (x = 0)."""
+    txt = (
+        "species A = 0; T = 0; T' = 1; J: => A; piecewise(10000, (T > 5.0003) && (T < 5.0013), 0);"
+    )
+    reps = 200
+    r = bngsim.Simulator(_ant(txt), method="ssa").run_replicates(
+        reps, t_span=(0, 10), n_points=2, seed=3, squeeze=True
+    )
+    _within(_col(r, "A")[:, -1].mean(), 10.0, reps)
+
+
+@pytest.mark.parametrize("expr", ["2time()", "2time", "0.2time()*10"])
+def test_implicit_multiplication_by_the_clock(tmp_path, expr):
+    """ExprTk reads ``2time()`` as 2*time(); a scan that took ``2time`` for a
+    number froze the rate at 0 (∫₀¹⁰ 2t dt = 100)."""
+    p = tmp_path / "m.net"
+    p.write_text(_net_text(f"    1 f() {expr}\n", "    1 0 1 f\n"))
+    reps = 200
+    r = bngsim.Simulator(bngsim.Model.from_net(str(p)), method="ssa").run_replicates(
+        reps, t_span=(0, 10), n_points=2, seed=3, squeeze=True
+    )
+    _within(np.asarray(r.observables)[:, -1, 0].mean(), 100.0, reps)
+
+
+@pytest.mark.parametrize("trigger", ["time > 5", "2time() > 10"])
+def test_a_clock_trigger_fires_with_nothing_to_fire(trigger):
+    """The discrete loop looks only at triggers that read the clock; one it
+    took for a state trigger never fired."""
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("k", 1.0)
+    a = b.add_species("A", 0.0)
+    s = b.add_species("B", 0.0)
+    b.add_observable("Aobs", [(a, 1.0)])
+    b.add_reaction([s], [], "elementary", "k")
+    b.add_event("E", trigger, [(a, "100")])
+    m = bngsim.Model(_core=b.build())
+    r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 10), n_points=2, seed=1)
+    assert np.asarray(r.species)[-1, 0] == 100.0
+
+
+def test_a_clamp_beside_a_moving_rule():
+    """``x' = piecewise(-1, x > 0, 0)`` beside ``z' = 1``: the stuck-step test
+    has to look at x alone; z moving hid it and the run crawled for minutes."""
+    m = _ant(
+        "species A = 10; J: A => ; 1e-6*A; x = 3; z = 0; x' = piecewise(-1, x > 0, 0); z' = 1"
+    )
+    r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 6), n_points=2, seed=1, timeout=30)
+    assert abs(_col(r, "x")[-1]) < 1e-8
+    assert _col(r, "z")[-1] == pytest.approx(6.0, rel=1e-9)
+
+
+def test_a_fast_forcing_at_a_large_clock():
+    """At t = 1e12 a panel of a few hundred ulps of t is a legitimate step for a
+    forcing of period 10; the no-headway guard counts only panels at the floor."""
+    t0, h = 1e12, 2e4
+    m = _ant(f"species A = 0; J: => A; 1 + sin(2*pi*(time - {t0})/10);")
+    r = bngsim.Simulator(m, method="ssa").run(t_span=(t0, t0 + h), n_points=2, seed=1, timeout=60)
+    assert abs(_col(r, "A")[-1] - h) < 5 * np.sqrt(h)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "compartment C = 1; C := 1 + 0.5*time; species S in C = 10; x = 0; x' = S;"
+            " species A = 0; J: => A; 0.01;",
+            id="rate-rule",
+        ),
+        pytest.param(
+            "compartment C = 1; C := 1 + 0.5*time; species S in C = 10; species A = 0;"
+            " E: at S < 6: A = 100;",
+            id="trigger",
+        ),
+        pytest.param(
+            "compartment C = 1; compartment D = 1; E: at time > 2: C = 2;"
+            " species X in C = 50; species S in C = 10; species P in D = 0; k = 0.01;"
+            " J: X => P; k*X*S*C;",
+            id="cross-compartment-modifier",
+        ),
+    ],
+)
+def test_more_stale_concentration_reads_are_refused(text):
+    m = _ant(text)
+    assert "variable_compartment_read" in [i.code for i in m.validate_for_ssa()]
+
+
+def test_a_compartment_ruled_by_a_constant_species_runs():
+    txt = (
+        "compartment C = 2; species P = 2; const P; C := P; species B in C = 50;"
+        " species A in C = 0; k = 0.5; J: B => A; k*B*C;"
+    )
+    m = _ant(txt)
+    assert m.validate_for_ssa() == []

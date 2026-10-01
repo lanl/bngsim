@@ -1346,6 +1346,27 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
                                             std::make_pair(std::move(sp_out), std::move(pa_out)));
 }
 
+// The end of the number starting at e[i]: digits and a point, then an exponent
+// only when one is well formed (`1e-5`), so the `e` of `2exp(x)` is a name.
+static size_t skip_number(const std::string &e, size_t i) {
+    const auto digit = [&](size_t k) {
+        return k < e.size() && std::isdigit(static_cast<unsigned char>(e[k])) != 0;
+    };
+    while (i < e.size() && (digit(i) || e[i] == '.'))
+        ++i;
+    if (i < e.size() && (e[i] == 'e' || e[i] == 'E')) {
+        size_t j = i + 1;
+        if (j < e.size() && (e[j] == '+' || e[j] == '-'))
+            ++j;
+        if (digit(j)) {
+            i = j;
+            while (digit(i))
+                ++i;
+        }
+    }
+    return i;
+}
+
 // What a rate (or a trigger) depends on through the model's definitions
 // (issue #719): the species it reads and whether it reads the clock. A worklist
 // over parameters: each one's defining function or expression is read as text
@@ -1391,11 +1412,10 @@ NetworkModel::rate_dependencies_(std::vector<int> params,
         }
         for (size_t i = 0; i < e.size();) {
             const unsigned char c = static_cast<unsigned char>(e[i]);
-            if (std::isdigit(c) || c == '.') { // a number, exponent included
-                while (i < e.size() &&
-                       (std::isalnum(static_cast<unsigned char>(e[i])) || e[i] == '.' ||
-                        ((e[i] == '+' || e[i] == '-') && (e[i - 1] == 'e' || e[i - 1] == 'E'))))
-                    ++i;
+            if (std::isdigit(c) || c == '.') {
+                // A number, exponent included, and no further: ExprTk reads
+                // `2time()` as 2*time(), so a name may follow a number directly.
+                i = skip_number(e, i);
                 continue;
             }
             if (!(std::isalpha(c) || c == '_')) {
