@@ -6869,6 +6869,26 @@ def _build_model_from_sbml_doc(doc):
         # branch's single representative-compartment divide is the bug source.
         if i in ssa_varvol_xcompartment:
             unified_ok = False
+        # The same holds for every cross-compartment reaction that changes an
+        # hOSU=false species in a compartment whose size is integrated or reset
+        # (a rate rule, an event), whatever its law: a reversible difference, a
+        # saturating law, or a monomial on a reaction flagged reversible, which
+        # SBML L2 does by default and Antimony's `->` does. The classifier
+        # certifies only the irreversible monomial, because only that one has an
+        # exact SSA propensity correction. The ODE row is `stoich·law/V_live`
+        # for all of them, and the single representative divide, like the static
+        # one below, is the load-time size.
+        _xc_varvol_species = (
+            [
+                _sid
+                for _sid in net
+                if species_comp[_sid] in varvol_ssa_comps and not species_hosu.get(_sid, False)
+            ]
+            if len(_rxn_comps) > 1
+            else []
+        )
+        if _xc_varvol_species:
+            unified_ok = False
         # (#192) The same by-value hazard for a WRITABLE STATIC volume, which is
         # #170's territory rather than #144's and was never done. `involved_vs`
         # holds volume VALUES, so a reaction whose species span several
@@ -7134,10 +7154,20 @@ def _build_model_from_sbml_doc(doc):
             #     bare-law emission uses ssa_volume_factor=1.0 and no /V_live in the
             #     function, so exp = m_c with no −1, unlike the single-compartment
             #     scalar's n_f − 1.)
+            # The ODE divide does not depend on the law, so it is recorded for
+            # every such reaction, certified or not. The SSA term is exact only
+            # for the certified monomial; the rest stay refused under SSA
+            # (varvol_non_mass_action, above).
+            for _sid in _xc_varvol_species:
+                ode_xcomp_species_fixups.append((species_idx[_sid], species_comp[_sid]))
             if i in ssa_varvol_xcompartment:
                 _varvol_comps = set(ssa_varvol_xcompartment[i])
                 for _sid in net:
-                    if species_comp[_sid] in _varvol_comps and not species_hosu.get(_sid, False):
+                    if (
+                        _sid not in _xc_varvol_species
+                        and species_comp[_sid] in _varvol_comps
+                        and not species_hosu.get(_sid, False)
+                    ):
                         ode_xcomp_species_fixups.append((species_idx[_sid], species_comp[_sid]))
                 _comp_exp: Counter = Counter()
                 for _ridx in reactant_mult:  # 0-based species idx, repeated by mult
