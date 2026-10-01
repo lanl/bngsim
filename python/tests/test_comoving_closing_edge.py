@@ -706,19 +706,24 @@ def test_a_step_on_the_closing_edge_is_refused(tmp_path, shape, shift):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10)
 
 
-def test_a_step_on_an_edge_that_is_not_singular_runs(tmp_path):
+@pytest.mark.parametrize(("shape", "param"), [("closing", "D"), ("both", "on"), ("both", "D")])
+def test_a_step_on_an_edge_that_is_not_singular_runs(tmp_path, shape, param):
     """Control. The step on the close again, at a = 3. The closing power is
     ``(1 − s)²`` there, and read a hair from its zero it is nothing, so the two
     crossings are told apart as they are anywhere else. An earlier cut refused
-    every crossing that shares its instant with the edge of a window."""
+    every crossing that shares its instant with the edge of a window.
+
+    The onset column of a window that opens as a power too is in its frame at
+    that close, from the opening on. It is a frame that was not entered ahead:
+    nothing in it is singular at this exponent."""
     text = NET.replace("    8 tmid  {tmid}", "    8 tmid  {tmid}\n    9 tj 7.0")
     text = text.format(
-        a=3, close="<=", shape=SHAPES["closing"][0], extra="+if(t>=tj,1.5,0)", tmid=5.0, on=ON
+        a=3, close="<=", shape=SHAPES[shape][0], extra="+if(t>=tj,1.5,0)", tmid=5.0, on=ON
     )
     path = tmp_path / "m.net"
     path.write_text(text)
-    got = _column(bngsim.Model.from_net(path), "D")
-    assert _worst(got, _exact("closing", 3, "D")) < 5e-6
+    got = _column(bngsim.Model.from_net(path), param)
+    assert _worst(got, _exact(shape, 3, param)) < 5e-6
 
 
 @pytest.mark.parametrize("param", ["on1", "D1", "on2"])
@@ -806,3 +811,16 @@ def test_the_source_does_not_read_a_parameters_value(tmp_path):
         return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
 
     assert source(3.0, 4.0, 1.1) == source(1.2, 2.604, 2.5) == source(3.0, -4.0, 1.7)
+
+
+@pytest.mark.parametrize("param", ["on", "D"])
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_an_exponent_of_zero_through_sbml(shape, param):
+    """a = 1: the power is the constant 1 and the window closes as a step. Its
+    case is not one to enter ahead of, and it is not of no use either. The
+    plain column carries ``(a − 1)·(1 − s)^(a − 2)``, which is 0·inf on the
+    edge of an SBML window that closes with ``<=``, so the column is in its
+    frame there as it was before there were cases to enter ahead of. A cut that
+    left the case alone at this exponent failed these runs."""
+    got = _column(_sbml(shape, 1.0), param)
+    assert _worst(got, _exact(shape, 1.0, param)) < 5e-6
