@@ -3722,6 +3722,69 @@ def state_switch_conditions(core, ctx=None) -> list[str]:
     return conditions
 
 
+def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[list[int]]:
+    """For each condition, the 0-based functional reactions whose rate law reads it.
+
+    Parallel to ``conditions`` (the list :func:`state_switch_conditions`
+    returns), for ``SolverOptions.set_state_switch_reactions``. The solver asks
+    whether a crossing is continuous of these reactions' flux alone (issue
+    #763). Asked of every species' whole dx/dt, a species the switch never
+    touches decided it: one whose rate law cancels internally (``0.3*P -
+    0.1*Q`` over two 1e8 pools) contributes pure roundoff that reads as a jump,
+    and a switched species' own large turnover dilutes a real one. A rate law
+    reads a condition when an atom of its inlined text has the same crossing
+    surface (:func:`_surface_key`), so ``X<1`` and ``X<=1`` both match. An
+    empty entry means no functional rate law reads it (only an output does), so
+    the solver takes the crossing as continuous; a tangent crossing, which its
+    probes cannot see past, is still judged over the whole right-hand side.
+
+    The list is of functional rate laws only. A law of another kind can read a
+    condition through a parameter a function writes (a Michaelis-Menten ``kcat``
+    bound to ``if(X<1, kb, 0)``), and is not listed. The solver covers that: a
+    jump the pre-#763 test reads, and that the listed reactions do not account
+    for, is judged as before.
+    """
+    from bngsim._jacobian import _inline_functions
+
+    out: list[list[int]] = [[] for _ in conditions]
+    if not conditions:
+        return out
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    memo: dict[str, str] = {}
+
+    def inline(text: str) -> str:
+        return _inline_functions(text, func_map, memo=memo) or text
+
+    key_of: dict[str, str | None] = {}
+
+    def surface(atom: str) -> str | None:
+        if atom not in key_of:
+            residual = state_switch_residual(core, atom)
+            key_of[atom] = _surface_key(residual) if residual else None
+        return key_of[atom]
+
+    wanted: dict[str, list[int]] = {}
+    for i, cond in enumerate(conditions):
+        key = surface(inline(cond))
+        if key is not None:
+            wanted.setdefault(key, []).append(i)
+    if not wanted:
+        return out
+    for rxn in ctx["functional_reactions"]:
+        flat = inline(str(rxn.get("rate_expr", "")))
+        if not _IF_CALL.search(flat):
+            continue
+        hit: set[int] = set()
+        for written in _iter_condition_atoms(flat):
+            for atom in _split_logical_atoms(written):
+                hit.update(wanted.get(surface(atom) or "", ()))
+        for i in hit:
+            out[i].append(int(rxn["rxn_idx"]))
+    return out
+
+
 def state_switch_root_conditions(core, covered: Sequence[str] = (), ctx=None) -> tuple[str, ...]:
     """Rate-law conditions over model state that a run without sensitivities roots on (#897).
 
