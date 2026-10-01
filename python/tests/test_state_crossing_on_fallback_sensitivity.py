@@ -68,7 +68,7 @@ def _simulator(tmp_path, fy, fz, params, decays=False):
 
 
 def _y_columns(sim):
-    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12)
+    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12, timeout=60)
     return np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
 
 
@@ -109,13 +109,22 @@ def test_a_column_that_does_not_move_the_counter_runs(tmp_path):
     np.testing.assert_allclose(_y_columns(sim), [-3.0], rtol=1e-8)
 
 
+def test_a_counter_threshold_the_rate_law_does_not_jump_at_runs(tmp_path):
+    """Control. The rate law turns on as a ramp from the counter's threshold:
+    Y = kb·k·(T − t*)²/2 with t* = (thr − A0)/k, so
+    dY/dk = kb·(T − t*)²/2 + kb·(T − t*)·t* = 36.66."""
+    sim = _simulator(tmp_path, "if(Aobs>4.4,kb*(Aobs-4.4),0)", DECLINED, ["k"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [36.66], rtol=1e-6)
+
+
 def test_a_step_call_on_the_state_is_refused_before_the_run(tmp_path):
     """``floor(Aobs/P)`` steps each time A passes a multiple of P, and no root
     is placed on a step call: the run ended in CVODE's no-progress error at the
     first one."""
     sim = _simulator(tmp_path, "kb", "kc*floor(Aobs/P)", ["k", "P"])
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #938") as caught:
-        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12)
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12, timeout=60)
     assert "floor(Aobs/P)" in str(caught.value)
 
 
@@ -159,7 +168,7 @@ def test_a_run_that_stalls_short_of_a_jump_is_refused_by_name(model):
     )
     assert not sim.has_analytic_sens_rhs
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #932"):
-        sim.run(sample_times=np.linspace(0.0, 6.0, 7), rtol=1e-10, atol=1e-12)
+        sim.run(sample_times=np.linspace(0.0, 6.0, 7), rtol=1e-10, atol=1e-12, timeout=60)
 
 
 def test_a_stall_that_is_not_beside_a_state_crossing_is_still_a_solver_failure(tmp_path):
@@ -167,7 +176,7 @@ def test_a_stall_that_is_not_beside_a_state_crossing_is_still_a_solver_failure(t
     and it reads no state: the solver's own error, as it was."""
     sim = _simulator(tmp_path, "kb", "kc*floor(time()/P)", ["P", "kc"])
     with pytest.raises(bngsim.SimulationError, match="CVODE made no progress") as caught:
-        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12)
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12, timeout=60)
     assert not isinstance(caught.value, bngsim.SensitivityUnsupportedError)
 
 
