@@ -6664,10 +6664,10 @@ class Simulator:
             sp = diag.get("first_rounded_species", "")
             sp_txt = f" (first: {sp})" if sp else ""
             warnings.warn(
-                f"SSA: {n_rounded} molecule count(s) were not whole numbers, at the "
-                "run's start or as an event wrote them, and were rounded to the "
-                f"nearest one{sp_txt}. The SSA fires whole molecules; set (and assign) "
-                "whole-number counts to silence this. See result.ssa_diagnostics.",
+                f"SSA: {n_rounded} molecule count(s) were not whole numbers when the "
+                f"run started and were rounded to the nearest one{sp_txt}. The SSA "
+                "fires whole molecules; set whole-number counts to silence this. See "
+                "result.ssa_diagnostics.",
                 SsaRoundingWarning,
                 stacklevel=3,
             )

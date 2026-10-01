@@ -707,9 +707,14 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     int first_rounded = -1;
     std::vector<double> conc(ns);
     std::vector<double> counts(ns);
+    // A run that continues the previous one (issue #693) starts from that run's
+    // own state, which may hold a fractional count an event assigned (kept, as
+    // store_value keeps it): rounding it here made a run split into legs differ
+    // from the run whole. Only a fresh start's populations are rounded.
+    const bool continuing = model.event_carry_for(times.t_start, model.n_events()) != nullptr;
     for (int i = 0; i < ns; ++i) {
         const auto &sp = model.species()[i];
-        if (!is_count[i]) {
+        if (!is_count[i] || continuing) {
             conc[i] = sp.concentration;
             counts[i] = conc[i] * sp.volume_factor; // a continuous value, not snapped
             continue;
@@ -810,27 +815,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         }
     };
     // An event assignment writes a stored value through here, so the count
-    // stays the count of the stored value. A molecule count is rounded to a
-    // whole one and reported as an initial count is (issue #718): kept
-    // fractional, it was rounded only by the next run's start, so a run split
-    // into legs gave a different trajectory than the same run whole. A
-    // continuous slot keeps the value as written.
+    // stays the count of the stored value. A value within rounding of a whole
+    // count is stored as exactly n/V; a fractional one is kept as written.
     auto store_value = [&](int si, double value) {
-        const double vf = species_list[si].volume_factor;
-        if (!is_count[si]) {
-            const double n = storage_to_count(value, vf);
-            counts[si] = n;
-            conc[si] = n == std::round(n) ? n / vf : value;
-            return;
-        }
-        conc[si] = round_initial_population_to_storage(value, vf);
-        counts[si] = storage_to_count(conc[si], vf);
-        const double amount = value * vf;
-        if (std::isfinite(amount) && std::fabs(amount - conc[si] * vf) > 1e-9 * std::fabs(amount)) {
-            ++n_rounded;
-            if (first_rounded < 0)
-                first_rounded = si;
-        }
+        const double n = storage_to_count(value, species_list[si].volume_factor);
+        counts[si] = n;
+        conc[si] = n == std::round(n) ? n / species_list[si].volume_factor : value;
     };
 
     // ─── Build (or reuse) dependency graph ───────────────────────────────────

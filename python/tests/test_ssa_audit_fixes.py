@@ -79,19 +79,68 @@ def test_a_unit_conversion_factor_is_not_refused():
     bngsim.Simulator(m, method="ssa").run(t_span=(0, 1), n_points=2, seed=1)
 
 
-def test_an_event_writing_a_fractional_count_rounds_it_as_a_start_does():
-    """A = A/2 with A = 7 writes 3.5 molecules: rounded where it is written, with
-    the #718 warning, so legs and one run agree."""
+def test_a_fractional_count_an_event_wrote_is_carried_across_legs():
+    """A = A/2 with A = 7 writes 3.5 molecules, which the run carries (#692).
+    A run_until leg that continues it used to round it at its start, so the
+    legs differed from the run whole."""
     text = "species A = 7; species B = 0; J: => B; 1; E: at time >= 1: A = A/2;"
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        whole = _sim(text).run(t_span=(0, 4), n_points=5, seed=3)
+    whole = _sim(text).run(t_span=(0, 4), n_points=5, seed=3)
     a = np.asarray(whole.species)[:, 0]
-    assert a[2] == round(a[2])
-    assert any("round" in str(x.message).lower() for x in w)
+    assert a[2] == 3.5
     s = _sim(text)
     s.run_until(2, seed=3)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
+        warnings.simplefilter("error", bngsim.SsaRoundingWarning)
         leg = s.run_until(4, seed=4)
-    assert np.asarray(leg.species)[0, 0] == a[2]
+    assert np.asarray(leg.species)[0, 0] == 3.5
+
+
+def test_an_event_just_past_a_leg_end_fires_once():
+    """``time > 4`` with legs ending at 4 and 8: the first leg looked past its
+    end, fired it, and the second fired it again (B = 200)."""
+    text = "species B = 0; species C = 0; J: => C; 1; E: at time > 4: B = B + 100;"
+    s = _sim(text)
+    s.run_until(4, seed=1)
+    r = s.run_until(8, seed=2)
+    assert np.asarray(r.species)[-1, 0] == 100
+
+
+CF_IA = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+ <model id="m">
+  <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+  <listOfSpecies>
+   <species id="A" compartment="c" initialAmount="10" hasOnlySubstanceUnits="true"
+            boundaryCondition="false" constant="false" conversionFactor="cf"/>
+  </listOfSpecies>
+  <listOfParameters>
+   <parameter id="cf" value="2" constant="true"/><parameter id="k" value="3" constant="true"/>
+  </listOfParameters>
+  <listOfInitialAssignments>
+   <initialAssignment symbol="sr">
+    <math xmlns="http://www.w3.org/1998/Math/MathML"><cn>2</cn></math>
+   </initialAssignment>
+  </listOfInitialAssignments>
+  <listOfReactions>
+   <reaction id="R" reversible="false">
+    <listOfReactants>
+     <speciesReference species="A" stoichiometry="1" constant="true"/>
+    </listOfReactants>
+    <listOfProducts>
+     <speciesReference id="sr" species="A" stoichiometry="1" constant="true"/>
+    </listOfProducts>
+    <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>k</ci></math></kineticLaw>
+   </reaction>
+  </listOfReactions>
+ </model>
+</sbml>"""
+
+
+def test_a_conversion_factor_with_a_stoichiometry_from_an_initial_assignment():
+    """A -> 2A with the 2 from an initialAssignment, cf = 2: dA/dt = cf*k, so
+    A(10) = 70 (libRoadRunner agrees). The cf used to be read against the
+    attribute's 1 -> 1, a catalyst, and dropped: 40 under the ODE, and SSA ran."""
+    r = bngsim.Simulator(bngsim.Model.from_sbml_string(CF_IA)).run(t_span=(0, 10), n_points=2)
+    assert np.asarray(r.species)[-1, 0] == pytest.approx(70.0)
+    m = bngsim.Model.from_sbml_string(CF_IA)
+    assert any(i.code == "conversion_factor" for i in m.validate_for_ssa())

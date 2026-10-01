@@ -302,9 +302,10 @@ class SsaRoundingWarning(UserWarning):
 
     The exact SSA fires whole molecules, so a species whose count is not a
     whole number when a run starts is rounded to the nearest one, as
-    ``run_network`` does. This is emitted for every run and every ``run_until``
-    leg that rounds, not only when the Simulator is built: a count set between
-    legs, or left fractional by an event assignment, is rounded at the next leg.
+    ``run_network`` does. This is emitted for every run that rounds, not only
+    when the Simulator is built. A run that continues the previous one (a
+    ``run_until`` leg) starts from that run's own state and rounds nothing, so a
+    count an event left fractional is carried, as within one run (issue #693).
     A parameter or compartment that an event assigns and a rate-rule target
     hold continuous values and are never rounded. ``result.ssa_diagnostics``
     carries the count (``n_rounded_populations``) regardless of filters::

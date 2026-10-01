@@ -5605,7 +5605,10 @@ def _build_model_from_sbml_doc(doc):
     # We realize it by scaling the reaction RATE: when every species a reaction
     # changes shares one effective cf, multiplying that reaction's rate by cf
     # gives d(amount_i)/dt = Σ_r stoich·(cf·rate) = cf·Σ_r stoich·rate for every
-    # involved species — exact, and correct for ODE and SSA alike. In section 7
+    # involved species — exact for the ODE and for the SSA mean, but not the SSA
+    # noise: each firing should move the species by cf·stoich, not fire cf times
+    # as often in unit jumps, so SSA/PSA refuse a cf other than 1 (SsaIssue
+    # ``conversion_factor``, in the reaction loop below). In section 7
     # this folds into the mass-action statistical factor ``sf``. Genuinely
     # mixed-cf-per-reaction and conversion-factored non-mass-action laws can't be
     # expressed as a single rate scale and are refused loudly there (never
@@ -5644,13 +5647,19 @@ def _build_model_from_sbml_doc(doc):
         species carry more than one distinct cf — which a single rate scale
         cannot represent, so the caller refuses."""
         net: dict[str, float] = {}
+        # The stoichiometry the emission uses (an initialAssignment or
+        # stoichiometryMath included): read off the attribute, `A -> 2A` with
+        # the 2 set by an initialAssignment read as a catalyst, and the cf was
+        # dropped, for the ODE and the SSA refusal alike.
         for _j in range(rxn.getNumReactants()):
             _sr = rxn.getReactant(_j)
-            _st = _sr.getStoichiometry() if _sr.isSetStoichiometry() else 1.0
+            _st = _resolve_stoich(_sr)
+            _st = 1.0 if _st is None else _st
             net[_sr.getSpecies()] = net.get(_sr.getSpecies(), 0.0) - _st
         for _j in range(rxn.getNumProducts()):
             _sr = rxn.getProduct(_j)
-            _st = _sr.getStoichiometry() if _sr.isSetStoichiometry() else 1.0
+            _st = _resolve_stoich(_sr)
+            _st = 1.0 if _st is None else _st
             net[_sr.getSpecies()] = net.get(_sr.getSpecies(), 0.0) + _st
         cfs = set()
         for _sid, _n in net.items():
