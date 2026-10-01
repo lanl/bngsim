@@ -1992,12 +1992,12 @@ static void land_clock_on_threshold(double *y_data, int ns, int clock_species_id
 struct ClockCrossingsAtEvent {
     std::vector<const SwitchTimeSens *> pending;
     std::vector<const SwitchTimeSens *> applied;
-    // Fixed thresholds on a counter clock that are crossed on this instant. No
-    // column moves them, so they have no record; a nudge of the time does not
-    // move a counter either, so the event jump has to be told where they are.
-    std::vector<CrossingStop> fixed_counters;
-    // A record within the reach the event's jump searches for a fixed switch,
-    // on the instant or not. Its jump is its own, taken at its own stop.
+    // The fixed crossings on or beside this instant: thresholds on the time or
+    // on a counter that no column moves, so they have no record. The event's
+    // own trigger time is one of them when it is a fixed threshold itself.
+    std::vector<CrossingStop> fixed_stops;
+    // A record within the reach of those, on the instant or not. Its jump is its
+    // own, taken at its own stop, and would be read as a fixed switch's.
     bool record_near = false;
 };
 
@@ -5508,51 +5508,60 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // carried through the batch beside the columns, and the run is refused
     // only where the two disagree.
     struct CommuteProbe {
+        int clock = -1;                 // the counter species, or -1 for the time
+        double at = 0.0;                // the switch's time, or the counter's threshold
+        bool fixed = false;             // the switch has no record: no column moves it
         std::vector<double> jump_minus; // Δ(x⁻)
         std::vector<double> jump_plus;  // Δ(x⁺)
         std::vector<double> scale;      // the flows they were read from, per row
-        bool fixed = false;             // the switch has no record: no column moves it
     };
     std::vector<CommuteProbe> probes;
-    std::vector<double> x_plus_state(x_post);
-    std::vector<double> x_minus_state(x_minus.begin(), x_minus.end());
-    // Δ at one state from its two branches, widening `scale` by what was read.
-    auto jump_between = [&](const std::vector<double> &f_b, const std::vector<double> &f_a,
-                            std::vector<double> &jump, std::vector<double> &scale) {
+    // Δ = f_before − f_after across a switch, at one state. It is the second
+    // difference of f over the clock about the switch,
+    //     −(2·(f(c+h) − f(c−h)) − (f(c+2h) − f(c−2h))),
+    // which is what a step leaves and a smooth change, however fast, does not:
+    // a rate law that passes through zero at the instant, or oscillates, has
+    // none. `scale` is widened by what was read.
+    auto jump_at = [&](const CommuteProbe &probe, const std::vector<double> &state,
+                       std::vector<double> &jump, std::vector<double> &scale) {
+        std::vector<double> at[4];
+        std::vector<double> moved(state);
+        const double h = probe.clock >= 0 ? counter_hair(probe.at) : nudge_at(probe.at);
+        const double offsets[4] = {-h, h, -2.0 * h, 2.0 * h};
+        for (int k = 0; k < 4; ++k) {
+            if (probe.clock >= 0) {
+                moved[static_cast<size_t>(probe.clock)] = probe.at + offsets[k];
+                flow_at(t_evt, moved, at[k]);
+            } else {
+                flow_at(probe.at + offsets[k], state, at[k]);
+            }
+        }
         jump.assign(static_cast<size_t>(ns), 0.0);
         scale.resize(static_cast<size_t>(ns), 0.0);
         for (int i = 0; i < ns; ++i) {
             const auto ui = static_cast<size_t>(i);
-            jump[ui] = f_b[ui] - f_a[ui];
-            scale[ui] = std::max({scale[ui], std::fabs(f_b[ui]), std::fabs(f_a[ui])});
-        }
-    };
-    auto is_jump = [&](const CommuteProbe &probe) {
-        for (int i = 0; i < ns; ++i) {
-            const auto ui = static_cast<size_t>(i);
-            const double tol = kEventClockSwitchRelTol * probe.scale[ui];
-            if (std::fabs(probe.jump_minus[ui]) > tol || std::fabs(probe.jump_plus[ui]) > tol) {
-                return true;
+            jump[ui] = -(2.0 * (at[1][ui] - at[0][ui]) - (at[3][ui] - at[2][ui]));
+            for (const auto &one : at) {
+                scale[ui] = std::max(scale[ui], std::fabs(one[ui]));
             }
         }
-        return false;
     };
-    // A counter clock's two branches at `state`: the clock put either side of
-    // its threshold.
-    auto counter_probe = [&](int clock, double threshold, bool fixed) {
-        CommuteProbe probe;
-        probe.fixed = fixed;
-        const double hair = kSwitchInstantUlps * eps_d * std::max(std::fabs(threshold), 1.0);
-        std::vector<double> f_b, f_a, state;
-        for (int side = 0; side < 2; ++side) {
-            state = side == 0 ? x_minus_state : x_plus_state;
-            state[static_cast<size_t>(clock)] = threshold - hair;
-            flow_at(t_evt, state, f_b);
-            state[static_cast<size_t>(clock)] = threshold + hair;
-            flow_at(t_evt, state, f_a);
-            jump_between(f_b, f_a, side == 0 ? probe.jump_minus : probe.jump_plus, probe.scale);
+    const std::vector<double> x_minus_state(x_minus.begin(), x_minus.end());
+    auto add_probe = [&](int clock, double where, bool fixed) {
+        if (clock >= ns) {
+            return;
         }
-        return probe;
+        for (const CommuteProbe &seen : probes) {
+            if (seen.clock == clock && seen.at == where) {
+                return;
+            }
+        }
+        CommuteProbe probe;
+        probe.clock = clock;
+        probe.at = where;
+        probe.fixed = fixed;
+        jump_at(probe, x_minus_state, probe.jump_minus, probe.scale);
+        probes.push_back(std::move(probe));
     };
 
     // What counts as the same shift: the columns' own size, so that a shift
@@ -5580,67 +5589,21 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             }
             apart = std::fabs(d - tau[static_cast<size_t>(c)]) > 1e-9 * shift_size;
         }
-        if (!apart) {
-            continue;
+        if (apart) {
+            const bool counter = one->clock_species_idx0 >= 0;
+            add_probe(one->clock_species_idx0, counter ? one->threshold : one->t_star, false);
         }
-        if (one->clock_species_idx0 >= 0) {
-            if (one->clock_species_idx0 < ns) {
-                probes.push_back(counter_probe(one->clock_species_idx0, one->threshold, false));
-            }
-            continue;
-        }
-        CommuteProbe probe;
-        std::vector<double> f_b, f_a;
-        const double hair = nudge_at(one->t_star);
-        flow_at(one->t_star - hair, x_minus_state, f_b);
-        flow_at(one->t_star + hair, x_minus_state, f_a);
-        jump_between(f_b, f_a, probe.jump_minus, probe.scale);
-        flow_at(one->t_star - hair, x_plus_state, f_b);
-        flow_at(one->t_star + hair, x_plus_state, f_a);
-        jump_between(f_b, f_a, probe.jump_plus, probe.scale);
-        probes.push_back(std::move(probe));
     }
     // A rate law that switches at a FIXED time on this instant has no record: no
     // column moves it. An event whose time does move comes apart from it the
-    // same way. f is asked whether one is there. Its jump across the instant is
-    // 2·(f(t+n) − f(t−n)) − (f(t+2n) − f(t−2n)): what a step leaves and a smooth
-    // change, however fast, does not. The reach n covers where a root can be
-    // reported, so a state-triggered event that lands on a literal switch time is
-    // seen too. A fixed threshold on a counter is not moved by the time, and is
-    // read from its own two sides.
+    // same way. The run knows where its fixed crossings are, and each one on
+    // this instant is asked for its jump. The event's own trigger time may be
+    // among them, and has none.
     if (!clocks.record_near &&
         std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; })) {
-        const double reach = kEventRootSlack * clock_nudge;
-        CommuteProbe probe;
-        probe.fixed = true;
-        std::vector<double> lo1, hi1, lo2, hi2;
-        for (int side = 0; side < 2; ++side) {
-            const std::vector<double> &state = side == 0 ? x_minus_state : x_plus_state;
-            flow_at(t_evt - reach, state, lo1);
-            flow_at(t_evt + reach, state, hi1);
-            flow_at(t_evt - 2.0 * reach, state, lo2);
-            flow_at(t_evt + 2.0 * reach, state, hi2);
-            std::vector<double> &jump = side == 0 ? probe.jump_minus : probe.jump_plus;
-            jump.assign(static_cast<size_t>(ns), 0.0);
-            probe.scale.resize(static_cast<size_t>(ns), 0.0);
-            for (int i = 0; i < ns; ++i) {
-                const auto ui = static_cast<size_t>(i);
-                jump[ui] = -(2.0 * (hi1[ui] - lo1[ui]) - (hi2[ui] - lo2[ui]));
-                probe.scale[ui] = std::max({probe.scale[ui], std::fabs(lo1[ui]), std::fabs(hi1[ui]),
-                                            std::fabs(lo2[ui]), std::fabs(hi2[ui])});
-            }
-        }
-        if (is_jump(probe)) {
-            probes.push_back(std::move(probe));
-        }
-        for (const CrossingStop &stop : clocks.fixed_counters) {
-            if (stop.clock_species_idx0 < 0 || stop.clock_species_idx0 >= ns) {
-                continue;
-            }
-            CommuteProbe counter = counter_probe(stop.clock_species_idx0, stop.threshold, true);
-            if (is_jump(counter)) {
-                probes.push_back(std::move(counter));
-            }
+        for (const CrossingStop &stop : clocks.fixed_stops) {
+            const bool counter = stop.clock_species_idx0 >= 0;
+            add_probe(stop.clock_species_idx0, counter ? stop.threshold : stop.t_star, true);
         }
     }
     if (!probes.empty()) {
@@ -5864,6 +5827,25 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
 
     // The event and a switch that comes apart from it have to commute (issue
     // #767): H·Δ(x⁻) against Δ(x⁺), row by row.
+    //
+    // Δ(x⁺) is read with every value the batch took from the time moved on, as
+    // though the event had fired a little later. An event that records its own
+    // time, `T0 = time`, beside a rate law gated on `time >= T0` puts a
+    // threshold exactly on its instant at x⁺. That one moves with the event and
+    // is no switch at all on the trajectory; a fixed one stays where it is.
+    if (!probes.empty()) {
+        std::vector<double> x_later(x_post);
+        const double later = 16.0 * kEventRootSlack * clock_nudge;
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<size_t>(i);
+            if (assigned[ui] != 0 && row_dcdt[ui] != 0.0) {
+                x_later[ui] += row_dcdt[ui] * later;
+            }
+        }
+        for (CommuteProbe &probe : probes) {
+            jump_at(probe, x_later, probe.jump_plus, probe.scale);
+        }
+    }
     for (size_t q = 0; q < probes.size(); ++q) {
         const CommuteProbe &probe = probes[q];
         for (int i = 0; i < ns; ++i) {
@@ -9754,9 +9736,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             }
                         }
                         for (const CrossingStop &stop : crossing_stops) {
-                            if (stop.clock_species_idx0 >= 0 &&
-                                std::fabs(stop.t_star - static_cast<double>(t_ret)) <= near) {
-                                clocks.fixed_counters.push_back(stop);
+                            if (std::fabs(stop.t_star - static_cast<double>(t_ret)) <= near) {
+                                clocks.fixed_stops.push_back(stop);
                             }
                         }
                     }

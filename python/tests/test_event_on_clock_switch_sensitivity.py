@@ -427,11 +427,12 @@ def test_a_second_fitted_switch_on_the_instant_that_does_not_move_with_the_event
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
 
 
-@pytest.mark.parametrize("ulps", [-300, 200])
+@pytest.mark.parametrize("ulps", [-300, -150, 150, 200])
 def test_a_fitted_switch_a_hair_from_the_event_is_not_a_fixed_one(ulps):
     """Control. The switch is at tau + off, a few hundred ulp from the event at
-    tau: not one instant, and both move with tau. The search for a fixed switch
-    reaches that far, and an earlier cut took the fitted one for it and refused.
+    tau: not one instant, and both move with tau. The event's own trigger time
+    is a stop the run knows, and the jump read across it reaches that far, so
+    an earlier cut took the fitted switch for a fixed one there and refused.
     The offset is set as a double: written into the model text it would be 0."""
     text = (
         "species X, Y; X = 0; Y = 0; a = 2; k = 0.5; tau = 3; off = 0\n"
@@ -450,3 +451,37 @@ def test_a_fitted_switch_a_hair_from_the_event_is_not_a_fixed_one(ulps):
     u = T - tau
     assert s[names.index("X")] == pytest.approx(c * a - a, rel=1e-7)
     assert s[names.index("Y")] == pytest.approx(k * (c * a * u - c * a * tau - a * u), rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("text", "param", "want"),
+    [
+        (
+            "species X, Y; X = 0; Y = 0; a = 2; k = 0.5; T0 = 1e9\n"
+            "J0: -> X; a\n"
+            "J1: -> Y; piecewise(k, time >= T0, 0)\n"
+            "E1: at (X >= 5): T0 = time\n",
+            "a",
+            0.5 * 5.0 / 4.0,
+        ),
+        (
+            "species Y; Y = 0; k = 0.5; T0 = 1e9; tau = 2.5\n"
+            "J1: -> Y; piecewise(k, time >= T0, 0)\n"
+            "E1: at (time >= tau): T0 = time\n",
+            "tau",
+            -0.5,
+        ),
+    ],
+    ids=["state-trigger", "time-trigger"],
+)
+def test_an_event_that_records_its_own_time_is_not_a_fixed_switch(text, param, want):
+    """Control. The event writes T0 = time, and a rate law is gated on
+    `time >= T0`. At the post-event state that threshold sits exactly on the
+    event's instant, but it moves with the event and is no switch at all on the
+    trajectory: Y grows at k from the event on, and dY/d(event time) = −k.
+
+    An earlier cut read the right-hand side either side of the instant at the
+    post-event state, found the step and refused. A corpus model does this
+    (BIOMD0000000675 records the time of START)."""
+    _x, s = _sens(text, [param])
+    assert s["Y"][0] == pytest.approx(want, rel=1e-6)
