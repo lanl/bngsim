@@ -169,13 +169,20 @@ An event on the same fitted time as a switch, a dose at `tau` beside
 switch's compose (issue #767). The switch may be on `time` or on a counter.
 
 If a requested parameter moves one of the two and not the other, they come
-apart under it. That matters only where the event changes what the switched rate
-law contributes, so that the result depends on which comes first: a reset of
-`X` at `tau` beside `piecewise(k*X, time >= 3, 0)` with `tau = 3`. There the
-sensitivity does not exist, and the run is refused. A pair that commutes runs:
-a bolus beside an infusion that starts at the same time. A third switch within
-12 digits of the shared time is refused as well: which side of the event it is
-on cannot be read by moving the clock.
+apart under it. Where the event changes what the switched rate law contributes,
+the result depends on which comes first and the sensitivity does not exist: a
+reset of `X` at `tau` beside `piecewise(k*X, time >= 3, 0)` with `tau = 3`.
+bngsim measures whether the event and the switch commute, and refuses the run
+where they do not. A pair that commutes runs: a bolus beside an infusion that
+starts at the same time.
+
+An event on, or within a few hundred ulp of, a switch time that shares its
+instant with another switch is refused as well: which side of the event each is
+on cannot be read by moving the clock. Some of those runs have a derivative.
+
+Two coincidences are not detected, and return a number: a `floor` step beside a
+fitted switch (issue #944), and a state-dependent switch that crosses within the
+integration tolerance of the event (issue #945).
 
 ### Landing on the crossing
 

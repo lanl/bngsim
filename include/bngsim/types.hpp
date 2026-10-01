@@ -1427,6 +1427,12 @@ struct SolverOptions {
     // half, and CVodeSetStopTime is what supplies it — the same mechanism
     // issue #48 uses for a crossing that a fitted parameter moves.
     std::vector<CrossingStop> crossing_stops;
+    // The same crossings before the ones on one instant are merged to a single
+    // stop: one entry per (time, clock, threshold), sorted by time. The loop
+    // stops once at an instant; the event jump asks each fixed switch on it
+    // for its own jump (issue #767), and two counters crossing their
+    // thresholds together are two. Empty falls back to crossing_stops.
+    std::vector<CrossingStop> crossing_probes;
 
     // ─── Per-species absolute tolerance (issue #196) ─────────────────────────
     // Empty (the default) leaves the scalar `atol` above on CVodeSStolerances,
