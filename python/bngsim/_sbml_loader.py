@@ -6132,6 +6132,31 @@ def _build_model_from_sbml_doc(doc):
                 )
             )
 
+        # SSA validation: a conversionFactor other than 1 scales how far each
+        # firing moves a species. bngsim folds it into the rate instead (§3b),
+        # which keeps the ODE and the SSA mean but gives the wrong noise under
+        # SSA: the reaction fires cf times as often in unit jumps (variance k·T
+        # where cf²·k·T is right). Refused until the jump itself is scaled.
+        if _has_conversion_factor:
+            _rcf, _rmixed = _reaction_conversion_factor(rxn)
+            if _rmixed or _rcf != 1.0:
+                ssa_issues.append(
+                    SsaIssue(
+                        severity="error",
+                        code="conversion_factor",
+                        message=(
+                            f"Reaction '{rid}' changes species whose SBML "
+                            f"conversionFactor is not 1 ({'mixed' if _rmixed else _rcf}). "
+                            "Under SSA each firing would have to move them by "
+                            "conversionFactor x stoichiometry; bngsim scales the rate "
+                            "instead, which keeps the mean but not the noise, so the "
+                            "model is refused for SSA/PSA. Use method='ode', or fold "
+                            "the factor into the stoichiometry."
+                        ),
+                        location=f"reaction:{rid}",
+                    )
+                )
+
         kl = rxn.getKineticLaw()
         if kl is None:
             continue

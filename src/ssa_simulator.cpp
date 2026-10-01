@@ -810,12 +810,27 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         }
     };
     // An event assignment writes a stored value through here, so the count
-    // stays the count of the stored value. A value within rounding of a whole
-    // count is stored as exactly n/V; a fractional one is kept as written.
+    // stays the count of the stored value. A molecule count is rounded to a
+    // whole one and reported as an initial count is (issue #718): kept
+    // fractional, it was rounded only by the next run's start, so a run split
+    // into legs gave a different trajectory than the same run whole. A
+    // continuous slot keeps the value as written.
     auto store_value = [&](int si, double value) {
-        const double n = storage_to_count(value, species_list[si].volume_factor);
-        counts[si] = n;
-        conc[si] = n == std::round(n) ? n / species_list[si].volume_factor : value;
+        const double vf = species_list[si].volume_factor;
+        if (!is_count[si]) {
+            const double n = storage_to_count(value, vf);
+            counts[si] = n;
+            conc[si] = n == std::round(n) ? n / vf : value;
+            return;
+        }
+        conc[si] = round_initial_population_to_storage(value, vf);
+        counts[si] = storage_to_count(conc[si], vf);
+        const double amount = value * vf;
+        if (std::isfinite(amount) && std::fabs(amount - conc[si] * vf) > 1e-9 * std::fabs(amount)) {
+            ++n_rounded;
+            if (first_rounded < 0)
+                first_rounded = si;
+        }
     };
 
     // ─── Build (or reuse) dependency graph ───────────────────────────────────
@@ -1748,6 +1763,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<char> probe_prev, probe_cur; // the continuous loop's scan
     auto probe_events_in_window = [&](double t_lo, double t_hi) -> double {
         double t_event = std::numeric_limits<double>::infinity();
+        // Nothing past the run's end can fire in it. The discrete loop asks up
+        // to its next firing, which with a tiny total propensity lies far past
+        // t_end: the grid then ran to it (millions of looks, past the timeout,
+        // and past INT_MAX in the look count).
+        t_hi = std::min(t_hi, times.t_end);
         if (time_triggers.empty() || !(t_hi > t_lo))
             return t_event;
         // Until a trigger changes, its recorded truth is what each look compares
