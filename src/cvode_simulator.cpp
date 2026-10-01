@@ -5537,15 +5537,13 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     //     −(2·(f(c+h) − f(c−h)) − (f(c+2h) − f(c−2h))),
     // which is what a step leaves and a smooth change, however fast, does not:
     // a rate law that passes through zero at the instant, or oscillates, has
-    // none. The weights are solved for the offsets the clock actually took: at
-    // t = 1e6 an offset of 1e-8 is rounded by a hundredth of itself, and with
-    // the nominal weights that leaves f'·ulp(t) of a smooth law in the sum.
-    // `scale` is widened by what was read.
+    // none. `scale` is widened by what was read.
     //
-    // A law that reads the clock rounds on the way: sin(30·time) at t = 1e6
-    // forms 30·t to one ulp of 3e7, which is 2e-9 of an argument. That is
-    // ε·|c|·|∂f/∂c| in each read, and the slope is taken from the two reads on
-    // each side of the switch, which no step lies between. It is a sixteenth
+    // The clock rounds on the way. At t = 1e6 an offset of 1e-8 is taken to a
+    // hundredth of itself, and sin(30·time) forms 30·t to one ulp of 3e7. Each
+    // leaves about ε·|c|·|∂f/∂c| in a read, six of them in the sum with its
+    // weights. `noise` is sixteen: the slope is taken from the two reads on
+    // each side of the switch, which no step lies between. That is a quarter
     // of what the law changes by over the nudge, so a step that small beside a
     // law moving that fast is not seen.
     auto jump_at = [&](const CommuteProbe &probe, const std::vector<double> &state,
@@ -5555,43 +5553,24 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         std::vector<double> moved(state);
         const double h = probe.clock >= 0 ? counter_hair(probe.at) : nudge_at(probe.at);
         const double offsets[4] = {-h, h, -2.0 * h, 2.0 * h};
-        double taken[4];
         for (int k = 0; k < 4; ++k) {
-            const volatile double where = probe.at + offsets[k];
-            taken[k] = (where - probe.at) / h;
             if (probe.clock >= 0) {
-                moved[static_cast<size_t>(probe.clock)] = where;
+                moved[static_cast<size_t>(probe.clock)] = probe.at + offsets[k];
                 flow_at(t_evt, moved, at[k]);
             } else {
-                flow_at(where, state, at[k]);
+                flow_at(probe.at + offsets[k], state, at[k]);
             }
-        }
-        // Weights w with w0 + w2 = 1 and w1 + w3 = −1 (a step gives before −
-        // after) that leave nothing of a constant, a slope or a curvature.
-        const double a11 = taken[0] - taken[2];
-        const double a12 = taken[1] - taken[3];
-        const double a21 = taken[0] * taken[0] - taken[2] * taken[2];
-        const double a22 = taken[1] * taken[1] - taken[3] * taken[3];
-        const double b1 = taken[3] - taken[2];
-        const double b2 = taken[3] * taken[3] - taken[2] * taken[2];
-        const double det = a11 * a22 - a12 * a21;
-        double w[4] = {2.0, -2.0, -1.0, 1.0};
-        if (std::fabs(det) > 1.0) { // −6 at the nominal offsets
-            w[0] = (b1 * a22 - a12 * b2) / det;
-            w[1] = (a11 * b2 - a21 * b1) / det;
-            w[2] = 1.0 - w[0];
-            w[3] = -1.0 - w[1];
         }
         jump.assign(static_cast<size_t>(ns), 0.0);
         scale.resize(static_cast<size_t>(ns), 0.0);
         noise.resize(static_cast<size_t>(ns), 0.0);
-        const double clock_ulps = 4.0 * eps_d * std::fabs(probe.at) / h;
+        const double clock_ulps = 16.0 * eps_d * std::fabs(probe.at) / h;
         for (int i = 0; i < ns; ++i) {
             const auto ui = static_cast<size_t>(i);
             noise[ui] =
                 std::max(noise[ui], clock_ulps * std::max(std::fabs(at[0][ui] - at[2][ui]),
                                                           std::fabs(at[3][ui] - at[1][ui])));
-            jump[ui] = w[0] * at[0][ui] + w[1] * at[1][ui] + w[2] * at[2][ui] + w[3] * at[3][ui];
+            jump[ui] = -(2.0 * (at[1][ui] - at[0][ui]) - (at[3][ui] - at[2][ui]));
             for (const auto &one : at) {
                 scale[ui] = std::max(scale[ui], std::fabs(one[ui]));
             }
@@ -5754,6 +5733,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
 
             // ∂c/∂x_j via central FD.
             std::vector<double> dcdx(static_cast<size_t>(ns), 0.0);
+            std::vector<double> dcdx_rounding(static_cast<size_t>(ns), 0.0);
             for (int j : x_support) {
                 const double xj = xread[j];
                 double h = 1e-6 * std::fabs(xj);
@@ -5767,6 +5747,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 sync_state();
                 const double f_lo = eval_ref_outer.evaluate(vexpr);
                 dcdx[j] = (f_hi - f_lo) / (2.0 * h);
+                dcdx_rounding[j] = 2.0 * std::numeric_limits<double>::epsilon() *
+                                   std::max(std::fabs(f_hi), std::fabs(f_lo)) / h;
                 // A value far larger than the state it reads leaves little of
                 // that step in the difference. `X + D` with D = 100 moves by
                 // 2e-15 at X = 1e-9, under one ulp of 100, and ∂c/∂X came back
@@ -5786,11 +5768,10 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     sync_state();
                     const double w_lo = eval_ref_outer.evaluate(vexpr);
                     const double d_wide = (w_hi - w_lo) / (2.0 * wide);
-                    const double rounding =
-                        2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
-                    if (std::isfinite(d_wide) &&
-                        std::fabs(d_wide - dcdx[j]) <= rounding + 1e-9 * std::fabs(d_wide)) {
+                    if (std::isfinite(d_wide) && std::fabs(d_wide - dcdx[j]) <=
+                                                     dcdx_rounding[j] + 1e-9 * std::fabs(d_wide)) {
                         dcdx[j] = d_wide;
+                        dcdx_rounding[j] *= h / wide;
                     }
                 }
                 xwork[j] = xj; // restore this component
@@ -5904,57 +5885,21 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 }
                 row.base[static_cast<size_t>(c)] = acc;
             }
-            // The same row of the batch's Jacobian applied to each probe. Not by
-            // ∂h/∂x above: its step is a millionth of the state it moves, and at
-            // a state near zero beside a large assigned value (a bolus into an
-            // empty compartment) that leaves 1e-5 of the value in the quotient.
-            // The assignment is differenced once along the jump itself, over a
-            // span sized by the value.
+            // The same row of the batch's Jacobian applied to each probe: a
+            // column with no parameter part and no shift. Its rounding is
+            // carried beside it.
             row.image.assign(probes.size(), 0.0);
             row.noise.assign(probes.size(), 0.0);
-            if (!probes.empty()) {
-                const double value_here = eval_ref_outer.evaluate(vexpr);
-                for (size_t q = 0; q < probes.size(); ++q) {
-                    double reach = 0.0;
-                    double size = std::fabs(value_here);
-                    for (int j : x_support) {
-                        const auto uj = static_cast<size_t>(j);
-                        const double along = at_trigger || assigned[uj] == 0
-                                                 ? probes[q].jump_minus[uj]
-                                                 : probe_image[q][uj];
-                        reach = std::max(reach, std::fabs(along));
-                        size = std::max(size, std::fabs(xread[uj]));
-                    }
-                    if (reach == 0.0) {
-                        continue;
-                    }
-                    const double step = 1e-4 * (size > 0.0 ? size : 1.0) / reach;
-                    double ends[2] = {0.0, 0.0};
-                    for (int side = 0; side < 2; ++side) {
-                        for (int j : x_support) {
-                            const auto uj = static_cast<size_t>(j);
-                            const double along = at_trigger || assigned[uj] == 0
-                                                     ? probes[q].jump_minus[uj]
-                                                     : probe_image[q][uj];
-                            xwork[uj] = xread[uj] + (side == 0 ? step : -step) * along;
-                        }
-                        sync_state();
-                        ends[side] = eval_ref_outer.evaluate(vexpr);
-                    }
-                    for (int j : x_support) {
-                        xwork[static_cast<size_t>(j)] = xread[static_cast<size_t>(j)];
-                    }
-                    row.image[q] = (ends[0] - ends[1]) / (2.0 * step);
-                    // Its own rounding, and the probe's carried at the gain
-                    // the assignment has along it.
-                    const double probe_noise_max =
-                        *std::max_element(probes[q].noise.begin(), probes[q].noise.end());
-                    row.noise[q] = 8.0 * std::numeric_limits<double>::epsilon() *
-                                       std::max(std::fabs(ends[0]), std::fabs(ends[1])) /
-                                       (2.0 * step) +
-                                   std::fabs(row.image[q]) / reach * probe_noise_max;
+            for (size_t q = 0; q < probes.size(); ++q) {
+                for (int j : x_support) {
+                    const auto uj = static_cast<size_t>(j);
+                    const bool fresh = at_trigger || assigned[uj] == 0;
+                    const double along = fresh ? probes[q].jump_minus[uj] : probe_image[q][uj];
+                    const double along_noise = fresh ? probes[q].noise[uj] : probe_noise[q][uj];
+                    row.image[q] += dcdx[j] * along;
+                    row.noise[q] +=
+                        std::fabs(dcdx[j]) * along_noise + dcdx_rounding[j] * std::fabs(along);
                 }
-                sync_state();
             }
             rows.push_back(std::move(row));
         }
