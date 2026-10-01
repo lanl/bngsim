@@ -246,7 +246,8 @@ trajectory crosses within about 1e-13 of each other in time are one stop for
 the solver. If both jump and the requested columns move them apart, the run is
 refused, because one jump would otherwise be moved with the other's `dt*/dθ`.
 A conjunction or a negation is split into its comparisons first. What the
-analytic path declines is a crossing nothing can locate: a comparison outside any `if()`, such as `k*(X > 1)`, and one whose sides
+analytic path declines is a crossing nothing can locate: a comparison outside any
+`if()`, such as `k*(X > 1)`, and one whose sides
 are themselves comparisons, such as `(X > 1) == (Y > 1)`. A parameter that both
 sets a switch time and acts inside a branch is answered on the analytic path,
 which adds the in-branch term to the jump (issue #358), and rejected on the
