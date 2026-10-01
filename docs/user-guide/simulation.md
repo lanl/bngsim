@@ -79,6 +79,19 @@ sim.run_until(t=200)
 sim.restore(snap)  # back to t=50
 ```
 
+A leg continues the events as well as the species and the clock. Each trigger
+keeps the truth it had when the previous leg ended, so an event whose trigger
+is still true at a boundary does not fire again there, and a delayed execution
+pending across the boundary is applied in the next leg (issue #693). An
+intervention that makes a trigger true between legs fires it at the start of
+the next leg. `snapshot()` and `restore()` save and rewind the events with the
+state, and so does rolling the clock back to where one of the last 64 legs
+of this trajectory ended with `set_state(x, time=t)` or `set_time(t)` (below);
+rolling back further warns and starts the events afresh, so take a
+`snapshot()` there instead. A run from any other start time, or after
+`model.reset()`, is a fresh start: each trigger starts from its
+`initialValue`.
+
 ### Rolling a step back
 
 `restore` rebuilds the backend, which is the right cost for an occasional

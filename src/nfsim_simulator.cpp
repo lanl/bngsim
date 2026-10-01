@@ -1253,6 +1253,10 @@ Result NfsimSimulator::simulate(double t_start, double t_end, int n_points, doub
             t_out[i] = t_label_origin + i * dt;
             abs_targets[i] = segment_base_time + i * dt;
         }
+        // The last label is the span's end, as TimeSpec::output_times() makes
+        // it (issue #693).
+        if (n_out > 1)
+            t_out.back() = relative_time ? t_end - t_start : t_end;
     }
 
     // Allocate Result

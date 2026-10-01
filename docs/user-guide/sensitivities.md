@@ -164,6 +164,40 @@ than that, however close, are stopped at one after the other, fitted or fixed. T
 a crossing just after an output time, an event or the start of the run: its jump
 is taken at its own instant, not at the stop before it (issue #737).
 
+An event on the same fitted time as a switch, a dose at `tau` beside
+`piecewise(k*X, time >= tau, 0)`, is supported: the event's jump and the
+switch's compose (issue #767). The switch may be on `time` or on a counter.
+
+If a requested parameter moves one of the two and not the other, they come
+apart under it. Where the event changes what the switched rate law contributes,
+the result depends on which comes first and the sensitivity does not exist: a
+reset of `X` at `tau` beside `piecewise(k*X, time >= 3, 0)` with `tau = 3`.
+bngsim measures whether the event and the switch commute, and refuses the run
+where they do not. A pair that commutes runs: a bolus beside an infusion that
+starts at the same time.
+
+Several switches can share the event's instant. If all of them move with the
+event, two rate laws gated on the dose time, that is one crossing and it runs.
+If some do not, the event has to commute with what the instant does as a whole
+and with each fitted switch on it alone. Back-to-back infusions with a bolus on
+the boundary run; a rate law switched off at `tau` and on again at the literal
+3, with a reset at `tau = 3`, is refused. A switch within a few hundred ulp of
+an event, fixed or fitted by another parameter, is asked too, so a pair that
+does not commute is refused a little before the two times coincide, where the
+derivative still exists.
+
+What is not detected returns a number:
+
+- a `floor` step on a fitted switch (issue #944);
+- a state-dependent switch that crosses within the integration tolerance of the
+  event (issue #945), or on the instant of a time switch (issue #946);
+- two time switches of one rate law on one instant, with no event (issue #951);
+- a fixed condition whose rounding puts it more than a few hundred ulp from the
+  time it is written at, `time + 3000 >= 3003`, which is read where it is
+  written;
+- a parameter that moves the event by under 1e-9 of its time per unit relative
+  change, which counts as not moving it.
+
 ### Landing on the crossing
 
 A discontinuity root alone cannot catch these. CVODE tests for a root only on a
@@ -189,6 +223,24 @@ trajectory that only approaches the threshold, parked beside it or relaxing onto
 it, can cross it on the solver's interpolant alone, within its own error, so the
 run steps on there as it did before these roots existed. A window narrower than
 the tolerance can resolve is therefore not guaranteed, as it is not in main.
+
+Stepping on can leave a run pinned on the threshold: a step long enough to move
+the state across by one ulp carries the rate law's jump into an error test it
+fails, and a shorter one leaves the state where it is. A slow approach does it
+with one condition: a species that rises by 1e-8 of itself a unit of time. Where
+the solver has spent a whole batch of steps that way, and the flow reaches the
+threshold and would have crossed in the time the state has been seen there,
+the state is put the few ulp across, each species the threshold reads that the
+flow moves by a few ulp of its own, and the run restarts there (issue #928). This is
+for `.net` models: a `piecewise` condition on a species in an SBML model is not
+a state switch of a plain run, and such a run still stalls.
+
+How late the crossing is depends on how slow the approach is and on
+`max_steps`. The crossing time is known no better than the threshold species
+is, its tolerance over its rate, and a pinned run spends a batch of
+`max_steps` steps before it is put across. A state that slides along the
+threshold, with both branches pointing into it, is not moved, and neither is
+one that comes to rest just short of it.
 
 Issue #904 lists what this does not yet cover:
 - a comparison used as a number outside `if()`, such as `k*(X > 1)`;

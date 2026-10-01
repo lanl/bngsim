@@ -106,6 +106,12 @@ class SsaSimulator {
     // an empty list clears it. Unsorted and repeated times are accepted.
     void set_breakpoints(const std::vector<double> &times);
 
+    // Functions, by name, that read the clock only inside conditions whose
+    // crossings are breakpoints, so are constant between them. A rate that reads
+    // the clock only through these is held constant and re-read at each
+    // breakpoint instead of being integrated. An empty list clears it.
+    void set_piecewise_constant_functions(const std::vector<std::string> &names);
+
     // GH #616 — record, at every output time, each reaction's cumulative firing
     // count N_r(t) and integrated propensity ∫ |a_r| ds: the two accumulators a
     // likelihood-ratio (Girsanov) parameter gradient of an SSA ensemble is built

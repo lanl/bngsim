@@ -195,6 +195,41 @@ static py::array_t<double> matrix_to_ndarray_2d_rows(const std::vector<double> &
         vec->data(), capsule);
 }
 
+// Issue #693 — NetworkModel::EventCarry to and from Python: None, or
+// (t, [trigger truth], [(event index, apply time, [frozen values])]).
+static py::object event_carry_to_py(const bngsim::NetworkModel::EventCarry &c) {
+    if (!c.valid)
+        return py::none();
+    py::list trig, pend;
+    for (char v : c.trigger)
+        trig.append(py::bool_(v != 0));
+    for (const auto &pe : c.pending)
+        pend.append(py::make_tuple(pe.event_idx, pe.apply_time, pe.frozen_values));
+    return py::make_tuple(c.t, trig, pend);
+}
+
+static bngsim::NetworkModel::EventCarry event_carry_from_py(const py::object &carry) {
+    bngsim::NetworkModel::EventCarry c;
+    if (carry.is_none())
+        return c;
+    auto tup = carry.cast<py::tuple>();
+    if (tup.size() != 3)
+        throw py::value_error("an event carry is None or (t, triggers, pending)");
+    c.valid = true;
+    c.t = tup[0].cast<double>();
+    for (auto v : tup[1].cast<py::list>())
+        c.trigger.push_back(v.cast<bool>() ? 1 : 0);
+    for (auto pe : tup[2].cast<py::list>()) {
+        auto p = pe.cast<py::tuple>();
+        if (p.size() != 3)
+            throw py::value_error(
+                "a pending execution is (event index, apply time, frozen values)");
+        c.pending.push_back(bngsim::NetworkModel::CarriedEventExecution{
+            p[0].cast<int>(), p[1].cast<double>(), p[2].cast<std::vector<double>>()});
+    }
+    return c;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Module definition
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -360,11 +395,15 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     c.threshold = std::get<2>(s);
                     out.push_back(c);
                 }
-                std::sort(out.begin(), out.end(),
-                          [](const bngsim::CrossingStop &a, const bngsim::CrossingStop &b) {
-                              return a.t_star < b.t_star;
-                          });
+                std::sort(
+                    out.begin(), out.end(),
+                    [](const bngsim::CrossingStop &a, const bngsim::CrossingStop &b) {
+                        return a.t_star < b.t_star;
+                    });
                 self.crossing_stops = std::move(out);
+                // The probes belong to a set of stops. A caller that sets only
+                // these has none.
+                self.crossing_probes.clear();
             },
             py::arg("stops"),
             "Set the model times a fixed time-dependent `piecewise`/`if()` "
@@ -381,6 +420,34 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "the after-branch (issue #443). Resolved by bngsim."
             "_switch_sensitivity.fixed_crossing_stops; empty (the default) "
             "leaves the integration loop untouched.")
+        .def(
+            "set_crossing_probes",
+            [](bngsim::SolverOptions &self,
+               const std::vector<std::tuple<double, int, double>> &stops) {
+                std::vector<bngsim::CrossingStop> out;
+                out.reserve(stops.size());
+                for (const auto &s : stops) {
+                    bngsim::CrossingStop c;
+                    c.t_star = std::get<0>(s);
+                    c.clock_species_idx0 = std::get<1>(s);
+                    c.threshold = std::get<2>(s);
+                    out.push_back(c);
+                }
+                std::stable_sort(
+                    out.begin(), out.end(),
+                    [](const bngsim::CrossingStop &a, const bngsim::CrossingStop &b) {
+                        return a.t_star < b.t_star;
+                    });
+                self.crossing_probes = std::move(out);
+            },
+            py::arg("stops"),
+            "Set every fixed crossing of the run, one entry per (time, "
+            "clock_species_index, threshold), without the merge that leaves "
+            "set_crossing_stops one stop per instant. Stepping does not read "
+            "it. The event sensitivity jump asks each fixed switch on an "
+            "event's instant for its own jump (issue #767), and two "
+            "conditions that cross together are two switches. Resolved by "
+            "bngsim._switch_sensitivity.all_fixed_crossings.")
         // Forward sensitivity options
         .def(
             "set_sensitivity_params",
@@ -443,7 +510,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "set_switch_time_sens",
             [](bngsim::SolverOptions &self,
                const std::vector<std::tuple<double, int, double, std::vector<double>,
-                                            std::vector<int>, std::vector<double>>> &records) {
+                                            std::vector<int>, std::vector<double>, bool>>
+                   &records) {
                 self.sensitivity.switch_times.clear();
                 self.sensitivity.switch_times.reserve(records.size());
                 for (const auto &r : records) {
@@ -454,6 +522,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     sw.dtstar_dp = std::get<3>(r);
                     sw.isolate_param_idx0 = std::get<4>(r);
                     sw.isolate_delta = std::get<5>(r);
+                    sw.fixed_on_instant = std::get<6>(r);
                     if (sw.isolate_param_idx0.size() != sw.isolate_delta.size()) {
                         throw std::invalid_argument(
                             "set_switch_time_sens: isolate_param_idx0 and isolate_delta must be "
@@ -470,7 +539,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::arg("records"),
             "Set the switch-time crossings to stop at and jump across, as "
             "(t_star, clock_species_idx0, threshold, [∂t*/∂p per param column], "
-            "[isolate_param_idx0], [isolate_delta]) records (issue #48). A "
+            "[isolate_param_idx0], [isolate_delta], fixed_on_instant) records (issue "
+            "#48). A "
             "switch time is a fitted parameter that sets "
             "WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset "
             "time. Its whole gradient is the jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p at "
@@ -481,7 +551,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "only while f⁻ is read, so that a crossing sharing its instant with "
             "another falls back to its before-branch alone and is charged only "
             "its own jump (issue #375); both empty — every model with distinct "
-            "switch times — reads the plain f⁻ − f⁺. Detection and the chain "
+            "switch times — reads the plain f⁻ − f⁺. fixed_on_instant says a "
+            "crossing no requested column moves shares this one's clock and "
+            "instant (issue #767). Detection and the chain "
             "rule to fitted primaries are done by bngsim._switch_sensitivity; "
             "empty records (the default) leave the integration loop untouched.")
         .def(
@@ -1358,6 +1430,60 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "re-resolving parameter-named species ICs (issue #79) rather than overwrite a "
             "pre-equilibrated baseline; use set_concentration() to dose such a protocol. "
             "Latching — there is no un-save — and carried by clone().")
+        // ── Event state carried between runs (issue #693) ────────────────────
+        .def(
+            "event_carry",
+            [](const bngsim::NetworkModel &self) { return event_carry_to_py(self.event_carry()); },
+            "The event state the last run left for a run that continues it (issue "
+            "#693): None, or (t, trigger truth per event, [(event index, apply time, "
+            "frozen values)] for the delayed executions not yet applied). A run "
+            "starting at t continues it; any other run is a fresh start.")
+        .def(
+            "set_event_carry",
+            [](bngsim::NetworkModel &self, py::object carry) {
+                self.set_event_carry(event_carry_from_py(carry));
+            },
+            py::arg("carry"),
+            "Install a carry in event_carry()'s form (None: a fresh start). Checked "
+            "against this model's events.")
+        .def(
+            "event_carry_state",
+            [](const bngsim::NetworkModel &self) -> py::object {
+                const auto &h = self.event_carry_history();
+                if (!self.event_carry().valid && h.empty())
+                    return py::none();
+                py::list hist;
+                for (const auto &c : h)
+                    hist.append(event_carry_to_py(c));
+                return py::make_tuple(event_carry_to_py(self.event_carry()), hist,
+                                      self.event_carry_evicted_t());
+            },
+            "The carry together with the trajectory's leg ends a rollback can return "
+            "to (issue #693), opaque, for set_event_carry_state: what a protocol "
+            "primitive that rewinds the state and the clock saves and puts back.")
+        .def(
+            "set_event_carry_state",
+            [](bngsim::NetworkModel &self, py::object state) {
+                if (state.is_none()) {
+                    self.clear_event_carry();
+                    return;
+                }
+                auto tup = state.cast<py::tuple>();
+                if (tup.size() != 3)
+                    throw py::value_error("set_event_carry_state expects what "
+                                          "event_carry_state() returned");
+                std::deque<bngsim::NetworkModel::EventCarry> hist;
+                for (auto c : tup[1].cast<py::list>())
+                    hist.push_back(event_carry_from_py(py::reinterpret_borrow<py::object>(c)));
+                self.set_event_carry_state(event_carry_from_py(tup[0]), std::move(hist),
+                                           tup[2].cast<double>());
+            },
+            py::arg("state"), "Put back what event_carry_state() returned (None clears).")
+        .def("rewind_event_carry", &bngsim::NetworkModel::rewind_event_carry, py::arg("t"),
+             "Move the events to the trajectory's leg end at time t, for a caller that "
+             "rolls the clock there (issue #693): 1 when there is one, -1 when t is "
+             "older than the retained leg ends and some were dropped, 0 otherwise. "
+             "Nothing changes unless 1.")
         .def_property_readonly(
             "has_pending_sensitivity_seed",
             [](const bngsim::NetworkModel &self) { return !self.pending_sens_seed().empty(); },
@@ -2330,7 +2456,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def("set_breakpoints", &bngsim::SsaSimulator::set_breakpoints, py::arg("times"),
              "Issue #719: times at which a time-dependent rate may jump. The "
              "continuous (time-dependent) loop never steps across one. Applies to "
-             "every later run; [] clears it.");
+             "every later run; [] clears it.")
+        .def("set_piecewise_constant_functions",
+             &bngsim::SsaSimulator::set_piecewise_constant_functions, py::arg("names"),
+             "Functions, by name, constant in time between the breakpoints: a rate that "
+             "reads the clock only through them is held constant and re-read at each "
+             "breakpoint. Applies to every later run; [] clears it.");
 
     // ─── NfsimSimulator (conditional on BNGSIM_HAS_NFSIM) ────────────────────
     //
@@ -2739,6 +2870,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "species. compute_derivs divides this species's per-species accumulation by "
              "conc[live_idx0] (the promoted compartment species = V_live) instead of its "
              "static volume_factor. No-op if species_idx0 is out of range.")
+        .def("set_species_ssa_live_volume", &bngsim::ModelBuilder::set_species_ssa_live_volume,
+             py::arg("species_idx0"), py::arg("live_idx0"),
+             "Issue #741: under SSA/PSA, an event assignment of a concentration to this "
+             "species is stored as value * conc[live_idx0] / volume_factor (V_live / "
+             "V_static). No-op if species_idx0 is out of range.")
         .def("set_species_rateof_amount", &bngsim::ModelBuilder::set_species_rateof_amount,
              py::arg("species_idx0"),
              "GH #231 (rateOf): mark a hasOnlySubstanceUnits=true species so its rateOf "
@@ -2801,6 +2937,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "override the constant delay/priority. assignment_ode_only (GH #81) is a "
             "parallel bool list; true entries apply under ODE only and are skipped under "
             "SSA (the compartment-resize concentration rescale that must not perturb counts).")
+        .def("set_last_event_assignment_rescale",
+             &bngsim::ModelBuilder::set_last_event_assignment_rescale, py::arg("assign_idx0"),
+             py::arg("size_expr"), py::arg("base_assign_idx0"),
+             "Issue #936: mark an assignment of the most recently added event as the "
+             "concentration rescale a compartment resize injects. size_expr is the "
+             "compartment's size; base_assign_idx0 the event's own assignment to the same "
+             "species, or -1. The engine stores base * size before / size after the event's "
+             "other assignments rather than the assignment's expression.")
         .def("set_compute_conservation_laws", &bngsim::ModelBuilder::set_compute_conservation_laws,
              py::arg("enabled"),
              "Enable/disable conservation-law detection in build() (GH #102). The "

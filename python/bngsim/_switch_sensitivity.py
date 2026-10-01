@@ -2849,6 +2849,19 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
     window in one phase and outside it in another, and stopping at a time that
     phase has no crossing at is a pure perturbation of its stepping.
     """
+    return merge_crossing_stops(all_fixed_crossings(core, t_start, t_end, conditions))
+
+
+def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> list[CrossingStop]:
+    """Every crossing :func:`fixed_crossing_stops` resolves, before the ones that
+    share an instant are merged to one stop: one entry per condition and
+    crossing, in time order.
+
+    The integration loop stops once at an instant, so it takes the merged list.
+    The event sensitivity jump asks each fixed switch on an event's instant for
+    its own jump (issue #767), and two conditions that cross together, one on
+    each of two counters, are two switches.
+    """
     if not conditions:
         return []
     ctx = core.functional_jacobian_context()
@@ -2880,11 +2893,18 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
             found.append(
                 CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
             )
-    # Merge the stops that land on one instant. In time order each needs only
-    # the last one kept: comparing each against every one kept was quadratic,
-    # and a step of time can put thousands of stops in a window (issue #869).
-    # The sort is stable, so among equal times the first condition's stop wins.
+    # The sort is stable, so among equal times the conditions keep their order.
     found.sort(key=lambda stop: stop.time)
+    return found
+
+
+def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
+    """Merge the time-ordered stops that land on one instant.
+
+    In time order each needs only the last one kept: comparing each against
+    every one kept was quadratic, and a step of time can put thousands of stops
+    in a window (issue #869). Among equal times the first condition's stop wins.
+    """
     out: list[CrossingStop] = []
     for stop in found:
         if not out or not _same_instant(stop.time, out[-1].time):
@@ -2896,6 +2916,126 @@ def fixed_crossing_stops(core, t_start: float, t_end: float, conditions=()) -> l
             # its threshold, which the plain one would leave a couple of ulp
             # short and the counter's own condition reading false.
             out[-1] = stop
+    return out
+
+
+# A clock reference anywhere in a text, read generously: `2time()` (ExprTk's
+# 2*time()) included, and an identifier that merely ends in `time` after a digit
+# too. Taking too much for a clock only costs speed below.
+_ANY_CLOCK = re.compile(r"(?<![A-Za-z_])time(?![A-Za-z0-9_])")
+
+
+def _condition_resolves_exactly(core, cond, scope, t_start, t_end, bodies) -> bool:
+    """True when *cond* holds one truth value between consecutive breakpoints
+    of this window, because the one time it flips is one of them.
+
+    Stricter than :func:`fixed_crossing_stops`, whose stops cost nothing when
+    wrong: here a wrong one would freeze a rate. Only a comparison of the bare
+    clock with a threshold that reads no clock, on literal time (a counter
+    crosses when something fires, not at a time), whose crossing
+    :func:`_crossing_time_of_condition` solves: ``time() > 10``,
+    ``time() < t_on + 0.5``. A schedule or a step call (``mod``, ``floor``) is
+    left a function of time: between its listed edges it need not be constant
+    (a sawtooth), and the resolvers do not promise every edge.
+    """
+    rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
+    if rewrite is None:
+        return False
+    text, clock_idx, _ = rewrite
+    if clock_idx >= 0:
+        return False
+    split = _relational_split(_strip_redundant_parens(text.strip()))
+    if split is None:
+        return False
+    lhs, rhs = (_strip_redundant_parens(x.strip()) for x in split)
+    for clock, other in ((lhs, rhs), (rhs, lhs)):
+        if not re.fullmatch(r"time\s*\(\s*\)", clock):
+            continue
+        # The threshold as the model evaluates it: a function slot or derived
+        # parameter that reads the clock (`T := time > 0.5`) moves it.
+        flat = _inline_function_slots(other, bodies)
+        flat = _inline_derived_param_refs(flat, scope.derived_exprs) or flat
+        if _ANY_CLOCK.search(flat) or any(
+            m.group(0) in bodies or m.group(0) in scope.function_names
+            for m in _IDENTIFIER.finditer(flat)
+        ):
+            return False
+        return _crossing_time_of_condition(text, scope, t_start, t_end, bodies) is not None
+    return False
+
+
+# What may stand next to a whole condition in an expression: a bracket, a comma,
+# a logical operator, or the text's end. `time()>5` is not a whole condition in
+# `time()>5*A`.
+_ATOM_LEFT = re.compile(r"(?:^|[(,!&|]|\b(?:and|or|not))\s*$")
+_ATOM_RIGHT = re.compile(r"^\s*(?:$|[),&|]|(?:and|or)\b)")
+
+
+def _remove_whole_atoms(expr: str, atom: str) -> str:
+    """*expr* with each occurrence of *atom* that stands as a whole condition
+    replaced by `` 0 ``; an occurrence that is part of a larger operand stays."""
+    out, i = [], 0
+    while True:
+        j = expr.find(atom, i)
+        if j < 0:
+            out.append(expr[i:])
+            return "".join(out)
+        k = j + len(atom)
+        if _ATOM_LEFT.search(expr[:j]) and _ATOM_RIGHT.match(expr[k:]):
+            out.append(expr[i:j] + " 0 ")
+        else:
+            out.append(expr[i:k])
+        i = k
+
+
+def piecewise_constant_time_functions(
+    core, t_start: float, t_end: float, conditions=(), clock_functions=None
+) -> list[str]:
+    """Functions that read the clock only inside conditions resolved exactly over
+    ``(t_start, t_end]`` (:func:`_condition_resolves_exactly`), so are constant
+    between the window's breakpoints. The SSA holds a rate that reads the clock
+    only through these constant and re-reads it at each breakpoint, rather than
+    integrating it (issue #719 follow-up): ``if((time()>10) && (time()<150),
+    2.6, 0)`` is a step, not a curve.
+
+    A function qualifies when removing every exactly resolved condition that
+    stands as a whole condition in its text leaves no clock reference.
+    Anything left over (a clock in arithmetic, a condition no resolver placed
+    exactly, a condition that is part of a larger operand) keeps it a function
+    of time. ``clock_functions`` is ``[(name, expression)]`` for the functions
+    whose text reads the clock, when the caller has it.
+    """
+    if not conditions:
+        return []
+    if clock_functions is None:
+        clock_functions = [
+            (f["name"], f["expression"])
+            for f in core.codegen_data()["functions"]
+            if _ANY_CLOCK.search(f["expression"])
+        ]
+    if not clock_functions:
+        return []
+    ctx = core.functional_jacobian_context()
+    scope = switch_condition_scope(core, ctx)
+    bodies = _function_slot_bodies(ctx)
+    exact = sorted(
+        (
+            c
+            for c in conditions
+            if _condition_resolves_exactly(core, c, scope, t_start, t_end, bodies)
+        ),
+        key=len,
+        reverse=True,
+    )
+    if not exact:
+        return []
+    out = []
+    for name, expr in clock_functions:
+        rest = expr
+        for c in exact:
+            rest = _remove_whole_atoms(rest, c)
+        if not _ANY_CLOCK.search(rest):
+            out.append(name)
     return out
 
 
@@ -4285,6 +4425,12 @@ class SwitchCrossing(NamedTuple):
     stays on its after-branch. Empty — the overwhelmingly common case — means no
     other condition crosses here and the plain ``f⁻ − f⁺`` is this crossing's
     jump on its own.
+
+    ``fixed_on_instant`` says a crossing no requested column moves is on this
+    one's clock and within one instant of it (issue #767). That one emits no
+    record, so the core cannot see it, and it flips with every nudge of the
+    clock that reads this one. An event on the instant comes apart from it
+    under any parameter that moves the event.
     """
 
     t_star: float
@@ -4293,6 +4439,7 @@ class SwitchCrossing(NamedTuple):
     dtstar: list[float]
     isolate_param_idx0: list[int]
     isolate_delta: list[float]
+    fixed_on_instant: bool = False
 
 
 class _Crossing(NamedTuple):
@@ -4623,14 +4770,24 @@ def _emit_switch_records(
     for cross in found:
         thresholds_on_clock.setdefault(cross.clock_idx0, set()).add(cross.threshold)
 
+    def emits(cross: _Crossing) -> bool:
+        # No requested column moves a crossing that does not emit: not its
+        # threshold, and not the clock it is read on (issue #725). One on a
+        # moved clock is kept even inside a coinciding group, isolated below by
+        # its own threshold's parameters like any other member.
+        return any(v != 0.0 for v in cross.dtstar) or cross.clock_idx0 in moved_clocks
+
+    def one_nudge(a: _Crossing, b: _Crossing) -> bool:
+        if a.clock_idx0 != b.clock_idx0:
+            return False
+        if a.clock_idx0 >= 0:
+            return _same_instant(a.threshold, b.threshold)
+        return _same_instant(a.t_star, b.t_star)
+
     records: list[SwitchCrossing] = []
     for group in _instant_groups(found):
         for cross in group:
-            if not any(v != 0.0 for v in cross.dtstar) and cross.clock_idx0 not in moved_clocks:
-                # No requested column moves this crossing: not its threshold,
-                # and not the clock it is read on (issue #725). One on a moved
-                # clock is kept even inside a coinciding group, isolated below
-                # by its own threshold's parameters like any other member.
+            if not emits(cross):
                 continue
             if len(group) > 1:
                 idx0, delta = _isolation_bump(
@@ -4647,6 +4804,10 @@ def _emit_switch_records(
                     dtstar=cross.dtstar,
                     isolate_param_idx0=isolate_idx,
                     isolate_delta=isolate_delta,
+                    fixed_on_instant=any(
+                        other is not cross and not emits(other) and one_nudge(other, cross)
+                        for other in group
+                    ),
                 )
             )
     records.sort(key=lambda r: r.t_star)
@@ -5048,10 +5209,7 @@ def compute_switch_time_sens(
     # what makes ∂f/∂p come out as the correct 0 and what keeps the probe from
     # displacing the switch into the approach (which stalls the integrator).
     switch_params = {
-        names[c]
-        for _t, _ci, _thr, dtstar, _ii, _id in records
-        for c in range(len(names))
-        if dtstar[c] != 0.0
+        names[c] for record in records for c in range(len(names)) if record.dtstar[c] != 0.0
     }
     # A switch-time parameter is safe to pin only if EVERY crossing it moves is
     # compensated. One that also reads a condition nothing brackets — a dose

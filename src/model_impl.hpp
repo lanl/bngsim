@@ -11,6 +11,8 @@
 #include "bngsim/types.hpp"
 
 #include <cstdint>
+#include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -291,6 +293,11 @@ struct NetworkModel::Impl {
     bool ic_state_dirty = false;
     std::vector<double> pending_sens_seed;
     std::vector<std::string> pending_sens_seed_param_names;
+
+    // Event state carried between runs (issue #693; NetworkModel::event_carry).
+    NetworkModel::EventCarry event_carry;
+    std::deque<NetworkModel::EventCarry> event_carry_history;
+    double event_carry_evicted_t = -std::numeric_limits<double>::infinity();
 
     // ── Has save_concentrations() redefined the IC baseline? (issue #79) ──────
     // set_param() re-resolves every species IC that names the written parameter
