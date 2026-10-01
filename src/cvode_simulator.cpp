@@ -4903,7 +4903,12 @@ int CvodeSimulator::Impl::comoving_enter_ahead(SensitivityState &sens, int ns, d
         }
         for (int c = 0; c < sens.n_p; ++c) {
             const auto uc = static_cast<size_t>(c);
-            if (frames.plist[uc] >= 0) {
+            // A column already in a frame is asked about too: two windows that
+            // share a width close at c = 1 and then at c = 2, and the column is
+            // in the first frame when the second close is the one ahead. It
+            // enters only once the restart has left that frame.
+            const bool active = frames.plist[uc] >= 0;
+            if (active && !dry_run) {
                 continue;
             }
             double moves = sw.dtstar_dp[uc];
@@ -4926,6 +4931,9 @@ int CvodeSimulator::Impl::comoving_enter_ahead(SensitivityState &sens, int ns, d
                 if (codegen_comoving_approach_fn(case_idx) == 0 ||
                     !(std::fabs(shift - moves) <= 1e-9 * std::max(1.0, std::fabs(shift)))) {
                     continue;
+                }
+                if (active && frames.plist[uc] == case_idx) {
+                    break; // in that frame already
                 }
                 ++entered;
                 if (dry_run) {
@@ -7491,8 +7499,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                                tau_enter, kComovingStateSwitchRelTol);
             }
             // Issue #760: and a column whose next switch time has a singular
-            // approach enters ahead of it. f is continuous here.
-            comoving_enter_ahead(sens, ns, comoving_cols.data(), t_evt, f_minus);
+            // approach asks for the stop it enters ahead at.
+            if (comoving_wants_ahead(sens, comoving_cols.data(), t_evt)) {
+                sens.comoving.entry_request = t_evt;
+            }
         }
         restart_past_surface();
         return;
@@ -7764,9 +7774,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         }
     }
     // Issue #760: a column left plain here whose next switch time has a singular
-    // approach enters ahead of it, against f on the branch the run restarts on.
-    if (sens.comoving.enabled) {
-        comoving_enter_ahead(sens, ns, comoving_cols.data(), t_evt, f_plus);
+    // approach asks for the stop it enters ahead at.
+    if (sens.comoving.enabled && comoving_wants_ahead(sens, comoving_cols.data(), t_evt)) {
+        sens.comoving.entry_request = t_evt;
     }
     restart_past_surface();
 }
@@ -8666,23 +8676,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         sw_scratch.resize(ns);
     }
     // Issue #760: a column whose first switch time is approached through a
-    // singular power is in its frame from the start of the run.
+    // singular power asks for the stop it enters its frame at.
     sens.comoving.switches = &switch_list;
+    sens.comoving.entry_request = std::numeric_limits<double>::quiet_NaN();
     if (sens.comoving.enabled && n_sens_p > 0) {
         std::vector<double *> cols(static_cast<size_t>(n_sens_p));
         for (int c = 0; c < n_sens_p; ++c) {
             cols[static_cast<size_t>(c)] = N_VGetArrayPointer(sens.yS[c]);
         }
         if (impl_->comoving_wants_ahead(sens, cols.data(), times.t_start)) {
-            std::vector<double> f_start;
-            impl_->comoving_rhs(times.t_start, y_data, ns, f_start);
-            impl_->comoving_enter_ahead(sens, ns, cols.data(), times.t_start, f_start);
-            int rf = CVodeSensReInit(cvode_mem, sens.method, sens.yS.arr);
-            if (rf != CV_SUCCESS) {
-                throw std::runtime_error(
-                    "CVodeSensReInit after entering a comoving frame at the start failed: " +
-                    std::to_string(rf));
-            }
+            sens.comoving.entry_request = times.t_start;
         }
     }
     // Issue #545: S of the comoving columns at an output, which is not what yS holds.
@@ -8943,9 +8946,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         for (int s = 0; s < n_sens; ++s) {
             sens_ptrs[s] = N_VGetArrayPointer(yS_guard[s]);
         }
-        // Issue #760: a column entered ahead at the start holds V already.
-        impl_->comoving_read_plain(sens, ns, times.t_start, y_data, sens_ptrs,
-                                   comoving_out_scratch);
         if (n_sens_p > 0) {
             result.record_sensitivities(0, sens_ptrs.data(), ns, n_sens_p);
         }
@@ -9143,7 +9143,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             double t_switch = 0.0;
             double t_crossing = 0.0;
             // Issue #760: a stop for a column to enter its frame at, halfway
-            // from the clock crossing that asked to the switch time ahead.
+            // from the restart that asked to the switch time ahead. Only where
+            // no other crossing lies between the two: in its frame the column
+            // carries c·∂f/∂t for everything f does, and another window's
+            // closing power in there is the singular forcing over again, in a
+            // column it never touched. The crossing in between asks again when
+            // the run reaches it.
             if (!std::isnan(sens.comoving.entry_request)) {
                 const double from = sens.comoving.entry_request;
                 sens.comoving.entry_request = std::numeric_limits<double>::quiet_NaN();
@@ -9153,7 +9158,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         same_instant(switch_list[ahead]->t_star, from))) {
                     ++ahead;
                 }
-                if (ahead < switch_list.size()) {
+                bool clear = ahead < switch_list.size();
+                for (size_t k = next_crossing; clear && k < crossing_stops.size(); ++k) {
+                    const double at = crossing_stops[k].t_star;
+                    if (at >= switch_list[ahead]->t_star) {
+                        break;
+                    }
+                    const bool own =
+                        std::any_of(comoving_entry_stops.begin(), comoving_entry_stops.end(),
+                                    [&](double mine) { return same_instant(mine, at); });
+                    clear = own || at <= from || same_instant(at, from) ||
+                            same_instant(at, switch_list[ahead]->t_star);
+                }
+                if (clear) {
                     const double to = switch_list[ahead]->t_star;
                     const double t_mid = from + 0.5 * (to - from);
                     if (t_mid > static_cast<double>(t_now) && !same_instant(t_mid, from) &&
@@ -9431,26 +9448,37 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 //
                 // Unless the root is a switch time's own (issue #760): an SBML
                 // `time <= on + D` is registered as a root and is a switch record
-                // as well, and the root is reported a few ulp after the record's
-                // stop. The read 1e-9 back is then before that switch: a window
-                // closing as (1-s)^0.1 is still 0.13 of its height there, and
-                // the onset column came out 30% off past the close.
-                if (sens.comoving.n_active > 0 && !evt_s_minus.empty()) {
+                // as well. With `<` the root is reported at the record's stop,
+                // before its jump: that jump leaves and enters against one f,
+                // which cancels, and nothing is done here. With `<=` it is
+                // reported a few ulp after the stop, and a read back from there
+                // is before the switch. A window closing as (1-s)^0.1 is still
+                // 0.13 of its height 1e-9 back, and the onset column came out
+                // 30% off past the close.
+                //
+                // The read back is four times the root finder's own tolerance,
+                // 100·ε·(|t| + |h|), and no further: at t = 1e6 a read 1e-9·t
+                // back is 1e-3 back, across whatever f did in between.
+                const bool switch_root =
+                    next_switch < switch_list.size() &&
+                    same_instant(switch_list[next_switch]->t_star, static_cast<double>(t_ret));
+                sunrealtype h_last = 0.0;
+                CVodeGetLastStep(cvode_mem, &h_last);
+                const double root_back = 400.0 * std::numeric_limits<double>::epsilon() *
+                                         (std::fabs(static_cast<double>(t_ret)) +
+                                          std::fabs(static_cast<double>(h_last)));
+                if (sens.comoving.n_active > 0 && !evt_s_minus.empty() && !switch_root) {
                     bool state_switch_root = false;
                     for (int j = 0; j < n_state_switch; ++j) {
                         state_switch_root |= root_info[n_events + n_disc + j] != 0;
                     }
                     if (!state_switch_root) {
                         std::vector<double> f_before;
-                        const double back =
-                            1e-9 * std::max(std::fabs(static_cast<double>(t_ret)), 1.0);
-                        if (static_cast<double>(t_ret) - back <= sens.comoving.t_entry) {
-                            // The root is reported a few ulp after the stop the
-                            // columns entered at. A read that far back is on the
-                            // other side of that switch.
+                        if (static_cast<double>(t_ret) - root_back <= sens.comoving.t_entry) {
+                            // The root of the stop the columns entered at.
                             f_before = sens.comoving.f_entry_after;
                         } else {
-                            impl_->comoving_rhs(static_cast<double>(t_ret) - back, y_data, ns,
+                            impl_->comoving_rhs(static_cast<double>(t_ret) - root_back, y_data, ns,
                                                 f_before);
                             model.update_observables(y_data);
                             model.evaluate_functions(static_cast<double>(t_ret));
@@ -9475,8 +9503,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     for (int c = 0; c < sens.n_p; ++c) {
                         cols[static_cast<size_t>(c)] = evt_s_minus[static_cast<size_t>(c)].data();
                     }
-                    if (!state_switch_root && impl_->comoving_wants_ahead(
-                                                  sens, cols.data(), static_cast<double>(t_ret))) {
+                    if (!state_switch_root && !switch_root &&
+                        impl_->comoving_wants_ahead(sens, cols.data(),
+                                                    static_cast<double>(t_ret))) {
                         sens.comoving.entry_request = static_cast<double>(t_ret);
                     }
                 }

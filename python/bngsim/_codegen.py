@@ -8483,7 +8483,9 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
 
     Only where the scale is positive at the model's parameter values, which is
     when the two forms are the same number, and only where the numerator reads
-    the scale, so a base ``(t - on)/D`` is left as it is written."""
+    the scale, so a base ``(t - on)/D`` is left as it is written. The values are
+    the ones the code is generated at: a scale whose sign a later ``set_param``
+    changes keeps the form it was given."""
     from bngsim._jacobian import _value_symbol_names
 
     def walk(node):
@@ -8502,7 +8504,11 @@ def _split_shared_scale(expr, clock_names: set[str], values: dict, sp):
         at_nominal = scale.xreplace(values)
         if not at_nominal.is_number or not bool(at_nominal > 0):
             return node
-        return sp.Pow(numerator, node.exp) * sp.Pow(scale, -node.exp)
+        # Both powers over the scale's own value, as a number: N^e and D^(-e)
+        # each overflow where their product does not (e = 60 with D = 1e6 is
+        # inf·0), and (N/D0)^e·(D/D0)^(-e) is the same product at any D.
+        unit = sp.Float(float(at_nominal))
+        return sp.Pow(numerator / unit, node.exp) * sp.Pow(scale / unit, -node.exp)
 
     return walk(expr)
 
