@@ -292,6 +292,10 @@ struct NetworkModel::Impl {
     std::vector<double> pending_sens_seed;
     std::vector<std::string> pending_sens_seed_param_names;
 
+    // Event state carried between runs (issue #693; NetworkModel::event_carry).
+    NetworkModel::EventCarry event_carry;
+    NetworkModel::EventCarry event_carry_start;
+
     // ── Has save_concentrations() redefined the IC baseline? (issue #79) ──────
     // set_param() re-resolves every species IC that names the written parameter
     // (or a derived parameter that reads it), because `A() Stot` says A's

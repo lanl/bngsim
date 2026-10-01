@@ -4417,27 +4417,34 @@ class Simulator:
         plus, minus = out
         return (plus - minus) / (2.0 * h), np.maximum(np.abs(plus), np.abs(minus))
 
-    def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool]:
-        """Snapshot the model's carry-over sensitivity state (issue #81)."""
+    def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool, Any]:
+        """Snapshot the model's carry-over state: the sensitivity seed (issue #81)
+        and the event state a continuing run starts from (issue #693)."""
         core = self._model._core
         seed = (
             np.array(core.pending_sensitivity_seed(), dtype=np.float64)
             if core.has_pending_sensitivity_seed
             else None
         )
-        return seed, list(core.pending_sensitivity_seed_param_names), bool(core.ic_state_dirty)
+        return (
+            seed,
+            list(core.pending_sensitivity_seed_param_names),
+            bool(core.ic_state_dirty),
+            core.event_carry(),
+        )
 
     def _restore_carryover_state(
-        self, snapshot: tuple[np.ndarray | None, list[str], bool]
+        self, snapshot: tuple[np.ndarray | None, list[str], bool, Any]
     ) -> None:
         """Put back what :meth:`_capture_carryover_state` captured."""
-        seed, names, dirty = snapshot
+        seed, names, dirty, events = snapshot
         core = self._model._core
         if seed is None:
             core.set_pending_sensitivity_seed(np.zeros((0, 0), dtype=np.float64), [])
         else:
             core.set_pending_sensitivity_seed(seed, names)
         core.ic_state_dirty = dirty
+        core.set_event_carry(events)
 
     def parameter_scan(
         self,
@@ -4666,6 +4673,9 @@ class Simulator:
             # here; the pre-equilibration carry (#81) is reset_conc=False and must
             # keep its marker.
             self._model._core.ic_state_dirty = False
+            # Every point starts from the events' state at invocation too, not
+            # from where the previous point's run left them (issue #693).
+            self._model._core.set_event_carry(invocation_sens[3])
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
 
@@ -6868,6 +6878,9 @@ class Simulator:
             "current_time": self._current_time,
             "species": species_state,
             "params": param_state,
+            # The triggers' truth and the pending delayed executions, so that
+            # rewinding rewinds the events too (issue #693).
+            "events": self._model._core.event_carry(),
         }
         self._snapshot_stack.append(copy.deepcopy(snap))
         logger.debug(
@@ -6910,6 +6923,10 @@ class Simulator:
         for name, value in snapshot["species"].items():
             with contextlib.suppress(Exception):
                 self._model.set_concentration(name, value)
+
+        # ...and the event state the snapshot's run left (issue #693). A
+        # snapshot from before that existed has none: a fresh start.
+        self._model._core.set_event_carry(snapshot.get("events"))
 
         # Recreate simulator with restored state
         self._recreate_interactive_sim()

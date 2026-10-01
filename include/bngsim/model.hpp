@@ -666,6 +666,37 @@ class NetworkModel {
     // clone(). Exposed for introspection and for the clone contract test.
     bool ic_baseline_saved() const;
 
+    // ─── Event state carried between runs (issue #693) ──────────────────────
+    // What a run leaves for the next one to continue from, beside the species
+    // and the clock: each event trigger's last recorded truth, and the delayed
+    // executions not yet applied. A run starting at the carried time continues
+    // it: its trigger baselines are the carried ones, not each event's
+    // initialValue (which describes a trigger before the simulation starts),
+    // so a trigger still true at a leg boundary does not fire again, and the
+    // pending executions are queued again. The carry that run itself started
+    // from is kept too, so a leg rolled back to its start and run again (a
+    // predictor-corrector step: set_state(x, time=t0)) continues the same
+    // events. Any other run is a fresh start. Set at every run's state
+    // write-back; cleared by reset(); copied by clone().
+    struct CarriedEventExecution {
+        int event_idx = 0;
+        double apply_time = 0.0;
+        std::vector<double> frozen_values; // empty unless frozen at the trigger
+    };
+    struct EventCarry {
+        bool valid = false;
+        double t = 0.0;
+        std::vector<char> trigger;
+        std::vector<CarriedEventExecution> pending;
+    };
+    const EventCarry &event_carry() const;       // where the last run ended
+    const EventCarry &event_carry_start() const; // what it started from
+    void set_event_carry(EventCarry end, EventCarry start);
+    void clear_event_carry();
+    // The carry a run over n_events events starting at t_start continues (the
+    // end, else the start), or nullptr when that run is a fresh start.
+    const EventCarry *event_carry_for(double t_start, int n_events) const;
+
     // ─── Table functions ────────────────────────────────────────────────────
 
     /// Add a table function from a .tfun file.

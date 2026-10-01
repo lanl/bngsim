@@ -141,6 +141,10 @@ NetworkModel NetworkModel::clone() const {
     // too or the clone's reset() would forget it.
     copy.impl_->baseline_sens_seed = impl_->baseline_sens_seed;
     copy.impl_->baseline_sens_seed_param_names = impl_->baseline_sens_seed_param_names;
+    // ...and the event state that goes with the copied state and clock (issue
+    // #693).
+    copy.impl_->event_carry = impl_->event_carry;
+    copy.impl_->event_carry_start = impl_->event_carry_start;
     // ...and whether that baseline is a saved state rather than the declared IC
     // (issue #79), or the clone's set_param() would re-resolve a parameter-named
     // IC over a baseline the original had already retired.
@@ -661,6 +665,8 @@ void NetworkModel::reset() {
         s.concentration = s.initial_conc;
     }
     impl_->current_time = 0.0;
+    // A fresh start for the events too (issue #693).
+    clear_event_carry();
     // Back at the IC baseline. When that baseline is θ-independent (the literal
     // .net ICs) this is a fresh start: no carry-over, no pending seed (GH #210).
     // But save_concentrations() can have redefined the baseline to a
@@ -776,6 +782,31 @@ void NetworkModel::clear_pending_sens_seed() {
 bool NetworkModel::has_baseline_sens_seed() const { return !impl_->baseline_sens_seed.empty(); }
 
 bool NetworkModel::ic_baseline_saved() const { return impl_->ic_baseline_saved; }
+
+// ─── Event state carried between runs (issue #693) ───────────────────────────
+
+const NetworkModel::EventCarry &NetworkModel::event_carry() const { return impl_->event_carry; }
+
+const NetworkModel::EventCarry &NetworkModel::event_carry_start() const {
+    return impl_->event_carry_start;
+}
+
+void NetworkModel::set_event_carry(EventCarry end, EventCarry start) {
+    impl_->event_carry = std::move(end);
+    impl_->event_carry_start = std::move(start);
+}
+
+void NetworkModel::clear_event_carry() {
+    impl_->event_carry = EventCarry{};
+    impl_->event_carry_start = EventCarry{};
+}
+
+const NetworkModel::EventCarry *NetworkModel::event_carry_for(double t_start, int n_events) const {
+    for (const EventCarry *c : {&impl_->event_carry, &impl_->event_carry_start})
+        if (c->valid && c->t == t_start && static_cast<int>(c->trigger.size()) == n_events)
+            return c;
+    return nullptr;
+}
 
 // ─── Accessors ───────────────────────────────────────────────────────────────
 

@@ -171,6 +171,10 @@ class NetworkModel:
         """
         One reaction's SSA propensity at conc (0-based rxn_index), reading the observable totals and function-bound parameters the model currently holds — the per-reaction body of the SSA propensity pass, without its refresh. Use compute_propensities for the refreshed vector. Issue #523.
         """
+    def event_carry(self) -> typing.Any:
+        """
+        The event state a run that continues the last one starts from (issue #693): None, or (end, start), each None or (t, trigger truth per event, [(event index, apply time, frozen values)] for the delayed executions not yet applied). end is where the last run left the events, start what that run itself started from. A run starting at either's t continues it; any other run is a fresh start. Opaque: pass it back to set_event_carry.
+        """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
         Return a reason string if any event blocks forward sensitivity for the given sensitivity-parameter names, else None (GH #212, issue #49, issue #144). event_time_compensated lists the 0-based indices of events whose ∂t*/∂p the caller supplies via SolverOptions.set_event_time_sens, which lifts the parameter-dependent-trigger refusal for exactly those.
@@ -246,6 +250,10 @@ class NetworkModel:
     def set_concentration(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex) -> None:
         """
         Set a single species concentration by name
+        """
+    def set_event_carry(self, carry: typing.Any) -> None:
+        """
+        Install what event_carry() returned (None clears it), so a protocol primitive that rewinds the state and the clock rewinds the events with them (issue #693).
         """
     def set_function_eval_expression(self, name: str, expression: str) -> bool:
         """

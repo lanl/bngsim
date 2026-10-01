@@ -8049,6 +8049,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         std::vector<double> frozen_values; // size = n_assignments when frozen
     };
     std::vector<PendingEvent> pending_events;
+    // The event state this run continues, if it continues one (issue #693),
+    // published beside where it ends.
+    NetworkModel::EventCarry started_from;
     // The immediate fires of the batch being drained, in execution order, for
     // the sensitivity jump (issue #722). Cleared by the caller that owns the
     // batch; filled only in a sensitivity run.
@@ -8545,7 +8548,24 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // expression value, ignoring `initialValue` entirely; that
         // suppressed legitimate t=0 fires for events declared with
         // `initialValue=false`.
+        //
+        // A run that continues the previous one (issue #693: a run_until leg,
+        // a run whose span starts where the last ended) is not a simulation
+        // start. Its baselines are the triggers' truth where that run left
+        // them, so only an edge since then fires here (an intervention that
+        // made a trigger true), and the delayed executions it left pending are
+        // queued again.
         {
+            const NetworkModel::EventCarry *carry = model.event_carry_for(times.t_start, n_events);
+            if (carry != nullptr) {
+                started_from = *carry;
+                for (const auto &ce : carry->pending) {
+                    if (ce.event_idx < 0 || ce.event_idx >= n_events)
+                        continue;
+                    pending_events.push_back(
+                        PendingEvent{ce.event_idx, ce.apply_time, ce.frozen_values});
+                }
+            }
             model.update_observables(y_data);
             model.evaluate_functions(times.t_start);
             // GH #106: the t=0 trigger init runs OUTSIDE the root function, so
@@ -8560,7 +8580,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             std::vector<int> t0_firing;
             t0_firing.reserve(n_events);
             for (int i = 0; i < n_events; ++i) {
-                trigger_was_true[i] = events_outer[i].initial_value;
+                trigger_was_true[i] =
+                    carry != nullptr ? carry->trigger[i] != 0 : events_outer[i].initial_value;
                 double val = eval_ref_outer.evaluate(events_outer[i].trigger_expr_idx);
                 bool now_true = (val > 0.5);
                 if (now_true && !trigger_was_true[i]) {
@@ -9848,6 +9869,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // Issue #545: the carry-over seed is S.
         impl_->comoving_finish(sens, ns, final_t, y_data);
         impl_->write_final_state_back(opts, ns, y_data, final_t, sens);
+        // ...and the event state that goes with it, for a run that continues
+        // this one (issue #693).
+        NetworkModel::EventCarry carry;
+        carry.valid = true;
+        carry.t = final_t;
+        carry.trigger.assign(trigger_was_true.begin(), trigger_was_true.end());
+        for (auto &pe : pending_events)
+            carry.pending.push_back(NetworkModel::CarriedEventExecution{
+                pe.event_idx, pe.apply_time, std::move(pe.frozen_values)});
+        model.set_event_carry(std::move(carry), std::move(started_from));
     }
 
     // ─── Cleanup ─────────────────────────────────────────────────────────────

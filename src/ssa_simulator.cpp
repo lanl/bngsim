@@ -1004,6 +1004,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // (NetworkModel::event_delay_is_fixed_zero; delay support under SSA/PSA is
     // issue #526).
     std::vector<bool> trigger_was_true(n_events, false);
+    // The event state this run continues, if it continues one (issue #693).
+    NetworkModel::EventCarry started_from;
     auto &eval_ref = model.evaluator();
     auto &sp_vec_ref = const_cast<std::vector<Species> &>(model.species());
 
@@ -1434,13 +1436,20 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // false but whose actual t=0 value is true — before the initial state
     // is recorded. After firing, re-sync trigger_was_true to the post-fire
     // truth values so subsequent transitions are detected as rising edges.
+    //
+    // A run that continues the previous one (issue #693) seeds them from the
+    // truth that run left instead: a leg boundary is not a simulation start.
     if (n_events > 0) {
         sync_state(times.t_start);
 
+        const NetworkModel::EventCarry *carry = model.event_carry_for(times.t_start, n_events);
+        if (carry != nullptr)
+            started_from = *carry;
         std::vector<int> t0_firing;
         t0_firing.reserve(n_events);
         for (int i = 0; i < n_events; ++i) {
-            trigger_was_true[i] = events[i].initial_value;
+            trigger_was_true[i] =
+                carry != nullptr ? carry->trigger[i] != 0 : events[i].initial_value;
             double val = eval_ref.evaluate(events[i].trigger_expr_idx);
             bool now_true = (val > 0.5);
             if (now_true && !trigger_was_true[i]) {
@@ -3025,6 +3034,13 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             species[i].concentration = conc[i];
         }
         model.set_current_time(t);
+        // ...and the event state that goes with it (issue #693). No execution
+        // is ever pending: a delayed event is refused above.
+        NetworkModel::EventCarry carry;
+        carry.valid = true;
+        carry.t = t;
+        carry.trigger.assign(trigger_was_true.begin(), trigger_was_true.end());
+        model.set_event_carry(std::move(carry), std::move(started_from));
     }
 
     // Solver stats
