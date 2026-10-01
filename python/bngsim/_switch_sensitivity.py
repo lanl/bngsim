@@ -3336,6 +3336,103 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
     return None
 
 
+def _reads_time_and_run_constants(flat: str, scope: SwitchConditionScope) -> bool:
+    """True when *flat* reads literal simulation time, and otherwise only run constants.
+
+    :func:`_reads_clock_and_run_constants` with a counter species left out of
+    what counts as a clock. A counter is a species: on the difference quotient
+    its sensitivity moves it like any other (issue #938), and literal time is
+    the one clock nothing moves.
+    """
+    if not _TIME_REF.search(flat):
+        return False
+    blanked = _TIME_REF.sub(" 0 ", flat)
+    for m in _IDENTIFIER.finditer(blanked):
+        name = m.group(0)
+        if name in scope.function_names:
+            return False
+        if blanked[m.end() :].lstrip().startswith("("):
+            continue
+        if name in scope.run_constants or name in _BUILTIN_CONSTANT_VALUES:
+            continue
+        return False
+    return True
+
+
+def model_state_crossing(core, ctx=None, *, steps_only: bool = False) -> str | None:
+    """The first rate-law crossing whose time moves with the *state*, or ``None``.
+
+    With ``steps_only``, the first step call on the state alone: ``floor(Atot)``
+    and its kind, which no root is placed on. A condition's crossing is located
+    by the run, which refuses it there if it jumps; a step call's is not, so a
+    run on the difference quotient is refused for one before it starts.
+
+    What a run left on CVODES' difference quotient cannot have (issue #938).
+    That quotient reads ``f`` at ``y + σ·s``. Beside a surface the state crosses,
+    ``y + σ·s`` is on the other branch for any column whose sensitivity moves the
+    state across it, so the difference is the rate law's jump over ``σ`` and the
+    column takes part of the crossing's jump before the crossing is reached. The
+    jump applied at the crossing itself (issue #48 for a counter, issue #150 for
+    a state threshold) is then added to it. ``if(Aobs>thr,kb,0)`` with A made at
+    rate ``k``, beside any rate law the analytic path declines, returned
+    dY/dk = 14.52 for 10.2. Where the step size collapses on the same
+    differences instead, the run ends in CVODE's no-progress error or in the
+    wall clock (issue #932).
+
+    A crossing on literal time is not one of these: its threshold's parameters
+    are held while the quotient is taken (issue #436), the state does not enter
+    it, and its jump is right on either path.
+
+    Scans what :func:`model_uncompensated_crossing_reason` scans, the reaction
+    rate expressions with their functions inlined. An atom that names no symbol
+    and a comparison over run constants alone are no crossing. A step call
+    outside a condition, ``floor(Atot)``, is a crossing like any other.
+
+    A counter species is state here, whatever its threshold: ``Aobs > 4.4``
+    against a literal is a threshold nothing moves, and a crossing the counter's
+    own rate constant and initial amount both move. With either requested, the
+    quotient reads the counter at ``y + σ·s`` like any other species.
+    """
+    from bngsim._jacobian import _inline_functions, has_condition_construct
+
+    if core.n_functions == 0:
+        return None
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    texts = [str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]]
+    flats = [_inline_functions(t, func_map) or t for t in texts]
+    flats = [f for f in flats if has_condition_construct(f) or _STEP_CALL.search(f)]
+    if not flats:
+        return None
+    try:
+        scope = switch_condition_scope(core, ctx)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("state-crossing scan: scope unavailable (%s)", exc)
+        return None
+    for flat in flats:
+        if has_condition_construct(flat) and not steps_only:
+            for atom in _iter_condition_atoms(flat):
+                atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+                if not _IDENTIFIER.search(atom_flat):
+                    continue
+                if condition_cannot_cross(atom_flat, scope):
+                    continue
+                if _reads_time_and_run_constants(atom_flat, scope):
+                    continue
+                return atom
+        for call, arg in _iter_step_calls(flat):
+            arg_flat = _inline_derived_param_refs(arg, scope.derived_exprs) or arg
+            if not _IDENTIFIER.search(arg_flat):
+                continue
+            if condition_cannot_cross(arg_flat, scope):
+                continue
+            if _reads_time_and_run_constants(arg_flat, scope):
+                continue
+            return call
+    return None
+
+
 def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     """Will :func:`compute_switch_time_sens` account for every one of *atom*'s
     crossings?

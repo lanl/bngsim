@@ -1549,9 +1549,13 @@ class Simulator:
             detail = " Detail: " + "; ".join(sorted(res.reasons.values())) + "."
         return list(res.compensated), detail, dict(res.blocked)
 
-    def _raise_if_uncompensated_crossing_sensitivities(self) -> None:
+    def _raise_if_uncompensated_crossing_sensitivities(self, *, time_course: bool = True) -> None:
         """Refuse a forward-sensitivity run left on the difference quotient over a
         rate-law branch crossing whose time moves (issue #414).
+
+        ``time_course`` is false for a steady-state solve, which reads ``∂f/∂p``
+        at one state and crosses nothing: the state-crossing refusal at the end
+        of this method (issue #938) is for a run that integrates through one.
 
         The rate-law twin of :meth:`_raise_if_event_sensitivities`. When a rate
         law branches on a condition whose crossing time moves with the trajectory
@@ -1620,6 +1624,7 @@ class Simulator:
             logger.debug("Uncompensated-crossing sensitivity refusal: scan unavailable (%s)", e)
             return
         if reason is None:
+            self._raise_if_state_crossing_on_fallback(time_course)
             return
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported for this model: it branches on a "
@@ -1634,6 +1639,84 @@ class Simulator:
             "nor the issue #150 saltation jump (which needs a single comparison over state "
             "to root on) applies here; validate against a trajectory finite difference if "
             "you need an approximate gradient."
+        )
+
+    def _raise_if_state_crossing_on_fallback(self, time_course: bool) -> None:
+        """Refuse a time-course sensitivity run left on the difference quotient
+        beside a step call on the state (issue #938).
+
+        Called only where the analytic sensitivity RHS is absent. CVODES'
+        difference quotient reads ``f`` at ``y + σ·s``, which beside a surface
+        the state crosses is on the other branch, so a column takes part of the
+        crossing's jump before the crossing. A condition's crossing is located
+        by the run, and the run refuses it there where the rate law jumps
+        (``apply_state_switch_sensitivity_jump``). A step call outside a
+        condition, ``floor(Atot)``, has no root: its steps are never located,
+        the quotient straddles each of them, and nothing adds the jump. On
+        ``k1*floor(Atot)`` the columns were 57% off, or the run stalled. That is
+        refused here, before the run starts.
+
+        A step call on literal time is left alone. See
+        :func:`~bngsim._switch_sensitivity.model_state_crossing`.
+        """
+        if not time_course:
+            return
+        from bngsim._switch_sensitivity import model_state_crossing
+
+        try:
+            crossing = model_state_crossing(self._model._core, steps_only=True)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("State-step sensitivity refusal: scan unavailable (%s)", e)
+            return
+        if crossing is None:
+            return
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity is not supported for this model: its rate law steps at "
+            f"{crossing!r}, at times that move with the state, and nothing locates them. "
+            "The analytic sensitivity right-hand side is declined for a step call, so CVODES' "
+            "internal difference quotient would be used. It reads the rate law at the state "
+            "moved along each sensitivity, which beside a step is on its other side, and no "
+            "jump is applied at the step itself: the columns come back wrong, or the step "
+            "size collapses and the run does not finish (issue #938). bngsim refuses rather "
+            "than return them. Write the step as an event, or difference plain runs."
+        )
+
+    def _stall_on_fallback_refusal(self, error: Exception) -> SensitivityUnsupportedError | None:
+        """The refusal a stalled sensitivity run on the difference quotient is
+        (issue #932), or ``None`` where the stall is something else.
+
+        A rate law that jumps where the state crosses a threshold, in a run with
+        no analytic sensitivity RHS: just before the crossing the quotient reads
+        ``f`` at ``y + σ·s`` on the other branch, every step fails its error
+        test on the jump over ``σ``, and the run ends in CVODE's no-progress
+        error 2e-5 to 2e-8 short of the crossing. The run cannot be refused
+        before it starts, because the same model with a condition that does not
+        jump (``if(v<0, -v/max(X,0.01), 0)``) is right on the quotient.
+        """
+        if not (self._sensitivity_params or self._sensitivity_ic):
+            return None
+        if "CVODE made no progress" not in str(error) or self._codegen_provides_sens_rhs():
+            return None
+        from bngsim._switch_sensitivity import model_state_crossing
+
+        try:
+            crossing = model_state_crossing(self._model._core)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Stalled-fallback diagnosis: scan unavailable (%s)", e)
+            return None
+        if crossing is None:
+            return None
+        why = self.sens_rhs_decline_reason
+        return SensitivityUnsupportedError(
+            "Forward sensitivity is not supported for this run: it stalled beside the "
+            f"rate-law crossing {crossing!r}, whose time moves with the state, and it has no "
+            "analytic sensitivity right-hand side"
+            + (f" ({why})" if why else "")
+            + ". CVODES' internal difference quotient reads the rate law at the state moved "
+            "along each sensitivity, which just short of that crossing is on the other "
+            "branch: where the rate law jumps there, every step fails on the jump and the "
+            f"step size collapses (issue #932). The solver's own report: {error} "
+            "Remove what the analytic path declines, or difference plain runs."
         )
 
     def _apply_event_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
@@ -3613,6 +3696,9 @@ class Simulator:
             # the other two did not.
             raise
         except RuntimeError as e:
+            refusal = self._stall_on_fallback_refusal(e)
+            if refusal is not None:
+                raise refusal from e
             raise SimulationError(f"Simulation failed: {e}{_tracking_hint(track_decades)}") from e
 
         # Stamp the seed on the Result when it identifies the realization (any
@@ -6022,7 +6108,7 @@ class Simulator:
             # so a model that declines it over a moving rate-law crossing lands on
             # the difference quotient here too. Refuse rather than solve
             # J·(dY/dp) = −∂f/∂p from a gradient flagged wrong at the crossing.
-            self._raise_if_uncompensated_crossing_sensitivities()
+            self._raise_if_uncompensated_crossing_sensitivities(time_course=False)
 
         from bngsim._bngsim_core import (
             SteadyStateOptions,

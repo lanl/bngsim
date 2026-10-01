@@ -1873,6 +1873,9 @@ struct SensitivityState {
     // Hoisted so the event-fire sensitivity jump (GH #212) can re-init the
     // sensitivity vectors with the same method CVodeSensInit1 was given.
     int method = CV_STAGGERED;
+    // The run has no analytic sensitivity right-hand side: CVODES forms each
+    // column's by its own difference quotient, f at y + σ·s (issue #938).
+    bool difference_quotient = false;
 
     // ── Sensitivity error floor (issue #177) ─────────────────────────────
     // The per-(state × column) absolute tolerance handed to
@@ -2055,6 +2058,9 @@ struct ExecutedEventFire {
 // treat them as one instant (issue #737). The Python detector groups crossings
 // by the same reach (`_switch_sensitivity._same_instant`).
 constexpr double kSwitchInstantUlps = 64.0;
+// A counter's threshold is crossed with a jump where the rate law changes by
+// more than this fraction of itself there (issue #938).
+constexpr double kCounterJumpRelTol = 1e-6;
 // How far short of the next crossing, as a part of the stretch from the last
 // restart to it, the run stops for its comoving columns (issue #760): a frame
 // entered at a crossing is left there, and a column that enters ahead of its
@@ -3910,6 +3916,7 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
         user_data.codegen_n_sens = n_sens;
         sens_rhs_fn = cvode_codegen_sens_rhs;
     }
+    sens.difference_quotient = sens_rhs_fn == nullptr;
     {
         const char *recover_env = std::getenv("BNGSIM_SENS_NONFINITE_RECOVER");
         user_data.sens_recover_nonfinite = !(recover_env && std::string(recover_env) == "0");
@@ -6796,6 +6803,41 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     }
     const std::vector<double> dtstar_p(dtstar_all.begin(), dtstar_all.begin() + n_sens_p);
 
+    // Issue #938: a counter is a species, and on CVODES' difference quotient a
+    // column whose sensitivity moves it reads the rate law at the counter
+    // moved, across this threshold, before the run gets here. Where the rate
+    // law jumps at it, that column has part of the jump already. A threshold
+    // on literal time is not read that way, and neither is a column that does
+    // not move the counter: its threshold's parameters are held while the
+    // quotient is taken.
+    if (sens.difference_quotient && !time_clock) {
+        double gap = 0.0;
+        double scale = 0.0;
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<size_t>(i);
+            gap = std::max(gap, std::fabs(sw_f_jump[ui] - sw_f_plus[ui]));
+            scale = std::max({scale, std::fabs(sw_f_jump[ui]), std::fabs(sw_f_plus[ui])});
+        }
+        bool moved = false;
+        for (int c = 0; c < n_sens_all && !moved; ++c) {
+            moved = N_VGetArrayPointer(yS_guard[c])[sw.clock_species_idx0] != 0.0;
+        }
+        if (moved && gap > kCounterJumpRelTol * scale) {
+            throw std::runtime_error(
+                "Forward sensitivity: the rate-law condition on the counter '" +
+                model.species()[static_cast<size_t>(sw.clock_species_idx0)].name +
+                "' crosses its threshold at t=" + std::to_string(t_evt) +
+                " with a jump in the rate law, a requested column moves the counter, and this "
+                "run has no analytic sensitivity right-hand side: one of the model's rate laws "
+                "could not be differentiated, so CVODES' internal difference quotient is used "
+                "for every column. That quotient reads the rate law with the counter moved "
+                "along each sensitivity, across the threshold, so a column has taken part of "
+                "the jump before the crossing and would be given all of it again here (issue "
+                "#938). bngsim refuses rather than return it. Remove what the analytic path "
+                "declines (see Simulator.sens_rhs_decline_reason), or difference plain runs.");
+        }
+    }
+
     std::vector<double *> sens_cols(static_cast<size_t>(n_sens_p));
     for (int c = 0; c < n_sens_p; ++c) {
         sens_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(yS_guard[c]);
@@ -8462,6 +8504,28 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // Back to the true crossing state: residual_dtstar differentiates there,
     // and the resumed integration must not see the nudge.
     sync(x, t_evt);
+
+    // Issue #938: a crossing that jumps, in a run on CVODES' difference
+    // quotient. That quotient reads f at y + σ·s, which beside the surface is
+    // on the other branch for a column whose sensitivity moves the state
+    // across it: the column has taken part of this jump already, on the way
+    // here, and the jump below would be added to it. `if(Aobs>thr,kb,0)`
+    // beside a rate law the analytic path declines returned dY/dk = 14.52 for
+    // 10.2. A crossing that does not jump has nothing for the quotient to
+    // straddle, and is left as it was.
+    if (sens.difference_quotient) {
+        throw std::runtime_error(
+            "Forward sensitivity: the state-dependent rate-law condition with residual '" +
+            sw.residual_source + "' crosses at t=" + std::to_string(t_evt) +
+            " with a jump in the rate law, and this run has no analytic sensitivity "
+            "right-hand side: one of the model's rate laws could not be differentiated, so "
+            "CVODES' internal difference quotient is used for every column. That quotient "
+            "reads the rate law at the state moved along each sensitivity, which beside this "
+            "surface is on the other branch, so a column has taken part of the jump before "
+            "the crossing and would be given all of it again here (issue #938). bngsim "
+            "refuses rather than return it. Remove what the analytic path declines (see "
+            "Simulator.sens_rhs_decline_reason), or difference plain runs.");
+    }
 
     auto subject_of = [](const NetworkModel::StateSwitch &one) {
         return "the state-dependent rate-law condition with residual '" + one.residual_source +

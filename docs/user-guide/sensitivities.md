@@ -334,7 +334,17 @@ sim.has_analytic_sens_rhs      # False when the run falls back
 sim.sens_rhs_decline_reason    # why, in words, or None
 ```
 
-The fallback is CVODES' own difference quotient, which is correct and slower.
+The fallback is CVODES' own difference quotient, which is correct and slower,
+with one exception: a rate law that jumps where the *state* crosses a threshold.
+The quotient reads the rate law at the state moved along each sensitivity, which
+just short of such a crossing is on the other branch, so a column takes part of
+the jump before the crossing. A run on the fallback is refused at a state
+crossing that jumps, or at a counter's threshold that a requested column moves
+(issue #938); one that stalls short of the crossing is refused there (issue
+#932); and a step call on the state, `floor(X)`, which nothing locates, is
+refused before the run. A crossing on literal time, and a crossing where the
+rate law does not jump (`if(v < 0, -v/max(X, 0.01), 0)`), are right on the
+fallback and are not refused.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 

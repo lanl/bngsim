@@ -7861,7 +7861,8 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     if isinstance(reason, UncompensatedCrossingReason):
         remedy = (
             "The analytic sensitivity RHS does apply that jump, so removing the decline "
-            "named above restores a correct gradient (issue #232)."
+            "named above restores a correct gradient (issue #232). A run that reaches a "
+            "crossing on the state where the rate law jumps is refused there (issue #938)."
             if isinstance(reason, DeclinedAtMovingCrossingReason)
             # No machinery compensates this one, and naming an issue here would
             # be a dangling pointer: issue #150 (state comparisons) and issue
