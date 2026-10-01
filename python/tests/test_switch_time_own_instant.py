@@ -37,8 +37,14 @@ TWO = (
 DAILY = [float(t) for t in range(101)]
 
 
-def _sens(text, params, times):
+def _sens(text, params, times, exact=None):
+    """`exact` sets parameters to the double itself: a value written into the
+    model text keeps 15 significant digits, which is not enough to place two
+    switch times an ulp apart."""
     model = bngsim.Model.from_antimony_string(text)
+    for name, value in (exact or {}).items():
+        model.set_param(name, value)
+        assert model.get_param(name) == value
     run = bngsim.Simulator(model, method="ode", sensitivity_params=params).run(
         sample_times=list(times), rtol=1e-10, atol=1e-12
     )
@@ -144,10 +150,9 @@ def _bucket_edge_pair():
 def test_two_switches_either_side_of_a_bucket_edge_are_isolated():
     """s1 and s2 are 2 ulp apart, so one nudge of the clock flips both. The
     detector grouped crossings by a 12-digit key, which these two straddle, so
-    neither was isolated and each column took both jumps: d[X, Y]/ds1 came out
-    [-2, -3]."""
+    neither was isolated, and every column came out 0."""
     s1, s2 = _bucket_edge_pair()
-    s, _ = _sens(TWO.format(s1=s1, s2=s2), ["s1", "s2"], DAILY)
+    s, _ = _sens(TWO.format(s1=35.0, s2=35.0), ["s1", "s2"], DAILY, exact={"s1": s1, "s2": s2})
     np.testing.assert_allclose(s["X"][-1], [-2.0, 0.0], atol=1e-9)
     np.testing.assert_allclose(s["Y"][-1], [0.0, -3.0], atol=1e-9)
 
