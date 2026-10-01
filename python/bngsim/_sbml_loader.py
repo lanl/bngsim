@@ -2653,50 +2653,55 @@ _SSA_FF_MAX_POWER = 2**31 - 1
 _MASS_ACTION_MAX_POWER = 1000
 
 
+def _math_names(node) -> tuple[set[str], bool]:
+    """The names a math AST reads, and whether it reads the clock (the time
+    csymbol, ``delay``, ``rateOf``). Iterative: a rule over a thousand terms is
+    a thousand-deep tree."""
+    names: set[str] = set()
+    clock = False
+    stack = [node] if node is not None else []
+    while stack:
+        n = stack.pop()
+        t = n.getType()
+        if t in (libsbml.AST_NAME_TIME, libsbml.AST_FUNCTION_DELAY, libsbml.AST_FUNCTION_RATE_OF):
+            clock = True
+        elif t == libsbml.AST_NAME:
+            names.add(n.getName())
+        stack.extend(n.getChild(i) for i in range(n.getNumChildren()))
+    return names, clock
+
+
 def _moving_assignment_rule_vars(sbml_model) -> tuple[dict, set[str]]:
-    """The assignment rules' math by variable, and the variables whose value
-    moves during a run: one that reads the clock, a species, a rate-rule or
+    """The names each assignment rule reads, by variable, and the variables whose
+    value moves during a run: one that reads the clock, a species, a rate-rule or
     event target, or another moving rule's variable. A rule over constants
     (``C := 2``, ``C := p``) holds its value."""
-    rules = {}
+    reads: dict[str, set[str]] = {}
+    moving: set[str] = set()
     rate_vars = set()
     for j in range(sbml_model.getNumRules()):
         r = sbml_model.getRule(j)
         if r.isAssignment() and r.getMath() is not None:
-            rules[r.getVariable()] = r.getMath()
+            names, clock = _math_names(r.getMath())
+            reads[r.getVariable()] = names
+            if clock:
+                moving.add(r.getVariable())
         elif r.isRate():
             rate_vars.add(r.getVariable())
-    event_vars = set()
+    sources = set(rate_vars)
     for j in range(sbml_model.getNumEvents()):
         ev = sbml_model.getEvent(j)
         for k in range(ev.getNumEventAssignments()):
-            event_vars.add(ev.getEventAssignment(k).getVariable())
-    species_ids = {sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())}
-    memo: dict[str, bool] = {}
-
-    def math_moves(node, stack) -> bool:
-        if node is None:
-            return False
-        t = node.getType()
-        if t in (libsbml.AST_NAME_TIME, libsbml.AST_FUNCTION_DELAY, libsbml.AST_FUNCTION_RATE_OF):
-            return True
-        if t == libsbml.AST_NAME:
-            name = node.getName()
-            if name in species_ids or name in rate_vars or name in event_vars:
-                return True
-            if name in rules:
-                return var_moves(name, stack)
-        return any(math_moves(node.getChild(i), stack) for i in range(node.getNumChildren()))
-
-    def var_moves(var, stack) -> bool:
-        if var in memo:
-            return memo[var]
-        if var in stack:  # a cycle: take it as moving
-            return True
-        memo[var] = math_moves(rules[var], stack | {var})
-        return memo[var]
-
-    return rules, {v for v in rules if var_moves(v, frozenset())}
+            sources.add(ev.getEventAssignment(k).getVariable())
+    sources |= {sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())}
+    changed = True
+    while changed:  # to the fixed point: a rule over a moving rule moves
+        changed = False
+        for var, names in reads.items():
+            if var not in moving and (names & sources or names & moving):
+                moving.add(var)
+                changed = True
+    return reads, moving
 
 
 def _ssa_moving_ar_comp_reads(
@@ -2711,7 +2716,9 @@ def _ssa_moving_ar_comp_reads(
     Second, the event-resized or rate-rule compartments (``varvol_comps``) whose
     concentration-valued species the rate reads from outside them, or through an
     assignment rule: the SSA's live-volume correction covers the species of the
-    compartment a reaction acts in, and no others."""
+    compartment a reaction acts in, and no others.
+
+    ``rules`` maps each assignment rule's variable to the names it reads."""
     if not moving_comps and not varvol_comps:
         return [], []
     kl = rxn.getKineticLaw()
@@ -2723,35 +2730,26 @@ def _ssa_moving_ar_comp_reads(
             local.add(kl.getParameter(j).getId())
     hit: set[str] = set()
     vv_hit: set[str] = set()
-    seen: set[str] = set()
     acts_in = {
         species_comp.get(lst.get(j).getSpecies())
         for lst in (rxn.getListOfReactants(), rxn.getListOfProducts())
         for j in range(lst.size())
     }
-
-    def read(name, via_rule):
+    law_names = _math_names(kl.getMath())[0] - local if kl is not None and kl.getMath() else set()
+    # (name, read through a rule); the touched species are read directly.
+    work = [(n, False) for n in law_names | _ssa_species_touched(rxn)]
+    seen_rules: set[str] = set()
+    while work:
+        name, via_rule = work.pop()
         comp = species_comp.get(name)
         conc = comp is not None and not species_hosu.get(name, False)
         if conc and comp in moving_comps:
             hit.add(comp)
         if conc and comp in varvol_comps and (via_rule or comp not in acts_in):
             vv_hit.add(comp)
-        if name in rules and name not in seen:
-            seen.add(name)
-            walk(rules[name], True)
-
-    def walk(node, via_rule):
-        if node is None:
-            return
-        if node.getType() == libsbml.AST_NAME and node.getName() not in local:
-            read(node.getName(), via_rule)
-        for i in range(node.getNumChildren()):
-            walk(node.getChild(i), via_rule)
-
-    walk(kl.getMath() if kl is not None else None, False)
-    for sid in _ssa_species_touched(rxn):
-        read(sid, False)
+        if name in rules and name not in seen_rules:
+            seen_rules.add(name)
+            work.extend((n, True) for n in rules[name])
     return sorted(hit), sorted(vv_hit)
 
 

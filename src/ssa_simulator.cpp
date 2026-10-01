@@ -1690,44 +1690,23 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // its window), and on a grid no coarser than ev_dt; the first interval in
     // which any trigger differs from its recorded truth is bisected. Probing only
     // the window's end saw neither a trigger true between two looks nor one that
-    // fell and rose again, so a periodic trigger fired once. Leaves the model
-    // synced at t_lo.
+    // fell and rose again, so a periodic trigger fired once.
     // Only a trigger that reads the clock can change while the state holds; the
     // rest change at a firing, where fire_rising_edges looks at every trigger.
     std::vector<int> time_triggers;
     for (int ei = 0; ei < n_events; ++ei)
         if (model.event_trigger_reads_time(ei))
             time_triggers.push_back(ei);
-    std::vector<double> probe_pts;
-    std::vector<char> probe_prev, probe_cur;
+    std::vector<char> probe_prev, probe_cur; // the continuous loop's scan
     auto probe_events_in_window = [&](double t_lo, double t_hi) -> double {
         double t_event = std::numeric_limits<double>::infinity();
         if (time_triggers.empty() || !(t_hi > t_lo))
             return t_event;
-        probe_pts.clear();
-        double a = t_lo;
-        bool a_is_bp = std::binary_search(bps.begin(), bps.end(), t_lo);
-        // Between two breakpoints at least one interior look: a time-only
-        // condition the breakpoints resolve is constant inside, so one suffices.
-        auto fill = [&](double b, bool b_is_bp) {
-            const int n =
-                std::max(a_is_bp && b_is_bp ? 2 : 1, static_cast<int>(std::ceil((b - a) / ev_dt)));
-            for (int k = 1; k < n; ++k)
-                probe_pts.push_back(a + (b - a) * k / n);
-            probe_pts.push_back(b);
-            a = b;
-            a_is_bp = b_is_bp;
-        };
-        for (auto it = std::upper_bound(bps.begin(), bps.end(), t_lo);
-             it != bps.end() && *it < t_hi; ++it)
-            fill(*it, true);
-        fill(t_hi, std::binary_search(bps.begin(), bps.end(), t_hi));
-
-        probe_prev.assign(trigger_was_true.begin(), trigger_was_true.end());
-        probe_cur.assign(static_cast<std::size_t>(n_events), 0);
-        double t_prev = t_lo;
+        // Until a trigger changes, its recorded truth is what each look compares
+        // with, so nothing is copied or stored per window.
         bool first = true;
-        for (double ts : probe_pts) {
+        double t_prev = t_lo;
+        const auto look = [&](double ts) -> bool {
             if (first)
                 sync_state(ts);
             else
@@ -1735,19 +1714,42 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             first = false;
             bool changed = false;
             for (int ei : time_triggers) {
-                probe_cur[ei] = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;
-                changed = changed || probe_cur[ei] != probe_prev[ei];
-            }
-            if (changed) {
-                for (int ei : time_triggers)
-                    if (probe_cur[ei] != probe_prev[ei])
-                        t_event =
-                            std::min(t_event, bisect_trigger(ei, t_prev, ts, probe_prev[ei] != 0));
-                break;
+                const bool was = trigger_was_true[ei];
+                if ((eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5) == was)
+                    continue;
+                changed = true;
+                t_event = std::min(t_event, bisect_trigger(ei, t_prev, ts, was));
+                model.evaluate_functions(ts); // the bisection moved the functions' time
             }
             t_prev = ts;
+            return changed;
+        };
+        // One window segment: its interior on a grid no coarser than ev_dt, at
+        // least one interior look between two breakpoints, then its end.
+        const auto segment = [&](double a, double b, bool both_bp) -> bool {
+            const int n = std::max(both_bp ? 2 : 1, static_cast<int>(std::ceil((b - a) / ev_dt)));
+            for (int k = 1; k < n; ++k)
+                if (look(a + (b - a) * k / n))
+                    return true;
+            return look(b);
+        };
+        double a = t_lo;
+        bool a_bp = false;
+        if (!bps.empty()) {
+            a_bp = std::binary_search(bps.begin(), bps.end(), t_lo);
+            for (auto it = std::upper_bound(bps.begin(), bps.end(), t_lo);
+                 it != bps.end() && *it < t_hi; ++it) {
+                if (segment(a, *it, a_bp))
+                    return t_event;
+                a = *it;
+                a_bp = true;
+            }
         }
-        sync_state(t_lo); // restore
+        segment(a, t_hi, a_bp && std::binary_search(bps.begin(), bps.end(), t_hi));
+        // The model is left synced at the last time looked at. Nothing reads it
+        // as t_lo's: a rate here reads no clock (or the model would be on the
+        // continuous loop), and the trigger sweep and every event path sync
+        // first.
         return t_event;
     };
 
@@ -1773,7 +1775,15 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // (a trigger on a rate-rule target, which the probe reads frozen) was
     // marked as already true and never fired, the issue #761 mechanism on
     // another path.
+    //
+    // It syncs the state first. A trigger reads the species, observables and
+    // functions the model holds, and nothing else had put the post-firing
+    // state there: after a firing the sweep read the state of the last sync,
+    // and a state trigger (`S >= 5`) was caught only by the next window's
+    // probe, which synced at the window's end. That probe now looks only at
+    // triggers that read the clock (issue #719).
     auto fire_rising_edges = [&](double t_now) -> bool {
+        sync_state(t_now);
         firing_scratch.clear();
         for (int ei = 0; ei < n_events; ++ei) {
             const bool now_true = eval_ref.evaluate(events[ei].trigger_expr_idx) > 0.5;

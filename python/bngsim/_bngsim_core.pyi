@@ -446,6 +446,11 @@ class NetworkModel:
     def species_names(self) -> list[str]:
         ...
     @property
+    def ssa_reads_clock(self) -> bool:
+        """
+        Whether a reaction rate or an event trigger reads the clock (issue #719): the SSA then needs the model's breakpoints. Decided from the model's text.
+        """
+    @property
     def table_function_names(self) -> list[str]:
         ...
     @property
