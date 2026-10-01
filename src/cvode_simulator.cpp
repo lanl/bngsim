@@ -6005,10 +6005,9 @@ static constexpr double kStateSwitchSumRoundoff = 2.0;
 // is sound. One that shares a reaction with another reader, or whose residual
 // reads a species the rest of the jump moves, has to agree after all.
 static constexpr double kStateSwitchAgreeRoundoff = 16.0;
-// When a probe point lands exactly on another switch's surface the probe step
-// is stretched by this factor, at most this many times (issue #763).
-static constexpr double kStateSwitchLandingStretch = 1.25;
-static constexpr int kStateSwitchLandingTries = 4;
+// When a probe point lands exactly on another switch's surface the ladder's
+// step is retried at these multiples, in this order: shorter first (issue #763).
+static constexpr double kStateSwitchLandingSteps[] = {0.8, 0.64, 1.25, 1.5625};
 // For how many probe steps of time a jump applied at one stop is remembered, so
 // that a stop that follows closely cannot read it again (issue #763).
 static constexpr double kStateSwitchRememberSteps = 64.0;
@@ -6299,7 +6298,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // strict condition still reads its old branch at the surface while the
     // residual says nothing has been crossed, and the extension of the
     // before-branch took that switch's jump in (824 ulps apart, twelfth
-    // review). So the step is stretched until no point lands. A residual that
+    // review). So the step is changed until no point lands. A residual that
     // is 0.0 at all four points is a plateau (issue #154), not a landing.
     if (dt_used != 0.0 && !others.empty()) {
         auto lands = [&](double step) {
@@ -6329,14 +6328,17 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
             return static_cast<const NetworkModel::StateSwitch *>(nullptr);
         };
+        // Shorter steps are tried first. A longer one can carry the pair back
+        // across a switch whose jump the last stop applied, and that is
+        // refused: on another platform's arithmetic the stop at a threshold
+        // nothing reads landed, was stretched, and was refused for a jump 500
+        // ulps behind it (issue #763, CI). A shorter one brings nothing new
+        // into the pair. It is taken only if it still carries the batch's own
+        // residuals across.
+        const double dt_ladder = dt_used;
         const NetworkModel::StateSwitch *landed = lands(dt_used);
-        for (int stretch = 0; landed != nullptr; ++stretch) {
-            const double longer = dt_used * kStateSwitchLandingStretch;
-            if (stretch < kStateSwitchLandingTries) {
-                probe(-longer, g_before);
-                probe(+longer, g_after);
-            }
-            if (stretch >= kStateSwitchLandingTries || n_straddled() != nb) {
+        for (std::size_t attempt = 0; landed != nullptr; ++attempt) {
+            if (attempt >= std::size(kStateSwitchLandingSteps)) {
                 sync(x, t_evt);
                 std::ostringstream msg;
                 msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
@@ -6350,7 +6352,13 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                        "sensitivities for this run.";
                 throw std::runtime_error(msg.str());
             }
-            dt_used = longer;
+            const double trial = dt_ladder * kStateSwitchLandingSteps[attempt];
+            probe(-trial, g_before);
+            probe(+trial, g_after);
+            if (n_straddled() != nb) {
+                continue;
+            }
+            dt_used = trial;
             landed = lands(dt_used);
         }
         // Leave the batch's residuals and the evaluator as the ladder did.

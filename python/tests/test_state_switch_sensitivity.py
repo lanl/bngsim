@@ -2206,8 +2206,8 @@ end groups
         the second jump was taken in with the first's dt*/dθ: dY1/dthr0 = -5 for
         0, where main is right (-824). Which spacing it is depends on the last
         bits of the arithmetic, so a range is run and each case has to be right,
-        or refused as two jumps in one probe step. The step is stretched off a
-        landing."""
+        or refused as two jumps in one probe step. The step is changed, shorter
+        first, until no point lands."""
         refused = 0
         spacings = range(around - 30, around + 31)
         for k in spacings:
@@ -2226,16 +2226,16 @@ end groups
         "units",
         [
             [("jump", 0, 0.0), ("noreader", 412, 0.0)],
-            [("clamp", 0, 1e9), ("clamp", 412, 1e9)],
-            [("jump", 0, 0.0), ("clamp", 474, 1e9)],
+            [("clamp", 0, 1e3), ("clamp", 412, 1e3)],
+            [("jump", 0, 0.0), ("clamp", 474, 1e3)],
         ],
         ids=["jump-unread-412", "clamp-clamp-412", "jump-clamp-474"],
     )
     def test_a_landing_on_a_switch_that_cannot_jump_is_not_refused(self, tmp_path, units):
         """The same landings on a threshold no rate law reads and on a clamp's.
-        A first cut refused every landing (twelfth review). Main runs the first
-        two and is right. The third is one of the #763 cases main gets wrong:
-        its jump column comes back 0 there."""
+        A first cut refused every landing (twelfth review), where main runs
+        and is right. With at most one jump in the model there is nothing to
+        refuse, whichever spacing lands on the machine."""
         s = _units_sens(tmp_path, units, "lands_on_quiet.net")
         if units[0][0] == "jump":
             np.testing.assert_allclose(s["Y0"][2:], [3.0, 0.0], atol=1e-5)
@@ -2245,7 +2245,7 @@ end groups
         thr1 = float(2.0 * (1 - units[1][1] * EPS))
 
         def b_end(thr):
-            return 1e9 * np.exp(
+            return 1e3 * np.exp(
                 -0.1 * np.log(10.0 / thr) / 0.5 - (0.2 / thr) * (thr - 10.0 * np.exp(-4.0))
             )
 
