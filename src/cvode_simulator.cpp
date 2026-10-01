@@ -5892,6 +5892,18 @@ static constexpr double kStateSwitchSumRoundoff = 2.0;
 // exchange beside a real jump, a run main completes. What the floor excuses is
 // not dropped. It is applied with the crossing's dt*/dθ, as on main.
 static constexpr double kStateSwitchAgreeRoundoff = 16.0;
+// Issue #763: a reader's root along the flow is known only as finely as the
+// state is. One ulp of a species the residual reads moves the root by that
+// ulp's worth of the residual over dg/dt, and a continuous clamp read that far
+// from its own kink differs by its change of slope times the distance. So a
+// branch change within this many such steps times the reader's change of slope
+// is a kink, not a jump: the two branch lines meet inside the rounding of where
+// the switch is. Each of the four flux readings carries the same rounding of
+// the state, which is where the factor comes from. MODEL1006230090 needs it. Its
+// guard `ATP_x > minCond` turns on a flux of slope 9e5 where ATP_x itself
+// moves at 2e-7, and the leftover 3e-11 is 160 times the drive tolerance. What
+// this excuses is a jump smaller than four ulps of the state do to the flux.
+static constexpr double kStateSwitchRootSlack = 4.0;
 // Issue #545: how closely a state-switch dt*/dθ — a finite difference — has to
 // match an emitted comoving shift for its column to enter that frame. The shift
 // itself is exact; this only decides which case the crossing is.
@@ -6831,12 +6843,32 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // `ksyn + if(…, kb, 0)` puts ksyn there, and a jump of kb under
         // 1e-6·ksyn read as continuous where the old global test saw it.
         const double tol = kStateSwitchContinuousRelTol * drive;
+        // How far along the flow one ulp of what `one`'s residual reads moves
+        // its root (see kStateSwitchRootSlack), at most δt.
+        auto root_step = [&](const Reader &one) {
+            const int gidx = one.sw->residual_expr_idx;
+            sync(x, t_evt);
+            const double g0 = eval.evaluate(gidx);
+            double quantum = 0.0;
+            for (int j : one.sw->species) {
+                const auto uj = static_cast<std::size_t>(j);
+                xw.assign(x.begin(), x.end());
+                xw[uj] = std::nextafter(x[uj], std::numeric_limits<double>::infinity());
+                sync(xw, t_evt);
+                quantum += std::fabs(eval.evaluate(gidx) - g0);
+            }
+            sync(x, std::nextafter(t_evt, std::numeric_limits<double>::infinity()));
+            quantum += std::fabs(eval.evaluate(gidx) - g0);
+            const double step = 2.0 * dt * quantum / std::fabs(one.g_hi - one.g_lo);
+            return std::isfinite(step) ? std::min(step, dt) : dt;
+        };
         for (Reader &r : readers) {
             // Where along the flow its own residual vanishes, in [−δt, δt].
             double root = dt * (r.g_lo + r.g_hi) / (r.g_lo - r.g_hi);
             root = std::isfinite(root) ? std::clamp(root, -dt, dt) : 0.0;
             const double w_lo = (root + dt) / dt;
             const double w_hi = (dt - root) / dt;
+            double slack = -1.0; // root_step(r), found only if a species needs it
             for (std::size_t u = 0; u < n_sp; ++u) {
                 double change = r.net[1][u] - r.net[2][u];
                 if (far_ok) {
@@ -6846,6 +6878,17 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 }
                 // Written so that a NaN reads as a jump.
                 if (!(std::fabs(change) <= tol)) {
+                    if (far_ok) {
+                        if (slack < 0.0) {
+                            slack = kStateSwitchRootSlack * root_step(r);
+                        }
+                        const double kink =
+                            std::fabs((r.net[1][u] - r.net[0][u]) - (r.net[3][u] - r.net[2][u])) /
+                            dt;
+                        if (std::fabs(change) <= tol + slack * kink) {
+                            continue;
+                        }
+                    }
                     r.jumps = true;
                     r.must_agree =
                         r.must_agree || !want_gross ||
@@ -6997,6 +7040,26 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             change[u] -= 2.0 * f_plus[u] - f_far[u];
         }
         sync(x, t_evt);
+        // A reader that does not jump has its kink at its own root, a little
+        // off x(t*), so extended to x(t*) its two branches differ by its
+        // change of slope times that offset. On a steep clamp that is not
+        // small: `kbig*(thr2 − A)` below thr2, crossing 300 ulps after a jump
+        // at thr1, put 0.12 into dZ/dthr1 at kbig = 1e12 (main: 0.30), for a
+        // truth of 0. Its reactions are continuous here, so they leave the
+        // jump: the same four readings, extended the same way. A reaction two
+        // such readers share leaves once.
+        std::vector<int> left;
+        for (const Reader &r : readers) {
+            if (r.jumps || std::any_of(r.rxns->begin(), r.rxns->end(), [&](int rxn) {
+                    return std::find(left.begin(), left.end(), rxn) != left.end();
+                })) {
+                continue;
+            }
+            left.insert(left.end(), r.rxns->begin(), r.rxns->end());
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                change[u] -= (2.0 * r.net[1][u] - r.net[0][u]) - (2.0 * r.net[2][u] - r.net[3][u]);
+            }
+        }
     }
 
     // Issue #545: a column this crossing moves at an emitted c enters V = S⁻ + c·f⁻,

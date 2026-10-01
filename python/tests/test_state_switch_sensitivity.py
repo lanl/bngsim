@@ -1306,6 +1306,40 @@ end groups
             got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()")]
             np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-6)
 
+    @pytest.mark.parametrize("kbig", [1e12, 1e14])
+    def test_a_steep_clamp_crossing_with_a_jump_takes_none_of_it(self, tmp_path, kbig):
+        """``fZ = if(A<thr2, kbig*(thr2 - A), 0)`` is continuous at thr2, which the
+        trajectory crosses a few hundred ulps from the jump at thr1, before it
+        or after. The clamp's kink is not where the jump is read, so across the
+        probe its two branches differ by kbig times that offset: 0.04 to 13
+        here. That went into the jump with thr1's dt*/dθ, so dZ/dthr1 came out
+        -0.12 at kbig = 1e12 and -13 at 1e14 (main: -0.30 and -31), for a truth
+        of 0. And read at its own root the clamp is still off by what a few
+        ulps of A do to a flux this steep, which at kbig = 1e14 passed the
+        drive and got one of these refused. The clamp's reactions are now
+        left out of the jump, and a branch change within the rounding of the
+        root is a kink. With the clamp first, main gives thr2 the whole jump."""
+        t1 = np.log(5.0) / 0.5
+        want_y = _switched_source(2.0, 3.0, 1)
+        want_y[3] = HAIR_T - t1
+        for k in (100, 300, -100, -300):
+            thr2 = float(2.0 * (1 - k * EPS))
+            run = _hair(
+                tmp_path,
+                f"steepclamp{k}.net",
+                thr2=thr2,
+                kbig=kbig,
+                fy="if(Aobs<thr1,kb,0)",
+                fz="if(Aobs<thr2,kbig*(thr2-Aobs),0)",
+            )
+            names = list(run.species_names)
+            s = np.asarray(run.sensitivities)[-1]
+            np.testing.assert_allclose(s[names.index("Y()")], want_y, rtol=1e-6, atol=1e-6)
+            z = s[names.index("Z()")]
+            # One ulp of A moves the clamp's flux by 4.4e-16·kbig.
+            assert abs(z[1]) < 1e-14 * kbig
+            assert z[2] == pytest.approx(kbig * (HAIR_T - np.log(10.0 / thr2) / 0.5), rel=1e-6)
+
     def test_a_tangent_crossing_ignores_a_threshold_its_reactions_do_not_read(self, tmp_path):
         """The same crawl past thr2 = 2 + 3e-9, but there the rate law is a
         clamp, ``kc·(thr2 − Aobs)`` below it and 0 above, continuous at its own
