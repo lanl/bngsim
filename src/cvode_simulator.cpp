@@ -5996,10 +5996,12 @@ static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|,
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
 // Where both branches are extended to the root, what a reader's flux changes by
 // there is a step or rounding (issue #917). Two kinds of rounding are allowed
-// for. The extension's own: this many ulp of the four readings, and never more
-// than the drive tolerance, so that a jump of 1 beside a constant of 1e14 in
-// the same rate law, 64 ulp of it, is still read.
-static constexpr double kStateSwitchExtendedRoundoff = 8.0;
+// for. The extension's own: this many times ε of the four readings, and never
+// more than the drive tolerance, so that a jump of 0.125 beside a constant of
+// 1e14 in the same rate law, 8 ulp of it, is still read under a slow
+// threshold. Each side is three readings of a flux that rounds by an ulp or
+// two, and 1.9 to 4.2 is what a saturating bystander at 1e11 leaves.
+static constexpr double kStateSwitchExtendedRoundoff = 16.0;
 // And the operands': this many times what one ulp of each species the switch's
 // residual reads moves that flux by. A rate law that is a small difference of
 // its operands, `k*(Vx - 5)` at Vx = 5, rounds by its operands and not by its

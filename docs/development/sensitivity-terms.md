@@ -181,12 +181,15 @@ no jump.
 Whether a state switch's branches meet is read from the flux of the reactions
 that read the switch alone (#763), at two probes on each side of the surface.
 Both branches are extended to the root, and the difference of the extensions is
-the branch change. It is a jump unless it is within the rounding of where the
-root is, or of the flux's operands: what one ulp of each species the residual
-reads moves that flux by (#917). A flux that vanishes on both branches, the BNGL
-signed-rate idiom, is under that; a jump of 3 beside a constant of 1e14 in the
-same rate law is not. Where the far probes cross another switch the near pair is
-read as it stands, against `1e-6` of the rate that drives the crossing.
+the branch change. It is a jump unless it is within rounding (#917): of where
+the root is; of the flux's operands, what one ulp of each species the residual
+reads moves that flux by; or of the extension itself, 16·ε of its four readings
+and never more than `1e-6` of the rate that drives the crossing. A flux that
+vanishes on both branches, the BNGL signed-rate idiom, is under the second; a
+continuous switch beside a large term that reads other species is under the
+third; a jump of 3 beside a constant of 1e14 in the same rate law is under
+none. Where the far probes cross another switch the near pair is read as it
+stands, against `1e-6` of the rate that drives the crossing.
 
 **An event and a switch at the same instant.** `f⁻` is the before-branch at
 `x⁻`, and `f⁺` is the after-branch at `x⁺`:
