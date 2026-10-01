@@ -48,20 +48,34 @@ trigger crosses zero, applies the assignments, and restarts.
 A trigger reading false whose *residual* is exactly zero at the start time is
 not below its threshold, it is sitting on it — `S > 0` with `S(t_start) = 0`.
 Whether the first move off that surface is a crossing depends on where the
-trajectory goes, and bngsim decides it from `dg/dt` along the flow at the start
-time:
+trajectory goes. bngsim decides it by evaluating the trigger itself a small
+step along the flow from the start time:
 
-- **It leaves into the true side** (`dg/dt > 0`) — the crossing is real and
-  located at the start time. `time > 0` is this case, and so is a species with a
-  nonzero production rate there. The event fires.
-- **It does not leave** (`dg/dt <= 0`) — nothing crosses. A root reported at the
-  start time is the initial condition being re-read, and its instant would be
-  set by the integrator's first step rather than by the model, so the event does
-  not fire. A later, genuine crossing of the same trigger is unaffected.
+- **It leaves into the true side** — the crossing is real and located at the
+  start time. `time > 0` is this case, and so is a species with a nonzero
+  production rate there, and `A < 10` with `A(t_start) = 10` and A decaying.
+  The event fires, however the comparison is written.
+- **It does not leave** — nothing crosses. A root reported at the start time is
+  the initial condition being re-read, and its instant would be set by the
+  integrator's first step rather than by the model, so the event does not fire.
+  A later, genuine crossing of the same trigger is unaffected.
+
+The step is first order in the flow. A trigger that leaves its threshold only at
+second order, `B > 0` where `dB/dt` is itself 0 at the start, is read as not
+leaving (issue #934).
 
 This mirrors what SUNDIALS does with a root function that is identically zero at
 `t0`. Declare `initialValue="true"` on the trigger if you want an event
 suppressed at the start time regardless of the flow.
+
+#### An event beside a state-dependent rate-law switch
+
+A forward-sensitivity run stops at a rate-law switch, `if(A < thr, ...)` in a
+rate law, and restarts a step of about 1e-13 of the time scale past it. An event
+whose trigger rises within that step, such as `at (A < thr)` on the same
+threshold, has no located crossing of its own. The run is refused rather than
+the event being dropped. A trigger that falls there is recorded, so its next
+rise fires. Runs without sensitivities are unaffected.
 
 ### Supported event features
 
