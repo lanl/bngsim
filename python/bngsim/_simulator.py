@@ -1904,7 +1904,7 @@ class Simulator:
         A no-op for any model with no conditional rate law, which leaves the
         root set — and the whole integration — untouched.
         """
-        from bngsim._switch_sensitivity import state_switch_conditions
+        from bngsim._switch_sensitivity import state_switch_conditions, state_switch_reactions
 
         try:
             conditions = state_switch_conditions(core)
@@ -1929,6 +1929,18 @@ class Simulator:
                 ", ".join(repr(c) for c in conditions),
             )
             opts.set_state_switch_conditions(conditions)
+            try:
+                reactions = state_switch_reactions(core, conditions)
+            except Exception as e:  # pragma: no cover - defensive
+                # Without the map the solver judges each crossing's continuity
+                # over the whole right-hand side, as it did before issue #763.
+                logger.warning(
+                    "State-switch reaction map failed (%s); continuity at each "
+                    "crossing is judged over every species (issue #763).",
+                    e,
+                )
+            else:
+                opts.set_state_switch_reactions(reactions)
 
     def _apply_state_switch_roots(self, opts, model) -> None:
         """Root the rate-law conditions over model state for a plain run (issue #897).

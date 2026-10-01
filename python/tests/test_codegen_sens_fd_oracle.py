@@ -843,7 +843,6 @@ TERMS: list = [
             param="A0",
             note="dY/dA0 is 0 against -0.6: a 1e8 pool nearby makes the jump read as roundoff",
         ),
-        marks=_xfail(763, "the continuity test scales the jump by max|f| over every species"),
     ),
     # ── Counter clocks ───────────────────────────────────────────────────────
     Term(
