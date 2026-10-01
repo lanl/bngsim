@@ -220,7 +220,8 @@ crossing the solver switches the column to `V`, and at the next restart it
 switches back to `S`. `S = V − c·f` is what every output reports. A crossing
 that is *approached* through such a power, the closing edge of a window
 `s*(1-s)^(a-1)`, needs the column in `V` before it: the solver switches at a
-stop it takes shortly after the switch time before that crossing (issue #760).
+stop it takes shortly before that crossing, and switches a column in `V` back
+to `S` shortly before any crossing that is not the column's own (issue #760).
 A parameter that moves no such crossing keeps its plain column. A model with no such power
 emits the code it always did, and that includes a logistic onset
 `1/(1+exp(-k*(t-on)))`, whose base is never 0.

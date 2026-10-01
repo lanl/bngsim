@@ -1843,9 +1843,12 @@ struct ComovingFrames {
     int n_active = 0;
     // The run's switch times, in order: what "the crossing still to come" is.
     const std::vector<const SwitchTimeSens *> *switches = nullptr;
-    // A clock crossing at this time left a column plain that has to enter ahead
-    // of the next switch time. The run takes a stop for it between the two.
+    // The restart that begins the stretch the run is on, where a frame is active
+    // or a column has to enter ahead of the next switch time. The run takes a
+    // stop for them short of the next crossing.
     double entry_request = std::numeric_limits<double>::quiet_NaN();
+    // Whether a column asked to enter ahead there, or frames are only to be left.
+    bool entry_wanted = false;
 };
 
 struct SensitivityState {
@@ -2009,9 +2012,16 @@ struct ExecutedEventFire {
 // treat them as one instant (issue #737). The Python detector groups crossings
 // by the same reach (`_switch_sensitivity._same_instant`).
 constexpr double kSwitchInstantUlps = 64.0;
-// Where between a restart and the switch time ahead a comoving column enters
-// its frame (issue #760).
+// How far short of the next crossing, as a part of the stretch from the last
+// restart to it, the run stops for its comoving columns (issue #760): a frame
+// entered at a crossing is left there, and a column that enters ahead of its
+// own crossing does so there.
 constexpr double kComovingEntryFraction = 1.0 / 16.0;
+// A frame is left at a registered root against f carried to the root from
+// reads just before it. Where those reads bend by more than this times the
+// run's relative tolerance of their size, f is singular within reach of the
+// root and cannot be carried to it.
+constexpr double kComovingRootBend = 1.0;
 // Two times that are one instant to that nudge.
 inline bool one_switch_instant(double a, double b) {
     return std::fabs(a - b) <= kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
@@ -2362,6 +2372,10 @@ struct CvodeSimulator::Impl {
     // the next switch time still to come moves it at the c of one of its cases,
     // and that case's crossing is approached through a singular power.
     bool comoving_wants_ahead(SensitivityState &sens, double *const *cols, double t);
+    // After a restart at `t`: has the run take its stops for the comoving
+    // columns on the stretch to the next crossing, one to leave the frames that
+    // are active and one for a column that wants to enter ahead.
+    void comoving_ask(SensitivityState &sens, double *const *cols, double t);
     // Enter those columns, V = S + c·f_after, with `f_after` the f just after the
     // restart. Returns how many entered.
     int comoving_enter_ahead(SensitivityState &sens, int ns, double *const *cols, double t,
@@ -4851,23 +4865,33 @@ void CvodeSimulator::Impl::comoving_leave(SensitivityState &sens, int ns, double
 // is APPROACHED, so a column that enters its frame at the crossing has already
 // integrated the forcing no step resolves: 0.03% to 0.6% off, flat in rtol. The
 // generator marks such a case, and a plain column whose next switch time moves at
-// that case's c enters before it instead. V = S + c·f holds for any constant c,
-// so the column it stands for is the same. Its forcing is not: in the frame it
-// is ∂f/∂p + c·∂f/∂t for everything f does, so the frame is right only over a
-// stretch where f does nothing singular that the column does not move.
+// that case's c enters before it instead. Whether the approach is singular is
+// asked at the run's own parameter values: an exponent a − 1 is, for 1 < a < 2.
+// V = S + c·f holds for any constant c, so the column it stands for is the
+// same. Its forcing is not: in the frame it is ∂f/∂p + c·∂f/∂t for everything f
+// does, so the frame is right only over a stretch where f does nothing singular
+// that the column does not move.
 //
 // So a column enters on the last stretch before its switch time and no earlier:
-// at a stop the run takes for it a sixteenth of the way from the last restart
-// to that switch time, and only when no other crossing lies between the two. A
-// window that closes as a power before then, in a column that does not move
-// it, stays in the plain column, where it costs nothing. Not at the restart
-// itself: a window that opens as a power too, s^(a-1)·(1-s)^(a-1), has an f
-// whose slope is unbounded just past the opening. At the crossing the column
-// leaves and enters again against one f, which cancels exactly.
+// at a stop the run takes a sixteenth of that stretch short of the switch time,
+// and only when no other crossing lies between the two. A window that closes as
+// a power before then, in a column that does not move it, stays in the plain
+// column, where it costs nothing. And every frame is left at that stop, so one
+// entered at a crossing does not reach the next (see the run loop). At its own
+// crossing the column leaves and enters again against one f, which cancels
+// exactly.
 
 bool CvodeSimulator::Impl::comoving_wants_ahead(SensitivityState &sens, double *const *cols,
                                                 double t) {
     return comoving_enter_ahead(sens, -1, cols, t, {}) > 0;
+}
+
+void CvodeSimulator::Impl::comoving_ask(SensitivityState &sens, double *const *cols, double t) {
+    const bool wanted = comoving_wants_ahead(sens, cols, t);
+    if (wanted || sens.comoving.n_active > 0) {
+        sens.comoving.entry_request = t;
+        sens.comoving.entry_wanted = wanted;
+    }
 }
 
 int CvodeSimulator::Impl::comoving_enter_ahead(SensitivityState &sens, int ns, double *const *cols,
@@ -4894,12 +4918,12 @@ int CvodeSimulator::Impl::comoving_enter_ahead(SensitivityState &sens, int ns, d
         }
         for (int c = 0; c < sens.n_p; ++c) {
             const auto uc = static_cast<size_t>(c);
-            // A column already in a frame is asked about too: two windows that
-            // share a width close at c = 1 and then at c = 2, and the column is
-            // in the first frame when the second close is the one ahead. It
-            // enters only once the restart has left that frame.
-            const bool active = frames.plist[uc] >= 0;
-            if (active && !dry_run) {
+            // A column already in a frame is asked about too. The frame it is
+            // in ends at the stop the run takes to leave it, whichever case it
+            // is: the onset column of a window is in its frame at the opening
+            // and has to enter again before the close. It enters only once a
+            // restart has left that frame.
+            if (frames.plist[uc] >= 0 && !dry_run) {
                 continue;
             }
             double moves = sw.dtstar_dp[uc];
@@ -4919,12 +4943,9 @@ int CvodeSimulator::Impl::comoving_enter_ahead(SensitivityState &sens, int ns, d
                 if (case_idx < 0) {
                     break;
                 }
-                if (codegen_comoving_approach_fn(case_idx) == 0 ||
+                if (codegen_comoving_approach_fn(case_idx, frames.param_values) == 0 ||
                     !(std::fabs(shift - moves) <= 1e-9 * std::max(1.0, std::fabs(shift)))) {
                     continue;
-                }
-                if (active && frames.plist[uc] == case_idx) {
-                    break; // in that frame already
                 }
                 ++entered;
                 if (dry_run) {
@@ -6010,13 +6031,9 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             col[i] += (sw_f_jump[i] - sw_f_plus[i]) * dtstar;
         }
     }
-    // Issue #760: a column this crossing leaves plain, whose NEXT switch time is
-    // approached through a singular power, enters its frame ahead of that one.
-    // Not here, where f may be opening a power of its own: the run takes a stop
-    // for it a little way on.
-    if (comoving_wants_ahead(sens, sens_cols.data(), t_evt)) {
-        sens.comoving.entry_request = t_evt;
-    }
+    // Issue #760: the run takes its stops for the comoving columns on the
+    // stretch this crossing begins.
+    comoving_ask(sens, sens_cols.data(), t_evt);
 
     // Restart the state stepper AT the kink (order drops to 1, history
     // discarded) — the same reason the GH #72 discontinuity root reinits —
@@ -7456,11 +7473,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 comoving_enter(sens, ns, comoving_cols.data(), t_evt, f_minus, f_minus, f_minus,
                                tau_enter, kComovingStateSwitchRelTol);
             }
-            // Issue #760: and a column whose next switch time has a singular
-            // approach asks for the stop it enters ahead at.
-            if (comoving_wants_ahead(sens, comoving_cols.data(), t_evt)) {
-                sens.comoving.entry_request = t_evt;
-            }
+            // Issue #760: and the stops of the stretch this crossing begins.
+            comoving_ask(sens, comoving_cols.data(), t_evt);
         }
         restart_past_surface();
         return;
@@ -7731,10 +7745,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
         }
     }
-    // Issue #760: a column left plain here whose next switch time has a singular
-    // approach asks for the stop it enters ahead at.
-    if (sens.comoving.enabled && comoving_wants_ahead(sens, comoving_cols.data(), t_evt)) {
-        sens.comoving.entry_request = t_evt;
+    // Issue #760: the stops of the stretch this crossing begins.
+    if (sens.comoving.enabled) {
+        comoving_ask(sens, comoving_cols.data(), t_evt);
     }
     restart_past_surface();
 }
@@ -8642,9 +8655,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         for (int c = 0; c < n_sens_p; ++c) {
             cols[static_cast<size_t>(c)] = N_VGetArrayPointer(sens.yS[c]);
         }
-        if (impl_->comoving_wants_ahead(sens, cols.data(), times.t_start)) {
-            sens.comoving.entry_request = times.t_start;
-        }
+        impl_->comoving_ask(sens, cols.data(), times.t_start);
     }
     // Issue #545: S of the comoving columns at an output, which is not what yS holds.
     std::vector<std::vector<double>> comoving_out_scratch;
@@ -8674,6 +8685,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // The stops among them the run added for a comoving column to enter at
     // (issue #760). Nothing crosses at one.
     std::vector<double> comoving_entry_stops;
+    std::vector<double> comoving_leave_stops;
 
     // Scratch for the root-sign check inside `land_clock_on_threshold`: the
     // registered roots evaluated on either side of the ulp it moves the counter
@@ -9100,18 +9112,36 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             bool stop_at_crossing = false;
             double t_switch = 0.0;
             double t_crossing = 0.0;
-            // Issue #760: a stop for a column to enter its frame at, a sixteenth
-            // of the way from the restart that asked to the switch time ahead:
-            // past whatever f does at the restart, and with as little of the
-            // approach left behind as that allows. Only where
-            // no other crossing lies between the two: in its frame the column
-            // carries c·∂f/∂t for everything f does, and another window's
-            // closing power in there is the singular forcing over again, in a
-            // column it never touched. The crossing in between asks again when
-            // the run reaches it.
+            // Issue #760: the stops the run takes for its comoving columns on the
+            // stretch from the restart that asked to the next crossing. In its
+            // frame a column carries c·∂f/∂t for everything f does, and another
+            // window's closing power is the singular forcing over again, in a
+            // column that never had it: a frame entered at one window's edge
+            // and kept up to the close of another was 0.6% off there. So a
+            // frame does not reach a crossing that is not the column's own.
+            //
+            //   - A frame entered at a crossing is left a sixteenth of the
+            //     stretch short of the next crossing of any kind, or of the end
+            //     of the run.
+            //   - A column whose next switch time is approached through a
+            //     singular power enters a sixteenth of the stretch short of it,
+            //     where no other crossing lies between: the one in between asks
+            //     again when the run reaches it. A column that is in that frame
+            //     already leaves and enters at the one stop, against one f.
+            //
+            // Not sooner after the restart: a window that opens as a power has
+            // an f whose slope is unbounded just past the opening, and the plain
+            // column of the parameter that moves it is no better there.
             if (!std::isnan(sens.comoving.entry_request)) {
                 const double from = sens.comoving.entry_request;
                 sens.comoving.entry_request = std::numeric_limits<double>::quiet_NaN();
+                auto own = [&](double at) {
+                    auto same = [&](double mine) { return same_instant(mine, at); };
+                    return std::any_of(comoving_entry_stops.begin(), comoving_entry_stops.end(),
+                                       same) ||
+                           std::any_of(comoving_leave_stops.begin(), comoving_leave_stops.end(),
+                                       same);
+                };
                 size_t ahead = 0;
                 while (ahead < switch_list.size() &&
                        (switch_list[ahead]->t_star <= from ||
@@ -9119,37 +9149,51 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     ++ahead;
                 }
                 bool clear = ahead < switch_list.size();
-                for (size_t k = next_crossing; clear && k < crossing_stops.size(); ++k) {
+                double to_any =
+                    clear ? std::min(switch_list[ahead]->t_star, times.t_end) : times.t_end;
+                for (size_t k = next_crossing; k < crossing_stops.size(); ++k) {
                     const double at = crossing_stops[k].t_star;
-                    if (at >= switch_list[ahead]->t_star) {
-                        break;
+                    if (at <= from || same_instant(at, from) || own(at)) {
+                        continue;
                     }
-                    const bool own =
-                        std::any_of(comoving_entry_stops.begin(), comoving_entry_stops.end(),
-                                    [&](double mine) { return same_instant(mine, at); });
-                    clear = own || at <= from || same_instant(at, from) ||
-                            same_instant(at, switch_list[ahead]->t_star);
+                    // The run's own next crossing: the stops are in time order.
+                    to_any = std::min(to_any, at);
+                    clear = clear && (at >= switch_list[ahead]->t_star ||
+                                      same_instant(at, switch_list[ahead]->t_star));
+                    break;
                 }
-                if (clear) {
-                    const double to = switch_list[ahead]->t_star;
-                    const double t_mid = from + kComovingEntryFraction * (to - from);
-                    if (t_mid > static_cast<double>(t_now) && !same_instant(t_mid, from) &&
-                        !same_instant(t_mid, to)) {
-                        auto at = std::lower_bound(
-                            crossing_stops.begin() + static_cast<std::ptrdiff_t>(next_crossing),
-                            crossing_stops.end(), t_mid,
-                            [](const CrossingStop &one, double t) { return one.t_star < t; });
-                        const bool taken =
-                            (at != crossing_stops.end() && same_instant(at->t_star, t_mid)) ||
-                            (at != crossing_stops.begin() &&
-                             same_instant(std::prev(at)->t_star, t_mid));
-                        if (!taken) {
-                            CrossingStop entry;
-                            entry.t_star = t_mid;
-                            crossing_stops.insert(at, entry);
-                            comoving_entry_stops.push_back(t_mid);
+                auto take = [&](double at, double not_at, std::vector<double> &mine) {
+                    if (!(at > static_cast<double>(t_now)) || same_instant(at, from) ||
+                        same_instant(at, not_at)) {
+                        return;
+                    }
+                    auto where = std::lower_bound(
+                        crossing_stops.begin() + static_cast<std::ptrdiff_t>(next_crossing),
+                        crossing_stops.end(), at,
+                        [](const CrossingStop &one, double t) { return one.t_star < t; });
+                    for (auto beside :
+                         {where, where == crossing_stops.begin() ? where : std::prev(where)}) {
+                        if (beside != crossing_stops.end() && same_instant(beside->t_star, at)) {
+                            // A stop is there already. One of the run's own
+                            // serves for this too; a crossing asks for itself.
+                            if (own(beside->t_star)) {
+                                mine.push_back(beside->t_star);
+                            }
+                            return;
                         }
                     }
+                    CrossingStop stop;
+                    stop.t_star = at;
+                    crossing_stops.insert(where, stop);
+                    mine.push_back(at);
+                };
+                if (sens.comoving.n_active > 0) {
+                    take(to_any - kComovingEntryFraction * (to_any - from), to_any,
+                         comoving_leave_stops);
+                }
+                if (sens.comoving.entry_wanted && clear) {
+                    const double to = switch_list[ahead]->t_star;
+                    take(to - kComovingEntryFraction * (to - from), to, comoving_entry_stops);
                 }
             }
             // A crossing at or behind t_now cannot be stopped at: CVODE refuses
@@ -9440,15 +9484,37 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         } else {
                             // Two reads, carried to the root: beside a closing
                             // power f moves by a part in a thousand over the
-                            // read back itself.
-                            std::vector<double> f_further;
-                            impl_->comoving_rhs(static_cast<double>(t_ret) - 2.0 * root_back,
-                                                y_data, ns, f_further);
-                            impl_->comoving_rhs(static_cast<double>(t_ret) - root_back, y_data, ns,
-                                                f_before);
+                            // read back itself. A third says whether the two
+                            // can be carried at all. A root a few of these
+                            // reads past a power's onset has f bending between
+                            // them, and the line through two is off by a part
+                            // in a thousand of the power: refused, where a
+                            // number came back.
+                            std::vector<double> f_further, f_furthest;
+                            const auto t_root = static_cast<double>(t_ret);
+                            impl_->comoving_rhs(t_root - 3.0 * root_back, y_data, ns, f_furthest);
+                            impl_->comoving_rhs(t_root - 2.0 * root_back, y_data, ns, f_further);
+                            impl_->comoving_rhs(t_root - root_back, y_data, ns, f_before);
+                            double bend = 0.0;
+                            double size = 0.0;
                             for (int i = 0; i < ns; ++i) {
                                 const auto ui = static_cast<size_t>(i);
+                                bend = std::max(bend, std::fabs(f_before[ui] - 2.0 * f_further[ui] +
+                                                                f_furthest[ui]));
+                                size =
+                                    std::max({size, std::fabs(f_before[ui]),
+                                              std::fabs(f_further[ui]), std::fabs(f_furthest[ui])});
                                 f_before[ui] += f_before[ui] - f_further[ui];
+                            }
+                            if (!(bend <= kComovingRootBend * rtol * size)) {
+                                throw std::runtime_error(
+                                    "Forward sensitivity: a root at t=" + std::to_string(t_root) +
+                                    " lies within a few hundred ulp of a point where a rate law "
+                                    "is singular in time (a window that opens or closes as a "
+                                    "power). The comoving column that carries that edge cannot "
+                                    "be read back there to the run's tolerance (issue #760). "
+                                    "Separate the two times, or drop the parameters that move "
+                                    "the window from sensitivity_params.");
                             }
                             model.update_observables(y_data);
                             model.evaluate_functions(static_cast<double>(t_ret));
@@ -9472,10 +9538,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     for (int c = 0; c < sens.n_p; ++c) {
                         cols[static_cast<size_t>(c)] = evt_s_minus[static_cast<size_t>(c)].data();
                     }
-                    if (!state_switch_root && !switch_root &&
-                        impl_->comoving_wants_ahead(sens, cols.data(),
-                                                    static_cast<double>(t_ret))) {
-                        sens.comoving.entry_request = static_cast<double>(t_ret);
+                    if (!state_switch_root && !switch_root) {
+                        impl_->comoving_ask(sens, cols.data(), static_cast<double>(t_ret));
                     }
                 }
 
@@ -9759,8 +9823,26 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // landed on the after side below.
                 std::vector<double> cross_f_before;
                 if (sens.comoving.n_active > 0) {
+                    // A stop the run took for its comoving columns is no
+                    // crossing: f is read where it is, not a nudge back. Only
+                    // another stop on the same instant makes it one.
+                    bool only_own = true;
+                    for (size_t k = next_crossing; k < crossing_stops.size(); ++k) {
+                        const double at = crossing_stops[k].t_star;
+                        if (at > static_cast<double>(t_ret) &&
+                            !same_instant(at, static_cast<double>(t_ret))) {
+                            break;
+                        }
+                        auto same = [&](double mine) { return mine == at; };
+                        only_own = only_own && (std::any_of(comoving_entry_stops.begin(),
+                                                            comoving_entry_stops.end(), same) ||
+                                                std::any_of(comoving_leave_stops.begin(),
+                                                            comoving_leave_stops.end(), same));
+                    }
                     if (static_cast<double>(t_ret) == sens.comoving.t_entry) {
                         cross_f_before = sens.comoving.f_entry_after;
+                    } else if (only_own) {
+                        impl_->comoving_rhs(static_cast<double>(t_ret), y_data, ns, cross_f_before);
                     } else {
                         impl_->comoving_rhs_before_stops(
                             static_cast<double>(t_ret), y_data, ns, crossing_stops, next_crossing,
@@ -9769,7 +9851,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             cross_f_before);
                     }
                 }
-                const size_t first_reached = next_crossing;
                 while (next_crossing < crossing_stops.size() &&
                        (crossing_stops[next_crossing].t_star <= static_cast<double>(t_ret) ||
                         same_instant(crossing_stops[next_crossing].t_star,
@@ -9804,17 +9885,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         if (!cross_f_before.empty()) {
                             impl_->comoving_leave(sens, ns, cols.data(), cross_f_before);
                         }
-                        // Issue #760: a column whose next switch time has a
-                        // singular approach enters ahead of it at the stop the
-                        // run took for that, and asks for one at any other.
-                        if (impl_->comoving_wants_ahead(sens, cols.data(),
-                                                        static_cast<double>(t_ret))) {
-                            const bool own_stop =
-                                std::any_of(comoving_entry_stops.begin(),
-                                            comoving_entry_stops.end(), [&](double at) {
-                                                return same_instant(at, static_cast<double>(t_ret));
-                                            });
-                            if (own_stop) {
+                        // Issue #760: every frame has just been left. At the
+                        // stop the run took for it, a column whose next switch
+                        // time has a singular approach enters. At a stop taken
+                        // only to leave, nothing does. Any other crossing
+                        // begins a stretch of its own.
+                        auto here = [&](double at) {
+                            return same_instant(at, static_cast<double>(t_ret));
+                        };
+                        if (std::any_of(comoving_entry_stops.begin(), comoving_entry_stops.end(),
+                                        here)) {
+                            if (impl_->comoving_wants_ahead(sens, cols.data(),
+                                                            static_cast<double>(t_ret))) {
                                 std::vector<double> f_now(cross_f_before);
                                 if (f_now.empty()) {
                                     impl_->comoving_rhs(static_cast<double>(t_ret), y_data, ns,
@@ -9822,9 +9904,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 }
                                 impl_->comoving_enter_ahead(sens, ns, cols.data(),
                                                             static_cast<double>(t_ret), f_now);
-                            } else {
-                                sens.comoving.entry_request = static_cast<double>(t_ret);
                             }
+                        } else if (std::none_of(comoving_leave_stops.begin(),
+                                                comoving_leave_stops.end(), here)) {
+                            impl_->comoving_ask(sens, cols.data(), static_cast<double>(t_ret));
                         }
                     }
                     std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);

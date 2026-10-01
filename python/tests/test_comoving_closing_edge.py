@@ -12,11 +12,13 @@ it moves at the same rate as the closing one, and is still in its frame when
 the window closes.
 
 A column whose next switch time is approached through such a power now enters
-before it, at a stop the run takes a sixteenth of the way along the last stretch
-between switch times that leads to it. Not at the crossing that begins the
+before it, at a stop the run takes a sixteenth short of it along the last
+stretch between crossings that leads to it. Not at the crossing that begins the
 stretch: a window that opens as a power too, ``s^(a-1)·(1-s)^(a-1)``, has an f
-whose slope is unbounded just past the opening. And not on an earlier stretch,
-where the frame would meet the edges of windows the column does not move.
+whose slope is unbounded just past the opening. And a frame does not reach a
+crossing that is not the column's own: one entered at a crossing is left at
+that same stop, a sixteenth short of the next, where it would meet the edge of
+a window the column does not move.
 
 X is linear in the pulse, so every expected value is a quadrature of the pulse
 against ``e^(-kdeg·(T-t))``, differenced in the parameter at two steps and
@@ -32,8 +34,8 @@ from scipy.integrate import quad
 
 ON, WIDTH, K1, KDEG = 3.0, 4.0, 2.0, 0.3
 # Nothing is sampled on the onset (3) or the close (7): the window's own edge
-# is a kink in D there. The D column enters at 3.25.
-T = [0.0, 1.0, 2.0, 4.0, 5.0, 5.5, 6.5, 6.99, 7.01, 8.0, 10.0]
+# is a kink in D there. 6.75 is the stop the D column enters at.
+T = [0.0, 1.0, 2.0, 4.0, 5.0, 5.5, 6.5, 6.75, 6.99, 7.01, 8.0, 10.0]
 
 NET = """begin parameters
     1 k0    0.1
@@ -141,9 +143,9 @@ def _worst(got, want):
 @pytest.mark.parametrize("a", [1.05, 1.1, 1.2, 1.3])
 @pytest.mark.parametrize("shape", ["closing", "both"])
 def test_the_column_that_moves_the_closing_edge(tmp_path, shape, a, close):
-    """dX/dD at every sample: one on the stop the column enters at (5), and one
-    0.01 either side of the close. It was 0.5% off at a = 1.05 and 1.1e-5 at
-    a = 1.3, at rtol 1e-8, and the closing shape raised at a = 1.05."""
+    """dX/dD at every sample: one on the stop the column enters at (6.75), and
+    one 0.01 either side of the close. It was 0.5% off at a = 1.05 and 1.1e-5
+    at a = 1.3, at rtol 1e-8, and the closing shape raised at a = 1.05."""
     got = _column(_model(tmp_path, shape, a, close), "D")
     assert _worst(got, _exact(shape, a, "D")) < 5e-6
 
@@ -184,13 +186,14 @@ def test_a_window_already_open_at_the_start(tmp_path, shape, a):
     assert _worst(got, _exact(shape, a, "D", on=0.0, times=times)) < 5e-6
 
 
-@pytest.mark.parametrize("tmid", [4.0, 5.0, 6.9])
+@pytest.mark.parametrize("tmid", [4.0, 6.75, 6.9])
 @pytest.mark.parametrize("shape", ["closing", "both"])
 def test_a_crossing_inside_the_window_asks_again(tmp_path, shape, tmid):
     """A fixed crossing at tmid, inside the window, restarts the run and leaves
-    every frame. The column asks for a new stop halfway from there to the close.
-    At 5 the crossing is on the stop the run had planned; at 6.9 the new stop is
-    0.05 before the close."""
+    every frame. The column asks for a new stop a sixteenth short of the close
+    on the stretch from there. At 6.75 the crossing is on the stop the run had
+    planned; at 6.9 the column is in its frame already, and the new stop is
+    0.006 before the close."""
     extra = "+if(t>=tmid,0.0,0.0)*0"
     got = _column(_model(tmp_path, shape, 1.1, extra=extra, tmid=tmid), "D")
     assert _worst(got, _exact(shape, 1.1, "D")) < 5e-6
@@ -198,13 +201,13 @@ def test_a_crossing_inside_the_window_asks_again(tmp_path, shape, tmid):
 
 @pytest.mark.parametrize(
     ("shape", "level"),
-    [("closing", 0.6), ("closing", 1.85), ("both", 2.0), ("both", 3.6)],
+    [("closing", 1.85), ("closing", 2.58), ("both", 3.6), ("both", 4.09)],
     ids=["closing-before-the-stop", "closing-after", "both-before-the-stop", "both-after"],
 )
 def test_a_state_switch_inside_the_window(tmp_path, shape, level):
-    """X crosses the level near t = 4.3 or t = 6, either side of the stop at 5
-    the D column enters at. A state switch restarts the run and leaves every
-    frame; f is smooth there, so the column enters again on the spot."""
+    """X crosses the level near t = 6 or t = 6.9, either side of the stop at
+    6.75 the D column enters at. A state switch restarts the run and leaves
+    every frame, and the column asks for a stop on the stretch from there."""
     got = _column(_model(tmp_path, shape, 1.1, state_switch=level), "D")
     assert _worst(got, _exact(shape, 1.1, "D")) < 5e-6
 
@@ -247,9 +250,9 @@ def test_the_closing_edge_through_sbml(shape, a, param, close):
 
 @pytest.mark.parametrize("shape", ["closing", "both"])
 def test_a_root_inside_the_window_through_sbml(shape):
-    """A fixed ``time >= 5.5`` inside the window is a root with no record. The
-    D column is in its frame by then, leaves at the root and asks for a stop
-    halfway to the close."""
+    """A fixed ``time >= 5.5`` inside the window is a root with no record, and
+    begins a stretch of its own: the D column enters a sixteenth short of the
+    close on it."""
     got = _column(_sbml(shape, 1.1, " + 0*piecewise(1, time >= tmid, 0)"), "D")
     assert _worst(got, _exact(shape, 1.1, "D")) < 5e-6
 
@@ -292,7 +295,7 @@ def test_nothing_enters_ahead_of_a_window_that_only_opens_as_a_power(tmp_path, p
 def test_only_a_scale_the_numerator_reads_is_split():
     """The closing base ``(on + D − t)/D`` is written as two powers. The opening
     base ``(t − on)/D`` is left as it is written: its numerator does not read D,
-    and a model with no closing power emits the code it always did."""
+    so a window that only opens emits the powers it always did."""
     import sympy as sp
     from bngsim import _codegen
 
@@ -318,8 +321,8 @@ def test_the_generator_marks_the_case_a_closing_edge_approaches(tmp_path):
         return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
 
     def approach(src):
-        body = src.split("int bngsim_codegen_comoving_approach(int case_idx)")[1].split("\n}")[0]
-        return body.count("return 1;")
+        head = "int bngsim_codegen_comoving_approach(int case_idx, const double *p)"
+        return src.split(head)[1].split("\n}")[0].count("if (case_idx ==")
 
     assert "bngsim_codegen_comoving_approach" in source("closing")
     assert approach(source("closing")) == 2  # on and D
@@ -455,3 +458,80 @@ def test_a_root_just_after_the_onset_late_in_time(shape):
     model = _sbml(shape, 1.1, extra=" + 0*piecewise(1, time >= 1000000.0005, 0)", on=t0)
     got = _column(model, "on", times=times)
     assert _worst(got, _exact(shape, 1.1, "on", on=t0, times=times)) < 5e-6
+
+
+# ─── A frame does not reach a crossing that is not the column's own ─────────
+
+
+@pytest.mark.parametrize("param", ["on2", "D2", "on1", "D1"])
+@pytest.mark.parametrize("shape", ["closing", "both"])
+def test_a_frame_is_left_before_another_windows_closing_edge(tmp_path, shape, param):
+    """Windows [2, 5] and [4, 10]: each closes while the other is open or has
+    just been. A column entered its frame at a crossing it moves and kept it to
+    the next restart, which here is the other window's close. On the way there
+    the frame carries c·∂f/∂t for that window's closing power, the singular
+    forcing again in a column that never had it: 0.2% to 0.6% off, or the
+    solver's error. A frame is left a sixteenth short of the next crossing."""
+    times = [0.0, 1.0, 3.0, 3.9, 4.1, 4.9, 5.1, 6.0, 8.0, 9.9, 10.1, 12.0]
+    got = _column(_two(tmp_path, shape, on2=4, d2=6), param, times=times)
+    if param.endswith("2"):
+        want = _exact(shape, 1.1, {"on2": "on", "D2": "D"}[param], 4.0, times, 6.0, 3.0)
+    else:
+        want = _exact(shape, 1.1, {"on1": "on", "D1": "D"}[param], 2.0, times, 3.0, 2.0)
+    assert _worst(got, want) < 5e-6
+
+
+# ─── An exponent that is a parameter ────────────────────────────────────────
+
+
+def _beside_a_background(tmp_path, a, k0):
+    text = NET.replace("    1 k0    0.1", f"    1 k0    {k0!r}").format(
+        a=a, close="<=", shape=SHAPES["closing"][0], extra="", tmid=5.0, on=ON
+    )
+    path = tmp_path / "m.net"
+    path.write_text(text)
+    return bngsim.Model.from_net(path)
+
+
+def test_an_exponent_above_two_is_not_entered_ahead(tmp_path):
+    """Control. At a = 3 the window closes as (1-s)², and nothing is unbounded.
+    The exponent is a parameter, so the case is emitted all the same, but
+    whether its approach is singular is asked at the run's own values. A column
+    in its frame reads back as V − c·f, to the tolerance of c·f: beside a
+    background flux of 100 a cut that entered ahead here was 1.2e-3 off at
+    rtol 1e-6, where the plain column is right to 4e-6."""
+    got = _column(_beside_a_background(tmp_path, 3.0, 100.0), "D", rtol=1e-6, atol=1e-8)
+    assert _worst(got, _exact("closing", 3.0, "D")) < 5e-5
+
+
+@pytest.mark.parametrize(("first", "second"), [(3.0, 1.1), (1.1, 3.0)])
+def test_the_exponent_is_read_when_the_run_asks(tmp_path, first, second):
+    """The code is generated at one value of a and run at another, across 2.
+    Decided when the code was written, the model made at a = 3 kept its column
+    plain at a = 1.1 and was 0.37% off again. From 1.1 to 3 is a control."""
+    model = _model(tmp_path, "closing", first)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["D"])
+    sim.run(sample_times=T, rtol=1e-8, atol=1e-10)
+    model.reset()
+    model.set_param("a", second)
+    run = sim.run(sample_times=T, rtol=1e-8, atol=1e-10)
+    got = np.asarray(run.sensitivities)[:, 0, 0]
+    assert _worst(got, _exact("closing", second, "D")) < 5e-6
+
+
+# ─── A root just past a power's onset ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("shape", ["closing", "both", "opening"])
+def test_a_root_within_reach_of_the_onset_is_refused(shape):
+    """A fixed root 2e-7 after an onset at t = 1e6, which is 2.5 times how far
+    back a frame's f is read from a root. Both reads are past the onset, where
+    s^0.1 bends, and the line through them is off by a part in a thousand of
+    the power. Main raised or was 21% off; a cut that carried two reads to the
+    root returned a number 0.2% off. A third read tells, and the run is
+    refused."""
+    t0 = 1.0e6
+    model = _sbml(shape, 1.1, extra=" + 0*piecewise(1, time >= 1000000.0000002, 0)", on=t0)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["on"])
+    with pytest.raises(Exception, match="singular in time.*issue #760"):
+        sim.run(sample_times=[t0 - 1.0, t0 + 1.0, t0 + 5.0], rtol=1e-8, atol=1e-10)
