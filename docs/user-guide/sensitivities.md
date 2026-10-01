@@ -259,6 +259,9 @@ there read as a jump (issue #763). Two independent thresholds that the
 trajectory crosses within about 1e-13 of each other in time are one stop for
 the solver. If both jump and the requested columns move them apart, the run is
 refused, because one jump would otherwise be moved with the other's `dt*/dθ`.
+A state that slides along the surface is refused too (issue #926): with
+`if(S < 1, amp, -amp)` both branches point into `S = 1`, the state stays on it,
+and the sensitivity there is that of neither branch.
 A conjunction or a negation is split into its comparisons first. What the
 analytic path declines is a crossing nothing can locate: a comparison outside any
 `if()`, such as `k*(X > 1)`, and one whose sides

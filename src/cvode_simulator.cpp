@@ -2382,6 +2382,13 @@ struct CvodeSimulator::Impl {
     // this, so all of them see the same picture of the model.
     void sync_model_at(double t, const double *x, int ns);
 
+    // Issue #926. Refuses a sensitivity run that is held on a state-switch
+    // surface with the flows on both sides pointing into it. See the definition.
+    void
+    refuse_slide_along_state_switch(double t, const double *x, int ns,
+                                    const std::vector<const NetworkModel::StateSwitch *> &switches,
+                                    double rtol, double atol, const std::vector<double> &atol_v);
+
     // dg/dt along the flow at (t, x) — the denominator of dt*/dθ, and the test
     // for whether a trajectory LEAVES a threshold it starts on (issue #340).
     // Fills `gx_out` (∂g/∂x, sized ns, zero off `support`) and `scale_out`
@@ -6192,6 +6199,82 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, 
     return true;
 }
 
+// A flow on the far side of a state-switch surface that carries the residual
+// back, by more than this fraction of the terms it is summed from, is a slide
+// along the surface and not a crossing of it (issue #926).
+static constexpr double kStateSwitchSlideRelTol = 1e-6;
+
+// ─── A slide the root finder never sees (issue #926) ────────────────────────
+//
+// At a loose tolerance a state that slides along a switching surface does not
+// cross it: each step that would is rejected for the jump in f, the steps
+// shrink, and the state creeps along just short of the surface, inside the
+// tolerance of it, for millions of steps. No root is reported, so the check in
+// the state-switch jump never runs, and the column integrates the near
+// branch's ∂f/∂p all the way: dS/damp = t where it is 0.
+//
+// So where CVODE has spent a whole batch of steps, each state switch is asked:
+// is the state within the tolerance's band of the surface, with the flow on
+// this side carrying it toward the surface and the flow just past the surface
+// carrying it back? That is a slide, and the run is refused. A state that is
+// merely slow near a surface it will cross has a far-side flow that carries on.
+void CvodeSimulator::Impl::refuse_slide_along_state_switch(
+    double t, const double *x, int ns,
+    const std::vector<const NetworkModel::StateSwitch *> &switches, double rtol, double atol,
+    const std::vector<double> &atol_v) {
+    auto &eval = model.evaluator();
+    const std::vector<double> here(x, x + ns);
+    std::vector<double> f_near(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f_far(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> x_far(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> gx;
+    sync_model_at(t, x, ns);
+    model.compute_derivs(t, x, f_near.data());
+    for (const NetworkModel::StateSwitch *sw : switches) {
+        double scale = 0.0;
+        const double flow =
+            residual_flow(sw->residual_expr_idx, sw->species, t, ns, here, f_near, gx, scale);
+        const double g = eval.evaluate(sw->residual_expr_idx);
+        double band = 0.0;
+        for (int j : sw->species) {
+            const auto uj = static_cast<std::size_t>(j);
+            const double atol_j = atol_v.empty() ? atol : atol_v[uj];
+            band += std::fabs(gx[uj]) * (rtol * std::fabs(here[uj]) + atol_j);
+        }
+        band *= 10.0 * std::sqrt(static_cast<double>(ns));
+        if (!std::isfinite(g) || !std::isfinite(flow) || !(band > 0.0) || std::fabs(g) > band ||
+            !(std::fabs(flow) > kStateSwitchSlideRelTol * scale) || g * flow > 0.0) {
+            continue; // not beside the surface, or not heading into it
+        }
+        // Just past the surface, along this side's flow.
+        const double across = (std::fabs(g) + band) / std::fabs(flow);
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            x_far[ui] = here[ui] + across * f_near[ui];
+        }
+        model.compute_derivs(t, x_far.data(), f_far.data());
+        double far_scale = 0.0;
+        const double far_flow =
+            residual_flow(sw->residual_expr_idx, sw->species, t, ns, x_far, f_far, gx, far_scale);
+        if (std::isfinite(far_flow) && far_flow * flow < 0.0 &&
+            std::fabs(far_flow) > kStateSwitchSlideRelTol * far_scale) {
+            sync_model_at(t, x, ns);
+            std::ostringstream msg;
+            msg << "Forward sensitivity: at t=" << t
+                << " the state is held on the surface of a state-dependent rate-law switch "
+                   "(residual '"
+                << sw->residual_source
+                << "'), with the flow on each side pointing into it: it slides along the "
+                   "switching surface, on neither branch of the rate law. The sensitivity along "
+                   "a slide is not the sensitivity of either branch, and bngsim refuses rather "
+                   "than integrate one of them (issue #926). Drop sensitivities for this run, or "
+                   "write the held value as an algebraic constraint.";
+            throw std::runtime_error(msg.str());
+        }
+    }
+    sync_model_at(t, x, ns);
+}
+
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     void *cvode_mem, N_Vector y, int ns, double t_evt,
     const std::vector<const NetworkModel::StateSwitch *> &batch,
@@ -6810,6 +6893,53 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         throw std::runtime_error(msg.str());
     }
     dt = dt_used;
+
+    // ── A slide along the surface (issue #926) ───────────────────────────────
+    // The straddle above steps the state along ONE flow, f at x(t*), both ways.
+    // A rate law that reverses across its own surface, `if(S < 1, amp, -amp)`,
+    // has a flow on the far side that points back: the state cannot leave the
+    // surface on either side, and slides along it on neither branch. There is
+    // no crossing to add a saltation term at, and each step after it lands on
+    // one branch or the other and integrates that branch's ∂f/∂p. dS/damp came
+    // back 1.5 where S is held at 1 whatever amp is, with no warning.
+    //
+    // So the flow just past the surface is read where it is, on the far
+    // branch, and a residual it carries back the way it came is refused. A
+    // flow that vanishes there is a tangency, which is judged below.
+    {
+        probe(-dt, g_before);
+        probe(+dt, g_after);
+        std::vector<double> x_far(static_cast<std::size_t>(ns), 0.0);
+        std::vector<double> f_far(static_cast<std::size_t>(ns), 0.0);
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            x_far[ui] = x[ui] + dt * f0[ui];
+        }
+        sync(x_far, t_evt + dt);
+        model.compute_derivs(t_evt + dt, x_far.data(), f_far.data());
+        std::vector<double> gx;
+        for (std::size_t k = 0; k < nb; ++k) {
+            const double across = g_after[k] - g_before[k]; // the way it crossed
+            double scale = 0.0;
+            const double flow = residual_flow(batch[k]->residual_expr_idx, batch[k]->species,
+                                              t_evt + dt, ns, x_far, f_far, gx, scale);
+            if (std::isfinite(flow) && std::isfinite(across) && flow * across < 0.0 &&
+                std::fabs(flow) > kStateSwitchSlideRelTol * scale) {
+                sync(x, t_evt);
+                std::ostringstream msg;
+                msg << "Forward sensitivity: the state-dependent rate-law switch (residual '"
+                    << batch[k]->residual_source << "') is reached at t=" << t_evt
+                    << " with the flow on the far side pointing back into it: the state slides "
+                       "along the switching surface, on neither branch of the rate law. The "
+                       "sensitivity along a slide is not the sensitivity of either branch, and "
+                       "bngsim refuses rather than integrate one of them (issue #926). Drop "
+                       "sensitivities for this run, or write the held value as an algebraic "
+                       "constraint.";
+                throw std::runtime_error(msg.str());
+            }
+        }
+        sync(x, t_evt);
+    }
 
     // ── Who crosses here, and what its own reactions do (issue #763) ─────────
     // Another registered switch whose residual this same probe pair straddles
@@ -9016,6 +9146,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             const bool one_step = step_for_floor && !stop_at_switch;
             sunrealtype t_ret;
             flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
+
+            // Issue #926: a whole batch of steps spent beside a state-switch
+            // surface the state slides along is refused in a run that carries
+            // sensitivities.
+            if (flag == CV_TOO_MUCH_WORK && sens.n_total > 0 && n_state_switch > 0) {
+                impl_->refuse_slide_along_state_switch(static_cast<double>(t_ret),
+                                                       N_VGetArrayPointer(y), ns, state_switches,
+                                                       rtol, atol, atol_v);
+            }
 
             // CV_TOO_MUCH_WORK is normally recoverable — max_steps is a batch
             // size per output point, not a ceiling on the run — so retry, but
