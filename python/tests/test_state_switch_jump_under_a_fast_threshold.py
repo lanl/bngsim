@@ -358,6 +358,7 @@ PAIR = """begin parameters
     4 kdeg {kdeg!r}
     5 B0 {B0!r}
     6 off {off!r}
+    7 ksyn {ksyn!r}
 end parameters
 begin functions
 {funcs}
@@ -367,16 +368,20 @@ begin species
     2 B2() B0
     3 Y1() 0
     4 Y2() 0
+    5 C() off
 end species
 begin reactions
     1 1 0 kdeg
     2 2 0 kdeg
     3 0 3 fY1
     4 0 4 fY2
+    5 0 1 ksyn
+    6 0 2 ksyn
 end reactions
 begin groups
     1 B1obs 1
     2 B2obs 2
+    3 Cobs 5
 end groups
 """
 QUADRATIC = (
@@ -387,15 +392,29 @@ OFFSET = (
     "    3 g1() k*(s1()+off-thr1)\n    4 g2() k*(s2()+off-thr2)\n"
     "    5 fY1() if(g1()>0,g1(),0)\n    6 fY2() if(g2()>0,g2(),0)"
 )
+# The same, with the offset a species that nothing moves.
+OFFSET_SPECIES = OFFSET.replace("-off", "-Cobs").replace("+off", "+Cobs")
 
 
-def _pair(tmp_path, funcs, pool, frac, kdeg, k):
+def _pair(tmp_path, funcs, pool, frac, kdeg, k, rising=False, off=2.0):
     """Two copies of one switch on thresholds of their own, crossing together.
-    Returns d(Y1, Y2)/d(thr1, thr2) at twice the crossing time."""
+    B falls from ``pool``, or rises to it from 0, and the offset is ``off``
+    pools. Returns d(Y1, Y2)/d(thr1, thr2) at twice the crossing time, with the
+    threshold and that time."""
     thr = pool * frac
     path = tmp_path / "m.net"
-    path.write_text(PAIR.format(funcs=funcs, k=k, thr=thr, kdeg=kdeg, B0=pool, off=2 * pool))
-    t_star = np.log(1 / frac) / kdeg
+    path.write_text(
+        PAIR.format(
+            funcs=funcs,
+            k=k,
+            thr=thr,
+            kdeg=kdeg,
+            B0=0.0 if rising else pool,
+            off=off * pool,
+            ksyn=pool * kdeg if rising else 0.0,
+        )
+    )
+    t_star = (-np.log1p(-frac) if rising else np.log(1 / frac)) / kdeg
     run = bngsim.Simulator(
         bngsim.Model.from_net(path), method="ode", sensitivity_params=["thr1", "thr2"]
     ).run(sample_times=[0.0, float(2 * t_star)], rtol=1e-10, atol=1e-12 * pool)
@@ -436,3 +455,119 @@ def test_two_ramps_written_through_an_offset_cross_together(tmp_path, pool, frac
     got, _thr, t_star = _pair(tmp_path, OFFSET, pool, frac, kdeg, k)
     own = -k * t_star
     np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
+
+
+def _risen(pool, thr, kdeg, t_star):
+    """∫(B − thr) dt from t* to 2·t*, for B = pool·(1 − e^(−kdeg·t))."""
+    return (pool - thr) * t_star - (pool / kdeg) * (
+        np.exp(-kdeg * t_star) - np.exp(-2 * kdeg * t_star)
+    )
+
+
+@pytest.mark.parametrize(
+    ("pool", "frac", "kdeg", "k"), [(1.0, 0.5, 0.1, 1.0), (1e6, 0.3, 2.0, 1e-2)]
+)
+def test_two_switches_that_turn_on_with_zero_slope_cross_together(tmp_path, pool, frac, kdeg, k):
+    """Control. B rises through thr, so the law that meets 0 with no slope is on
+    the far side of the crossing, and the bend has to be read there too.
+    dY/dthr = −2k·∫(B − thr) dt from t* on."""
+    got, thr, t_star = _pair(tmp_path, QUADRATIC, pool, frac, kdeg, k, rising=True)
+    own = -2 * k * _risen(pool, thr, kdeg, t_star)
+    np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
+
+
+@pytest.mark.parametrize(
+    ("pool", "frac", "kdeg", "k"),
+    [
+        (16409.31242378578, 0.21299300190962633, 4.206269876778064, 133.13651639489908),
+        (42948.961778762176, 0.29815289739334216, 0.15301427251275476, 0.04655553007911675),
+        (17771858.43306985, 0.33796235705279576, 0.017460679088385594, 1.6913124945519817),
+    ],
+)
+@pytest.mark.parametrize("funcs", [OFFSET, OFFSET_SPECIES], ids=["parameter", "species"])
+def test_two_ramps_through_an_offset_that_turn_on_cross_together(
+    tmp_path, funcs, pool, frac, kdeg, k
+):
+    """Control. B rises, so the ramp that rounds by its offset is on the far
+    side, and what an ulp of the offset moves it by has to be read there. The
+    offset is a parameter, or a species that nothing moves: each is an input
+    whose rounding the ramp carries. It is two million pools, so the ramp is a
+    staircase with treads far wider than the probes are apart: every probe on
+    its side reads one tread, the ramp shows no bend, and what is left at the
+    root is a tread. dY/dthr = −k·t*."""
+    got, _thr, t_star = _pair(tmp_path, funcs, pool, frac, kdeg, k, rising=True, off=2e6)
+    own = -k * t_star
+    np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
+
+
+@pytest.mark.parametrize(
+    ("pool", "frac", "kdeg", "k"),
+    [
+        (16409.31242378578, 0.21299300190962633, 4.206269876778064, 133.13651639489908),
+        (42948.961778762176, 0.29815289739334216, 0.15301427251275476, 0.04655553007911675),
+        (17771858.43306985, 0.33796235705279576, 0.017460679088385594, 1.6913124945519817),
+    ],
+)
+def test_two_ramps_through_a_species_offset_cross_together(tmp_path, pool, frac, kdeg, k):
+    """Control. The falling pair, with the offset a species of two million
+    pools: an ulp of that species is all that accounts for the tread the ramp
+    leaves at the root."""
+    got, _thr, t_star = _pair(tmp_path, OFFSET_SPECIES, pool, frac, kdeg, k, off=2e6)
+    own = -k * t_star
+    np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
+
+
+JUMP_BESIDE_A_BYSTANDER = """begin parameters
+    1 kb {kb!r}
+    2 thr 5e7
+    3 kdeg 0.1
+    4 B0 1e8
+    5 kA 3.0
+    6 kdA 0.17
+    7 A0 1e7
+    8 kdC 0.66
+    9 C0 3e6
+end parameters
+begin functions
+    1 fY() kA*Aobs*Cobs+if(Bobs<thr,kb,0)
+end functions
+begin species
+    1 B() B0
+    2 Y() 0
+    3 A() A0
+    4 C() C0
+end species
+begin reactions
+    1 1 0 kdeg
+    2 0 2 fY
+    3 3 0 kdA
+    4 4 0 kdC
+end reactions
+begin groups
+    1 Bobs 1
+    2 Aobs 3
+    3 Cobs 4
+end groups
+"""
+
+
+@pytest.mark.parametrize("kb", [3.0, 0.3])
+def test_a_jump_beside_a_large_term_that_moves(tmp_path, kb):
+    """The rate law also carries ``kA·A·C``, 2.9e11 at the crossing and falling
+    by 3e-13 of itself from one probe to the next. The jump is 49,000 ulp of
+    that, or 4,900, and both were dropped. It is read to the rounding of the
+    readings it is a difference of, about two ulp of the term: 5e-5 of the
+    jump, or 5e-4.
+
+    The term moves from probe to probe by more than the smaller jump. That is
+    its slope, not a tread: a staircase reads the same an eighth of a step from
+    a probe as at it, and this does not."""
+    path = tmp_path / "m.net"
+    path.write_text(JUMP_BESIDE_A_BYSTANDER.format(kb=kb))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["kdeg", "thr", "B0"]
+    ).run(sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
+    t_star = np.log(2.0) / KDEG
+    want = [kb * t_star / KDEG, kb / (KDEG * 5e7), -kb / (KDEG * 1e8)]
+    np.testing.assert_allclose(got, want, rtol=6e-4 / kb)

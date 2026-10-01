@@ -190,11 +190,17 @@ drives the crossing and also within a bound on what is not a step there
 - the flux bending on its own side of the surface, eight times the second
   difference to a third probe a side: a law that turns on as `(B − thr)²` shows
   on its own side what a line through two probes leaves at the root;
+- a tread, where the flux rounds as a staircase: `s() + off − thr` with
+  `s() = B − off` moves in steps of an ulp of `off`, as wide as the probes are
+  apart once `off` is a few hundred times `B`. A flux that reads the same an
+  eighth of a step from its far probe as at it is on a tread, and is followed to
+  the next: at the probe beside it, or further out along the flow, where it has
+  to move a second time to count;
 - its inputs' rounding, 64 times what one ulp of every species and every
   parameter moves the flux by at the far probe on each side: `kbig·(P − Q)` with
   `P ≈ Q` rounds by an ulp of `P`, and `s() + off − thr` by an ulp of `off`.
 
-The last two are read only where the first two do not settle it. A jump of 3
+The last three are read only where the first two do not settle it. A jump of 3
 under a threshold species moving at 5e6 is within the drive tolerance and
 outside the bound, so it is read. A probe that lands across another surface
 makes the bound larger, never smaller, and the reading is then held to the

@@ -6005,7 +6005,8 @@ static constexpr double kStateSwitchContinuousRelTol = 1e-6;
 //   - The extension's own rounding: this many times ε of the four readings.
 //   - What the flux bends by on either side of the surface, read from a third
 //     probe a side: a step shows only across the surface, and a law that turns
-//     on as (B − thr)² shows on its own side as well.
+//     on as (B − thr)² shows on its own side as well. A flux that rounds as a
+//     staircase is followed from the tread it is on to the next.
 //   - What one ulp of every species and every parameter moves the flux by, at
 //     the far probe on each side: a flux cannot be read to better than its
 //     inputs' rounding moves it, and `kbig*(P − Q)` with P ≈ Q rounds by P, not
@@ -6016,6 +6017,11 @@ static constexpr double kStateSwitchContinuousRelTol = 1e-6;
 static constexpr double kStateSwitchExtendedRoundoff = 16.0;
 static constexpr double kStateSwitchBend = 8.0;
 static constexpr double kStateSwitchInputRoundoff = 64.0;
+// How far out along the flow a flux that is on one tread at all its probes is
+// followed to find the next: this many doublings, and no further than this
+// part of the time.
+static constexpr int kStateSwitchTreadDoublings = 24;
+static constexpr double kStateSwitchTreadReach = 1e-6;
 // Issue #763: on the TANGENT path, a branch gap below this many ulps of the
 // switched reactions' gross flux (the absolute sum of their terms) is the final
 // rounding of the two sums it is read from, one per side, not a jump. There a
@@ -7274,6 +7280,72 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     out[u] =
                         std::max(out[u], kStateSwitchBend * std::fabs(moved[u] - 2.0 * far_read[u] +
                                                                       near_read[u]));
+                }
+                // A staircase. `s() + off − thr` with `s() = B − off` moves in
+                // steps of an ulp of `off`, and once `off` is a few hundred
+                // times B a tread is as wide as the probes are apart, or
+                // wider. Three probes that land on consecutive treads show no
+                // bend, three on one tread show nothing at all, and what the
+                // extension leaves at the root is a tread either way. A flux
+                // that reads the same an eighth of a step from the far probe
+                // as at it is on a tread there, or is constant. It is then
+                // followed to where it moves: the probe next to it, or
+                // further out along the flow, away from the surface, where
+                // it has to move again to count.
+                std::vector<double> third(moved);
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    state[u] = x[u] + sign * 2.125 * dt * f0[u];
+                }
+                flux_at(one, state, t_evt + sign * 2.125 * dt, moved);
+                std::vector<std::size_t> flat;
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    if (far_read[u] == 0.0 || moved[u] != far_read[u]) {
+                        continue;
+                    }
+                    const double tread = near_read[u] != far_read[u] ? near_read[u] - far_read[u]
+                                                                     : third[u] - far_read[u];
+                    if (tread != 0.0) {
+                        out[u] = std::max(out[u], kStateSwitchBend * std::fabs(tread));
+                    } else {
+                        flat.push_back(u);
+                    }
+                }
+                double out_to = 6.0;
+                for (int doubling = 0;
+                     doubling < kStateSwitchTreadDoublings && !flat.empty() &&
+                     out_to * dt <= kStateSwitchTreadReach * std::max(std::fabs(t_evt), 1.0);
+                     ++doubling, out_to *= 2.0) {
+                    for (std::size_t u = 0; u < n_sp; ++u) {
+                        state[u] = x[u] + sign * out_to * dt * f0[u];
+                    }
+                    flux_at(one, state, t_evt + sign * out_to * dt, moved);
+                    std::vector<std::size_t> stepped;
+                    for (auto it = flat.begin(); it != flat.end();) {
+                        if (moved[*it] != far_read[*it]) {
+                            stepped.push_back(*it);
+                            it = flat.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                    if (stepped.empty()) {
+                        continue;
+                    }
+                    // A tread is followed by another. A flux that has moved
+                    // once and is no further on at three times the distance
+                    // has met something else out there, another switch of the
+                    // same rate law, and that says nothing of this one.
+                    const std::vector<double> first(moved);
+                    for (std::size_t u = 0; u < n_sp; ++u) {
+                        state[u] = x[u] + sign * 3.0 * out_to * dt * f0[u];
+                    }
+                    flux_at(one, state, t_evt + sign * 3.0 * out_to * dt, moved);
+                    for (std::size_t u : stepped) {
+                        const double tread = first[u] - far_read[u];
+                        if ((moved[u] - far_read[u]) / tread >= 1.5) {
+                            out[u] = std::max(out[u], kStateSwitchBend * std::fabs(tread));
+                        }
+                    }
                 }
                 // The inputs' rounding, at the far probe on this side.
                 const double t_far = t_evt + sign * 2.0 * dt;
