@@ -12,8 +12,9 @@ of it, and the column integrated the near branch's ∂f/∂amp = 1 all the way:
 dS/damp = t, 1.5 for 0 at t = 1.5, with no warning.
 
 The slide is now refused, at the root where the flow on the far side points
-back, and at the first batch of steps spent beside the surface where no root
-is reported. The trajectory, without sensitivities, is as it was.
+back, and where no root is reported: a run that carries sensitivities through
+a state switch is taken in batches of 50 steps and asked after each. The
+trajectory, without sensitivities, is as it was.
 """
 
 from __future__ import annotations
@@ -59,11 +60,32 @@ def _model(tmp_path, law, s0=0.0, amp=1.0):
     ("law", "s0"), [(FROM_BELOW, 0.0), (FROM_ABOVE, 2.0)], ids=["from-below", "from-above"]
 )
 def test_a_slide_is_refused(tmp_path, law, s0, rtol, atol):
-    """dS/damp came back 1.5 for 0 at the two looser tolerances, and the run
-    timed out at the tight one."""
+    """From below dS/damp came back 1.0 and 1.5 for 0 at the two looser
+    tolerances, from above −1.0 and 0.5, and the run timed out at the tight
+    one."""
     sim = bngsim.Simulator(_model(tmp_path, law, s0), method="ode", sensitivity_params=["amp"])
     with pytest.raises(Exception, match="slides along the switching surface.*issue #926"):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=rtol, atol=atol, timeout=10.0)
+
+
+@pytest.mark.parametrize(
+    ("rtol", "n_points"), [(1e-4, 101), (1e-5, 1001), (1e-6, 10001)], ids=["101", "1001", "10001"]
+)
+def test_a_slide_between_the_points_of_a_dense_grid_is_refused(tmp_path, rtol, n_points):
+    """The same slide reported on a grid: no interval between two points uses a
+    batch of 10000 steps up, which was the only place a first cut of this
+    asked, and dS/damp came back 1.5 for 0 at each of these."""
+    sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
+    with pytest.raises(Exception, match="issue #926"):
+        sim.run(t_span=(0.0, 1.5), n_points=n_points, rtol=rtol, atol=1e-2 * rtol, timeout=30.0)
+
+
+def test_a_slide_under_a_batch_of_a_million_steps_is_refused(tmp_path):
+    """``max_steps`` is the batch the caller asks for, and the run is asked
+    about its switches after 50 steps whatever it is."""
+    sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
+    with pytest.raises(Exception, match="issue #926"):
+        sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-6, atol=1e-8, max_steps=1000000, timeout=30)
 
 
 def test_a_column_that_does_not_move_the_slide_is_refused_too(tmp_path):
@@ -103,6 +125,18 @@ def test_the_trajectory_of_a_slide_without_sensitivities(tmp_path):
     np.testing.assert_allclose(np.asarray(run.species)[:, 0], [0.0, 0.5, 1.0, 1.0], atol=1e-5)
 
 
+@pytest.mark.parametrize("max_steps", [1, 2])
+def test_a_crossing_into_a_branch_a_million_times_faster(tmp_path, max_steps):
+    """Control. ``if(S < 1, amp, 1e6·amp)``: past the crossing the steps are a
+    millionth as long, and in batches of a step or two the run is asked while
+    they are. dS/damp = 1e6·t there."""
+    law = "if(Sobs<lvl,amp,1e6*amp)"
+    run = bngsim.Simulator(_model(tmp_path, law), method="ode", sensitivity_params=["amp"]).run(
+        sample_times=[0.0, 0.5, 1.0000005], rtol=1e-8, atol=1e-10, max_steps=max_steps
+    )
+    assert np.asarray(run.sensitivities)[-1, 0, 0] == pytest.approx(1e6 * 1.0000005, rel=1e-6)
+
+
 @pytest.mark.parametrize("after", [0.25, 3.0], ids=["slower", "faster"])
 def test_a_crossing_that_carries_on_is_not_a_slide(tmp_path, after):
     """Control. ``if(S < 1, amp, after·amp)``: the slope changes at S = 1 and
@@ -116,14 +150,16 @@ def test_a_crossing_that_carries_on_is_not_a_slide(tmp_path, after):
     np.testing.assert_allclose(got, [0.0, 0.5, after * 1.5, after * 2.0], rtol=1e-6)
 
 
-@pytest.mark.parametrize("max_steps", [None, 20])
+@pytest.mark.parametrize("max_steps", [None, 20, 1])
 def test_a_state_that_comes_to_rest_on_a_continuous_switch_is_not_a_slide(tmp_path, max_steps):
     """Control. ``if(S < lvl, k·(lvl − S), −k·(S − lvl))`` is one field written
     as two branches: S relaxes to lvl and rests on the switch, with a flow that
     points in from both sides and runs out at the surface. Nothing jumps there.
     S = lvl·(1 − e^(−k·t)), so dS/dlvl = 1 − e^(−k·t) and dS/dk = lvl·t·e^(−k·t).
     A cut of this fix that asked only which way the two flows point refused a
-    corpus model that settles on its own switch this way."""
+    corpus model that settles on its own switch this way. In batches of one
+    step the run is asked after every step it takes inside the tolerance's
+    band of the surface."""
     model = _model(tmp_path, "if(Sobs<lvl,k*(lvl-Sobs),(-k)*(Sobs-lvl))")
     extra = {} if max_steps is None else {"max_steps": max_steps}
     run = bngsim.Simulator(model, method="ode", sensitivity_params=["lvl", "k"]).run(

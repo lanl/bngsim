@@ -66,10 +66,35 @@ def test_a_surface_approached_too_slowly_to_cross_is_refused(tmp_path, eps):
         _run(_model(tmp_path, eps), sensitivity_params=["thr"])
 
 
+@pytest.mark.parametrize("eps", [1e-10, 1e-12, 1e-13])
+def test_a_slow_approach_reported_on_a_grid_is_refused(tmp_path, eps):
+    """At the default tolerances and 101 points no interval uses a batch of
+    10000 steps up, which was the only place a first cut of this asked: the run
+    returned Y(10) = 0 for 15 and dY/dthr = 0."""
+    sim = bngsim.Simulator(_model(tmp_path, eps), method="ode", sensitivity_params=["thr"])
+    with pytest.raises(bngsim.SimulationError, match="issue #952"):
+        sim.run(t_span=(0.0, 10.0), n_points=101, timeout=30)
+
+
 @pytest.mark.parametrize("eps", [1e-3, 1e-6, 1e-7])
 def test_a_surface_the_steps_cross_is_jumped(tmp_path, eps):
     """Control. Y(10) = 15 and dY/dthr = −kb/eps."""
     run = _run(_model(tmp_path, eps), sensitivity_params=["thr"])
+    assert np.asarray(run.species)[-1, 1] == pytest.approx(15.0, rel=1e-6)
+    assert np.asarray(run.sensitivities)[-1, 1, 0] == pytest.approx(-3.0 / eps, rel=1e-6)
+
+
+@pytest.mark.parametrize("max_steps", [1, 2, 20])
+@pytest.mark.parametrize("eps", [1e-3, 1e-7])
+def test_a_surface_the_steps_cross_in_small_batches_is_jumped(tmp_path, eps, max_steps):
+    """Control. At this tolerance the step that takes the rate law's jump is as
+    short as a pinned one, for a step or two, and then the state is across. In
+    batches of a step or two the run is asked while it is that short, and a
+    first cut refused the crossing it was about to make. A state is pinned
+    once it has stayed there for 200 steps."""
+    run = bngsim.Simulator(_model(tmp_path, eps), method="ode", sensitivity_params=["thr"]).run(
+        t_span=(0.0, 10.0), n_points=2, rtol=1e-10, atol=1e-12, timeout=20, max_steps=max_steps
+    )
     assert np.asarray(run.species)[-1, 1] == pytest.approx(15.0, rel=1e-6)
     assert np.asarray(run.sensitivities)[-1, 1, 0] == pytest.approx(-3.0 / eps, rel=1e-6)
 
@@ -80,6 +105,21 @@ def test_the_plain_run_is_carried_across(tmp_path, eps):
     crossing time, rtol·A/eps."""
     run = _run(_model(tmp_path, eps))
     assert np.asarray(run.species)[-1, 1] == pytest.approx(15.0, abs=3.0 * (2e-10 / eps + 1e-6))
+
+
+@pytest.mark.parametrize("max_steps", [1, 2, 5, 20])
+def test_a_state_at_rest_within_the_tolerance_of_the_surface_is_not_a_slide(tmp_path, max_steps):
+    """Control. A relaxes to Ainf, 1e-7 short of thr, which is inside the
+    tolerance's band of the surface. It heads for the surface all the way and
+    the flow past the surface points back, which is what a slide looks like
+    from where the state is. At the surface the flow on this side points back
+    too: the state never gets there. Y = 0 and both columns are 0."""
+    model = _model(tmp_path, 0.5, thr=2.0, fA="eps*(Ainf-Aobs)", Ainf=2.0 - 1e-7)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["eps", "thr"]).run(
+        t_span=(0.0, 200.0), n_points=3, rtol=1e-8, atol=1e-10, timeout=20, max_steps=max_steps
+    )
+    assert np.asarray(run.species)[-1, 1] == 0.0
+    np.testing.assert_array_equal(np.asarray(run.sensitivities)[-1, 1, :], [0.0, 0.0])
 
 
 @pytest.mark.parametrize("max_steps", [None, 50])
