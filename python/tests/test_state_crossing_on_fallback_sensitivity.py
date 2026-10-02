@@ -195,8 +195,9 @@ def test_a_run_that_stalls_short_of_a_jump_is_refused_by_name(model):
 
 def test_a_stall_that_is_not_beside_a_state_crossing_is_still_a_solver_failure(tmp_path):
     """Control. ``floor(time()/P)`` with P requested stalls at its first step,
-    and it reads no state: the solver's own error, as it was."""
-    sim = _simulator(tmp_path, "kb", "kc*floor(time()/P)", ["P", "kc"])
+    beside a condition on literal time. Neither reads the state: the solver's
+    own error, as it was."""
+    sim = _simulator(tmp_path, "if(time()>tau,kb,0)", "kc*floor(time()/P)", ["P", "kc"])
     with pytest.raises(bngsim.SimulationError, match="CVODE made no progress") as caught:
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12, timeout=60)
     assert not isinstance(caught.value, bngsim.SensitivityUnsupportedError)
