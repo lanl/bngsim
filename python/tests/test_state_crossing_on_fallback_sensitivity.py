@@ -769,6 +769,7 @@ begin species
     2 Y() 0
     3 Z() 0
     4 C() 0
+    5 B() 1e-4
 end species
 begin reactions
     1 {a_rxn} k
@@ -779,13 +780,14 @@ end reactions
 begin groups
     1 Aobs 1
     2 Cobs 4
+    3 Bobs 5
 end groups
 """
 
 
 def _wider(tmp_path, fy, fz=DECLINED, decays=True, extra=(), k=1.0, n=0.0):
     """The model above with a counter C that nothing but its own rate moves,
-    an exponent n and a few more parameters."""
+    a species B that stays at 1e-4, an exponent n and a few more parameters."""
     funcs = [*extra, f"fY() {fy}", f"fZ() {fz}"]
     path = tmp_path / "wider.net"
     path.write_text(
@@ -859,15 +861,42 @@ def test_a_step_table_indexed_through_a_function_is_refused(tmp_path):
         ("if(Aobs<thr,kb*exp(-2000*g),0)", 0.0),
         # A second flip, at Aobs = 2, for c = −4 and for no c above 0.
         ("if((Aobs-thr)*(Aobs*Aobs+c)<0,kb*(thr-Aobs),0)", 0.0),
+        # Most of kb where B is, at 1e-4, and nothing for B between 0.5 and 2.
+        ("if(Aobs<thr,kb*exp(-2000*Bobs),0)", 0.0),
     ],
-    ids=["a-step-of-time", "a-step-of-a-parameter", "an-exponent-of-0", "a-factor", "a-flip"],
+    ids=[
+        "a-step-of-time",
+        "a-step-of-a-parameter",
+        "an-exponent-of-0",
+        "a-factor",
+        "a-flip",
+        "a-factor-of-the-state",
+    ],
 )
 def test_a_jump_that_goes_with_what_the_parameters_are_is_refused(tmp_path, law, n):
-    """Each of these laws bends where A is thr for parameters, or a time,
-    between 0.5 and 2, which is where every symbol used to be put, and jumps
-    at the values the model has. A parameter is read at its own value, and a
-    call on the clock is a symbol of its own."""
+    """Each of these laws bends where A is thr for parameters, a time or a
+    state between 0.5 and 2, which is where every symbol used to be put, and
+    jumps at the values the model has. A parameter is read at its own value,
+    the state near where it is, and a call on the clock is a symbol of its
+    own."""
     _refused_run(_wider(tmp_path, law, n=n), ["k", "thr"])
+
+
+def test_a_ramp_whose_condition_divides_by_the_time_runs(tmp_path):
+    """Control. ``(Aobs − thr)/(time() + 1) < 0`` changes sign with the time
+    at −1, across a pole, and the ramp does not meet 0 there. The time is a
+    clock no column moves: the comparison flips along it at an instant."""
+    model = _wider(tmp_path, "if((Aobs-thr)/(time()+1)<0,kb*(thr-Aobs),0)")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
+    assert not sim.has_analytic_sens_rhs
+    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
+    t_star = math.log(a0 / thr) / k
+    tail = math.exp(-k * T_END)
+    want = [
+        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
+        kb * (T_END - t_star),
+    ]
+    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
 
 
 def test_a_ramp_whose_exponent_is_a_parameter_runs_where_it_is_one(tmp_path):
@@ -978,7 +1007,6 @@ def test_an_equality_that_holds_a_step_holds_over_an_interval(tmp_path):
     taken to hold on no interval, and with a step call in it it holds on one:
     the columns came back [0, 0] for [2.463, 0.682], with nothing logged. It
     is not admitted, and the run is refused (issue #414)."""
-    model = _wider(tmp_path, "if(floor(Aobs/thr)==0,kb,0)", "kc*Aobs")
-    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
-    with pytest.raises(bngsim.SensitivityUnsupportedError):
+    sim = _simulator(tmp_path, "if(floor(Aobs/thr)==0,kb,0)", "kc*Aobs", ["k", "thr"], True)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #414"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10, timeout=20)
