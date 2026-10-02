@@ -513,6 +513,12 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         ("kb*X*(pos-3)/abs(pos-3)", False),
         # A sum that the choice is in is not asked about.
         ("kb*X/(abs(X)+0*Y)", False),
+        # A requested parameter is moved as the state is.
+        ("kb*X*(asked-3)/abs(asked-3)", True),
+        ("kb*X/abs(asked)", False),
+        ("kb*X*abs(X)^(Y*Y)", False),
+        ("kb*X/max(Y*Y+pos,X)", False),
+        ("kb*X/max(Y*X+pos,X)", True),
         # Nothing is assumed of the state: X + pos is not known to be above 0.
         ("kb*Y/max(X+pos,0)", True),
         ("kb*Y/max(pos-X,0)", True),
@@ -834,6 +840,64 @@ def test_a_divisor_is_asked_about_again_when_a_parameter_changes_sign(tmp_path):
     model.reset()
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
         sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+@pytest.mark.parametrize("n", [1.0 + 1e-6, 1.0, 1.0 - 1e-6, 1.001, 0.8])
+def test_a_condition_a_requested_parameter_is_near_flipping_is_refused(tmp_path, n):
+    """``if(n > 1, kb, 0)`` holds one way for the whole run, and is a surface
+    in n. The quotient reads the law at n moved by up to its size times the
+    root of the tolerance, either way, and near 1 one of the two is on the
+    other branch: dY/dn came back 901 at n = 1 + 1e-6, 1.8e10 at 1, 2.0 at
+    1 − 1e-6 and 0.9 at 1.001, for 0."""
+    _refused_run(_wider(tmp_path, "if(n>1,kb,0)", n=n), ["n", "k"])
+
+
+@pytest.mark.parametrize(("n", "params"), [(1.5, ["n", "k"]), (0.5, ["n", "k"]), (1.0, ["k"])])
+def test_a_condition_on_a_parameter_far_from_flipping_runs(tmp_path, n, params):
+    """Control. n half of itself from where the comparison flips, and n on
+    it with only k requested: nothing is moved across. Y is kb·T or 0
+    whatever k is."""
+    sim = bngsim.Simulator(
+        _wider(tmp_path, "if(n>1,kb,0)", n=n), method="ode", sensitivity_params=params
+    )
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0] * len(params), atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("law", "n"),
+    [
+        ("if(n==1,kb,0)", 1.0),
+        ("kb*floor(n)", 5.0),
+        ("kb*(1+(n-1)/abs(n-1))/2", 1.0 + 1e-6),
+        ('tfun([0,2,4.4,8],[0,1,3,5],n,method=>"step")', 2.0),
+    ],
+    ids=["an-equality-that-holds", "a-step", "a-sign", "a-step-table"],
+)
+def test_a_jump_in_a_requested_parameter_is_refused(tmp_path, law, n):
+    """The same in an equality that holds where n is, a step call on n, a
+    sign of ``n − 1`` written as a quotient and a step table indexed by n."""
+    _refused_run(_wider(tmp_path, law, n=n), ["n", "k"])
+
+
+def test_an_equality_on_a_parameter_that_does_not_hold_runs(tmp_path):
+    """Control. ``n == 1`` at n = 1.5 holds nowhere the quotient reads."""
+    sim = bngsim.Simulator(
+        _wider(tmp_path, "if(n==1,kb,0)", n=1.5), method="ode", sensitivity_params=["n", "k"]
+    )
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0, 0.0], atol=1e-9)
+
+
+def test_a_rate_law_that_does_not_parse_is_refused(tmp_path, monkeypatch):
+    """A rate law with an ``abs``, ``max`` or ``min`` in it that is not read
+    is one whose quotients are not known."""
+    from bngsim import _switch_sensitivity
+
+    sim = _simulator(tmp_path, "kb*abs(Aobs-thr)", DECLINED, ["k"])
+    monkeypatch.setattr(_switch_sensitivity, "_syntax_tree", lambda expr: None)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="not read"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
 def test_what_is_kept_between_runs_does_not_grow(tmp_path):

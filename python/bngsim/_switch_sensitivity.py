@@ -3383,12 +3383,14 @@ class _Facts(NamedTuple):
 
     @property
     def live(self) -> bool:
-        """Whether a column moves what this reads: the state, or a clock
-        compared with a requested parameter."""
-        return self.state or (self.clock and self.asked)
+        """Whether a column moves what this reads: the state, or a requested
+        parameter, which the quotient moves as it does the state."""
+        return self.state or self.asked
 
 
 _NO_FACTS = _Facts()
+# The two factors of a product are compared, for a square, where each is this small.
+_SQUARE_MAX_NODES = 50
 
 
 def _operands(node: ast.AST) -> list[ast.AST]:
@@ -3463,7 +3465,12 @@ def _facts_of(
         elif isinstance(node.op, ast.Mult):
             positive = (left.positive and right.positive) or (left.negative and right.negative)
             negative = (left.positive and right.negative) or (left.negative and right.positive)
-            nonnegative = left.nonnegative and right.nonnegative
+            nonnegative = (left.nonnegative and right.nonnegative) or (
+                # A square, written as a product.
+                left.size == right.size
+                and left.size <= _SQUARE_MAX_NODES
+                and ast.dump(node.left) == ast.dump(node.right)
+            )
         elif isinstance(node.op, ast.Div):
             positive = (left.positive and right.positive) or (left.negative and right.negative)
             negative = (left.positive and right.negative) or (left.negative and right.positive)
@@ -3551,9 +3558,9 @@ def _factors(node: ast.AST, facts: Mapping[int, _Facts]) -> list[ast.AST]:
 
 
 def _divides_by_nothing(power: _Facts) -> bool:
-    """Whether a power with these facts is one no column moves and that is
-    not below 0: ``x^2`` and ``x^n`` at an ``n`` of 2, and not ``x^-1``."""
-    return not power.live and power.nonnegative
+    """Whether a power with these facts is known not to be below 0: ``x^2``
+    and ``x^n`` at an ``n`` of 2, and not ``x^-1`` or ``x^Y``."""
+    return power.nonnegative
 
 
 # A factor is compared with what a choice flips on only where it is this
@@ -3674,16 +3681,74 @@ def _clipped(node: ast.AST, width: int = 120) -> str:
 
 def _equality_of_smooth_sides(atom: str) -> bool:
     """Whether *atom* is an equality between two expressions that hold no
-    condition, no ``abs``, ``max`` or ``min``, and no step call.
+    ``abs``, ``max`` or ``min`` and no step call.
 
     Such an equality holds at a state and over no interval of them: there is
     no surface with the law one thing on one side and another on the other.
     ``max(X − thr, 0) == 0`` holds for every ``X`` up to ``thr``, and
-    ``if(X < thr, 1, 0) == 1`` and ``floor(X/thr) == 0`` likewise.
+    ``floor(X/thr) == 0`` likewise. A condition inside one,
+    ``if(X < thr, 1, 0) == 1``, is an atom of its own and is asked about
+    there.
     """
-    return is_equality_atom(atom) and not (
-        _STEP_CALL.search(atom) or _CHOICE_CALL.search(atom) or _IF_CALL.search(atom)
-    )
+    return is_equality_atom(atom) and not (_STEP_CALL.search(atom) or _CHOICE_CALL.search(atom))
+
+
+# How far the quotient moves a parameter: its own size times the root of the
+# relative tolerance, a quarter of it at a tolerance of 0.06. And how fine the
+# moves tried are, from that down: a comparison that flips and flips back
+# inside the quarter is found where one of them lands between the two.
+_QUOTIENT_REACH = 0.25
+_QUOTIENT_HALVINGS = 12
+
+
+def _parameter_crossing(flat: str, scope: SwitchConditionScope, asked: AbstractSet[str]) -> bool:
+    """Whether the quotient reads across *flat*, a comparison or a step call's
+    argument over run constants alone, by moving a requested parameter.
+
+    Such a condition holds one way for the whole run, and is still a surface
+    in the parameters. The quotient reads the rate law at ``p + σ`` and
+    ``p − σ``, and with ``p`` within ``σ`` of where the comparison flips one
+    of the two is on the other branch: ``if(n > 1, kb, 0)`` at n = 1 + 1e-6
+    returned dY/dn = 901 for 0, and 1.8e10 at n = 1.
+
+    A comparison is one where it comes out differently with a requested
+    parameter in it moved by up to a quarter of itself, either way; an
+    equality, where it holds; and anything else that reads a requested
+    parameter, a step call's argument, whatever its value.
+    """
+    names = sorted(set(_IDENTIFIER.findall(flat)) & set(asked) & set(scope.param_idx))
+    if not names:
+        return False
+    split = _relational_split_op(flat)
+    if split is None:
+        return True
+    lhs, _op, rhs = split
+
+    def side(values: Sequence[float]) -> int | None:
+        both = [
+            _evaluate_threshold(text, scope.param_idx, values, scope.derived_exprs)
+            for text in (lhs, rhs)
+        ]
+        if any(v is None or not math.isfinite(v) for v in both):
+            return None
+        return (both[0] > both[1]) - (both[0] < both[1])  # type: ignore[operator]
+
+    now = side(scope.values)
+    if now is None or now == 0:
+        return True
+    if is_equality_atom(flat):
+        return False
+    for name in names:
+        index = scope.param_idx[name]
+        value = float(scope.values[index])
+        reach = _QUOTIENT_REACH * (abs(value) if value != 0.0 else 1.0)
+        moved = list(scope.values)
+        for halving in range(_QUOTIENT_HALVINGS):
+            for sign in (1.0, -1.0):
+                moved[index] = value + sign * reach / 2.0**halving
+                if side(moved) != now:
+                    return True
+    return False
 
 
 def fallback_crossing(
@@ -3734,7 +3799,13 @@ def fallback_crossing(
       argument reads a requested parameter, ``floor(time()/P)`` with ``P``
       requested: the steps move with ``P``, and nothing jumps a column at a
       step. In a condition as well as outside one;
-    - a table function that steps, indexed by an observable or by a function;
+    - a table function that steps, indexed by an observable, by a function
+      or by a requested parameter;
+    - a comparison over parameters alone that a requested one is within a
+      quarter of itself of flipping, ``if(n > 1, kb, 0)`` at n = 1.001 with n
+      requested, and a step call on a requested parameter
+      (:func:`_parameter_crossing`): the quotient moves a parameter as it
+      moves the state;
     - a rate law that is not read: its functions nest too deep to write out,
       or it holds one of the above in a form the scan does not parse.
 
@@ -3745,7 +3816,7 @@ def fallback_crossing(
 
     Scans the reaction rate expressions with their functions inlined, as
     :func:`model_uncompensated_crossing_reason` does. An atom that names no
-    symbol and a comparison over run constants alone are no crossing.
+    symbol is no crossing.
     """
     from bngsim._jacobian import _TIME_SYM, _inline_functions, has_condition_construct
 
@@ -3755,8 +3826,16 @@ def fallback_crossing(
         logger.debug("fallback-crossing scan: codegen data unavailable (%s)", exc)
         data = {}
     stepping = [table for table in data.get("table_functions", ()) if table.get("step")]
+    requested = frozenset(sens_param_names)
+    param_names = list(core.param_names)
     for table in stepping:
-        if table.get("index_kind") not in ("time", "parameter"):
+        index = table.get("index_param_idx", -1)
+        if table.get("index_kind") not in ("time", "parameter") or (
+            # Indexed by a requested parameter: the quotient moves the index.
+            table.get("index_kind") == "parameter"
+            and 0 <= index < len(param_names)
+            and param_names[index] in requested
+        ):
             return f'tfun {table.get("name")} (method=>"step")'
     if core.n_functions == 0:
         return None
@@ -3765,7 +3844,6 @@ def fallback_crossing(
     func_map = dict(ctx["function_map"])
     # A table indexed by a parameter is indexed by the state where the
     # parameter is a slot a function owns: ``fIdx() = Aobs``.
-    param_names = list(core.param_names)
     for table in stepping:
         index = table.get("index_param_idx", -1)
         if (
@@ -3792,7 +3870,6 @@ def fallback_crossing(
         return None
     scope = switch_condition_scope(core, ctx)
     moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
-    requested = frozenset(sens_param_names)
     # ``parsed`` keeps the syntax tree of each rate law's text between one
     # scan of a model and the next.
     parsed = {} if parsed is None else parsed
@@ -3805,8 +3882,10 @@ def fallback_crossing(
 
     def crosses(flat: str) -> bool:
         """Whether the quotient reads across the surface *flat* names."""
-        if not _IDENTIFIER.search(flat) or condition_cannot_cross(flat, scope):
+        if not _IDENTIFIER.search(flat):
             return False
+        if condition_cannot_cross(flat, scope):
+            return _parameter_crossing(flat, scope, requested)
         if _equality_of_smooth_sides(flat):
             return False
         if _reads_clock_and_run_constants(flat, scope):
