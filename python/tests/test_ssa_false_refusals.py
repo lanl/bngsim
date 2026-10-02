@@ -53,20 +53,46 @@ def test_a_reversible_flag_on_a_law_with_no_difference_is_a_label(text, method, 
     np.testing.assert_array_equal(runs[0], runs[1])
 
 
+NET_FLUX = (
+    "compartment c = 2; species A in c = 30; species B in c = 1; kf = 1; kr = 0.5;"
+    " krn = -0.5; kx = 1; E: at time > 1: kx = -1; v := kf*A - kr*B;"
+    " function f(a, b) a - b end; function g(a) a end;"
+)
+
+
 @pytest.mark.parametrize(
     "law",
     [
         "5*(A - B/2)/(2+A)",  # a difference
         "5*A/(2+A) + -1*B",  # a negative term
         "f(3*A, B)",  # a difference inside a called function
+        "c*v",  # a difference in an assignment rule: the usual BioModels spelling
+        "c*(kf*A + krn*B)",  # a negative parameter
+        "c*ln(A/B)",
+        "c*kf*A*sin(time)",
+        "piecewise(kf*A, A > B, krn*B)*c",
+        "c*kx*A",  # a parameter an event makes negative
+        "g(krn)*A*c",
     ],
 )
-def test_a_reversible_difference_is_still_refused(law):
-    text = (
-        "compartment c = 2; species A in c = 30; species B in c = 0;"
-        f" function f(a, b) a - b end; J1: A -> B; {law};"
-    )
-    assert "reversible_non_mass_action" in _errors(text)
+def test_a_reversible_law_not_proven_non_negative_is_still_refused(law):
+    """A net flux written without a minus was admitted at first: `c*v` with
+    `v := kf*A - kr*B` ran as one channel, the variance of A(1) 114 for 256."""
+    assert "reversible_non_mass_action" in _errors(NET_FLUX + f" J1: A -> B; {law};")
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        "kf*A*exp(-kr*time)*c",
+        "piecewise(kf*A, A > B, kr*B)*c",
+        "kf*A*pow(B + 1, krn)*c",  # a negative power of a non-negative base
+        "mm(A, 5, 2)*c",
+    ],
+)
+def test_a_reversible_law_proven_non_negative_is_admitted(law):
+    text = NET_FLUX + f" function mm(s, v, k) v*s/(k+s) end; J1: A -> B; {law};"
+    assert "reversible_non_mass_action" not in _errors(text)
 
 
 GROW = "compartment c = 1; c' = 0.1;"

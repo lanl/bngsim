@@ -492,7 +492,10 @@ def _law_is_nonnegative(node, lookup, env: dict | None = None, _seen: set | None
         if called is None or called[1] is _RATEOF_FUNCDEF or len(called[0]) != len(kids):
             return False
         formals, body = called
-        bound = {f: _law_is_nonnegative(k, lookup, env, _seen) for f, k in zip(formals, kids)}
+        bound = {
+            f: _law_is_nonnegative(k, lookup, env, _seen)
+            for f, k in zip(formals, kids, strict=False)
+        }
         return _law_is_nonnegative(body, lookup, bound, _seen)
     return False
 
