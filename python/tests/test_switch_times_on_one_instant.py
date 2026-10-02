@@ -287,3 +287,19 @@ def test_two_composed_switches_that_one_parameter_moves_together_are_refused(cas
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["p"])
     with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+def test_a_neighbour_whose_rate_law_reads_the_moved_switch_time():
+    """Control. Z's law switches at the literal 3 and is scaled by tau, which is
+    the threshold raised a hair to read Y's switch apart: what Z does across
+    the instant is 1.5·tau, and differs between the two readings by the hair.
+    That part is in proportion to the hair and is taken out. Z = tau·(0.5·3 +
+    2·(T − 3)), so dZ/dtau = 7.5, and dY/dtau = −r. To a part in a million:
+    the jump that is applied is still read with the threshold a hair up, as
+    it was."""
+    text = (
+        "species Y, Z; Y = 0; Z = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)\n"
+        "J9: -> Z; tau*piecewise(2, time >= 3, 0.5)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["tau"]), [[-1.0], [7.5]], rtol=1e-5)
