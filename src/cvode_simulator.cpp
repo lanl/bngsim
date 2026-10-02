@@ -6657,6 +6657,11 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // bump cannot move a crossing this one does not own; where no such parameter
     // exists it refuses the run instead of reaching here.
     const std::vector<double> *jump_from = &sw_f_minus;
+    // Why the conditions on this instant do not commute, where they do not
+    // (issue #951). Thrown below, once the window's own refusal has had its
+    // say: the edge of a window that closes as a singular power fails this
+    // test too, and that one names what is wrong with it.
+    std::string not_commuting;
     if (!sw.isolate_param_idx0.empty()) {
         auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
         // No hold is passed to refresh_derived_params() below, and that is
@@ -6703,56 +6708,166 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         model.refresh_derived_params();
         rhs_on_branch(+eps_clock, scratch.f_iso);
 
-        // ── Does this crossing commute with the others on its instant? (issue #951)
-        // The difference just read is this crossing's jump with every other
-        // condition on the instant already past it. The same crossing with the
-        // others still to come is read from the other side: the clock a nudge
-        // BEFORE the instant and this threshold lowered by the same hair, so
-        // that this condition alone has switched. Where the two jumps are one,
-        // the conditions add, and each crossing's jump moves with its own time:
-        // two rate laws that switch together, or two gates summed in one. Where
-        // they differ, the conditions are composed: a product of two gates, the
-        // later of two times, a window of no width. Then what a parameter that
-        // moves this crossing and not the others does depends on which way it
-        // moves it, the run sits on a kink in that parameter, and the column
-        // had one side of it: dY/dtau = −0.75 for (−0.75 | −0.375), with no
-        // warning.
-        for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
-            params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
-                saved[k] - sw.isolate_delta[k];
-        }
-        model.refresh_derived_params();
-        std::vector<double> f_iso_before(static_cast<size_t>(ns), 0.0);
-        rhs_on_branch(-eps_clock, f_iso_before);
-
         for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
             params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
         }
         model.refresh_derived_params();
 
+        // ── Does this crossing commute with the others on its instant? (issue #951)
+        // The difference just read is this crossing's jump with every other
+        // condition on its clock and instant already past it. Where the
+        // conditions add, two rate laws that switch together or two gates
+        // summed in one, that is its jump whichever side of the others it is
+        // read from. Where they are composed, a product of two gates, the later
+        // of two times, a window of no width, it is not: what a parameter that
+        // moves this crossing and not the others does depends on which way it
+        // moves it, the run sits on a kink in that parameter, and the column
+        // had one side of it: dY/dtau = −0.75 for (−0.75 | −0.375), with no
+        // warning.
+        //
+        // What is compared is what the OTHERS do, with this one before and with
+        // it after: every clock on the instant nudged across it, once with this
+        // threshold raised a hair and once with it lowered. Not this crossing's
+        // own jump read from the two sides. That reads its after-branch a
+        // nudge past its onset on one side and a whole hair past it on the
+        // other, and a rate law that reads its own switch time,
+        // `if(time > tau, k·exp(−(time − tau)/T), 0)` or a pulse that opens as
+        // `s^0.2`, differs between the two by more than any tolerance: two
+        // corpus models and every pulse were refused for it. The others' jump
+        // has this crossing on one branch in both of its readings.
+        //
+        // Two things that are not a kink are in the difference, each in
+        // proportion to the step it comes from. A rate law that moves with the
+        // clock inside one branch of this condition, a window that opens as
+        // the one before it closes, differs across the nudge by its slope
+        // there. And a rate law of another condition that reads the bumped
+        // parameter outside its condition moves with the hair. So where the
+        // two differ they are read again over twice the nudge, and then at
+        // half the hair, and what is left when those parts are taken out is
+        // the kink.
+        auto others_do = [&](double bump, double nudges, std::vector<double> &out) {
+            // f with every clock on the instant `nudges` nudges past it, less
+            // f with every clock as far before it, at this threshold moved by
+            // `bump` hairs.
+            for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
+                    saved[k] + bump * sw.isolate_delta[k];
+            }
+            model.refresh_derived_params();
+            std::vector<double> side[2];
+            for (int k = 0; k < 2; ++k) {
+                const double sign = (k == 0 ? -1.0 : 1.0) * nudges;
+                double t_at = time_clock ? t_cross + sign * eps_clock : t_evt;
+                if (!time_clock) {
+                    sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] =
+                        sw.threshold + sign * eps_clock;
+                }
+                for (const auto &other : sw.instant_clocks) {
+                    const double eps_other = kSwitchInstantUlps *
+                                             std::numeric_limits<double>::epsilon() *
+                                             std::max(std::fabs(other.second), 1.0);
+                    if (other.first < 0) {
+                        t_at = other.second + sign * eps_other;
+                    } else {
+                        sw_ywork[static_cast<size_t>(other.first)] =
+                            other.second + sign * eps_other;
+                    }
+                }
+                for (int i = 0; i < ns; ++i) {
+                    sp_vec_outer[i].concentration = sw_ywork[i];
+                }
+                side[k].assign(static_cast<size_t>(ns), 0.0);
+                model.compute_derivs(t_at, sw_ywork.data(), side[k].data());
+            }
+            out.assign(static_cast<size_t>(ns), 0.0);
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                out[ui] = side[1][ui] - side[0][ui];
+            }
+        };
+        auto put_back = [&] {
+            for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
+            }
+            model.refresh_derived_params();
+            for (const auto &other : sw.instant_clocks) {
+                if (other.first >= 0) {
+                    sw_ywork[static_cast<size_t>(other.first)] =
+                        y_data[static_cast<size_t>(other.first)];
+                }
+            }
+        };
+        std::vector<double> with_this_before;
+        std::vector<double> with_this_after;
+        others_do(+1.0, 1.0, with_this_before);
+        others_do(-1.0, 1.0, with_this_after);
+        auto apart = [&](const std::vector<double> &kink) {
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                const double size =
+                    std::max({std::fabs(sw_f_plus[ui]), std::fabs(sw_f_minus[ui]),
+                              std::fabs(with_this_before[ui]), std::fabs(with_this_after[ui])});
+                if (!(std::fabs(kink[ui]) <=
+                      kEventJumpRelTol * std::max(std::fabs(with_this_before[ui]),
+                                                  std::fabs(with_this_after[ui])) +
+                          kEventJumpUlps * std::numeric_limits<double>::epsilon() * size)) {
+                    return i;
+                }
+            }
+            return -1;
+        };
+        // The difference at `bump` hairs, with what is in proportion to the
+        // nudge taken out.
+        std::vector<double> wide_before;
+        std::vector<double> wide_after;
+        auto without_the_nudge = [&](double bump, const std::vector<double> &before,
+                                     const std::vector<double> &after, std::vector<double> &out) {
+            others_do(+bump, 2.0, wide_before);
+            others_do(-bump, 2.0, wide_after);
+            out.assign(static_cast<size_t>(ns), 0.0);
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                out[ui] = 2.0 * (after[ui] - before[ui]) - (wide_after[ui] - wide_before[ui]);
+            }
+        };
+        std::vector<double> kink(static_cast<size_t>(ns), 0.0);
         for (int i = 0; i < ns; ++i) {
             const auto ui = static_cast<size_t>(i);
-            // This crossing's jump: f_iso has every condition on the instant
-            // switched but this one, and f_iso_before this one alone.
-            const double others_after = sw_f_plus[ui] - scratch.f_iso[ui];
-            const double others_before = f_iso_before[ui] - sw_f_minus[ui];
-            const double size = std::max({std::fabs(scratch.f_iso[ui]), std::fabs(sw_f_plus[ui]),
-                                          std::fabs(sw_f_minus[ui]), std::fabs(f_iso_before[ui])});
-            if (!(std::fabs(others_after - others_before) <=
-                  kEventJumpRelTol * std::max(std::fabs(others_after), std::fabs(others_before)) +
-                      kEventJumpUlps * std::numeric_limits<double>::epsilon() * size)) {
-                throw std::runtime_error(
-                    "Forward sensitivity: the switch time at t=" + std::to_string(t_evt) +
-                    " shares its instant with another rate-law condition, and the two do not "
-                    "commute: across this switch d[" +
-                    model.species()[ui].name + "]/dt jumps by " + std::to_string(others_before) +
-                    " with the other condition still to switch and by " +
-                    std::to_string(others_after) +
-                    " with it already switched. A requested parameter moves this switch time "
-                    "apart from the other, so the result has a kink in that parameter there and "
-                    "no derivative (issue #951). Separate the two times, or drop the parameters "
-                    "that move one of them from sensitivity_params.");
+            kink[ui] = with_this_after[ui] - with_this_before[ui];
+        }
+        int worst = apart(kink);
+        if (worst >= 0) {
+            without_the_nudge(1.0, with_this_before, with_this_after, kink);
+            worst = apart(kink);
+        }
+        if (worst >= 0) {
+            std::vector<double> half_before;
+            std::vector<double> half_after;
+            std::vector<double> half_kink;
+            others_do(+0.5, 1.0, half_before);
+            others_do(-0.5, 1.0, half_after);
+            without_the_nudge(0.5, half_before, half_after, half_kink);
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                kink[ui] = 2.0 * half_kink[ui] - kink[ui];
             }
+            worst = apart(kink);
+        }
+        put_back();
+        if (worst >= 0) {
+            const auto uw = static_cast<size_t>(worst);
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the switch time at t=" << t_evt
+                << " shares its instant with another rate-law condition, and the two do not "
+                   "commute: the other changes d["
+                << model.species()[uw].name << "]/dt by " << with_this_before[uw]
+                << " with this switch still to come and by " << with_this_after[uw]
+                << " with it made. Each switch's jump then depends on which of them comes "
+                   "first. Under a parameter that moves one and not the other the result has a "
+                   "kink there and no derivative, and under one that moves both bngsim does not "
+                   "take the two as one (issue #951). Separate the two times, or drop the "
+                   "parameters that move them from sensitivity_params.";
+            not_commuting = msg.str();
         }
 
         // An isolated difference of exactly zero is a legitimate answer here and
@@ -6881,6 +6996,9 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             "other's: read with its own threshold raised a hair, the power is not at its zero "
             "(issue #949). Separate the two times, or drop the parameters that move the window "
             "from sensitivity_params.");
+    }
+    if (!not_commuting.empty()) {
+        throw std::runtime_error(not_commuting);
     }
     for (int c = 0; c < n_sens_all; ++c) {
         const double dtstar = dtstar_all[static_cast<size_t>(c)];

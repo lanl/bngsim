@@ -4436,6 +4436,12 @@ class SwitchCrossing(NamedTuple):
     record, so the core cannot see it, and it flips with every nudge of the
     clock that reads this one. An event on the instant comes apart from it
     under any parameter that moves the event.
+
+    ``instant_clocks`` lists the other clocks with a crossing on this instant,
+    each with the value it crosses at: ``(-1, t*)`` for the time and
+    ``(species, threshold)`` for a counter. A nudge of this crossing's clock
+    does not flip their conditions, and the core's test of whether the
+    conditions on an instant commute needs them all flipped (issue #951).
     """
 
     t_star: float
@@ -4445,6 +4451,7 @@ class SwitchCrossing(NamedTuple):
     isolate_param_idx0: list[int]
     isolate_delta: list[float]
     fixed_on_instant: bool = False
+    instant_clocks: list[tuple[int, float]] = []
 
 
 class _Crossing(NamedTuple):
@@ -4642,6 +4649,82 @@ def _isolation_bump(
     return param_idx[name], delta_threshold / private[name]
 
 
+# How many (step call, moved crossing) pairs are read one at a time before the
+# step calls' own edges are listed instead.
+_STEP_PROBE_PAIRS = 2048
+
+
+def _steps_on_instants(
+    core,
+    ctx,
+    scope: SwitchConditionScope,
+    t_start: float,
+    t_end: float,
+    moved: Sequence[_Crossing],
+) -> list[_Crossing]:
+    """The step calls outside every condition that step on a moved crossing's
+    instant, each as a crossing no parameter moves (issue #944).
+
+    Each call is evaluated a nudge before and a nudge after each instant, the
+    nudge the core reads a crossing with. That asks the one thing that matters
+    here, whatever the call is: ``trunc``, ``round`` and ``sign`` step, and so
+    do ``floor(time^2/9)`` and ``floor(exp(time - 3))``, and none of them is a
+    step :func:`_step_edge_stop_times` can list the edges of. A call that
+    cannot be evaluated is taken to step: reading a crossing apart from a step
+    that is not there costs nothing.
+
+    Where the pairs are too many to read one at a time, the edges of the calls
+    that can be listed are taken instead.
+    """
+    calls = time_discontinuity_conditions(core, ctx, steps_only=True)
+    if not calls:
+        return []
+    if len(calls) * len(moved) > _STEP_PROBE_PAIRS:
+        return [
+            _Crossing(
+                t_star=stop.time,
+                clock_idx0=stop.clock_species_idx,
+                threshold=stop.threshold if stop.clock_species_idx >= 0 else stop.time,
+                dtstar=[],
+                partials={},
+            )
+            for stop in all_fixed_crossings(core, t_start, t_end, calls)
+        ]
+    out: list[_Crossing] = []
+    for call in calls:
+        rewrite = _rewrite_counter_clock(core, call, scope, t_start)
+        if rewrite is None:
+            continue
+        text, clock_idx, offset = rewrite
+
+        def at(t: float, text: str = text) -> float | None:
+            try:
+                return _evaluate_threshold(
+                    _TIME_REF.sub(f"({t!r})", text),
+                    scope.param_idx,
+                    scope.values,
+                    scope.derived_exprs,
+                )
+            except Exception:  # noqa: BLE001 - a call this cannot read is taken to step
+                return None
+
+        for cross in moved:
+            t = cross.t_star
+            reach = (_INSTANT_ULPS + 4.0) * _EPS * max(abs(t), 1.0)
+            before, after = at(t - reach), at(t + reach)
+            if before is None or after is None or before != after:
+                out.append(
+                    _Crossing(
+                        t_star=t,
+                        clock_idx0=clock_idx,
+                        threshold=t + offset if clock_idx >= 0 else t,
+                        dtstar=[],
+                        partials={},
+                    )
+                )
+    return out
+
+
 def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int]) -> frozenset[int]:
     """The clock species a requested column moves (issue #725).
 
@@ -4812,6 +4895,16 @@ def _emit_switch_records(
                     fixed_on_instant=any(
                         other is not cross and not emits(other) and one_nudge(other, cross)
                         for other in group
+                    ),
+                    instant_clocks=sorted(
+                        {
+                            (
+                                other.clock_idx0,
+                                other.threshold if other.clock_idx0 >= 0 else other.t_star,
+                            )
+                            for other in group
+                            if other.clock_idx0 != cross.clock_idx0
+                        }
                     ),
                 )
             )
@@ -5208,29 +5301,14 @@ def compute_switch_time_sens(
     # factor of a rate law is not one: each of its steps was placed as a stop
     # (#869) and not grouped with the records, so a fitted switch that landed on
     # one was read with the step inside its bracket, and took the step's jump
-    # into its own column (dW/dtau = −4.2 for 0). The steps are absorbed here as
-    # crossings no parameter moves, which is what puts a record on their instant
-    # onto the isolation path. Only where some crossing is moved: otherwise no
-    # record is read at all.
+    # into its own column (dW/dtau = −4.2 for 0). A step that sits on a moved
+    # crossing's instant is absorbed here as a crossing no parameter moves,
+    # which is what puts the record onto the isolation path.
     moved_clocks = _clocks_moved(core, clocks, names, ic_species)
-    if any(any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks for c in found):
-        for stop in all_fixed_crossings(
-            core,
-            float(t_start),
-            float(t_end),
-            time_discontinuity_conditions(core, ctx, steps_only=True),
-        ):
-            _absorb_crossing(
-                found,
-                _Crossing(
-                    t_star=stop.time,
-                    clock_idx0=stop.clock_species_idx,
-                    threshold=stop.threshold if stop.clock_species_idx >= 0 else stop.time,
-                    dtstar=[0.0] * len(names),
-                    partials={},
-                ),
-                found_index,
-            )
+    moved = [c for c in found if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks]
+    if moved:
+        for step in _steps_on_instants(core, ctx, scope, float(t_start), float(t_end), moved):
+            _absorb_crossing(found, step._replace(dtstar=[0.0] * len(names)), found_index)
 
     records = _emit_switch_records(found, param_idx, moved_clocks)
     if not records:
