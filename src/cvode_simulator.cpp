@@ -5750,12 +5750,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         return;
     }
 
-    // Issue #945: a state-dependent switch jumped within its reach of this
-    // fire, and which came first is not known.
+    // What the triggers that fired read (issue #945, below).
     std::vector<int> fired_reads;
-    // A fire moves where its trigger reads the state, or where its time is one
-    // a requested column moves.
-    bool fire_moves = false;
     // The state the event has left, which the model holds on entry.
     std::vector<double> x_after(static_cast<std::size_t>(ns), 0.0);
     for (int i = 0; i < ns; ++i) {
@@ -5765,7 +5761,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     for (int ei : fired) {
         const std::vector<int> &support = model.event_trigger_residual_species(ei);
         fired_reads.insert(fired_reads.end(), support.begin(), support.end());
-        fire_moves = fire_moves || !support.empty();
+
         // A trigger that reads the time as well as the state crosses where
         // the time says, `V + 1e5*time > c`: it is on no species' trajectory.
         const int gidx = support.empty() ? -1 : model.event_trigger_residual_expr(ei);
@@ -5780,58 +5776,10 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             }
             model_moved = true;
         }
-        for (const EventTimeSens &one : opts.sensitivity.event_times) {
-            fire_moves = fire_moves || (one.event_idx0 == ei &&
-                                        std::any_of(one.dtstar_dp.begin(), one.dtstar_dp.end(),
-                                                    [](double d) { return d != 0.0; }));
-        }
     }
     if (model_moved) {
         sync_model_at(t_evt, x_after.data(), ns);
     }
-    for (const StateCrossing &crossing : state_crossings) {
-        if (!(std::fabs(t_evt - crossing.t) <= crossing.reach) || !(fire_moves || crossing.moves) ||
-            one_trajectory(fired_reads, crossing.reads)) {
-            continue;
-        }
-        if (crossing.continuous) {
-            // A bend before the event, and one still in the state the event
-            // has left: nothing to be on one side of. A jump that the state
-            // hid, `q·X` at an X of 0 that the event sets, shows now.
-            std::vector<double> after(static_cast<std::size_t>(ns), 0.0);
-            for (int i = 0; i < ns; ++i) {
-                after[static_cast<std::size_t>(i)] = sp_vec_outer[i].concentration;
-            }
-            const bool reads_time = std::find(crossing.reads.begin(), crossing.reads.end(),
-                                              kReadsTime) != crossing.reads.end();
-            const bool shows =
-                reads_time || jumps_across_surface(crossing.own, crossing.x_own, crossing.f_own,
-                                                   crossing.step, after, t_evt);
-            sync_model_at(t_evt, after.data(), ns);
-            if (!shows) {
-                continue;
-            }
-        }
-        std::ostringstream msg;
-        msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within " << crossing.reach
-            << " of the state-dependent rate-law switch with residual '" << crossing.residual
-            << "', which crossed at t=" << crossing.t
-            << ". Which of the two comes first is not known to the tolerances of "
-               "the run, and where the event changes what the switched rate law reads the "
-               "result has a kink there and no derivative (issue #945). Separate the two in "
-               "time, or drop sensitivities for this run.";
-        throw std::runtime_error(msg.str());
-    }
-    if (t_evt <= state_crossings_dropped_until) {
-        throw std::runtime_error(
-            "Forward sensitivity: an event fires at t=" + std::to_string(t_evt) +
-            " after more state-dependent rate-law switches than are kept to ask it about, "
-            "within the reach of one of them (issue #945). Drop sensitivities for this run.");
-    }
-    if (event_fires.size() >= kCrossingsKept) {
-        event_fires.erase(event_fires.begin());
-    }
-    event_fires.push_back({t_evt, fired_reads, fire_moves, x_minus});
 
     auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
 
@@ -6088,6 +6036,58 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             adopt_tau(ei, candidate);
         }
     }
+    // Issue #945: a state-dependent switch jumped within its reach of this
+    // fire, and which came first is not known. A fire moves where a column
+    // moves its time: a fitted time, or a trigger on a state the column moves.
+    // A trigger on the state that no requested column moves fires when it
+    // fires.
+    const bool fire_moves = std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; });
+    sync_model_at(t_evt, x_after.data(), ns);
+    for (const StateCrossing &crossing : state_crossings) {
+        if (!(std::fabs(t_evt - crossing.t) <= crossing.reach) || !(fire_moves || crossing.moves) ||
+            one_trajectory(fired_reads, crossing.reads)) {
+            continue;
+        }
+        if (crossing.continuous) {
+            // A bend before the event, and one still in the state the event
+            // has left: nothing to be on one side of. A jump that the state
+            // hid, `q·X` at an X of 0 that the event sets, shows now.
+            std::vector<double> after(static_cast<std::size_t>(ns), 0.0);
+            for (int i = 0; i < ns; ++i) {
+                after[static_cast<std::size_t>(i)] = sp_vec_outer[i].concentration;
+            }
+            const bool reads_time = std::find(crossing.reads.begin(), crossing.reads.end(),
+                                              kReadsTime) != crossing.reads.end();
+            const bool shows =
+                reads_time || jumps_across_surface(crossing.own, crossing.x_own, crossing.f_own,
+                                                   crossing.step, after, t_evt);
+            sync_model_at(t_evt, after.data(), ns);
+            if (!shows) {
+                continue;
+            }
+        }
+        std::ostringstream msg;
+        msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within " << crossing.reach
+            << " of the state-dependent rate-law switch with residual '" << crossing.residual
+            << "', which crossed at t=" << crossing.t
+            << ". Which of the two comes first is not known to the tolerances of "
+               "the run, and where the event changes what the switched rate law reads the "
+               "result has a kink there and no derivative (issue #945). Separate the two in "
+               "time, or drop sensitivities for this run.";
+        throw std::runtime_error(msg.str());
+    }
+    if (t_evt <= state_crossings_dropped_until) {
+        throw std::runtime_error(
+            "Forward sensitivity: an event fires at t=" + std::to_string(t_evt) +
+            " after more state-dependent rate-law switches than are kept to ask it about, "
+            "within the reach of one of them (issue #945). Drop sensitivities for this run.");
+    }
+    if (event_fires.size() >= kCrossingsKept) {
+        event_fires.erase(event_fires.begin());
+    }
+    event_fires.push_back({t_evt, fired_reads, fire_moves, x_minus});
+    sync_state();
+
     // Issue #945, as #946 is from the clock's side: a state-dependent switch
     // that is on its surface where this event fires, or within what the
     // tolerances allow of it, with a column that moves the fire. An event that
@@ -6095,8 +6095,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // threshold, under `piecewise(k, X > X0, 0)`: the residual is 0 in the
     // state the event leaves and no root is reported for it leaving 0, so the
     // switch's jump was never made, and dY/dtau came back 0 for −k.
-    if (!state_switch_all.empty() && needs_flow &&
-        std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; })) {
+    if (!state_switch_all.empty() && needs_flow && fire_moves) {
         std::vector<double> f_after(static_cast<std::size_t>(ns), 0.0);
         sync_model_at(t_evt, x_after.data(), ns);
         model.compute_derivs(t_evt, x_after.data(), f_after.data());

@@ -1288,3 +1288,87 @@ def test_a_switch_beside_a_term_that_rounds_as_a_staircase_runs():
         "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)\n"
     )
     assert _columns(text, ["thr"])[1, 0] == pytest.approx(-0.5, rel=1e-7)
+
+
+def test_two_bends_in_different_rate_laws_on_one_instant_run():
+    """Control. Two ramps, each from its own species' threshold, that start
+    on one instant, with a column that moves one and not the other: no rate
+    law reads both conditions, so neither has a jump of the other's to hide.
+    Y = k·(T − thr)²/4 and dY/dthr = −k·(T − thr)/2."""
+    text = (
+        "species S, Z, X, Y; S = 0; Z = 0; X = 0; Y = 0; k = 0.5; thr = 3\n"
+        "Js: -> S; 0.5\nJz: -> Z; 0.5\n"
+        "Jx: -> X; piecewise(k*(Z - 1.5), Z >= 1.5, 0)\n"
+        "Jy: -> Y; piecewise(k*(S - 0.5*thr), S >= 0.5*thr, 0)\n"
+    )
+    np.testing.assert_allclose(
+        _columns(text, ["thr"])[:, 0], [0.0, 0.0, 0.0, -0.5], rtol=1e-7, atol=1e-9
+    )
+
+
+EMPTIED_FOR_GOOD = (
+    "species X, W, V, U; X = 5; W = 0; V = 0; U = 0; q = 0.7; kv = 2; c = 0.5\n"
+    "Jv: -> V; kv\nJu: -> U; c\nJ2: -> W; piecewise(q*X, V >= {at}, 0)\n"
+    "E1: at (U > 1.5): X = 0\n"
+)
+
+
+@pytest.mark.parametrize("off", [4e-10, -4e-10], ids=["the-event-first", "the-switch-first"])
+def test_an_event_no_column_moves_that_empties_what_the_law_reads_is_refused_beside_a_moved_switch(
+    off,
+):
+    """The event fires where U = 0.5·t passes 1.5 and empties X for good; the
+    switch is where V = kv·t reaches 6, with kv requested. W = 5·q·(3 − t_c)
+    with the switch first and 0 with the event first: dW/dkv is 5.25 | 0.
+    Found after the event the crossing is continuous, q·X at an X of 0, and
+    the jump shows in the state as it was before the event."""
+    _refused(EMPTIED_FOR_GOOD.format(at=repr(6.0 + off)), ["kv"], 945, EVENT_TIMES)
+
+
+def test_an_event_that_empties_what_the_law_reads_runs_apart_from_the_switch():
+    """Control. The switch at t = 2.5, half a unit before the event:
+    dW/dkv = 5·q·5/kv²."""
+    got = _columns(EMPTIED_FOR_GOOD.format(at="5"), ["kv"], EVENT_TIMES)
+    np.testing.assert_allclose(got[:, 0], [0.0, 4.375, 7.5, 0.0], rtol=1e-7, atol=1e-9)
+
+
+EVENT_ON_U_STARTS = (
+    "species X, Y, U; X = {x}; Y = 0; U = 0; r = 0; k = 0.5; c = 1; X0 = 2\nJu: -> U; c\n"
+    "Jx: -> X; r\nJy: -> Y; piecewise(k, X > X0, 0)\nE1: at (U > 3): r = 1.5\n"
+)
+
+
+def test_a_state_just_under_its_surface_that_a_moved_event_starts_is_refused():
+    """Refused here, where main is right. X is 1e-11 under X0 and at rest
+    until an event on U = c·t starts it: it crosses 7e-12 later, a root like
+    any other, within reach of a fire that c moves. From well under X0 the
+    pair runs: dY/dc = 1.5."""
+    _refused(EVENT_ON_U_STARTS.format(x=repr(2 - 1e-11)), ["c"], 945)
+    got = _columns(EVENT_ON_U_STARTS.format(x="1.7"), ["c"])
+    np.testing.assert_allclose(got[:, 0], [4.5, 1.5, 5.0], rtol=1e-7)
+
+
+@pytest.mark.parametrize(("after", "before"), [(0, 1), (1, 0)], ids=["closes", "opens"])
+def test_a_state_that_touches_its_surface_as_the_gate_that_turns_it_gates_the_law_is_refused(
+    after, before
+):
+    """X rises to X0 as the fitted gate turns it back, and the same gate
+    closes the switched law, or opens it: the law jumps across X's surface
+    on one side of the gate only. With the gate later X is over X0 for a
+    while on either side of it. 0 came back on a kink."""
+    text = (
+        "species X, Y; X = 0; Y = 0; k = 0.5; tau = 3; X0 = 1.5\n"
+        "Jx: -> X; piecewise(-0.5, time >= tau, 0.5)\n"
+        f"Jy: -> Y; piecewise(k, X > X0, 0)*piecewise({after}, time >= tau, {before})\n"
+    )
+    _refused(text, ["tau"], 946)
+
+
+def test_an_event_on_a_state_no_column_moves_runs_beside_a_switch_no_column_moves():
+    """Control. The event fires where U = c·t passes 3, 2e-10 after the
+    switch, and q is requested: no column moves either. A trigger on the
+    state is moved where a column moves the state it reads, not wherever
+    it reads one. dW/dq = 33.75."""
+    text = EVENT_ON_STATE.replace("U > {at}", "U > 3.0000000002")
+    got = _columns(text, ["q"], EVENT_TIMES)
+    np.testing.assert_allclose(got[:, 0], [0.0, 0.0, 33.75, 0.0, 0.0], rtol=1e-7, atol=1e-9)
