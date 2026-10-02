@@ -475,8 +475,7 @@ NEAR = {
     # −2 from above and 0 from below; the run returned −2. The second gate is
     # inside the nudge and outside half of it, with the weight of the first.
     "two-gates-of-one-weight-forty-ulp-apart": [0, 40],
-    # Inside half the nudge and outside a quarter of it: the whole and the half
-    # agree, and only the quarter says the difference is not a jump and a slope.
+    # Inside half the nudge and outside a quarter of it.
     "two-gates-of-one-weight-twenty-four-ulp-apart": [0, 24],
     "two-gates-of-one-weight-sixty-ulp-apart": [0, 60],
     # Neither fixed gate on the fitted switch's own time.
@@ -493,11 +492,13 @@ NEAR = {
 def test_gates_a_few_ulp_from_the_instant_are_refused(case):
     """``r·gate(tau)·(gate(3 + a) + gate(3 + b) + …)`` with the fixed gates a
     few ulp from the fitted switch at 3: dY/dtau has a kink that close. A
-    gate that is inside the nudge and outside half of it adds its jump to the
-    long reading and not to the short one, which is what a slope does, and one
-    with the weight of the gate on the instant cancelled that one's part
-    exactly. A third reading, over a quarter of the nudge, does not agree with
-    the other two unless the difference is a jump and a slope."""
+    cut that nudged the clock about the switch's own time had a gate inside
+    the nudge and outside half of it in the long reading and not in the short
+    one, which is what a slope does, and one with the weight of the gate on
+    the instant cancelled that one's part exactly. The gates are on the
+    instant: thresholds that agree to 12 digits are one crossing, kept with
+    the least and the greatest of them, and every clock is put before the one
+    and past the other in every reading."""
     text = (
         "species Y; Y = 0; r = 1; tau = 3\n"
         "J1: -> Y; r*piecewise(1, time >= tau, 0)*("
@@ -597,8 +598,9 @@ def test_a_law_that_vanishes_at_its_switch_as_a_difference_of_two_terms(case):
     1e-16, where a ramp written ``r·(time − tau)`` rounds by an ulp of
     itself. What the readings were allowed went with their own size, and each
     of these was refused beside a law of Z that switches at the same number.
-    A kink the columns could not show, under their absolute tolerance, is
-    not one; nor is the law's slope times a few ulp of the clock."""
+    No rate law reads the two conditions together, so they cannot be composed
+    and there is nothing to ask: a reaction's rate is one law, and the
+    right-hand side adds reactions up."""
     law, tau, want = VANISHING[case]
     text = (
         f"species Y, Z; Y = 0; Z = 0; r = 1; k = 0.5; tau = {tau!r}\n"
@@ -651,3 +653,61 @@ def test_a_refusal_does_not_depend_on_the_order_the_laws_are_written_in(first):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
     with pytest.raises(bngsim.SimulationError, match="issue #951"):
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+IN_ONE_LAW = {
+    # The ramp times a gate on its own switch time: the product is 0 at the
+    # switch whatever the gate does. Y = 0.3·(T − tau)²/2.
+    "a-product-with-a-gate": ("({law})*piecewise(1, time >= {at!r}, 0.5)", -0.9),
+    # The ramp plus a gate: dY/dtau = −0.9 and the gate's part does not move.
+    "a-sum-with-a-gate": ("({law}) + piecewise(2, time >= {at!r}, 0.5)", -0.9),
+}
+
+
+@pytest.mark.parametrize("tau", [2.6, 250.5])
+@pytest.mark.parametrize("case", sorted(IN_ONE_LAW))
+def test_a_vanishing_law_in_one_rate_law_with_another_gate(case, tau):
+    """Control. ``0.3·time − 0.3·tau`` from its switch, in one rate law with a
+    fixed gate on the same number, so the two can be composed and are asked.
+    They commute: the law is 0 where the gate flips. What is left of the
+    difference is the law's own rounding, an ulp of the two products, which
+    is its slope times an ulp of the clock; at 250.5 that is far more than
+    the readings' own size allows."""
+    template, want = IN_ONE_LAW[case]
+    law = template.format(law="piecewise(0.3*time - 0.3*tau, time >= tau, 0)", at=tau)
+    text = f"species Y; Y = 0; tau = {tau!r}\nJ1: -> Y; {law}\n"
+    got = _columns(text, ["tau"], [0.0, tau / 2, tau + 1.0, tau + 3.0])
+    np.testing.assert_allclose(got, [[want]], rtol=1e-6, atol=1e-8)
+
+
+def test_a_composed_kink_is_refused_whatever_the_units():
+    """The product of a fitted and a fixed gate with r = 1e-9: the kink is
+    −7.5e-10 | −3.75e-10. A cut that allowed a kink no column could show
+    above its absolute tolerance let this through at the default tolerances,
+    and refused it at tighter ones."""
+    text = (
+        "species Y; Y = 0; r = 1e-9; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0.25)*piecewise(1, time >= 3, 0.5)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-8, atol=1e-8)
+
+
+def test_gates_in_other_laws_a_few_thousand_ulp_after_the_switch():
+    """Control. Gates in two other rate laws 2,000 and 9,000 ulp after tau:
+    the nearer agrees with tau to 12 digits and is on its instant, and the
+    farther caps the hair the switch is read apart with. No law reads them
+    with the switch, so its jump is read a nudge past its own time, as it
+    was: dY/dtau = −1. Read past the whole instant, half the hair fell short
+    of the clock and the column came back +1."""
+    eps = float(np.finfo(float).eps)
+    near_gate, far_gate = (repr(3.0 * (1 + n * eps)) for n in (2000, 9000))
+    text = (
+        "species Y, Z, W; Y = 0; Z = 0; W = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)\n"
+        f"J8: -> Z; piecewise(2, time >= {near_gate}, 0.5)\n"
+        f"J9: -> W; piecewise(2, time >= {far_gate}, 0.5)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["tau"]), [[-1.0], [0.0], [0.0]], atol=1e-9)
