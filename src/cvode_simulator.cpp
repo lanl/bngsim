@@ -2639,6 +2639,19 @@ struct CvodeSimulator::Impl {
     // probe pair to cross one of them again would read that jump a second time.
     std::vector<std::pair<const NetworkModel::StateSwitch *, double>> state_switch_consumed;
 
+    // Issues #946, #945: what a state-dependent switch that jumps cannot share
+    // its instant with. Every rate-law crossing on a clock in this run, fitted
+    // or fixed; the last event fire; and the last such switch, with how far
+    // from it its crossing time is known, for the event that fires after it.
+    std::vector<double> clock_instants;
+    double last_event_fire = std::numeric_limits<double>::quiet_NaN();
+    struct StateJump {
+        double t = std::numeric_limits<double>::quiet_NaN();
+        double reach = 0.0;
+        std::string residual;
+    };
+    StateJump last_state_jump;
+
     // Issue #897: whether a plain run should restart at state switch `sw`'s
     // root, located at (t, x) in a step that ended at t_end. True when the
     // solver's trajectory over the rest of the step goes beyond the surface by
@@ -5607,6 +5620,21 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     if (n_sens == 0 || fired.empty() || s_minus.empty()) {
         return;
     }
+
+    // Issue #945: a state-dependent switch jumped within its reach of this
+    // fire, and which came first is not known.
+    if (std::fabs(t_evt - last_state_jump.t) <= last_state_jump.reach) {
+        std::ostringstream msg;
+        msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within "
+            << last_state_jump.reach << " of the state-dependent rate-law switch with residual '"
+            << last_state_jump.residual << "', which crossed at t=" << last_state_jump.t
+            << " and jumped. Which of the two comes first is not known to the tolerances of "
+               "the run, and where the event changes what the switched rate law reads the "
+               "result has a kink there and no derivative (issue #945). Separate the two in "
+               "time, or drop sensitivities for this run.";
+        throw std::runtime_error(msg.str());
+    }
+    last_event_fire = t_evt;
 
     auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
 
@@ -9717,6 +9745,78 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // and the resumed integration must not see the nudge.
     sync(x, t_evt);
 
+    // ── A clock switch or an event on this instant (issues #946, #945) ───────
+    // The jump read below is the whole right-hand side a probe step before
+    // the crossing less the same a step after it, with the time moved as the
+    // state is. A rate-law condition on a clock that switches between the two
+    // probes is in that difference, and its jump was given this switch's
+    // dt*/dθ: `piecewise(k, time >= thr, 0)` beside `piecewise(k, S >= 0.5*thr,
+    // 0)` with S = 0.5·t returned dX/dthr = −1 for −0.5, the time switch's own
+    // record (issue #48) adding the same jump again, and a fixed gate on the
+    // instant gave a column that should be 0 this switch's shift.
+    //
+    // And where this crossing's time is not known apart from a clock switch's
+    // or an event's, their order is not known either. Composed, in one rate
+    // law or an event that changes what the switched law reads, the result
+    // has a kink there under a parameter that moves one and not the other,
+    // and the run returned one side of it (issue #945): dW/dtau = −3.15 on
+    // the kink −1.05 | −3.15.
+    //
+    // How far apart is apart: the probes reach two steps either way, and the
+    // root is where the residual is within what the tolerances allow it,
+    // which over its rate is a time.
+    double reach = 2.0 * dt;
+    {
+        std::vector<double> gx;
+        double scale = 0.0;
+        const double flow =
+            residual_flow(sw.residual_expr_idx, sw.species, t_evt, ns, x, f0, gx, scale);
+        double allowed = 0.0;
+        for (int j : sw.species) {
+            const auto uj = static_cast<std::size_t>(j);
+            if (j >= 0 && j < ns) {
+                const double atol_j = atol_vec.empty() ? atol : atol_vec[uj];
+                allowed += std::fabs(gx[uj]) * (rtol * std::fabs(x[uj]) + atol_j);
+            }
+        }
+        if (std::isfinite(flow) && flow != 0.0 && std::isfinite(allowed)) {
+            reach += allowed / std::fabs(flow);
+        }
+        sync(x, t_evt);
+    }
+    {
+        const auto first =
+            std::lower_bound(clock_instants.begin(), clock_instants.end(), t_evt - reach);
+        if (first != clock_instants.end() && *first <= t_evt + reach) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
+                << sw.residual_source << "' crosses at t=" << t_evt
+                << " and the right-hand side jumps there, within " << reach
+                << " of a rate-law condition on a clock that switches at t=" << *first
+                << ". The two are not told apart in time: this switch's jump is read across "
+                   "both, and which comes first is not known. Each is right alone. bngsim "
+                   "refuses rather than give one the other's jump, or one side of a kink (issue "
+                   "#946). Separate the two crossings, or drop the parameters that move them "
+                   "from sensitivity_params.";
+            throw std::runtime_error(msg.str());
+        }
+        if (std::fabs(t_evt - last_event_fire) <= reach) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
+                << sw.residual_source << "' crosses at t=" << t_evt
+                << " and the right-hand side jumps there, within " << reach
+                << " of an event that fired at t=" << last_event_fire
+                << ". Which of the two comes first is not known to the tolerances of the run, "
+                   "and where the event changes what the switched rate law reads the result has "
+                   "a kink there and no derivative (issue #945). Separate the two in time, or "
+                   "drop sensitivities for this run.";
+            throw std::runtime_error(msg.str());
+        }
+        last_state_jump.t = t_evt;
+        last_state_jump.reach = reach;
+        last_state_jump.residual = sw.residual_source;
+    }
+
     // ── A slide along the surface (issue #926) ───────────────────────────────
     // The rate law jumps here. One that reverses across its own surface,
     // `if(S < 1, amp, -amp)`, has a flow on the far side that points back: the
@@ -10432,6 +10532,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
     impl_->state_switch_consumed.clear();
+    impl_->clock_instants.clear();
+    for (const CrossingStop &stop : opts.crossing_stops) {
+        impl_->clock_instants.push_back(stop.t_star);
+    }
+    for (const SwitchTimeSens &record : opts.sensitivity.switch_times) {
+        impl_->clock_instants.push_back(record.t_star);
+    }
+    std::sort(impl_->clock_instants.begin(), impl_->clock_instants.end());
+    impl_->last_event_fire = std::numeric_limits<double>::quiet_NaN();
+    impl_->last_state_jump = {};
     if (!opts.sensitivity.state_switch_conditions.empty()) {
         const auto &conds = opts.sensitivity.state_switch_conditions;
         const auto &rxn_lists = opts.sensitivity.state_switch_reactions;
@@ -11701,6 +11811,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     stop.t_star = at;
                     crossing_stops.insert(where, stop);
                     mine.push_back(at);
+                    impl_->clock_instants.insert(std::upper_bound(impl_->clock_instants.begin(),
+                                                                  impl_->clock_instants.end(), at),
+                                                 at);
                 };
                 std::vector<double *> cols(static_cast<size_t>(sens.n_p));
                 for (int c = 0; c < sens.n_p; ++c) {
