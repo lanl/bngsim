@@ -224,12 +224,53 @@ no jump.
   within `switch_t_eps = 1e-9·max(1, horizon)`.
 - State crossings: `state_switch_conditions` (`_switch_sensitivity.py`) finds
   them, and `apply_state_switch_sensitivity_jump` applies them.
-- Oracle: `time-switch`, `state-switch`.
-- **Open:** a switch that lies within that window after an output time or other
-  stop is jumped at the wrong instant (#737,
-  `time-switch-just-after-an-output`). The branches-meet test compares the jump
-  with `1e-6·max|f|` over *every* species, so one large, unrelated flux makes a
-  real jump read as continuous (#763, `state-switch-beside-a-large-pool`).
+- Oracle: `time-switch`, `time-switch-just-after-an-output`, `state-switch`,
+  `state-switch-beside-a-large-pool`.
+
+Whether a state switch's branches meet is read from the flux of the reactions
+that read the switch alone (#763), at two probes on each side of the surface
+along the flow. Both branches are extended to the root, and the difference of
+the extensions is the branch change. Under the rounding of its four readings,
+16·ε of them, it is no jump. Past `1e-6` of the rate that drives the crossing it
+is one. That tolerance is for a flux that vanishes on both branches and differs
+across a pair of probes by its slope times the crossing's speed; it is far too
+wide for a step under a fast threshold species, where a jump of 3 under a pool
+moving at 5e6 was dropped (#917).
+
+Between the two, the branches are read at one state: the state on the surface,
+with only the species the residual reads moved a few ulp to either side of it,
+16 ulp of the residual and more where that does not flip its sign. Every term
+that does not switch is the same in both readings, whatever it rounds by, so
+their difference is the step, and it is a jump unless it is within
+
+- the rounding of the two readings, 16·ε of them;
+- eight times what the flux does on its own over as far again on each side: a
+  term that reads the residual's species moves with them;
+- eight times a tread, where the flux rounds as a staircase: `s() + off − thr`
+  with `s() = B − off` moves in steps of an ulp of `off`. A side that reads the
+  same further out is followed to where it moves, and it has to move a second
+  time to count, so that another switch of the same rate law out there is not
+  taken for a tread.
+
+Where the two sides cannot be reached by moving those species, the reading
+stands as the drive tolerance has it.
+
+The same reading takes back a jump past the drive tolerance that is not the
+switch's. A term beside a continuous switch that rounds as a staircase and does
+not read the switch steps between the probes, and its tread went into the column
+as a jump: −2029.6 for 4.42. The crossing is continuous where the two branches
+at one state are the same to the rounding of the two readings, and within the
+drive tolerance with each side carried to the surface along its own slope. To
+their rounding and no more: what the flux does further out is no measure here,
+since a second switch of the same rate law a few ulp away is in that reading,
+and a staircase that reads the threshold species puts a tread between the two
+sides.
+
+It also sizes a jump that such a term stepped beside. The jump applied is the
+whole right-hand side's change between the probes, extended to the surface, and
+a tread of 15 beside a jump of 3 gave −1826 for 207.9. Where one switch jumps
+and its branch change read at one state differs from the one the probes give by
+more than that reading allows, the jump is the one read at one state.
 
 **An event and a switch at the same instant.** `f⁻` is the before-branch at
 `x⁻`, and `f⁺` is the after-branch at `x⁺`:
