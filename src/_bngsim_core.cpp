@@ -2352,7 +2352,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 d["reactions"] = rxn_list;
 
                 // Table functions: [{name, index_kind, index_param_idx,
-                // index_obs_idx}, ...] in dispatch-id order. Lets the
+                // index_obs_idx, step}, ...] in dispatch-id order. Lets the
                 // model-based codegen path emit
                 //   data->tfun_eval(tf_id, idx_c, data->tfun_ctx)
                 // for any BNGL function whose name appears here. Empty
@@ -2364,6 +2364,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     td["index_kind"] = spec.index_kind;
                     td["index_param_idx"] = spec.index_param_idx;
                     td["index_obs_idx"] = spec.index_obs_idx;
+                    td["step"] = spec.step;
                     tf_list.append(td);
                 }
                 d["table_functions"] = tf_list;

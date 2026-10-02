@@ -360,7 +360,27 @@ sim.has_analytic_sens_rhs      # False when the run falls back
 sim.sens_rhs_decline_reason    # why, in words, or None
 ```
 
-The fallback is CVODES' own difference quotient, which is correct and slower.
+The fallback is CVODES' own difference quotient. It is slower, and it is right
+where every rate law is continuous in the state along the run. It is not right
+across a jump: the quotient reads the rate law at the state moved along each
+sensitivity, which just short of a surface the state crosses is on the other
+branch, so a column takes part of the jump before the crossing, by more the
+looser the tolerance.
+
+A time course on the fallback is therefore refused, before it starts, for a
+model with (issues #938, #932):
+
+- a rate-law condition that reads the state, `if(X < thr, ...)`, whether or not
+  the rate law jumps there;
+- a condition on a counter species that a requested column moves;
+- a step call on the state, `floor(X)`, or a table function read as a step and
+  indexed by an observable;
+- a step call on time whose argument reads a requested parameter,
+  `floor(time()/P)` with `P` requested.
+
+A condition on literal time runs, and so does a steady-state solve. A jump
+written with none of these, `(thr - X)/abs(thr - X)`, is not seen: the run
+returns, and the columns are wrong from the crossing on.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 

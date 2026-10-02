@@ -4242,6 +4242,7 @@ std::vector<TableFunctionSpec> NetworkModel::table_function_specs() const {
     for (const auto &tf : impl_->table_functions) {
         TableFunctionSpec spec;
         spec.name = tf->name();
+        spec.step = tf->method() == InterpolationMethod::Step;
         const auto &idx_name = tf->index_name();
         const std::string lookup = strip_paren_suffix(idx_name);
         if (is_time_index(idx_name)) {

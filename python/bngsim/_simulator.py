@@ -1549,9 +1549,13 @@ class Simulator:
             detail = " Detail: " + "; ".join(sorted(res.reasons.values())) + "."
         return list(res.compensated), detail, dict(res.blocked)
 
-    def _raise_if_uncompensated_crossing_sensitivities(self) -> None:
+    def _raise_if_uncompensated_crossing_sensitivities(self, *, time_course: bool = True) -> None:
         """Refuse a forward-sensitivity run left on the difference quotient over a
         rate-law branch crossing whose time moves (issue #414).
+
+        ``time_course`` is false for a steady-state solve, which reads ``∂f/∂p``
+        at one state and crosses nothing: the state-crossing refusal at the end
+        of this method (issue #938) is for a run that integrates through one.
 
         The rate-law twin of :meth:`_raise_if_event_sensitivities`. When a rate
         law branches on a condition whose crossing time moves with the trajectory
@@ -1586,15 +1590,19 @@ class Simulator:
            compensated.
 
         Both are needed. Absence alone is not a dropped jump: a *compensated*
-        crossing on the difference quotient (a ``t>=sigma`` clock forced to the
-        fallback by ``BNGSIM_NO_FUNCTIONAL_SENS_RHS``, or an ``I>=thresh`` state
-        threshold) still gets its jump from :meth:`_apply_switch_time_sens` /
-        :meth:`_apply_state_switch_sens` at run time, and an underivable-but-smooth
+        crossing on literal time (a ``t>=sigma`` clock forced to the fallback by
+        ``BNGSIM_NO_FUNCTIONAL_SENS_RHS``) still gets its jump from
+        :meth:`_apply_switch_time_sens` at run time, and an underivable-but-smooth
         rate law with no crossing (``erf(I)*beta*I``) declines the analytic RHS but
         drops no jump — both keep their correct difference quotient. A crossing
         alone is not enough either: if the artifact still carries the analytic RHS,
         the crossing was compensated. Only their conjunction — no analytic RHS AND
         a crossing nothing brackets — is a gradient wrong at the crossing.
+
+        A compensated crossing on the *state* (``I>=thresh``) is another matter,
+        and is refused by :meth:`_raise_if_state_crossing_on_fallback` (issue
+        #938): its jump is applied at the crossing, but the quotient has read
+        across the surface before the run gets there.
 
         Issue #414's other half — compensating the saltation jump for a moving
         *state* crossing the way issue #150 did for the single-rootable-comparison
@@ -1620,6 +1628,7 @@ class Simulator:
             logger.debug("Uncompensated-crossing sensitivity refusal: scan unavailable (%s)", e)
             return
         if reason is None:
+            self._raise_if_state_crossing_on_fallback(time_course)
             return
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported for this model: it branches on a "
@@ -1634,6 +1643,53 @@ class Simulator:
             "nor the issue #150 saltation jump (which needs a single comparison over state "
             "to root on) applies here; validate against a trajectory finite difference if "
             "you need an approximate gradient."
+        )
+
+    def _raise_if_state_crossing_on_fallback(self, time_course: bool) -> None:
+        """Refuse a time-course sensitivity run left on the difference quotient
+        in a model with a crossing the quotient reads across (issues #938, #932).
+
+        Called only where the analytic sensitivity RHS is absent. CVODES'
+        difference quotient reads ``f`` at ``y + σ·s``, which beside a surface
+        the state crosses is on the other branch, so a column takes part of the
+        crossing's jump before the crossing. The run is refused before it
+        starts, for the crossings
+        :func:`~bngsim._switch_sensitivity.fallback_crossing` lists: nothing at
+        the crossing can put the column right, and a run that ends short of the
+        crossing has already returned it.
+        """
+        if not time_course:
+            return
+        from bngsim._switch_sensitivity import fallback_crossing
+
+        try:
+            core = self._model._core
+            species = list(core.species_names)
+            crossing = fallback_crossing(
+                core,
+                self._sensitivity_params or (),
+                [species.index(n) for n in self._sensitivity_ic or () if n in species],
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Fallback-crossing sensitivity refusal: scan unavailable (%s)", e)
+            return
+        if crossing is None:
+            return
+        why = self.sens_rhs_decline_reason
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity is not supported for this model: it has no analytic "
+            "sensitivity right-hand side"
+            + (f" ({why})" if why else "")
+            + f", and its rate law has a crossing at {crossing!r} whose time moves with the "
+            "state or with a requested parameter. Without the analytic right-hand side, "
+            "CVODES' internal difference quotient is used for every column. It reads the "
+            "rate law at the state and the parameter moved along each column, which beside "
+            "such a crossing is on its other side: a column takes part of the rate law's "
+            "jump before the crossing, by more the looser the tolerance, or the step size "
+            "collapses and the run does not finish (issues #938, #932). bngsim refuses "
+            "rather than return it, whether or not this run reaches the crossing: that is "
+            "not known before it. Remove what the analytic path declines, or difference "
+            "plain runs."
         )
 
     def _apply_event_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
@@ -6022,7 +6078,7 @@ class Simulator:
             # so a model that declines it over a moving rate-law crossing lands on
             # the difference quotient here too. Refuse rather than solve
             # J·(dY/dp) = −∂f/∂p from a gradient flagged wrong at the crossing.
-            self._raise_if_uncompensated_crossing_sensitivities()
+            self._raise_if_uncompensated_crossing_sensitivities(time_course=False)
 
         from bngsim._bngsim_core import (
             SteadyStateOptions,

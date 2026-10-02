@@ -295,7 +295,7 @@ raising one does not raise the other.
 One difference is deliberate. The sensitivity budget **never becomes unbounded**,
 at any model size. Where a dropped analytical Jacobian falls back to something
 that may not converge at all, a declined sensitivity RHS falls back to CVODES'
-internal difference quotient, which is correct at every scale — so there is never
+internal difference quotient, which converges at every scale — so there is never
 a reason to let this derivation run without a bound, and a genome-scale model with
 Functional rate laws gets a decline it can read rather than a build that appears
 to hang.
