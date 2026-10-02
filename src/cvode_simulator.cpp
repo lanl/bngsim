@@ -5360,6 +5360,20 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
     std::vector<double> xwork(x.begin(), x.end());
 
     // ∂g/∂x, over the species that can move g.
+    //
+    // The step is a millionth of the species. Where the residual also reads a
+    // species a great deal larger, `(LECs + Capillaries) − L` with LECs at 1e4
+    // and Capillaries at 1e-10 just after its rate law turns on, that step is
+    // under an ulp of the residual and the difference is 0: the residual read
+    // as not moving with a species that carries it at 504 a unit of time, and
+    // its flow came out −90 for +414. So a difference lost in the rounding of
+    // the largest species the residual reads is taken again over wider steps,
+    // a hundred times at a time, up to a millionth of that species.
+    double largest = 0.0;
+    for (int j : support) {
+        largest = std::max(largest, std::fabs(x[j]));
+    }
+    const double lost = 64.0 * std::numeric_limits<double>::epsilon() * largest;
     gx_out.assign(static_cast<std::size_t>(ns), 0.0);
     for (int j : support) {
         const double xj = x[j];
@@ -5367,12 +5381,20 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
         if (h == 0.0) {
             h = 1e-9;
         }
-        xwork[j] = xj + h;
-        sync_model_at(t, xwork.data(), ns);
-        const double g_hi = eval.evaluate(gidx);
-        xwork[j] = xj - h;
-        sync_model_at(t, xwork.data(), ns);
-        const double g_lo = eval.evaluate(gidx);
+        double g_hi = 0.0;
+        double g_lo = 0.0;
+        for (;;) {
+            xwork[j] = xj + h;
+            sync_model_at(t, xwork.data(), ns);
+            g_hi = eval.evaluate(gidx);
+            xwork[j] = xj - h;
+            sync_model_at(t, xwork.data(), ns);
+            g_lo = eval.evaluate(gidx);
+            if (!(std::fabs(g_hi - g_lo) <= lost) || !(100.0 * h <= 1e-6 * largest)) {
+                break;
+            }
+            h *= 100.0;
+        }
         xwork[j] = xj; // restore this component
         gx_out[j] = (g_hi - g_lo) / (2.0 * h);
     }
@@ -7194,6 +7216,7 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
     const std::vector<double> here(x, x + ns);
     std::vector<double> f_near(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> f_far(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f_back(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> x_far(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> gx;
     sync_model_at(t, x, ns);
@@ -7214,6 +7237,14 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
             !(std::fabs(flow) > kStateSwitchSlideRelTol * scale) || g * flow > 0.0) {
             continue; // not beside the surface, or not heading into it
         }
+        // The right-hand side as far back again from the surface as the state
+        // is, on this side: what it does on its own over that distance.
+        const double back = (std::fabs(g) + band) / std::fabs(flow);
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            x_far[ui] = here[ui] - back * f_near[ui];
+        }
+        model.compute_derivs(t, x_far.data(), f_back.data());
         // Just past the surface, along this side's flow.
         const double across = (std::fabs(g) + band) / std::fabs(flow);
         for (int i = 0; i < ns; ++i) {
@@ -7224,7 +7255,25 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
         double far_scale = 0.0;
         const double far_flow =
             residual_flow(sw->residual_expr_idx, sw->species, t, ns, x_far, f_far, gx, far_scale);
-        if (std::isfinite(far_flow) && far_flow * flow < 0.0 &&
+        // A slide is a rate law that jumps across its surface. One that is
+        // continuous there brings a state to rest on the surface, with a flow
+        // that points in from both sides and runs out at it: at rest, not
+        // sliding. A corpus model in the signed-rate idiom settles on its own
+        // switch that way, and its columns are right. So the right-hand side
+        // has to differ across the surface by more than it does over the same
+        // distance on this side, and than it rounds by.
+        double jump = 0.0;
+        double smooth = 0.0;
+        double size = 0.0;
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<std::size_t>(i);
+            jump = std::max(jump, std::fabs(f_far[ui] - f_near[ui]));
+            smooth = std::max(smooth, std::fabs(f_back[ui] - f_near[ui]));
+            size = std::max({size, std::fabs(f_far[ui]), std::fabs(f_near[ui])});
+        }
+        const bool jumps =
+            jump > 8.0 * smooth + 64.0 * std::numeric_limits<double>::epsilon() * size;
+        if (jumps && std::isfinite(far_flow) && far_flow * flow < 0.0 &&
             std::fabs(far_flow) > kStateSwitchSlideRelTol * far_scale) {
             sync_model_at(t, x, ns);
             std::ostringstream msg;
@@ -8047,53 +8096,6 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     }
     dt = dt_used;
 
-    // ── A slide along the surface (issue #926) ───────────────────────────────
-    // The straddle above steps the state along ONE flow, f at x(t*), both ways.
-    // A rate law that reverses across its own surface, `if(S < 1, amp, -amp)`,
-    // has a flow on the far side that points back: the state cannot leave the
-    // surface on either side, and slides along it on neither branch. There is
-    // no crossing to add a saltation term at, and each step after it lands on
-    // one branch or the other and integrates that branch's ∂f/∂p. dS/damp came
-    // back 1.5 where S is held at 1 whatever amp is, with no warning.
-    //
-    // So the flow just past the surface is read where it is, on the far
-    // branch, and a residual it carries back the way it came is refused. A
-    // flow that vanishes there is a tangency, which is judged below.
-    {
-        probe(-dt, g_before);
-        probe(+dt, g_after);
-        std::vector<double> x_far(static_cast<std::size_t>(ns), 0.0);
-        std::vector<double> f_far(static_cast<std::size_t>(ns), 0.0);
-        for (int i = 0; i < ns; ++i) {
-            const auto ui = static_cast<std::size_t>(i);
-            x_far[ui] = x[ui] + dt * f0[ui];
-        }
-        sync(x_far, t_evt + dt);
-        model.compute_derivs(t_evt + dt, x_far.data(), f_far.data());
-        std::vector<double> gx;
-        for (std::size_t k = 0; k < nb; ++k) {
-            const double across = g_after[k] - g_before[k]; // the way it crossed
-            double scale = 0.0;
-            const double flow = residual_flow(batch[k]->residual_expr_idx, batch[k]->species,
-                                              t_evt + dt, ns, x_far, f_far, gx, scale);
-            if (std::isfinite(flow) && std::isfinite(across) && flow * across < 0.0 &&
-                std::fabs(flow) > kStateSwitchSlideRelTol * scale) {
-                sync(x, t_evt);
-                std::ostringstream msg;
-                msg << "Forward sensitivity: the state-dependent rate-law switch (residual '"
-                    << batch[k]->residual_source << "') is reached at t=" << t_evt
-                    << " with the flow on the far side pointing back into it: the state slides "
-                       "along the switching surface, on neither branch of the rate law. The "
-                       "sensitivity along a slide is not the sensitivity of either branch, and "
-                       "bngsim refuses rather than integrate one of them (issue #926). Drop "
-                       "sensitivities for this run, or write the held value as an algebraic "
-                       "constraint.";
-                throw std::runtime_error(msg.str());
-            }
-        }
-        sync(x, t_evt);
-    }
-
     // ── Who crosses here, and what its own reactions do (issue #763) ─────────
     // Another registered switch whose residual this same probe pair straddles
     // crosses here too. It may be the same surface: A -> B conserves A + B, so
@@ -8616,6 +8618,70 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // Back to the true crossing state: residual_dtstar differentiates there,
     // and the resumed integration must not see the nudge.
     sync(x, t_evt);
+
+    // ── A slide along the surface (issue #926) ───────────────────────────────
+    // The rate law jumps here. One that reverses across its own surface,
+    // `if(S < 1, amp, -amp)`, has a flow on the far side that points back: the
+    // state cannot leave the surface on either side, and slides along it on
+    // neither branch. There is no crossing to add a saltation term at, and each
+    // step after it lands on one branch or the other and integrates that
+    // branch's ∂f/∂p. dS/damp came back 1.5 where S is held at 1 whatever amp
+    // is, with no warning.
+    //
+    // So the residual's flow is read a probe either side of the surface, each
+    // on its own branch, and a residual the far side carries back the way the
+    // near side brought it is refused. A flow that vanishes on either side is
+    // a tangency, which is judged below.
+    //
+    // Asked only where the rate law jumps. Where it is continuous the flow is
+    // one field, and a state it brings to rest on the surface is at rest, not
+    // sliding: a corpus model in the signed-rate idiom that settles on its own
+    // switch was refused here where its columns are right. And the two flows,
+    // not the residual's change across the probes for the way it came: where
+    // the residual rounds as a staircase that change is a tread or nothing.
+    {
+        std::vector<double> x_side(static_cast<std::size_t>(ns), 0.0);
+        std::vector<double> f_side(static_cast<std::size_t>(ns), 0.0);
+        std::vector<double> gx;
+        std::vector<double> flow_side[2];
+        std::vector<double> scale_side[2];
+        for (int side = 0; side < 2; ++side) {
+            const double by = side == 0 ? -dt : dt;
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<std::size_t>(i);
+                x_side[ui] = x[ui] + by * f0[ui];
+            }
+            sync(x_side, t_evt + by);
+            model.compute_derivs(t_evt + by, x_side.data(), f_side.data());
+            flow_side[side].assign(nb, 0.0);
+            scale_side[side].assign(nb, 0.0);
+            for (std::size_t k = 0; k < nb; ++k) {
+                flow_side[side][k] =
+                    residual_flow(batch[k]->residual_expr_idx, batch[k]->species, t_evt + by, ns,
+                                  x_side, f_side, gx, scale_side[side][k]);
+            }
+        }
+        for (std::size_t k = 0; k < nb; ++k) {
+            const double came = flow_side[0][k];
+            const double flow = flow_side[1][k];
+            if (std::isfinite(flow) && std::isfinite(came) && flow * came < 0.0 &&
+                std::fabs(came) > kStateSwitchSlideRelTol * scale_side[0][k] &&
+                std::fabs(flow) > kStateSwitchSlideRelTol * scale_side[1][k]) {
+                sync(x, t_evt);
+                std::ostringstream msg;
+                msg << "Forward sensitivity: the state-dependent rate-law switch (residual '"
+                    << batch[k]->residual_source << "') is reached at t=" << t_evt
+                    << " with the flow on the far side pointing back into it: the state slides "
+                       "along the switching surface, on neither branch of the rate law. The "
+                       "sensitivity along a slide is not the sensitivity of either branch, and "
+                       "bngsim refuses rather than integrate one of them (issue #926). Drop "
+                       "sensitivities for this run, or write the held value as an algebraic "
+                       "constraint.";
+                throw std::runtime_error(msg.str());
+            }
+        }
+        sync(x, t_evt);
+    }
 
     auto subject_of = [](const NetworkModel::StateSwitch &one) {
         return "the state-dependent rate-law condition with residual '" + one.residual_source +

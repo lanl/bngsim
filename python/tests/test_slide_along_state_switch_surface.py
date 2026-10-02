@@ -114,3 +114,66 @@ def test_a_crossing_that_carries_on_is_not_a_slide(tmp_path, after):
     )
     got = np.asarray(run.sensitivities)[:, 0, 0]
     np.testing.assert_allclose(got, [0.0, 0.5, after * 1.5, after * 2.0], rtol=1e-6)
+
+
+@pytest.mark.parametrize("max_steps", [None, 20])
+def test_a_state_that_comes_to_rest_on_a_continuous_switch_is_not_a_slide(tmp_path, max_steps):
+    """Control. ``if(S < lvl, k·(lvl − S), −k·(S − lvl))`` is one field written
+    as two branches: S relaxes to lvl and rests on the switch, with a flow that
+    points in from both sides and runs out at the surface. Nothing jumps there.
+    S = lvl·(1 − e^(−k·t)), so dS/dlvl = 1 − e^(−k·t) and dS/dk = lvl·t·e^(−k·t).
+    A cut of this fix that asked only which way the two flows point refused a
+    corpus model that settles on its own switch this way."""
+    model = _model(tmp_path, "if(Sobs<lvl,k*(lvl-Sobs),(-k)*(Sobs-lvl))")
+    extra = {} if max_steps is None else {"max_steps": max_steps}
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["lvl", "k"]).run(
+        sample_times=[0.0, 2.0, 60.0, 200.0], rtol=1e-8, atol=1e-10, **extra
+    )
+    k, lvl = 0.5, 1.0
+    t = np.array([0.0, 2.0, 60.0, 200.0])
+    got = np.asarray(run.sensitivities)[:, 0, :]
+    np.testing.assert_allclose(got[:, 0], 1 - np.exp(-k * t), rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(got[:, 1], lvl * t * np.exp(-k * t), rtol=1e-6, atol=1e-7)
+
+
+TURNS_ON = """begin parameters
+    1 k 1e3
+    2 thr 1e4
+    3 d 100
+    4 kc 500
+end parameters
+begin functions
+    1 fA() if(Aobs+Cobs>thr,-d,k)
+    2 fC() if(Aobs+Cobs>thr,kc,0)
+end functions
+begin species
+    1 A() 0
+    2 C() 1e-10
+end species
+begin reactions
+    1 0 1 fA
+    2 0 2 fC
+end reactions
+begin groups
+    1 Aobs 1
+    2 Cobs 2
+end groups
+"""
+
+
+def test_a_crossing_carried_on_by_a_species_far_smaller_than_the_threshold(tmp_path):
+    """Control. A rises to thr = 1e4 and then falls at d, and C, 1e-10 until
+    then, rises at kc from the crossing: A + C goes on through at kc − d. The
+    way C moves the residual is read over a millionth of C, 1e-16, which is
+    under an ulp of 1e4, so it read as not moving it at all, and the far side's
+    flow as −d: a slide. A corpus model whose switch turns a species on from
+    nothing was refused that way. The difference is retaken over wider steps
+    where it is lost. With t* = thr/k, C = kc·(t − t*): dC/dk = kc·t*/k and
+    dC/dthr = −kc/k."""
+    path = tmp_path / "m.net"
+    path.write_text(TURNS_ON)
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["k", "thr"]
+    ).run(sample_times=[0.0, 5.0, 12.0, 20.0], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, 1, :]
+    np.testing.assert_allclose(got, [500 * 10 / 1e3, -500 / 1e3], rtol=1e-6)
