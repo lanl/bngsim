@@ -370,8 +370,13 @@ looser the tolerance.
 A time course on the fallback is therefore refused, before it starts, for a
 model with (issues #938, #932):
 
-- a rate-law condition that reads the state, `if(X < thr, ...)`, whether or not
-  the rate law jumps there;
+- a rate-law condition that reads the state, `if(X < thr, kb, 0)`, unless the
+  rate law is continuous wherever the condition flips. A ramp from the threshold,
+  `if(X < thr, kb*(thr - X), 0)`, and a signed rate, `if(v < 0, -v/max(X, 0.01), 0)`,
+  are bends, and the quotient is right across a bend. Whether a law bends or
+  jumps is asked of its text before the run, with every other choice in it
+  (`max`, `min`, `abs`, another condition) taken either way: a clamp written as
+  `if(X > 0, if(X < n, X, n), 0)` is a bend and is refused all the same;
 - a condition on a counter species that a requested column moves;
 - a step call on the state, `floor(X)`, or a table function read as a step and
   indexed by an observable;

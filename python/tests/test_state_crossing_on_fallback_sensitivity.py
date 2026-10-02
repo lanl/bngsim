@@ -313,9 +313,60 @@ def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path,
         ("if(Aobs<thr,kb*(thr-Aobs)/((thr-Aobs)+3e-6),0)", "Aobs<thr", True),
         # A jump a thousandth of what the ramp beside it does over the hair.
         ("if(Aobs<thr,kb*(thr-Aobs)+1e-9,0)", "Aobs<thr", False),
-        # Powers under 1 either side of the square root.
-        ("if(Aobs<thr,kb*(thr-Aobs)^0.9,0)", "Aobs<thr", False),
+        # Powers under 1: 0.9 leaves the surface slowly enough, 0.2 does not.
+        ("if(Aobs<thr,kb*(thr-Aobs)^0.9,0)", "Aobs<thr", True),
         ("if(Aobs<thr,kb*(thr-Aobs)^0.2,0)", "Aobs<thr", False),
+        # A jump in proportion to something that is 0 at the values picked.
+        ("if(Aobs<thr,kb*max(Bobs-3,0),0)", "Aobs<thr", False),
+        ("if(Aobs<thr,kb*if(Bobs>5,1,0),0)", "Aobs<thr", False),
+        # A ramp that is clamped is a bend, and is not found one: the clamp
+        # is taken as a symbol of its own.
+        ("if(Aobs<thr,min(kb*(thr-Aobs),cap),0)", "Aobs<thr", False),
+        # The lesser of two written as a conditional.
+        ("kb*if(Aobs<Bobs,Aobs,Bobs)", "Aobs<Bobs", True),
+        # The atom under a not: the branches change places.
+        ("if(not(Aobs>=thr),kb*(thr-Aobs),0)", "Aobs>=thr", True),
+        ("if(not(Aobs>=thr),kb,0)", "Aobs>=thr", False),
+        # A step call in the comparison: it flips where the step does.
+        ("if(floor(Aobs/P)>2,kb*(floor(Aobs/P)-2),0)", "floor(Aobs/P)>2", False),
+        # The greater of two written as a conditional, inside the comparison
+        # of a signed rate: the outer condition holds the inner atom only
+        # through the inner conditional's value.
+        (
+            "if((g*if(QR>QL,QR,QL)-QR)>0,(g*if(QR>QL,QR,QL)-QR),0)",
+            "QR>QL",
+            True,
+        ),
+        (
+            "if((g*if(QR>QL,QR,2*QL)-QR)>0,(g*if(QR>QL,QR,2*QL)-QR),0)",
+            "QR>QL",
+            False,
+        ),
+        # The law is 0/0 on the flip itself, at that one double, and has a
+        # value either side of it.
+        (
+            "if(X<x0,exp(sp*((x0-X)/x0)^2),exp(sn*((X-x0)/x0)^2))*exp(((X-x0)/abs(X-x0))*h*((X-x0)/x0)^2)",
+            "X<x0",
+            True,
+        ),
+        (
+            "if(X<x0,exp(sp*((x0-X)/x0)^2),2*exp(sn*((X-x0)/x0)^2))*exp(((X-x0)/abs(X-x0))*h*((X-x0)/x0)^2)",
+            "X<x0",
+            False,
+        ),
+        # A clamp written as two conditionals: a bend, and not found one. The
+        # inner choice is free where the outer condition flips.
+        ("if(X>0,if(X<n,X,n),0)", "X>0", False),
+        # Either of two conditions: the first flips to no effect where the
+        # second holds, and where it does not the branches meet.
+        ("if((Aobs>thr)||(Bobs<2),kb,kb*(1+(Aobs-thr)))", "Aobs>thr", True),
+        ("if((Aobs>thr)||(Bobs<2),kb,kb*(1+(Aobs-thr)))", "Bobs<2", False),
+        # A jump times a factor that is 0 on the surface: the law is
+        # continuous though the conditional is not.
+        ("if(R<0,0,if(R>0,1,0.5))*kb*R", "R<0", True),
+        ("if(R<0,0,if(R>0,1,0.5))*kb*(R+1)", "R<0", False),
+        # Two conditionals on one atom, one a bend and one a jump.
+        ("if(Aobs<thr,kb*(thr-Aobs),0)+if(Aobs<thr,kb,0)", "Aobs<thr", False),
         # A pole of the condition and of the law: passed over, and the bend
         # where the numerator is 0 is what is left.
         ("if(((A-B)/(U+R))>0,(A-B)/(U+R),0)", "((A-B)/(U+R))>0", True),
@@ -341,25 +392,29 @@ def test_whether_a_rate_law_is_continuous_where_its_condition_flips(law, atom, c
 GATES = "if(T<4,1,if(T>=16,if(T<20,1,0),0))"
 
 
+SIGNED = f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)"
+
+
 @pytest.mark.parametrize(
-    ("law", "held", "continuous"),
+    ("law", "atom", "held", "continuous"),
     [
-        (f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)", {"T"}, True),
-        (f"if((({GATES})*fA-V)>0,kb,0)", {"T"}, False),
-        # With T moved, the condition flips where a gate does, and the law
-        # jumps there.
-        (f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)", set(), False),
+        (SIGNED, f"(({GATES})*fA-V)>0", {"T"}, True),
+        (f"if((({GATES})*fA-V)>0,kb,0)", f"(({GATES})*fA-V)>0", {"T"}, False),
+        # With the clock moved, the gates are what is asked about, and each
+        # is a jump.
+        (SIGNED, f"(({GATES})*fA-V)>0", set(), True),
+        (SIGNED, "T<4", set(), False),
     ],
-    ids=["signed-rate", "jump", "signed-rate-on-a-moved-clock"],
+    ids=["signed-rate", "jump", "signed-rate-on-a-moved-clock", "a-gate-on-a-moved-clock"],
 )
 def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(
-    monkeypatch, law, held, continuous
+    monkeypatch, law, atom, held, continuous
 ):
     """A condition that holds a conditional on a clock T: sympy puts it into a
     canonical form as it parses, at 2 s a rate law, and one corpus model
     (mt_music_sequencer) has twelve of them. The law is read as plain doubles.
-    A clock no column moves is held: where the condition flips along it, it
-    flips at an instant and not at a state."""
+    The gates inside the comparison are symbols of their own: where one of
+    them flips, the comparison jumps, and that is the gate's own flip."""
     from bngsim import _jacobian
     from bngsim._switch_sensitivity import _continuous_across
 
@@ -367,7 +422,6 @@ def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(
         raise AssertionError(f"parsed through sympy: {expr[:40]}")
 
     monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", parse)
-    atom = f"(({GATES})*fA-V)>0"
     assert _continuous_across(law, atom, held=frozenset(held)) is continuous
 
 
@@ -467,3 +521,32 @@ def test_a_steady_state_solve_is_not_refused():
     )
     assert not sim.has_analytic_sens_rhs
     sim.steady_state(sensitivity_params=["a", "ks"])
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "if(a<b,a*b,a/b)+max(a,b,c)-min(a,c)+abs(a-c)",
+        "exp(-a/b)*log(c)+ln(a)+log10(b)+log2(c)+sqrt(a*b)",
+        "sin(a)+cos(b)+tan(c)+asin(a/4)+acos(b/4)+atan(c)+sinh(a)+cosh(b)+tanh(c)",
+        "a^b-(a-c)^2+(-a)^3+2^-b+_pi*_e",
+        "if((a>b)&&(b<=c),1,2)+if((a>=b)||not(c!=a),3,4)",
+        "(a<b)+(b<c)*2",
+        "1-1/(1+exp(-(a-b)*40))",
+        "sqrt(a-b-c)+log(a-b-c)+1/(a-a)+(a-b-c)^0.5",
+    ],
+)
+def test_the_two_readings_of_a_rate_law_agree(expr):
+    """A law is read twice: compiled, for the many readings of a condition
+    along a symbol, and walked, for a value with what it rounds by. The two
+    give one value, a NaN where the other gives a NaN."""
+    from bngsim._switch_sensitivity import _float_form, _float_rounding, _float_tree
+
+    tree = _float_tree(expr)
+    evaluate, names, _ = _float_form(tree)
+    for values in ({"a": 1.7, "b": 0.6, "c": 0.9}, {"a": 0.3, "b": 1.9, "c": 1.1}):
+        point = {name: values[name] for name in names}
+        compiled = float(evaluate(point))
+        walked, size = _float_rounding(tree, point)
+        assert compiled == float(walked) or (math.isnan(compiled) and math.isnan(walked))
+        assert size >= 0.0 and math.isfinite(size)

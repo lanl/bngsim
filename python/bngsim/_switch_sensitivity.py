@@ -3719,47 +3719,247 @@ _CONTINUITY_GRID = tuple(
 )
 
 
+def _is_call(node: ast.AST, name: str) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
+
+
+def _two_branches(node: ast.Call) -> tuple[ast.expr, ast.expr, ast.expr]:
+    """``(taken, condition, other)`` of a conditional as
+    :func:`bngsim._jacobian._preprocess_exprtk` writes one; :class:`_Unread`
+    for any other shape."""
+    pairs = node.args
+    if (
+        len(pairs) == 2
+        and isinstance(pairs[0], ast.Tuple)
+        and isinstance(pairs[1], ast.Tuple)
+        and len(pairs[0].elts) == 2
+        and len(pairs[1].elts) == 2
+        and isinstance(pairs[1].elts[1], ast.Constant)
+        and pairs[1].elts[1].value is True
+    ):
+        return pairs[0].elts[0], pairs[0].elts[1], pairs[1].elts[0]
+    raise _Unread("Piecewise")
+
+
+def _rebuilt(node, visit):
+    """*node* with *visit* applied to each expression under it: the node
+    itself where none of them changes, and a new one where one does. Nothing
+    is changed in place, so a tree can be rewritten many times over, and
+    what the rewrites leave alone is shared between them."""
+    if isinstance(node, ast.BinOp):
+        left, right = visit(node.left), visit(node.right)
+        if left is node.left and right is node.right:
+            return node
+        return ast.BinOp(left=left, op=node.op, right=right)
+    if isinstance(node, ast.UnaryOp):
+        operand = visit(node.operand)
+        return node if operand is node.operand else ast.UnaryOp(op=node.op, operand=operand)
+    if isinstance(node, ast.Compare):
+        left = visit(node.left)
+        comparators = [visit(c) for c in node.comparators]
+        same = all(a is b for a, b in zip(comparators, node.comparators, strict=True))
+        if left is node.left and same:
+            return node
+        return ast.Compare(left=left, ops=node.ops, comparators=comparators)
+    if isinstance(node, ast.Call):
+        args = [visit(arg) for arg in node.args]
+        if all(a is b for a, b in zip(args, node.args, strict=True)):
+            return node
+        return ast.Call(func=node.func, args=args, keywords=node.keywords)
+    if isinstance(node, ast.Tuple):
+        elts = [visit(elt) for elt in node.elts]
+        if all(a is b for a, b in zip(elts, node.elts, strict=True)):
+            return node
+        return ast.Tuple(elts=elts, ctx=node.ctx)
+    return node
+
+
+class _Forced:
+    """A tree with one comparison held true, or held false.
+
+    Every conditional whose condition holds the comparison, outside any
+    conditional nested in that condition, is cut down to what is left of it:
+    the branch its condition now selects, or a conditional on the atoms that
+    still decide. ``hits`` counts the comparisons that were held.
+
+    A conditional whose condition holds the comparison only inside a
+    conditional nested in it keeps the name of its condition as written
+    (``_bngsim_condition``), and so does every other call that is changed: it
+    is one choice, made the same way on both sides of the flip, where what is
+    nested in it does not jump there.
+    """
+
+    def __init__(self, atom: ast.expr, value: bool) -> None:
+        self.kind = type(atom)
+        self.key = ast.dump(atom)
+        self.value = value
+        self.hits = 0
+        self._held: list[int] = []  # per conditional being cut, the atoms held in it
+
+    def _condition(self, node: ast.expr) -> ast.expr:
+        if isinstance(node, self.kind) and ast.dump(node) == self.key:
+            self.hits += 1
+            self._held[-1] += 1
+            return ast.Constant(value=self.value)
+        if not isinstance(node, ast.Call):
+            return self.visit(node)
+        if _is_call(node, "Not") and len(node.args) == 1:
+            inner = self._condition(node.args[0])
+            if inner is node.args[0]:
+                return node
+            if isinstance(inner, ast.Constant):
+                return ast.Constant(value=not inner.value)
+            return ast.Call(func=node.func, args=[inner], keywords=[])
+        if _is_call(node, "And") or _is_call(node, "Or"):
+            inners = [self._condition(arg) for arg in node.args]
+            if all(a is b for a, b in zip(inners, node.args, strict=True)):
+                return node
+            # ``And`` is decided by one false operand, ``Or`` by one true.
+            decides = _is_call(node, "Or")
+            left = []
+            for inner in inners:
+                if isinstance(inner, ast.Constant):
+                    if bool(inner.value) == decides:
+                        return ast.Constant(value=decides)
+                else:
+                    left.append(inner)
+            if not left:
+                return ast.Constant(value=not decides)
+            return left[0] if len(left) == 1 else ast.Call(func=node.func, args=left, keywords=[])
+        # Anything else is a value: a comparison of other things, a
+        # conditional. The atom inside one of those is not this condition's.
+        return self.visit(node)
+
+    def visit(self, node):
+        if not _is_call(node, "Piecewise"):
+            out = _rebuilt(node, self.visit)
+            # ``max``, ``min`` and ``abs`` are choices too, each the same one
+            # on both sides of the flip, and are named as written.
+            if out is not node and isinstance(node, ast.Call):
+                out._bngsim_condition = ast.dump(node)
+            return out
+        taken, condition, other = _two_branches(node)
+        self._held.append(0)
+        cut = self._condition(condition)
+        held = self._held.pop()
+        if isinstance(cut, ast.Constant):
+            return self.visit(taken if cut.value else other)
+        one, two = self.visit(taken), self.visit(other)
+        if cut is condition and one is taken and two is other:
+            return node
+        out = ast.Call(
+            func=node.func,
+            args=[
+                ast.Tuple(elts=[one, cut], ctx=ast.Load()),
+                ast.Tuple(elts=[two, ast.Constant(value=True)], ctx=ast.Load()),
+            ],
+            keywords=[],
+        )
+        if not held:
+            out._bngsim_condition = ast.dump(condition)  # type: ignore[attr-defined]
+        return out
+
+
+class _Blended:
+    """A tree with every choice in it made by a symbol of its own.
+
+    ``if(c, a, b)`` becomes ``s·a + (1 − s)·b`` with ``s`` a name for the
+    condition ``c``, the same name wherever that condition is written;
+    ``max`` and ``min`` likewise, for the call; ``abs(a)`` becomes ``s·a``.
+    What is left is smooth in every symbol, the selectors among them, and is
+    what the law is in each combination of its choices when each selector is
+    0 or 1. It is linear in each selector, so an identity that holds for the
+    selectors at values picked at random holds in every combination.
+    """
+
+    def __init__(self, names: dict[str, str]) -> None:
+        self.names = names
+
+    def _selector(self, node: ast.AST, key: str | None = None) -> ast.expr:
+        key = ast.dump(node) if key is None else key
+        name = self.names.setdefault(key, f"_bngsim_choice_{len(self.names)}")
+        return ast.Name(id=name, ctx=ast.Load())
+
+    @staticmethod
+    def _blend(selector: ast.expr, one: ast.expr, two: ast.expr) -> ast.expr:
+        rest = ast.BinOp(left=ast.Constant(value=1.0), op=ast.Sub(), right=selector)
+        return ast.BinOp(
+            left=ast.BinOp(left=selector, op=ast.Mult(), right=one),
+            op=ast.Add(),
+            right=ast.BinOp(left=rest, op=ast.Mult(), right=two),
+        )
+
+    def visit(self, node):
+        if _is_call(node, "Piecewise"):
+            taken, condition, other = _two_branches(node)
+            choice = self._selector(condition, getattr(node, "_bngsim_condition", None))
+            return self._blend(choice, self.visit(taken), self.visit(other))
+        if (_is_call(node, "max") or _is_call(node, "min")) and len(node.args) >= 2:
+            out = self.visit(node.args[0])
+            written = getattr(node, "_bngsim_condition", None) or ast.dump(node)
+            for k, arg in enumerate(node.args[1:]):
+                choice = self._selector(node, f"{written}#{k}")
+                out = self._blend(choice, out, self.visit(arg))
+            return out
+        if _is_call(node, "abs") and len(node.args) == 1:
+            choice = self._selector(node, getattr(node, "_bngsim_condition", None))
+            return ast.BinOp(left=choice, op=ast.Mult(), right=self.visit(node.args[0]))
+        return _rebuilt(node, self.visit)
+
+
+def _blended(body: ast.expr, names: dict[str, str]) -> ast.Expression:
+    return ast.fix_missing_locations(ast.Expression(body=_Blended(names).visit(body)))
+
+
 def _continuous_across(
     flat: str, atom: str, parsed: dict | None = None, held: AbstractSet[str] = frozenset()
 ) -> bool:
     """Whether the rate law *flat* is continuous wherever the comparison
-    *atom* flips, asked at every flip found from three points.
+    *atom* flips.
 
     ``if(v < 0, -v/max(X, 0.01), 0)`` is: its two branches meet where ``v`` is
     0. ``if(X < thr, kb, 0)`` is not. The first is a bend, which a difference
     quotient reads across without harm; the second is a jump (issue #938).
 
+    What is compared is the law with the atom held true and the law with it
+    held false (:class:`_Forced`), at the flip: the one is what the law is on
+    one side and the other what it is on the other. Not the law as written a
+    hair either side: every other choice in it, another conditional, ``max``,
+    ``min``, ``abs``, is made by a symbol of its own (:class:`_Blended`), so
+    that the two are smooth and are compared in every combination of those
+    choices at once. Read as written, a jump in proportion to
+    ``max(Y − c, 0)`` or to ``if(time > 100, 1, 0)`` is 0 wherever the values
+    picked put it, and was found a bend. A comparison that holds a step call,
+    ``floor(X/P) > 2``, flips where the step does and not where its two sides
+    meet, and is never a bend here.
+
     Every symbol is given a value between 0.5 and 2. Each symbol the atom
     reads is then moved, in turn, over :data:`_CONTINUITY_GRID`, and wherever
     the atom comes out differently at two neighbouring values the flip
-    between them is closed in on by bisection. There the whole rate law is
-    read a hair either side and a tenth of a hair either side. A jump is as
-    large across the tenth as across the whole; what a ramp does across the
-    surface is a tenth as large. A difference of two readings and not a slope
-    beside them: a jump of a thousandth beside a term that moves by 0.2 over
-    the hair is a jump. Where the tenth is more than a tenth, a hundredth of
-    the hair is read too, which tells a law that curves on the scale of the
-    hair, a bend, from one that jumps or turns on as a power under 1.
+    between them is closed in on by bisection. Along every symbol and at
+    every flip along it: the atom of ``if((B − 0.1)·(B − 3) > 0, kb·(B − 3),
+    0)`` flips at two values of B, and the law bends at the one and jumps at
+    the other. A flip is where the atom changes, which is what the engine
+    evaluates: a comparison that tends to 0 without reaching it is no flip,
+    and one that changes sign across a pole is.
 
-    Along every symbol, because a jump in proportion to one of them is
-    nothing on the part of the surface where that one is 0. And at every flip
-    along it, not at the first one a root finder comes to: the atom of
-    ``if((B − 0.1)·(B − 3) > 0, kb·(B − 3), 0)`` flips at two values of B, and
-    the law bends at the one and jumps at the other. A flip is where the atom
-    changes, which is what the engine evaluates: a comparison that tends to 0
-    without reaching it, ``(B − 0.1)·exp(−3·B)`` far out, is no flip, and one
-    that changes sign across a pole is.
+    At a flip each of the two laws is read on its own side: at the flip, a
+    tenth of a hair from it and a hair from it. The two have to meet, to what
+    their own arithmetic rounds by (:func:`_float_rounding`), and each has to
+    leave the surface no faster than a power of 0.7: a square root turns on
+    with a slope that has no bound. A law with no value on its side, or with
+    a pole there, makes no demand: the engine's right-hand side is not finite
+    there, and a run that ends has not crossed.
 
     ``held`` names the symbols that are not moved: the ones no run moves and
     no column perturbs across a surface, a parameter or a clock. A condition
     that flips along one of those alone flips at an instant, at one state for
     every column, and is not this question.
 
-    A jump inside what the rate law's own arithmetic rounds by
-    (:func:`_float_rounding`) is not seen, nor are two flips along one symbol
-    that no grid value separates. A flip the law has a pole at, or no value
-    beside, is passed over: the engine's right-hand side is not finite there,
-    and a run that ends has not crossed it.
+    A bend that depends on which way another choice goes is not found one:
+    ``if(X < thr, min(kb·(thr − X), cap), 0)`` meets 0 on the surface because
+    the ramp is the lesser there, and with the choice free it does not. Two
+    flips along one symbol that no grid value separates are not seen.
 
     The law and the atom are read as plain doubles (:func:`_float_form`), not
     through sympy: sympy puts a condition that holds a conditional into a
@@ -3767,46 +3967,56 @@ def _continuous_across(
     the signed-rate idiom.
 
     False wherever the question cannot be asked: a rate law or an atom that is
-    not read, a call that is not evaluated, an atom no symbol flips.
+    not read, a call that is not evaluated, an atom no conditional of the law
+    holds, an atom no symbol flips.
 
-    ``parsed`` keeps each rate law's compiled form between calls: a law with
-    twenty conditions is asked twenty times.
+    ``parsed`` keeps each rate law's tree between calls: a law with twenty
+    conditions is asked twenty times.
     """
     import random
 
-    if len(flat) > _CONTINUITY_MAX_CHARS:
+    if len(flat) > _CONTINUITY_MAX_CHARS or _STEP_CALL.search(atom):
         return False
     if parsed is None:
         parsed = {}
-    for text in (flat, atom):
-        if text not in parsed:
-            parsed[text] = _float_form(_float_tree(text))
-    law, cond = parsed[flat], parsed[atom]
-    if law is None or cond is None:
+    if flat not in parsed:
+        parsed[flat] = _float_tree(flat)
+    law_tree, atom_tree = parsed[flat], _float_tree(atom)
+    if law_tree is None or atom_tree is None:
         return False
-    _, law_names, law_tree = law
+    choices: dict[str, str] = {}
+    try:
+        laws = []
+        for value in (True, False):
+            forced = _Forced(atom_tree.body, value)
+            body = forced.visit(law_tree.body)
+            if not forced.hits:
+                return False
+            laws.append(_blended(body, choices))
+        cond = _float_form(_blended(atom_tree.body, choices))
+        forms = [_float_form(law) for law in laws]
+    except (_Unread, RecursionError):
+        return False
+    if cond is None or None in forms:
+        return False
     cond_at, cond_names, _ = cond
-    symbols = sorted(set(law_names) | set(cond_names))
-    pivots = [i for i, name in enumerate(symbols) if name in set(cond_names) - held]
+    names = sorted(set(cond_names) | {name for form in forms for name in form[1]})
+    pivots = [i for i, name in enumerate(names) if name in set(cond_names) - held]
     if not pivots:
         return False
 
-    def read(point: list[float]) -> tuple[float, float]:
-        """The law's value and what it rounds by (:func:`_float_rounding`)."""
-        value, size = _float_rounding(law_tree, dict(zip(symbols, point, strict=True)))
-        return float(value), float(size)
-
     def holds(point: list[float]) -> bool | None:
         try:
-            return bool(cond_at(dict(zip(symbols, point, strict=True))))
-        except Exception:  # noqa: BLE001
+            return bool(cond_at(dict(zip(names, point, strict=True))))
+        except Exception:  # noqa: BLE001 - a value that is no number
             return None
 
-    def flips(point: list[float], i: int) -> list[float] | None:
-        """Every value of symbol *i* on the grid's range at which the atom
-        flips, or ``None`` where the atom cannot be read."""
+    def flips(point: list[float], i: int) -> list[tuple[float, float]] | None:
+        """Every flip of the atom along symbol *i* on the grid's range, as
+        the two neighbouring doubles it lies between; ``None`` where the atom
+        cannot be read."""
         at = list(point)
-        found: list[float] = []
+        found: list[tuple[float, float]] = []
         before_x = before = None
         for x in _CONTINUITY_GRID:
             at[i] = x
@@ -3827,88 +4037,80 @@ def _continuous_across(
                         lo = mid
                     else:
                         hi = mid
-                found.append(hi)
+                found.append((lo, hi))
             before_x, before = x, now
         return found
 
-    def beside(point: list[float], i: int, steps: Sequence[float]):
-        """The law's values, what they round by, and the atom's truth, with
-        symbol *i* at each of *steps*; ``None`` where one cannot be read."""
+    def leaves(tree: ast.Expression, point: list[float], i: int, steps: Sequence[float]):
+        """A law at the flip and a tenth of a hair and a hair from it, on one
+        side, with what it rounds by; ``None`` where it has no value there or
+        a pole, and ``False`` where it leaves the surface faster than a power
+        of 0.7."""
         at = list(point)
         values: list[float] = []
         sizes: list[float] = []
-        sides: list[bool] = []
         for step in steps:
             at[i] = step
-            try:
-                value, size = read(at)
-            except Exception:  # noqa: BLE001 - a value that is no number
-                return None
-            side = holds(at)
-            if side is None:
-                return None
-            values.append(value)
-            sizes.append(size)
-            sides.append(side)
-        return values, sizes, sides
+            value, size = _float_rounding(tree, dict(zip(names, at, strict=True)))
+            values.append(float(value))
+            sizes.append(float(size))
+        on, tenth, whole = values
+        if not (math.isfinite(tenth) and math.isfinite(whole)):
+            return None
+        rounding = 16.0 * _EPS * max(sizes[1:]) + _CONTINUITY_UNDERFLOW
+        if math.isfinite(on):
+            rounding = max(rounding, 16.0 * _EPS * sizes[0])
+        else:
+            # No value on the flip itself and one either side of it: 0/0 in
+            # `(x − x0)/abs(x − x0)` at x0, which the engine has too, at that
+            # one double. Carried to the flip from the two readings beside it.
+            on = tenth - (whole - tenth) / 9.0
+            rounding += abs(whole - tenth)
+        # A pole: ten times as large a tenth of the hair out as a whole hair
+        # out. `K·e/dt` with the gain `K = U/(U + R)` has one where U is −R.
+        if abs(tenth) > rounding and abs(tenth) >= 8.0 * abs(whole):
+            return None
+        if abs(tenth - on) > 0.2 * abs(whole - on) + rounding:
+            return False
+        return on, rounding
 
     rng = random.Random(938)
     reached = 0
     for _ in range(3):
-        point = [rng.uniform(0.5, 2.0) for _ in symbols]
+        point = [rng.uniform(0.5, 2.0) for _ in names]
         for i in pivots:
             crossings = flips(point, i)
             if crossings is None:
                 return False
-            for x in crossings:
-                hair = 1e-6 * max(abs(x), 1.0)
-                read_at = beside(point, i, [x + k * hair for k in (-1.0, -0.1, 0.1, 1.0)])
-                if read_at is None:
+            for lo, hi in crossings:
+                hair = 1e-6 * max(abs(hi), 1.0)
+                at = list(point)
+                at[i] = hi
+                true_above = holds(at)
+                at[i] = hi + hair
+                if true_above is None or holds(at) != true_above:
+                    return False  # a second flip inside the hair
+                at[i] = lo - hair
+                if holds(at) == true_above:
                     return False
-                values, sizes, sides = read_at
-                # The law has no value on a side: an overflow, a root of a
-                # negative number. The engine has none there either, and no
-                # run that ends has been there.
-                if not all(math.isfinite(v) for v in values):
-                    continue
-                # One flip inside the hair, and inside the tenth of it.
-                if sides[0] == sides[3] or sides[1] == sides[2]:
+                above = [hi, hi + 0.1 * hair, hi + hair]
+                below = [lo, lo - 0.1 * hair, lo - hair]
+                try:
+                    ends = [
+                        leaves(laws[0], point, i, above if true_above else below),
+                        leaves(laws[1], point, i, below if true_above else above),
+                    ]
+                except Exception:  # noqa: BLE001 - a value that is no number
                     return False
-                wide = abs(values[3] - values[0])
-                narrow = abs(values[2] - values[1])
-                rounding = 16.0 * _EPS * max(sizes) + _CONTINUITY_UNDERFLOW
-                # A pole: on one side the law is ten times as large a tenth
-                # of the hair out as a whole hair out. No run that ends has
-                # crossed it, the rate being without bound there, and it is
-                # neither a bend nor a jump: `K·e/dt` with the gain
-                # `K = U/(U + R)` changes sign where U is −R.
-                if any(
-                    abs(inner) > rounding and abs(inner) >= 8.0 * abs(outer)
-                    for inner, outer in ((values[1], values[0]), (values[2], values[3]))
-                ):
+                # No value, or a pole, on one side: nothing crosses here, and
+                # how the other law leaves the surface is its own affair.
+                if any(end is None for end in ends):
                     continue
-                # A part in 1e5 over the tenth: the flip is found to 1e-13,
-                # which is 1e-7 of the hair, and a ramp from it is that far
-                # off its tenth.
-                if narrow > (0.1 + 1e-5) * wide + rounding:
-                    # Not a ramp over the hair. A law that curves on the
-                    # scale of the hair is not one either, a saturation whose
-                    # half-point is three hairs off, and it is a bend. Read a
-                    # hundredth of the hair either side: how far the tenth is
-                    # off a tenth of the whole goes down with the scale for a
-                    # curve, stays for a power and goes up for a jump. A
-                    # power under 1 stays refused.
-                    finer = beside(point, i, [x - 0.01 * hair, x + 0.01 * hair])
-                    if finer is None or not all(math.isfinite(v) for v in finer[0]):
-                        return False
-                    if finer[2][0] == finer[2][1]:
-                        return False
-                    finest = abs(finer[0][1] - finer[0][0])
-                    rounding = max(rounding, 16.0 * _EPS * max(finer[1]) + _CONTINUITY_UNDERFLOW)
-                    if narrow > 0.3 * wide + rounding:
-                        return False
-                    if finest * wide > narrow * (0.05 * wide + 0.5 * narrow) + rounding * wide:
-                        return False
+                if any(end is False for end in ends):
+                    return False
+                (one, one_rounds), (two, two_rounds) = ends
+                if abs(one - two) > one_rounds + two_rounds:
+                    return False
                 reached += 1
     return reached > 0
 
