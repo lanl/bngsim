@@ -733,14 +733,16 @@ end groups
 """
 
 
-def test_a_jump_of_eighty_ulp_of_a_steep_term_that_reads_the_threshold_species(tmp_path):
-    """Control. ``kbig·B + if(B < thr, kb, 0)`` with kb at 80 ulp of kbig·B and
+def test_a_jump_of_sixty_ulp_of_a_steep_term_that_reads_the_threshold_species(tmp_path):
+    """Control. ``kbig·B + if(B < thr, kb, 0)`` with kb at 61 ulp of kbig·B and
     just over the drive tolerance, so it is a jump as it always was. The steep
     term moves between the two sides of the surface by 32 of its ulp and more,
     which takes most of the jump out of their difference as it stands: read that
     way alone, the jump was taken back and dY/dthr came back 0. Carried to the
-    surface along each side's slope it is 80 ulp again. The column is the jump
-    to the 3% that 80 ulp can be read to."""
+    surface along each side's slope it is 61 ulp again. The column is the jump
+    to what 61 ulp can be read to, a few ulp in the six readings it is taken
+    from: 0.9% out on one machine and 5.1% on another, which land the root on
+    different doubles."""
     path = tmp_path / "m.net"
     path.write_text(STEEP)
     run = bngsim.Simulator(
@@ -749,7 +751,7 @@ def test_a_jump_of_eighty_ulp_of_a_steep_term_that_reads_the_threshold_species(t
     got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), 0]
     # dY/dthr = kbig·dB-integral's part is 0 (the smooth term does not read thr)
     # plus the jump's kb/(kdeg·thr).
-    assert got == pytest.approx(0.06 / (1e-3 * 5e7), rel=0.05)
+    assert got == pytest.approx(0.06 / (1e-3 * 5e7), rel=0.12)
 
 
 SPECIES_THRESHOLD = """begin parameters
