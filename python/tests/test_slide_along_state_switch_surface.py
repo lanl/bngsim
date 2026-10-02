@@ -358,3 +358,42 @@ def test_a_blow_up_beside_a_state_switch_fails_as_it_did(tmp_path):
     )
     with pytest.raises(bngsim.SimulationError, match="CV_REPTD_SRHSFUNC_ERR.*non-finite"):
         sim.run(sample_times=[0.0, 2.0], rtol=1e-8, atol=1e-10, timeout=60.0)
+
+
+@pytest.mark.parametrize(
+    ("tol", "s0", "times"),
+    [
+        (1e-2, 0.999, [0.0, 0.05, 0.2]),
+        (1e-2, 0.99, [0.0, 0.05, 0.2]),
+        (1e-2, 0.9, [0.0, 0.05, 0.2]),
+        (1e-3, 0.999, [0.0, 0.01, 0.05]),
+    ],
+    ids=["a-thousandth-short", "a-hundredth-short", "a-tenth-short", "tighter"],
+)
+def test_a_short_slide_at_a_loose_tolerance_is_refused(tmp_path, tol, s0, times):
+    """S starts inside the tolerance's band of the surface, or a few steps
+    from it, and slides for most of a short run: dS/damp came back the length
+    of the run, 0.2 for 0.001 in the first. A state that starts inside the
+    band is no nearer the surface than it has ever been, so every switch is
+    read at the first asking; and a run of 55 steps is asked at its output
+    points, not only where 50 steps have gone by."""
+    sim = bngsim.Simulator(
+        _model(tmp_path, FROM_BELOW, s0), method="ode", sensitivity_params=["amp"]
+    )
+    with pytest.raises(Exception, match="issue #926"):
+        sim.run(sample_times=times, rtol=tol, atol=tol, timeout=30.0)
+
+
+@pytest.mark.parametrize("tol", [1e-2, 1e-3, 1e-4])
+def test_a_state_inside_a_wide_band_that_has_not_arrived_is_not_a_slide(tmp_path, tol):
+    """Control. S goes from 0.9 to 0.95, with the surface at 1. At a tolerance
+    of a hundredth the band is a quarter of the state, S is inside it all the
+    way, and the two flows at the surface are those of the slide that begins
+    at t = 0.1. The state is not there yet: the near side's flow has not had
+    the time to bring it. dS/damp = t."""
+    run = bngsim.Simulator(
+        _model(tmp_path, FROM_BELOW, 0.9), method="ode", sensitivity_params=["amp"]
+    ).run(sample_times=[0.0, 0.01, 0.05], rtol=tol, atol=tol)
+    np.testing.assert_allclose(
+        np.asarray(run.sensitivities)[:, 0, 0], [0.0, 0.01, 0.05], rtol=1e-6
+    )

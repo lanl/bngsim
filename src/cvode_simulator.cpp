@@ -2539,7 +2539,8 @@ struct CvodeSimulator::Impl {
                                     const std::vector<const NetworkModel::StateSwitch *> &switches,
                                     double rtol, double atol, const std::vector<double> &atol_v,
                                     const std::vector<char> *ask = nullptr, bool at_root = false,
-                                    std::vector<double> *band_out = nullptr);
+                                    std::vector<double> *band_out = nullptr,
+                                    std::vector<std::pair<double, double>> *last_away = nullptr);
 
     // Issue #928. Whether a run is pinned on a state-switch surface, and if
     // so, the state put across it and the integrator restarted there.
@@ -7437,7 +7438,7 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
     double t, const double *x, int ns,
     const std::vector<const NetworkModel::StateSwitch *> &switches, double rtol, double atol,
     const std::vector<double> &atol_v, const std::vector<char> *ask, bool at_root,
-    std::vector<double> *band_out) {
+    std::vector<double> *band_out, std::vector<std::pair<double, double>> *last_away) {
     auto &eval = model.evaluator();
     const auto n = static_cast<std::size_t>(ns);
     const std::vector<double> here(x, x + ns);
@@ -7486,6 +7487,9 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
         // their thresholds took 72 times main's time on a grid of 10,001.
         if (band_out != nullptr && std::isfinite(band) && band > 0.0) {
             (*band_out)[which] = band;
+        }
+        if (last_away != nullptr && !beside && std::isfinite(g)) {
+            (*last_away)[which] = {t, std::fabs(g)};
         }
         if (!std::isfinite(g) || !std::isfinite(flow) || !beside || !(norm2 > 0.0) ||
             !(ulp > 0.0) || side == 0.0) {
@@ -7572,8 +7576,18 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
         const double near_flow =
             (flow_at[1] * g_at[0] - flow_at[0] * g_at[1]) / (g_at[0] - g_at[1]);
         const double far_flow = (flow_at[2] * g_at[3] - flow_at[3] * g_at[2]) / (g_at[3] - g_at[2]);
-        if (std::isfinite(near_flow) && std::isfinite(far_flow) && near_flow * side < 0.0 &&
-            far_flow * side > 0.0 && std::fabs(near_flow) >= 0.5 * std::fabs(flow_at[1]) &&
+        // And the state has to be there. Inside the band is not on the
+        // surface: at a tolerance of a hundredth the band is a quarter of the
+        // state, and a state a twentieth short of a surface it has not reached
+        // has the flows of a slide at that surface. It is there once the near
+        // side's flow has had the time to bring it from where it last was
+        // outside the band, or from where the run began.
+        const bool arrived =
+            last_away == nullptr ||
+            (*last_away)[which].second <= std::fabs(near_flow) * (t - (*last_away)[which].first);
+        if (arrived && std::isfinite(near_flow) && std::isfinite(far_flow) &&
+            near_flow * side < 0.0 && far_flow * side > 0.0 &&
+            std::fabs(near_flow) >= 0.5 * std::fabs(flow_at[1]) &&
             std::fabs(far_flow) >= 0.5 * std::fabs(flow_at[2]) &&
             std::fabs(near_flow) > kStateSwitchSlideRelTol * scale_at[1] &&
             std::fabs(far_flow) > kStateSwitchSlideRelTol * scale_at[2]) {
@@ -10613,9 +10627,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // One sync reads every residual. The surface itself is read only for a
     // residual inside four times the tolerance's band of its surface as it
     // was last measured, or within a tenth of the largest it has been where
-    // the band has not been measured yet, and for all of them once in 64
-    // askings, which is what holds the cost where a model has hundreds of
-    // switches.
+    // the band has not been measured yet, and for all of them at the first
+    // asking and once in 64 after it, which is what holds the cost where a
+    // model has hundreds of switches.
     //
     // CVODE logs the end of a batch as an error, one line each. The run's
     // error log goes to the null sink with its warnings: a failure still
@@ -10624,11 +10638,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     const long watch_batch = std::min<long>(static_cast<long>(max_steps), kWatchBatchSteps);
     // How many batches make up one max_steps batch, for the stall check.
     const long watch_stall = watch ? std::max<long>(1, max_steps / watch_batch) : 1;
-    int watch_askings = 0;
+    // The first asking is for every switch, so that each has its band from
+    // the start: a state that begins inside the band of a surface is no
+    // nearer it than it has ever been, and was never read.
+    int watch_askings = 63;
     long watch_steps_asked = 0; // CVODE's count of steps when the run was last asked
     std::vector<double> watch_largest;
     std::vector<double> watch_band;
     std::vector<char> watch_ask;
+    // For each switch, the last asking at which the state was not beside its
+    // surface: when, and how far from it.
+    std::vector<std::pair<double, double>> watch_away;
     if (watch) {
         CVodeSetMaxNumSteps(cvode_mem, watch_batch);
         SUNLogger logger = nullptr;
@@ -10641,12 +10661,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         const size_t n_sw = state_switches.size();
         watch_largest.assign(n_sw, 0.0);
         watch_band.assign(n_sw, 0.0);
+        watch_away.assign(n_sw, {static_cast<double>(t_now), 0.0});
         impl_->sync_model_at(static_cast<double>(t_now), N_VGetArrayPointer(y), ns);
         for (size_t k = 0; k < n_sw; ++k) {
             const double g =
                 std::fabs(model.evaluator().evaluate(state_switches[k]->residual_expr_idx));
             if (g > watch_largest[k]) {
                 watch_largest[k] = g;
+            }
+            if (std::isfinite(g)) {
+                watch_away[k].second = g;
             }
         }
     }
@@ -10673,13 +10697,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (all || beside) {
                 watch_ask[k] = 1;
                 any = true;
+            } else if (std::isfinite(g)) {
+                watch_away[k] = {t, g};
             }
         }
         if (!any) {
             return;
         }
         impl_->refuse_slide_along_state_switch(t, x, ns, state_switches, rtol, atol, atol_v,
-                                               &watch_ask, false, &watch_band);
+                                               &watch_ask, false, &watch_band, &watch_away);
         state_switch_pinned_since.resize(n_sw, std::numeric_limits<double>::quiet_NaN());
         state_switch_pinned_steps.resize(n_sw, 0);
         // Ends the run where the state is pinned (issue #952); false otherwise.
