@@ -1678,7 +1678,9 @@ class Simulator:
             "moved along each sensitivity, which beside a step is on its other side, and no "
             "jump is applied at the step itself: the columns come back wrong, or the step "
             "size collapses and the run does not finish (issue #938). bngsim refuses rather "
-            "than return them. Write the step as an event, or difference plain runs."
+            "than return them, whether or not this run reaches a step: that is not known "
+            "before it. A condition is located, so write the step as one "
+            "(`if(X > a, 1, -1)` for `sign(X - a)`), or as an event, or difference plain runs."
         )
 
     def _stall_on_fallback_refusal(self, error: Exception) -> SensitivityUnsupportedError | None:
