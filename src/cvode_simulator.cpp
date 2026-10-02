@@ -2644,13 +2644,28 @@ struct CvodeSimulator::Impl {
     // or fixed; the last event fire; and the last such switch, with how far
     // from it its crossing time is known, for the event that fires after it.
     std::vector<double> clock_instants;
+    // The tolerances of the run under way, which say how well a state
+    // crossing's time is known.
+    double run_rtol = 0.0;
+    double run_atol = 0.0;
+    std::vector<double> run_atol_vec;
     double last_event_fire = std::numeric_limits<double>::quiet_NaN();
+    std::vector<int> last_event_reads; // the species the triggers that fired read
     struct StateJump {
         double t = std::numeric_limits<double>::quiet_NaN();
         double reach = 0.0;
         std::string residual;
+        std::vector<int> reads; // the species its residuals read
     };
     StateJump last_state_jump;
+    // Whether two crossings read a species in common. Two that do are on one
+    // trajectory, and the root finder takes them in the order they come in:
+    // `A < thr1` and `A < thr2` a few hundred ulp apart. Two that do not are
+    // each known to the tolerances of the run, and their order is not.
+    static bool reads_in_common(const std::vector<int> &a, const std::vector<int> &b) {
+        return std::any_of(a.begin(), a.end(),
+                           [&](int j) { return std::find(b.begin(), b.end(), j) != b.end(); });
+    }
 
     // Issue #897: whether a plain run should restart at state switch `sw`'s
     // root, located at (t, x) in a step that ended at t_end. True when the
@@ -5623,7 +5638,13 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
 
     // Issue #945: a state-dependent switch jumped within its reach of this
     // fire, and which came first is not known.
-    if (std::fabs(t_evt - last_state_jump.t) <= last_state_jump.reach) {
+    std::vector<int> fired_reads;
+    for (int ei : fired) {
+        const std::vector<int> &support = model.event_trigger_residual_species(ei);
+        fired_reads.insert(fired_reads.end(), support.begin(), support.end());
+    }
+    if (std::fabs(t_evt - last_state_jump.t) <= last_state_jump.reach &&
+        !reads_in_common(fired_reads, last_state_jump.reads)) {
         std::ostringstream msg;
         msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within "
             << last_state_jump.reach << " of the state-dependent rate-law switch with residual '"
@@ -5635,6 +5656,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         throw std::runtime_error(msg.str());
     }
     last_event_fire = t_evt;
+    last_event_reads = fired_reads;
 
     auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
 
@@ -9775,8 +9797,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         for (int j : sw.species) {
             const auto uj = static_cast<std::size_t>(j);
             if (j >= 0 && j < ns) {
-                const double atol_j = atol_vec.empty() ? atol : atol_vec[uj];
-                allowed += std::fabs(gx[uj]) * (rtol * std::fabs(x[uj]) + atol_j);
+                const double atol_j = run_atol_vec.empty() ? run_atol : run_atol_vec[uj];
+                allowed += std::fabs(gx[uj]) * (run_rtol * std::fabs(x[uj]) + atol_j);
             }
         }
         if (std::isfinite(flow) && flow != 0.0 && std::isfinite(allowed)) {
@@ -9792,15 +9814,18 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
                 << sw.residual_source << "' crosses at t=" << t_evt
                 << " and the right-hand side jumps there, within " << reach
-                << " of a rate-law condition on a clock that switches at t=" << *first
+                << " of a condition on a clock, in a rate law or an event's trigger, that "
+                   "switches at t="
+                << *first
                 << ". The two are not told apart in time: this switch's jump is read across "
                    "both, and which comes first is not known. Each is right alone. bngsim "
-                   "refuses rather than give one the other's jump, or one side of a kink (issue "
-                   "#946). Separate the two crossings, or drop the parameters that move them "
-                   "from sensitivity_params.";
+                   "refuses rather than give one the other's jump, or one side of a kink "
+                   "(issues #946, #945). Separate the two crossings, or drop the parameters "
+                   "that move them from sensitivity_params.";
             throw std::runtime_error(msg.str());
         }
-        if (std::fabs(t_evt - last_event_fire) <= reach) {
+        if (std::fabs(t_evt - last_event_fire) <= reach &&
+            !reads_in_common(last_event_reads, residual_support)) {
             std::ostringstream msg;
             msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
                 << sw.residual_source << "' crosses at t=" << t_evt
@@ -9815,6 +9840,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         last_state_jump.t = t_evt;
         last_state_jump.reach = reach;
         last_state_jump.residual = sw.residual_source;
+        last_state_jump.reads = residual_support;
     }
 
     // ── A slide along the surface (issue #926) ───────────────────────────────
@@ -10197,6 +10223,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     double atol = (opts.atol > 0) ? opts.atol : impl_->atol;
     const std::vector<double> &atol_v = impl_->resolve_atol_vec(opts);
     int max_steps = (opts.max_steps > 0) ? opts.max_steps : impl_->max_steps;
+    impl_->run_rtol = rtol;
+    impl_->run_atol = atol;
+    impl_->run_atol_vec = atol_v;
 
     // Dense vs sparse (KLU) matrix, including the two force flags (GH #102,
     // GH #29) — see Impl::choose_use_sparse.
@@ -10541,6 +10570,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     }
     std::sort(impl_->clock_instants.begin(), impl_->clock_instants.end());
     impl_->last_event_fire = std::numeric_limits<double>::quiet_NaN();
+    impl_->last_event_reads.clear();
     impl_->last_state_jump = {};
     if (!opts.sensitivity.state_switch_conditions.empty()) {
         const auto &conds = opts.sensitivity.state_switch_conditions;
