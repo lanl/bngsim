@@ -802,15 +802,19 @@ def test_a_power_onset_beside_a_gate_on_a_counter_in_another_law(tmp_path, ulps)
     #545), against the whole right-hand side, and no nudge of the time flips a
     condition on a counter: the frame was entered with Z's gate still to come
     and left with it made, and Z's row kept the gate's jump, −1.5. Every other
-    clock on the instant is put past it."""
+    clock on the instant is put past it, where the frame is entered and where
+    a sample on the instant is read out of it."""
     path = tmp_path / "m.net"
     path.write_text(ONSET_AND_GATE.format(at=repr(float(3.0 * (1 + ulps * np.finfo(float).eps)))))
     run = bngsim.Simulator(
         bngsim.Model.from_net(path), method="ode", sensitivity_params=["tau"]
-    ).run(sample_times=[0.0, 1.0, 2.0, 4.0, 5.0, 6.0], rtol=1e-10, atol=1e-12, timeout=60)
-    got = np.asarray(run.sensitivities)[-1, [0, 2], 0]
+    ).run(sample_times=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], rtol=1e-10, atol=1e-12, timeout=60)
+    got = np.asarray(run.sensitivities)[:, [0, 2], 0]
     # Y = r·(T − tau)^1.2/1.2.
-    np.testing.assert_allclose(got, [-(3.0**0.2), 0.0], rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(got[-1], [-(3.0**0.2), 0.0], rtol=1e-6, atol=1e-8)
+    # Z's row at every sample, the one on the instant among them: what a
+    # comoving column is read out against there has the gate made as well.
+    np.testing.assert_allclose(got[:, 1], 0.0, atol=1e-8)
 
 
 CURVED = {
