@@ -1174,7 +1174,7 @@ class Simulator:
         # support map; None until first needed by a sensitivity run.
         self._expr_sens_support_memo: dict[str, str | None] | None = None
         self._fallback_crossing_memo: tuple[tuple, str | None] | None = None
-        self._fallback_scan_cache: tuple[tuple, dict] | None = None
+        self._fallback_scan_cache: dict | None = None
         if self._sensitivity_params and dispatch != "ode":
             raise ValueError("sensitivity_params is only supported for method='ode'.")
         if self._sensitivity_ic and dispatch != "ode":
@@ -1556,7 +1556,7 @@ class Simulator:
         return list(res.compensated), detail, dict(res.blocked)
 
     def _raise_if_uncompensated_crossing_sensitivities(
-        self, *, time_course: bool = True, params: Sequence[str] | None = None
+        self, *, time_course: bool = True, params: Sequence[str] | None = None, core=None
     ) -> None:
         """Refuse a forward-sensitivity run left on the difference quotient over a
         rate-law branch crossing whose time moves (issue #414).
@@ -1564,6 +1564,10 @@ class Simulator:
         ``time_course`` is false for a steady-state solve, which reads ``∂f/∂p``
         at one state and crosses nothing: the state-crossing refusal at the end
         of this method (issue #938) is for a run that integrates through one.
+
+        ``core`` is the model asked about where that is not this Simulator's
+        own: a batch row's clone, with the row's parameters set. Which species
+        is a counter and which denominator is known nonzero go with them.
 
         The rate-law twin of :meth:`_raise_if_event_sensitivities`. When a rate
         law branches on a condition whose crossing time moves with the trajectory
@@ -1626,17 +1630,21 @@ class Simulator:
             return
         from bngsim._switch_sensitivity import model_uncompensated_crossing_reason
 
+        asked = self._model._core if core is None else core
         try:
-            reason = model_uncompensated_crossing_reason(self._model._core)
-        except Exception as e:  # pragma: no cover - defensive
-            # Detection is best-effort: without it we cannot confirm an
-            # uncompensated crossing, so leave the pre-#414 behaviour (the codegen
-            # warning already fired) rather than refuse a run we cannot justify
-            # refusing.
-            logger.debug("Uncompensated-crossing sensitivity refusal: scan unavailable (%s)", e)
-            return
+            reason = model_uncompensated_crossing_reason(asked)
+        except Exception as e:
+            # Not let through: a model whose rate laws cannot be read is one
+            # whose crossings are not known.
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported for this model: it has no analytic "
+                "sensitivity right-hand side, and its rate laws could not be read for a "
+                f"branch crossing ({type(e).__name__}: {e}). On CVODES' internal difference "
+                "quotient a column is wrong across one (issues #414, #938), and bngsim "
+                "refuses rather than run without knowing."
+            ) from e
         if reason is None:
-            self._raise_if_state_crossing_on_fallback(time_course, params)
+            self._raise_if_state_crossing_on_fallback(time_course, params, core)
             return
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported for this model: it branches on a "
@@ -1654,7 +1662,7 @@ class Simulator:
         )
 
     def _raise_if_state_crossing_on_fallback(
-        self, time_course: bool, params: Sequence[str] | None = None
+        self, time_course: bool, params: Sequence[str] | None = None, core=None
     ) -> None:
         """Refuse a time-course sensitivity run left on the difference quotient
         in a model with a crossing the quotient reads across (issues #938, #932).
@@ -1672,29 +1680,30 @@ class Simulator:
             return
         from bngsim._switch_sensitivity import fallback_crossing
 
-        core = self._model._core
+        own = core is None
+        core = self._model._core if own else core
         columns = tuple(self._sensitivity_params or ()) if params is None else tuple(params)
         ic = tuple(self._sensitivity_ic or ())
         # The answer goes with the rate laws' text, with which columns are
-        # requested and with what the parameters are: a law that bends at one
-        # value of an exponent jumps at another, and a species is a counter
-        # at a rate of exactly 1. Asked again where any of those has changed,
-        # with what was made of the text kept.
+        # requested and with what the parameters are: a species is a counter
+        # at a rate of exactly 1, and a denominator is known nonzero by the
+        # sign of what is in it. Asked again where any of those has changed,
+        # with each law's syntax tree kept: one entry a rate law.
         key = (columns, ic, tuple(float(core.get_param(name)) for name in core.param_names))
         cached = self._fallback_crossing_memo
         if cached is not None and cached[0] == key:
             crossing = cached[1]
         else:
             kept = self._fallback_scan_cache
-            if kept is None or kept[0] != key[:2]:
-                kept = self._fallback_scan_cache = (key[:2], {})
+            if kept is None:
+                kept = self._fallback_scan_cache = {}
             species = list(core.species_names)
             try:
                 crossing = fallback_crossing(
                     core,
                     columns,
                     [species.index(n) for n in ic if n in species],
-                    parsed=kept[1],
+                    parsed=kept,
                 )
             except Exception as e:
                 # Not let through: a rate law that cannot be read is one whose
@@ -1706,7 +1715,8 @@ class Simulator:
                     "difference quotient a column is wrong across one (issues #938, #932), "
                     "and bngsim refuses rather than run without knowing."
                 ) from e
-            self._fallback_crossing_memo = (key, crossing)
+            if own:
+                self._fallback_crossing_memo = (key, crossing)
         if crossing is None:
             return
         why = self.sens_rhs_decline_reason
@@ -1714,17 +1724,18 @@ class Simulator:
             "Forward sensitivity is not supported for this model: it has no analytic "
             "sensitivity right-hand side"
             + (f" ({why})" if why else "")
-            + f", and its rate law is not found continuous across {crossing!r}, which "
-            "the state or a requested parameter moves the run across. Without the analytic "
-            "right-hand side, CVODES' internal difference quotient is used for every column. "
-            "It reads the rate law at the state and the parameter moved along each column, "
-            "which beside a jump is on its other side: a column takes part of the jump "
-            "before the crossing, by more the looser the tolerance, or the step size "
-            "collapses and the run does not finish (issues #938, #932). bngsim refuses "
-            "rather than return it, whether or not this run reaches the crossing: that is "
-            "not known before it. Remove what the analytic path declines; or write the law "
-            "so that its branches meet where the condition flips, each condition holding "
-            "the difference it switches on, as in if(v > 0, v, 0); or difference plain runs."
+            + f", and a rate law of it switches on {crossing!r}, which the state or a "
+            "requested parameter moves the run across. Without the analytic right-hand "
+            "side, CVODES' internal difference quotient is used for every column. It reads "
+            "the rate law at the state and the parameter moved along each column, which "
+            "beside a jump is on its other side: a column takes part of the jump before the "
+            "crossing, by more the looser the tolerance, or the step size collapses and the "
+            "run does not finish (issues #938, #932). bngsim refuses rather than return it, "
+            "whether or not this run reaches the crossing and whether the law jumps there "
+            "or only bends: neither is known from its text. Remove what the analytic path "
+            "declines, so that the crossing is taken on the analytic right-hand side; or "
+            "write a bend with max or min, max(v, 0) for if(v > 0, v, 0); or difference "
+            "plain runs."
         )
 
     def _apply_event_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
@@ -5059,6 +5070,11 @@ class Simulator:
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
+                    # Issues #414, #938 — asked again of this row's parameters.
+                    # The batch asked of the model's own before any row ran,
+                    # and a row that makes a species a counter, or changes the
+                    # sign of what a rate law divides by, is another model.
+                    self._raise_if_uncompensated_crossing_sensitivities(core=clone._core)
                     opts.set_sensitivity_method(self._sensitivity_method)
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone. Outside

@@ -3133,11 +3133,6 @@ _STEP_CALL = re.compile(
 )
 
 
-# ``abs``, ``max`` and ``min``: a kink in ``f`` where they stand alone, and a
-# jump where the law divides by one, ``(X − thr)/abs(X − thr)``.
-_CHOICE_CALL = re.compile(r"(?<![A-Za-z0-9_.])(?:abs|max|min)\s*\(")
-
-
 def _iter_step_calls(expr: str, outermost: bool = False):
     """``(call, argument)`` for every :data:`_STEP_CALL` outside an ``if()`` condition.
 
@@ -3350,197 +3345,13 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
     return None
 
 
-def _reads_time_and_run_constants(flat: str, scope: SwitchConditionScope) -> bool:
-    """True when *flat* reads literal simulation time, and otherwise only run constants.
-
-    :func:`_reads_clock_and_run_constants` with a counter species left out of
-    what counts as a clock. A counter is a species: on the difference quotient
-    its sensitivity moves it like any other (issue #938), and literal time is
-    the one clock nothing moves.
-    """
-    if not _TIME_REF.search(flat):
-        return False
-    blanked = _TIME_REF.sub(" 0 ", flat)
-    for m in _IDENTIFIER.finditer(blanked):
-        name = m.group(0)
-        if name in scope.function_names:
-            return False
-        if blanked[m.end() :].lstrip().startswith("("):
-            continue
-        if name in scope.run_constants or name in _BUILTIN_CONSTANT_VALUES:
-            continue
-        return False
-    return True
+# ``abs``, ``max`` and ``min``: the law takes one of two expressions, with no
+# condition written.
+_CHOICE_NAMES = frozenset({"abs", "max", "min"})
+_CHOICE_CALL = re.compile(r"(?<![A-Za-z0-9_.])(?:abs|max|min)\s*\(")
 
 
-# A rate law longer than this is not asked whether it is continuous across a
-# condition: reading it costs more than the answer is worth, and it is refused.
-_CONTINUITY_MAX_CHARS = 20000
-
-
-def _float_call(fn):
-    """*fn* as ExprTk has it on a double: NaN outside its domain and an
-    infinity past the range of one, where Python's ``math`` raises."""
-
-    def call(*args):
-        try:
-            return float(fn(*(float(a) for a in args)))
-        except OverflowError:
-            return math.inf
-        except (ValueError, TypeError):
-            return math.nan
-
-    return call
-
-
-def _float_log(fn):
-    def call(x):
-        x = float(x)
-        if x > 0.0:
-            return fn(x) if x != math.inf else math.inf
-        return -math.inf if x == 0.0 else math.nan
-
-    return call
-
-
-def _float_div(a, b):
-    a, b = float(a), float(b)
-    if b != 0.0:
-        return a / b
-    if a == 0.0 or a != a:
-        return math.nan
-    return math.copysign(math.inf, a) * math.copysign(1.0, b)
-
-
-def _float_pow(a, b):
-    try:
-        value = float(a) ** float(b)
-    except OverflowError:
-        return math.inf
-    except ZeroDivisionError:
-        return math.inf
-    # A negative base to a fractional power is NaN on a double, and complex here.
-    return value if isinstance(value, float) else math.nan
-
-
-def _float_sign(x):
-    x = float(x)
-    return 1.0 if x > 0.0 else -1.0 if x < 0.0 else x
-
-
-# What a rate law may call and still be read as plain doubles. A call that is
-# not here (``rateOf``, ``mratio``, a table function with an argument) leaves
-# the law unread, and a law that is not read is not found continuous.
-_FLOAT_CALLS = {
-    "exp": _float_call(math.exp),
-    "log": _float_log(math.log),
-    "ln": _float_log(math.log),
-    "log10": _float_log(math.log10),
-    "log2": _float_log(math.log2),
-    "sqrt": _float_call(math.sqrt),
-    "abs": _float_call(math.fabs),
-    "sign": _float_sign,
-    "sin": _float_call(math.sin),
-    "cos": _float_call(math.cos),
-    "tan": _float_call(math.tan),
-    "asin": _float_call(math.asin),
-    "acos": _float_call(math.acos),
-    "atan": _float_call(math.atan),
-    "sinh": _float_call(math.sinh),
-    "cosh": _float_call(math.cosh),
-    "tanh": _float_call(math.tanh),
-    "min": _float_call(min),
-    "max": _float_call(max),
-    "floor": _float_call(math.floor),
-    "ceil": _float_call(math.ceil),
-    "And": lambda *args: all(bool(a) for a in args),
-    "Or": lambda *args: any(bool(a) for a in args),
-    "Not": lambda a: not a,
-    "Eq": lambda a, b: a == b,
-    "Ne": lambda a, b: a != b,
-}
-_FLOAT_HELPERS = {"__builtins__": {}, "_bngsim_div": _float_div, "_bngsim_pow": _float_pow}
-_FLOAT_COMPARISONS = (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
-
-
-class _Unread(Exception):
-    """The expression has something :func:`_float_form` does not read."""
-
-
-class _FloatForm(ast.NodeTransformer):
-    """An ExprTk expression, as :func:`bngsim._jacobian._preprocess_exprtk`
-    writes it, made into Python that evaluates it on doubles.
-
-    ``Piecewise((v, c), ..., (w, True))`` becomes a chain of conditional
-    expressions, so that only the branch taken is evaluated, and ``/`` and
-    ``**`` become calls that return what a double does where Python raises.
-    Anything outside the arithmetic, the comparisons and :data:`_FLOAT_CALLS`
-    raises :class:`_Unread`.
-    """
-
-    def __init__(self) -> None:
-        self.names: set[str] = set()
-
-    def generic_visit(self, node):
-        raise _Unread(type(node).__name__)
-
-    def visit_Expression(self, node):
-        return ast.Expression(body=self.visit(node.body))
-
-    def visit_Constant(self, node):
-        if isinstance(node.value, (bool, int, float)):
-            return node
-        raise _Unread("constant")
-
-    def visit_Name(self, node):
-        self.names.add(node.id)
-        return node
-
-    def visit_UnaryOp(self, node):
-        if not isinstance(node.op, (ast.USub, ast.UAdd)):
-            raise _Unread("unary")
-        return ast.UnaryOp(op=node.op, operand=self.visit(node.operand))
-
-    def visit_BinOp(self, node):
-        left, right = self.visit(node.left), self.visit(node.right)
-        if isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
-            return ast.BinOp(left=left, op=node.op, right=right)
-        if isinstance(node.op, ast.Div):
-            helper = "_bngsim_div"
-        elif isinstance(node.op, ast.Pow):
-            helper = "_bngsim_pow"
-        else:
-            raise _Unread("operator")
-        return ast.Call(func=ast.Name(id=helper, ctx=ast.Load()), args=[left, right], keywords=[])
-
-    def visit_Compare(self, node):
-        if len(node.ops) != 1 or not isinstance(node.ops[0], _FLOAT_COMPARISONS):
-            raise _Unread("comparison")
-        return ast.Compare(
-            left=self.visit(node.left),
-            ops=node.ops,
-            comparators=[self.visit(node.comparators[0])],
-        )
-
-    def visit_Call(self, node):
-        if not isinstance(node.func, ast.Name) or node.keywords:
-            raise _Unread("call")
-        name = node.func.id
-        if name == "Piecewise":
-            # No branch taken is no value: NaN, which no reading accepts.
-            out: ast.expr = ast.Constant(value=math.nan)
-            for pair in reversed(node.args):
-                if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
-                    raise _Unread("Piecewise")
-                value, cond = self.visit(pair.elts[0]), self.visit(pair.elts[1])
-                out = ast.IfExp(test=cond, body=value, orelse=out)
-            return out
-        if name not in _FLOAT_CALLS:
-            raise _Unread(name)
-        return ast.Call(func=node.func, args=[self.visit(a) for a in node.args], keywords=[])
-
-
-def _float_tree(expr: str) -> ast.Expression | None:
+def _syntax_tree(expr: str) -> ast.Expression | None:
     """The Python syntax tree of an ExprTk expression, or ``None`` where it
     is not Python once :func:`bngsim._jacobian._preprocess_exprtk` has it."""
     from bngsim._codegen import _PY_KEYWORD_PARAM_NAMES, _alias_keyword_param
@@ -3557,866 +3368,322 @@ def _float_tree(expr: str) -> ast.Expression | None:
         return None
 
 
-def _float_form(tree: ast.Expression | None):
-    """``(evaluate, names, tree)`` for a tree of :func:`_float_tree`: a
-    function of a ``{name: value}`` mapping, the names it reads other than
-    the built-in constants, and the tree itself, for
-    :func:`_float_rounding`. ``None`` for a tree that is not read."""
-    if tree is None:
-        return None
-    form = _FloatForm()
-    try:
-        code = compile(ast.fix_missing_locations(form.visit(tree)), "<rate law>", "eval")
-    except (_Unread, RecursionError, ValueError, TypeError, SyntaxError):
-        return None
-    scope = {**_FLOAT_HELPERS, **_FLOAT_CALLS, **_BUILTIN_CONSTANT_VALUES}
-    names = sorted(form.names - set(_BUILTIN_CONSTANT_VALUES))
+class _Facts(NamedTuple):
+    """What one node of a rate law's syntax tree reads, and what sign it is
+    known to have whatever the state is."""
 
-    def evaluate(values: dict[str, float]) -> float:
-        return eval(code, scope, values)  # noqa: S307 - a tree of whitelisted nodes
+    state: bool = False  # reads the state, or a counter a requested column moves
+    clock: bool = False  # reads literal time or a counter nothing moves
+    asked: bool = False  # reads a requested parameter
+    choice: bool = False  # holds an abs, max or min that is live
+    positive: bool = False
+    nonnegative: bool = False
+    negative: bool = False
+    size: int = 1
 
-    return evaluate, names, tree
-
-
-# What each call rounds by, as its derivative: the factor an argument's own
-# rounding is carried through with. ``None`` for a call whose value is taken
-# to round by itself alone.
-_FLOAT_SLOPES = {
-    "exp": lambda x, f: abs(f),
-    "log": lambda x, f: _float_div(1.0, abs(x)),
-    "ln": lambda x, f: _float_div(1.0, abs(x)),
-    "log10": lambda x, f: _float_div(1.0, abs(x) * math.log(10.0)),
-    "log2": lambda x, f: _float_div(1.0, abs(x) * math.log(2.0)),
-    "sqrt": lambda x, f: _float_div(0.5, abs(f)),
-    "abs": lambda x, f: 1.0,
-    "sin": lambda x, f: 1.0,
-    "cos": lambda x, f: 1.0,
-    "tan": lambda x, f: 1.0 + f * f,
-    "asin": lambda x, f: _float_div(1.0, math.sqrt(max(1.0 - x * x, 0.0))),
-    "acos": lambda x, f: _float_div(1.0, math.sqrt(max(1.0 - x * x, 0.0))),
-    "atan": lambda x, f: 1.0 / (1.0 + x * x),
-    "sinh": lambda x, f: _FLOAT_CALLS["cosh"](x),
-    "cosh": lambda x, f: abs(_FLOAT_CALLS["sinh"](x)),
-    "tanh": lambda x, f: 1.0,
-}
+    @property
+    def live(self) -> bool:
+        """Whether a column moves what this reads: the state, or a clock
+        compared with a requested parameter."""
+        return self.state or (self.clock and self.asked)
 
 
-def _float_rounding(node: ast.AST, values: Mapping[str, float]) -> tuple[float, float]:
-    """The value of a tree of :func:`_float_tree` at *values*, and what the
-    arithmetic that makes it rounds by, in ulps of 1.
-
-    ``16·eps`` of a law's own value is not what it rounds by where it is a
-    small difference of large terms: ``1 − 1/(1 + exp(−x))`` is 0 or one ulp
-    of 1 for large x, whatever multiplies it afterwards, and a law that
-    carries it steps by that much. The second number is the size the first
-    was made from: a sum's is the sum of its terms', a product carries each
-    factor's through the other, a call carries its argument's through its
-    slope.
-
-    The size is carried as its logarithm (:func:`_float_sized`): as a double
-    it overflows where ``exp`` is within a factor of its argument's size of
-    the largest double, and an infinite size would let any jump through. An
-    exact 0 carries nothing through a product, and a quotient by an infinity
-    is an exact 0.
-
-    A truth value comes back with 0 for the second. Raises :class:`_Unread`
-    for what :class:`_FloatForm` does not read; the two read the same trees
-    and give the same values.
-    """
-    value, log_size = _float_sized(node, values)
-    if isinstance(value, bool) or log_size == _NO_SIZE:
-        return value, 0.0
-    return value, math.exp(log_size) if log_size < _LOG_MAX else sys.float_info.max
+_NO_FACTS = _Facts()
 
 
-_NO_SIZE = -math.inf  # the logarithm of a size of 0
-_LOG_MAX = math.log(sys.float_info.max)
-
-
-def _log_of(x: float) -> float:
-    """``log|x|``: :data:`_NO_SIZE` for 0, an infinity for what is not finite."""
-    x = abs(x)
-    if x == 0.0:
-        return _NO_SIZE
-    return math.log(x) if x < math.inf else math.inf
-
-
-def _log_sum(*logs: float) -> float:
-    """The logarithm of a sum, from the logarithms of its terms."""
-    top = max(logs)
-    if top in (_NO_SIZE, math.inf) or top != top:
-        return top
-    return top + math.log(sum(math.exp(term - top) for term in logs))
-
-
-def _carried(log_factor: float, log_size: float) -> float:
-    """A size carried through a factor, with nothing carried through a 0."""
-    if _NO_SIZE in (log_factor, log_size):
-        return _NO_SIZE
-    return log_factor + log_size
-
-
-def _float_sized(node: ast.AST, values: Mapping[str, float]) -> tuple[float, float]:
-    """:func:`_float_rounding` with the size as its logarithm."""
-    if isinstance(node, ast.Expression):
-        return _float_sized(node.body, values)
-    if isinstance(node, ast.Constant):
-        if isinstance(node.value, bool):
-            return node.value, _NO_SIZE
-        if isinstance(node.value, (int, float)):
-            return float(node.value), _log_of(node.value)
-        raise _Unread("constant")
-    if isinstance(node, ast.Name):
-        if node.id in _BUILTIN_CONSTANT_VALUES:
-            value = float(_BUILTIN_CONSTANT_VALUES[node.id])
-        else:
-            value = float(values[node.id])
-        return value, _log_of(value)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        value, size = _float_sized(node.operand, values)
-        return (-value if isinstance(node.op, ast.USub) else +value), size
-    if isinstance(node, ast.BinOp):
-        a, size_a = _float_sized(node.left, values)
-        b, size_b = _float_sized(node.right, values)
-        a, b = float(a), float(b)
-        if isinstance(node.op, ast.Add):
-            return a + b, _log_sum(size_a, size_b)
-        if isinstance(node.op, ast.Sub):
-            return a - b, _log_sum(size_a, size_b)
-        if isinstance(node.op, ast.Mult):
-            return a * b, _log_sum(_carried(_log_of(a), size_b), _carried(_log_of(b), size_a))
-        if isinstance(node.op, ast.Div):
-            value = _float_div(a, b)
-            if math.isinf(b):
-                return value, _NO_SIZE
-            if b == 0.0:
-                return value, math.inf
-            below = _log_of(b)
-            return value, _log_sum(
-                _carried(size_a, -below), _carried(_log_of(value), _carried(size_b, -below))
-            )
-        if isinstance(node.op, ast.Pow):
-            value = _float_pow(a, b)
-            if a == 0.0:
-                # 0 to a power: what the base rounds by, to that power.
-                if size_a == _NO_SIZE or b <= 0.0:
-                    return value, _log_of(value)
-                log_eps = math.log(_EPS)
-                return value, _log_sum(_log_of(value), b * (log_eps + size_a) - log_eps)
-            through = _log_sum(
-                _carried(_log_of(b), _carried(size_a, -_log_of(a))),
-                _carried(_log_of(math.log(abs(a))), size_b),
-            )
-            return value, _carried(_log_of(value), _log_sum(0.0, through))
-        raise _Unread("operator")
-    if isinstance(node, ast.Compare):
-        if len(node.ops) != 1 or not isinstance(node.ops[0], _FLOAT_COMPARISONS):
-            raise _Unread("comparison")
-        a = _float_sized(node.left, values)[0]
-        b = _float_sized(node.comparators[0], values)[0]
-        op = node.ops[0]
-        if isinstance(op, ast.Lt):
-            return a < b, _NO_SIZE
-        if isinstance(op, ast.LtE):
-            return a <= b, _NO_SIZE
-        if isinstance(op, ast.Gt):
-            return a > b, _NO_SIZE
-        if isinstance(op, ast.GtE):
-            return a >= b, _NO_SIZE
-        return (a == b) if isinstance(op, ast.Eq) else (a != b), _NO_SIZE
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
-        name = node.func.id
-        if name == "Piecewise":
-            for pair in node.args:
-                if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
-                    raise _Unread("Piecewise")
-                if _float_sized(pair.elts[1], values)[0]:
-                    return _float_sized(pair.elts[0], values)
-            return math.nan, _NO_SIZE
-        if name not in _FLOAT_CALLS:
-            raise _Unread(name)
-        args = [_float_sized(arg, values) for arg in node.args]
-        value = _FLOAT_CALLS[name](*(a for a, _ in args))
-        if isinstance(value, bool):
-            return value, _NO_SIZE
-        if name in ("min", "max"):
-            return value, max(size for _, size in args)
-        slope = _FLOAT_SLOPES.get(name)
-        if slope is None or len(args) != 1:
-            return value, _log_of(value)
-        through = _carried(_log_of(slope(float(args[0][0]), value)), args[0][1])
-        return value, _log_sum(_log_of(value), through)
-    raise _Unread(type(node).__name__)
-
-
-# Under this a double is within gradual underflow of 0 and has lost digits:
-# a law that carries `1/(1 + exp(x))` goes from 1e-306 to exactly 0 where the
-# exponential overflows, and that is no jump.
-_CONTINUITY_UNDERFLOW = sys.float_info.min / sys.float_info.epsilon
-
-# Where a condition is looked for a flip along one symbol: both signs, a
-# third apart from 1e-12 to 1e9, and five decades apart from there to 1e-300
-# and to 1e300. A threshold written as a literal is a count of molecules as
-# readily as a concentration.
-_CONTINUITY_MAGNITUDES = sorted(
-    {10.0 ** (k / 8.0 - 12.0) for k in range(169)}
-    | {10.0**k for k in range(-300, -12, 5)}
-    | {10.0**k for k in range(10, 301, 5)}
-)
-_CONTINUITY_GRID = tuple(
-    [-x for x in reversed(_CONTINUITY_MAGNITUDES)] + list(_CONTINUITY_MAGNITUDES)
-)
-
-
-def _is_call(node: ast.AST, name: str) -> bool:
-    return isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
-
-
-def _two_branches(node: ast.Call) -> tuple[ast.expr, ast.expr, ast.expr]:
-    """``(taken, condition, other)`` of a conditional as
-    :func:`bngsim._jacobian._preprocess_exprtk` writes one; :class:`_Unread`
-    for any other shape."""
-    pairs = node.args
-    if (
-        len(pairs) == 2
-        and isinstance(pairs[0], ast.Tuple)
-        and isinstance(pairs[1], ast.Tuple)
-        and len(pairs[0].elts) == 2
-        and len(pairs[1].elts) == 2
-        and isinstance(pairs[1].elts[1], ast.Constant)
-        and pairs[1].elts[1].value is True
-    ):
-        return pairs[0].elts[0], pairs[0].elts[1], pairs[1].elts[0]
-    raise _Unread("Piecewise")
-
-
-def _rebuilt(node, visit):
-    """*node* with *visit* applied to each expression under it: the node
-    itself where none of them changes, and a new one where one does. Nothing
-    is changed in place, so a tree can be rewritten many times over, and
-    what the rewrites leave alone is shared between them."""
-    if isinstance(node, ast.BinOp):
-        left, right = visit(node.left), visit(node.right)
-        if left is node.left and right is node.right:
-            return node
-        return ast.BinOp(left=left, op=node.op, right=right)
-    if isinstance(node, ast.UnaryOp):
-        operand = visit(node.operand)
-        return node if operand is node.operand else ast.UnaryOp(op=node.op, operand=operand)
-    if isinstance(node, ast.Compare):
-        left = visit(node.left)
-        comparators = [visit(c) for c in node.comparators]
-        same = all(a is b for a, b in zip(comparators, node.comparators, strict=True))
-        if left is node.left and same:
-            return node
-        return ast.Compare(left=left, ops=node.ops, comparators=comparators)
+def _operands(node: ast.AST) -> list[ast.AST]:
+    """The expressions under *node*: a call's arguments and not its name."""
     if isinstance(node, ast.Call):
-        args = [visit(arg) for arg in node.args]
-        if all(a is b for a, b in zip(args, node.args, strict=True)):
-            return node
-        return ast.Call(func=node.func, args=args, keywords=node.keywords)
-    if isinstance(node, ast.Tuple):
-        elts = [visit(elt) for elt in node.elts]
-        if all(a is b for a, b in zip(elts, node.elts, strict=True)):
-            return node
-        return ast.Tuple(elts=elts, ctx=node.ctx)
-    return node
+        return list(node.args)
+    return [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr)]
 
 
-def _conditional(taken: ast.expr, condition: ast.expr, other: ast.expr) -> ast.Call:
-    return ast.Call(
-        func=ast.Name(id="Piecewise", ctx=ast.Load()),
-        args=[
-            ast.Tuple(elts=[taken, condition], ctx=ast.Load()),
-            ast.Tuple(elts=[other, ast.Constant(value=True)], ctx=ast.Load()),
-        ],
-        keywords=[],
-    )
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        return node.func.id
+    return ""
 
 
-def _choices_written_out(node):
-    """*node* with ``abs``, ``max`` and ``min`` written as the conditionals
-    they are: ``abs(e)`` as ``if(e < 0, −e, e)``, ``max(a, b)`` as
-    ``if(a > b, a, b)``. Each is a choice the law makes on the state, with a
-    surface of its own, and ``(X − thr)/abs(X − thr)`` jumps across its
-    surface with no condition written anywhere. The comparison made for one
-    carries the call it stands for (``_bngsim_written``)."""
-
-    def comparison(left, op, right, call) -> ast.Compare:
-        out = ast.Compare(left=left, ops=[op], comparators=[right])
-        out._bngsim_written = ast.unparse(call)  # type: ignore[attr-defined]
-        return out
-
-    if _is_call(node, "abs") and len(node.args) == 1:
-        inner = _choices_written_out(node.args[0])
-        below = comparison(inner, ast.Lt(), ast.Constant(value=0.0), node)
-        out = _conditional(ast.UnaryOp(op=ast.USub(), operand=inner), below, inner)
-        out._bngsim_magnitude = True  # type: ignore[attr-defined]
-        return out
-    if (_is_call(node, "max") or _is_call(node, "min")) and len(node.args) >= 2:
-        op = ast.Gt if _is_call(node, "max") else ast.Lt
-        out = _choices_written_out(node.args[0])
-        for arg in node.args[1:]:
-            other = _choices_written_out(arg)
-            out = _conditional(out, comparison(out, op(), other, node), other)
-        return out
-    return _rebuilt(node, _choices_written_out)
-
-
-def _law_tree(expr: str) -> ast.Expression | None:
-    """:func:`_float_tree` with its choices written out."""
-    tree = _float_tree(expr)
-    if tree is None:
-        return None
-    return ast.fix_missing_locations(ast.Expression(body=_choices_written_out(tree.body)))
-
-
-class _Forced:
-    """A tree with one comparison held true, or held false.
-
-    Every conditional whose condition holds the comparison, outside any
-    conditional nested in that condition, is cut down to what is left of it:
-    the branch its condition now selects, or a conditional on the atoms that
-    still decide. ``hits`` counts the comparisons that were held.
-
-    A conditional whose condition holds the comparison only inside a
-    conditional nested in it keeps the name of its condition as written
-    (``_bngsim_condition``): it is one choice, made the same way on both
-    sides of the flip, where what is nested in it does not jump there.
-    """
-
-    def __init__(self, atom: ast.expr, value: bool) -> None:
-        self.kind = type(atom)
-        self.key = ast.dump(atom)
-        self.value = value
-        self.hits = 0
-        self._held: list[int] = []  # per conditional being cut, the atoms held in it
-
-    def _condition(self, node: ast.expr) -> ast.expr:
-        if isinstance(node, self.kind) and ast.dump(node) == self.key:
-            self.hits += 1
-            self._held[-1] += 1
-            return ast.Constant(value=self.value)
-        if not isinstance(node, ast.Call):
-            return self.visit(node)
-        if _is_call(node, "Not") and len(node.args) == 1:
-            inner = self._condition(node.args[0])
-            if inner is node.args[0]:
-                return node
-            if isinstance(inner, ast.Constant):
-                return ast.Constant(value=not inner.value)
-            return ast.Call(func=node.func, args=[inner], keywords=[])
-        if _is_call(node, "And") or _is_call(node, "Or"):
-            inners = [self._condition(arg) for arg in node.args]
-            if all(a is b for a, b in zip(inners, node.args, strict=True)):
-                return node
-            # ``And`` is decided by one false operand, ``Or`` by one true.
-            decides = _is_call(node, "Or")
-            left = []
-            for inner in inners:
-                if isinstance(inner, ast.Constant):
-                    if bool(inner.value) == decides:
-                        return ast.Constant(value=decides)
-                else:
-                    left.append(inner)
-            if not left:
-                return ast.Constant(value=not decides)
-            return left[0] if len(left) == 1 else ast.Call(func=node.func, args=left, keywords=[])
-        # Anything else is a value: a comparison of other things, a
-        # conditional. The atom inside one of those is not this condition's.
-        return self.visit(node)
-
-    def visit(self, node):
-        if not _is_call(node, "Piecewise"):
-            return _rebuilt(node, self.visit)
-        taken, condition, other = _two_branches(node)
-        self._held.append(0)
-        cut = self._condition(condition)
-        held = self._held.pop()
-        if isinstance(cut, ast.Constant):
-            return self.visit(taken if cut.value else other)
-        one, two = self.visit(taken), self.visit(other)
-        if cut is condition and one is taken and two is other:
-            return node
-        out = ast.Call(
-            func=node.func,
-            args=[
-                ast.Tuple(elts=[one, cut], ctx=ast.Load()),
-                ast.Tuple(elts=[two, ast.Constant(value=True)], ctx=ast.Load()),
-            ],
-            keywords=[],
-        )
-        if not held:
-            out._bngsim_condition = ast.dump(condition)  # type: ignore[attr-defined]
-            if getattr(node, "_bngsim_magnitude", False):
-                out._bngsim_magnitude = True  # type: ignore[attr-defined]
-        return out
-
-
-class _Blended:
-    """A tree with every choice in it made by a symbol of its own.
-
-    ``if(c, a, b)`` becomes ``s·a + (1 − s)·b`` with ``s`` a name for the
-    condition ``c``, the same name wherever that condition is written. The
-    tree is one of :func:`_law_tree`, where ``max``, ``min`` and ``abs`` are
-    conditionals too; ``abs(e)`` becomes ``s·abs(e)``. What is left is smooth
-    in every symbol, the selectors among them, and is
-    what the law is in each combination of its choices when each selector is
-    0 or 1. It is linear in each selector, so an identity that holds for the
-    selectors at values picked at random holds in every combination.
-    """
-
-    def __init__(self, names: dict[str, str]) -> None:
-        self.names = names
-
-    def _selector(self, node: ast.AST, key: str | None = None) -> ast.expr:
-        key = ast.dump(node) if key is None else key
-        name = self.names.setdefault(key, f"_bngsim_choice_{len(self.names)}")
-        return ast.Name(id=name, ctx=ast.Load())
-
-    @staticmethod
-    def _blend(selector: ast.expr, one: ast.expr, two: ast.expr) -> ast.expr:
-        rest = ast.BinOp(left=ast.Constant(value=1.0), op=ast.Sub(), right=selector)
-        return ast.BinOp(
-            left=ast.BinOp(left=selector, op=ast.Mult(), right=one),
-            op=ast.Add(),
-            right=ast.BinOp(left=rest, op=ast.Mult(), right=two),
-        )
-
-    def visit(self, node):
-        if _is_call(node, "Piecewise"):
-            taken, condition, other = _two_branches(node)
-            choice = self._selector(condition, getattr(node, "_bngsim_condition", None))
-            if getattr(node, "_bngsim_magnitude", False):
-                # A magnitude, as a multiple of itself: either sign of its
-                # argument is one, and it stays where a root or a logarithm
-                # of it has a value.
-                size = ast.Call(
-                    func=ast.Name(id="abs", ctx=ast.Load()), args=[self.visit(other)], keywords=[]
-                )
-                return ast.BinOp(left=choice, op=ast.Mult(), right=size)
-            return self._blend(choice, self.visit(taken), self.visit(other))
-        return _rebuilt(node, self.visit)
-
-
-def _blended(body: ast.expr, names: dict[str, str]) -> ast.Expression:
-    return ast.fix_missing_locations(ast.Expression(body=_Blended(names).visit(body)))
-
-
-# The calls :data:`_STEP_CALL` names that :data:`_FLOAT_CALLS` evaluates.
-_STEP_NAMES = frozenset({"floor", "ceil", "sign"})
-
-
-def _unmoved_as_symbols(body: ast.expr, names: dict[str, str], fixed, clocks) -> ast.expr:
-    """*body* with every call on clocks alone taken as a symbol of its own,
-    and every step call on what is not fixed.
-
-    ``kb·floor(time/7)`` is 0 for the first seven units of time and
-    ``kb·exp(−(time − 50)²)`` is 0 to a double away from 50, and a jump in
-    proportion to either is no jump at a time picked at random. Whatever
-    such a call comes to, the law has to bend with it; so it is a symbol, the
-    same one wherever it is written. ``fixed`` names what has one value for
-    the run, and ``clocks`` what moves with the time and with nothing else.
-    Arithmetic on a clock is left as it is: a polynomial in the time is 0
-    only where it is 0, and ``kc·Aobs`` and ``kc·0.5`` are the same ``kc``.
-    """
-    fixed_kind, clock_kind, moved_kind = 0, 1, 2
-    logical = ("And", "Or", "Not", "Eq", "Ne")
-
-    def symbol(node: ast.AST) -> ast.Name:
-        name = names.setdefault(ast.dump(node), f"_bngsim_clock_{len(names)}")
-        return ast.Name(id=name, ctx=ast.Load())
-
-    def walk(node):
-        if isinstance(node, ast.Constant):
-            return node, fixed_kind
-        if isinstance(node, ast.Name):
-            if node.id in clocks:
-                return node, clock_kind
-            if node.id in fixed or node.id in _BUILTIN_CONSTANT_VALUES:
-                return node, fixed_kind
-            return node, moved_kind
-        kinds: list[int] = []
-
-        def visit(child):
-            out, kind = walk(child)
-            kinds.append(kind)
-            return out
-
-        out = _rebuilt(node, visit)
-        top = max(kinds, default=fixed_kind)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            called = node.func.id
-            stepping = called in _STEP_NAMES and top != fixed_kind
-            if stepping or (called not in logical and top == clock_kind):
-                return symbol(node), max(top, clock_kind)
-        return out, top
-
-    return walk(body)[0]
-
-
-def _continuous_across(
-    flat: str,
-    atom: str,
-    parsed: dict | None = None,
-    held: AbstractSet[str] = frozenset(),
-    positive: AbstractSet[str] = frozenset(),
-    values: Mapping[str, float] | None = None,
-    state: Mapping[str, float] | None = None,
-) -> bool:
-    """Whether the rate law *flat* is continuous wherever the comparison
-    *atom* flips.
-
-    ``if(v < 0, -v/max(X, 0.01), 0)`` is: its two branches meet where ``v`` is
-    0. ``if(X < thr, kb, 0)`` is not. The first is a bend, which a difference
-    quotient reads across without harm; the second is a jump (issue #938).
-
-    What is compared is the law with the atom held true and the law with it
-    held false (:class:`_Forced`), at the flip: the one is what the law is on
-    one side and the other what it is on the other. Not the law as written a
-    hair either side: every other choice in it, another conditional, ``max``,
-    ``min``, ``abs`` (each written out as the conditional it is,
-    :func:`_law_tree`), is made by a symbol of its own (:class:`_Blended`), so
-    that the two are smooth and are compared in every combination of those
-    choices at once. Read as written, a jump in proportion to
-    ``max(Y − c, 0)`` or to ``if(time > 100, 1, 0)`` is 0 wherever the values
-    picked put it, and was found a bend. For the same reason a call on
-    clocks alone, and a step call, is a symbol of its own
-    (:func:`_unmoved_as_symbols`). A comparison that holds a step call,
-    ``floor(X/P) > 2``, flips where the step does and not where its two sides
-    meet, and is never a bend here.
-
-    A parameter has the value it has (``values``): ``kb·(thr − X)^n`` is a
-    bend for n of 1 and a jump for n of 0, and ``kb·exp(−2000·g)`` is nothing
-    for g of 1 and most of kb for g of 1e-4. A symbol the state moves is put
-    near the value it has now (``state``), at three points between half of it
-    and twice it, and between 0.5 and 2 where that is not known or is 0; a
-    choice is put between 0.2 and 0.8. Each symbol of the atom that the state
-    moves is then moved, in turn, over :data:`_CONTINUITY_GRID`, and wherever
-    the atom comes out differently at two neighbouring values the flip
-    between them is closed in on by bisection. Along every symbol and at
-    every flip along it: the atom of ``if((B − 0.1)·(B − 3) > 0, kb·(B − 3),
-    0)`` flips at two values of B, and the law bends at the one and jumps at
-    the other. A flip is where the atom changes, which is what the engine
-    evaluates: a comparison that tends to 0 without reaching it is no flip,
-    and one that changes sign across a pole is.
-
-    At a flip each of the two laws is read on its own side: a hundredth of a
-    hair from the flip, a tenth, and a whole hair. The two have to meet, to
-    what their own arithmetic rounds by (:func:`_float_rounding`) and what
-    each does over the tenth, and each has to leave the surface no faster
-    than a power of 0.6: a square root turns on with a slope that has no
-    bound. A law with no value on its side, or with a pole there, makes no
-    demand: the engine's right-hand side is not finite there, and a run that
-    ends has not crossed.
-
-    ``held`` names the symbols that are not moved: the ones no run moves and
-    no column perturbs across a surface, a parameter or a clock. A condition
-    that flips along one of those alone flips at an instant, at one state for
-    every column, and is not this question.
-
-    ``positive`` names the symbols that are concentrations, and are moved
-    over positive values alone. ``min(c·E, c·R)/c`` with c in proportion to
-    CO2 is the lesser of E and R where CO2 is above 0 and the greater below
-    it, and CO2 does not get there.
-
-    A bend that depends on which way another choice goes is not found one:
-    ``if(X > 0, if(X < n, X, n), 0)`` meets 0 on the surface because X is the
-    lesser there, and with the choice free it does not. Two flips along one
-    symbol that no grid value separates are not seen.
-
-    The law and the atom are read as plain doubles (:func:`_float_form`), not
-    through sympy: sympy puts a condition that holds a conditional into a
-    canonical form as it parses, at 2 s a rate law for a gate schedule inside
-    the signed-rate idiom.
-
-    False wherever the question cannot be asked: a rate law or an atom that is
-    not read, a call that is not evaluated, an atom no conditional of the law
-    holds, an atom no symbol flips.
-
-    ``parsed`` keeps each rate law's tree between calls: a law with twenty
-    conditions is asked twenty times.
-    """
-    if len(flat) > _CONTINUITY_MAX_CHARS or _STEP_CALL.search(atom):
-        return False
-    if parsed is None:
-        parsed = {}
-    if flat not in parsed:
-        parsed[flat] = _law_tree(flat)
-    law_tree, atom_tree = parsed[flat], _law_tree(atom)
-    if law_tree is None or atom_tree is None:
-        return False
-    return _bends(law_tree, atom_tree.body, held, positive, values, state, parsed) == "bend"
-
-
-def _choice_jump(
-    flat: str,
-    parsed: dict,
-    held: AbstractSet[str],
-    positive: AbstractSet[str] = frozenset(),
-    values: Mapping[str, float] | None = None,
-    state: Mapping[str, float] | None = None,
-) -> str | None:
-    """The first ``abs``, ``max`` or ``min`` of the rate law *flat* that the
-    law jumps across, as written, or ``None``.
-
-    Each is a conditional with no condition written (:func:`_choices_written_out`),
-    and is asked about as one (:func:`_bends`): ``kb·abs(X − thr)`` bends
-    where X is thr, and ``kb·(X − thr)/abs(X − thr)`` jumps. One that reads
-    nothing but what is held, a parameter or a clock no column moves, flips at
-    an instant, and nothing is found for it. A step call inside one is found
-    as a step call (:func:`_iter_step_calls`).
-
-    A condition is refused unless it is found a bend; a choice is refused
-    where it is found a jump. ``abs`` of what has one sign and ``max`` of a
-    rate that is not read are everywhere, and flip nowhere that can be seen.
-    The root of a magnitude, ``sqrt(abs(d))`` over the discriminant of a
-    binding equilibrium, meets itself across its zero with a slope that has
-    no bound; that is a bend to a choice, and the quotient is out by the root
-    of its step there, a part in ten thousand.
-    """
-    if len(flat) > _CONTINUITY_MAX_CHARS:
-        return None
-    if flat not in parsed:
-        parsed[flat] = _law_tree(flat)
-    law_tree = parsed[flat]
-    if law_tree is None:
-        return None
-    seen: set[str] = set()
-    for node in ast.walk(law_tree):
-        written = getattr(node, "_bngsim_written", None)
-        if written is None or not isinstance(node, ast.expr) or ast.dump(node) in seen:
-            continue
-        seen.add(ast.dump(node))
-        if _bends(law_tree, node, held, positive, values, state, parsed) == "jump":
-            return written
+def _number(node: ast.AST) -> float | None:
+    """The value of a numeric literal, signed or not."""
+    sign = 1.0
+    while isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        sign = -sign if isinstance(node.op, ast.USub) else sign
+        node = node.operand
+    if isinstance(node, ast.Constant) and isinstance(node.value, (bool, int, float)):
+        return sign * float(node.value)
     return None
 
 
-def _made_ready(law_tree: ast.Expression, atom: ast.expr, fixed, clocks) -> tuple:
-    """``(laws, comparison, forms, choices, unmoved)`` for :func:`_bends`: the
-    law with *atom* held true and held false, and the comparison, each with
-    its choices blended and its calls on clocks taken as symbols; the
-    compiled form of each; and the names given to the choices and to those
-    calls. The first three are ``None`` where one of them is not read or no
-    conditional of the law holds the atom."""
-    choices: dict[str, str] = {}
-    unmoved: dict[str, str] = {}
+def _facts_of(
+    node: ast.AST,
+    under: list[_Facts],
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> _Facts:
+    """The facts of *node*, from those of its operands, *under*."""
+    size = 1 + sum(f.size for f in under)
+    if isinstance(node, ast.Name):
+        if node.id in values:
+            value = values[node.id]
+            return _Facts(
+                asked=node.id in asked,
+                positive=value > 0.0,
+                nonnegative=value >= 0.0,
+                negative=value < 0.0,
+            )
+        if node.id in clocks:
+            return _Facts(clock=True)
+        return _Facts(state=True)
+    if isinstance(node, ast.Constant):
+        value = _number(node)
+        if value is None:
+            return _NO_FACTS
+        return _Facts(positive=value > 0.0, nonnegative=value >= 0.0, negative=value < 0.0)
+    reads = {
+        "state": any(f.state for f in under),
+        "clock": any(f.clock for f in under),
+        "asked": any(f.asked for f in under),
+        "choice": any(f.choice for f in under),
+        "size": size,
+    }
+    positive = nonnegative = negative = False
+    name = _call_name(node)
+    if isinstance(node, ast.UnaryOp) and len(under) == 1:
+        (one,) = under
+        if isinstance(node.op, ast.USub):
+            positive, negative = one.negative, one.positive
+        elif isinstance(node.op, ast.UAdd):
+            positive, nonnegative, negative = one.positive, one.nonnegative, one.negative
+    elif isinstance(node, ast.BinOp) and len(under) == 2:
+        left, right = under
+        if isinstance(node.op, ast.Add):
+            positive = (left.positive and right.nonnegative) or (
+                left.nonnegative and right.positive
+            )
+            nonnegative = left.nonnegative and right.nonnegative
+            negative = left.negative and right.negative
+        elif isinstance(node.op, ast.Sub):
+            positive = (left.positive or left.nonnegative) and right.negative
+            negative = left.negative and (right.positive or right.nonnegative)
+        elif isinstance(node.op, ast.Mult):
+            positive = (left.positive and right.positive) or (left.negative and right.negative)
+            negative = (left.positive and right.negative) or (left.negative and right.positive)
+            nonnegative = left.nonnegative and right.nonnegative
+        elif isinstance(node.op, ast.Div):
+            positive = (left.positive and right.positive) or (left.negative and right.negative)
+            negative = (left.positive and right.negative) or (left.negative and right.positive)
+            nonnegative = left.nonnegative and right.positive
+        elif isinstance(node.op, ast.Pow):
+            power = _number(node.right)
+            even = power is not None and power > 0.0 and power % 2.0 == 0.0
+            positive = left.positive
+            nonnegative = left.nonnegative or even
+    elif name in ("abs", "sqrt") and len(under) == 1:
+        (one,) = under
+        nonnegative = True
+        positive = one.positive or (name == "abs" and one.negative)
+    elif name == "exp":
+        positive = True
+    elif name == "max" and under:
+        positive = any(f.positive for f in under)
+        nonnegative = any(f.nonnegative for f in under)
+        negative = all(f.negative for f in under)
+    elif name == "min" and under:
+        positive = all(f.positive for f in under)
+        nonnegative = all(f.nonnegative for f in under)
+        negative = any(f.negative for f in under)
+    elif name == "pow" and len(under) == 2:
+        positive = under[0].positive
+        nonnegative = under[0].nonnegative
+    elif name == "Piecewise" and under:
+        # Each argument is a (value, condition) pair, with the value's facts.
+        positive = all(f.positive for f in under)
+        nonnegative = all(f.nonnegative for f in under)
+        negative = all(f.negative for f in under)
+    elif isinstance(node, ast.Tuple) and len(under) == 2:
+        # A Piecewise pair: what the pair is, is what its value is.
+        positive, nonnegative, negative = (
+            under[0].positive,
+            under[0].nonnegative,
+            under[0].negative,
+        )
+    facts = _Facts(
+        positive=positive, nonnegative=nonnegative or positive, negative=negative, **reads
+    )
+    if name in _CHOICE_NAMES and facts.live:
+        facts = facts._replace(choice=True)
+    return facts
 
-    def ready(body: ast.expr) -> ast.Expression:
-        out = _unmoved_as_symbols(_blended(body, choices).body, unmoved, fixed, clocks)
-        return ast.fix_missing_locations(ast.Expression(body=out))
 
-    try:
-        laws = []
-        for value in (True, False):
-            forced = _Forced(atom, value)
-            body = forced.visit(law_tree.body)
-            if not forced.hits:
-                return None, None, None, choices, unmoved
-            laws.append(ready(body))
-        cond = _float_form(ready(atom))
-        forms = [_float_form(law) for law in laws]
-    except (_Unread, RecursionError):
-        return None, None, None, choices, unmoved
-    return laws, cond, forms, choices, unmoved
+def _power(node: ast.AST) -> tuple[ast.AST, ast.AST] | None:
+    """``(base, power)`` of a power, written ``a^b`` or ``pow(a, b)``."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+        return node.left, node.right
+    if _call_name(node) == "pow" and len(node.args) == 2:  # type: ignore[attr-defined]
+        return node.args[0], node.args[1]  # type: ignore[attr-defined]
+    return None
 
 
-def _bends(
-    law_tree: ast.Expression,
-    atom: ast.expr,
-    held: AbstractSet[str],
-    positive: AbstractSet[str] = frozenset(),
-    values: Mapping[str, float] | None = None,
-    state: Mapping[str, float] | None = None,
-    parsed: dict | None = None,
+def _factors(node: ast.AST, facts: Mapping[int, _Facts]) -> list[ast.AST]:
+    """What *node* is a product of, so that it is 0 where one of them is:
+    through a sign, a product, the numerator of a quotient, a square root,
+    and a power that no column moves and that is not below 0."""
+    out: list[ast.AST] = []
+    stack = [node]
+    while stack:
+        one = stack.pop()
+        power = _power(one)
+        if isinstance(one, ast.UnaryOp) and isinstance(one.op, (ast.USub, ast.UAdd)):
+            stack.append(one.operand)
+        elif isinstance(one, ast.BinOp) and isinstance(one.op, ast.Mult):
+            stack.extend((one.left, one.right))
+        elif isinstance(one, ast.BinOp) and isinstance(one.op, ast.Div):
+            stack.append(one.left)
+        elif _call_name(one) == "sqrt" and len(one.args) == 1:  # type: ignore[attr-defined]
+            stack.append(one.args[0])  # type: ignore[attr-defined]
+        elif power is not None and _divides_by_nothing(facts[id(power[1])]):
+            stack.append(power[0])
+        else:
+            out.append(one)
+    return out
+
+
+def _divides_by_nothing(power: _Facts) -> bool:
+    """Whether a power with these facts is one no column moves and that is
+    not below 0: ``x^2`` and ``x^n`` at an ``n`` of 2, and not ``x^-1``."""
+    return not power.live and power.nonnegative
+
+
+# A factor is compared with what a choice flips on only where it is this
+# small: a sign or a step is written over a difference, not over a page of
+# rate law.
+_FLIP_MAX_NODES = 200
+
+
+def _quotient_across_a_choice(
+    tree: ast.Expression,
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
 ) -> str | None:
-    """:func:`_continuous_across` on a tree of :func:`_law_tree` and a
-    comparison in it: ``"bend"``, ``"jump"``, ``"steep"`` for a law that
-    meets itself and leaves the surface too fast, and ``None`` where none of
-    them was found: a law or a comparison that is not read, one no flip was
-    found for.
+    """A division in the rate law *tree* that jumps where an ``abs``, ``max``
+    or ``min`` flips, as text, or ``None``.
 
-    ``parsed`` keeps the two laws and the comparison as they are made ready,
-    which does not change with a parameter's value, and the answer for the
-    values the law reads.
+    Each of the three is continuous: ``max(X, c)`` bends where ``X`` passes
+    ``c``, and the difference quotient is right across a bend. A law jumps
+    across one by dividing by what is 0 there: ``(X − thr)/abs(X − thr)`` is
+    a sign and ``max(X − thr, 0)/(X − thr)`` a step, with nothing in the text
+    that says so. What is named is a division, in a law where one of the
+    three reads what a column moves, by a product with a factor that is
+
+    - one of the three itself, and not known to be nonzero: ``e/abs(e)``,
+      ``1/max(X − thr, 0)``. ``v/max(X, 0.01)`` is known nonzero; or
+    - a factor of what one of them flips on: ``abs(e)/e``, ``max(e, 0)/e``,
+      and ``abs(u·v)/u``.
+
+    A negative or unknown power is a division by its base. What is known
+    nonzero is known by the signs of numbers and of parameters and by what
+    ``abs``, ``exp``, an even power, a sum and a product keep: nothing is
+    assumed of the state, which a concentration below 0 would break.
+
+    A sign written any other way is not found: with the choice inside a sum
+    the law divides by, ``e/(abs(e) + 0·X)``, or with the two sides of the
+    quotient written differently, ``abs(X − thr)/(X/thr − 1)``. Nor is a
+    pole cut off on both sides, ``min(max(k/(X − thr), −5), 5)``.
     """
-    fixed = dict(values or {})
-    clocks = frozenset(held) - set(fixed)
-    key = (id(law_tree), ast.dump(atom), clocks, frozenset(fixed))
-    ready: tuple | None = parsed.get(key) if parsed is not None else None
-    if ready is None:
-        ready = _made_ready(law_tree, atom, fixed, clocks)
-        if parsed is not None:
-            parsed[key] = ready
-    laws, cond, forms, choices, unmoved = ready
-    if laws is None or cond is None or None in forms:
-        return None
-    cond_at, cond_names, _ = cond
-    read = set(cond_names) | {name for form in forms for name in form[1]}
-    names = sorted(read - set(fixed))
-    # Asked once for one law at one value of each parameter it reads: a model
-    # writes one law in seventy reactions, and a fit moves the parameters of
-    # a few laws between one run and the next.
-    asked = (
-        "asked",
-        key,
-        tuple(fixed[name] for name in sorted(read & set(fixed))),
-        frozenset(positive & read),
-    )
-    if parsed is not None and asked in parsed:
-        return parsed[asked]
-    answer = _bends_at(
-        laws, cond_at, cond_names, names, fixed, held, positive, state, choices, unmoved
-    )
-    if parsed is not None:
-        parsed[asked] = answer
-    return answer
-
-
-def _bends_at(
-    laws, cond_at, cond_names, names, fixed, held, positive, state, choices, unmoved
-) -> str | None:
-    """:func:`_bends` once the two laws and the comparison are made ready."""
-    import random
-
-    chosen = set(choices.values())
-    still = set(held) | chosen | set(unmoved.values())
-    pivots = [i for i, name in enumerate(names) if name in set(cond_names) - still]
-    if not pivots:
+    # Parents before what is under them; read backwards, operands first.
+    order: list[ast.AST] = []
+    stack: list[ast.AST] = [tree.body]
+    while stack:
+        node = stack.pop()
+        order.append(node)
+        stack.extend(_operands(node))
+    facts: dict[int, _Facts] = {}
+    for node in reversed(order):
+        facts[id(node)] = _facts_of(
+            node, [facts[id(child)] for child in _operands(node)], values, clocks, asked
+        )
+    if not facts[id(tree.body)].choice:
         return None
 
-    def at_point(point: list[float]) -> dict[str, float]:
-        return {**fixed, **dict(zip(names, point, strict=True))}
+    def small(node: ast.AST) -> bool:
+        return facts[id(node)].live and facts[id(node)].size <= _FLIP_MAX_NODES
 
-    def holds(point: list[float]) -> bool | None:
-        try:
-            return bool(cond_at(at_point(point)))
-        except Exception:  # noqa: BLE001 - a value that is no number
-            return None
+    def either_way(node: ast.AST) -> list[str]:
+        """*node* as text, and a difference with its sides swapped as well:
+        ``X − thr`` is 0 where ``thr − X`` is."""
+        out = [ast.dump(node)]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
+            out.append(ast.dump(ast.BinOp(left=node.right, op=ast.Sub(), right=node.left)))
+        return out
 
-    def flips(point: list[float], i: int) -> list[tuple[float, float]] | None:
-        """Every flip of the atom along symbol *i* on the grid's range, as
-        the two neighbouring doubles it lies between; ``None`` where the atom
-        cannot be read."""
-        at = list(point)
-        found: list[tuple[float, float]] = []
-        before_x = before = None
-        for x in _CONTINUITY_GRID:
-            if x < 0.0 and names[i] in positive:
+    # What each live choice flips on: the factors of an ``abs``'s argument,
+    # and of one side where the other is 0; else the difference of the two
+    # sides, as written and with them swapped.
+    flips: set[str] = set()
+    for node in order:
+        name = _call_name(node)
+        if name not in _CHOICE_NAMES or not facts[id(node)].live:
+            continue
+        args = node.args  # type: ignore[attr-defined]
+        if name == "abs":
+            pairs = [(args[0], None)] if len(args) == 1 else []
+        else:
+            pairs = [(a, b) for i, a in enumerate(args) for b in args[i + 1 :]]
+        for a, b in pairs:
+            if b is not None and _number(b) == 0.0:
+                b = None
+            elif b is not None and _number(a) == 0.0:
+                a, b = b, None
+            if b is None:
+                for factor in _factors(a, facts):
+                    if small(factor):
+                        flips.update(either_way(factor))
+            elif facts[id(a)].size + facts[id(b)].size < _FLIP_MAX_NODES:
+                flips.update(either_way(ast.BinOp(left=a, op=ast.Sub(), right=b)))
+    for node in order:
+        divisor = None
+        power = _power(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            divisor = node.right
+        elif power is not None and not _divides_by_nothing(facts[id(power[1])]):
+            divisor = power[0]
+        if divisor is None or not facts[id(divisor)].live:
+            continue
+        for factor in _factors(divisor, facts):
+            known = facts[id(factor)]
+            if not known.live or known.positive or known.negative:
                 continue
-            at[i] = x
-            now = holds(at)
-            if now is None:
-                return None
-            if before is not None and now != before:
-                lo, hi = before_x, x
-                for _ in range(1100):
-                    mid = 0.5 * (lo + hi)
-                    if mid in (lo, hi):
-                        break
-                    at[i] = mid
-                    there = holds(at)
-                    if there is None:
-                        return None
-                    if there == before:
-                        lo = mid
-                    else:
-                        hi = mid
-                found.append((lo, hi))
-            before_x, before = x, now
-        return found
+            if _call_name(factor) in _CHOICE_NAMES:
+                return _clipped(node)
+            if small(factor) and ast.dump(factor) in flips:
+                return _clipped(node)
+    return None
 
-    def leaves(tree: ast.Expression, point: list[float], i: int, steps: Sequence[float]):
-        """A law a hundredth of a hair from the flip on one side, with what
-        that is good to as its value on the flip; ``None`` where it has no
-        value there or no bound, and ``False`` where it leaves the surface
-        faster than a power of 0.6. Read a tenth of a hair and a whole hair
-        out as well, for those two.
 
-        Not read on the flip itself. A hair is 1e-6 of the symbol and the
-        flip is closed in on to an ulp: there, ``(X − thr)/abs(X − thr)`` is
-        an ulp over an ulp, and what it rounds by is as large as it is.
-        """
-        at = list(point)
-        read_values: list[float] = []
-        sizes: list[float] = []
-        for step in steps:
-            at[i] = step
-            value, size = _float_rounding(tree, at_point(at))
-            read_values.append(float(value))
-            sizes.append(float(size))
-        if not all(math.isfinite(v) for v in read_values):
-            return None
-        rounds = [16.0 * _EPS * size + _CONTINUITY_UNDERFLOW for size in sizes]
-        rounding = max(rounds)
-        near, tenth, whole = read_values
-        # No bound on the law here: twice as large a hundredth of a hair out
-        # as a whole hair out, which over a millionth of the symbol is a
-        # pole, `K·e/dt` with the gain `K = U/(U + R)` where U is −R, or the
-        # root of one. Against what the nearest reading rounds by itself,
-        # which beside a pole is more than the others are.
-        if abs(near) > rounds[0] and abs(near) >= 2.0 * abs(whole):
-            return None
-        if abs(tenth - near) > 0.2 * abs(whole - near) + rounding:
-            return False
-        # Out, as the value on the flip, by what the law does from here to a
-        # tenth of a hair at most.
-        return near, rounding + abs(tenth - near)
+def _clipped(node: ast.AST, width: int = 120) -> str:
+    """*node* as text, cut to *width*."""
+    try:
+        text = ast.unparse(node)
+    except RecursionError:
+        text = type(node).__name__
+    return text if len(text) <= width else text[: width - 3] + "..."
 
-    rng = random.Random(938)
 
-    def drawn(name: str) -> float:
-        # A selector between its two ends, so that a choice between two
-        # values a root has a value at is one too.
-        if name in chosen:
-            return rng.uniform(0.2, 0.8)
-        spread = rng.uniform(0.5, 2.0)
-        now = state.get(name) if state else None
-        return now * spread if now else spread
+def _equality_of_smooth_sides(atom: str) -> bool:
+    """Whether *atom* is an equality between two expressions that hold no
+    condition, no ``abs``, ``max`` or ``min``, and no step call.
 
-    reached = 0
-    steep = False
-    for _ in range(3):
-        point = [drawn(name) for name in names]
-        for i in pivots:
-            crossings = flips(point, i)
-            if crossings is None:
-                return None
-            for lo, hi in crossings:
-                # A millionth of where the flip is: a threshold of 1e-9 is
-                # read 1e-15 either side. Of where the symbol is, for a flip
-                # on 0 itself.
-                where = max(abs(hi), abs(lo))
-                hair = 1e-6 * (where if where > 1e-200 else abs(point[i]))
-                at = list(point)
-                at[i] = hi
-                true_above = holds(at)
-                if true_above is None:
-                    return None
-                above = [hi + k * hair for k in (0.01, 0.1, 1.0)]
-                below = [lo - k * hair for k in (0.01, 0.1, 1.0)]
-                try:
-                    ends = [
-                        leaves(laws[0], point, i, above if true_above else below),
-                        leaves(laws[1], point, i, below if true_above else above),
-                    ]
-                except Exception:  # noqa: BLE001 - a value that is no number
-                    return None
-                # No value, or a pole, on one side: nothing crosses here, and
-                # how the other law leaves the surface is its own affair.
-                if any(end is None for end in ends):
-                    continue
-                if any(end is False for end in ends):
-                    steep = True
-                    continue
-                (one, one_rounds), (two, two_rounds) = ends
-                if abs(one - two) > one_rounds + two_rounds:
-                    return "jump"
-                reached += 1
-    if steep:
-        return "steep"
-    return "bend" if reached else None
+    Such an equality holds at a state and over no interval of them: there is
+    no surface with the law one thing on one side and another on the other.
+    ``max(X − thr, 0) == 0`` holds for every ``X`` up to ``thr``, and
+    ``if(X < thr, 1, 0) == 1`` and ``floor(X/thr) == 0`` likewise.
+    """
+    return is_equality_atom(atom) and not (
+        _STEP_CALL.search(atom) or _CHOICE_CALL.search(atom) or _IF_CALL.search(atom)
+    )
 
 
 def fallback_crossing(
@@ -4447,32 +3714,38 @@ def fallback_crossing(
     refused before a time course starts:
 
     - a rate-law condition that reads the state, ``Aobs < thr`` or
-      ``rateOf(X) > 0``, unless the rate law is continuous wherever that
-      condition flips (:func:`_continuous_across`): a ramp from the threshold,
-      or the signed-rate idiom ``if(v < 0, -v/max(X, 0.01), 0)``, is a bend,
-      and the quotient is right across a bend;
+      ``rateOf(X) > 0``, whatever the law does where it flips. A law that
+      only bends there, ``if(v > 0, v, 0)``, is one the quotient is right
+      across; telling a bend from a jump by the law's text was tried and is
+      not sound (issue #938), so it is not told;
     - a condition on a counter species that a requested column moves (its rate
       constant, its initial amount). A counter nothing moves is read at ``y``
       in both terms of the quotient, and its threshold's parameters are held
       while the quotient is taken (issue #436);
-    - a choice the law makes with no condition written, ``abs``, ``max`` or
-      ``min``, where it is found to jump across it:
-      ``(thr − X)/abs(thr − X)`` (:func:`_choice_jump`);
+    - an equality on the state with an ``abs``, ``max``, ``min``, a condition
+      or a step call in it, which holds over an interval
+      (:func:`_equality_of_smooth_sides`);
+    - a division the law may jump across through an ``abs``, ``max`` or
+      ``min``: ``(thr − X)/abs(thr − X)``
+      (:func:`_quotient_across_a_choice`). One that stands alone is a bend,
+      and runs;
     - a step call on the state, ``floor(Atot)``, or on a moved counter;
     - a step call on a clock, literal time or a counter nothing moves, whose
       argument reads a requested parameter, ``floor(time()/P)`` with ``P``
       requested: the steps move with ``P``, and nothing jumps a column at a
       step. In a condition as well as outside one;
     - a table function that steps, indexed by an observable or by a function;
-    - a rate law whose functions nest too deep to write out, which is not
-      read at all.
+    - a rate law that is not read: its functions nest too deep to write out,
+      or it holds one of the above in a form the scan does not parse.
 
     A crossing on literal time is not one of these.
 
+    What is asked is what the text says and what sign each parameter has.
+    Nothing is evaluated, and nothing is assumed of the state.
+
     Scans the reaction rate expressions with their functions inlined, as
     :func:`model_uncompensated_crossing_reason` does. An atom that names no
-    symbol, a comparison over run constants alone, and a concentration
-    compared with a number that is not above 0 are no crossing.
+    symbol and a comparison over run constants alone are no crossing.
     """
     from bngsim._jacobian import _TIME_SYM, _inline_functions, has_condition_construct
 
@@ -4519,43 +3792,27 @@ def fallback_crossing(
         return None
     scope = switch_condition_scope(core, ctx)
     moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
-    requested = set(sens_param_names)
-    # ``parsed`` keeps what is made of each rate law's text, which does not
-    # change with a parameter's value, between one scan of a model and the next.
+    requested = frozenset(sens_param_names)
+    # ``parsed`` keeps the syntax tree of each rate law's text between one
+    # scan of a model and the next.
     parsed = {} if parsed is None else parsed
-    # What no run moves and no column perturbs across a surface: a parameter,
-    # literal time, a counter no requested column moves.
-    held = frozenset(scope.run_constants) | frozenset(_BUILTIN_CONSTANT_VALUES)
-    held |= {name for name, idx in scope.clocks.items() if idx not in moved}
-    held |= {_TIME_SYM}
-    # What each parameter is, and what each observable is now. A
-    # concentration is an observable that is a positive sum of species, none
-    # of them below 0 now, and is moved over positive values alone.
+    # What each parameter is; and the clocks no column moves, literal time
+    # and a counter with nothing requested that moves it.
     values = {name: float(scope.values[scope.param_idx[name]]) for name in scope.run_constants}
-    state: dict[str, float] = {}
-    positive: set[str] = set()
-    amounts = [float(core.get_concentration(name)) for name in core.species_names]
-    for name, parts in ctx.get("observables", ()):
-        state[str(name)] = sum(weight * amounts[index] for index, weight in parts)
-        if (
-            parts
-            and all(weight > 0.0 and amounts[index] >= 0.0 for index, weight in parts)
-            and state[str(name)] > 0.0
-        ):
-            positive.add(str(name))
+    for name, value in _BUILTIN_CONSTANT_VALUES.items():
+        values.setdefault(name, float(value))
+    clocks = frozenset({_TIME_SYM}) | {n for n, idx in scope.clocks.items() if idx not in moved}
 
     def crosses(flat: str) -> bool:
         """Whether the quotient reads across the surface *flat* names."""
         if not _IDENTIFIER.search(flat) or condition_cannot_cross(flat, scope):
             return False
-        # An equality holds at a state and over no interval of them, unless
-        # it holds a step: there is no surface to read across.
-        if is_equality_atom(flat) and not _STEP_CALL.search(flat):
+        if _equality_of_smooth_sides(flat):
             return False
         if _reads_clock_and_run_constants(flat, scope):
             read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
             return bool({i for i in read if i >= 0} & moved)
-        return not _never_flips(flat, positive, values)
+        return True
 
     def step_moves(flat: str, raw: str) -> bool:
         """A step on a clock that a requested parameter moves: on literal
@@ -4565,51 +3822,36 @@ def fallback_crossing(
         return bool((set(_IDENTIFIER.findall(flat)) | set(_IDENTIFIER.findall(raw))) & requested)
 
     for flat in flats:
-        # With derived parameters written out, so that what is left to name
-        # is a primary, a clock or the state.
-        whole = _inline_derived_param_refs(flat, scope.derived_exprs) or flat
         if has_condition_construct(flat):
             for atom in _iter_condition_atoms(flat):
                 atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-                if crosses(atom_flat) and not _continuous_across(
-                    whole, atom_flat, parsed, held, positive, values, state
-                ):
+                if crosses(atom_flat):
                     return atom
                 # A step in a condition on a clock: its edges move with a
                 # requested parameter as they do outside one.
                 if _STEP_CALL.search(atom_flat) and step_moves(atom_flat, atom):
                     return atom
-        if _CHOICE_CALL.search(flat):
-            choice = _choice_jump(whole, parsed, held, positive, values, state)
-            if choice is not None:
-                return choice
         for call, arg in _iter_step_calls(flat):
             arg_flat = _inline_derived_param_refs(arg, scope.derived_exprs) or arg
             if crosses(arg_flat) or step_moves(arg_flat, arg):
                 return call
+        if _CHOICE_CALL.search(flat):
+            # With derived parameters written out, so that what is left to
+            # name is a primary, a clock or the state.
+            whole = _inline_derived_param_refs(flat, scope.derived_exprs) or flat
+            if whole not in parsed:
+                parsed[whole] = _syntax_tree(whole)
+            tree = parsed[whole]
+            if tree is None:
+                return f"{_clip_text(flat)} (not read)"
+            quotient = _quotient_across_a_choice(tree, values, clocks, requested)
+            if quotient is not None:
+                return quotient
     return None
 
 
-def _never_flips(atom: str, positive: AbstractSet[str], values: Mapping[str, float]) -> bool:
-    """Whether *atom* compares a concentration with a number that is not
-    above 0: ``S > 0``, the guard of ``if(S > 0, Vm·Q/S, 0)``. A
-    concentration is above 0, and the comparison comes out one way."""
-    tree = _float_tree(atom)
-    body = tree.body if tree is not None else None
-    if not isinstance(body, ast.Compare) or len(body.ops) != 1:
-        return False
-    for one, other in ((body.left, body.comparators[0]), (body.comparators[0], body.left)):
-        if not (isinstance(one, ast.Name) and one.id in positive):
-            continue
-        form = _float_form(ast.fix_missing_locations(ast.Expression(body=other)))
-        if form is None or not set(form[1]) <= set(values):
-            continue
-        try:
-            if float(form[0](dict(values))) <= 0.0:
-                return True
-        except Exception:  # noqa: BLE001 - a value that is no number
-            continue
-    return False
+def _clip_text(text: str, width: int = 120) -> str:
+    return text if len(text) <= width else text[: width - 3] + "..."
 
 
 def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:

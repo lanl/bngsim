@@ -18,7 +18,14 @@ with a crossing the quotient reads across is refused before a time course
 starts. A crossing on literal time is not one, and neither is a counter that no
 requested column moves.
 
-Every expected value is a closed form.
+What is refused is what the text says: every condition on the state, whatever
+the law does where it flips, and a sign or a step written by dividing by an
+``abs``, ``max`` or ``min``. Nothing is evaluated. A bend written with ``max``
+or ``min`` runs; the same bend written as a condition is refused, where main
+is right.
+
+Every expected value is a closed form, or a central difference of plain runs
+where that is said.
 """
 
 from __future__ import annotations
@@ -245,269 +252,279 @@ def test_a_jump_no_requested_column_moves_is_refused_all_the_same(tmp_path):
     _refused(sim, "Aobs<thr")
 
 
-def test_a_counter_threshold_the_rate_law_does_not_jump_at_runs(tmp_path):
-    """Control. The rate law turns on as a ramp from the counter's threshold:
-    Y = kb·k·(T − t*)²/2 with t* = (thr − A0)/k, so
-    dY/dk = kb·(T − t*)²/2 + kb·(T − t*)·t* = 36.66. A bend, which the
-    quotient reads across without harm."""
-    sim = _simulator(tmp_path, "if(Aobs>4.4,kb*(Aobs-4.4),0)", DECLINED, ["k"])
+WIDER = """begin parameters
+    1 A0 {A0!r}
+    2 k {k!r}
+    3 thr 4.4
+    4 kb 3.0
+    5 kc 5.0
+    6 tau 3.4
+    7 P 1.3
+    8 one 1.0
+    9 n {n!r}
+   10 c -4.0
+   11 g 1e-4
+end parameters
+begin functions
+{funcs}
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 Z() 0
+    4 C() 0
+    5 B() 1e-4
+end species
+begin reactions
+    1 {a_rxn} k
+    2 0 2 fY
+    3 0 3 fZ
+    4 0 4 one
+end reactions
+begin groups
+    1 Aobs 1
+    2 Cobs 4
+    3 Bobs 5
+end groups
+"""
+
+
+def _wider(tmp_path, fy, fz=DECLINED, decays=True, extra=(), k=1.0, n=0.0):
+    """The model above with a counter C that nothing but its own rate moves,
+    a species B that stays at 1e-4, an exponent n and a few more parameters."""
+    funcs = [*extra, f"fY() {fy}", f"fZ() {fz}"]
+    path = tmp_path / "wider.net"
+    path.write_text(
+        WIDER.format(
+            funcs="\n".join(f"    {i} {f}" for i, f in enumerate(funcs, 1)),
+            A0=10.0 if decays else 1.0,
+            a_rxn="1 0" if decays else "0 1",
+            k=k,
+            n=n,
+        )
+    )
+    return bngsim.Model.from_net(path)
+
+
+def _refused_run(model, params, **kwargs):
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
     assert not sim.has_analytic_sens_rhs
-    np.testing.assert_allclose(_y_columns(sim), [36.66], rtol=1e-6)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20, **kwargs)
+
+
+def _ramp_columns():
+    """dY/dk and dY/dthr of Y' = kb·(thr − A) from where A = 10·exp(−k·t)
+    passes thr."""
+    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
+    t_star = math.log(a0 / thr) / k
+    tail = math.exp(-k * T_END)
+    return [
+        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
+        kb * (T_END - t_star),
+    ]
+
+
+BENDS_AS_CONDITIONS = {
+    "a-ramp": "if(Aobs<thr,kb*(thr-Aobs),0)",
+    "a-signed-rate": "if((Aobs-thr)<0,(-(Aobs-thr))*kb,0)",
+    "a-ramp-whose-condition-divides-by-a-parameter": "if((Aobs-thr)/tau<0,kb*(thr-Aobs),0)",
+    "a-window-written-as-a-product": "if((Aobs-4.4)*(Aobs-5)<0,kb*(Aobs-4.4)*(5-Aobs),0)",
+    "a-guard": "if(Aobs>0,kb/Aobs,0)",
+}
+
+
+@pytest.mark.parametrize("case", sorted(BENDS_AS_CONDITIONS))
+def test_a_bend_written_as_a_condition_is_refused(tmp_path, case):
+    """Refused here, where main is right. Each of these laws is continuous
+    where its condition flips, and the quotient is right across it. Whether a
+    law bends or jumps where a condition flips is not told from its text: a
+    reading that tried took a jump in proportion to ``exp(−2000·B)`` for none
+    where B was large, a jump beside a slope of 1e8 for rounding, and a ramp
+    with an exponent of 0 for a ramp. So a condition on the state is refused,
+    and the bend is written with ``max`` or ``min``."""
+    sim = _simulator(tmp_path, BENDS_AS_CONDITIONS[case], DECLINED, ["k", "thr"], decays=True)
+    _refused(sim, "Aobs", rtol=1e-4)
+
+
+def test_a_ramp_from_a_counter_s_threshold_is_refused(tmp_path):
+    """Refused here, where main is right. A counter a requested column moves
+    is a state like any other."""
+    sim = _simulator(tmp_path, "if(Aobs>4.4,kb*(Aobs-4.4),0)", DECLINED, ["k"])
+    _refused(sim, "Aobs>4.4")
 
 
 @pytest.mark.parametrize(
     "law",
-    ["if(Aobs<thr,kb*(thr-Aobs),0)", "if((Aobs-thr)<0,(-(Aobs-thr))*kb,0)"],
-    ids=["ramp", "signed-rate"],
+    ["kb*max(thr-Aobs,0)", "kb*(thr-min(Aobs,thr))", "kb*(abs(thr-Aobs)+(thr-Aobs))/2"],
+    ids=["max", "min", "abs"],
 )
-def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path, law):
-    """Control. A decays through thr and the rate law turns on from 0 there, as
-    a ramp, or in the signed-rate idiom. The rate law is continuous wherever
-    its condition flips, which is asked of it before the run, at three points
-    of the condition's surface: there is no jump for the quotient to straddle,
-    and the columns are right on it."""
+def test_the_same_bend_written_with_a_choice_runs(tmp_path, law):
+    """Control. The ramp from thr written with ``max``, ``min`` and ``abs``:
+    continuous by what it is made of, with no condition and no division."""
     sim = _simulator(tmp_path, law, DECLINED, ["k", "thr"], decays=True)
     assert not sim.has_analytic_sens_rhs
-    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
-    t_star = math.log(a0 / thr) / k
-    tail = math.exp(-k * T_END)
-    want = [
-        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
-        kb * (T_END - t_star),
-    ]
-    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
+    np.testing.assert_allclose(_y_columns(sim), _ramp_columns(), rtol=1e-6)
+
+
+def test_a_magnitude_runs(tmp_path):
+    """Control. ``kb·abs(Aobs − thr)`` is continuous where A is thr, and so is
+    the declined law beside it, ``kc·max(Aobs, 0.5)``: bends, which the
+    quotient is right across. dY/dk in closed form."""
+    sim = _simulator(tmp_path, "kb*abs(Aobs-thr)", DECLINED, ["k"])
+    assert not sim.has_analytic_sens_rhs
+    k, thr, kb = 1.0, 4.4, 3.0
+    t_star = (thr - 1.0) / k
+    # dY/dk = kb·(∫ t dt over [t*, T] − ∫ t dt over [0, t*]).
+    want = kb * ((T_END**2 - t_star**2) / 2.0 - t_star**2 / 2.0)
+    np.testing.assert_allclose(_y_columns(sim), [want], rtol=1e-6)
+
+
+SIGNS = {
+    # 1 above thr and 0 below it, each: Y' = kb from the crossing on.
+    "a-ratio-to-its-magnitude": "kb*(1+(Aobs-thr)/abs(Aobs-thr))/2",
+    "a-magnitude-over-what-it-is-of": "kb*(1+abs(Aobs-thr)/(Aobs-thr))/2",
+    "the-greater-over-the-difference": "kb*(max(Aobs,thr)-thr)/(Aobs-thr)",
+    "the-greater-of-it-and-0-over-it": "kb*max(Aobs-thr,0)/(Aobs-thr)",
+    "the-lesser-of-it-and-0-over-it": "kb*(1-min(Aobs-thr,0)/(Aobs-thr))",
+    "a-negative-power": "kb*(1+abs(Aobs-thr)*(Aobs-thr)^(-1))/2",
+    "a-power-that-is-a-parameter": "kb*(1+abs(Aobs-thr)*(Aobs-thr)^c)/2",
+    "a-factor-no-column-moves-on-each-side": "kb*(1+(2*(Aobs-thr))/abs(3*(Aobs-thr))*1.5)/2",
+    "with-a-cusp-beside-it": "kb*(1+(Aobs-thr)/abs(Aobs-thr)*(1+sqrt(abs(Aobs-thr))))/2",
+    "with-a-call-the-scan-does-not-know": "kb*(1+(Aobs-thr)/abs(Aobs-thr))*erf(1)",
+    "a-product-of-two": "kb*(Aobs-4.4)*(Aobs-5)/abs((Aobs-4.4)*(Aobs-5))",
+    "one-factor-of-a-product": "kb*abs((Aobs-4.4)*(Aobs+5))/(Aobs-4.4)",
+}
+
+
+@pytest.mark.parametrize("case", sorted(SIGNS))
+def test_a_sign_written_as_a_quotient_is_refused(tmp_path, case):
+    """``(X − thr)/abs(X − thr)`` is −1 below thr and 1 above it, with no
+    condition written and no step call: a division by what an ``abs``,
+    ``max`` or ``min`` is 0 at, or flips at. dY/dk came back 18.37 for 10.2
+    at a loose tolerance, and the run ended in CVODE's no-progress error at a
+    tight one."""
+    model = _wider(tmp_path, SIGNS[case], decays=False)
+    _refused_run(model, ["k"])
+
+
+def test_a_sign_of_the_time_that_a_requested_parameter_moves_is_refused(tmp_path):
+    """``(time() − tau)/abs(time() − tau)`` with tau requested: nothing stops
+    at tau and nothing holds it while the quotient is taken. dY/dtau came
+    back −0.656 for −3."""
+    law = "kb*0.5*(1+(time()-tau)/abs(time()-tau))"
+    _refused_run(_wider(tmp_path, law, decays=False), ["tau"])
+
+
+CHOICES_THAT_BEND = {
+    "a-floor-under-a-divisor": "kb*Aobs/max(Aobs,0.01)",
+    "a-magnitude-in-a-sum-it-divides-by": "kb/(1+abs(Aobs-thr))",
+    "a-root-of-a-magnitude-in-a-sum": "kb*Aobs/(1+0.5*(Aobs+sqrt(abs(Aobs*Aobs-thr))))",
+    "a-clamp": "kb*max(0,min(Aobs,thr))",
+    "the-lesser-of-two-rates": "min(kb*Aobs/(thr+Aobs),kb*Aobs/(1+Aobs))",
+    "a-positive-power-of-a-magnitude": "kb*abs(thr-Aobs)^1.5",
+}
+
+
+@pytest.mark.parametrize("case", sorted(CHOICES_THAT_BEND))
+def test_a_choice_that_only_bends_runs(tmp_path, case):
+    """Control. A division beside an ``abs``, ``max`` or ``min`` that is not
+    by what it is 0 at: a floor that is a number above 0, a magnitude in a
+    sum, a lesser of two quotients. Against a central difference of plain
+    runs, Richardson-extrapolated."""
+
+    def build(k):
+        return _wider(tmp_path, CHOICES_THAT_BEND[case], k=k)
+
+    sim = bngsim.Simulator(build(1.0), method="ode", sensitivity_params=["k"])
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), 0]
+
+    def plain(k):
+        out = bngsim.Simulator(build(k), method="ode").run(
+            t_span=(0.0, T_END), n_points=3, rtol=1e-12, atol=1e-14, timeout=60
+        )
+        return np.asarray(out.species)[-1, list(out.species_names).index("Y()")]
+
+    def slope(h):
+        return (plain(1.0 + h) - plain(1.0 - h)) / (2.0 * h)
+
+    want = (4.0 * slope(5e-4) - slope(1e-3)) / 3.0
+    assert got == pytest.approx(want, rel=1e-5, abs=1e-8)
 
 
 @pytest.mark.parametrize(
-    ("law", "atom", "continuous"),
+    ("law", "found"),
     [
-        ("if((k*(thr-Aobs))<0,(-(k*(thr-Aobs)))/max(Bobs,0.01),0)", "(k*(thr-Aobs))<0", True),
-        ("if(Aobs<thr,kb*(thr-Aobs)^2,0)", "Aobs<thr", True),
-        ("if(Aobs<thr,kb*(thr-Aobs)+1e6*Aobs,1e6*Aobs)", "Aobs<thr", True),
-        ("if((Aobs>thr)&&(Bobs<2),kb*(Aobs-thr),0)", "Aobs>thr", True),
-        # The same law jumps where its other comparison flips.
-        ("if((Aobs>thr)&&(Bobs<2),kb*(Aobs-thr),0)", "Bobs<2", False),
-        # A jump in proportion to another species: nothing where that one is 0.
-        ("if(Aobs<thr,kb*Bobs,0)", "Aobs<thr", False),
-        # In proportion to a symbol the condition itself reads.
-        ("if(k*(Aobs-thr)<0,k*kb,0)", "k*(Aobs-thr)<0", False),
-        # A jump of a thousandth beside a term that moves by 1.3 over the hair.
-        ("if(Aobs<thr,kb,0)*1e-3+1e6*Aobs", "Aobs<thr", False),
-        # Continuous and not a bend: its slope has no bound at the surface.
-        ("if(Aobs<thr,kb*sqrt(thr-Aobs),0)", "Aobs<thr", False),
-        ("if(rateOf(A)>-thr,kb,0)", "rateOf(A)>-thr", False),
-        ("kc*if(floor(Aobs/P)>2,1,2)", "floor(Aobs/P)>2", False),
-        # The branch not taken has no value a hair below the threshold: its
-        # square root is of a negative number.
-        ("if(Aobs<thr,0,kb*(Aobs-thr)*sqrt(Aobs-thr+1e-9))", "Aobs<thr", True),
-        # The branch taken is: no value there, and nothing to compare.
-        ("if(Aobs<thr,kb*(thr-Aobs)*sqrt(Aobs-thr),0)", "Aobs<thr", False),
-        # A parameter named with a Python keyword.
-        ("if(lambda<thr,kb*(thr-lambda),0)", "lambda<thr", True),
-        ("if(lambda<thr,kb,0)", "lambda<thr", False),
-        # A call and an operator that are not read as doubles.
-        ("if(Aobs<thr,kb*(thr-Aobs)*mratio(1,2,Aobs),0)", "Aobs<thr", False),
-        ("if(Aobs<thr,kb*(thr-Aobs)*(Bobs%2),0)", "Aobs<thr", False),
-        # A saturation whose half-point is three hairs from the surface: not
-        # a ramp over the hair, and a bend.
-        ("if(Aobs<thr,kb*(thr-Aobs)/((thr-Aobs)+3e-6),0)", "Aobs<thr", True),
-        # A jump ten times what the ramp beside it does over a hair, and one
-        # a thousandth of it: the second is inside what the law does between
-        # the two readings it is carried to the flip from, and is not seen.
-        ("if(Aobs<thr,kb*(thr-Aobs)+1e-5,0)", "Aobs<thr", False),
-        ("if(Aobs<thr,kb*(thr-Aobs)+1e-9,0)", "Aobs<thr", True),
-        # Powers under 1: 0.9 leaves the surface slowly enough, 0.2 does not.
-        ("if(Aobs<thr,kb*(thr-Aobs)^0.9,0)", "Aobs<thr", True),
-        ("if(Aobs<thr,kb*(thr-Aobs)^0.2,0)", "Aobs<thr", False),
-        # A jump in proportion to something that is 0 at the values picked.
-        ("if(Aobs<thr,kb*max(Bobs-3,0),0)", "Aobs<thr", False),
-        ("if(Aobs<thr,kb*if(Bobs>5,1,0),0)", "Aobs<thr", False),
-        # A ramp that is clamped is a bend, and is not found one: the clamp
-        # is taken as a symbol of its own.
-        ("if(Aobs<thr,min(kb*(thr-Aobs),cap),0)", "Aobs<thr", False),
-        # The lesser of two written as a conditional.
-        ("kb*if(Aobs<Bobs,Aobs,Bobs)", "Aobs<Bobs", True),
-        # The atom under a not: the branches change places.
-        ("if(not(Aobs>=thr),kb*(thr-Aobs),0)", "Aobs>=thr", True),
-        ("if(not(Aobs>=thr),kb,0)", "Aobs>=thr", False),
-        # A step call in the comparison: it flips where the step does.
-        ("if(floor(Aobs/P)>2,kb*(floor(Aobs/P)-2),0)", "floor(Aobs/P)>2", False),
-        # The greater of two written as a conditional, inside the comparison
-        # of a signed rate: the outer condition holds the inner atom only
-        # through the inner conditional's value.
-        (
-            "if((g*if(QR>QL,QR,QL)-QR)>0,(g*if(QR>QL,QR,QL)-QR),0)",
-            "QR>QL",
-            True,
-        ),
-        (
-            "if((g*if(QR>QL,QR,2*QL)-QR)>0,(g*if(QR>QL,QR,2*QL)-QR),0)",
-            "QR>QL",
-            False,
-        ),
-        # The law is 0/0 on the flip itself, at that one double, and has a
-        # value either side of it.
-        (
-            "if(X<x0,exp(sp*((x0-X)/x0)^2),exp(sn*((X-x0)/x0)^2))*exp(((X-x0)/abs(X-x0))*h*((X-x0)/x0)^2)",
-            "X<x0",
-            True,
-        ),
-        (
-            "if(X<x0,exp(sp*((x0-X)/x0)^2),2*exp(sn*((X-x0)/x0)^2))*exp(((X-x0)/abs(X-x0))*h*((X-x0)/x0)^2)",
-            "X<x0",
-            False,
-        ),
-        # A clamp written as two conditionals: a bend, and not found one. The
-        # inner choice is free where the outer condition flips.
-        ("if(X>0,if(X<n,X,n),0)", "X>0", False),
-        # Either of two conditions: the first flips to no effect where the
-        # second holds, and where it does not the branches meet.
-        ("if((Aobs>thr)||(Bobs<2),kb,kb*(1+(Aobs-thr)))", "Aobs>thr", True),
-        ("if((Aobs>thr)||(Bobs<2),kb,kb*(1+(Aobs-thr)))", "Bobs<2", False),
-        # A jump times a factor that is 0 on the surface: the law is
-        # continuous though the conditional is not.
-        ("if(R<0,0,if(R>0,1,0.5))*kb*R", "R<0", True),
-        ("if(R<0,0,if(R>0,1,0.5))*kb*(R+1)", "R<0", False),
-        # A step call in the comparison that does not step at the values
-        # tried: the threshold jumps where Z reaches 1e12.
-        ("if(X>thr+floor(Z/1e12+0.5),kb*(X-thr),0)", "X>thr+floor(Z/1e12+0.5)", False),
-        # A comparison the law does not hold.
-        ("if(Aobs<thr,kb*(thr-Aobs),0)", "Bobs<thr", False),
-        # The jump is along the second symbol the comparison reads.
-        ("if((A-1)*(Z-2)>0,kb*(A-1),0)", "(A-1)*(Z-2)>0", False),
-        # The comparison flips twice along B: a bend first, then a jump.
-        ("if((B-0.1)*(B-3)>0,kb*(B-0.1),0)", "(B-0.1)*(B-3)>0", False),
-        # A magnitude that holds a conditional on the atom is one choice,
-        # made the same way either side.
-        ("kb*abs(if(A<B,A,B)-c)", "A<B", True),
-        # A jump in proportion to a magnitude less its argument: 0 where the
-        # argument is negative, as it is at the values tried.
-        ("if(A<thr,kb*(abs(Y-3)-(3-Y)),0)", "A<thr", False),
-        # A condition with the atom and its denial: never true.
-        ("if((A<thr)&&not(A<thr),kb,0)", "A<thr", True),
-        # A ramp made as the difference of two numbers of 1e10: it moves in
-        # steps of 2e-6, their ulp, which is more than it does over a hair.
-        ("if(A<thr,(1e10+kb*(thr-A))-1e10,0)", "A<thr", True),
-        # Two conditionals on one atom, one a bend and one a jump.
-        ("if(Aobs<thr,kb*(thr-Aobs),0)+if(Aobs<thr,kb,0)", "Aobs<thr", False),
-        # A pole of the condition and of the law: passed over, and the bend
-        # where the numerator is 0 is what is left.
-        ("if(((A-B)/(U+R))>0,(A-B)/(U+R),0)", "((A-B)/(U+R))>0", True),
-        # 1 − 1/(1 + exp(−x)) is 0 or one ulp of 1 far out, and the law steps
-        # by that: inside what its own arithmetic rounds by.
-        (
-            "if((a*(1-1/(1+exp(-(Q-off)/tmp)))*(S-Q))>0,a*(1-1/(1+exp(-(Q-off)/tmp)))*(S-Q),0)",
-            "(a*(1-1/(1+exp(-(Q-off)/tmp)))*(S-Q))>0",
-            True,
-        ),
-        # A threshold written as a count of molecules.
-        ("if(Aobs>250000,kb*(Aobs-250000),0)", "Aobs>250000", True),
-        ("if(Aobs>250000,kb,0)", "Aobs>250000", False),
+        ("kb*abs(X-thr)", False),
+        ("kb*(X-thr)/abs(X-thr)", True),
+        ("kb*abs(X-thr)/(X-thr)", True),
+        ("kb*abs(2*(X-thr))/(3*(thr-X))", True),
+        ("kb*max(X,thr)", False),
+        ("kb*(max(X,thr)-thr)/(X-thr)", True),
+        ("kb*(max(X,thr)-thr)/(thr-X)", True),
+        ("kb*max(X-thr,0)/(X-thr)", True),
+        ("kb*max(0,X-thr)/(X-thr)", True),
+        ("kb*min(X,thr,Y)/(X-Y)", True),
+        ("kb*min(X,thr,Y)/(X-1)", False),
+        ("kb*X/max(X,0.01)", False),
+        ("kb*X/max(X,pos)", False),
+        ("kb*X/max(X,neg)", True),
+        ("kb*X/max(X,-0.01)", True),
+        ("kb*X/min(X,-0.01)", False),
+        ("kb*X/(pos+abs(X))", False),
+        ("kb*X/(neg+abs(X))", False),
+        ("kb*X/(abs(X)*pos)", True),
+        ("kb*X/(abs(X)+1)^2", False),
+        ("kb*X/abs(X)^2", True),
+        ("kb*X/sqrt(abs(X))", True),
+        ("kb*X*abs(X)^(-1)", True),
+        ("kb*X*abs(X)^neg", True),
+        ("kb*X*abs(X)^pos", False),
+        ("kb*X*abs(X)^Y", True),
+        ("kb*X*pow(abs(X),-1)", True),
+        ("kb*X/exp(abs(X))", False),
+        ("kb*X/(abs(X)*abs(X)+1)", False),
+        ("kb*X/(-(1+abs(X)))", False),
+        ("kb*abs(X*Y)/Y", True),
+        ("kb*abs(X*Y)/(X+Y)", False),
+        # On the time alone a choice flips at an instant no column moves.
+        ("kb*X*(T-3)/abs(T-3)", False),
+        # And with a requested parameter beside the time, one does.
+        ("kb*X*(T-asked)/abs(T-asked)", True),
+        ("kb*X*(T-pos)/abs(T-pos)", False),
+        # A parameter alone is no state.
+        ("kb*X*(pos-3)/abs(pos-3)", False),
+        # A sum that the choice is in is not asked about.
+        ("kb*X/(abs(X)+0*Y)", False),
     ],
 )
-def test_whether_a_rate_law_is_continuous_where_its_condition_flips(law, atom, continuous):
-    """The question the refusal turns on, asked of the rate law's text."""
-    from bngsim._switch_sensitivity import _continuous_across
+def test_which_quotient_is_named(law, found):
+    """What :func:`_quotient_across_a_choice` names: X and Y are the state,
+    T a clock, ``pos`` and ``asked`` parameters above 0 and ``neg`` one
+    below, with ``asked`` requested."""
+    from bngsim._switch_sensitivity import _quotient_across_a_choice, _syntax_tree
 
-    assert _continuous_across(law, atom) is continuous
-
-
-GATES = "if(T<4,1,if(T>=16,if(T<20,1,0),0))"
-
-
-SIGNED = f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)"
+    values = {"kb": 3.0, "thr": 4.4, "pos": 2.0, "neg": -2.0, "asked": 3.0}
+    got = _quotient_across_a_choice(_syntax_tree(law), values, frozenset({"T"}), {"asked"})
+    assert (got is not None) is found
 
 
-@pytest.mark.parametrize(
-    ("law", "atom", "held", "continuous"),
-    [
-        (SIGNED, f"(({GATES})*fA-V)>0", {"T"}, True),
-        (f"if((({GATES})*fA-V)>0,kb,0)", f"(({GATES})*fA-V)>0", {"T"}, False),
-        # With the clock moved, the gates are what is asked about, and each
-        # is a jump.
-        (SIGNED, f"(({GATES})*fA-V)>0", set(), True),
-        (SIGNED, "T<4", set(), False),
-    ],
-    ids=["signed-rate", "jump", "signed-rate-on-a-moved-clock", "a-gate-on-a-moved-clock"],
-)
-def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(
-    monkeypatch, law, atom, held, continuous
-):
-    """A condition that holds a conditional on a clock T: sympy puts it into a
-    canonical form as it parses, at 2 s a rate law, and one corpus model
-    (mt_music_sequencer) has twelve of them. The law is read as plain doubles.
-    The gates inside the comparison are symbols of their own: where one of
-    them flips, the comparison jumps, and that is the gate's own flip."""
-    from bngsim import _jacobian
-    from bngsim._switch_sensitivity import _continuous_across
+def test_a_long_rate_law_is_read(tmp_path):
+    """Control. 3,000 terms in a sum, with a ``max`` among them: read without
+    going as deep as the law is long."""
+    from bngsim._switch_sensitivity import _quotient_across_a_choice, _syntax_tree
 
-    def parse(expr):
-        raise AssertionError(f"parsed through sympy: {expr[:40]}")
-
-    monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", parse)
-    assert _continuous_across(law, atom, held=frozenset(held)) is continuous
-
-
-def test_a_condition_is_not_moved_along_what_is_held():
-    """``(A − thr)/tau < 0`` flips along tau where tau is 0, across a pole,
-    and the ramp does not meet 0 there. tau is a parameter: no run moves it
-    and no column perturbs it across 0, and it is held."""
-    from bngsim._switch_sensitivity import _continuous_across
-
-    law, atom = "if((A-thr)/tau<0,kb*(thr-A),0)", "(A-thr)/tau<0"
-    assert _continuous_across(law, atom, held=frozenset({"tau", "thr", "kb"}))
-    assert not _continuous_across(law, atom)
-
-
-def test_a_law_that_underflows_to_zero_does_not_jump():
-    """``1/(1 + exp(x))`` is 1e-306 and then exactly 0 where the exponential
-    overflows, and the signed rate that carries it goes from 1e-306 to 0
-    there. Under 1e-292 a double is within gradual underflow of 0."""
-    from bngsim._switch_sensitivity import _continuous_across
-
-    v = "a/(1+exp((QL-QR)/tmp))"
-    held = frozenset({"tmp", "a"})
-    assert _continuous_across(f"if(({v})>0,{v},0)", f"({v})>0", held=held)
-    # The condition flips there in the engine's arithmetic too, and a law
-    # that is 5 more on one side of it steps by 5: what the exponential
-    # rounds by near the largest double is not what the law rounds by.
-    assert not _continuous_across(f"if(({v})>0,{v}+5,0)", f"({v})>0", held=held)
-
-
-def test_a_law_that_steps_by_what_it_rounds_by_does_not_jump():
-    """``1 − 1/(1 + exp(−x))`` is one ulp of 1 and then exactly 0 as x grows,
-    whatever multiplies it afterwards, and the signed rate that carries it
-    steps from 1e-16 of its other factors to 0 there, flat either side. That
-    is what the law's own arithmetic rounds by, which is carried through it
-    (:func:`_float_rounding`): 16 ulp of the value itself is far less."""
-    from bngsim._switch_sensitivity import _continuous_across
-
-    v = "a*(1-1/(1+exp(-(Q-off)/tmp)))*(S+Q)"
-    held = frozenset({"tmp", "a"})
-    assert _continuous_across(f"if(({v})>0,{v},0)", f"({v})>0", held=held)
-    assert not _continuous_across(f"if(({v})>0,{v}+5,0)", f"({v})>0", held=held)
-
-
-def test_a_threshold_far_under_the_state_is_read_on_its_own_scale():
-    """``if(S > c, kb·(S − c)/(S + c), 0)`` with c = 1e-9 and S near 10: a
-    bend at 1e-9. A hair that was a millionth of where S is, 1e-5, read the
-    law at S below 0 and across its pole at −c."""
-    from bngsim._switch_sensitivity import _continuous_across
-
-    law, atom = "if(S>c,kb*(S-c)/(S+c),0)", "S>c"
-    known = {"values": {"c": 1e-9, "kb": 3.0}, "state": {"S": 10.0}}
-    assert _continuous_across(law, atom, held=frozenset({"c", "kb"}), **known)
-    assert not _continuous_across("if(S>c,kb,0)", atom, held=frozenset({"c", "kb"}), **known)
-
-
-def test_a_pulse_in_time_is_a_symbol_of_its_own():
-    """``kb·exp(−(T − 50)²)`` is 0 to a double at any time picked between 0.5
-    and 2, and a jump in proportion to it was no jump there."""
-    from bngsim._switch_sensitivity import _continuous_across
-
-    held = frozenset({"T", "kb", "thr"})
-    assert not _continuous_across("if(A<thr,kb*exp(-((T-50)/1)^2),0)", "A<thr", held=held)
-    assert _continuous_across("if(A<thr,kb*(thr-A)*exp(-((T-50)/1)^2),0)", "A<thr", held=held)
+    law = "+".join(["kb*max(X,0.5)"] + [f"X/({i}+thr)" for i in range(1, 3000)])
+    tree = _syntax_tree(law)
+    assert tree is not None
+    assert _quotient_across_a_choice(tree, {"kb": 3.0, "thr": 4.4}, frozenset(), set()) is None
+    sign = law + "+X/abs(X)"
+    found = _quotient_across_a_choice(
+        _syntax_tree(sign), {"kb": 3.0, "thr": 4.4}, frozenset(), set()
+    )
+    assert found == "X / abs(X)"
 
 
 def test_a_scan_that_fails_refuses(tmp_path, monkeypatch):
@@ -521,131 +538,6 @@ def test_a_scan_that_fails_refuses(tmp_path, monkeypatch):
     monkeypatch.setattr(_switch_sensitivity, "fallback_crossing", broken)
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="could not be read"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
-
-
-def test_a_ramp_whose_condition_divides_by_a_parameter_runs(tmp_path):
-    """Control. The same ramp in a model: its condition changes sign with the
-    parameter it divides by, which nothing in a run moves."""
-    sim = _simulator(
-        tmp_path, "if((Aobs-thr)/tau<0,kb*(thr-Aobs),0)", DECLINED, ["k", "thr"], True
-    )
-    assert not sim.has_analytic_sens_rhs
-    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
-    t_star = math.log(a0 / thr) / k
-    tail = math.exp(-k * T_END)
-    want = [
-        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
-        kb * (T_END - t_star),
-    ]
-    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
-
-
-@pytest.mark.parametrize(
-    ("law", "atom", "continuous"),
-    [
-        # The atom flips at B = 0.1 and at B = 3: a bend at 3, a jump at 0.1.
-        ("if((B-0.1)*(B-3)>0,kb*(B-3),0)", "(B-0.1)*(B-3)>0", False),
-        # A bend at both.
-        ("if((B-0.1)*(B-3)>0,kb*(B-0.1)*(B-3),0)", "(B-0.1)*(B-3)>0", True),
-        # The comparison tends to 0 far out and reaches it only at B = 0.1,
-        # where the law jumps. A secant from B between 0.5 and 2 runs outward.
-        ("if((B-0.1)*exp(-3*B)>0,kb,0)", "(B-0.1)*exp(-3*B)>0", False),
-        # A flip across a pole, with the law finite either side.
-        ("if(1/(B-0.7)>0,kb,2*kb)", "1/(B-0.7)>0", False),
-        # A condition no value of its symbols flips.
-        ("if((A*A+thr*thr)<0,kb,0)", "(A*A+thr*thr)<0", False),
-        # The magnitude of a signed quantity: two flips, a bend at each.
-        ("if(abs(V)>c,kb*(abs(V)-c),0)", "abs(V)>c", True),
-        ("if(abs(V)>c,kb*(V-c),0)", "abs(V)>c", False),
-    ],
-)
-def test_every_flip_of_a_condition_is_asked_about(law, atom, continuous):
-    """A comparison can flip at more than one value of a symbol, and the law
-    can bend at one and jump at another. Asked only at the root a secant came
-    to from a value between 0.5 and 2, the first of these was found
-    continuous, and the third at a root that is none."""
-    from bngsim._switch_sensitivity import _continuous_across
-
-    assert _continuous_across(law, atom) is continuous
-
-
-@pytest.mark.parametrize(
-    "law",
-    ["kb*(1+(Aobs-thr)/abs(Aobs-thr))/2", "kb*(max(Aobs,thr)-thr)/(Aobs-thr)"],
-    ids=["a-ratio-to-its-magnitude", "a-ratio-of-the-greater"],
-)
-def test_a_jump_written_with_no_condition_is_refused(tmp_path, law):
-    """``(X − thr)/abs(X − thr)`` is −1 below thr and 1 above it, with no
-    condition written and no step call. ``abs``, ``max`` and ``min`` are
-    choices the law makes on the state, each with a surface, and each is
-    asked about as a condition is. dY/dk came back 18.37 for 10.2 at a loose
-    tolerance, and the run ended in CVODE's no-progress error at a tight one."""
-    _refused(_simulator(tmp_path, law, DECLINED, ["k"]), "Aobs")
-
-
-@pytest.mark.parametrize(
-    ("law", "want"),
-    [
-        # Y = kb·((T − t*)² + t*²)/2 with A = 1 + k·t crossing thr at t* = 3.4/k.
-        ("kb*abs(Aobs-thr)", 3.0 * (6.0 * (6.0 - 3.4) * 6.0 / 2.0 - 3.4 * 3.4 * 6.0 / 2.0) / 6.0),
-    ],
-    ids=["a-magnitude"],
-)
-def test_a_choice_that_bends_runs_on_the_difference_quotient(tmp_path, law, want):
-    """Control. ``kb·abs(Aobs − thr)`` is continuous where A is thr, and so is
-    the declined law beside it, ``kc·max(Aobs, 0.5)``: bends, which the
-    quotient is right across. dY/dk in closed form."""
-    sim = _simulator(tmp_path, law, DECLINED, ["k"])
-    assert not sim.has_analytic_sens_rhs
-    k, thr, kb = 1.0, 4.4, 3.0
-    t_star = (thr - 1.0) / k
-    # dY/dk = kb·(∫ t dt over [t*, T] − ∫ t dt over [0, t*]).
-    want = kb * ((T_END**2 - t_star**2) / 2.0 - t_star**2 / 2.0)
-    np.testing.assert_allclose(_y_columns(sim), [want], rtol=1e-6)
-
-
-@pytest.mark.parametrize(
-    ("law", "bends"),
-    [
-        ("kb*abs(X-thr)", None),
-        ("kb*(X-thr)/abs(X-thr)", "abs(X - thr)"),
-        ("kb*max(X,thr)", None),
-        ("kb*(max(X,thr)-thr)/(X-thr)", "max(X, thr)"),
-        ("kb*min(X,thr,c)", None),
-        # A clamp written with the two calls is a bend at each.
-        ("kb*max(0,min(X,n))", None),
-        # A choice on the time alone flips at an instant.
-        ("kb*X*(T-3)/abs(T-3)", None),
-        # A step inside a choice is a symbol here, and is found as a step
-        # call in a model.
-        ("kb*abs(floor(X)-thr)", None),
-        # A magnitude of what has one sign flips nowhere, and the greater of
-        # a rate that is not read and a floor is not asked about: a choice is
-        # refused where it is found a jump.
-        ("kb*abs(1/(1+X*X))", None),
-        ("kb*max(rateOf(X),0.1)", None),
-        # A cusp: the root of a magnitude leaves its zero with no bound on
-        # its slope, and meets itself there. Not a jump.
-        ("kb*sqrt(abs(X-thr))", None),
-    ],
-)
-def test_which_choice_a_rate_law_jumps_across(law, bends):
-    from bngsim._switch_sensitivity import _choice_jump
-
-    assert _choice_jump(law, {}, frozenset({"T", "kb"})) == bends
-
-
-def test_a_concentration_is_moved_over_positive_values_alone():
-    """``min(c·E, c·R)/c`` written with a magnitude, with c in proportion to
-    CO2 (BIOMD0000000383): the lesser of E and R where CO2 is above 0, and
-    the greater below it. CO2 is a concentration and does not get there."""
-    from bngsim._switch_sensitivity import _choice_jump
-
-    c = "(kc*CO2/(CO2+K))"
-    law = f"(0.21*O2/Ko)/(CO2/Kc)*(({c}*E+{c}*R)-abs({c}*E-{c}*R))/2"
-    held = frozenset({"kc", "K", "Ko", "Kc", "E"})
-    assert _choice_jump(law, {}, held) is not None
-    assert _choice_jump(law, {}, held, positive=frozenset({"CO2", "O2", "R"})) is None
 
 
 def test_a_time_crossing_beside_a_declined_rate_law_runs(tmp_path):
@@ -718,98 +610,6 @@ def test_a_steady_state_solve_is_not_refused():
 
 
 @pytest.mark.parametrize(
-    "expr",
-    [
-        "if(a<b,a*b,a/b)+max(a,b,c)-min(a,c)+abs(a-c)",
-        "exp(-a/b)*log(c)+ln(a)+log10(b)+log2(c)+sqrt(a*b)",
-        "sin(a)+cos(b)+tan(c)+asin(a/4)+acos(b/4)+atan(c)+sinh(a)+cosh(b)+tanh(c)",
-        "a^b-(a-c)^2+(-a)^3+2^-b+_pi*_e",
-        "if((a>b)&&(b<=c),1,2)+if((a>=b)||not(c!=a),3,4)",
-        "(a<b)+(b<c)*2",
-        "1-1/(1+exp(-(a-b)*40))",
-        "sqrt(a-b-c)+log(a-b-c)+1/(a-a)+(a-b-c)^0.5",
-    ],
-)
-def test_the_two_readings_of_a_rate_law_agree(expr):
-    """A law is read twice: compiled, for the many readings of a condition
-    along a symbol, and walked, for a value with what it rounds by. The two
-    give one value, a NaN where the other gives a NaN."""
-    from bngsim._switch_sensitivity import _float_form, _float_rounding, _float_tree
-
-    tree = _float_tree(expr)
-    evaluate, names, _ = _float_form(tree)
-    for values in ({"a": 1.7, "b": 0.6, "c": 0.9}, {"a": 0.3, "b": 1.9, "c": 1.1}):
-        point = {name: values[name] for name in names}
-        compiled = float(evaluate(point))
-        walked, size = _float_rounding(tree, point)
-        assert compiled == float(walked) or (math.isnan(compiled) and math.isnan(walked))
-        assert size >= 0.0 and math.isfinite(size)
-
-
-# ─── What an independent review found ───────────────────────────────────────
-
-WIDER = """begin parameters
-    1 A0 {A0!r}
-    2 k {k!r}
-    3 thr 4.4
-    4 kb 3.0
-    5 kc 5.0
-    6 tau 3.4
-    7 P 1.3
-    8 one 1.0
-    9 n {n!r}
-   10 c -4.0
-   11 g 1e-4
-end parameters
-begin functions
-{funcs}
-end functions
-begin species
-    1 A() A0
-    2 Y() 0
-    3 Z() 0
-    4 C() 0
-    5 B() 1e-4
-end species
-begin reactions
-    1 {a_rxn} k
-    2 0 2 fY
-    3 0 3 fZ
-    4 0 4 one
-end reactions
-begin groups
-    1 Aobs 1
-    2 Cobs 4
-    3 Bobs 5
-end groups
-"""
-
-
-def _wider(tmp_path, fy, fz=DECLINED, decays=True, extra=(), k=1.0, n=0.0):
-    """The model above with a counter C that nothing but its own rate moves,
-    a species B that stays at 1e-4, an exponent n and a few more parameters."""
-    funcs = [*extra, f"fY() {fy}", f"fZ() {fz}"]
-    path = tmp_path / "wider.net"
-    path.write_text(
-        WIDER.format(
-            funcs="\n".join(f"    {i} {f}" for i, f in enumerate(funcs, 1)),
-            A0=10.0 if decays else 1.0,
-            a_rxn="1 0" if decays else "0 1",
-            k=k,
-            n=n,
-        )
-    )
-    return bngsim.Model.from_net(path)
-
-
-def _refused_run(model, params, **kwargs):
-    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
-    assert not sim.has_analytic_sens_rhs
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
-        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20, **kwargs)
-
-
-@pytest.mark.parametrize(
     ("fy", "fz", "params"),
     [("if(Aobs>thr,kb,0)", DECLINED, ["k", "thr"]), ("kb", "kc*floor(time()/P)", ["P", "kc"])],
     ids=["a-state-switch", "a-step-of-time-the-period-moves"],
@@ -875,43 +675,11 @@ def test_a_step_table_indexed_through_a_function_is_refused(tmp_path):
 )
 def test_a_jump_that_goes_with_what_the_parameters_are_is_refused(tmp_path, law, n):
     """Each of these laws bends where A is thr for parameters, a time or a
-    state between 0.5 and 2, which is where every symbol used to be put, and
-    jumps at the values the model has. A parameter is read at its own value,
-    the state near where it is, and a call on the clock is a symbol of its
-    own."""
+    state between 0.5 and 2, and jumps at the values the model has. A reading
+    that put every symbol between 0.5 and 2 found each continuous, and one
+    that read parameters at their values and the state near where it is
+    found the last so too."""
     _refused_run(_wider(tmp_path, law, n=n), ["k", "thr"])
-
-
-def test_a_ramp_whose_condition_divides_by_the_time_runs(tmp_path):
-    """Control. ``(Aobs − thr)/(time() + 1) < 0`` changes sign with the time
-    at −1, across a pole, and the ramp does not meet 0 there. The time is a
-    clock no column moves: the comparison flips along it at an instant."""
-    model = _wider(tmp_path, "if((Aobs-thr)/(time()+1)<0,kb*(thr-Aobs),0)")
-    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
-    assert not sim.has_analytic_sens_rhs
-    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
-    t_star = math.log(a0 / thr) / k
-    tail = math.exp(-k * T_END)
-    want = [
-        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
-        kb * (T_END - t_star),
-    ]
-    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
-
-
-def test_a_ramp_whose_exponent_is_a_parameter_runs_where_it_is_one(tmp_path):
-    """Control. The same law with n = 1: a ramp, against its closed form."""
-    model = _wider(tmp_path, "if(Aobs<thr,kb*(thr-Aobs)^n,0)", n=1.0)
-    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
-    assert not sim.has_analytic_sens_rhs
-    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
-    t_star = math.log(a0 / thr) / k
-    tail = math.exp(-k * T_END)
-    want = [
-        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
-        kb * (T_END - t_star),
-    ]
-    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
 
 
 def test_the_refusal_is_asked_again_when_a_parameter_changes(tmp_path):
@@ -944,61 +712,123 @@ def test_a_condition_behind_many_assignment_rules_is_refused(depth):
         sim.run(sample_times=[0.0, 3.0, 6.0], rtol=1e-4, atol=1e-6, timeout=20)
 
 
-SIGNED_RATES = {
-    "a-power-of-one-and-a-half": "Vm*S^1.5/(K^1.5 + S^1.5) - d*Q",
-    "a-power-that-is-a-parameter": "Vm*S^n/(K^n + S^n) - d*Q",
-    "a-square-root": "Vm*(sqrt(S) - sqrt(K*Q))",
-    "a-logarithm": "Vm*ln(S/(K*Q))",
+@pytest.mark.parametrize(
+    "law",
+    [
+        "if(max(Aobs-thr,0)==0,kb,0)",
+        "if(if(Aobs<thr,1,0)==1,kb,0)",
+        "if(min(Aobs,thr)==Aobs,kb,0)",
+        "if(abs(Aobs-thr)+(thr-Aobs)!=0,kb,0)",
+    ],
+    ids=["a-max", "a-condition", "a-min", "an-abs"],
+)
+def test_an_equality_that_holds_over_an_interval_is_refused(tmp_path, law):
+    """``max(Aobs − thr, 0) == 0`` holds for every A up to thr, where an
+    equality between two smooth expressions holds at one value. Taken for
+    one of those, the model ran: dY/dk = 4.424 and dY/dthr = 1.225 for 2.463
+    and 0.682."""
+    sim = _simulator(tmp_path, law, DECLINED, ["k", "thr"], decays=True)
+    _refused(sim, "Aobs", rtol=1e-4)
+
+
+BELOW_ZERO = {
+    # x = cos(w·t) passes 0, and −0.5, again and again.
+    "a-rate-rule-through-0": (
+        "x = 1; y = 0; Y = 0; Z = 0; w = 1; kb = 3\nx' = w*y\ny' = -w*x\n"
+        "Y' = piecewise(kb, x > 0, 0)\nZ' = max(x, -2)\n",
+        ["w"],
+    ),
+    "a-rate-rule-through-a-number-below-0": (
+        "x = 1; y = 0; Y = 0; Z = 0; w = 1; kb = 3; c = 0.5\nx' = w*y\ny' = -w*x\n"
+        "Y' = piecewise(kb, x > -c, 0)\nZ' = max(x, -2)\n",
+        ["w"],
+    ),
+    "a-sign-of-what-passes-below-0": (
+        "x = 1; y = 0; Y = 0; Z = 0; w = 1; kb = 3; c = 0.5\nx' = w*y\ny' = -w*x\n"
+        "Y' = kb*(1 + (x + c)/abs(x + c))\nZ' = max(x, -2)\n",
+        ["w"],
+    ),
+    # A falls at a constant rate and passes 0 at t = 3.
+    "a-species-consumed-at-a-constant-rate": (
+        "species A, Y, Z; A = 3; Y = 0; Z = 0; k0 = 1; kb = 3\nJ0: A -> ; k0\n"
+        "J1: -> Y; piecewise(kb, A > 0, 0)\nJ2: -> Z; max(A, -5)\n",
+        ["k0"],
+    ),
 }
 
 
-@pytest.mark.parametrize("case", sorted(SIGNED_RATES))
-def test_a_signed_rate_that_has_no_value_below_zero_runs(case):
-    """Control. ``if(v > 0, v, 0)`` beside ``if(v < 0, −v·X/max(X, 0.01), 0)``
-    with a power of S that is not a whole number, a root or a logarithm in v:
-    v has no value for S below 0, and a cut that moved S there took the edge
-    of that for a flip with a jump. S is a concentration and is moved over
-    positive values. Against a central difference of plain runs."""
-
-    def build(a=0.5):
-        return bngsim.Model.from_antimony_string(
-            f"species S, Q, X; S = 10; Q = 1; X = 0; a = {a!r}; Vm = 2; K = 2; d = 1; n = 1.5;\n"
-            f"J0: S -> ; a*S\nv := {SIGNED_RATES[case]}\n"
-            "J1: -> X; piecewise(v, v > 0, 0)\n"
-            "J2: X -> ; piecewise(-v*X/max(X, 0.01), v < 0, 0)\n"
-        )
-
-    times = [0.0, 3.0, 6.0]
-    sim = bngsim.Simulator(build(), method="ode", sensitivity_params=["a"])
-    assert not sim.has_analytic_sens_rhs
-    run = sim.run(sample_times=times, rtol=1e-10, atol=1e-12, timeout=60)
-    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("X"), 0]
-
-    def plain(a):
-        out = bngsim.Simulator(build(a), method="ode").run(
-            sample_times=times, rtol=1e-12, atol=1e-14, timeout=60
-        )
-        return np.asarray(out.species)[-1, list(out.species_names).index("X")]
-
-    def slope(h):
-        return (plain(0.5 + h) - plain(0.5 - h)) / (2.0 * h)
-
-    want = (4.0 * slope(2.5e-4) - slope(5e-4)) / 3.0
-    assert got == pytest.approx(want, rel=1e-5)
-
-
-def test_a_guard_on_a_concentration_runs():
-    """Control. ``piecewise(Vm·Q/S, S > 0, 0)``: S is a concentration, and is
-    above 0. The comparison comes out one way and is no crossing."""
-    text = (
-        "species S, Q, X; S = 10; Q = 1; X = 0; a = 0.5; Vm = 2;\n"
-        "J0: S -> ; a*S\nJ1: -> X; piecewise(Vm*Q/S, S > 0, 0)\nJ2: -> Q; max(S, 0.1)\n"
+@pytest.mark.parametrize("case", sorted(BELOW_ZERO))
+def test_a_condition_on_what_goes_below_zero_is_refused(case):
+    """``x > 0`` was taken to hold for good where x starts above 0, as a
+    guard on a concentration does. A variable under a rate rule, and a
+    species consumed at a constant rate, pass 0: dY/dw came back 14.13 for
+    9.42, and dY/dk0 −13.49 for −9. Nothing is assumed of the state."""
+    text, params = BELOW_ZERO[case]
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=params
     )
-    model = bngsim.Model.from_antimony_string(text)
-    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["a"])
     assert not sim.has_analytic_sens_rhs
-    run = sim.run(sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-12, timeout=60)
-    assert np.all(np.isfinite(np.asarray(run.sensitivities)))
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(sample_times=[0.0, 3.0, 6.0], rtol=1e-8, atol=1e-10, timeout=20)
+
+
+def test_a_batch_row_is_asked_about_with_its_own_parameters(tmp_path):
+    """A is made at rate k: a counter at k = 1, which the one requested
+    column, thr, does not move, and a state like any other at k = 2. The
+    batch was asked about once, at the model's own k = 1, and the row at
+    k = 2 returned dY/dthr = −4.228 for −1.5."""
+    model = _wider(tmp_path, "if(Aobs>thr,kb,0)", decays=False)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
+    assert not sim.has_analytic_sens_rhs
+    rows = sim.run_batch(
+        params=[{"k": 1.0}], t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10
+    )
+    got = np.asarray(rows[0].sensitivities)[-1, list(rows[0].species_names).index("Y()"), 0]
+    assert got == pytest.approx(-3.0, rel=1e-6)
+    with pytest.raises(bngsim.SimulationError, match="#938"):
+        sim.run_batch(params=[{"k": 2.0}], t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6)
+
+
+def test_a_divisor_is_asked_about_again_when_a_parameter_changes_sign(tmp_path):
+    """``kb/max(thr − Aobs, g)``: a floor under the divisor at g = 1e-4, and
+    a division by what is 0 wherever A is above thr at g = 0."""
+    model = _wider(tmp_path, "kb/max(thr-Aobs,g)")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kb"])
+    assert not sim.has_analytic_sens_rhs
+    sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+    model.set_param("g", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+def test_what_is_kept_between_runs_does_not_grow(tmp_path):
+    """One syntax tree a rate law, whatever the parameters are set to: a fit
+    that changes them ten thousand times keeps what it kept after the first."""
+    model = _wider(tmp_path, "kb*abs(Aobs-thr)", decays=False)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+    sizes = set()
+    for kb in (3.0, 3.5, 4.0, 4.5):
+        model.set_param("kb", kb)
+        model.reset()
+        sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+        sizes.add(len(sim._fallback_scan_cache))
+    assert sizes == {2}
+
+
+def test_a_branch_scan_that_fails_refuses(tmp_path, monkeypatch):
+    """The scan for a branch crossing whose time moves (issue #414) comes
+    before this one, and where it failed the model was run: nothing after it
+    was asked."""
+    from bngsim import _switch_sensitivity
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("no scope")
+
+    sim = _simulator(tmp_path, "if(Aobs>thr,kb,0)", DECLINED, ["k"])
+    monkeypatch.setattr(_switch_sensitivity, "model_uncompensated_crossing_reason", broken)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="could not be read"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
 def test_an_equality_that_holds_a_step_holds_over_an_interval(tmp_path):
