@@ -1010,3 +1010,11 @@ def test_an_equality_that_holds_a_step_holds_over_an_interval(tmp_path):
     sim = _simulator(tmp_path, "if(floor(Aobs/thr)==0,kb,0)", "kc*Aobs", ["k", "thr"], True)
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="issue #414"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10, timeout=20)
+
+
+def test_an_equality_on_the_state_is_no_crossing(tmp_path):
+    """Control. ``if(Aobs == 4.4, kb, 2*kb)`` holds at one value of A and
+    over no interval: the rate is 2·kb, and dY/dk is 0."""
+    sim = _simulator(tmp_path, "if(Aobs==4.4,kb,2*kb)", DECLINED, ["k"], True)
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0], atol=1e-9)

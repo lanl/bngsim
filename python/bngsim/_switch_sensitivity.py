@@ -4542,6 +4542,10 @@ def fallback_crossing(
         """Whether the quotient reads across the surface *flat* names."""
         if not _IDENTIFIER.search(flat) or condition_cannot_cross(flat, scope):
             return False
+        # An equality holds at a state and over no interval of them, unless
+        # it holds a step: there is no surface to read across.
+        if is_equality_atom(flat) and not _STEP_CALL.search(flat):
+            return False
         if _reads_clock_and_run_constants(flat, scope):
             read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
             return bool({i for i in read if i >= 0} & moved)
