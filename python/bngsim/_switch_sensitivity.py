@@ -4378,9 +4378,11 @@ def _bends_at(
             if crossings is None:
                 return None
             for lo, hi in crossings:
-                # A millionth of where the flip is, or of where the symbol
-                # is for a flip much nearer 0 than that.
-                hair = 1e-6 * max(abs(hi), abs(lo), abs(point[i]))
+                # A millionth of where the flip is: a threshold of 1e-9 is
+                # read 1e-15 either side. Of where the symbol is, for a flip
+                # on 0 itself.
+                where = max(abs(hi), abs(lo))
+                hair = 1e-6 * (where if where > 1e-200 else abs(point[i]))
                 at = list(point)
                 at[i] = hi
                 true_above = holds(at)

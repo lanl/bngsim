@@ -488,6 +488,41 @@ def test_a_law_that_steps_by_what_it_rounds_by_does_not_jump():
     assert not _continuous_across(f"if(({v})>0,{v}+5,0)", f"({v})>0", held=held)
 
 
+def test_a_threshold_far_under_the_state_is_read_on_its_own_scale():
+    """``if(S > c, kb·(S − c)/(S + c), 0)`` with c = 1e-9 and S near 10: a
+    bend at 1e-9. A hair that was a millionth of where S is, 1e-5, read the
+    law at S below 0 and across its pole at −c."""
+    from bngsim._switch_sensitivity import _continuous_across
+
+    law, atom = "if(S>c,kb*(S-c)/(S+c),0)", "S>c"
+    known = {"values": {"c": 1e-9, "kb": 3.0}, "state": {"S": 10.0}}
+    assert _continuous_across(law, atom, held=frozenset({"c", "kb"}), **known)
+    assert not _continuous_across("if(S>c,kb,0)", atom, held=frozenset({"c", "kb"}), **known)
+
+
+def test_a_pulse_in_time_is_a_symbol_of_its_own():
+    """``kb·exp(−(T − 50)²)`` is 0 to a double at any time picked between 0.5
+    and 2, and a jump in proportion to it was no jump there."""
+    from bngsim._switch_sensitivity import _continuous_across
+
+    held = frozenset({"T", "kb", "thr"})
+    assert not _continuous_across("if(A<thr,kb*exp(-((T-50)/1)^2),0)", "A<thr", held=held)
+    assert _continuous_across("if(A<thr,kb*(thr-A)*exp(-((T-50)/1)^2),0)", "A<thr", held=held)
+
+
+def test_a_scan_that_fails_refuses(tmp_path, monkeypatch):
+    """A rate law that cannot be read for a crossing is not let through."""
+    from bngsim import _switch_sensitivity
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("no scope")
+
+    sim = _simulator(tmp_path, "kb", DECLINED, ["k"])
+    monkeypatch.setattr(_switch_sensitivity, "fallback_crossing", broken)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="could not be read"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
 def test_a_ramp_whose_condition_divides_by_a_parameter_runs(tmp_path):
     """Control. The same ramp in a model: its condition changes sign with the
     parameter it divides by, which nothing in a run moves."""
