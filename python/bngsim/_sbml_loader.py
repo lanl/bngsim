@@ -3810,6 +3810,22 @@ def _classify_mass_action_ast(
             if len(storage_comps) == 1:
                 _record_varvol_reject(next(iter(storage_comps)))
             return None
+        elif any(
+            products_by_id.get(s, 0) != reactants_by_id.get(s, 0)
+            and not species_hosu.get(s, False)
+            and species_comp[s] in varvol_comp_ids
+            for s in rxn_species
+        ):
+            # Some species amount-valued, and the reaction changes a concentration
+            # in a variable-volume compartment, with no compartment factor to
+            # cancel: its row is law/V_live, and the one Elementary rate divides
+            # every row by the baked V_static. `H => B; k*H` with H an amount and
+            # B a concentration in a growing compartment made B(6) 40.55 molecules
+            # out of 40; RoadRunner 33.39.
+            storage_comps = {species_comp[s] for s in rxn_species}
+            if len(storage_comps) == 1:
+                _record_varvol_reject(next(iter(storage_comps)))
+            return None
 
     if not elementary:
         storage_comps = {species_comp[s] for s in rxn_species}
@@ -7406,6 +7422,11 @@ def _build_model_from_sbml_doc(doc):
         # A species the reaction leaves as it found it (a catalyst, net 0) has no
         # row to divide, and does not count: a reaction whose changed species all
         # sit in one compartment keeps the single divide it is right with.
+        # Within one compartment too, where the reaction changes both a
+        # concentration there and an amount: the concentration's row is
+        # law/V_live and the amount's law/V_static, and no single divide is both.
+        # `H => B; 0.3*H` divided H's by the live size: H(6) was 9.77 for 6.61.
+        _changes_an_amount = any(net[_sid] != 0 and species_hosu.get(_sid, False) for _sid in net)
         _xc_varvol_species = (
             [
                 _sid
@@ -7414,7 +7435,7 @@ def _build_model_from_sbml_doc(doc):
                 and species_comp[_sid] in varvol_ssa_comps
                 and not species_hosu.get(_sid, False)
             ]
-            if len(_rxn_comps) > 1
+            if len(_rxn_comps) > 1 or _changes_an_amount
             else []
         )
         if _xc_varvol_species:
@@ -7707,6 +7728,21 @@ def _build_model_from_sbml_doc(doc):
             # (varvol_non_mass_action, above).
             for _sid in _xc_varvol_species:
                 ode_xcomp_species_fixups.append((species_idx[_sid], species_comp[_sid]))
+            if i in ssa_varvol_functional and len(_rxn_comps) == 1:
+                # A one-compartment monomial certified for the scalar correction
+                # and written out per species because it changes an amount and a
+                # concentration together. This emission has no /V_live in the
+                # function, so its exponent is the hOSU=false law-factor count
+                # n_f, not n_f - 1.
+                _one = next(iter(_rxn_comps))
+                ssa_xcomp_term_fixups.append(
+                    (
+                        _xrxn_idx,
+                        _one,
+                        float(comp_volumes.get(_one, 1.0)),
+                        float(ssa_varvol_functional[i]),
+                    )
+                )
             if i in ssa_varvol_xcompartment:
                 _varvol_comps = set(ssa_varvol_xcompartment[i])
                 for _sid in net:
