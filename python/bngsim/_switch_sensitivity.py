@@ -3437,17 +3437,10 @@ def _facts_of(
             return _Facts(clock=True)
         return _Facts(state=True)
     if isinstance(node, ast.Constant):
-        value = _number(node)
-        if value is None:
+        number = _number(node)
+        if number is None:
             return _NO_FACTS
-        return _Facts(positive=value > 0.0, nonnegative=value >= 0.0, negative=value < 0.0)
-    reads = {
-        "state": any(f.state for f in under),
-        "clock": any(f.clock for f in under),
-        "asked": any(f.asked for f in under),
-        "choice": any(f.choice for f in under),
-        "size": size,
-    }
+        return _Facts(positive=number > 0.0, nonnegative=number >= 0.0, negative=number < 0.0)
     positive = nonnegative = negative = False
     name = _call_name(node)
     if isinstance(node, ast.UnaryOp) and len(under) == 1:
@@ -3510,7 +3503,14 @@ def _facts_of(
             under[0].negative,
         )
     facts = _Facts(
-        positive=positive, nonnegative=nonnegative or positive, negative=negative, **reads
+        state=any(f.state for f in under),
+        clock=any(f.clock for f in under),
+        asked=any(f.asked for f in under),
+        choice=any(f.choice for f in under),
+        positive=positive,
+        nonnegative=nonnegative or positive,
+        negative=negative,
+        size=size,
     )
     if name in _CHOICE_NAMES and facts.live:
         facts = facts._replace(choice=True)
@@ -3644,7 +3644,7 @@ def _quotient_across_a_choice(
             elif facts[id(a)].size + facts[id(b)].size < _FLIP_MAX_NODES:
                 flips.update(either_way(ast.BinOp(left=a, op=ast.Sub(), right=b)))
     for node in order:
-        divisor = None
+        divisor: ast.AST | None = None
         power = _power(node)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             divisor = node.right
