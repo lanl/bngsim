@@ -2170,7 +2170,7 @@ def _reads_clock_and_run_constants(flat: str, scope: SwitchConditionScope) -> bo
     return True
 
 
-def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
+def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -> tuple[str, ...]:
     """Every rate-law branch condition this model switches on a *clock* alone with.
 
     The ``.net``/BNGL answer to the question the SBML loader answers at load
@@ -2206,6 +2206,10 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     Empty for a model with no functions, and for the far more common model whose
     conditions read state rather than a clock, so nothing about its stepping
     changes.
+
+    ``steps_only`` returns the step calls alone. The sensitivity detector reads
+    the conditions itself, with what each threshold's crossing moves with, and
+    needs only what it does not read (issue #944).
     """
     from bngsim._jacobian import _inline_functions, has_condition_construct
 
@@ -2285,9 +2289,10 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
             else:
                 admit(arg)
 
+    n_conditions = len(found)
     for text in stepped:
         admit(_inline_functions(text, func_map) or text)
-    return tuple(found)
+    return tuple(found[n_conditions:] if steps_only else found)
 
 
 # Resolved schedule and step-edge lists, keyed by :func:`_stop_memo_key`: the
@@ -5198,9 +5203,36 @@ def compute_switch_time_sens(
                         found_index,
                     )
 
-    records = _emit_switch_records(
-        found, param_idx, _clocks_moved(core, clocks, names, ic_species)
-    )
+    # Issue #944: a step call on a clock outside every condition is on its
+    # instants too. The loop above reads conditions, and `floor(time/3)` as a
+    # factor of a rate law is not one: each of its steps was placed as a stop
+    # (#869) and not grouped with the records, so a fitted switch that landed on
+    # one was read with the step inside its bracket, and took the step's jump
+    # into its own column (dW/dtau = −4.2 for 0). The steps are absorbed here as
+    # crossings no parameter moves, which is what puts a record on their instant
+    # onto the isolation path. Only where some crossing is moved: otherwise no
+    # record is read at all.
+    moved_clocks = _clocks_moved(core, clocks, names, ic_species)
+    if any(any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks for c in found):
+        for stop in all_fixed_crossings(
+            core,
+            float(t_start),
+            float(t_end),
+            time_discontinuity_conditions(core, ctx, steps_only=True),
+        ):
+            _absorb_crossing(
+                found,
+                _Crossing(
+                    t_star=stop.time,
+                    clock_idx0=stop.clock_species_idx,
+                    threshold=stop.threshold if stop.clock_species_idx >= 0 else stop.time,
+                    dtstar=[0.0] * len(names),
+                    partials={},
+                ),
+                found_index,
+            )
+
+    records = _emit_switch_records(found, param_idx, moved_clocks)
     if not records:
         return [], []
 

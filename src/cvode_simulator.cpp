@@ -6702,10 +6702,58 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         }
         model.refresh_derived_params();
         rhs_on_branch(+eps_clock, scratch.f_iso);
+
+        // ── Does this crossing commute with the others on its instant? (issue #951)
+        // The difference just read is this crossing's jump with every other
+        // condition on the instant already past it. The same crossing with the
+        // others still to come is read from the other side: the clock a nudge
+        // BEFORE the instant and this threshold lowered by the same hair, so
+        // that this condition alone has switched. Where the two jumps are one,
+        // the conditions add, and each crossing's jump moves with its own time:
+        // two rate laws that switch together, or two gates summed in one. Where
+        // they differ, the conditions are composed: a product of two gates, the
+        // later of two times, a window of no width. Then what a parameter that
+        // moves this crossing and not the others does depends on which way it
+        // moves it, the run sits on a kink in that parameter, and the column
+        // had one side of it: dY/dtau = −0.75 for (−0.75 | −0.375), with no
+        // warning.
+        for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+            params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
+                saved[k] - sw.isolate_delta[k];
+        }
+        model.refresh_derived_params();
+        std::vector<double> f_iso_before(static_cast<size_t>(ns), 0.0);
+        rhs_on_branch(-eps_clock, f_iso_before);
+
         for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
             params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
         }
         model.refresh_derived_params();
+
+        for (int i = 0; i < ns; ++i) {
+            const auto ui = static_cast<size_t>(i);
+            // This crossing's jump: f_iso has every condition on the instant
+            // switched but this one, and f_iso_before this one alone.
+            const double others_after = sw_f_plus[ui] - scratch.f_iso[ui];
+            const double others_before = f_iso_before[ui] - sw_f_minus[ui];
+            const double size = std::max({std::fabs(scratch.f_iso[ui]), std::fabs(sw_f_plus[ui]),
+                                          std::fabs(sw_f_minus[ui]), std::fabs(f_iso_before[ui])});
+            if (!(std::fabs(others_after - others_before) <=
+                  kEventJumpRelTol * std::max(std::fabs(others_after), std::fabs(others_before)) +
+                      kEventJumpUlps * std::numeric_limits<double>::epsilon() * size)) {
+                throw std::runtime_error(
+                    "Forward sensitivity: the switch time at t=" + std::to_string(t_evt) +
+                    " shares its instant with another rate-law condition, and the two do not "
+                    "commute: across this switch d[" +
+                    model.species()[ui].name + "]/dt jumps by " + std::to_string(others_before) +
+                    " with the other condition still to switch and by " +
+                    std::to_string(others_after) +
+                    " with it already switched. A requested parameter moves this switch time "
+                    "apart from the other, so the result has a kink in that parameter there and "
+                    "no derivative (issue #951). Separate the two times, or drop the parameters "
+                    "that move one of them from sensitivity_params.");
+            }
+        }
 
         // An isolated difference of exactly zero is a legitimate answer here and
         // is deliberately not checked for. A condition can flip with no effect
