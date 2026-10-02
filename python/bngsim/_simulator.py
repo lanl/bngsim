@@ -1763,16 +1763,22 @@ class Simulator:
         from bngsim._switch_sensitivity import crossings_with_periodic, merge_crossing_stops
 
         try:
-            crossings, periodic = crossings_with_periodic(
-                model._core, float(t_start), float(t_end), conditions
+            crossings, periodic, periodic_at = crossings_with_periodic(
+                model._core,
+                float(t_start),
+                float(t_end),
+                conditions,
+                touches=getattr(model, "_event_disc_conditions", frozenset()),
             )
             # A crossing of a sinusoid or a polynomial in time is a stop too
             # (issue #714): a window narrower than a step lay wholly inside one,
-            # unseen. To the event sensitivity jump it is one more fixed
-            # crossing on its instant.
-            if periodic:
-                crossings = sorted([*crossings, *periodic], key=lambda stop: stop.time)
-            stops = merge_crossing_stops(crossings)
+            # unseen. The stop lands a little past the crossing; to the event
+            # sensitivity jump the crossing is one more fixed one on its instant.
+            stops = merge_crossing_stops(
+                sorted([*crossings, *periodic], key=lambda stop: stop.time)
+            )
+            if periodic_at:
+                crossings = sorted([*crossings, *periodic_at], key=lambda stop: stop.time)
         except Exception as e:  # pragma: no cover - defensive
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than
@@ -1797,7 +1803,9 @@ class Simulator:
             probes = dict.fromkeys(
                 (stop.time, stop.clock_species_idx, stop.threshold) for stop in crossings
             )
-            opts.set_crossing_probes(list(probes) if len(probes) > len(stops) else [])
+            opts.set_crossing_probes(
+                list(probes) if len(probes) > len(stops) or periodic_at else []
+            )
 
     @staticmethod
     def _apply_ssa_breakpoints(sims, model, t_start, t_end) -> None:
@@ -1836,8 +1844,12 @@ class Simulator:
                 )
 
                 try:
-                    crossings, periodic = crossings_with_periodic(
-                        model._core, float(t_start), float(t_end), conditions
+                    crossings, periodic, _ = crossings_with_periodic(
+                        model._core,
+                        float(t_start),
+                        float(t_end),
+                        conditions,
+                        touches=getattr(model, "_event_disc_conditions", frozenset()),
                     )
                     times = [float(stop.time) for stop in merge_crossing_stops(crossings)]
                     # ...and the crossings of a sinusoid or a polynomial in time,

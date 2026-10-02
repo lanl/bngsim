@@ -104,12 +104,16 @@ def test_ode_daily_pulse_with_decay():
     assert _col(r, "X")[-1] == pytest.approx(13.37783, rel=1e-5)
 
 
-def _crossings(text, cond, t0, t1):
+def _pairs(text, cond, t0, t1):
     m = _ant(text)
     ctx = m._core.functional_jacobian_context()
     return _periodic_stop_times(
         cond, switch_condition_scope(m._core, ctx), t0, t1, _function_slot_bodies(ctx)
     )
+
+
+def _crossings(text, cond, t0, t1):
+    return [t for t, _ in _pairs(text, cond, t0, t1)]
 
 
 def test_the_crossings_are_solved_exactly():
@@ -156,16 +160,17 @@ def test_a_stop_lands_past_its_crossing():
     for tol in ({}, {"rtol": 1e-8, "atol": 1e-10}, {"rtol": 1e-10, "atol": 1e-12}):
         r = bngsim.Simulator(_ant(text)).run(t_span=(0, 100), n_points=11, **tol)
         assert _col(r, "A")[-1] == pytest.approx(50 / 51, rel=1e-6)
-    # Each stop is past its crossing, and within 32 ulps of it.
-    stops = _crossings("species X = 0;", "sin(0.3*time())>0.5", 0.0, 100.0)
+    # Each stop is past its crossing, within 32 ulps of it.
+    pairs = _pairs("species X = 0;", "sin(0.3*time())>0.5", 0.0, 100.0)
     exact = sorted(
         x
         for th in (np.arcsin(0.5), np.pi - np.arcsin(0.5))
         for k in range(8)
         if 0 < (x := (th + 2 * np.pi * k) / 0.3) <= 100
     )
-    assert len(stops) == len(exact)
-    for stop, t in zip(stops, exact, strict=False):
+    assert len(pairs) == len(exact)
+    for (crossing, stop), t in zip(pairs, exact, strict=False):
+        assert crossing == pytest.approx(t, rel=1e-14)
         assert 0 < stop - t <= 32 * np.finfo(float).eps * max(t, 1.0)
 
 
@@ -234,15 +239,69 @@ def test_a_window_on_a_counter_clock(tmp_path, law, exact):
 
 @pytest.mark.parametrize(("cond", "fires"), [("-(time-3)^2 >= 0", 1), ("sin(time) >= 1", 16)])
 @pytest.mark.parametrize("method", ["ode", "ssa"])
-def test_a_tangent_condition_fires_the_same_on_any_grid(cond, fires, method):
-    """A condition that touches its threshold without crossing it has a stop on
-    the touch. The double root came back complex and was dropped, so the count
+def test_a_trigger_that_touches_its_threshold_fires_on_any_grid(cond, fires, method):
+    """An event trigger true at one instant fires there: its stop is on the
+    touch. The double root came back complex and was dropped, so the count
     depended on the output grid."""
     for n_points in (2, 11, 1001):
         r = bngsim.Simulator(_ant(f"species n = 0; E: at {cond}: n = n + 1;"), method=method).run(
             t_span=(0, 100), n_points=n_points, **({"seed": 1} if method == "ssa" else {})
         )
         assert _col(r, "n")[-1] == fires
+
+
+def test_a_rate_law_that_touches_its_threshold_has_no_stop():
+    """sin(time) < 1 is false at one instant. The evaluator reads sin as exactly
+    1.0 over 2e-8 around it, and a stop on the touch sat in that band: with a
+    1e6 jump at rtol=1e-12 CVODE made no progress, where a run with no stop
+    steps over the instant, as it should."""
+    assert _crossings("species X = 0;", "sin(time())<1", 0.0, 20.0) == []
+    assert _crossings("species X = 0;", "-(time()-3)^2>=0", 0.0, 20.0) == []
+    text = (
+        "species A = 1; species B = 0;"
+        " J1: A => B; piecewise(1e6, sin(time) < 1, 1)*A; J2: B => A; 50*B;"
+    )
+    r = bngsim.Simulator(_ant(text)).run(t_span=(0, 20), n_points=2, rtol=1e-12, atol=1e-14)
+    assert _col(r, "A")[-1] == pytest.approx(50 / (50 + 1e6), rel=1e-6)
+
+
+def test_a_linear_and_a_periodic_crossing_on_one_instant():
+    """The merge kept the linear stop at 10.0, where sin(pi*10/10) is 1.2e-16 and
+    still reads the branch ending there, and dropped the periodic one past it."""
+    text = (
+        "species A = 1; species B = 0; J2: B => A; 50*B;"
+        " J1: A => B; (piecewise(1e4, sin(pi*time/10) < 0, 1) + piecewise(0.5, time > 10, 0))*A;"
+    )
+    r = bngsim.Simulator(_ant(text)).run(t_span=(0, 30), n_points=2, rtol=1e-10, atol=1e-12)
+    ref = bngsim.Simulator(_ant(text)).run(t_span=(0, 30), n_points=2, rtol=1e-7, atol=1e-9)
+    assert _col(r, "A")[-1] == pytest.approx(_col(ref, "A")[-1], rel=1e-5)
+
+
+def test_a_sum_of_sinusoids_of_one_frequency():
+    """2*sin(10t) + cos(10t) = sqrt(5)*sin(10t + atan2(1, 2))."""
+    thr = 2.2
+    t = _crossings("species X = 0;", f"2*sin(10*time())+cos(10*time())>{thr}", 0.0, 3.0)
+    phi, amp = np.arctan2(1.0, 2.0), np.sqrt(5.0)
+    want = sorted(
+        x
+        for th in (np.arcsin(thr / amp), np.pi - np.arcsin(thr / amp))
+        for k in range(-1, 8)
+        if 0 < (x := (th + 2 * np.pi * k - phi) / 10) <= 3
+    )
+    np.testing.assert_allclose(t, want, rtol=1e-12)
+
+
+def test_a_degree_twelve_polynomial_is_solved_quickly():
+    """sympy's exact real-root isolation took 24 s at degree 12, 77 s at 13."""
+    import time
+
+    cond = " * ".join(f"(0.3*time()-{k}.7)" for k in range(1, 13)) + ">1e-3"
+    t0 = time.perf_counter()
+    t = _crossings("species X = 0;", cond, 0.0, 100.0)
+    assert time.perf_counter() - t0 < 5
+    # Twelve simple roots near (k + 0.7)/0.3, each moved a hair by the 1e-3.
+    assert len(t) == 12
+    np.testing.assert_allclose(t, [(k + 0.7) / 0.3 for k in range(1, 13)], atol=1e-2)
 
 
 def test_too_many_crossings_are_declined_loudly_and_cheaply(caplog):
@@ -255,7 +314,7 @@ def test_too_many_crossings_are_declined_loudly_and_cheaply(caplog):
     with caplog.at_level("WARNING"):
         assert _crossings("species X = 0;", "sin(1e6*time())>0.5", 0.0, 1e4) == []
     assert time.perf_counter() - t0 < 2
-    assert "more than the" in caplog.text
+    assert "past the" in caplog.text
     assert m is not None
 
 
