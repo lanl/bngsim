@@ -210,11 +210,18 @@ The same reading takes back a jump past the drive tolerance that is not the
 switch's. A term beside a continuous switch that rounds as a staircase and does
 not read the switch steps between the probes, and its tread went into the column
 as a jump: −2029.6 for 4.42. The crossing is continuous where the two branches
-at one state are within the drive tolerance, both as they stand and with each
-side carried to the surface along its own slope, and within the bound above. A
-term that reads the threshold species moves between the two sides and can take
-a jump of 80 of its ulp out of the difference as it stands, which is what the
-second reading is for.
+at one state are the same to the rounding of the two readings, and within the
+drive tolerance with each side carried to the surface along its own slope. To
+their rounding and no more: what the flux does further out is no measure here,
+since a second switch of the same rate law a few ulp away is in that reading,
+and a staircase that reads the threshold species puts a tread between the two
+sides.
+
+It also sizes a jump that such a term stepped beside. The jump applied is the
+whole right-hand side's change between the probes, extended to the surface, and
+a tread of 22 beside a jump of 3 gave −1826 for 207.9. Where one switch jumps
+and its branch change read at one state differs from the one the probes give by
+more than that reading allows, the jump is the one read at one state.
 
 **An event and a switch at the same instant.** `f⁻` is the before-branch at
 `x⁻`, and `f⁺` is the after-branch at `x⁺`:

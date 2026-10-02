@@ -6965,16 +6965,19 @@ static constexpr double kStateSwitchContinuousRelTol = 1e-6;
 // bending, a term beside the switched one that rounds by more than the step
 // (issue #917). The drive tolerance stands for all of that at once, and is far
 // too wide for it under a fast threshold. A reading under the extension's own
-// rounding, this many times ε of the four readings, is no step. Past the drive
-// tolerance it is one, as it always was. In between, the two branches are read
-// at one state: the state on the surface, with only the species the residual
-// reads moved a few ulp to either side of it. Every term that does not switch
-// is the same on both, whatever it rounds by, and what is left is the step.
+// rounding, this many times ε of the four readings, is no step. In the band
+// between that and the drive tolerance, the two branches are read at one state:
+// the state on the surface, with only the species the residual reads moved a
+// few ulp to either side of it. Every term that does not read those species is
+// the same on both, whatever it rounds by, and what is left is the step.
 //
 // What is allowed there without a step: the rounding of the two readings, and
 // what the flux does on its own as far again from the surface, for a term that
 // reads the residual's species. Where the two sides cannot be reached by moving
 // those species, the reading stands as the drive tolerance had it.
+//
+// Past the drive tolerance a reading is a step, except where the two branches
+// at one state are the same to their rounding: see the verdict.
 static constexpr double kStateSwitchExtendedRoundoff = 16.0;
 static constexpr double kStateSwitchBend = 8.0;
 // How many ulp of the residual each side is taken past the surface.
@@ -7984,6 +7987,12 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         std::vector<double> gross;  // the largest gross flux of the four
         bool jumps = false;         // a branch change above the drive tolerance
         bool must_agree = false;    // and above that flux's own rounding
+        // Its branch change as the probes along the flow give it, and as its
+        // two branches read at one state give it, with what that reading
+        // allows (issue #917). The second is empty where it was not taken.
+        std::vector<double> along;
+        std::vector<double> at_one_state;
+        std::vector<double> allowed;
     };
     std::vector<Reader> readers;
     std::vector<std::size_t> reader_batch_idx;
@@ -8400,6 +8409,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             std::vector<double> further[2];
             std::vector<double> apart;
             std::vector<double> allowed;
+            // The part of `allowed` that is the rounding of the two readings.
+            std::vector<double> rounding;
             // The same difference with each side carried to the surface along
             // its own slope first.
             std::vector<double> step;
@@ -8489,14 +8500,17 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
             a.apart.assign(n_sp, 0.0);
             a.allowed.assign(n_sp, 0.0);
+            a.rounding.assign(n_sp, 0.0);
             a.step.assign(n_sp, 0.0);
             for (std::size_t u = 0; u < n_sp; ++u) {
                 a.apart[u] = a.flux[0][u] - a.flux[1][u];
                 a.step[u] = (1.5 * a.flux[0][u] - 0.5 * a.further[0][u]) -
                             (1.5 * a.flux[1][u] - 0.5 * a.further[1][u]);
+                a.rounding[u] = kStateSwitchExtendedRoundoff *
+                                std::numeric_limits<double>::epsilon() *
+                                std::max(std::fabs(a.flux[0][u]), std::fabs(a.flux[1][u]));
                 a.allowed[u] =
-                    kStateSwitchExtendedRoundoff * std::numeric_limits<double>::epsilon() *
-                        std::max(std::fabs(a.flux[0][u]), std::fabs(a.flux[1][u])) +
+                    a.rounding[u] +
                     kStateSwitchBend * std::max(std::fabs(a.further[0][u] - a.flux[0][u]),
                                                 std::fabs(a.further[1][u] - a.flux[1][u]));
             }
@@ -8568,6 +8582,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             const double w_hi = (dt - r.root) / dt;
             double slack = -1.0; // root_step(r), found only if a species needs it
             Sides sides;         // read_apart(r), likewise
+            r.along.assign(far_ok ? n_sp : 0, 0.0);
             for (std::size_t u = 0; u < n_sp; ++u) {
                 double change = r.net[1][u] - r.net[2][u];
                 // The drive tolerance is for the pair read as it stands, where
@@ -8582,6 +8597,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     const double before = r.net[1][u] + w_lo * (r.net[1][u] - r.net[0][u]);
                     const double after = r.net[2][u] + w_hi * (r.net[2][u] - r.net[3][u]);
                     change = before - after;
+                    r.along[u] = change;
                     rounding = kStateSwitchExtendedRoundoff *
                                std::numeric_limits<double>::epsilon() *
                                std::max({std::fabs(r.net[0][u]), std::fabs(r.net[1][u]),
@@ -8607,19 +8623,28 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                             if (!read_apart(r, sides) || no_step(r, sides, u)) {
                                 continue;
                             }
-                        } else if (read_apart(r, sides) && std::fabs(sides.apart[u]) <= tol &&
-                                   std::fabs(sides.step[u]) <= tol && no_step(r, sides, u)) {
+                        } else if (read_apart(r, sides) &&
+                                   std::fabs(sides.apart[u]) <= sides.rounding[u] &&
+                                   std::fabs(sides.step[u]) <= tol) {
                             // Past the drive tolerance it is a step, unless the
-                            // two branches at one state are within it, as they
-                            // stand and carried to the surface: what the probes
+                            // two branches at one state are the same to the
+                            // rounding of the two readings: what the probes
                             // differ by is then not this switch's. A term
                             // beside it that rounds as a staircase stepped
                             // between them, and its tread went into the column
-                            // as a jump (−2029.6 for 4.42). Carried to the
-                            // surface as well, because a term that reads the
-                            // threshold species moves between the two sides and
-                            // can take a jump of 80 of its ulp out of the
-                            // difference as it stands.
+                            // as a jump (−2029.6 for 4.42).
+                            //
+                            // To their rounding and to no more. What the flux
+                            // does on its own further out is no measure here:
+                            // a second switch of the same rate law 17 to 48
+                            // ulp away is in that reading, and a staircase
+                            // that reads the threshold species puts a tread
+                            // between the two sides. Each took a jump just
+                            // past the tolerance back, where main reads it or
+                            // refuses the pair. The same with each side
+                            // carried to the surface along its own slope,
+                            // against a steep term that takes the jump out of
+                            // the difference as it stands.
                             continue;
                         }
                     }
@@ -8629,6 +8654,13 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         !(std::fabs(change) <= std::numeric_limits<double>::epsilon() *
                                                    kStateSwitchAgreeRoundoff * r.gross[u]);
                 }
+            }
+            if (r.jumps && sides.read == 1) {
+                if (!sides.treads) {
+                    allow_treads(r, sides);
+                }
+                r.at_one_state = sides.step;
+                r.allowed = sides.allowed;
             }
             continuous = continuous && !r.jumps;
         }
@@ -8740,6 +8772,35 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             change[u] -= 2.0 * f_plus[u] - f_far[u];
         }
         sync(x, t_evt);
+    }
+    // Issue #917: the difference above is everything the right-hand side does
+    // between the probes, and the jump is one switch's. A term beside the
+    // switch that rounds as a staircase steps between them, and its tread was
+    // added to the jump: with `kbig·(sP() + off − Q) + if(B < thr, kb, 0)` and
+    // kb = 3, dY/dkdeg came back −1826 for 207.9. Where one reader jumps and
+    // its two branches were read at one state, and the two readings of its
+    // branch change differ by more than that reading allows, the jump is the
+    // one read at one state. Where they agree it stays as it was.
+    if (judge != Judge::Legacy) {
+        const Reader *only = nullptr;
+        int jumping = 0;
+        for (const Reader &r : readers) {
+            if (r.jumps) {
+                ++jumping;
+                only = &r;
+            }
+        }
+        if (jumping == 1 && !only->at_one_state.empty() && !only->along.empty()) {
+            bool beside = false;
+            for (std::size_t u = 0; u < n_sp && !beside; ++u) {
+                beside = std::fabs(only->along[u] - only->at_one_state[u]) >
+                         kStateSwitchContinuousRelTol * std::fabs(only->at_one_state[u]) +
+                             only->allowed[u];
+            }
+            if (beside) {
+                change = only->at_one_state;
+            }
+        }
     }
 
     // ── One crossing time, or several? (issue #153) ──────────────────────────

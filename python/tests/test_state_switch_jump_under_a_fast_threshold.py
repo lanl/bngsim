@@ -87,9 +87,9 @@ def test_a_smaller_jump_under_a_slower_one(tmp_path):
 
 
 def test_a_jump_beside_a_large_constant_in_the_same_rate_law(tmp_path):
-    """``ksyn + if(…, kb, 0)`` with ksyn = 1e6: the flux neither bends nor moves
-    with an ulp of anything it reads, so it is allowed a few ulp of 1e6 and no
-    more, and the jump of 3 is read under a drive of 5e6."""
+    """``ksyn + if(…, kb, 0)`` with ksyn = 1e6: at one state the constant is the
+    same on both sides of the surface, so the two readings differ by the jump of
+    3 and are allowed a few ulp of 1e6. It is read under a drive of 5e6."""
     got = _columns(tmp_path, "ksyn+if(Bobs<thr,kb,0)", 3.0, 1e8, ksyn=1e6)
     want = _step(3.0, 1e8)
     np.testing.assert_allclose(got[:3], want[:3], rtol=1e-6)
@@ -192,10 +192,11 @@ def test_a_continuous_switch_beside_a_fast_bystander_in_the_same_rate_law(tmp_pa
     """Control. The switched term vanishes at the surface, and the rate law also
     carries ``kA·A·C/(1 + A/KA)``, two species the residual does not read, large
     and moving. The reading extended to the root from two probes a side rounds
-    by a few ulp of that: 1.9 to 4.2 times ε·|flux| in these six. Allowed none,
-    or one, an earlier cut took the rounding for a jump: up to 1e-4 of dY/dkdeg
-    here, and on the corpus two residuals that cross together (SIR_v5) each read
-    one and the run was refused."""
+    by a few ulp of that: 1.9 to 4.2 times ε·|flux| in these six, which is under
+    the 16 it is allowed, so the crossing is continuous before the two branches
+    are read at one state at all. Allowed one, an earlier cut took the rounding
+    for a jump: up to 1e-4 of dY/dkdeg here, and on the corpus two residuals
+    that cross together (SIR_v5) each read one and the run was refused."""
     path = tmp_path / "m.net"
     path.write_text(BESIDE_A_BYSTANDER.format(kA=kA, kdA=kdA, kdC=kdC))
     run = bngsim.Simulator(
@@ -280,10 +281,11 @@ def test_a_jump_under_a_fast_rising_threshold_species(tmp_path, law, kdeg, ksyn,
 )
 def test_a_jump_at_a_slow_crossing_under_a_plateau(tmp_path, kdeg, ksyn, thr):
     """Control. thr is 2e-4 short of the plateau, so the crossing is slow and
-    the probes are a few ulp of B from the surface. An earlier cut allowed the
-    reading what one ulp of B moves the flux by, read at a probe that the ulp
-    carried across the surface: the allowance was the jump itself, and both
-    columns came back 0."""
+    the probes along the flow are a few ulp of B from the surface. The drive is
+    small here, and the jump is past its tolerance: it is read as it was. An
+    earlier cut measured its allowance at a probe that one ulp carried across
+    the surface, so the allowance was the jump itself, and both columns came
+    back 0."""
     got, want = _rising(tmp_path, "if(Bobs<thr,0,kb)", kdeg, ksyn, thr)
     np.testing.assert_allclose(got, want, rtol=1e-6)
 
@@ -328,10 +330,10 @@ end groups
 def test_a_continuous_switch_beside_a_difference_of_two_large_pools(tmp_path, kbig, kdP):
     """Control. The rate law also carries ``kbig·(P − Q)``, with P and Q at
     2.5e11 and a part in 1e9 apart at the crossing. That term rounds by an ulp
-    of P, not by an ulp of its own value, so a bound of a few ulp of the
-    readings is far too tight for it. An earlier cut read the rounding as a
-    jump: dY/dkdeg up to 60% off at kbig = 1e4. The bound now counts what one
-    ulp of every species and parameter moves the flux by."""
+    of P, not by an ulp of its own value, so between two probes along the flow
+    it moves by far more than a few ulp of the readings. An earlier cut read
+    that as a jump: dY/dkdeg up to 60% off at kbig = 1e4. At one state the term
+    reads the same on both sides of the surface, to the bit."""
     t_star = np.log(2.0) / KDEG
     p0 = 1e12 * float(np.exp((kdP - 0.2) * t_star)) * (1 + 1e-9)
     path = tmp_path / "m.net"
@@ -433,8 +435,9 @@ def test_two_switches_that_turn_off_with_zero_slope_cross_together(tmp_path, poo
     """Control. ``if(B > thr, k·(B − thr)², 0)`` meets 0 with no slope, so a
     line through two probes on its own side leaves the curve's bend at the
     root. An earlier cut read that as a jump in each of the two, and refused
-    the pair as two jumps on one instant. The bend is now read from a third
-    probe a side. dY/dthr = −2k·((B0 − thr)/kdeg − thr·t*)."""
+    the pair as two jumps on one instant. A few ulp either side of the surface
+    the law is a few ulp squared, and what it does as far again out is allowed.
+    dY/dthr = −2k·((B0 − thr)/kdeg − thr·t*)."""
     got, thr, t_star = _pair(tmp_path, QUADRATIC, pool, frac, kdeg, k)
     own = -2 * k * ((pool - thr) / kdeg - thr * t_star)
     np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
@@ -471,8 +474,8 @@ def _risen(pool, thr, kdeg, t_star):
 )
 def test_two_switches_that_turn_on_with_zero_slope_cross_together(tmp_path, pool, frac, kdeg, k):
     """Control. B rises through thr, so the law that meets 0 with no slope is on
-    the far side of the crossing, and the bend has to be read there too.
-    dY/dthr = −2k·∫(B − thr) dt from t* on."""
+    the far side of the crossing, and what it does on its own is read on that
+    side too. dY/dthr = −2k·∫(B − thr) dt from t* on."""
     got, thr, t_star = _pair(tmp_path, QUADRATIC, pool, frac, kdeg, k, rising=True)
     own = -2 * k * _risen(pool, thr, kdeg, t_star)
     np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
@@ -491,12 +494,11 @@ def test_two_ramps_through_an_offset_that_turn_on_cross_together(
     tmp_path, funcs, pool, frac, kdeg, k
 ):
     """Control. B rises, so the ramp that rounds by its offset is on the far
-    side, and what an ulp of the offset moves it by has to be read there. The
-    offset is a parameter, or a species that nothing moves: each is an input
-    whose rounding the ramp carries. It is two million pools, so the ramp is a
-    staircase with treads far wider than the probes are apart: every probe on
-    its side reads one tread, the ramp shows no bend, and what is left at the
-    root is a tread. dY/dthr = −k·t*."""
+    side. The offset is a parameter, or a species that nothing moves. It is two
+    million pools, so the ramp is a staircase with treads far wider than the
+    probes are apart, and wider than the few ulp of B the two sides are read
+    at: the side that is on reads one tread, which is followed out to where the
+    ramp moves again. dY/dthr = −k·t*."""
     got, _thr, t_star = _pair(tmp_path, funcs, pool, frac, kdeg, k, rising=True, off=2e6)
     own = -k * t_star
     np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
@@ -512,8 +514,7 @@ def test_two_ramps_through_an_offset_that_turn_on_cross_together(
 )
 def test_two_ramps_through_a_species_offset_cross_together(tmp_path, pool, frac, kdeg, k):
     """Control. The falling pair, with the offset a species of two million
-    pools: an ulp of that species is all that accounts for the tread the ramp
-    leaves at the root."""
+    pools."""
     got, _thr, t_star = _pair(tmp_path, OFFSET_SPECIES, pool, frac, kdeg, k, off=2e6)
     own = -k * t_star
     np.testing.assert_allclose(got, [[own, 0.0], [0.0, own]], rtol=1e-6, atol=1e-6 * abs(own))
@@ -561,9 +562,9 @@ def test_a_jump_beside_a_large_term_that_moves(tmp_path, kb):
     readings it is a difference of, about two ulp of the term: 5e-5 of the
     jump, or 5e-4.
 
-    The term moves from probe to probe by more than the smaller jump. That is
-    its slope, not a tread: a staircase reads the same an eighth of a step from
-    a probe as at it, and this does not."""
+    The term moves from probe to probe by more than the smaller jump. It does
+    not read the threshold species, so at one state it is the same on both
+    sides of the surface."""
     path = tmp_path / "m.net"
     path.write_text(JUMP_BESIDE_A_BYSTANDER.format(kb=kb))
     run = bngsim.Simulator(
@@ -647,34 +648,54 @@ STAIRCASES = {
 }
 
 
+def _beside_a_staircase(tmp_path, case, kb, switched):
+    """dY/d(kdeg, thr, B0) with `switched` as the law the condition turns on."""
+    _, kbig, kdP, Q0, over, gap, beside = STAIRCASES[case]
+    t_star = np.log(2.0) / KDEG
+    pools = Q0 * np.exp(-0.2 * t_star)
+    text = BESIDE_A_STAIRCASE.format(
+        kb=kb,
+        kbig=kbig,
+        kdP=kdP,
+        P0=Q0 * float(np.exp((kdP - 0.2) * t_star)) * (1 + gap),
+        Q0=Q0,
+        off=float(over * pools),
+        beside=beside,
+    ).replace("if(Bobs<thr,ramp(),0)", f"if(Bobs<thr,{switched},0)")
+    path = tmp_path / "m.net"
+    path.write_text(text)
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["kdeg", "thr", "B0"]
+    ).run(sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12)
+    return np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
+
+
+@pytest.mark.parametrize("kb", [0.3, 3.0, 30.0])
+@pytest.mark.parametrize("case", sorted(STAIRCASES))
+def test_a_jump_beside_a_term_that_rounds_as_a_staircase(tmp_path, case, kb):
+    """The same staircase beside a switch that does jump, by kb. The jump was
+    read, and sized from everything the right-hand side did between the probes,
+    the staircase's tread included: with kb = 3 and a tread of 22, dY/dkdeg came
+    back −1826 for 207.9. Read at one state, the tread is the same on both sides
+    and the jump is kb."""
+    got = _beside_a_staircase(tmp_path, case, kb, "kb")
+    t_star = np.log(2.0) / KDEG
+    want = [kb * t_star / KDEG, kb / (KDEG * 5e7), -kb / (KDEG * 1e8)]
+    np.testing.assert_allclose(got, want, rtol=1e-6)
+
+
 @pytest.mark.parametrize("case", sorted(STAIRCASES))
 def test_a_continuous_switch_beside_a_term_that_rounds_as_a_staircase(tmp_path, case):
     """``kbig·(P − Q)`` with P and Q a part in 1e7 apart, written through an
     offset a thousand times their size, moves in treads of an ulp of the offset:
-    22 here, under a drive of 5e6 and so over its tolerance of 5. It does not
+    15, 213 and 3 in these, under a drive of 5e6 and a tolerance of 5. It does not
     read the switch. Between two probes it stepped by a tread, which was read as
     the switch's jump: dY/dkdeg came back −2029.6 for 4.42. The switch is a ramp
     that vanishes at the surface, and at one state the term beside it is the
     same on both sides."""
-    kb, kbig, kdP, Q0, over, gap, beside = STAIRCASES[case]
+    kb = STAIRCASES[case][0]
     t_star = np.log(2.0) / KDEG
-    pools = Q0 * np.exp(-0.2 * t_star)
-    path = tmp_path / "m.net"
-    path.write_text(
-        BESIDE_A_STAIRCASE.format(
-            kb=kb,
-            kbig=kbig,
-            kdP=kdP,
-            P0=Q0 * float(np.exp((kdP - 0.2) * t_star)) * (1 + gap),
-            Q0=Q0,
-            off=float(over * pools),
-            beside=beside,
-        )
-    )
-    run = bngsim.Simulator(
-        bngsim.Model.from_net(path), method="ode", sensitivity_params=["kdeg", "thr", "B0"]
-    ).run(sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12)
-    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
+    got = _beside_a_staircase(tmp_path, case, kb, "ramp()")
     pool, thr, tail = 1e8, 5e7, np.exp(-KDEG * T_END)
     want = [
         kb * t_star / KDEG
@@ -727,3 +748,139 @@ def test_a_jump_of_eighty_ulp_of_a_steep_term_that_reads_the_threshold_species(t
     # dY/dthr = kbig·dB-integral's part is 0 (the smooth term does not read thr)
     # plus the jump's kb/(kdeg·thr).
     assert got == pytest.approx(0.06 / (1e-3 * 5e7), rel=0.05)
+
+
+SPECIES_THRESHOLD = """begin parameters
+    1 kb {kb!r}
+    2 C0 5e7
+    3 kdeg 0.1
+    4 B0 1e8
+    5 off {off!r}
+end parameters
+begin functions
+    1 sB() Bobs-off
+    2 fY() {law}
+end functions
+begin species
+    1 B() B0
+    2 Y() 0
+    3 Cst() C0
+end species
+begin reactions
+    1 1 0 kdeg
+    2 0 2 fY
+end reactions
+begin groups
+    1 Bobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+@pytest.mark.parametrize("kb", [3.0, 3e-3])
+@pytest.mark.parametrize(
+    ("law", "off"),
+    [("if(Bobs<Cobs,kb,0)", 0.0), ("if(sB()+off<Cobs,kb,0)", 1e10)],
+    ids=["a-species-threshold", "through-an-offset"],
+)
+def test_a_jump_under_a_residual_that_reads_two_species(tmp_path, law, off, kb):
+    """The threshold is a species that does not move, so the residual reads two
+    species, one on each side of it, and they move it opposite ways: to put the
+    state on either side of the surface each is moved its own way. Written
+    through an offset a hundred times the pool, the residual moves in treads of
+    128 ulp of B, and the way each species moves it shows only over a step wider
+    than a tread. dY/dkdeg and dY/dB0 were 0, as under a parameter threshold."""
+    path = tmp_path / "m.net"
+    path.write_text(SPECIES_THRESHOLD.format(kb=kb, law=law, off=off))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["kdeg", "B0", "kb"]
+    ).run(sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
+    t_star = np.log(2.0) / KDEG
+    np.testing.assert_allclose(
+        got, [kb * t_star / KDEG, -kb / (KDEG * 1e8), T_END - t_star], rtol=1e-6
+    )
+
+
+STEEP_STAIRCASE = """begin parameters
+    1 kb 0.18369935312979419
+    2 thr 334184.8555261631
+    3 kdeg 0.49422710341294795
+    4 B0 469545.4943152115
+    5 kbig 5746070.828948309
+    6 off 17431975.458342686
+    7 c0 333850.670670637
+end parameters
+begin functions
+    1 fY() kbig*((Bobs-off)+off-c0)+if(Bobs<thr,kb,0)
+end functions
+begin species
+    1 B() B0
+    2 Y() 0
+end species
+begin reactions
+    1 1 0 kdeg
+    2 0 2 fY
+end reactions
+begin groups
+    1 Bobs 1
+end groups
+"""
+
+
+def test_a_jump_just_past_the_tolerance_beside_a_staircase_that_reads_the_threshold(tmp_path):
+    """Control. The term beside the jump is a staircase in B itself, with a
+    tread of 0.13 of the drive tolerance, and the jump is 1.11 of it: a jump as
+    it always was. A boundary between treads falls between the two sides of the
+    surface, so their difference is the jump less a tread. A cut that allowed
+    that reading a tread took the jump back, and dY/dthr came back 0 where it
+    is 1.112e-6 and main is within 0.3% of that."""
+    path = tmp_path / "m.net"
+    path.write_text(STEEP_STAIRCASE)
+    t_end = 2 * np.log(469545.4943152115 / 334184.8555261631) / 0.49422710341294795
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["thr"]
+    ).run(sample_times=[0.0, 0.4 * t_end, t_end], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), 0]
+    want = 0.18369935312979419 / (0.49422710341294795 * 334184.8555261631)
+    assert got == pytest.approx(want, rel=1e-2)
+
+
+TWO_JUMPS = """begin parameters
+    1 thr 5e7
+    2 thr2 {thr2!r}
+    3 kdeg 0.1
+    4 B0 1e8
+end parameters
+begin functions
+    1 fY() if(Bobs<thr,3,0)+if(Bobs<thr2,5,0)
+end functions
+begin species
+    1 B() B0
+    2 Y() 0
+end species
+begin reactions
+    1 1 0 kdeg
+    2 0 2 fY
+end reactions
+begin groups
+    1 Bobs 1
+end groups
+"""
+
+
+@pytest.mark.parametrize("gap", [-30, 17, 30, 44, 48])
+def test_two_jumps_of_one_rate_law_a_few_ulp_apart_are_still_refused(tmp_path, gap):
+    """Control. Two thresholds 17 to 48 ulp of B apart, each with a jump under
+    the drive tolerance and the two together over it. The pair is refused, as
+    two crossings on one instant that the columns move apart. Read at one
+    state, each switch has the other's jump just beyond its two sides, and a
+    cut that allowed a reading what the flux does further out took both jumps
+    back: (0, 0) for (6e-7, 1e-6)."""
+    path = tmp_path / "m.net"
+    path.write_text(TWO_JUMPS.format(thr2=float(5e7 + gap * np.spacing(5e7))))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["thr", "thr2"]
+    )
+    with pytest.raises(Exception, match="cross at the same instant"):
+        sim.run(sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12)
