@@ -271,3 +271,26 @@ def test_a_linear_condition_is_not_parsed_again(monkeypatch):
     m = _ant("species X = 0; td = 5; J0: => X; piecewise(1, (time > td) && (time < td + 0.5), 0);")
     r = bngsim.Simulator(m).run(t_span=(0, 10), n_points=2)
     assert _col(r, "X")[-1] == pytest.approx(0.5, rel=1e-6)
+
+
+@pytest.mark.parametrize("n_points", [2, 3, 6, 11, 21])
+def test_sbml_suite_00936_on_a_coarse_grid(n_points):
+    """SBML semantic suite 00936: S1 := piecewise(sin(10*time), time < 2, 1),
+    and an event at S1 < 0 with a delay of 2 adds 1 to S2 three times. The
+    windows lie inside one step on a coarse grid: S2(5) was 0, 2 or 1 for 3."""
+    m = _ant(
+        "species S1; species S2 = 0; S1 := piecewise(sin(time*10), time < 2, 1);"
+        " E0: at 2 after S1 < 0, fromTrigger=false: S2 = S2 + 1;"
+    )
+    r = bngsim.Simulator(m).run(t_span=(0, 5), n_points=n_points)
+    assert _col(r, "S2")[-1] == 3
+    if n_points == 11:
+        np.testing.assert_array_equal(_col(r, "S2"), [0, 0, 0, 0, 0, 1, 2, 2, 3, 3, 3])
+
+
+def test_a_window_inside_an_if_branch():
+    """A branch's crossings count only where its guard selects it."""
+    t = _crossings("species X = 0;", "if((time()>3)&&(time()<5),(time()-4)^2,1)<0.01", 0.0, 10.0)
+    np.testing.assert_allclose(t, [3.9, 4.1], rtol=1e-12)
+    t = _crossings("species X = 0;", "if(time()<=2,sin(10*time()),1)<0", 0.0, 5.0)
+    assert len(t) == 6 and t[-1] < 2

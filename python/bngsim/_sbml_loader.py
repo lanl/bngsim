@@ -901,10 +901,12 @@ def _collect_time_discontinuity_conditions(
     inside the function definitions *node* calls (GH #231).
 
     n-ary relationals (``a < b < c``) are split into the consecutive pairs
-    MathML defines them as, so each emitted condition is a single
-    monotonic-in-time threshold — exactly what CVODE root-finding brackets
-    reliably regardless of step size. piecewise / and / or / nested structure is
-    reached at any depth.
+    MathML defines them as, so each emitted condition is a single threshold.
+    Not necessarily a monotonic one: ``sin(10*time) > 0.99`` is true on windows
+    narrower than a step, which a root on the boolean cannot bracket when a
+    whole window lies inside one. Its crossings are placed as stops instead
+    (:func:`bngsim._switch_sensitivity.crossings_with_periodic`, issue #714).
+    piecewise / and / or / nested structure is reached at any depth.
 
     ``time_names`` are the assignment-rule targets that transitively read the
     ``time`` csymbol. A model routinely aliases it

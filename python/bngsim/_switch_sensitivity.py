@@ -3003,15 +3003,33 @@ def _periodic_stop_times(cond, scope, t_start, t_end, bodies) -> list[float]:
         _PERIODIC_SHAPES[key] = shape
     if shape is None:
         return []
-    lo, hi = float(t_start), float(t_end)
+    return _shape_stop_times(shape, cond, float(t_start), float(t_end))
+
+
+def _shape_stop_times(shape, cond, lo: float, hi: float) -> list[float]:
+    if shape[0] == "const":
+        return []
     if shape[0] == "poly":
         return [min(stop, hi) for t_cross, stop in shape[1] if lo < t_cross <= hi]
+    if shape[0] == "piecewise":
+        import numpy as np
+
+        out: list[float] = []
+        for i, (_, sub) in enumerate(shape[1]):
+            times = np.asarray(_shape_stop_times(sub, cond, lo, hi), dtype=float)
+            if times.size:
+                out.extend(float(x) for x in times[shape[2](times) == i])
+        return sorted(out)
     return _trig_stop_times(shape, cond, lo, hi)
 
 
 def _periodic_shape(flat, params, constants, scope) -> tuple | None:
     """``("poly", ((crossing, stop), ...))`` over every real root of a
-    polynomial residual, or ``("sin" | "cos", a, ω, φ, c)``, or ``None``."""
+    polynomial residual, ``("sin" | "cos", a, ω, φ, c)``, ``("const",)``, or
+    ``("piecewise", ((guard, shape), ...), branch_of)`` for an ``if()`` over
+    pieces of those shapes whose guards read only the time, as an assignment
+    rule ``S1 := if(time <= 2, sin(10*time), 1)`` brings into ``S1 < 0`` (SBML
+    suite 00936); else ``None``."""
     import sympy as sp
 
     text = _TIME_REF.sub(" bngsim_clock_t ", flat)
@@ -3028,6 +3046,39 @@ def _periodic_shape(flat, params, constants, scope) -> tuple | None:
     t = sp.Symbol("bngsim_clock_t")
     if expr.free_symbols != {t}:
         return None
+    if not expr.has(sp.Piecewise):
+        return _shape_of(expr, t)
+    # Each branch a shape of its own, kept where its guard selects it: the
+    # crossings at a guard's own edges are the guard's, a condition of its own.
+    folded = sp.piecewise_fold(expr)
+    if not isinstance(folded, sp.Piecewise):
+        return None
+    pieces = []
+    for value, guard in folded.args:
+        if value.has(sp.Piecewise) or not guard.free_symbols <= {t}:
+            return None
+        sub = _shape_of(value, t)
+        if sub is None:
+            return None
+        pieces.append((guard, sub))
+    guards = [sp.lambdify(t, guard, "numpy") for guard, _ in pieces]
+
+    def branch_of(times):
+        import numpy as np
+
+        out = np.full(times.shape, -1)
+        for i, holds in enumerate(guards):
+            out[(out < 0) & np.broadcast_to(np.asarray(holds(times), dtype=bool), times.shape)] = i
+        return out
+
+    return ("piecewise", tuple(pieces), branch_of)
+
+
+def _shape_of(expr, t) -> tuple | None:
+    import sympy as sp
+
+    if not expr.has(t):
+        return ("const",)
     try:
         sp.Poly(expr, t)
     except sp.PolynomialError:
