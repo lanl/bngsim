@@ -3988,6 +3988,8 @@ class Simulator:
                 for i, future in enumerate(futures):
                     try:
                         results.append(future.result())
+                    except SensitivityUnsupportedError:
+                        raise
                     except Exception as e:
                         raise SimulationError(f"Batch simulation {i} failed: {e}") from e
         else:
@@ -5105,7 +5107,8 @@ class Simulator:
                     core_result = sim.run(times, base_seed + index, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
-        except SimulationTimeout:
+        except (SimulationTimeout, SensitivityUnsupportedError):
+            # A refusal is a refusal of the row's model, as it is from run().
             raise
         except RuntimeError as e:
             raise SimulationError(f"Batch simulation {index} failed: {e}") from e

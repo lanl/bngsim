@@ -264,6 +264,8 @@ WIDER = """begin parameters
     9 n {n!r}
    10 c -4.0
    11 g 1e-4
+   12 idx 2*n
+   13 near 1.001
 end parameters
 begin functions
 {funcs}
@@ -384,7 +386,8 @@ BENDS_NOT_PROVED = {
     # Continuous, each of them, and main is right on it.
     "a-guard": "if(Aobs>0,kb/Aobs,0)",
     "a-ramp-as-a-root": "if(Aobs<thr,kb*sqrt(thr-Aobs),0)",
-    "a-ramp-to-a-power-that-is-a-parameter": "if(Aobs<thr,kb*(thr-Aobs)^one,0)",
+    "a-ramp-to-a-power-that-is-no-whole-number": "if(Aobs<thr,kb*(thr-Aobs)^P,0)",
+    "an-onset-through-a-function": "if(Aobs<thr,kb*(1-exp(-(thr-Aobs)/2)),0)",
     "a-clamp-written-as-two-conditions": "kb*if(Aobs>0,if(Aobs<thr,Aobs,thr),0)",
     "a-ramp-over-what-is-not-known-nonzero": "if(Aobs<thr,kb*(thr-Aobs)/(1+Cobs),0)",
     "a-condition-scaled-on-both-sides": "if(2*Aobs<2*thr,kb*(thr-Aobs),0)",
@@ -422,11 +425,32 @@ def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
         # A power is 0 with its base where it is a number of 1 or more.
         ("if(X<thr,kb*(thr-X)^2,0)", True),
         ("if(X<thr,kb*(thr-X)^1,0)", True),
-        ("if(X<thr,kb*(thr-X)^pos,0)", False),
+        ("if(X<thr,kb*(thr-X)^pos,0)", True),
+        ("if(X<thr,kb*(thr-X)^half,0)", False),
+        ("if(X<thr,kb*(thr-X)^1.5,0)", False),
+        ("if(X<thr,kb*(thr-X)*abs(Y)^1.5,0)", True),
         ("if(X<thr,kb*(thr-X)^zero,0)", False),
         ("if(X<thr,kb*(thr-X)^0.5,0)", False),
         ("if(X<thr,kb*(thr-X)^Y,0)", False),
         ("if(X<thr,kb*sqrt(thr-X),0)", False),
+        # A root has no value below 0, and a comparison with no number is
+        # false: the law drops from −kb to 0 where X passes thr.
+        ("if((sqrt(X-thr)-1)<0,kb*(sqrt(X-thr)-1),0)", False),
+        ("if(((X-thr)^0.5-1)<0,kb*((X-thr)^0.5-1),0)", False),
+        ("if(X<thr,kb*(thr-X)*sqrt(Y),0)", False),
+        ("if(X<thr,kb*(thr-X)*sqrt(Y*Y+pos),0)", True),
+        # Both branches 0 where the comparison flips.
+        ("if(X>thr,kb*(X-thr),neg*(X-thr))", True),
+        ("if(X>thr,kb*(X-thr),-kb*(X-thr))", True),
+        ("if(X>thr,kb*(X-thr),neg)", False),
+        # A branch that is 0 as a parameter is, or a product with one.
+        ("if(X<thr,kb*(thr-X),zero)", True),
+        ("if(X<thr,kb*(thr-X),pos*zero)", True),
+        # A condition that is a number, true where it is not 0.
+        ("if(max(X,thr)-X,kb,0)", False),
+        ("if(X<thr&&(Y-1),kb*(thr-X),0)", False),
+        # A call that is not known to be continuous.
+        ("if(X<thr,kb*(thr-X)*clamp(0,Y,1),0)", False),
         ("if(X<thr,kb*abs(thr-X),0)", False),
         # What the product is of besides: continuous, or not known to be.
         ("if(X<thr,kb*(thr-X)*exp(-Y),0)", True),
@@ -468,7 +492,7 @@ def test_which_rate_law_is_proved_to_bend(law, proved):
     ``pos``, ``zero`` and ``neg`` parameters above, at and below 0."""
     from bngsim._switch_sensitivity import _only_bends, _syntax_tree
 
-    values = {"kb": 3.0, "thr": 4.4, "pos": 2.0, "zero": 0.0, "neg": -2.0}
+    values = {"kb": 3.0, "thr": 4.4, "pos": 2.0, "zero": 0.0, "neg": -2.0, "half": 0.5}
     assert _only_bends(_syntax_tree(law), values, frozenset({"T"}), set()) is proved
 
 
@@ -485,11 +509,17 @@ def test_the_same_bend_written_with_a_choice_runs(tmp_path, law):
     np.testing.assert_allclose(_y_columns(sim), _ramp_columns(), rtol=1e-6)
 
 
-def test_a_magnitude_runs(tmp_path):
+@pytest.mark.parametrize(
+    "law",
+    ["kb*abs(Aobs-thr)", "if((Aobs-thr)>0,kb*(Aobs-thr),-kb*(Aobs-thr))"],
+    ids=["abs", "written-as-a-condition"],
+)
+def test_a_magnitude_runs(tmp_path, law):
     """Control. ``kb·abs(Aobs − thr)`` is continuous where A is thr, and so is
     the declined law beside it, ``kc·max(Aobs, 0.5)``: bends, which the
-    quotient is right across. dY/dk in closed form."""
-    sim = _simulator(tmp_path, "kb*abs(Aobs-thr)", DECLINED, ["k"])
+    quotient is right across. Written as a condition, both branches are 0
+    where it flips. dY/dk in closed form."""
+    sim = _simulator(tmp_path, law, DECLINED, ["k"])
     assert not sim.has_analytic_sens_rhs
     k, thr, kb = 1.0, 4.4, 3.0
     t_star = (thr - 1.0) / k
@@ -631,6 +661,40 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         ("kb*X*(pos-3)/abs(pos-3)", False),
         # A sum that the choice is in is not asked about.
         ("kb*X/(abs(X)+0*Y)", False),
+        # A choice this does not know: any division by what may be 0.
+        ("kb*clamp(0,X-thr,1)/(X-thr)", True),
+        ("kb*clamp(0,X-thr,1)/(X*X+pos)", False),
+        ("kb*clamp(0,X-thr,1)", False),
+        # A conditional the law divides by is 0 where a branch of it is.
+        ("kb*(1+(X-thr)/if(T>0.2,abs(X-thr),1))", True),
+        ("kb*(1+(X-thr)/if(pos>0.5,abs(X-thr),1))", True),
+        ("kb*(1+(X-thr)/if(T>0.2,1+abs(X-thr),1))", False),
+        # A choice under a root, a logarithm or an exponential, with no sum
+        # over it.
+        ("kb*X/sqrt(abs(X))", True),
+        ("kb*X/sqrt(1+abs(X))", False),
+        ("kb*X/tanh(abs(X))", True),
+        # exp of what has no value is 0, and so is a power of it.
+        ("kb*(1+X/exp(log(abs(X))))", True),
+        ("kb*(1+X/2^log2(abs(X)))", True),
+        ("kb*(1+X/exp(-abs(X)))", False),
+        # The greater of e and −e is its magnitude.
+        ("kb*(1+max(X-thr,-(X-thr))/(X-thr))", True),
+        ("kb*(1+max(-(X-thr),X-thr)/(X-thr))", True),
+        # 0 as a parameter is, or a product with one.
+        ("kb*max(X-thr,zero)/(X-thr)", True),
+        ("kb*max(X-thr,0*kb)/(X-thr)", True),
+        ("kb*X/max(X,zero)", True),
+        # Over parameters alone: a bend the quotient straddles for the whole
+        # run where a requested one is within a quarter of itself of it.
+        ("kb*X*min(pos,near)", True),
+        ("kb*X*min(pos,asked)", False),
+        ("kb*X*abs(near-pos)", True),
+        ("kb*X*max(kb,pos)", False),
+        ("kb*X*max(thr,near-pos)", False),
+        # A power whose sign is what its parameters make it.
+        ("kb*X*abs(X)^(asked-1)", False),
+        ("kb*X*abs(X)^(pos-3)", True),
         # A requested parameter is moved as the state is.
         ("kb*X*(asked-3)/abs(asked-3)", True),
         ("kb*X/abs(asked)", False),
@@ -664,8 +728,9 @@ def test_which_quotient_is_named(law, found):
     below, with ``asked`` requested."""
     from bngsim._switch_sensitivity import _quotient_across_a_choice, _syntax_tree
 
-    values = {"kb": 3.0, "thr": 4.4, "pos": 2.0, "neg": -2.0, "asked": 3.0}
-    got = _quotient_across_a_choice(_syntax_tree(law), values, frozenset({"T"}), {"asked"})
+    values = {"kb": 3.0, "thr": 4.4, "pos": 2.0, "neg": -2.0, "asked": 3.0, "zero": 0.0}
+    values["near"] = 2.001
+    got = _quotient_across_a_choice(_syntax_tree(law), values, frozenset({"T"}), {"asked", "near"})
     assert (got is not None) is found
 
 
@@ -958,7 +1023,7 @@ def test_a_batch_row_is_asked_about_with_its_own_parameters(tmp_path):
     )
     got = np.asarray(rows[0].sensitivities)[-1, list(rows[0].species_names).index("Y()"), 0]
     assert got == pytest.approx(-3.0, rel=1e-6)
-    with pytest.raises(bngsim.SimulationError, match="#938"):
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
         sim.run_batch(params=[{"k": 2.0}], t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6)
 
 
@@ -1106,9 +1171,100 @@ def test_an_equality_that_holds_a_step_holds_over_an_interval(tmp_path):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10, timeout=20)
 
 
-def test_an_equality_on_the_state_is_no_crossing(tmp_path):
-    """Control. ``if(Aobs == 4.4, kb, 2*kb)`` holds at one value of A and
-    over no interval: the rate is 2·kb, and dY/dk is 0."""
+def test_an_equality_on_the_state_is_refused(tmp_path):
+    """Refused here, where main is right. ``if(Aobs == 4.4, kb, 2*kb)`` holds
+    at one value of A, which A passes through, and dY/dk is 0. An equality
+    that the state sits on is not told from one it passes through."""
     sim = _simulator(tmp_path, "if(Aobs==4.4,kb,2*kb)", DECLINED, ["k"], True)
+    _refused(sim, "Aobs==4.4", rtol=1e-4)
+
+
+def test_an_equality_the_state_sits_on_is_refused():
+    """B is 0 until A falls past q, and is made from there: ``B == 0`` holds
+    over an interval, and stops holding where A passes q. Taken to hold at
+    one state and nowhere else, the model ran: dY/da = 0 and dY/dq = 0 for
+    −14.45 and −2."""
+    text = (
+        "species A, B, Y; A = 10; B = 0; Y = 0; a = 0.5; q = 3; kb = 3; kp = 1\n"
+        "J0: A -> ; a*A\nJB: -> B; kp*max(q - A, 0)\nJ1: -> Y; piecewise(kb, B == 0, 0)\n"
+    )
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["a", "q"]
+    )
+    assert not sim.has_analytic_sens_rhs
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(sample_times=[0.0, 3.0, 6.0], rtol=1e-8, atol=1e-10, timeout=20)
+
+
+MORE_SIGNS = {
+    # 1 above thr and 0 below it: dY/dk came back −2.94 to 8.84 for 2.46 or 4.93.
+    "a-clamp-over-what-it-is-of": "kb*clamp(0,thr-Aobs,1)/(thr-Aobs)",
+    "a-magnitude-in-a-conditional-on-the-time": (
+        "kb*(1+(thr-Aobs)/if(time()>0.2,abs(thr-Aobs),1))"
+    ),
+    "a-magnitude-in-a-conditional-on-a-parameter": (
+        "kb*(1+(thr-Aobs)/if(one>0.5,abs(thr-Aobs),1))"
+    ),
+    "a-magnitude-through-a-logarithm": "kb*(1+(thr-Aobs)/exp(log(abs(thr-Aobs))))",
+    "the-greater-of-it-and-its-negative": "kb*(1+max(thr-Aobs,-(thr-Aobs))/(thr-Aobs))",
+    "the-greater-of-it-and-a-parameter-at-0": "kb*max(thr-Aobs,n)/(thr-Aobs)",
+}
+
+
+@pytest.mark.parametrize("case", sorted(MORE_SIGNS))
+def test_a_sign_written_as_a_quotient_is_refused_however_the_choice_is_written(tmp_path, case):
+    """The same sign with its choice written as a ``clamp``, inside a
+    conditional on the time or on a parameter, through ``exp(log(abs(e)))``,
+    as ``max(e, −e)``, and against a parameter that is 0."""
+    _refused_run(_wider(tmp_path, MORE_SIGNS[case]), ["k", "thr"])
+
+
+def test_a_step_table_indexed_by_what_is_made_of_a_requested_parameter_is_refused(tmp_path):
+    """``idx = 2*n`` with n requested and the table's index on a step edge,
+    4.4004: the table named a requested parameter and not one made of it.
+    dY/dn came back 18 for 0."""
+    table = 'tfun([0,2,4.4,8],[0,1,3,5],idx,method=>"step")'
+    _refused_run(_wider(tmp_path, table, n=2.2002), ["n"])
+
+
+def test_a_bend_in_a_requested_parameter_that_is_close_is_refused(tmp_path):
+    """``min(one, near)·Aobs`` with near = 1.001: one is the lesser, and the
+    column for near is 0. The quotient moves near by more than a thousandth
+    at rtol 1e-4 and reads the other side of the bend for the whole run:
+    dY/d(near) came back 1.41 for 0."""
+    _refused_run(_wider(tmp_path, "kb*min(one,near)*Aobs"), ["near", "k"])
+
+
+def test_a_bend_in_a_parameter_that_is_far_runs(tmp_path):
+    """Control. ``min(one, tau)·Aobs`` with tau = 3.4: the column for tau is 0."""
+    model = _wider(tmp_path, "kb*min(one,tau)*Aobs")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
     assert not sim.has_analytic_sens_rhs
     np.testing.assert_allclose(_y_columns(sim), [0.0], atol=1e-9)
+
+
+def test_a_root_past_the_edge_of_where_it_has_a_value_is_not_proved_a_bend(tmp_path):
+    """``if((sqrt(Aobs−thr)−1) < 0, kb·(sqrt(Aobs−thr)−1), 0)``: one branch 0
+    and the other the difference the condition compares. Below thr the root
+    has no value, the comparison is false, and the law drops from −kb to 0.
+    Proved a bend, it ran: dY/dk = 0.2687 and dY/dthr = 0.0170 for 0.2133
+    and 0.0456."""
+    law = "if((sqrt(Aobs-thr)-1)<0,kb*(sqrt(Aobs-thr)-1),0)"
+    _refused_run(_wider(tmp_path, law), ["k", "thr"])
+
+
+def test_a_batch_row_s_refusal_is_a_refusal(tmp_path):
+    """A row that is refused raises what ``run`` raises for its model, in a
+    batch run in threads as in one run in order."""
+    model = _wider(tmp_path, "if(Aobs>thr,kb,0)", decays=False)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
+    for workers in (None, 2):
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+            sim.run_batch(
+                params=[{"k": 2.0}, {"k": 3.0}],
+                t_span=(0.0, T_END),
+                n_points=3,
+                rtol=1e-4,
+                atol=1e-6,
+                num_processors=workers,
+            )

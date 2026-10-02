@@ -40,7 +40,7 @@ import logging
 import math
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import NamedTuple
 
@@ -3385,16 +3385,25 @@ def _syntax_tree(expr: str) -> ast.Expression | None:
 
 
 class _Facts(NamedTuple):
-    """What one node of a rate law's syntax tree reads, and what sign it is
-    known to have whatever the state is."""
+    """What one node of a rate law's syntax tree reads, and what is known of
+    its value whatever the state is."""
 
     state: bool = False  # reads the state, or a counter a requested column moves
     clock: bool = False  # reads literal time or a counter nothing moves
     asked: bool = False  # reads a requested parameter
     choice: bool = False  # holds an abs, max or min that is live
+    exotic: bool = False  # holds a live call this does not know: clamp
+    # Holds one of those with no sum over it, so that it may be 0 where the
+    # choice is: ``sqrt(abs(e))``, ``exp(log(abs(e)))``, and not ``1 + abs(e)``.
+    bare: bool = False
     positive: bool = False
     nonnegative: bool = False
     negative: bool = False
+    # Has a value wherever its operands have: no logarithm of what may be 0,
+    # no division by it. ``exp`` of what has none can be 0.
+    finite: bool = True
+    # What it is, where it reads numbers and parameters alone.
+    value: float | None = None
     size: int = 1
 
     @property
@@ -3403,10 +3412,44 @@ class _Facts(NamedTuple):
         parameter, which the quotient moves as it does the state."""
         return self.state or self.asked
 
+    @property
+    def zero(self) -> bool:
+        return self.value == 0.0
+
 
 _NO_FACTS = _Facts()
 # The two factors of a product are compared, for a square, where each is this small.
 _SQUARE_MAX_NODES = 50
+
+# Calls that make no choice between two expressions and take no step:
+# analytic wherever they have a value.
+_SMOOTH_CALLS = frozenset(
+    {"exp", "expm1", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh"}
+    | {"asinh", "acosh", "atanh", "erf", "erfc", "log", "ln", "log2", "log10", "log1p", "pow"}
+    | {"avg", "sum", "mul", "hypot"}
+)
+_LOG_CALLS = frozenset({"log", "ln", "log2", "log10"})
+_STEP_NAMES = frozenset(
+    {"floor", "ceil", "round", "roundn", "rint", "nint", "trunc", "frac", "sign", "sgn"}
+    | {"mod", "fmod", "rem", "iclamp", "inrange"}
+)
+_STRUCTURE_CALLS = frozenset({"Piecewise", "And", "Or", "Not", "Eq", "Ne"})
+# What a call on numbers alone comes to.
+_VALUE_CALLS: dict[str, Callable[..., float]] = {
+    "abs": abs,
+    "max": max,
+    "min": min,
+    "exp": math.exp,
+    "sqrt": math.sqrt,
+    "log": math.log,
+    "ln": math.log,
+    "log2": math.log2,
+    "log10": math.log10,
+    "pow": math.pow,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tanh": math.tanh,
+}
 
 
 def _operands(node: ast.AST) -> list[ast.AST]:
@@ -3433,6 +3476,41 @@ def _number(node: ast.AST) -> float | None:
     return None
 
 
+def _value_of(node: ast.AST, operands: Sequence[float | None]) -> float | None:
+    """What *node* comes to on operands that are numbers, or ``None`` where
+    one is not, or where it has no value."""
+    if any(v is None for v in operands):
+        return None
+    try:
+        if isinstance(node, ast.UnaryOp) and len(operands) == 1:
+            if isinstance(node.op, ast.USub):
+                return -operands[0]  # type: ignore[operator]
+            if isinstance(node.op, ast.UAdd):
+                return operands[0]
+            return None
+        if isinstance(node, ast.BinOp) and len(operands) == 2:
+            a, b = operands
+            if isinstance(node.op, ast.Add):
+                out = a + b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Sub):
+                out = a - b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Mult):
+                out = a * b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Div):
+                out = a / b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Pow):
+                out = math.pow(a, b)  # type: ignore[arg-type]
+            else:
+                return None
+            return float(out)
+        call = _VALUE_CALLS.get(_call_name(node))
+        if call is not None and operands:
+            return float(call(*operands))
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+    return None
+
+
 def _facts_of(
     node: ast.AST,
     under: list[_Facts],
@@ -3441,36 +3519,47 @@ def _facts_of(
     asked: AbstractSet[str],
 ) -> _Facts:
     """The facts of *node*, from those of its operands, *under*."""
+
+    def valued(value: float, **reads) -> _Facts:
+        return _Facts(
+            positive=value > 0.0,
+            nonnegative=value >= 0.0,
+            negative=value < 0.0,
+            finite=math.isfinite(value),
+            value=value,
+            **reads,
+        )
+
     size = 1 + sum(f.size for f in under)
     if isinstance(node, ast.Name):
         if node.id in values:
-            value = values[node.id]
-            return _Facts(
-                asked=node.id in asked,
-                positive=value > 0.0,
-                nonnegative=value >= 0.0,
-                negative=value < 0.0,
-            )
+            return valued(values[node.id], asked=node.id in asked)
         if node.id in clocks:
             return _Facts(clock=True)
         return _Facts(state=True)
     if isinstance(node, ast.Constant):
         number = _number(node)
-        if number is None:
-            return _NO_FACTS
-        return _Facts(positive=number > 0.0, nonnegative=number >= 0.0, negative=number < 0.0)
-    positive = nonnegative = negative = False
+        return _NO_FACTS if number is None else valued(number)
+    state = any(f.state for f in under)
+    clock = any(f.clock for f in under)
+    reads_asked = any(f.asked for f in under)
     name = _call_name(node)
+    if not state and not clock:
+        value = _value_of(node, [f.value for f in under])
+        if value is not None:
+            facts = valued(value, asked=reads_asked, size=size)
+            return facts._replace(
+                choice=any(f.choice for f in under) or (name in _CHOICE_NAMES and reads_asked),
+                exotic=any(f.exotic for f in under),
+            )
+    positive = nonnegative = negative = False
+    finite = all(f.finite for f in under)
     if isinstance(node, ast.UnaryOp) and len(under) == 1:
         (one,) = under
         if isinstance(node.op, ast.USub):
             positive, negative = one.negative, one.positive
         elif isinstance(node.op, ast.UAdd):
-            positive, nonnegative, negative = (
-                one.positive,
-                one.nonnegative,
-                one.negative,
-            )
+            positive, nonnegative, negative = one.positive, one.nonnegative, one.negative
     elif isinstance(node, ast.BinOp) and len(under) == 2:
         left, right = under
         if isinstance(node.op, ast.Add):
@@ -3495,17 +3584,25 @@ def _facts_of(
             positive = (left.positive and right.positive) or (left.negative and right.negative)
             negative = (left.positive and right.negative) or (left.negative and right.positive)
             nonnegative = left.nonnegative and right.positive
+            finite = finite and (right.positive or right.negative)
         elif isinstance(node.op, ast.Pow):
             power = _number(node.right)
             even = power is not None and power > 0.0 and power % 2.0 == 0.0
-            positive = left.positive
+            # ``2^(log(0))`` is 0: a positive base is above 0 to a power that
+            # has a value.
+            positive = left.positive and right.finite
             nonnegative = left.nonnegative or even
+            finite = finite and (right.nonnegative or left.positive or left.negative)
+        else:
+            finite = False
     elif name in ("abs", "sqrt") and len(under) == 1:
         (one,) = under
         nonnegative = True
         positive = one.positive or (name == "abs" and one.negative)
-    elif name == "exp":
-        positive = True
+    elif name == "exp" and len(under) == 1:
+        # ``exp(log(abs(e)))`` is 0 where e is: above 0 only of what has a value.
+        nonnegative = True
+        positive = under[0].finite
     elif name == "max" and under:
         positive = any(f.positive for f in under)
         nonnegative = any(f.nonnegative for f in under)
@@ -3515,8 +3612,11 @@ def _facts_of(
         nonnegative = all(f.nonnegative for f in under)
         negative = any(f.negative for f in under)
     elif name == "pow" and len(under) == 2:
-        positive = under[0].positive
+        positive = under[0].positive and under[1].finite
         nonnegative = under[0].nonnegative
+        finite = finite and (under[1].nonnegative or under[0].positive or under[0].negative)
+    elif name in _LOG_CALLS and len(under) == 1:
+        finite = finite and under[0].positive
     elif name == "Piecewise" and under:
         # Each argument is a (value, condition) pair, with the value's facts.
         positive = all(f.positive for f in under)
@@ -3524,24 +3624,51 @@ def _facts_of(
         negative = all(f.negative for f in under)
     elif isinstance(node, ast.Tuple) and len(under) == 2:
         # A Piecewise pair: what the pair is, is what its value is.
-        positive, nonnegative, negative = (
+        positive, nonnegative, negative, finite = (
             under[0].positive,
             under[0].nonnegative,
             under[0].negative,
+            under[0].finite,
         )
+    elif name and name not in _SMOOTH_CALLS and name not in _STRUCTURE_CALLS:
+        finite = False
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+        bare = False
+    elif isinstance(node, ast.Tuple):
+        bare = bool(under) and under[0].bare  # a Piecewise pair: its value
+    elif isinstance(node, (ast.Compare, ast.BoolOp)) or name in ("And", "Or", "Not", "Eq", "Ne"):
+        bare = False
+    else:
+        bare = any(f.bare for f in under)
     facts = _Facts(
-        state=any(f.state for f in under),
-        clock=any(f.clock for f in under),
-        asked=any(f.asked for f in under),
+        state=state,
+        clock=clock,
+        asked=reads_asked,
         choice=any(f.choice for f in under),
+        exotic=any(f.exotic for f in under),
+        bare=bare,
         positive=positive,
         nonnegative=nonnegative or positive,
         negative=negative,
+        finite=finite,
         size=size,
     )
     if name in _CHOICE_NAMES and facts.live:
-        facts = facts._replace(choice=True)
+        facts = facts._replace(choice=True, bare=True)
+    elif facts.live and _unknown_call(name):
+        facts = facts._replace(exotic=True, bare=True)
     return facts
+
+
+def _unknown_call(name: str) -> bool:
+    """Whether *name* is a call this does not know to be smooth, a choice or
+    a step: ``clamp``."""
+    return bool(name) and not (
+        name in _SMOOTH_CALLS
+        or name in _CHOICE_NAMES
+        or name in _STEP_NAMES
+        or name in _STRUCTURE_CALLS
+    )
 
 
 def _facts_of_tree(
@@ -3587,12 +3714,13 @@ def _power(node: ast.AST) -> tuple[ast.AST, ast.AST] | None:
 def _factors(node: ast.AST, facts: Mapping[int, _Facts], vanishing: bool = False) -> list[ast.AST]:
     """What *node* is a product of, so that it is 0 where one of them is:
     through a sign, a product, the numerator of a quotient, a square root,
-    and a power that is known not to be below 0.
+    a power that is known not to be below 0, and each branch of a
+    conditional.
 
     With *vanishing*, what *node* goes to 0 with, no faster than in
-    proportion: not through a root, and through a power only where it is a
-    number of 1 or more. ``e^0`` is 1 where ``e`` is 0, and ``sqrt(e)``
-    leaves 0 with a slope that has no bound."""
+    proportion: not through a root or a conditional, and through a power
+    only where it is known to be 1 or more. ``e^0`` is 1 where ``e`` is 0,
+    and ``sqrt(e)`` leaves 0 with a slope that has no bound."""
     out: list[ast.AST] = []
     stack = [node]
     while stack:
@@ -3606,8 +3734,15 @@ def _factors(node: ast.AST, facts: Mapping[int, _Facts], vanishing: bool = False
             stack.append(one.left)
         elif not vanishing and _call_name(one) == "sqrt" and len(one.args) == 1:  # type: ignore[attr-defined]
             stack.append(one.args[0])  # type: ignore[attr-defined]
+        elif not vanishing and _call_name(one) == "Piecewise":
+            # 0 where the branch it takes is.
+            stack.extend(
+                pair.elts[0]
+                for pair in one.args  # type: ignore[attr-defined]
+                if isinstance(pair, ast.Tuple) and len(pair.elts) == 2
+            )
         elif power is not None and (
-            (_number(power[1]) or 0.0) >= 1.0
+            (facts[id(power[1])].value or 0.0) >= 1.0
             if vanishing
             else _divides_by_nothing(facts[id(power[1])])
         ):
@@ -3627,6 +3762,55 @@ def _divides_by_nothing(power: _Facts) -> bool:
 # small: a sign or a step is written over a difference, not over a page of
 # rate law.
 _FLIP_MAX_NODES = 200
+# How far the quotient moves a parameter: its own size times the root of the
+# relative tolerance, a quarter of it at a tolerance of 0.06. And how fine the
+# moves tried are, from that down: a comparison that flips and flips back
+# inside the quarter is found where one of them lands between the two.
+_QUOTIENT_REACH = 0.25
+_QUOTIENT_HALVINGS = 12
+
+
+def _moves_tried(value: float) -> list[float]:
+    """The values a requested parameter at *value* is tried at: a quarter of
+    itself away and by halves of that down, either way; a quarter where it
+    is 0."""
+    reach = _QUOTIENT_REACH * (abs(value) if value != 0.0 else 1.0)
+    return [
+        value + sign * reach / 2.0**halving
+        for halving in range(_QUOTIENT_HALVINGS)
+        for sign in (1.0, -1.0)
+    ]
+
+
+def _flips_with_a_parameter(
+    node: ast.AST, values: Mapping[str, float], asked: AbstractSet[str]
+) -> bool:
+    """Whether *node*, an expression over numbers and parameters, is 0 or
+    changes sign with a requested parameter in it moved as the quotient may
+    move it (:func:`_moves_tried`); or cannot be read."""
+
+    def sign_at(at: Mapping[str, float]) -> int | None:
+        _order, facts = _facts_of_tree(
+            ast.Expression(body=node),  # type: ignore[arg-type]
+            at,
+            frozenset(),
+            frozenset(),
+        )
+        value = facts[id(node)].value
+        if value is None or not math.isfinite(value):
+            return None
+        return (value > 0.0) - (value < 0.0)
+
+    now = sign_at(values)
+    if now is None or now == 0:
+        return True
+    for name in sorted({n.id for n in ast.walk(node) if isinstance(n, ast.Name)} & set(asked)):
+        if name not in values:
+            return True
+        for moved in _moves_tried(values[name]):
+            if sign_at({**values, name: moved}) != now:
+                return True
+    return False
 
 
 def _quotient_across_a_choice(
@@ -3645,15 +3829,26 @@ def _quotient_across_a_choice(
     that says so. What is named is a division, in a law where one of the
     three reads what a column moves, by a product with a factor that is
 
-    - one of the three itself, and not known to be nonzero: ``e/abs(e)``,
-      ``1/max(X − thr, 0)``. ``v/max(X, 0.01)`` is known nonzero; or
+    - one of the three, or holds one with no sum over it, and is not known
+      to be nonzero: ``e/abs(e)``, ``1/max(X − thr, 0)``,
+      ``e/exp(log(abs(e)))``. ``v/max(X, 0.01)`` is known nonzero; or
     - a factor of what one of them flips on: ``abs(e)/e``, ``max(e, 0)/e``,
-      and ``abs(u·v)/u``.
+      ``max(e, −e)/e`` and ``abs(u·v)/u``.
 
-    A negative or unknown power is a division by its base. What is known
-    nonzero is known by the signs of numbers and of parameters and by what
-    ``abs``, ``exp``, an even power, a sum and a product keep: nothing is
-    assumed of the state, which a concentration below 0 would break.
+    A negative or unknown power is a division by its base, and a
+    conditional is 0 where a branch of it is. What is known nonzero is known
+    by what a number or a parameter is, and by what ``abs``, ``exp`` of what
+    has a value, an even power, a sum and a product keep: nothing is assumed
+    of the state, which a concentration below 0 would break.
+
+    Two more are named:
+
+    - any division by what is not known to be nonzero, in a law that holds a
+      call this does not know to be smooth, ``clamp(0, e, 1)/e``;
+    - an ``abs``, ``max`` or ``min`` over parameters alone that a requested
+      one is within a quarter of itself of flipping, ``min(k1, k2)`` at
+      k2 = 1.001·k1: a bend in the parameter, which the quotient straddles
+      for the whole run and not for an instant of it.
 
     A sign written any other way is not found: with the choice inside a sum
     the law divides by, ``e/(abs(e) + 0·X)``, or with the two sides of the
@@ -3661,38 +3856,56 @@ def _quotient_across_a_choice(
     pole cut off on both sides, ``min(max(k/(X − thr), −5), 5)``.
     """
     order, facts = _facts_of_tree(tree, values, clocks, asked)
-    if not facts[id(tree.body)].choice:
+    root = facts[id(tree.body)]
+    if not root.choice and not root.exotic:
         return None
 
     def small(node: ast.AST) -> bool:
         return facts[id(node)].live and facts[id(node)].size <= _FLIP_MAX_NODES
 
-    either_way = _either_way
-
     # What each live choice flips on: the factors of an ``abs``'s argument,
-    # and of one side where the other is 0; else the difference of the two
-    # sides, as written and with them swapped.
+    # and of one side where the other is 0 or is the first with its sign
+    # turned; else the difference of the two sides, either way round.
     flips: set[str] = set()
     for node in order:
         name = _call_name(node)
-        if name not in _CHOICE_NAMES or not facts[id(node)].live:
+        known = facts[id(node)]
+        if name not in _CHOICE_NAMES or not known.live:
             continue
         args = node.args  # type: ignore[attr-defined]
+        pairs: list[tuple[ast.expr, ast.expr | None]]
         if name == "abs":
             pairs = [(args[0], None)] if len(args) == 1 else []
         else:
             pairs = [(a, b) for i, a in enumerate(args) for b in args[i + 1 :]]
+        if not known.state and not known.clock:
+            # Over parameters alone: a bend the quotient straddles for good.
+            for a, b in pairs:
+                flip: ast.AST = a if b is None else ast.BinOp(left=a, op=ast.Sub(), right=b)
+                if _flips_with_a_parameter(flip, values, asked):
+                    return _clipped(node)
+            continue
         for a, b in pairs:
-            if b is not None and _number(b) == 0.0:
+            if b is not None and facts[id(b)].zero:
                 b = None
-            elif b is not None and _number(a) == 0.0:
+            elif b is not None and facts[id(a)].zero:
                 a, b = b, None
+            elif b is not None and (
+                (isinstance(b, ast.UnaryOp) and isinstance(b.op, ast.USub) and _same(b.operand, a))
+                or (
+                    isinstance(a, ast.UnaryOp)
+                    and isinstance(a.op, ast.USub)
+                    and _same(a.operand, b)
+                )
+            ):
+                # ``max(e, −e)`` is ``abs(e)``.
+                a, b = (a if isinstance(b, ast.UnaryOp) else b), None
             if b is None:
                 for factor in _factors(a, facts):
                     if small(factor):
-                        flips.update(either_way(factor))
+                        flips.update(_either_way(factor))
             elif facts[id(a)].size + facts[id(b)].size < _FLIP_MAX_NODES:
-                flips.update(either_way(ast.BinOp(left=a, op=ast.Sub(), right=b)))
+                flips.update(_either_way(ast.BinOp(left=a, op=ast.Sub(), right=b)))
     for node in order:
         divisor: ast.AST | None = None
         power = _power(node)
@@ -3702,28 +3915,30 @@ def _quotient_across_a_choice(
             divisor = power[0]
         if divisor is None or not facts[id(divisor)].live:
             continue
+        if root.exotic and not (facts[id(divisor)].positive or facts[id(divisor)].negative):
+            return _clipped(node)
         for factor in _factors(divisor, facts):
             known = facts[id(factor)]
             if not known.live or known.positive or known.negative:
                 continue
-            if _call_name(factor) in _CHOICE_NAMES:
+            if known.bare:
                 return _clipped(node)
             if small(factor) and ast.dump(factor) in flips:
                 return _clipped(node)
     return None
 
 
-# Calls that are continuous wherever they have a value. A logarithm is one
-# only of what is known to be above 0, and a step call is asked about on its
-# own, as a step.
+def _same(a: ast.AST, b: ast.AST) -> bool:
+    """Whether two expressions are written the same."""
+    return ast.dump(a) == ast.dump(b)
+
+
+# Calls that are continuous wherever they have a value. A logarithm, a root
+# and a power that is not a whole number are, where what they are of is known
+# to be where they have one; a step call is asked about on its own, as a step.
 _CONTINUOUS_CALLS = frozenset(
     {"exp", "sin", "cos", "sinh", "cosh", "tanh", "atan", "sqrt", "erf", "erfc"}
     | {"abs", "max", "min", "pow", "Piecewise", "And", "Or", "Not"}
-)
-_LOG_CALLS = frozenset({"log", "ln", "log2", "log10"})
-_STEP_NAMES = frozenset(
-    {"floor", "ceil", "round", "roundn", "rint", "nint", "trunc", "frac", "sign", "sgn"}
-    | {"mod", "fmod", "rem", "iclamp", "inrange"}
 )
 
 
@@ -3738,25 +3953,39 @@ def _only_bends(
 
     The difference quotient is right across a bend, and whether a law bends
     or jumps where a condition flips is not told by evaluating it (issue
-    #938). It is proved here, for the two ways a bend is written, or not at
-    all:
+    #938). It is proved here, for the ways a bend is written, or not at all:
 
     - ``if(e > 0, e·g, 0)``: one branch is 0 and the other is a product with
       everything ``e`` is 0 with among its factors, where ``e`` is the
       difference the condition compares. The signed rate
       ``if(v < 0, −v/max(X, 0.01), 0)`` and a ramp ``if(X < thr,
-      kb·(thr − X), 0)`` are this;
+      kb·(thr − X), 0)`` are this. So is ``if(e > 0, e·g, e·h)``, with both
+      branches such products;
     - ``if(a < b, a, b)``: the two branches are the two sides of the one
       comparison, the lesser or the greater of two written out.
 
     And the law is made of nothing else that could jump there: every division
-    is by what is known to be nonzero, every power is to what is known not to
-    be below 0, and every call is one that is continuous
-    (:data:`_CONTINUOUS_CALLS`). An equality, a condition of more than two
-    branches, a comparison outside a condition, and anything this does not
-    read, is not proved.
+    is by what is known to be nonzero; every power is a whole number that is
+    not below 0, or of what is known not to be below 0; a root is of what is
+    known not to be below 0 and a logarithm of what is known to be above it,
+    since each is no number past the edge of where it has a value, and a
+    comparison with no number is false; and every call is one that is
+    continuous (:data:`_CONTINUOUS_CALLS`). An equality, a condition that is
+    not a comparison, a condition of more than two branches, a comparison
+    outside a condition, and anything this does not read, is not proved.
     """
     order, facts = _facts_of_tree(tree, values, clocks, asked)
+
+    def whole(power: _Facts) -> bool:
+        return power.value is not None and power.value >= 0.0 and power.value == int(power.value)
+
+    def in_its_domain(base: _Facts, power: _Facts) -> bool:
+        """A power that has a value on both sides of anything its base can
+        do, and is continuous there."""
+        if whole(power):
+            return True
+        return (base.nonnegative and power.nonnegative) or base.positive
+
     proved: set[int] = set()
     for node in order:
         name = _call_name(node)
@@ -3773,21 +4002,22 @@ def _only_bends(
                 if not (divisor.positive or divisor.negative):
                     return False
             elif isinstance(node.op, ast.Pow):
-                if not (
-                    _divides_by_nothing(facts[id(node.right)]) or facts[id(node.left)].positive
-                ):
+                if not in_its_domain(facts[id(node.left)], facts[id(node.right)]):
                     return False
             elif not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
                 return False
         elif name in _LOG_CALLS:
             if len(node.args) != 1 or not facts[id(node.args[0])].positive:  # type: ignore[attr-defined]
                 return False
+        elif name == "sqrt":
+            if len(node.args) != 1 or not facts[id(node.args[0])].nonnegative:  # type: ignore[attr-defined]
+                return False
         elif name in _STEP_NAMES:
             if known.state:
                 return False
         elif name == "pow":
             base, power = _operands(node)
-            if not (_divides_by_nothing(facts[id(power)]) or facts[id(base)].positive):
+            if not in_its_domain(facts[id(base)], facts[id(power)]):
                 return False
         elif name not in _CONTINUOUS_CALLS:
             return False
@@ -3803,6 +4033,8 @@ def _only_bends(
             continue
         (taken, condition), (other, _always) = pairs[0].elts, pairs[1].elts
         # The comparisons the condition is made of, through And, Or and Not.
+        # Anything else in it that reads the state is a condition that is a
+        # number, true where it is not 0, and is not proved.
         atoms: list[ast.Compare] = []
         stack = [condition]
         while stack:
@@ -3811,30 +4043,19 @@ def _only_bends(
                 atoms.append(one)
             elif _call_name(one) in ("And", "Or", "Not"):
                 stack.extend(one.args)  # type: ignore[attr-defined]
+            elif facts[id(one)].state:
+                return False
         for atom in atoms:
             if not facts[id(atom)].state or len(atom.ops) != 1:
                 continue
             if not isinstance(atom.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
                 continue
             left, right = atom.left, atom.comparators[0]
-            if _number(other) == 0.0:
-                product = taken
-            elif _number(taken) == 0.0:
-                product = other
-            else:
-                # The lesser or the greater of the two sides, written out.
-                if (
-                    atom is condition
-                    and facts[id(taken)].size + facts[id(other)].size <= _FLIP_MAX_NODES
-                    and {ast.dump(taken), ast.dump(other)} == {ast.dump(left), ast.dump(right)}
-                ):
-                    proved.add(id(atom))
-                continue
             # What the comparison's difference is 0 with: each factor of one
             # side where the other is 0, else the difference itself.
-            if _number(right) == 0.0:
+            if facts[id(right)].zero:
                 needed = [f for f in _factors(left, facts) if facts[id(f)].live]
-            elif _number(left) == 0.0:
+            elif facts[id(left)].zero:
                 needed = [f for f in _factors(right, facts) if facts[id(f)].live]
             else:
                 needed = [ast.BinOp(left=left, op=ast.Sub(), right=right)]
@@ -3843,13 +4064,28 @@ def _only_bends(
                 )
             if not needed or any(facts[id(f)].size > _FLIP_MAX_NODES for f in needed):
                 continue
-            has = {
-                text
-                for factor in _factors(product, facts, vanishing=True)
-                if facts[id(factor)].size <= _FLIP_MAX_NODES
-                for text in _either_way(factor)
-            }
-            if all(ast.dump(f) in has for f in needed):
+
+            def vanishes(product: ast.AST, needed=needed) -> bool:
+                """Whether *product* is 0, or has every one of them among
+                its factors."""
+                if facts[id(product)].zero:
+                    return True
+                has = {
+                    text
+                    for factor in _factors(product, facts, vanishing=True)
+                    if facts[id(factor)].size <= _FLIP_MAX_NODES
+                    for text in _either_way(factor)
+                }
+                return all(ast.dump(f) in has for f in needed)
+
+            if vanishes(taken) and vanishes(other):
+                proved.add(id(atom))
+            elif (
+                atom is condition
+                and facts[id(taken)].size + facts[id(other)].size <= _FLIP_MAX_NODES
+                and {ast.dump(taken), ast.dump(other)} == {ast.dump(left), ast.dump(right)}
+            ):
+                # The lesser or the greater of the two sides, written out.
                 proved.add(id(atom))
     return all(
         id(node) in proved
@@ -3865,28 +4101,6 @@ def _clipped(node: ast.AST, width: int = 120) -> str:
     except RecursionError:
         text = type(node).__name__
     return text if len(text) <= width else text[: width - 3] + "..."
-
-
-def _equality_of_smooth_sides(atom: str) -> bool:
-    """Whether *atom* is an equality between two expressions that hold no
-    ``abs``, ``max`` or ``min`` and no step call.
-
-    Such an equality holds at a state and over no interval of them: there is
-    no surface with the law one thing on one side and another on the other.
-    ``max(X − thr, 0) == 0`` holds for every ``X`` up to ``thr``, and
-    ``floor(X/thr) == 0`` likewise. A condition inside one,
-    ``if(X < thr, 1, 0) == 1``, is an atom of its own and is asked about
-    there.
-    """
-    return is_equality_atom(atom) and not (_STEP_CALL.search(atom) or _CHOICE_CALL.search(atom))
-
-
-# How far the quotient moves a parameter: its own size times the root of the
-# relative tolerance, a quarter of it at a tolerance of 0.06. And how fine the
-# moves tried are, from that down: a comparison that flips and flips back
-# inside the quarter is found where one of them lands between the two.
-_QUOTIENT_REACH = 0.25
-_QUOTIENT_HALVINGS = 12
 
 
 def _parameter_crossing(flat: str, scope: SwitchConditionScope, asked: AbstractSet[str]) -> bool:
@@ -3928,14 +4142,11 @@ def _parameter_crossing(flat: str, scope: SwitchConditionScope, asked: AbstractS
         return False
     for name in names:
         index = scope.param_idx[name]
-        value = float(scope.values[index])
-        reach = _QUOTIENT_REACH * (abs(value) if value != 0.0 else 1.0)
         moved = list(scope.values)
-        for halving in range(_QUOTIENT_HALVINGS):
-            for sign in (1.0, -1.0):
-                moved[index] = value + sign * reach / 2.0**halving
-                if side(moved) != now:
-                    return True
+        for value in _moves_tried(float(scope.values[index])):
+            moved[index] = value
+            if side(moved) != now:
+                return True
     return False
 
 
@@ -3976,9 +4187,9 @@ def fallback_crossing(
       constant, its initial amount). A counter nothing moves is read at ``y``
       in both terms of the quotient, and its threshold's parameters are held
       while the quotient is taken (issue #436);
-    - an equality on the state with an ``abs``, ``max``, ``min``, a condition
-      or a step call in it, which holds over an interval
-      (:func:`_equality_of_smooth_sides`);
+    - an equality on the state. It holds at one state and over no interval
+      of them, unless the state sits there: ``B == 0`` with B made from where
+      another species passes a threshold holds until it does;
     - a division the law may jump across through an ``abs``, ``max`` or
       ``min``: ``(thr − X)/abs(thr − X)``
       (:func:`_quotient_across_a_choice`). One that stands alone is a bend,
@@ -3988,11 +4199,12 @@ def fallback_crossing(
       argument reads a requested parameter, ``floor(time()/P)`` with ``P``
       requested: the steps move with ``P``, and nothing jumps a column at a
       step. In a condition as well as outside one;
-    - a table function that steps, indexed by an observable, by a function
-      or by a requested parameter;
+    - a table function that steps, indexed by an observable, by a function,
+      or by a requested parameter or one made of it;
     - a comparison over parameters alone that a requested one is within a
       quarter of itself of flipping, ``if(n > 1, kb, 0)`` at n = 1.001 with n
-      requested, and a step call on a requested parameter
+      requested, an ``abs``, ``max`` or ``min`` over parameters likewise,
+      and a step call on a requested parameter
       (:func:`_parameter_crossing`): the quotient moves a parameter as it
       moves the state;
     - a rate law that is not read: its functions nest too deep to write out,
@@ -4000,7 +4212,7 @@ def fallback_crossing(
 
     A crossing on literal time is not one of these.
 
-    What is asked is what the text says and what sign each parameter has.
+    What is asked is what the text says and what each parameter is.
     Nothing is evaluated, and nothing is assumed of the state.
 
     Scans the reaction rate expressions with their functions inlined, as
@@ -4017,14 +4229,24 @@ def fallback_crossing(
     stepping = [table for table in data.get("table_functions", ()) if table.get("step")]
     requested = frozenset(sens_param_names)
     param_names = list(core.param_names)
+    if stepping:
+        is_expr = list(core.param_is_expression)
+        exprs = list(core.param_expressions)
+        derived = {
+            param_names[i]: exprs[i] for i in range(len(param_names)) if is_expr[i] and exprs[i]
+        }
     for table in stepping:
         index = table.get("index_param_idx", -1)
-        if table.get("index_kind") not in ("time", "parameter") or (
-            # Indexed by a requested parameter: the quotient moves the index.
-            table.get("index_kind") == "parameter"
-            and 0 <= index < len(param_names)
-            and param_names[index] in requested
-        ):
+        moved_index = False
+        if table.get("index_kind") == "parameter" and 0 <= index < len(param_names):
+            # Indexed by a requested parameter, or by one that is made of
+            # one: the quotient moves the index.
+            name = param_names[index]
+            written = _inline_derived_param_refs(name, derived)
+            moved_index = written is None or bool(
+                ({name} | set(_IDENTIFIER.findall(written))) & requested
+            )
+        if table.get("index_kind") not in ("time", "parameter") or moved_index:
             return f'tfun {table.get("name")} (method=>"step")'
     if core.n_functions == 0:
         return None
@@ -4081,24 +4303,30 @@ def fallback_crossing(
         if not _IDENTIFIER.search(flat):
             return ""
         if condition_cannot_cross(flat, scope):
-            return "parameter" if _parameter_crossing(flat, scope, requested) else ""
-        if _equality_of_smooth_sides(flat):
-            return ""
+            # Asked again only where a parameter the comparison reads has
+            # changed, or the columns have.
+            key = (
+                tuple(
+                    float(scope.values[scope.param_idx[n]])
+                    for n in sorted(set(_IDENTIFIER.findall(flat)) & set(scope.param_idx))
+                ),
+                requested,
+            )
+            last = parsed.get(("parameter", flat))
+            if last is None or last[0] != key:
+                last = (key, _parameter_crossing(flat, scope, requested))
+                parsed[("parameter", flat)] = last
+            return "parameter" if last[1] else ""
         if _reads_clock_and_run_constants(flat, scope):
             read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
             return "state" if {i for i in read if i >= 0} & moved else ""
         return "state"
 
     def went_by(law: _Law) -> tuple:
-        """What an answer about *law*'s tree goes by: the sign of each
-        parameter it reads, which of its names are clocks, and which are
-        requested."""
+        """What an answer about *law*'s tree goes by: what each parameter it
+        reads is, which of its names are clocks, and which are requested."""
         return (
-            tuple(
-                (n, values[n] > 0.0, values[n] >= 0.0, values[n] < 0.0)
-                for n in sorted(law.names)
-                if n in values
-            ),
+            tuple((n, values[n]) for n in sorted(law.names) if n in values),
             law.names & clocks,
             law.names & requested,
         )
@@ -4160,9 +4388,13 @@ class _Law(NamedTuple):
     # Each step call outside a condition: the call, its argument, and the
     # argument with derived parameters inlined.
     steps: tuple[tuple[str, str, str], ...]
-    choice: bool  # holds an abs, max or min
+    choice: bool  # holds an abs, max or min, or a call this does not know
     tree: ast.Expression | None  # its syntax tree, where it holds one
     names: frozenset[str]  # what the tree reads
+
+
+# A name written as a call.
+_ANY_CALL = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 def _read_law(text: str, flat: str, derived_exprs, has_condition_construct) -> _Law:
@@ -4176,7 +4408,10 @@ def _read_law(text: str, flat: str, derived_exprs, has_condition_construct) -> _
         (call, arg, _inline_derived_param_refs(arg, derived_exprs) or arg)
         for call, arg in _iter_step_calls(flat)
     )
-    choice = _CHOICE_CALL.search(flat) is not None
+    choice = _CHOICE_CALL.search(flat) is not None or any(
+        _unknown_call(m.group(1)) and m.group(1) not in ("if", "time")
+        for m in _ANY_CALL.finditer(flat)
+    )
     tree = None
     names: frozenset[str] = frozenset()
     if choice or atoms:
