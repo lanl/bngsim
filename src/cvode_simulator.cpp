@@ -8791,14 +8791,45 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
         }
         if (jumping == 1 && !only->at_one_state.empty() && !only->along.empty()) {
+            // With one switch in the batch nothing else jumps, so the whole
+            // difference is held to the one-state reading as well: a staircase
+            // in another reaction of the same species is in the first and not
+            // in the switch's own flux. Past what that flux may do on its own,
+            // as above, and past what the right-hand side rounds by.
+            const bool alone = far_whole && readers.size() == 1;
             bool beside = false;
             for (std::size_t u = 0; u < n_sp && !beside; ++u) {
-                beside = std::fabs(only->along[u] - only->at_one_state[u]) >
-                         kStateSwitchContinuousRelTol * std::fabs(only->at_one_state[u]) +
-                             only->allowed[u];
+                const double may = kStateSwitchContinuousRelTol * std::fabs(only->at_one_state[u]) +
+                                   only->allowed[u];
+                beside = std::fabs(only->along[u] - only->at_one_state[u]) > may;
+                if (!beside && alone) {
+                    const double rounds = kStateSwitchExtendedRoundoff *
+                                          std::numeric_limits<double>::epsilon() *
+                                          std::max(std::fabs(f_minus[u]), std::fabs(f_plus[u]));
+                    beside = std::fabs(change[u] - only->at_one_state[u]) > may + rounds;
+                }
             }
             if (beside) {
                 change = only->at_one_state;
+            }
+        }
+        // A species that none of the crossing switches' reactions moves has no
+        // jump. With each branch extended to the crossing, what the difference
+        // holds for it is what the right-hand side rounds by between the
+        // probes, and a column carries that on: an ulp of P′ beside
+        // `kbig·(P − Q)` came back in dY/dthr as 1.0 to 2.6 treads of the
+        // staircase, at seven thresholds in forty. Not for the pair as it
+        // stands: there each entry holds what its species does between the
+        // two probes, and the entries are right together or not at all.
+        for (std::size_t u = 0; far_whole && u < n_sp; ++u) {
+            bool moved = false;
+            for (const Reader &r : readers) {
+                for (const std::vector<double> &net : r.net) {
+                    moved = moved || (u < net.size() && net[u] != 0.0);
+                }
+            }
+            if (!moved) {
+                change[u] = 0.0;
             }
         }
     }

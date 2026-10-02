@@ -648,10 +648,10 @@ STAIRCASES = {
 }
 
 
-def _beside_a_staircase(tmp_path, case, kb, switched):
+def _beside_a_staircase(tmp_path, case, kb, switched, thr=5e7):
     """dY/d(kdeg, thr, B0) with `switched` as the law the condition turns on."""
     _, kbig, kdP, Q0, over, gap, beside = STAIRCASES[case]
-    t_star = np.log(2.0) / KDEG
+    t_star = np.log(1e8 / thr) / KDEG
     pools = Q0 * np.exp(-0.2 * t_star)
     text = BESIDE_A_STAIRCASE.format(
         kb=kb,
@@ -664,9 +664,11 @@ def _beside_a_staircase(tmp_path, case, kb, switched):
     ).replace("if(Bobs<thr,ramp(),0)", f"if(Bobs<thr,{switched},0)")
     path = tmp_path / "m.net"
     path.write_text(text)
-    run = bngsim.Simulator(
-        bngsim.Model.from_net(path), method="ode", sensitivity_params=["kdeg", "thr", "B0"]
-    ).run(sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12)
+    model = bngsim.Model.from_net(path)
+    model.set_param("thr", thr)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["kdeg", "thr", "B0"]).run(
+        sample_times=[0.0, 5.0, 10.0, T_END], rtol=1e-10, atol=1e-12
+    )
     return np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
 
 
@@ -675,13 +677,27 @@ def _beside_a_staircase(tmp_path, case, kb, switched):
 def test_a_jump_beside_a_term_that_rounds_as_a_staircase(tmp_path, case, kb):
     """The same staircase beside a switch that does jump, by kb. The jump was
     read, and sized from everything the right-hand side did between the probes,
-    the staircase's tread included: with kb = 3 and a tread of 22, dY/dkdeg came
+    the staircase's tread included: with kb = 3 and a tread of 15, dY/dkdeg came
     back −1826 for 207.9. Read at one state, the tread is the same on both sides
     and the jump is kb."""
     got = _beside_a_staircase(tmp_path, case, kb, "kb")
     t_star = np.log(2.0) / KDEG
     want = [kb * t_star / KDEG, kb / (KDEG * 5e7), -kb / (KDEG * 1e8)]
     np.testing.assert_allclose(got, want, rtol=1e-6)
+
+
+@pytest.mark.parametrize("step", [7, 8, 12, 19, 27])
+@pytest.mark.parametrize("kb", [3.0, 30.0])
+def test_a_jump_beside_two_pools_that_round_at_other_thresholds(tmp_path, kb, step):
+    """``kbig·(P − Q)`` beside the jump, with the threshold moved off half the
+    pool. The switch's own reaction read clean at these, and the column was
+    still 1.0 to 2.6 treads off: what the right-hand side of P and of Q rounds
+    by between the probes, an ulp of each, went into their columns as a jump,
+    and kbig carries the difference of those two columns into Y. No switched
+    reaction moves P or Q, so they have no jump."""
+    thr = 5e7 * (1 + 0.0037 * step)
+    got = _beside_a_staircase(tmp_path, "two-pools", kb, "kb", thr=thr)
+    assert got[1] == pytest.approx(kb / (KDEG * thr), rel=1e-6)
 
 
 @pytest.mark.parametrize("case", sorted(STAIRCASES))
