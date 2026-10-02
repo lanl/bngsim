@@ -62,13 +62,14 @@ s' = f_x·s + f_p,      f_p = ∂f/∂p + Σ_d (∂f/∂d)·(∂d/∂p)   over d
   `_derived_param_jacobian_dag` for the derived chain (`_codegen.py`).
 - CVODES' own difference quotient takes over when the analytic RHS is declined
   (for example `abs()` or `floor()`). The parameter sync for each probe is
-  `sync_sens_params` (`cvode_simulator.cpp`).
-- Oracle: `rhs-dfdp`, `rhs-derived-chain`, `rhs-derived-own-column`, `dq-primary`.
-- **Open:** on the difference-quotient path, the sync re-derives a derived
-  parameter that is being probed, so its column is exactly zero (#707,
-  `dq-derived-own-column`). A compiled sensitivity RHS that is already attached
-  is reused after `set_param` changes a derived parameter's attachment, so it
-  keeps the old chain rule (#708, `stale-artifact-after-override`).
+  `sync_sens_params` (`cvode_simulator.cpp`). A probed parameter that is
+  itself derived is held at its probe value while the rest are re-derived, so
+  what reads it moves with it (#707).
+- Oracle: `rhs-dfdp`, `rhs-derived-chain`, `rhs-derived-own-column`,
+  `dq-primary`, `dq-derived-own-column`.
+- **Open:** a compiled sensitivity RHS that is already attached is reused
+  after `set_param` changes a derived parameter's attachment, so it keeps the
+  old chain rule (#708, `stale-artifact-after-override`).
 
 ## 3. An event: the jump at `t*`
 
