@@ -10406,7 +10406,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // error log goes to the null sink with its warnings: a failure still
     // throws, through the flag < 0 checks, with bngsim's own account of it.
     const bool watch = sens.n_total != 0 && n_state_switch > 0;
-    const long watch_batch = std::min<long>(static_cast<long>(impl_->max_steps), kWatchBatchSteps);
+    const long watch_batch = std::min<long>(static_cast<long>(max_steps), kWatchBatchSteps);
     // Steps taken one at a time for the ladder above since the run was asked.
     long watch_single_steps = 0;
     if (watch) {
