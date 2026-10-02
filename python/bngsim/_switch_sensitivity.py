@@ -2755,6 +2755,9 @@ class CrossingStop(NamedTuple):
     time: float
     clock_species_idx: int
     threshold: float
+    # A stop ON a touch of the threshold (issue #714): the condition is true at
+    # that one double alone, so the stop is never merged into another.
+    touch: bool = False
 
 
 def _rewrite_counter_clock(
@@ -2927,7 +2930,12 @@ def _resolve_crossings(
                     CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
                 )
                 stops.append(
-                    CrossingStop(t_stop, clock_idx, t_stop + offset if clock_idx >= 0 else 0.0)
+                    CrossingStop(
+                        t_stop,
+                        clock_idx,
+                        t_stop + offset if clock_idx >= 0 else 0.0,
+                        touch=t_stop == t_cross,
+                    )
                 )
         for t_cross in times or ():
             if not (t_start < t_cross <= t_end):
@@ -2969,6 +2977,27 @@ _PERIODIC_SHAPES: dict[tuple, tuple | None] = {}
 # its whole band.
 _STOP_NUDGE_SAFETY = 4.0
 _STOP_NUDGE_MAX_ULPS = 32.0
+
+
+_NOISY_TRIGGERS_WARNED: set[str] = set()
+
+
+def _warn_noisy_trigger(cond) -> None:
+    """Once per condition: an event trigger whose crossings lie inside the
+    evaluator's rounding noise. A sum of terms that nearly cancel at its peak
+    (`sin(time) + cos(time) > 1.4142135623`) reads true and false by turns
+    across a band ~1e-9 wide, and the event fires as many times as the rounding
+    decides (23 for 16, or 0), on any engine that evaluates it in doubles."""
+    if cond in _NOISY_TRIGGERS_WARNED:
+        return
+    _NOISY_TRIGGERS_WARNED.add(cond)
+    logger.warning(
+        "The event trigger %r crosses its threshold within the rounding of its own "
+        "evaluation: near each crossing it reads true and false by turns, and the "
+        "event can fire more or fewer times than it crosses. Move the threshold off "
+        "the extremum or write the trigger so it does not cancel there.",
+        cond,
+    )
 
 
 def _warn_over_budget(cond, n, t_start, t_end) -> None:
@@ -3054,11 +3083,10 @@ def _shape_stop_times(
     if shape[0] == "const":
         return []
     if shape[0] == "poly":
-        return [
-            (tc, min(ts, hi))
-            for tc, ts, touch in shape[1]
-            if lo < tc <= hi and (touches or not touch)
-        ]
+        kept = [e for e in shape[1] if lo < e[0] <= hi and (touches or not e[2])]
+        if touches and any(e[3] for e in kept):
+            _warn_noisy_trigger(cond)
+        return [(tc, min(ts, hi)) for tc, ts, _, _ in kept]
     if shape[0] == "piecewise":
         import numpy as np
 
@@ -3070,6 +3098,13 @@ def _shape_stop_times(
                 out.extend(p for p, keep in zip(pairs, held, strict=False) if keep)
         return sorted(out)
     return _trig_stop_times(shape, cond, lo, hi, touches)
+
+
+@functools.lru_cache(maxsize=256)
+def _parse_periodic_text(text: str):
+    """:func:`_parse_clock_expr`, once per text: the parameters stay symbols
+    through it, so a scan or a fit that moves their values reuses the parse."""
+    return _parse_clock_expr(text)
 
 
 def _periodic_shape(flat, params, constants, scope) -> tuple | None:
@@ -3094,7 +3129,7 @@ def _periodic_shape(flat, params, constants, scope) -> tuple | None:
             f"({_EVALUATOR_CONSTANTS[name]!r})",
             text,
         )
-    expr, dealias = _parse_clock_expr(text)
+    expr, dealias = _parse_periodic_text(text)
     t = sp.Symbol("bngsim_clock_t")
     if t not in expr.free_symbols:
         return None
@@ -3245,7 +3280,7 @@ def _poly_shape(exact, numeric, t) -> tuple | None:
     out = []
     for i, (tr, m) in enumerate(roots):
         if m % 2 == 0:
-            out.append((tr, tr, True))
+            out.append((tr, tr, True, False))
             continue
         gap = min(
             (abs(tr - roots[j][0]) for j in (i - 1, i + 1) if 0 <= j < len(roots)),
@@ -3258,8 +3293,13 @@ def _poly_shape(exact, numeric, t) -> tuple | None:
             if coeff > 0.0 and math.isfinite(err)
             else math.inf
         )
-        ulp = _EPS * max(abs(tr), 1.0)
-        out.append((tr, tr + min(max(nudge, ulp), _STOP_NUDGE_MAX_ULPS * ulp, gap / 4.0), False))
+        # Ulps of the time itself: CVODE's reach for a stop shrinks with t, and
+        # an absolute floor of eps put a stop near t = 0.01 2048 ulps past.
+        ulp = math.ulp(tr)
+        noisy = nudge > _STOP_NUDGE_MAX_ULPS * ulp
+        out.append(
+            (tr, tr + min(max(nudge, ulp), _STOP_NUDGE_MAX_ULPS * ulp, gap / 4.0), False, noisy)
+        )
     return ("poly", tuple(out))
 
 
@@ -3345,7 +3385,9 @@ def _trig_stop_times(
     band = _STOP_NUDGE_SAFETY * err / (r * abs(w) * s)
     sep = (bases[1] - bases[0]) % two_pi
     gap = min(sep, two_pi - sep) / abs(w)
-    ulp = _EPS * np.maximum(np.abs(times), 1.0)
+    ulp = np.spacing(np.abs(times))
+    if touches and noise_amp > r * (1.0 + 1e-12) and np.any(band > _STOP_NUDGE_MAX_ULPS * ulp):
+        _warn_noisy_trigger(cond)
     nudge = np.minimum(np.maximum(band, ulp), _STOP_NUDGE_MAX_ULPS * ulp)
     nudge = np.minimum(nudge, gap / 4.0)
     return [
@@ -3358,12 +3400,18 @@ def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
 
     In time order each needs only the last one kept: comparing each against
     every one kept was quadratic, and a step of time can put thousands of stops
-    in a window (issue #869). Among equal times the first condition's stop wins.
+    in a window (issue #869). On one instant a touch of a threshold wins, then a
+    counter's stop, then the later of two on literal time.
     """
     out: list[CrossingStop] = []
     for stop in found:
         if not out or not _same_instant(stop.time, out[-1].time):
             out.append(stop)
+        elif stop.touch or out[-1].touch:
+            # A touch of a threshold is true at one double alone: the stop on it
+            # is never merged away (issue #714).
+            if stop.touch and not out[-1].touch:
+                out[-1] = stop
         elif stop.clock_species_idx >= 0 and out[-1].clock_species_idx < 0:
             # Two conditions crossing at one instant, one on a counter and
             # one on literal time. Keep the counter record: it does

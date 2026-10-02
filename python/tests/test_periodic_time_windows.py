@@ -353,3 +353,56 @@ def test_a_window_inside_an_if_branch():
     np.testing.assert_allclose(t, [3.9, 4.1], rtol=1e-12)
     t = _crossings("species X = 0;", "if(time()<=2,sin(10*time()),1)<0", 0.0, 5.0)
     assert len(t) == 6 and t[-1] < 2
+
+
+@pytest.mark.parametrize(
+    "cond", ["sin(1000*time) > 0.5", "(time-0.01)*(time-0.02)*(time-0.0301) < 0"]
+)
+def test_a_crossing_near_time_zero_is_stopped_on_within_its_own_ulps(cond):
+    """The nudge's floor and cap were eps*max(|t|, 1), absolute: near t = 0.01 a
+    stop landed 2048 ulps past its crossing, beyond CVODE's reach for one, and
+    a 1e6 jump at rtol=1e-12 made no progress."""
+    text = (
+        f"species A = 1; species B = 0; J1: A => B; piecewise(1e6, {cond}, 1)*A; J2: B => A; 50*B;"
+    )
+    ref = bngsim.Simulator(_ant(text)).run(t_span=(0, 0.3), n_points=2, rtol=1e-8, atol=1e-12)
+    r = bngsim.Simulator(_ant(text)).run(t_span=(0, 0.3), n_points=2, rtol=1e-12, atol=1e-16)
+    assert _col(r, "A")[-1] == pytest.approx(_col(ref, "A")[-1], rel=1e-6)
+    for crossing, stop in _pairs("species X = 0;", cond.replace("time", "time()"), 0.0, 0.3):
+        assert 0 < stop - crossing <= 32 * np.spacing(crossing)
+
+
+def test_a_trigger_that_crosses_inside_its_own_rounding_warns(caplog):
+    """sin(t) + cos(t) peaks at sqrt(2) and cancels there: within ~1e-9 of each
+    crossing it reads true and false by turns, and the event fires as often as
+    rounding decides (25 for 16). No placement fixes that; it is said."""
+    with caplog.at_level("WARNING"):
+        bngsim.Simulator(
+            _ant("species n = 0; E: at sin(time) + cos(time) > 1.414213562373: n = n + 1;")
+        ).run(t_span=(0, 100), n_points=2)
+    assert "within the rounding of its own evaluation" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        r = bngsim.Simulator(
+            _ant("species n = 0; E: at sin(time) > 0.9999999999: n = n + 1;")
+        ).run(t_span=(0, 100), n_points=2)
+    assert "rounding of its own" not in caplog.text
+    assert _col(r, "n")[-1] == 16
+
+
+@pytest.mark.parametrize("ulps", [0, 20, 40, 66])
+def test_a_touch_beside_a_linear_crossing_keeps_its_stop(ulps):
+    """(time-2)^2 <= 0 is true at t = 2 alone. The merge kept the later of two
+    literal-time stops on one instant, which dropped the touch's when `time >
+    tau` crossed 20 to 66 ulps after it, and E1 never fired."""
+    import math
+
+    tau = 2.0
+    for _ in range(ulps):
+        tau = math.nextafter(tau, 3.0)
+    m = _ant(
+        f"species n1 = 0; species n2 = 0; tau = {tau!r};"
+        " E1: at (time-2)^2 <= 0: n1 = n1 + 1; E2: at time > tau: n2 = n2 + 1;"
+    )
+    r = bngsim.Simulator(m).run(t_span=(0, 5), n_points=2)
+    assert _col(r, "n1")[-1] == 1 and _col(r, "n2")[-1] == 1
