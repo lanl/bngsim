@@ -2082,9 +2082,6 @@ inline bool one_switch_instant(double a, double b) {
 // the flows they were differenced from.
 constexpr double kEventJumpRelTol = 1e-8;
 constexpr double kEventJumpUlps = 1e3;
-// How many ulp of the clock a rate law that moves with it is allowed to round
-// by, where the conditions on an instant are asked whether they commute.
-constexpr double kSwitchLawUlps = 8.0;
 // A side of a switch is carried to it from three reads where they close in as a
 // geometric sequence with a ratio up to this. Above it the law is turning on as
 // a power under 0.15, which 64 ulp out is a step to any tolerance.
@@ -6660,6 +6657,10 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // bump cannot move a crossing this one does not own; where no such parameter
     // exists it refuses the run instead of reaching here.
     const std::vector<double> *jump_from = &sw_f_minus;
+    // Every other clock on the instant, and the value a nudge past the latest
+    // threshold on it: −1 for the time. What is read on the crossing itself
+    // for a comoving column, below, is read with these past it too.
+    std::vector<std::pair<int, double>> other_clocks_past;
     // Why the conditions on this instant do not commute, where they do not
     // (issue #951). Thrown below, once the window's own refusal has had its
     // say: the edge of a window that closes as a singular power fails this
@@ -6720,14 +6721,29 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         for (const auto &other : sw.instant_clocks) {
             widen(other.first, other.second);
         }
-        // The right-hand side with every clock on the instant a nudge past
-        // it. This crossing's jump is read there, and not a nudge past its
-        // own time alone: `gate(tau)·(g₄₀ − g₁₀₀)` with the two fixed gates 40
-        // and 100 ulp on is 0 past the instant, and read 64 ulp past tau it
-        // had the one gate and not the other, −1 for 0. The same for a gate
-        // on the time less the same gate on a counter. Where every threshold
-        // on the instant is this crossing's own number, this is the nudge
-        // above, bit for bit.
+        // A crossing on another clock is flipped by no nudge of this one, and
+        // a column that enters a comoving frame here enters it against the
+        // whole right-hand side (issue #545): read with a counter's gate still
+        // to come and left, later, with it made, the column kept the gate's
+        // jump. `if(time >= tau, r·(time − tau)^0.2, 0)` beside
+        // `if(t >= 3, 2, 0.5)` on a counter t in another reaction returned
+        // dZ/dtau = −1.5 for 0. So every other clock on the instant is put
+        // past it, whether or not a rate law reads the two together.
+        for (const auto &other : sw.instant_other_clocks) {
+            widen(other.first, other.second);
+        }
+        // The right-hand side with every clock in `spans` a nudge past the
+        // latest threshold on it. `instant_clocks` lists only the crossings a
+        // rate law composes with this one, so on this crossing's own clock
+        // that is a nudge past the latest of those, and past its own time
+        // where there are none: a neighbour in another law 2,000 ulp on is
+        // not read past, and a law that is fast at its own switch is not
+        // read 2.7e-12 late for it. Composed crossings are read past:
+        // `gate(tau)·(g₄₀ − g₁₀₀)` with the two fixed gates 40 and 100 ulp on
+        // is 0 past the instant, and read 64 ulp past tau it had the one gate
+        // and not the other, −1 for 0. The same for a gate on the time less
+        // the same gate on a counter. Where every threshold on the instant is
+        // this crossing's own number, this is the nudge above, bit for bit.
         auto rhs_past_instant = [&](std::vector<double> &out) {
             double t_at = t_evt;
             for (const auto &span : spans) {
@@ -6751,6 +6767,14 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             }
         };
         rhs_past_instant(sw_f_plus);
+        for (const auto &span : spans) {
+            if (span.clock != (time_clock ? -1 : sw.clock_species_idx0)) {
+                other_clocks_past.emplace_back(
+                    span.clock, span.hi + kSwitchInstantUlps *
+                                              std::numeric_limits<double>::epsilon() *
+                                              std::max(std::fabs(span.hi), 1.0));
+            }
+        }
         std::vector<double> saved;
         saved.reserve(sw.isolate_param_idx0.size());
         for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
@@ -6768,8 +6792,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         // The parameter that is bumped may be one the rate laws read as well:
         // a period that sets the threshold and scales the law. The reading
         // then carries a hair's worth of that, a part in a million of the
-        // jump at each crossing, and over 2,000 edges of a schedule it came
-        // to 0.2% of a column. Read again at half the hair and taken to none.
+        // jump at each crossing. Read again at half the hair and taken to none.
         // Where no law reads the parameter the two readings are one and this
         // returns it, bit for bit.
         {
@@ -6821,8 +6844,8 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         // there. And a rate law of another condition that reads the bumped
         // parameter outside its condition moves with the hair. So where the
         // two differ they are read again over half the nudge and a quarter of
-        // it, and then at half the hair, and what is left when those parts
-        // are taken out is the kink.
+        // it, and then at half the hair and a quarter of it, and what is left
+        // when those parts are taken out is the kink.
         //
         // The clocks are put outside the whole instant: before the earliest
         // threshold on it and past the latest. A neighbour 40 ulp on is on
@@ -6957,12 +6980,6 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                 others_do(-bump, 0.5, half_after, moved_half);
                 others_do(+bump, 0.25, quarter_before, moved_quarter);
                 others_do(-bump, 0.25, quarter_after, moved_quarter);
-                // A law that moves with the clock rounds by its slope times an ulp
-                // of the clock, and the slope is the part of the difference that
-                // goes with the length.
-                const double clock_at = std::max(std::fabs(spans[0].lo), std::fabs(spans[0].hi));
-                const double clock_ulp =
-                    std::nextafter(clock_at, std::numeric_limits<double>::infinity()) - clock_at;
                 // As the first clock was moved, and how far from that the rest were.
                 const double half = moved_half[0] / moved_whole[0];
                 const double quarter = moved_quarter[0] / moved_whole[0];
@@ -6981,9 +6998,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                     const double quarter_d = quarter_after[ui] - quarter_before[ui];
                     outer[ui] = (half_d - half * whole_d) / (1.0 - half);
                     inner[ui] = (quarter_d * half - half_d * quarter) / (half - quarter);
-                    slack[ui] = 8.0 * uneven * std::fabs(whole_d - half_d) +
-                                kSwitchLawUlps * clock_ulp * std::fabs(whole_d - half_d) /
-                                    (moved_whole[0] - moved_half[0]);
+                    slack[ui] = 8.0 * uneven * std::fabs(whole_d - half_d);
                 }
             };
             std::vector<double> kink(static_cast<size_t>(ns), 0.0);
@@ -7023,12 +7038,43 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                     others_do(-0.5, 1.0, half_after, moved_unused);
                     without_the_nudge(0.5, half_before, half_after, half_outer, half_inner,
                                       half_slack);
+                    const std::vector<double> whole_hair = kink;
+                    const std::vector<double> whole_slack = slack;
                     for (int i = 0; i < ns; ++i) {
                         const auto ui = static_cast<size_t>(i);
-                        kink[ui] = 2.0 * half_inner[ui] - kink[ui];
-                        slack[ui] += 2.0 * half_slack[ui];
+                        kink[ui] = 2.0 * half_inner[ui] - whole_hair[ui];
+                        slack[ui] = whole_slack[ui] + 2.0 * half_slack[ui];
                     }
                     worst = apart(kink, &slack);
+                    // A law that is 0 at this switch and curved from it,
+                    // `1 − exp(−k·(time − tau))`, in one rate law with a gate
+                    // on the same number: the two commute, the law being 0
+                    // where the gate flips, and what is read is the law's
+                    // value a hair from its zero. Half the hair takes out the
+                    // part in proportion to the hair and leaves the square of
+                    // it, 4.5e-12 of the rate against an allowance of 1e-14.
+                    // A quarter of the hair takes that out too.
+                    if (worst >= 0) {
+                        std::vector<double> quarter_before;
+                        std::vector<double> quarter_after;
+                        std::vector<double> quarter_outer;
+                        std::vector<double> quarter_inner;
+                        std::vector<double> quarter_slack;
+                        others_do(+0.25, 1.0, quarter_before, moved_unused);
+                        others_do(-0.25, 1.0, quarter_after, moved_unused);
+                        without_the_nudge(0.25, quarter_before, quarter_after, quarter_outer,
+                                          quarter_inner, quarter_slack);
+                        for (int i = 0; i < ns; ++i) {
+                            const auto ui = static_cast<size_t>(i);
+                            kink[ui] =
+                                (8.0 * quarter_inner[ui] - 6.0 * half_inner[ui] + whole_hair[ui]) /
+                                3.0;
+                            slack[ui] =
+                                (8.0 * quarter_slack[ui] + 6.0 * half_slack[ui] + whole_slack[ui]) /
+                                3.0;
+                        }
+                        worst = apart(kink, &slack);
+                    }
                 }
             }
             put_back();
@@ -7090,7 +7136,15 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         if (!time_clock) {
             sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] = sw.threshold;
         }
-        comoving_rhs(t_cross, sw_ywork.data(), ns, f_instant);
+        double t_at = t_cross;
+        for (const auto &other : other_clocks_past) {
+            if (other.first < 0) {
+                t_at = other.second;
+            } else {
+                sw_ywork[static_cast<size_t>(other.first)] = other.second;
+            }
+        }
+        comoving_rhs(t_at, sw_ywork.data(), ns, f_instant);
     }
 
     // Land the clock ON its threshold rather than a few ulp short, so the

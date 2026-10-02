@@ -4438,13 +4438,18 @@ class SwitchCrossing(NamedTuple):
     clock that reads this one. An event on the instant comes apart from it
     under any parameter that moves the event.
 
-    ``instant_clocks`` lists the other crossings on this instant, each as its
-    clock and the value it crosses at: ``(-1, t*)`` for the time and
-    ``(species, threshold)`` for a counter. The core's test of whether the
-    conditions on an instant commute needs them all flipped (issue #951): a
-    nudge of this crossing's clock does not flip a condition on another, and
-    one about this crossing's own time does not reach one on the same clock
-    that is a few ulp on.
+    ``instant_clocks`` lists the other crossings on this instant that a rate
+    law reads together with this one, each as its clock and the value it
+    crosses at: ``(-1, t*)`` for the time and ``(species, threshold)`` for a
+    counter. The core's test of whether the conditions on an instant commute
+    needs them all flipped (issue #951): a nudge of this crossing's clock does
+    not flip a condition on another, and one about this crossing's own time
+    does not reach one on the same clock that is a few ulp on.
+
+    ``instant_other_clocks`` lists every crossing on the instant that is on
+    another clock, in the same form, composed with this one or not. A column
+    that enters a comoving frame at this crossing enters it against the whole
+    right-hand side, which has to be read with those made.
     """
 
     t_star: float
@@ -4455,6 +4460,7 @@ class SwitchCrossing(NamedTuple):
     isolate_delta: list[float]
     fixed_on_instant: bool = False
     instant_clocks: list[tuple[int, float]] = []
+    instant_other_clocks: list[tuple[int, float]] = []
 
 
 class _Crossing(NamedTuple):
@@ -4668,13 +4674,14 @@ def _isolation_bump(
     # worth failing over. Kept as the thing that fails instead, with the margin
     # itself pinned by test_the_quantisation_leaves_room_for_the_isolation_step.
     floor = _ISOLATION_MIN_ULP * _EPS * span
-    # The core reads at the whole hair and at half of it, with the clock a
-    # nudge past the crossing — or, where a rate law reads it together with
-    # others on the instant (``composed``), a nudge past the latest of those.
-    # Half the hair has to clear that, or the half reading has this condition
-    # already made: with two gates of its own law 2,000 and 9,000 ulp after a
-    # switch the hair is capped at 2,252 ulp, half of it is short of 2,064,
-    # and the column came back +1 for −1.
+    # The core reads at the whole hair, at half of it and, where it asks
+    # whether the instant commutes, at a quarter, with the clock a nudge past
+    # the crossing — or, where a rate law reads it together with others on the
+    # instant (``composed``), a nudge past the latest of those. The shortest
+    # reading has to clear that, or it has this condition already made: with
+    # two gates of its own law 2,000 and 9,000 ulp after a switch the hair is
+    # capped at 2,252 ulp, half of it is short of 2,064, and the column came
+    # back +1 for −1.
     extent = max(
         (
             abs(at - _on_clock(cross))
@@ -4684,7 +4691,9 @@ def _isolation_bump(
         ),
         default=0.0,
     )
-    floor = max(floor, 2.0 * (extent + 2.0 * _INSTANT_ULPS * _EPS * span))
+    # The quarter is read only where the crossing is composed with another.
+    shortest = 4.0 if any(other is not cross for other in composed) else 2.0
+    floor = max(floor, shortest * (extent + 2.0 * _INSTANT_ULPS * _EPS * span))
     if delta_threshold < floor:
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported on this model: the switch times "
@@ -5002,6 +5011,14 @@ def _emit_switch_records(
                         for other in group
                     ),
                     instant_clocks=_composed_with(cross, group, one_law),
+                    instant_other_clocks=sorted(
+                        {
+                            (other.clock_idx0, at)
+                            for other in group
+                            if other.clock_idx0 != cross.clock_idx0
+                            for at in _extent(other)
+                        }
+                    ),
                 )
             )
     records.sort(key=lambda r: r.t_star)
@@ -5433,7 +5450,14 @@ def compute_switch_time_sens(
                     }
             _absorb_crossing(found, step._replace(dtstar=[0.0] * len(names)), found_index)
 
-    records = _emit_switch_records(found, param_idx, moved_clocks, atom_laws)
+    # A rate law that reads ``rateOf(X)`` reads every rate law that changes X,
+    # which the text of neither says: a gate in X's reaction and one in the
+    # law that reads its rate are composed. With `rateOf` in the model every
+    # crossing on an instant is taken as read together with every other.
+    reads_rates = bool(getattr(core, "uses_rateof", False))
+    records = _emit_switch_records(
+        found, param_idx, moved_clocks, None if reads_rates else atom_laws
+    )
     if not records:
         return [], []
 
