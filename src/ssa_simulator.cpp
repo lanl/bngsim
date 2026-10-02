@@ -1773,6 +1773,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<char> probe_prev, probe_cur; // the continuous loop's scan
     auto probe_events_in_window = [&](double t_lo, double t_hi) -> double {
         double t_event = std::numeric_limits<double>::infinity();
+        // Nothing past the run's end can fire in it. The discrete loop asks up
+        // to its next firing, which with a tiny total propensity lies far past
+        // t_end: the grid then ran to it (millions of looks, past the timeout,
+        // and past INT_MAX in the look count).
+        t_hi = std::min(t_hi, times.t_end);
         if (time_triggers.empty() || !(t_hi > t_lo))
             return t_event;
         // Until a trigger changes, its recorded truth is what each look compares

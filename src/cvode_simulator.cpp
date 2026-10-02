@@ -43,6 +43,7 @@
 #include "bngsim/sundials_guards.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -106,13 +107,28 @@ static std::string sensitivity_restart_hint(double t_now, const CvodeUserData &d
 static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vector y,
                                   sunrealtype *t_ret, int &flag, const char *context,
                                   CvodeUserData &data, const std::function<void()> &check_budget,
-                                  const std::function<bool(double)> &handled = nullptr) {
+                                  const std::function<bool(double)> &handled = nullptr,
+                                  long window_steps = 0, long steps_at_first = 0) {
+    // A run taken in shorter batches than its max_steps (see the watch in
+    // run()) is stalled where `window_steps` steps, one max_steps batch's
+    // worth, have not moved the time. They are counted in the windows a run
+    // in whole batches has, from `steps_at_first`, CVODE's count before the
+    // caller's own call: that call's batch was the first window, which is
+    // not judged, and a window ends every `window_steps` after it. Counted
+    // from wherever the time stopped moving instead, a blow-up was called a
+    // stall a few steps before CVODE failed on it and named the column that
+    // was not finite. With `window_steps` at 0 every batch is a window.
+    long window = 0;
+    sunrealtype window_from = 0.0;
     while (flag == CV_TOO_MUCH_WORK) {
         if (check_budget)
             check_budget();
 
         sunrealtype t_before = 0.0;
         CVodeGetCurrentTime(cvode_mem, &t_before);
+        if (window_steps <= 0) {
+            window_from = t_before;
+        }
 
         flag = CVode(cvode_mem, t_target, y, t_ret, CV_NORMAL);
         if (flag != CV_TOO_MUCH_WORK)
@@ -122,8 +138,21 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
 
         sunrealtype t_after = 0.0;
         CVodeGetCurrentTime(cvode_mem, &t_after);
-        if (t_after > t_before)
+        bool stalled = !(t_after > window_from);
+        if (window_steps > 0) {
+            long taken = 0;
+            CVodeGetNumSteps(cvode_mem, &taken);
+            const long now_in = (taken - steps_at_first) / window_steps;
+            if (now_in == window) {
+                continue; // inside a window
+            }
+            stalled = stalled && window >= 1;
+            window = now_in;
+            window_from = t_after;
+        }
+        if (!stalled) {
             continue; // still climbing, however slowly — keep going
+        }
 
         sunrealtype h_now = 0.0;
         CVodeGetCurrentStep(cvode_mem, &h_now);
@@ -370,7 +399,7 @@ struct CvodeUserData {
     // or through another derived parameter, in derivation order. Every other
     // derived parameter's inputs are at the nominal point, so its value is the
     // snapshot's. probe_fast[p] says p may take that path; it is 0 for a
-    // derived p, which the full re-derivation overwrites with its expression.
+    // derived p, which takes the full re-derivation, held at its probe value.
     std::vector<std::vector<int>> probe_dependents;
     std::vector<char> probe_fast;
 
@@ -1045,7 +1074,9 @@ static void note_nominal_point(CvodeUserData *data, const std::vector<Parameter>
 // The sensitivity sync both RHS callbacks run before evaluating f: mirror
 // sens_p (which CVODES perturbs during a difference-quotient probe) into the
 // model's parameters, and re-derive the derived ones so a perturbed primary
-// reaches them (issues #2, #568). A pinned switch-time parameter ignores the
+// reaches them (issues #2, #568). A perturbed parameter that is itself derived
+// is held, and what reads it is re-derived from it (issue #707). A pinned
+// switch-time parameter ignores the
 // probe (issue #48): ∂f/∂p is 0 in the branch interior, and letting the probe
 // move the switch instead drags the kink into the approach and stalls the
 // solver. See CvodeUserData::sens_param_pinned.
@@ -1095,13 +1126,25 @@ static std::vector<Parameter> &sync_sens_params(CvodeUserData *data) {
             return params;
         }
     }
+    // The parameter a probe has moved, where it has moved exactly one.
+    int probed = -1;
+    int n_moved = 0;
     for (int i = 0; i < n; ++i) {
         params[i].value = synced(i);
         if (data->sens_p_nominal != nullptr &&
-            off_nominal(params[i].value, data->sens_p_nominal[i]))
+            off_nominal(params[i].value, data->sens_p_nominal[i])) {
             data->params_off_nominal = true;
+            probed = i;
+            ++n_moved;
+        }
     }
-    const_cast<NetworkModel *>(data->model)->refresh_derived_params();
+    // A probed parameter that is itself derived is held at its probe value
+    // (issue #707). Re-derived with the rest, `kd = 2*k0` went back to 2·k0 at
+    // the unprobed k0 before f was read, the probed right-hand side was the
+    // nominal one, and the column for kd came back exactly 0. What reads kd is
+    // still re-derived, from the probed kd. A probed primary is held by
+    // nothing: it has no expression to go back to.
+    const_cast<NetworkModel *>(data->model)->refresh_derived_params(n_moved == 1 ? probed : -1);
     note_nominal_point(data, params);
     return params;
 }
@@ -2090,6 +2133,17 @@ constexpr double kEventLimitRatio = 0.9;
 // of the state or parameter. Where that keeps fewer digits than this, the
 // difference is taken again over a wider step (see apply_event_sensitivity_jump).
 constexpr double kAssignedDerivativeRelTol = 1e-9;
+// That difference is no derivative where the value steps, bends or turns inside
+// it, and the run is refused there (issue #915). A value is taken as smooth
+// across the step where what a smooth value leaves out of its half-step
+// differences is under this fraction of what the value moves by across it.
+constexpr double kAssignedSmoothRelTol = 1e-3;
+// The slope a value may have across the difference step and still be taken for
+// flat at the point: per unit relative change of what is moved, against the
+// value's scale.
+constexpr double kAssignedFlatSlope = 1e-6;
+// The difference is taken over this fraction of what is moved, each way.
+constexpr double kAssignedDifferenceStep = 1e-6;
 // Two shifts ∂t*/∂p are one when they agree to this fraction, or when their
 // difference moves the time by under this fraction of itself per unit relative
 // change of the parameter. A shift under the second is no shift: a
@@ -2500,14 +2554,32 @@ struct CvodeSimulator::Impl {
     // this, so all of them see the same picture of the model.
     void sync_model_at(double t, const double *x, int ns);
 
-    // Issue #928. Whether a run without sensitivities is pinned on a
-    // state-switch surface, and if so, the state put across it and the
-    // integrator restarted there. `t_batch` is where the batch of steps that
-    // has just ended started. `since` is the run's, one entry per switch: the
-    // time from which a residual has been seen pinned. See the definition.
+    // Issue #926. Refuses a sensitivity run that is held on a state-switch
+    // surface with the flows on both sides pointing into it. See the definition.
+    // `ask`, where given, is one flag per switch: only those set are read.
+    // `at_root` takes the state for on the surface whatever the tolerance.
+    // `band_out`, where given, gets the tolerance's band of each switch read.
+    void refuse_slide_along_state_switch(
+        double t, const double *x, int ns,
+        const std::vector<const NetworkModel::StateSwitch *> &switches, double rtol, double atol,
+        const std::vector<double> &atol_v, const std::vector<char> *ask = nullptr,
+        bool at_root = false, std::vector<double> *band_out = nullptr,
+        std::vector<std::array<double, 3>> *last_seen = nullptr, bool *pending = nullptr);
+
+    // Issue #928. Whether a run is pinned on a state-switch surface, and if
+    // so, the state put across it and the integrator restarted there.
+    // `t_batch` is where the batch of steps that has just ended started.
+    // `since` is the run's, one entry per switch: the time from which a
+    // residual has been seen pinned. With `refuse`, for a run that carries
+    // sensitivities, a pinned state ends the run instead (issue #952), once it
+    // has been seen pinned over `since_steps`' worth of steps: the run's count
+    // of steps when each residual was first seen there. `ask` as above. See
+    // the definition.
     bool carry_across_stalled_state_switch(
         void *cvode_mem, double t, double t_batch, N_Vector y, int ns,
-        const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since);
+        const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since,
+        bool refuse, std::vector<long> *since_steps = nullptr,
+        const std::vector<char> *ask = nullptr);
 
     // dg/dt along the flow at (t, x) — the denominator of dt*/dθ, and the test
     // for whether a trajectory LEAVES a threshold it starts on (issue #340).
@@ -5350,6 +5422,22 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
     std::vector<double> xwork(x.begin(), x.end());
 
     // ∂g/∂x, over the species that can move g.
+    //
+    // The step is a millionth of the species. Where the residual also reads a
+    // species a great deal larger, `(LECs + Capillaries) − L` with LECs at 1e4
+    // and Capillaries at 1e-10 just after its rate law turns on, that step is
+    // under an ulp of the residual and the difference is 0: the residual read
+    // as not moving with a species that carries it at 504 a unit of time, and
+    // its flow came out −90 for +414. So a difference lost in the rounding of
+    // the largest species the residual reads is taken again over wider steps,
+    // a hundred times at a time, up to a millionth of that species, or to the
+    // 1e-9 a species at 0 is stepped by: `exp(S) < 1` with S at 1e-12 moves in
+    // ulps of 1, and reads the same a millionth of S either side.
+    double largest = 0.0;
+    for (int j : support) {
+        largest = std::max(largest, std::fabs(x[j]));
+    }
+    const double lost = 64.0 * std::numeric_limits<double>::epsilon() * largest;
     gx_out.assign(static_cast<std::size_t>(ns), 0.0);
     for (int j : support) {
         const double xj = x[j];
@@ -5357,12 +5445,21 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
         if (h == 0.0) {
             h = 1e-9;
         }
-        xwork[j] = xj + h;
-        sync_model_at(t, xwork.data(), ns);
-        const double g_hi = eval.evaluate(gidx);
-        xwork[j] = xj - h;
-        sync_model_at(t, xwork.data(), ns);
-        const double g_lo = eval.evaluate(gidx);
+        double g_hi = 0.0;
+        double g_lo = 0.0;
+        for (;;) {
+            xwork[j] = xj + h;
+            sync_model_at(t, xwork.data(), ns);
+            g_hi = eval.evaluate(gidx);
+            xwork[j] = xj - h;
+            sync_model_at(t, xwork.data(), ns);
+            g_lo = eval.evaluate(gidx);
+            if (!(std::fabs(g_hi - g_lo) <= lost) ||
+                !(100.0 * h <= std::max(1e-6 * largest, 1e-9))) {
+                break;
+            }
+            h *= 100.0;
+        }
         xwork[j] = xj; // restore this component
         gx_out[j] = (g_hi - g_lo) / (2.0 * h);
     }
@@ -6179,6 +6276,127 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             }
         }
     };
+    // A central difference says nothing where the value steps or bends inside
+    // it (issue #915). `u := piecewise(5, time >= T0 + 1, 0)` assigned by an
+    // event at `time >= T0 + 1` steps in the time and in T0 at the instant it
+    // is read: ∂h/∂T0 and ∂h/∂t·∂t*/∂T0 were each 5 over the width of a
+    // difference, and dB/dT0 came back −3.3e6 for 0 at T0 = 0.5. A bend,
+    // `max(time − 2.3, 0)` read at 2.3, came back as the mean of its two slopes.
+    //
+    // Across a smooth value the difference over half the step is half as
+    // large, and the second difference about the point a quarter as large. A
+    // step inside the difference doubles the first or loses it, a value that
+    // turns inside it changes it, and a bend at the point leaves the first
+    // alone and halves the second. `lo` and `hi` are the value at −h and +h,
+    // and `value_at(offset)` reads it anywhere between. False where either is
+    // off by more than a part in 1e3 of what the value moves by across the
+    // step.
+    //
+    // The readings round, too, and by more than their own last digits where
+    // the value is a difference of larger things: `(D + q·time) − D` with D at
+    // 1e6 rounds by an ulp of 1e6. What is out by no more than 16 ulp of
+    // `reach`, the largest of the value and of everything it reads, may be
+    // that rounding. It is let pass up to 2e-9 of the value's size, which
+    // leaves the derivative in doubt by a few parts in 1e3 of the value per
+    // unit relative change of what is moved: a saturated `X³/(8 + X³)` at
+    // X = 2000 is inside that, and a term with a coefficient of 1e-9. Where
+    // it leaves more in doubt, `(X + Y) − Y` with Y at 1e9, the difference is
+    // not a derivative to those parts in 1e3, and the run is refused as it is
+    // for a step.
+    auto smooth_across = [&](const std::function<double(double)> &value_at, double h, double lo,
+                             double here, double hi, double reach, double moved) {
+        const double span = std::fabs(hi - here) + std::fabs(here - lo);
+        // A value that is not finite at the point or beside it has no
+        // derivative there: `1/(X − 3)` read at X = 3 came back as 1.1e11.
+        if (!std::isfinite(span)) {
+            return false;
+        }
+        // A value that reads the same at −h, at the point and at +h either
+        // does not read what is moved, or the step is a whole number of its
+        // periods: `(X + 0.25) − floor(X + 0.25)` with X at 1e6 has a step of
+        // exactly one period, reads 0.25 at all three, and its difference is 0
+        // for a derivative of 1. It is asked between them, off any simple
+        // fraction of the step: at half of it a period of half the step reads
+        // the same again.
+        if (span == 0.0) {
+            const double off = 0.6180339887498949 * h;
+            const double may = std::max(
+                std::min(16.0 * std::numeric_limits<double>::epsilon() * reach,
+                         2.0 * kAssignedDifferenceStep * kAssignedSmoothRelTol * std::fabs(here)),
+                std::numeric_limits<double>::min());
+            return std::fabs(value_at(off) - here) <= may &&
+                   std::fabs(value_at(-off) - here) <= may;
+        }
+        const double half_hi = value_at(0.5 * h);
+        const double half_lo = value_at(-0.5 * h);
+        const double whole = (hi - here) - (here - lo);
+        const double half = (half_hi - here) - (here - half_lo);
+        const double size = std::max({std::fabs(lo), std::fabs(here), std::fabs(hi)});
+        const double rounding =
+            std::min(16.0 * std::numeric_limits<double>::epsilon() * reach,
+                     2.0 * kAssignedDifferenceStep * kAssignedSmoothRelTol * size);
+        // The smallest normal number stands in for the rounding of a value
+        // that is itself denormal.
+        const double allowed =
+            std::max({kAssignedSmoothRelTol * span, rounding, std::numeric_limits<double>::min()});
+        if (std::fabs((hi - lo) - 2.0 * (half_hi - half_lo)) <= allowed &&
+            std::fabs(half - 0.25 * whole) <= allowed) {
+            return true;
+        }
+        // A value that is flat at the point. `X³/(8 + X³)` with X at 0 is
+        // that, and `(X − Y)³` where X is Y: the derivative there is 0, and
+        // the difference gives 1e-19. The two tests above take it for a value
+        // that turns inside the step, because the difference over half the
+        // step is a quarter or less of the one over the whole. Two kinds pass.
+        const double up = hi - here;
+        const double down = lo - here;
+        const double half_up = half_hi - here;
+        const double half_down = half_lo - here;
+        // A side leaves the point as a power of order 1.75 or more where what
+        // it has moved by at half the step is 0.3 or less of the whole. A side
+        // that has not moved at the whole step must not have moved at half.
+        auto as_a_power = [](double whole_side, double half_side) {
+            if (whole_side == 0.0) {
+                return half_side == 0.0;
+            }
+            const double ratio = half_side / whole_side;
+            return ratio > 1.0 / 4096.0 && ratio <= 0.3;
+        };
+        // One that is even about the point and leaves it as such a power:
+        // `X⁴/(K⁴ + X⁴)` at 0, `((X − 3)/1e-3)⁴` at 3. An even value has
+        // derivative 0 at the point where it has one, and the central
+        // difference of an even value is 0 whatever its size. `abs(X − 3)` is
+        // even too, has none, and halves over half the step. (A kink under an
+        // even term steep enough to hide it, `abs(X − 3) + 1e13·abs(X − 3)³`,
+        // passes: its two slopes are under 1% of the slope a step away.)
+        const double even = std::max(rounding, std::numeric_limits<double>::min());
+        if (up != 0.0 && std::fabs(up - down) <= even && std::fabs(half_up - half_down) <= even &&
+            as_a_power(up, half_up)) {
+            return true;
+        }
+        // And one that leaves the point as such a power on each side it moves
+        // on, and does not move to speak of: its slope across the step, times
+        // what is moved (or 1, if that is larger), is under a millionth of the
+        // value (or of 1, if the value is larger than that, or is smaller than
+        // what it moves by across the step: `(time − 0.3)³` read at 0.2 + 0.1
+        // is 1.7e-49 there, not 0). Then the difference across it is no slope,
+        // relative or absolute.
+        //
+        // Both are asked. The shape alone is not enough:
+        // `5·min(max((q − 1)/1e-6, 0), 1)²` at q = 1 leaves the point as a
+        // square and is done inside the step, a Hill function of X at 0 with a
+        // half-saturation of 1e-8 is past it in ten steps, and
+        // `1e6·max(X − 1, 0)^1.81` has a slope of 25 one step on: the
+        // difference gave 2.5e6, 1e6 and 6.9 for a derivative of 0. Nor is the
+        // value's own size a scale to measure by: beside an offset of 1e9 a
+        // bend 0.4 of the step out came back as 300. And the size alone is not
+        // enough: a step of 1e-18 at the fire instant, in a model whose values
+        // are that small, is the step this was written for.
+        const double moves = std::max(std::fabs(up), std::fabs(down));
+        const double scale = std::fabs(here) <= moves ? 1.0 : std::min(std::fabs(here), 1.0);
+        const double cap = kAssignedFlatSlope * scale * h / std::max(moved, 1.0);
+        return as_a_power(up, half_up) && as_a_power(down, half_down) && moves <= cap;
+    };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;
     struct RowResult {
@@ -6260,11 +6478,36 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             std::vector<int> x_support, p_support;
             model.expression_support(vexpr, &x_support, &p_support);
             const std::unordered_set<int> p_support_set(p_support.begin(), p_support.end());
+            // Called with the evaluator back at the read state and p₀.
+            auto refuse_not_smooth = [&](const std::string &in) {
+                throw std::runtime_error(
+                    "Forward sensitivity: the value event '" + ev.id + "' assigns to '" +
+                    model.species()[static_cast<size_t>(k)].name +
+                    "' at t=" + std::to_string(t_evt) + " is not smooth in " + in +
+                    " where it is read: it steps, bends or turns within a part in a million of "
+                    "that point, is not finite there, or rounds by more than a part in 1e3 of "
+                    "what it moves by there, "
+                    "so the derivative the sensitivity needs is not defined, or is not what a "
+                    "difference across it gives (issue #915). Move the step away from the event, "
+                    "or drop the parameters that reach it from sensitivity_params.");
+            };
 
             // ∂c/∂x_j via central FD.
             const double value_here = eval_ref_outer.evaluate(vexpr);
+            // The largest of the value and of everything it reads: what its
+            // readings can round by (see smooth_across).
+            double reach = std::fabs(value_here);
+            for (int j : x_support) {
+                reach = std::max(reach, std::fabs(xread[j]));
+            }
+            for (int pi : p_support) {
+                reach = std::max(reach, std::fabs(params[pi].value));
+            }
             std::vector<double> dcdx(static_cast<size_t>(ns), 0.0);
             std::vector<double> dcdx_rounding(static_cast<size_t>(ns), 0.0);
+            // A species the value is not smooth in. Refused only where a
+            // column carries something through it.
+            std::vector<char> rough_x(static_cast<size_t>(ns), 0);
             for (int j : x_support) {
                 const double xj = xread[j];
                 double h = 1e-6 * std::fabs(xj);
@@ -6280,14 +6523,16 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 dcdx[j] = (f_hi - f_lo) / (2.0 * h);
                 const double value_size = std::max(std::fabs(f_hi), std::fabs(f_lo));
                 dcdx_rounding[j] = 2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
+                const std::function<double(double)> value_at = [&](double offset) {
+                    xwork[j] = xj + offset;
+                    sync_state();
+                    return eval_ref_outer.evaluate(vexpr);
+                };
+                rough_x[static_cast<size_t>(j)] =
+                    smooth_across(value_at, h, f_lo, value_here, f_hi, reach, std::fabs(xj)) ? 0
+                                                                                             : 1;
                 // Taken again over wider steps where it keeps too few digits.
-                widen_difference(
-                    [&](double offset) {
-                        xwork[j] = xj + offset;
-                        sync_state();
-                        return eval_ref_outer.evaluate(vexpr);
-                    },
-                    h, value_here, value_size, dcdx[j], dcdx_rounding[j]);
+                widen_difference(value_at, h, value_here, value_size, dcdx[j], dcdx_rounding[j]);
                 xwork[j] = xj; // restore this component
             }
             sync_state(); // back to the read state for the parameter FD
@@ -6316,15 +6561,20 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 // ∂c/∂q = 0 for Y.
                 const double value_size = std::max(std::fabs(f_hi), std::fabs(f_lo));
                 double rounding = 2.0 * std::numeric_limits<double>::epsilon() * value_size / h;
-                widen_difference(
-                    [&](double offset) {
-                        params[pidx].value = p0 + offset;
-                        perturbed_sync(pidx, t_evt);
-                        return eval_ref_outer.evaluate(vexpr);
-                    },
-                    h, value_here, value_size, dcdp[col], rounding);
+                const std::function<double(double)> value_at = [&](double offset) {
+                    params[pidx].value = p0 + offset;
+                    perturbed_sync(pidx, t_evt);
+                    return eval_ref_outer.evaluate(vexpr);
+                };
+                const bool smooth =
+                    smooth_across(value_at, h, f_lo, value_here, f_hi, reach, std::fabs(p0));
+                widen_difference(value_at, h, value_here, value_size, dcdp[col], rounding);
                 params[pidx].value = p0; // restore
                 perturbed_sync(pidx, t_evt);
+                if (!smooth) {
+                    sync_state();
+                    refuse_not_smooth("the parameter '" + params[pidx].name + "'");
+                }
             }
             sync_state(); // restore evaluator state at (read state, p₀)
 
@@ -6355,7 +6605,18 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 const double c_hi = value_at(t_evt + ht);
                 const double c_lo = value_at(t_evt - ht);
                 dcdt = (c_hi - c_lo) / (2.0 * ht);
+                const std::function<double(double)> at_offset = [&](double offset) {
+                    return value_at(t_evt + offset);
+                };
+                const bool smooth =
+                    smooth_across(at_offset, ht, c_lo, value_here, c_hi, reach, std::fabs(t_evt));
                 sync_state();
+                // Only where a column moves the fire time: a state trigger
+                // takes this path with every shift 0.
+                if (!smooth && std::any_of(tau.begin(), tau.end(),
+                                           [](double shift) { return shift != 0.0; })) {
+                    refuse_not_smooth("the time");
+                }
             }
 
             // D_k for every column, without its ∂h/∂t·∂t*/∂θ term:
@@ -6375,16 +6636,22 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 double acc = 0.0;
                 const std::vector<double> &sm = s_minus[c];
                 for (int j = 0; j < ns; ++j) {
-                    if (dcdx[j] == 0.0) {
+                    if (dcdx[j] == 0.0 && rough_x[static_cast<size_t>(j)] == 0) {
                         continue;
                     }
+                    double through = 0.0; // what the column carries through species j
                     if (at_trigger || assigned[static_cast<size_t>(j)] == 0) {
-                        acc += dcdx[j] * (sm[j] + (tau_c != 0.0 ? f_minus[j] * tau_c : 0.0));
+                        through = sm[j] + (tau_c != 0.0 ? f_minus[j] * tau_c : 0.0);
                     } else {
                         const auto uj = static_cast<size_t>(j);
-                        acc += dcdx[j] * (row_base[static_cast<size_t>(c)][uj] +
-                                          (tau_c != 0.0 ? row_dcdt[uj] * tau_c : 0.0));
+                        through = row_base[static_cast<size_t>(c)][uj] +
+                                  (tau_c != 0.0 ? row_dcdt[uj] * tau_c : 0.0);
                     }
+                    if (rough_x[static_cast<size_t>(j)] != 0 && through != 0.0) {
+                        refuse_not_smooth("the species '" +
+                                          model.species()[static_cast<size_t>(j)].name + "'");
+                    }
+                    acc += dcdx[j] * through;
                 }
                 if (c < n_sens_p) {
                     acc += dcdp[c];
@@ -6669,11 +6936,12 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     if (!sw.isolate_param_idx0.empty()) {
         auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
         // No hold is passed to refresh_derived_params() below, and that is
-        // correct rather than an oversight — the other three finite-difference
+        // correct rather than an oversight — the other four finite-difference
         // probe sites DO pass one (residual_dtstar, apply_event_sensitivity_jump,
-        // SteadyStateRhs::sync_params), so the asymmetry is worth a sentence.
+        // SteadyStateRhs::sync_params, and sync_sens_params since issue #707),
+        // so the asymmetry is worth a sentence.
         //
-        // Those three perturb a *sensitivity* parameter, which since issue #475
+        // Those four perturb a *sensitivity* parameter, which since issue #475
         // can be a derived one; re-deriving it would undo the probe. This site
         // perturbs a detector-chosen ISOLATION parameter, and that is
         // structurally a primary: `_isolation_bump` picks it out of
@@ -7372,6 +7640,31 @@ static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
 static constexpr double kStateSwitchContinuousRelTol = 1e-6;
+// Where both branches are extended to the root, what a reader's flux changes by
+// there is a step, or it is something a step is not: rounding, the flux
+// bending, a term beside the switched one that rounds by more than the step
+// (issue #917). The drive tolerance stands for all of that at once, and is far
+// too wide for it under a fast threshold. A reading under the extension's own
+// rounding, this many times ε of the four readings, is no step. In the band
+// between that and the drive tolerance, the two branches are read at one state:
+// the state on the surface, with only the species the residual reads moved a
+// few ulp to either side of it. Every term that does not read those species is
+// the same on both, whatever it rounds by, and what is left is the step.
+//
+// What is allowed there without a step: the rounding of the two readings, and
+// what the flux does on its own as far again from the surface, for a term that
+// reads the residual's species. Where the two sides cannot be reached by moving
+// those species, the reading stands as the drive tolerance had it.
+//
+// Past the drive tolerance a reading is a step, except where the two branches
+// at one state are the same to their rounding: see the verdict.
+static constexpr double kStateSwitchExtendedRoundoff = 16.0;
+static constexpr double kStateSwitchBend = 8.0;
+// How many ulp of the residual each side is taken past the surface.
+static constexpr double kStateSwitchApartUlps = 16.0;
+// How far out a flux that is on one tread at both of its readings is followed
+// to find the next: this many times a factor of four.
+static constexpr int kStateSwitchTreadDoublings = 16;
 // Issue #763: on the TANGENT path, a branch gap below this many ulps of the
 // switched reactions' gross flux (the absolute sum of their terms) is the final
 // rounding of the two sums it is read from, one per side, not a jump. There a
@@ -7570,6 +7863,254 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, 
     return true;
 }
 
+// A flow on the far side of a state-switch surface that carries the residual
+// back, by more than this fraction of the terms it is summed from, is a slide
+// along the surface and not a crossing of it (issue #926).
+static constexpr double kStateSwitchSlideRelTol = 1e-6;
+// How far to either side of a surface its two branches are read, in ulp of the
+// residual.
+static constexpr double kStateSwitchSlideUlps = 64.0;
+// How many times that is widened, eight times at a time, before a surface is
+// given up on: up to 5e11 ulp, a part in 1e4.
+static constexpr int kStateSwitchSlideWidenings = 12;
+// A state beside a surface is held there where its residual closes on it at
+// under this fraction of the rate its own flow closes at.
+static constexpr double kStateSwitchHeld = 0.25;
+
+// ─── A slide the root finder never sees (issue #926) ────────────────────────
+//
+// At a loose tolerance a state that slides along a switching surface does not
+// cross it: each step that would is rejected for the jump in f, the steps
+// shrink, and the state creeps along just short of the surface, inside the
+// tolerance of it, for millions of steps. No root is reported, so the check in
+// the state-switch jump never runs, and the column integrates the near
+// branch's ∂f/∂p all the way: dS/damp = t where it is 0.
+//
+// So each state switch whose surface the state is within the tolerance's band
+// of is read AT the surface: the right-hand side at two states a few ulp of
+// the residual to this side of it, and at two as far past it, with only the
+// species the residual reads moved. A slide is a flow on this side that is
+// still carrying the residual to the surface where it gets there, and a flow
+// past it that is still carrying it back. The same is asked at a root.
+//
+// At the surface, and not where the state is. A state that comes to rest just
+// short of a threshold, `k·(Ainf − A)` with thr a little past Ainf, is in the
+// band and heading for the surface, and the flow past it points back; but at
+// the surface the flow on this side already points back too. Carried there
+// along its own flow, as a first cut of this did, the state took the whole
+// time it would never spend, and a model with anything else going on was read
+// somewhere it never is.
+void CvodeSimulator::Impl::refuse_slide_along_state_switch(
+    double t, const double *x, int ns,
+    const std::vector<const NetworkModel::StateSwitch *> &switches, double rtol, double atol,
+    const std::vector<double> &atol_v, const std::vector<char> *ask, bool at_root,
+    std::vector<double> *band_out, std::vector<std::array<double, 3>> *last_seen, bool *pending) {
+    auto &eval = model.evaluator();
+    const auto n = static_cast<std::size_t>(ns);
+    const std::vector<double> here(x, x + ns);
+    std::vector<double> f_here(n, 0.0);
+    // Three hairs and one hair short of the surface, and one and three past it.
+    std::vector<double> x_at[4];
+    std::vector<double> f_at[4];
+    for (auto &f : f_at) {
+        f.assign(n, 0.0);
+    }
+    std::vector<double> gx;
+    sync_model_at(t, x, ns);
+    model.compute_derivs(t, x, f_here.data());
+    for (std::size_t which = 0; which < switches.size(); ++which) {
+        if (ask != nullptr && (*ask)[which] == 0) {
+            continue;
+        }
+        const NetworkModel::StateSwitch *sw = switches[which];
+        double scale = 0.0;
+        const double flow =
+            residual_flow(sw->residual_expr_idx, sw->species, t, ns, here, f_here, gx, scale);
+        const double g = eval.evaluate(sw->residual_expr_idx);
+        double band = 0.0;
+        double norm2 = 0.0;
+        double ulp = 0.0; // what one ulp of each species it reads moves the residual by
+        for (int j : sw->species) {
+            const auto uj = static_cast<std::size_t>(j);
+            const double atol_j = atol_v.empty() ? atol : atol_v[uj];
+            const double size = std::fabs(here[uj]);
+            band += std::fabs(gx[uj]) * (rtol * size + atol_j);
+            norm2 += gx[uj] * gx[uj];
+            ulp += std::fabs(gx[uj]) *
+                   (std::nextafter(size, std::numeric_limits<double>::infinity()) - size);
+        }
+        // What the tolerance allows the residual itself, before the band is
+        // made as wide as a creeping state can sit.
+        const double within = band;
+        band *= 10.0 * std::sqrt(static_cast<double>(ns));
+        // The side the state is on, or comes from where it is on the surface.
+        double side = g > 0.0 ? 1.0 : g < 0.0 ? -1.0 : 0.0;
+        if (side == 0.0) {
+            side = flow > 0.0 ? -1.0 : flow < 0.0 ? 1.0 : 0.0;
+        }
+        // A root has the state on the surface, whatever the tolerance.
+        const bool beside = at_root || (band > 0.0 && std::fabs(g) <= band);
+        // Kept wherever it was measured, beside the surface or not: a residual
+        // inside a tenth of its largest and outside its band was measured
+        // again at every asking, and 300 of them at rest a thousandth short of
+        // their thresholds took 72 times main's time on a grid of 10,001.
+        if (band_out != nullptr && std::isfinite(band) && band > 0.0) {
+            (*band_out)[which] = band;
+        }
+        // What the last asking saw of this switch, and what this one does:
+        // when, how far the residual was from zero, and, beside the surface,
+        // how fast the flow on this side was closing on it.
+        const double not_a_number = std::numeric_limits<double>::quiet_NaN();
+        const std::array<double, 3> seen_before =
+            last_seen != nullptr ? (*last_seen)[which]
+                                 : std::array<double, 3>{t, std::fabs(g), not_a_number};
+        const bool closing_in = std::isfinite(flow) && flow * side < 0.0;
+        if (last_seen != nullptr && std::isfinite(g)) {
+            (*last_seen)[which] = {t, std::fabs(g),
+                                   beside && closing_in ? std::fabs(flow) : not_a_number};
+        }
+        if (!std::isfinite(g) || !std::isfinite(flow) || !beside || !(norm2 > 0.0) ||
+            !(ulp > 0.0) || side == 0.0) {
+            continue; // not beside the surface
+        }
+        // The four states, by moving the species the residual reads along its
+        // gradient until it reads `target`: a hair is a few ulp of the
+        // residual, and more where rounding leaves a state on the wrong side.
+        // Much more, where the residual rounds by far more than the species
+        // it reads do: `exp(S) < 1` with S at 1e-6 moves in ulps of 1, which
+        // is 1e6 ulps of S, so the hair is widened eight times at a time
+        // until the four states read on their own sides.
+        // By Newton's steps, because the residual need not be a line:
+        // `exp(S) < lvl` at a loose tolerance is a band from its surface, and
+        // one step along the slope there lands on the wrong side of it.
+        double delta = kStateSwitchSlideUlps * ulp;
+        auto place = [&](double target, std::vector<double> &out) {
+            out = here;
+            double g_now = g;
+            for (int pass = 0; pass < 4; ++pass) {
+                for (int j : sw->species) {
+                    const auto uj = static_cast<std::size_t>(j);
+                    out[uj] += (target - g_now) * gx[uj] / norm2;
+                }
+                sync_model_at(t, out.data(), ns);
+                g_now = eval.evaluate(sw->residual_expr_idx);
+                if (std::fabs(g_now - target) <= 0.25 * delta) {
+                    break;
+                }
+            }
+            return g_now;
+        };
+        bool reached = false;
+        double g_at[4] = {0.0, 0.0, 0.0, 0.0};
+        for (int attempt = 0; attempt < kStateSwitchSlideWidenings && !reached; ++attempt) {
+            if (attempt > 0) {
+                delta *= 8.0;
+            }
+            const double target[4] = {3.0 * delta * side, delta * side, -delta * side,
+                                      -3.0 * delta * side};
+            for (int k = 0; k < 4; ++k) {
+                g_at[k] = place(target[k], x_at[k]);
+            }
+            reached = g_at[1] * side > 0.0 && g_at[0] * side > g_at[1] * side &&
+                      g_at[2] * side < 0.0 && g_at[3] * side < g_at[2] * side;
+        }
+        if (!reached) {
+            continue;
+        }
+        // The residual's flow at each, with the gradient the state itself was
+        // read with: the four are a hair from it, and a gradient taken again
+        // at one of them is a difference over a millionth of a species that
+        // the hair has put at 1e-15.
+        double along_time = flow;
+        for (int j : sw->species) {
+            const auto uj = static_cast<std::size_t>(j);
+            along_time -= gx[uj] * f_here[uj];
+        }
+        double flow_at[4] = {0.0, 0.0, 0.0, 0.0};
+        double scale_at[4] = {0.0, 0.0, 0.0, 0.0};
+        for (int k = 0; k < 4; ++k) {
+            model.compute_derivs(t, x_at[k].data(), f_at[k].data());
+            flow_at[k] = along_time;
+            scale_at[k] = std::fabs(along_time);
+            for (int j : sw->species) {
+                const auto uj = static_cast<std::size_t>(j);
+                flow_at[k] += gx[uj] * f_at[k][uj];
+                scale_at[k] += std::fabs(gx[uj] * f_at[k][uj]);
+            }
+        }
+        // A slide is a residual whose flow is FINITE at its surface on both
+        // sides: toward the surface on this side, and back on the other. Two
+        // things look like one from the signs a hair away. A rate law that is
+        // continuous there brings a state to rest on the surface, with a flow
+        // that points in from both sides and runs out at it: a corpus model in
+        // the signed-rate idiom settles on its own switch that way, however
+        // much steeper one side is than the other. And a species that relaxes
+        // to a level which is the threshold, `V' = k_stim − k_leak·V` with
+        // `V < 50` gating some other rate and k_stim/k_leak = 50, comes to
+        // rest on a surface its own flow does not know is there: another
+        // corpus model. In both the flow passes through zero at the surface.
+        // So each side's flow is carried to the surface as a line through its
+        // two states, and has to keep at least half of itself there.
+        const double near_flow =
+            (flow_at[1] * g_at[0] - flow_at[0] * g_at[1]) / (g_at[0] - g_at[1]);
+        const double far_flow = (flow_at[2] * g_at[3] - flow_at[3] * g_at[2]) / (g_at[3] - g_at[2]);
+        // And the state has to be held. Inside the band is not on the
+        // surface: the band is as wide as a creeping state can sit from it,
+        // which goes with the root of the number of states and columns, and
+        // at a tolerance of a hundredth it is a quarter of the state. A state
+        // a twentieth short of a surface it has not reached has the flows of
+        // a slide at that surface. It is held where its residual has closed
+        // on the surface, since the run was last asked, at under a quarter of
+        // the rate its own flow closes at, then or now: a state on its way
+        // closes at that rate, and one that creeps does not close.
+        //
+        // Not by the time the flow at the surface would need: a flow that
+        // speeds up toward the surface read as there before it was, and one
+        // that slows read as never there.
+        //
+        // Or where the residual is inside what the tolerance allows it: the
+        // run cannot tell that state from one on the surface, and at a
+        // tolerance of a hundredth a creeping state moves about by enough,
+        // from one asking to the next, to read as closing.
+        bool held = last_seen == nullptr || std::fabs(g) <= within;
+        if (!held && closing_in && t > seen_before[0]) {
+            const double closed = (seen_before[1] - std::fabs(g)) / (t - seen_before[0]);
+            const double at_least = std::isnan(seen_before[2])
+                                        ? std::fabs(flow)
+                                        : std::min(seen_before[2], std::fabs(flow));
+            held = closed < kStateSwitchHeld * at_least;
+        }
+        const bool both_flows_in = std::isfinite(near_flow) && std::isfinite(far_flow) &&
+                                   near_flow * side < 0.0 && far_flow * side > 0.0 &&
+                                   std::fabs(near_flow) >= 0.5 * std::fabs(flow_at[1]) &&
+                                   std::fabs(far_flow) >= 0.5 * std::fabs(flow_at[2]) &&
+                                   std::fabs(near_flow) > kStateSwitchSlideRelTol * scale_at[1] &&
+                                   std::fabs(far_flow) > kStateSwitchSlideRelTol * scale_at[2];
+        // The flows of a slide and a state not yet seen to be held: asked
+        // again after the next step, so that a slide that begins a few steps
+        // before the run ends is seen. At a loose tolerance a few steps are a
+        // tenth of a time unit.
+        if (both_flows_in && !held && pending != nullptr) {
+            *pending = true;
+        }
+        if (held && both_flows_in) {
+            sync_model_at(t, x, ns);
+            std::ostringstream msg;
+            msg << "Forward sensitivity: at t=" << t
+                << " the state is held on the surface of a state-dependent rate-law switch "
+                   "(residual '"
+                << sw->residual_source
+                << "'), with the flow on each side pointing into it: it slides along the "
+                   "switching surface, on neither branch of the rate law. The sensitivity along "
+                   "a slide is not the sensitivity of either branch, and bngsim refuses rather "
+                   "than integrate one of them (issue #926). Drop sensitivities for this run, or "
+                   "write the held value as an algebraic constraint.";
+            throw std::runtime_error(msg.str());
+        }
+    }
+    sync_model_at(t, x, ns);
+}
+
 // ─── A run pinned on a state-switch surface (issue #928) ────────────────────
 //
 // A run without sensitivities restarts at a state-switch root only where the
@@ -7608,10 +8149,24 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(void *cvode_mem, double t, 
 // where the flow on the far side carries on away from the surface: one that
 // points back is a slide along it (#926), which this leaves as it found it.
 static constexpr double kStalledSwitchUlps = 16.0;
+// How many steps a residual has to be seen pinned over before a run that
+// carries sensitivities is ended for it.
+static constexpr long kStalledRefuseSteps = 200;
+// The batch of steps a run that carries sensitivities through state switches
+// is taken in, to be asked about them after each (issues #926, #952), and how
+// many go by between two askings at output points. One asking reads every
+// residual, and after every step that was 2.8 times main's time for a model
+// of 300 switches. At a tolerance of a thousandth 50 steps are two units of
+// time, which a state can spend on a surface and the run end before it is
+// asked.
+static constexpr long kWatchSteps = 8;
 
 bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     void *cvode_mem, double t, double t_batch, N_Vector y, int ns,
-    const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since) {
+    const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since,
+    bool refuse, std::vector<long> *since_steps, const std::vector<char> *ask) {
+    long steps_now = 0;
+    CVodeGetNumSteps(cvode_mem, &steps_now);
     double *y_data = N_VGetArrayPointer(y);
     const std::vector<double> x(y_data, y_data + ns);
     sunrealtype h_next = 0.0;
@@ -7635,6 +8190,10 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     std::vector<double> xb(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> fb(static_cast<std::size_t>(ns), 0.0);
     for (std::size_t k = 0; k < switches.size(); ++k) {
+        if (ask != nullptr && (*ask)[k] == 0) {
+            since[k] = std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
         const NetworkModel::StateSwitch *sw = switches[k];
         double scale = 0.0;
         const double flow =
@@ -7667,6 +8226,9 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         // residual here, for as long as every batch since has.
         if (std::isnan(since[k])) {
             since[k] = t_batch;
+            if (since_steps != nullptr) {
+                (*since_steps)[k] = steps_now;
+            }
         }
         if (!(std::fabs(flow) * (t - since[k]) >= std::fabs(g) + reach)) {
             continue; // the flow would not have brought it across yet
@@ -7692,11 +8254,41 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         if (!(at_surface * one.dir >= 0.5 * std::fabs(flow))) {
             continue; // it runs out before the surface: the state is coming to rest
         }
+        // A run is ended for it only once it has stayed there. A crossing the
+        // steps do make passes through all of the above on its way: at a tight
+        // tolerance the step that takes the rate law's jump is as short as
+        // this, for a step or two, and then the state is across. A plain run
+        // put across a step early loses nothing. A run with sensitivities
+        // would have been refused a crossing it was about to make.
+        if (refuse && since_steps != nullptr &&
+            steps_now - (*since_steps)[k] < kStalledRefuseSteps) {
+            continue;
+        }
         stalled.push_back(std::move(one));
     }
     sync_model_at(t, x.data(), ns);
     if (stalled.empty()) {
         return false;
+    }
+    if (refuse) {
+        // A run that carries sensitivities has a jump to apply at this
+        // crossing, taken from a trajectory that crosses it. This one does
+        // not: the state is held an ulp short while the time runs on, and the
+        // run returned with the switch not taken and a column of zeros
+        // (issue #952). Put across by hand, as a plain run is, there would be
+        // no crossing time to move with the parameters.
+        std::ostringstream msg;
+        msg << "Forward sensitivity: at t=" << t
+            << " the state is held within a few ulp of the surface of a state-dependent "
+               "rate-law switch (residual '"
+            << stalled.front().sw->residual_source
+            << "') that it approaches too slowly for any step to carry it across: the step "
+               "that moves the threshold species by one ulp fails its error test on the rate "
+               "law's jump. The crossing is not resolved, so there is no crossing time for the "
+               "sensitivities to move with, and bngsim refuses rather than return with the "
+               "switch not taken (issue #952). A plain run is carried across; drop "
+               "sensitivities for this run, or loosen the tolerances.";
+        throw std::runtime_error(msg.str());
     }
     std::vector<double> xc(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> f1(static_cast<std::size_t>(ns), 0.0);
@@ -8374,6 +8966,12 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         std::vector<double> gross;  // the largest gross flux of the four
         bool jumps = false;         // a branch change above the drive tolerance
         bool must_agree = false;    // and above that flux's own rounding
+        // Its branch change as the probes along the flow give it, and as its
+        // two branches read at one state give it, with what that reading
+        // allows (issue #917). The second is empty where it was not taken.
+        std::vector<double> along;
+        std::vector<double> at_one_state;
+        std::vector<double> allowed;
     };
     std::vector<Reader> readers;
     std::vector<std::size_t> reader_batch_idx;
@@ -8767,21 +9365,225 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             const double step = 2.0 * dt * quantum / std::fabs(one.g_hi - one.g_lo);
             return std::isfinite(step) ? std::min(step, dt) : dt;
         };
+        // `one`'s reactions' flux at a state along the flow.
+        auto flux_at = [&](const Reader &one, const std::vector<double> &state, double t,
+                           std::vector<double> &out) {
+            sync(state, t);
+            out.assign(n_sp, 0.0);
+            model.compute_flux_split(t, state.data(), one.rxns, out.data(), nullptr);
+        };
+        // `one`'s two branches read at one state (issue #917): the state on its
+        // surface, with only the species its residual reads moved a few ulp to
+        // either side. `apart` is what its reactions' flux differs by between
+        // the two, and `allowed` is what that may be without a step.
+        struct Sides {
+            int read = -1;       // 1 where both sides were reached, 0 where not, −1 not asked
+            bool treads = false; // the staircase has been looked for
+            double t_on = 0.0;
+            double steps = 0.0;  // how many ulp each side is from the surface
+            double before = 1.0; // the residual's sign before the crossing
+            std::vector<double> on;
+            std::vector<double> ulp;
+            std::vector<double> flux[2]; // before, after
+            std::vector<double> further[2];
+            std::vector<double> apart;
+            std::vector<double> allowed;
+            // The part of `allowed` that is the rounding of the two readings.
+            std::vector<double> rounding;
+            // The same difference with each side carried to the surface along
+            // its own slope first.
+            std::vector<double> step;
+        };
+        // `one`'s flux with the residual's species `by` ulp to side `k` of the
+        // surface.
+        auto moved_out = [&](const Reader &one, const Sides &a, int k, double by,
+                             std::vector<double> &out) {
+            const double sign = k == 0 ? a.before : -a.before;
+            xw = a.on;
+            for (std::size_t i = 0; i < one.sw->species.size(); ++i) {
+                const auto uj = static_cast<std::size_t>(one.sw->species[i]);
+                xw[uj] = a.on[uj] + sign * by * a.ulp[i];
+            }
+            flux_at(one, xw, a.t_on, out);
+        };
+        // True where the two sides could be reached by moving those species.
+        auto read_apart = [&](const Reader &one, Sides &a) {
+            if (a.read >= 0) {
+                return a.read == 1;
+            }
+            a.read = 0;
+            const int gidx = one.sw->residual_expr_idx;
+            a.t_on = t_evt + one.root;
+            a.on.assign(n_sp, 0.0);
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                a.on[u] = x[u] + one.root * f0[u];
+            }
+            sync(a.on, a.t_on);
+            const double g_on = eval.evaluate(gidx);
+            // One ulp of each species the residual reads, signed by the way it
+            // moves the residual, and what all of them together move it by.
+            a.ulp.assign(one.sw->species.size(), 0.0);
+            double ulp_g = 0.0;
+            std::vector<double> state(a.on);
+            for (std::size_t i = 0; i < one.sw->species.size(); ++i) {
+                const auto uj = static_cast<std::size_t>(one.sw->species[i]);
+                const double size = std::fabs(a.on[uj]);
+                const double own =
+                    std::nextafter(size, std::numeric_limits<double>::infinity()) - size;
+                // The way it moves the residual, over a step wide enough to
+                // show it where the residual rounds as a staircase.
+                const double wide = std::max(1e-6 * size, 4096.0 * own);
+                state[uj] = a.on[uj] + wide;
+                sync(state, a.t_on);
+                const double up = eval.evaluate(gidx);
+                state[uj] = a.on[uj] - wide;
+                sync(state, a.t_on);
+                const double down = eval.evaluate(gidx);
+                state[uj] = a.on[uj];
+                const double slope = (up - down) / (2.0 * wide);
+                if (!std::isfinite(slope) || slope == 0.0) {
+                    continue;
+                }
+                a.ulp[i] = slope > 0.0 ? own : -own;
+                ulp_g += std::fabs(slope) * own;
+            }
+            a.before = one.g_lo > 0.0 ? 1.0 : -1.0;
+            bool reached = false;
+            if (std::isfinite(g_on) && ulp_g > 0.0) {
+                double out_by = kStateSwitchApartUlps;
+                for (int attempt = 0; attempt < 4 && !reached; ++attempt, out_by *= 4.0) {
+                    a.steps = std::fabs(g_on) / ulp_g + out_by;
+                    double g_side[2] = {0.0, 0.0};
+                    for (int k = 0; k < 2; ++k) {
+                        const double sign = k == 0 ? a.before : -a.before;
+                        for (std::size_t i = 0; i < one.sw->species.size(); ++i) {
+                            const auto uj = static_cast<std::size_t>(one.sw->species[i]);
+                            state[uj] = a.on[uj] + sign * a.steps * a.ulp[i];
+                        }
+                        sync(state, a.t_on);
+                        g_side[k] = eval.evaluate(gidx);
+                    }
+                    reached = g_side[0] * a.before > 0.0 && g_side[1] * a.before < 0.0;
+                }
+            }
+            if (!reached) {
+                sync(x, t_evt);
+                return false;
+            }
+            // What the flux does on its own over as far again, on each side:
+            // a term that reads the residual's species moves with them, and a
+            // step is what it does not do there.
+            for (int k = 0; k < 2; ++k) {
+                moved_out(one, a, k, a.steps, a.flux[k]);
+                moved_out(one, a, k, 3.0 * a.steps, a.further[k]);
+            }
+            a.apart.assign(n_sp, 0.0);
+            a.allowed.assign(n_sp, 0.0);
+            a.rounding.assign(n_sp, 0.0);
+            a.step.assign(n_sp, 0.0);
+            for (std::size_t u = 0; u < n_sp; ++u) {
+                a.apart[u] = a.flux[0][u] - a.flux[1][u];
+                a.step[u] = (1.5 * a.flux[0][u] - 0.5 * a.further[0][u]) -
+                            (1.5 * a.flux[1][u] - 0.5 * a.further[1][u]);
+                a.rounding[u] = kStateSwitchExtendedRoundoff *
+                                std::numeric_limits<double>::epsilon() *
+                                std::max(std::fabs(a.flux[0][u]), std::fabs(a.flux[1][u]));
+                a.allowed[u] =
+                    a.rounding[u] +
+                    kStateSwitchBend * std::max(std::fabs(a.further[0][u] - a.flux[0][u]),
+                                                std::fabs(a.further[1][u] - a.flux[1][u]));
+            }
+            sync(x, t_evt);
+            a.read = 1;
+            return true;
+        };
+        // A side that reads the same further out is constant there, or it is
+        // on one tread of a staircase: `s() + off − thr` with `s() = B − off`
+        // moves in steps of an ulp of `off`, and the first tread past the
+        // surface is what the two sides differ by. It is followed out to where
+        // it moves, and it has to move again to count: a flux that has moved
+        // once and is no further on at three times the distance has met
+        // another switch of the same rate law.
+        auto allow_treads = [&](const Reader &one, Sides &a) {
+            a.treads = true;
+            std::vector<double> first;
+            std::vector<double> again;
+            for (int k = 0; k < 2; ++k) {
+                std::vector<std::size_t> flat;
+                for (std::size_t u = 0; u < n_sp; ++u) {
+                    if (a.apart[u] != 0.0 && a.flux[k][u] != 0.0 &&
+                        a.further[k][u] == a.flux[k][u]) {
+                        flat.push_back(u);
+                    }
+                }
+                double out_to = 12.0 * a.steps;
+                for (int doubling = 0; doubling < kStateSwitchTreadDoublings && !flat.empty();
+                     ++doubling, out_to *= 4.0) {
+                    moved_out(one, a, k, out_to, first);
+                    std::vector<std::size_t> stepped;
+                    for (auto it = flat.begin(); it != flat.end();) {
+                        if (first[*it] != a.flux[k][*it]) {
+                            stepped.push_back(*it);
+                            it = flat.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+                    if (stepped.empty()) {
+                        continue;
+                    }
+                    moved_out(one, a, k, 3.0 * out_to, again);
+                    for (std::size_t u : stepped) {
+                        const double tread = first[u] - a.flux[k][u];
+                        if ((again[u] - a.flux[k][u]) / tread >= 1.5) {
+                            a.allowed[u] =
+                                std::max(a.allowed[u], kStateSwitchBend * std::fabs(tread));
+                        }
+                    }
+                }
+            }
+            sync(x, t_evt);
+        };
+        // Written so that a NaN reads as a step.
+        auto no_step = [&](const Reader &one, Sides &a, std::size_t u) {
+            if (std::fabs(a.apart[u]) <= a.allowed[u]) {
+                return true;
+            }
+            if (!a.treads) {
+                allow_treads(one, a);
+            }
+            return std::fabs(a.apart[u]) <= a.allowed[u];
+        };
         for (Reader &r : readers) {
             const double root = dt * (r.g_lo + r.g_hi) / (r.g_lo - r.g_hi);
             r.root = std::isfinite(root) ? std::clamp(root, -dt, dt) : 0.0;
             const double w_lo = (r.root + dt) / dt;
             const double w_hi = (dt - r.root) / dt;
             double slack = -1.0; // root_step(r), found only if a species needs it
+            Sides sides;         // read_apart(r), likewise
+            r.along.assign(far_ok ? n_sp : 0, 0.0);
             for (std::size_t u = 0; u < n_sp; ++u) {
                 double change = r.net[1][u] - r.net[2][u];
+                // The drive tolerance is for the pair read as it stands, where
+                // a flux that vanishes on both branches differs across it by
+                // its slope times the crossing's speed. With both branches
+                // extended to the root that is out of the reading. Held to the
+                // drive there, a step of 3 under a threshold species moving at
+                // 5e6 read as continuous and its saltation term was dropped
+                // (issue #917).
+                double rounding = tol;
                 if (far_ok) {
                     const double before = r.net[1][u] + w_lo * (r.net[1][u] - r.net[0][u]);
                     const double after = r.net[2][u] + w_hi * (r.net[2][u] - r.net[3][u]);
                     change = before - after;
+                    r.along[u] = change;
+                    rounding = kStateSwitchExtendedRoundoff *
+                               std::numeric_limits<double>::epsilon() *
+                               std::max({std::fabs(r.net[0][u]), std::fabs(r.net[1][u]),
+                                         std::fabs(r.net[2][u]), std::fabs(r.net[3][u])});
                 }
                 // Written so that a NaN reads as a jump.
-                if (!(std::fabs(change) <= tol)) {
+                if (!(std::fabs(change) <= std::min(tol, rounding))) {
                     if (far_ok) {
                         if (slack < 0.0) {
                             slack = kStateSwitchRootSlack * root_step(r);
@@ -8789,7 +9591,39 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         const double kink =
                             std::fabs((r.net[1][u] - r.net[0][u]) - (r.net[3][u] - r.net[2][u])) /
                             dt;
+                        if (std::fabs(change) <= std::min(tol, rounding) + slack * kink) {
+                            continue;
+                        }
+                        // Between what the readings round by and the drive
+                        // tolerance, the two branches are read at one state,
+                        // and where they cannot be the reading stands as the
+                        // drive tolerance had it.
                         if (std::fabs(change) <= tol + slack * kink) {
+                            if (!read_apart(r, sides) || no_step(r, sides, u)) {
+                                continue;
+                            }
+                        } else if (read_apart(r, sides) &&
+                                   std::fabs(sides.apart[u]) <= sides.rounding[u] &&
+                                   std::fabs(sides.step[u]) <= tol) {
+                            // Past the drive tolerance it is a step, unless the
+                            // two branches at one state are the same to the
+                            // rounding of the two readings: what the probes
+                            // differ by is then not this switch's. A term
+                            // beside it that rounds as a staircase stepped
+                            // between them, and its tread went into the column
+                            // as a jump (−2029.6 for 4.42).
+                            //
+                            // To their rounding and to no more. What the flux
+                            // does on its own further out is no measure here:
+                            // a second switch of the same rate law 17 to 48
+                            // ulp away is in that reading, and a staircase
+                            // that reads the threshold species puts a tread
+                            // between the two sides. Each took a jump just
+                            // past the tolerance back, where main reads it or
+                            // refuses the pair. The same with each side
+                            // carried to the surface along its own slope,
+                            // against a steep term that takes the jump out of
+                            // the difference as it stands.
                             continue;
                         }
                     }
@@ -8799,6 +9633,13 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         !(std::fabs(change) <= std::numeric_limits<double>::epsilon() *
                                                    kStateSwitchAgreeRoundoff * r.gross[u]);
                 }
+            }
+            if (r.jumps && sides.read == 1) {
+                if (!sides.treads) {
+                    allow_treads(r, sides);
+                }
+                r.at_one_state = sides.step;
+                r.allowed = sides.allowed;
             }
             continuous = continuous && !r.jumps;
         }
@@ -8876,6 +9717,26 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // and the resumed integration must not see the nudge.
     sync(x, t_evt);
 
+    // ── A slide along the surface (issue #926) ───────────────────────────────
+    // The rate law jumps here. One that reverses across its own surface,
+    // `if(S < 1, amp, -amp)`, has a flow on the far side that points back: the
+    // state cannot leave the surface on either side, and slides along it on
+    // neither branch. There is no crossing to add a saltation term at, and each
+    // step after it lands on one branch or the other and integrates that
+    // branch's ∂f/∂p. dS/damp came back 1.5 where S is held at 1 whatever amp
+    // is, with no warning.
+    //
+    // So the surface is read here as it is where no root is reported: the
+    // residual's flow at two states a few ulp short of the surface and at two
+    // past it, each side carried to the surface as a line. A slide is a flow
+    // that is still arriving on this side and still pointing back on the
+    // other. One that runs out at the surface is a tangency, which is judged
+    // below, or a state at rest on a switch that is continuous there: a
+    // corpus model in the signed-rate idiom settles on its own switch that
+    // way, and its columns are right.
+    refuse_slide_along_state_switch(t_evt, x.data(), ns, batch, 0.0, 0.0, {}, nullptr, true);
+    sync(x, t_evt);
+
     auto subject_of = [](const NetworkModel::StateSwitch &one) {
         return "the state-dependent rate-law condition with residual '" + one.residual_source +
                "' crosses";
@@ -8910,6 +9771,35 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             change[u] -= 2.0 * f_plus[u] - f_far[u];
         }
         sync(x, t_evt);
+    }
+    // Issue #917: the difference above is everything the right-hand side does
+    // between the probes, and the jump is one switch's. A term beside the
+    // switch that rounds as a staircase steps between them, and its tread was
+    // added to the jump: with `kbig·(sP() + off − Q) + if(B < thr, kb, 0)` and
+    // kb = 3, dY/dkdeg came back −1826 for 207.9. Where one reader jumps and
+    // its two branches were read at one state, and the two readings of its
+    // branch change differ by more than that reading allows, the jump is the
+    // one read at one state. Where they agree it stays as it was.
+    if (judge != Judge::Legacy) {
+        const Reader *only = nullptr;
+        int jumping = 0;
+        for (const Reader &r : readers) {
+            if (r.jumps) {
+                ++jumping;
+                only = &r;
+            }
+        }
+        if (jumping == 1 && !only->at_one_state.empty() && !only->along.empty()) {
+            bool beside = false;
+            for (std::size_t u = 0; u < n_sp && !beside; ++u) {
+                beside = std::fabs(only->along[u] - only->at_one_state[u]) >
+                         kStateSwitchContinuousRelTol * std::fabs(only->at_one_state[u]) +
+                             only->allowed[u];
+            }
+            if (beside) {
+                change = only->at_one_state;
+            }
+        }
     }
 
     // ── One crossing time, or several? (issue #153) ──────────────────────────
@@ -9537,6 +10427,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // count of failed error tests when the residuals were last read.
     std::vector<double> state_switch_pinned_since;
     long state_switch_pinned_fails = 0;
+    // The run's count of steps when each residual was first seen pinned.
+    std::vector<long> state_switch_pinned_steps;
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
     impl_->state_switch_consumed.clear();
@@ -10496,6 +11388,140 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     size_t next_floor_time = 0;
     int floor_single_steps = 0;
 
+    // ─── Watching the state switches of a run with sensitivities ─────────────
+    // (issues #926, #952)
+    //
+    // A state that slides along a switching surface, or is pinned an ulp short
+    // of one, reports no root: the steps that would cross are rejected for the
+    // rate law's jump, and the run creeps on with its columns on one branch.
+    // Asking after a whole batch of steps is not asking: a batch is 10000
+    // steps, and an ordinary output grid ends its intervals long before one is
+    // spent, so dS/damp came back 1.5 for 0 from 101 points. Nor does a creep
+    // announce itself by failed steps: at a tight tolerance it settles into
+    // steps of 1e-9 that pass every test.
+    //
+    // So such a run is taken in batches of 8 steps, which changes no step,
+    // and is asked after each. CVODE counts a batch from each call, and a
+    // dense grid ends every call before 8 are spent, so the run's own count
+    // of steps is kept: it is asked wherever 8 have gone by since it last
+    // was, at the last output point where any has, and after every step
+    // while a switch has the flows of a slide and a state beside it that is
+    // not yet seen to be held.
+    //
+    // One sync reads every residual. The surface itself is read only for a
+    // residual inside four times the tolerance's band of its surface as it
+    // was last measured, or within a tenth of the largest it has been where
+    // the band has not been measured yet, and for all of them at the first
+    // asking and once in 64 after it, which is what holds the cost where a
+    // model has hundreds of switches.
+    //
+    // CVODE logs the end of a batch as an error, one line each. The run's
+    // error log goes to the null sink with its warnings: a failure still
+    // throws, through the flag < 0 checks, with bngsim's own account of it.
+    const bool watch = sens.n_total != 0 && n_state_switch > 0;
+    const long watch_batch = std::min<long>(static_cast<long>(max_steps), kWatchSteps);
+    // A switch whose surface has the flows of a slide and whose state is
+    // beside it and not yet seen to be held: the run is asked after every
+    // step until it is one or the other.
+    bool watch_pending = false;
+    // The first asking is for every switch, so that each has its band from
+    // the start: a state that begins inside the band of a surface is no
+    // nearer it than it has ever been, and was never read.
+    int watch_askings = 63;
+    long watch_steps_asked = 0; // CVODE's count of steps when the run was last asked
+    std::vector<double> watch_largest;
+    std::vector<double> watch_band;
+    std::vector<char> watch_ask;
+    // For each switch, what the last asking saw: when, how far the residual
+    // was from zero, and how fast this side's flow was closing on the surface
+    // (not a number where the state was not beside it).
+    std::vector<std::array<double, 3>> watch_seen;
+    if (watch) {
+        CVodeSetMaxNumSteps(cvode_mem, watch_batch);
+        SUNLogger logger = nullptr;
+        if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
+            SUNLogger_SetErrorFilename(logger, bngsim::null_device);
+        }
+        // The largest each residual has been starts from where the run does,
+        // not from the first asking: a state that starts a little short of a
+        // surface is nearer it by then.
+        const size_t n_sw = state_switches.size();
+        watch_largest.assign(n_sw, 0.0);
+        watch_band.assign(n_sw, 0.0);
+        watch_seen.assign(
+            n_sw, {static_cast<double>(t_now), 0.0, std::numeric_limits<double>::quiet_NaN()});
+        impl_->sync_model_at(static_cast<double>(t_now), N_VGetArrayPointer(y), ns);
+        for (size_t k = 0; k < n_sw; ++k) {
+            const double g =
+                std::fabs(model.evaluator().evaluate(state_switches[k]->residual_expr_idx));
+            if (g > watch_largest[k]) {
+                watch_largest[k] = g;
+            }
+            if (std::isfinite(g)) {
+                watch_seen[k][1] = g;
+            }
+        }
+    }
+    auto watch_state_switches = [&](double t, double t_from) {
+        const double *x = N_VGetArrayPointer(y);
+        const size_t n_sw = state_switches.size();
+        CVodeGetNumSteps(cvode_mem, &watch_steps_asked);
+        watch_ask.assign(n_sw, 0);
+        const bool all = ++watch_askings >= 64;
+        if (all) {
+            watch_askings = 0;
+        }
+        impl_->sync_model_at(t, x, ns);
+        bool any = false;
+        for (size_t k = 0; k < n_sw; ++k) {
+            const double g =
+                std::fabs(model.evaluator().evaluate(state_switches[k]->residual_expr_idx));
+            if (g > watch_largest[k]) {
+                watch_largest[k] = g;
+            }
+            // Written so that a residual that is not a number is read.
+            const bool beside =
+                watch_band[k] > 0.0 ? !(g > 4.0 * watch_band[k]) : !(g > 0.1 * watch_largest[k]);
+            if (all || beside) {
+                watch_ask[k] = 1;
+                any = true;
+            } else if (std::isfinite(g)) {
+                watch_seen[k] = {t, g, std::numeric_limits<double>::quiet_NaN()};
+            }
+        }
+        bool pending = false;
+        if (any) {
+            impl_->refuse_slide_along_state_switch(t, x, ns, state_switches, rtol, atol, atol_v,
+                                                   &watch_ask, false, &watch_band, &watch_seen,
+                                                   &pending);
+        }
+        if (pending != watch_pending) {
+            watch_pending = pending;
+            CVodeSetMaxNumSteps(cvode_mem, pending ? 1 : watch_batch);
+        }
+        if (!any) {
+            return;
+        }
+        state_switch_pinned_since.resize(n_sw, std::numeric_limits<double>::quiet_NaN());
+        state_switch_pinned_steps.resize(n_sw, 0);
+        // Ends the run where the state is pinned (issue #952); false otherwise.
+        impl_->carry_across_stalled_state_switch(cvode_mem, t, t_from, y, ns, state_switches,
+                                                 state_switch_pinned_since, true,
+                                                 &state_switch_pinned_steps, &watch_ask);
+    };
+    // Asked where `every` steps have gone by since it last was. CVODE's count
+    // starts again where the run is restarted.
+    auto watch_after = [&](long every, double t, double t_from) {
+        long steps = 0;
+        CVodeGetNumSteps(cvode_mem, &steps);
+        if (steps < watch_steps_asked) {
+            watch_steps_asked = 0;
+        }
+        if (steps - watch_steps_asked >= (watch_pending ? 1 : every)) {
+            watch_state_switches(t, t_from);
+        }
+    };
+
     for (int i = 1; i < n_out; ++i) {
         // Loop until we've reached t_out[i] (within numerical tolerance).
         while (true) {
@@ -10782,6 +11808,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // lands exactly on the crossing.
             const bool one_step = step_for_floor && !stop_at_switch;
             sunrealtype t_ret;
+            long steps_at_call = 0;
+            if (watch) {
+                CVodeGetNumSteps(cvode_mem, &steps_at_call);
+            }
             flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
 
             // Issue #928: a whole batch of steps spent pinned on a state-switch
@@ -10790,7 +11820,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // each batch it spends.
             bool carried = false;
             auto carry_if_pinned = [&](double t_batch) {
-                if (sens.n_total != 0 || n_state_switch == 0) {
+                if (n_state_switch == 0) {
+                    return false;
+                }
+                if (sens.n_total != 0) {
+                    // A run that carries sensitivities is not put across: it
+                    // is refused where it slides (issue #926) or is pinned
+                    // (issue #952), and goes on otherwise.
+                    watch_state_switches(static_cast<double>(t_ret), t_batch);
                     return false;
                 }
                 // A pinned state is one a step has just failed its error test
@@ -10806,7 +11843,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                  std::numeric_limits<double>::quiet_NaN());
                 carried = impl_->carry_across_stalled_state_switch(
                     cvode_mem, static_cast<double>(t_ret), t_batch, y, ns, state_switches,
-                    state_switch_pinned_since);
+                    state_switch_pinned_since, false);
                 return carried;
             };
             if (flag == CV_TOO_MUCH_WORK) {
@@ -10828,7 +11865,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         if (budget.active())
                             budget.check();
                     },
-                    carry_if_pinned);
+                    carry_if_pinned, watch ? static_cast<long>(max_steps) : 0L, steps_at_call);
             }
             if (carried) {
                 std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
@@ -10876,6 +11913,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     next_floor_time = floor_times.size();
                     continue;
                 }
+                // A step at a time ends no batch, so the watch counts its own:
+                // a state that starts empty keeps the ladder going for most of
+                // a run.
+                if (watch) {
+                    watch_after(watch_batch, static_cast<double>(t_ret), t_before_step);
+                }
                 bool crossed = false;
                 while (next_floor_time < floor_times.size() &&
                        floor_times[next_floor_time] <= static_cast<double>(t_ret) + 1e-15) {
@@ -10888,6 +11931,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                     user_data, sens, ns);
                 }
                 continue;
+            }
+
+            // An output point: asked where a few steps have gone by, and at
+            // the run's last one where any has, so that a run of fewer steps
+            // than a batch is asked before it returns.
+            if (watch && flag == CV_SUCCESS) {
+                watch_after(i + 1 == n_out ? 1 : kWatchSteps, static_cast<double>(t_ret),
+                            t_before_step);
             }
 
             // ─── Event handling: CV_ROOT_RETURN ───────────────────────────────
