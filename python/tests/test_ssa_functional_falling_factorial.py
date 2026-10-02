@@ -397,7 +397,11 @@ def test_a_conversion_factor_scales_the_change_not_the_pairs():
     for n in (1, 2, 3):
         got = m.propensities([n / v, 0.0])[0]
         assert got == pytest.approx(k * n * (n - 1) / v, rel=1e-14, abs=0.0), (n, got)
-    r = bngsim.Simulator(m, method="ssa").run(t_span=(0, 1e4), n_points=2, seed=2)
+    # A cf other than 1 is refused under SSA (its noise is wrong); the pair
+    # count is what this checks, so the run opts out of the refusal.
+    r = bngsim.Simulator(m, method="ssa", strict_ssa=False).run(
+        t_span=(0, 1e4), n_points=2, seed=2
+    )
     a = np.asarray(r.species)[-1, list(r.species_names).index("A")] * v
     assert a == 1.0  # one A left, which cannot pair
 
