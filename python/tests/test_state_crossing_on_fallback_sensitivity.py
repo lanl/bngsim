@@ -408,6 +408,21 @@ def test_a_sign_written_as_a_quotient_is_refused(tmp_path, case):
     _refused_run(model, ["k"])
 
 
+def test_a_sign_of_a_counter_nothing_moves_runs(tmp_path):
+    """Control. A is made at a rate of 1 and only kb is requested: A is a
+    clock, read at the same value in both terms of the quotient, and the
+    sign of ``Aobs − thr`` flips at an instant no column moves.
+    Y = kb·(T − 3.4)."""
+    law = "kb*(1+(Aobs-thr)/abs(Aobs-thr))/2"
+    sim = bngsim.Simulator(
+        _wider(tmp_path, law, decays=False), method="ode", sensitivity_params=["kb"]
+    )
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), 0]
+    assert got == pytest.approx(T_END - 3.4, rel=1e-4)
+
+
 def test_a_sign_of_the_time_that_a_requested_parameter_moves_is_refused(tmp_path):
     """``(time() − tau)/abs(time() − tau)`` with tau requested: nothing stops
     at tau and nothing holds it while the quotient is taken. dY/dtau came
@@ -498,6 +513,25 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         ("kb*X*(pos-3)/abs(pos-3)", False),
         # A sum that the choice is in is not asked about.
         ("kb*X/(abs(X)+0*Y)", False),
+        # Nothing is assumed of the state: X + pos is not known to be above 0.
+        ("kb*Y/max(X+pos,0)", True),
+        ("kb*Y/max(pos-X,0)", True),
+        ("kb*Y/max(pos*X,0)", True),
+        ("kb*Y/max(pos/X,0)", True),
+        ("kb*Y/max(X^3,0)", True),
+        ("kb*X/max(Y^3+pos,X)", True),
+        ("kb*X/min(X,pos)", True),
+        ("kb*X/max(-pos,X)", True),
+        ("kb*X/max(if(Y>1,pos,X),X)", True),
+        # What is known above 0: an even power, a magnitude and an
+        # exponential beside a number above 0, and a choice between two such.
+        ("kb*X/max(Y^2+pos,X)", False),
+        ("kb*X/max(pos+abs(Y),X)", False),
+        ("kb*X/max(exp(Y),X)", False),
+        ("kb*X/max(if(Y>1,pos,2),X)", False),
+        # Through the numerator of a quotient, and through a sign.
+        ("kb*X/(abs(X)/pos)", True),
+        ("kb*X/(-abs(X))", True),
     ],
 )
 def test_which_quotient_is_named(law, found):

@@ -370,28 +370,28 @@ looser the tolerance.
 A time course on the fallback is therefore refused, before it starts, for a
 model with (issues #938, #932):
 
-- a rate-law condition that reads the state, `if(X < thr, kb, 0)`, unless the
-  rate law is continuous wherever the condition flips. A ramp from the threshold,
-  `if(X < thr, kb*(thr - X), 0)`, and a signed rate, `if(v < 0, -v/max(X, 0.01), 0)`,
-  are bends, and the quotient is right across a bend;
-- an `abs`, `max` or `min` the rate law jumps across, `(thr - X)/abs(thr - X)`.
-  One it only bends across, `kc*max(X, 0.5)`, runs;
+- a rate-law condition that reads the state, `if(X < thr, kb, 0)`, whatever the
+  law does where the condition flips;
+- a sign or a step written by dividing by an `abs`, `max` or `min` where it is 0,
+  or by what it flips on: `(thr - X)/abs(thr - X)`, `max(X - thr, 0)/(X - thr)`;
 - a condition on a counter species that a requested column moves;
 - a step call on the state, `floor(X)`, or a table function read as a step and
   indexed by an observable or by a function;
 - a step call on time, or on a counter nothing moves, whose argument reads a
   requested parameter, `floor(time()/P)` with `P` requested.
 
-Whether a law bends or jumps is asked of its text before the run, at the values
-the parameters have, and asked again when one of them is changed. Every other
-choice in the law (`max`, `min`, `abs`, another condition) is taken either way,
-so a bend that depends on one is refused all the same: a clamp written as
-`if(X > 0, if(X < n, X, n), 0)`. Written as `max(0, min(X, n))` it runs. A
-concentration is taken to stay above 0: `if(S > 0, Vm*Q/S, 0)` runs.
+The refusal goes by what the rate laws' text says and by the sign of each
+parameter. Nothing is evaluated, so it costs the same before every run, and it
+does not tell a law that jumps where its condition flips from one that only
+bends there: `if(X < thr, kb*(thr - X), 0)` is refused, though the quotient is
+right across a bend. Write a bend with `max` or `min`, which are continuous by
+what they are and run: `kb*max(thr - X, 0)`, `max(0, min(X, n))`,
+`v/max(X, 0.01)`.
 
 A condition on literal time runs, and so does a steady-state solve. What the
-scan does not see is a jump written through a root or a power with no
-condition, `sqrt(X*X)/X`, and a threshold outside 1e-300 to 1e300.
+scan does not see is a jump written with no condition and not as one of the
+quotients above: `sqrt(X*X)/X`, `tanh(1e9*(X - thr))`, and a pole cut off on
+both sides, `min(max(k/(X - thr), -5), 5)`.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 
