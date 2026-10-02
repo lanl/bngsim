@@ -82,6 +82,53 @@ def test_a_reversible_law_not_proven_non_negative_is_still_refused(law):
 
 
 @pytest.mark.parametrize(
+    "extra",
+    [
+        "species S in c = 2; S' = -1;",  # a rate rule drives it negative
+        "species S in c = 2; E1: at time >= 1: S = -5;",  # an event writes it
+        "species $S in c = -3;",  # it starts negative
+        "compartment c2 = 2; c2' = -1; species S in c2 = 1;",
+    ],
+)
+def test_a_species_that_can_go_negative_is_not_taken_for_non_negative(extra):
+    text = NET_FLUX + f" {extra} J1: A -> B; c*(kf*A + S);"
+    assert _errors(text) & {"reversible_non_mass_action", "variable_compartment_read"}
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "species S in c = 2; S' = 0.5;",  # a rate rule that only adds
+        "species S in c = 2; E1: at time >= 1: S = 5;",  # an event that writes a positive
+    ],
+)
+def test_a_species_kept_non_negative_by_what_writes_it_is(extra):
+    text = NET_FLUX + f" {extra} J1: A -> B; c*(kf*A + S);"
+    assert "reversible_non_mass_action" not in _errors(text)
+
+
+def test_a_kinetic_laws_local_parameter_does_not_reach_a_global_rule():
+    """`v := kf*A + krn*B` with the global krn = -0.5 is a difference; a local
+    krn = 0.5 in a reaction reading v used to stand in for it there, and the
+    result was cached for every later reaction."""
+    import antimony
+    import libsbml
+
+    antimony.clearPreviousLoads()
+    antimony.loadAntimonyString(NET_FLUX + " w := kf*A + krn*B; J0: A -> B; c*w; J1: A -> B; c*w;")
+    doc = libsbml.readSBMLFromString(antimony.getSBMLString(antimony.getMainModuleName()))
+    law = doc.getModel().getReaction("J0").getKineticLaw()
+    local = law.createLocalParameter() if doc.getLevel() >= 3 else law.createParameter()
+    local.setId("krn")
+    local.setValue(0.5)
+    model = bngsim.Model.from_sbml_string(libsbml.writeSBMLToString(doc))
+    refused = {
+        i.location for i in model.validate_for_ssa() if i.code == "reversible_non_mass_action"
+    }
+    assert refused == {"reaction:J0", "reaction:J1"}
+
+
+@pytest.mark.parametrize(
     "law",
     [
         "kf*A*exp(-kr*time)*c",

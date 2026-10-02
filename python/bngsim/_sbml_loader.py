@@ -6283,6 +6283,14 @@ def _build_model_from_sbml_doc(doc):
     # assignments, a rule's target is by its rule, anything a rate rule or an
     # event writes is not (it can be made negative), nor is anything else.
     _sign_memo: dict[str, bool] = {}
+    # What an event writes, by target: an event can write any value, so its
+    # target is non-negative only where every value it writes is.
+    _event_writes: dict[str, list] = {}
+    for _e in range(sbml_model.getNumEvents()):
+        _ev = sbml_model.getEvent(_e)
+        for _a in range(_ev.getNumEventAssignments()):
+            _ea = _ev.getEventAssignment(_a)
+            _event_writes.setdefault(_ea.getVariable(), []).append(_ea.getMath())
 
     class _SignLookup:
         def __init__(self, local_map, local_values):
@@ -6297,26 +6305,48 @@ def _build_model_from_sbml_doc(doc):
             if name in _sign_memo:
                 return _sign_memo[name]
             _sign_memo[name] = False  # a cycle reads as not proven
-            if name in assignment_targets:
-                rule = sbml_model.getAssignmentRuleByVariable(name)
-                ok = (
-                    rule is not None
-                    and rule.getMath() is not None
-                    and _law_is_nonnegative(rule.getMath(), self, {}, _seen)
-                )
-            elif name in species_idx or name in comp_volumes:
-                ok = True
-            elif name in rate_rule_targets or name in event_promoted_params:
-                ok = False
-            else:
-                par = sbml_model.getParameter(name)
-                if par is None:
-                    ok = False
-                else:
-                    v = ia_values.get(name, par.getValue() if par.isSetValue() else float("nan"))
-                    ok = v == v and v >= 0
-            _sign_memo[name] = ok
-            return ok
+            _sign_memo[name] = _global_is_nonnegative(name, _seen)
+            return _sign_memo[name]
+
+    def _global_is_nonnegative(name, _seen) -> bool:
+        # Rules, rates and event values are read in the model's scope, not the
+        # reaction's: a kinetic law's local of the same name does not reach them.
+        if name in assignment_targets:
+            rule = sbml_model.getAssignmentRuleByVariable(name)
+            return (
+                rule is not None
+                and rule.getMath() is not None
+                and _law_is_nonnegative(rule.getMath(), _global_sign, {}, _seen)
+            )
+        if name in species_idx:
+            sp = sbml_model.getSpecies(name)
+            v = ia_values.get(name, float("nan"))
+            if v != v and sp is not None:
+                if sp.isSetInitialAmount():
+                    v = sp.getInitialAmount()
+                elif sp.isSetInitialConcentration():
+                    v = sp.getInitialConcentration()
+        elif name in comp_volumes:
+            v = ia_values.get(name, comp_volumes[name])
+        else:
+            par = sbml_model.getParameter(name)
+            if par is None:
+                return False
+            v = ia_values.get(name, par.getValue() if par.isSetValue() else float("nan"))
+        if not (v == v and v >= 0):
+            return False
+        # It starts non-negative. A rate rule keeps it so if its rate is
+        # non-negative; an event, if every value it writes is.
+        if name in rate_rule_targets:
+            rate = sbml_model.getRateRuleByVariable(name)
+            if rate is None or not _law_is_nonnegative(rate.getMath(), _global_sign, {}, _seen):
+                return False
+        for written in _event_writes.get(name, ()):
+            if written is not None and not _law_is_nonnegative(written, _global_sign, {}, _seen):
+                return False
+        return True
+
+    _global_sign = _SignLookup({}, {})
 
     reaction_local_param_maps: dict[int, dict[str, str]] = {}
     for i in range(sbml_model.getNumReactions()):
@@ -7513,7 +7543,7 @@ def _build_model_from_sbml_doc(doc):
                     # bug). The live-symbol divide is kept for hOSU=false species
                     # (#86 dilution) and for event-resize compartments (#74).
                     if rep_comp in vstatic_divide_comps and all(
-                        species_hosu.get(s, False) for s in net
+                        species_hosu.get(s, False) for s in net if net[s] != 0
                     ):
                         divisor = repr(float(comp_volumes.get(rep_comp, 1.0)))
                     else:
@@ -7568,7 +7598,7 @@ def _build_model_from_sbml_doc(doc):
                     # move the sizes apart.
                     rep_comp = species_comp[next(iter(net))]
                     _rep_is_vstatic = rep_comp in vstatic_divide_comps and all(
-                        species_hosu.get(s, False) for s in net
+                        species_hosu.get(s, False) for s in net if net[s] != 0
                     )
                     if not _rep_is_vstatic and rep_comp in live_volume_param_comps:
                         vf_name = f"_vd_{rid}_unified"
@@ -7590,7 +7620,7 @@ def _build_model_from_sbml_doc(doc):
                 # Byte-identical for static compartments (the symbol value equals
                 # the numeric); only AR/rate-rule-compartment reactions change.
                 if rep_comp in vstatic_divide_comps and all(
-                    species_hosu.get(s, False) for s in net
+                    species_hosu.get(s, False) for s in net if net[s] != 0
                 ):
                     divisor = repr(float(comp_volumes.get(rep_comp, 1.0)))
                 else:
@@ -7663,10 +7693,13 @@ def _build_model_from_sbml_doc(doc):
             if i in ssa_varvol_functional and len(_fix_comps) == 1:
                 _rep_comp = next(iter(_fix_comps))
                 _n_f = ssa_varvol_functional[i]
+                # A concentration the reaction only reads (a catalyst) is stale
+                # too, under either divide: with the numeric V_static divide the
+                # exponent is n_f, with the live-symbol divide n_f - 1.
                 if _rep_comp in vstatic_divide_comps and all(
-                    species_hosu.get(s, False) for s in net
+                    species_hosu.get(s, False) for s in net if net[s] != 0
                 ):
-                    _vv_exp = 0.0
+                    _vv_exp = float(_n_f)
                 else:
                     _vv_exp = float(_n_f - 1)
                 ssa_varvol_fixups.append((_func_rxn_idx, _rep_comp, _vv_exp))

@@ -113,3 +113,20 @@ def test_the_ssa_mean_of_an_amount_turned_into_a_concentration():
     h = 40.0 * np.exp(-K * T)
     se = x.std(0, ddof=1) / np.sqrt(reps)
     assert np.all(np.abs(x.mean(0) - np.c_[h, 40.0 - h]) <= 4.5 * se + 1e-9)
+
+
+@pytest.mark.parametrize("vol", [GROW, RESIZE], ids=["rate-rule", "event-resize"])
+@pytest.mark.parametrize("law", ["k*H*A*c", "0.012*H*A*c"])
+def test_amounts_changed_beside_a_concentration_catalyst(vol, law):
+    """A (a concentration, 5 molecules) catalyses H -> G, both amounts: a rate of
+    k·n_H·[A]·V = k·n_H·5, so n_H = 40·exp(-5kt). The divide took the catalyst,
+    whose net change is 0, for a row and divided by the live size: 24 of 32 such
+    shapes were off, by up to 76%."""
+    text = vol + (
+        "species A in c = 5; substanceOnly species H in c = 40; substanceOnly species G in c = 0;"
+        f" k = 0.012; J1: H + A => G + A; {law};"
+    )
+    h = 40.0 * np.exp(-5 * 0.012 * T)
+    np.testing.assert_allclose(
+        _amounts(text, ["H", "G"]), np.c_[h, 40.0 - h], rtol=1e-7, atol=1e-9
+    )
