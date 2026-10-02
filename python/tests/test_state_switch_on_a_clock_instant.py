@@ -587,3 +587,107 @@ def test_a_jump_that_a_fitted_gate_starts_is_refused():
     without coming through it: no root is reported, the state switch's jump
     was never made, and dY/dtau came back 0 for −0.5."""
     _refused(STARTED.format(law="k"), ["tau", "r"], 946)
+
+
+def test_a_jump_that_a_fitted_gate_starts_runs_for_what_does_not_move_the_gate():
+    """Control. The same with only r requested: the gate does not move, the
+    crossing is on it whatever r is, and dY/dr = 0."""
+    got = _columns(STARTED.format(law="k"), ["r"])
+    np.testing.assert_allclose(got[:, 0], [2.0 * 1.0, 0.0], atol=1e-9)
+
+
+NESTED = """begin parameters
+    1 k 0.5
+    2 a 1
+    3 b 10
+    4 t1 3
+    5 one 1
+end parameters
+begin functions
+    1 sched() if(t<t1,a,b)
+    2 fX() if(t>=sched(),k,0)
+end functions
+begin species
+    1 X() 0
+    2 Tc() 0
+end species
+begin reactions
+    1 0 1 fX
+    2 0 2 one
+end reactions
+begin groups
+    1 t 2
+end groups
+"""
+NESTED_TIMES = [0.0, 2.0, 5.0, 8.0, 12.0]
+
+
+def _nested(tmp_path, params):
+    path = tmp_path / "nested.net"
+    path.write_text(NESTED)
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=params
+    )
+    return sim.run(sample_times=NESTED_TIMES, rtol=1e-10, atol=1e-12, timeout=60)
+
+
+def test_a_threshold_that_is_itself_a_condition_on_the_clock_is_refused(tmp_path):
+    """``t >= if(t < t1, a, b)``: on from a to t1 and again from b, so
+    X = k·((t1 − a) + (T − b)) and dX/dt1 = k. At t1 the threshold jumps from
+    a to b and the residual jumps across 0 with it: the clock's own record
+    makes the law's jump there, and the state switch made it again.
+    dX/dt1 came back 1 for 0.5."""
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        _nested(tmp_path, ["t1"])
+
+
+@pytest.mark.parametrize(("param", "want"), [("k", 4.0), ("a", -0.5)])
+def test_a_threshold_that_is_a_condition_runs_for_what_does_not_move_it(tmp_path, param, want):
+    """Control. With k requested, or the first threshold a, nothing moves
+    the crossing at t1."""
+    got = np.asarray(_nested(tmp_path, [param]).sensitivities)[-1]
+    assert got[0, 0] == pytest.approx(want, rel=1e-7)
+
+
+def test_a_column_that_moves_the_crossing_by_less_than_the_reach_does_not_move_it():
+    """Control. S is made at 0.5 + 1e-14·q and crosses 1.5 at 3 − 6e-14,
+    with a fixed gate in another law at 3. q moves the crossing by 6e-14 for
+    the whole of itself, far inside the 3e-10 the crossing's time is known
+    to: nothing is on one side of anything. dS/dq = 5e-14 and the rest are 0
+    to 1e-12."""
+    text = (
+        "species S, X, Y; S = 0; X = 0; Y = 0; k = 0.5; q = 1\n"
+        "Js: -> S; 0.5 + 1e-14*q\nJx: -> X; piecewise(k, time >= 3, 0)\n"
+        "Jy: -> Y; piecewise(k, S >= 1.5, 0)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["q"])[:, 0], [5e-14, 0.0, 0.0], atol=1e-12)
+
+
+SET = (
+    "species X, Y, W, V; X = {x0}; Y = 0; W = 0; V = 0; k = 0.5; q = 0.7; tau = 3\n"
+    "Jv: -> V; 2\nJ1: -> Y; k\nJ2: -> W; piecewise({law}, V >= {at}, 0)\n"
+    "E1: at (time >= tau): X = {to}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "off", [-4e-10, 0.0, 4e-10], ids=["the-switch-first", "on", "the-event-first"]
+)
+def test_an_event_that_fills_what_the_law_reads_is_refused(off):
+    """X is 0 until the event sets it to 5, and the switched law is q·X: with
+    the switch first it crosses where the law is 0 on both sides and reads as
+    continuous, and the jump shows once the event has fired. dW/dtau is 0
+    with the switch first and −3.5 with the event first."""
+    text = SET.format(x0=0, law="q*X", at=repr(6.0 + off), to="5")
+    _refused(text, ["tau"], 945, EVENT_TIMES)
+
+
+@pytest.mark.parametrize("off", [-4e-10, 4e-10], ids=["the-switch-first", "the-event-first"])
+def test_a_bend_beside_an_event_runs(off):
+    """Control. The switched law is a ramp from the threshold, q·(V − at)·X,
+    and the event doubles X within the reach of the crossing: 0 at the
+    surface before the event and after it. dW/dtau is 0 to 1e-8."""
+    at = 6.0 + off
+    text = SET.format(x0=1, law=f"q*(V - {at!r})*X", at=repr(at), to="2*X")
+    got = _columns(text, ["tau"], EVENT_TIMES)
+    assert abs(got[2, 0]) < 1e-8

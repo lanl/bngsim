@@ -10117,8 +10117,11 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             // A residual that is far from 0 on both sides of the probes has
             // not come through 0: it jumped across it, with a condition on a
             // clock inside it, `t - if(t < t1, a, b)` at t1. That is the clock's
-            // switch seen again, which its own record jumps, and no crossing
-            // of this switch's own.
+            // switch seen again. Where the right-hand side is continuous
+            // across it there is no jump of this switch's to make, and it is
+            // no crossing of its own (below). Where it jumps, the clock's own
+            // record makes that jump and this switch makes it again: dX/dt1
+            // came back 1 for 0.5. That one is asked about as any other.
             const double through =
                 1e3 * std::max({std::fabs(flow) * step,
                                 std::isfinite(flow_here) ? std::fabs(flow_here) * step : 0.0,
@@ -10156,7 +10159,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         if (other_jump) {
             near_clock = t_evt;
         }
-        if (residual_jumps) {
+        if (residual_jumps && continuous) {
             near_clock = std::numeric_limits<double>::quiet_NaN();
             near_clock_moves = false;
         }
@@ -10175,7 +10178,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             near_fire = event_fires.front().t;
             near_fire_moves = true;
         }
-        if (residual_jumps) {
+        if (residual_jumps && continuous) {
             near_fire = std::numeric_limits<double>::quiet_NaN();
         }
         // ── A crossing the right-hand side is continuous across ───────────
@@ -10304,7 +10307,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                          state_crossings.front().t + state_crossings.front().reach);
             state_crossings.erase(state_crossings.begin());
         }
-        if (!residual_jumps) {
+        if (!(residual_jumps && continuous)) {
             state_crossings.push_back({t_evt, reach, sw.residual_source, residual_support, moves,
                                        continuous, own_species, x_own, f_own, step});
         }
