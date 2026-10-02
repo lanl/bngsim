@@ -130,3 +130,25 @@ def test_amounts_changed_beside_a_concentration_catalyst(vol, law):
     np.testing.assert_allclose(
         _amounts(text, ["H", "G"]), np.c_[h, 40.0 - h], rtol=1e-7, atol=1e-9
     )
+
+
+@pytest.mark.parametrize("vol", [GROW, RESIZE], ids=["rate-rule", "event-resize"])
+def test_the_ssa_mean_with_a_concentration_modifier(vol):
+    """A (a concentration, 5 molecules) appears in the law only, and the
+    reaction changes amounts: a rate of k·n_H·[A]·V = k·n_H·5. The SSA read A's
+    stale concentration with no correction, |z| up to 114."""
+    text = vol + (
+        "species A in c = 5; substanceOnly species H in c = 40; substanceOnly species G in c = 0;"
+        " k = 0.012; J1: H => G; k*H*A*c;"
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ssa")
+    reps = 800
+    runs = []
+    for i in range(reps):
+        sim.model.reset()
+        r = sim.run(sample_times=list(T), seed=500 + i)
+        runs.append(np.asarray(r.as_roadrunner(["H", "G"])))
+    x = np.array(runs)
+    h = 40.0 * np.exp(-5 * 0.012 * T)
+    se = x.std(0, ddof=1) / np.sqrt(reps)
+    assert np.all(np.abs(x.mean(0) - np.c_[h, 40.0 - h]) <= 4.5 * se + 1e-9)

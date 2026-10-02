@@ -95,9 +95,27 @@ def test_a_species_that_can_go_negative_is_not_taken_for_non_negative(extra):
     assert _errors(text) & {"reversible_non_mass_action", "variable_compartment_read"}
 
 
+def test_an_initial_assignment_the_load_cannot_fold_is_read_by_its_math():
+    """S is declared 5 with S = delay(-3, 0): the load cannot fold the delay and
+    kept the 5, while the run starts S at -3."""
+    import antimony
+    import libsbml
+
+    antimony.clearPreviousLoads()
+    antimony.loadAntimonyString(NET_FLUX + " species $S in c = 5; J1: A -> B; c*(kf*A + S);")
+    doc = libsbml.readSBMLFromString(antimony.getSBMLString(antimony.getMainModuleName()))
+    assignment = doc.getModel().createInitialAssignment()
+    assignment.setSymbol("S")
+    assignment.setMath(libsbml.parseL3Formula("delay(-3, 0)"))
+    model = bngsim.Model.from_sbml_string(libsbml.writeSBMLToString(doc))
+    assert "reversible_non_mass_action" in {i.code for i in model.validate_for_ssa()}
+
+
 @pytest.mark.parametrize(
     "extra",
     [
+        "species S in c = 2; S' = 0.2*S;",  # grows from a non-negative start
+        "species S in c = 2; E1: at time >= 1: S = S/2;",
         "species S in c = 2; S' = 0.5;",  # a rate rule that only adds
         "species S in c = 2; E1: at time >= 1: S = 5;",  # an event that writes a positive
     ],

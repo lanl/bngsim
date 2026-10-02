@@ -6318,31 +6318,50 @@ def _build_model_from_sbml_doc(doc):
                 and rule.getMath() is not None
                 and _law_is_nonnegative(rule.getMath(), _global_sign, {}, _seen)
             )
-        if name in species_idx:
-            sp = sbml_model.getSpecies(name)
-            v = ia_values.get(name, float("nan"))
-            if v != v and sp is not None:
-                if sp.isSetInitialAmount():
-                    v = sp.getInitialAmount()
-                elif sp.isSetInitialConcentration():
-                    v = sp.getInitialConcentration()
-        elif name in comp_volumes:
-            v = ia_values.get(name, comp_volumes[name])
-        else:
-            par = sbml_model.getParameter(name)
-            if par is None:
+        ia = sbml_model.getInitialAssignmentBySymbol(name)
+        if ia is not None and ia.getMath() is not None:
+            # Its start is the assignment's value. Where the load cannot fold it
+            # (`delay(-3, 0)`), ia_values keeps the declared one and the math
+            # decides.
+            v0 = _eval_ast_numeric(ia.getMath(), eval_ctx, func_defs)
+            if v0 is None or v0 != v0:
+                if not _law_is_nonnegative(ia.getMath(), _global_sign, {}, _seen):
+                    return False
+            elif v0 < 0:
                 return False
-            v = ia_values.get(name, par.getValue() if par.isSetValue() else float("nan"))
-        if not (v == v and v >= 0):
-            return False
+        else:
+            if name in species_idx:
+                sp = sbml_model.getSpecies(name)
+                v = ia_values.get(name, float("nan"))
+                if v != v and sp is not None:
+                    if sp.isSetInitialAmount():
+                        v = sp.getInitialAmount()
+                    elif sp.isSetInitialConcentration():
+                        v = sp.getInitialConcentration()
+            elif name in comp_volumes:
+                v = ia_values.get(name, comp_volumes[name])
+            else:
+                par = sbml_model.getParameter(name)
+                if par is None:
+                    return False
+                v = ia_values.get(name, par.getValue() if par.isSetValue() else float("nan"))
+            if not (v == v and v >= 0):
+                return False
         # It starts non-negative. A rate rule keeps it so if its rate is
-        # non-negative; an event, if every value it writes is.
+        # non-negative; an event, if every value it writes is; each read with
+        # the variable itself non-negative, which is what holds them so by
+        # induction (`c' = 0.2*c`, `S = S/2`).
+        itself = {name: True}
         if name in rate_rule_targets:
             rate = sbml_model.getRateRuleByVariable(name)
-            if rate is None or not _law_is_nonnegative(rate.getMath(), _global_sign, {}, _seen):
+            if rate is None or not _law_is_nonnegative(
+                rate.getMath(), _global_sign, itself, _seen
+            ):
                 return False
         for written in _event_writes.get(name, ()):
-            if written is not None and not _law_is_nonnegative(written, _global_sign, {}, _seen):
+            if written is not None and not _law_is_nonnegative(
+                written, _global_sign, itself, _seen
+            ):
                 return False
         return True
 
