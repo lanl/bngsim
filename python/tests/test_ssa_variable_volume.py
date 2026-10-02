@@ -255,10 +255,10 @@ def test_varvol_non_mass_action_rejected():
         bngsim.Simulator(model, method="ssa").run(t_span=(0, 2), n_points=3, seed=1)
 
 
-# A *bare* concentration-rate law ``k*A*B`` (no compartment factor, p=0) is a
-# different beast from the BNG ``Cc*k*A*B`` (p=1): bngsim's variable-volume ODE
-# bakes the static volume and diverges from RoadRunner after the volume moves,
-# so SSA must refuse it rather than run a value the ODE cannot reproduce.
+# A *bare* concentration-rate law ``k*A*B`` (no compartment factor, p=0) is
+# GH #144 case 2 below, validated against Extrande. Flagged reversible (Antimony's
+# ``->``) it was refused, as a forward-minus-reverse net flux it is not: it runs
+# as its irreversible twin does, for the same seed the same trajectory.
 _T2_BARE = """
 model t2_bare
   compartment Cc = 1.0;
@@ -268,17 +268,28 @@ model t2_bare
   k = 0.002;
   g = 0.1;
   Cc' = g;
-  J1: A + B -> P; k*A*B;
+  J1: A + B ARROW P; k*A*B;
 end
 """
 
 
-def test_bare_concentration_law_in_varvol_rejected():
-    model = bngsim.Model.from_antimony_string(_T2_BARE)
-    codes = {i.code for i in bngsim.validate_for_ssa(model)}
-    assert "varvol_non_mass_action" in codes
-    with pytest.raises(bngsim.SsaValidationError):
-        bngsim.Simulator(model, method="ssa").run(t_span=(0, 2), n_points=3, seed=1)
+def _same_for_either_flag(text):
+    runs = []
+    for arrow in ("->", "=>"):
+        model = bngsim.Model.from_antimony_string(text.replace("ARROW", arrow))
+        assert not [i for i in bngsim.validate_for_ssa(model) if i.severity == "error"]
+        runs.append(
+            np.asarray(
+                bngsim.Simulator(model, method="ssa")
+                .run(t_span=(0, 2), n_points=3, seed=1)
+                .species
+            )
+        )
+    np.testing.assert_array_equal(runs[0], runs[1])
+
+
+def test_bare_concentration_law_flagged_reversible_runs_as_its_irreversible_twin():
+    _same_for_either_flag(_T2_BARE)
 
 
 # ── V_static != 1: the compartment loads at 2.0 ──────────────────────────────
@@ -448,26 +459,21 @@ def test_tier2_synthesis_matches_extrande():
 
 
 # A *bare* zeroth-order law ``k`` (no compartment factor, p=0) in a varvol
-# compartment is refused for the same reason as the bare bimolecular law: the
-# ODE bakes the static volume, so SSA cannot reproduce it after V moves. Only
-# the BNG ``cell*k`` (p=1) synthesis is supported (#144).
+# compartment is GH #144 case 2 too; flagged reversible it runs as its
+# irreversible twin does.
 _T2_SYNTH_BARE = """
 model t2_synth_bare
   compartment cell = 1.0;
   species P in cell = 0;
   k = 5.0; g = 0.2;
   cell' = g;
-  J1: -> P; k;
+  J1: ARROW P; k;
 end
 """
 
 
-def test_bare_synthesis_in_varvol_rejected():
-    model = bngsim.Model.from_antimony_string(_T2_SYNTH_BARE)
-    codes = {i.code for i in bngsim.validate_for_ssa(model)}
-    assert "varvol_non_mass_action" in codes
-    with pytest.raises(bngsim.SsaValidationError):
-        bngsim.Simulator(model, method="ssa").run(t_span=(0, 2), n_points=3, seed=1)
+def test_bare_synthesis_flagged_reversible_runs_as_its_irreversible_twin():
+    _same_for_either_flag(_T2_SYNTH_BARE)
 
 
 # ── Case 1 (GH #144): hOSU=true (amount-valued) law factor in a varvol comp ───
@@ -722,11 +728,12 @@ def test_gh170_bare_hosu_bimolecular_matches_extrande():
         assert z < 5.0, f"#170 bimol t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
 
 
-# Negative scope (#170): the fix must stay confined to the volume-INDEPENDENT
-# sub-case. A bare law with a MIXED hOSU set — ``k*A*B`` with A hOSU=true but B
-# hOSU=false — keeps a surviving V_static from B's concentration factor, so it is
-# NOT volume-independent and the Elementary ODE bakes the static volume (the #131
-# finding 4 hazard). It must stay refused ``varvol_non_mass_action``.
+# A bare law with a MIXED hOSU set — ``k*A*B`` with A hOSU=true but B hOSU=false
+# — is not volume-independent: the rate is k·n_A·n_B/V(t). It was refused here
+# because the Elementary ODE baked the static volume into B's and P's rows, and
+# (no single divide serving the amount A and the concentrations B and P) it now
+# takes the per-species emission, each row over its own size, with the SSA
+# correction (V_static/V_live)^1 for B's stale concentration factor.
 _C170_MIXED = """
 model c170_mixed
   compartment cell = 1.0;
@@ -738,10 +745,31 @@ end
 """
 
 
-def test_gh170_mixed_hosu_bare_law_still_refused():
+def test_gh170_mixed_hosu_bare_law_matches_extrande():
+    k, g, reps, seed = 0.01, 0.15, 2000, 47
     model = bngsim.Model.from_antimony_string(_C170_MIXED)
-    errs = [i for i in bngsim.validate_for_ssa(model) if i.severity == "error"]
-    assert [i.code for i in errs] == ["varvol_non_mass_action"]
+    assert not [i for i in bngsim.validate_for_ssa(model) if i.severity == "error"]
+    names, arr = _ssa_counts(model, 10.0, 11, reps=reps, seed=seed)
+    n_p = arr[:, :, names.index("P")]  # hOSU=false, V_static = 1 ⇒ counts
+    t = np.linspace(0.0, 10.0, 11)
+    ref = ext.RefModel(
+        species=["A", "B", "P"],
+        x0={"A": 60, "B": 90, "P": 0},
+        reactions=[
+            ext.ReactionSpec(
+                stoich={"A": -1, "B": -1, "P": 1},
+                propensity=lambda s: k * s["A"] * s["B"] / s["cell"],
+            )
+        ],
+        cont={"cell": lambda s: g},
+        c0={"cell": 1.0},
+    )
+    oref = ext.simulate_batch(ref, t, reps, seed=seed + 1, look_ahead=0.05)
+    pb, pe = n_p.mean(0), oref[:, :, 2].mean(0)
+    se = np.sqrt(n_p.var(0, ddof=1) / reps + oref[:, :, 2].var(0, ddof=1) / reps)
+    for i in range(1, len(t)):
+        z = abs(pb[i] - pe[i]) / (se[i] + 1e-12)
+        assert z < 5.0, f"#170 mixed t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
 
 
 # ── Case 2 (GH #144): bare (p≠1) concentration-rate law in a varvol comp ──────

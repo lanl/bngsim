@@ -261,7 +261,8 @@ def _one(t):
     return 2.0 + t
 
 
-def test_a_catalyst_in_a_changing_compartment_is_not_a_species_it_moves():
+@pytest.mark.parametrize("arrow", ["->", "=>"])
+def test_a_catalyst_in_a_changing_compartment_is_not_a_species_it_moves(arrow):
     """Control. A and B share an assignment-rule compartment and the catalyst E
     sits in one that follows a rate rule. Nothing crosses a compartment: E is
     left as it was found. The single divide by A and B's own compartment was
@@ -271,7 +272,7 @@ def test_a_catalyst_in_a_changing_compartment_is_not_a_species_it_moves():
     text = (
         "compartment C1 = 2, C3 = 2; C1 := 2 + 0.5*time; C3' = 1;\n"
         "species A in C1, B in C1, E in C3; A = 1; B = 0.2; E = 0.5; k = 0.7;\n"
-        "J1: A + E -> B + E; k*A*E;\n"
+        f"J1: A + E {arrow} B + E; k*A*E;\n"
     )
     want = _final(lambda a, b, t: K * a * (1.0 / _one(t)), _half, _half, 2.0, 0.4)
     model = bngsim.Model.from_antimony_string(text)
@@ -304,20 +305,24 @@ def test_a_static_catalyst_beside_two_species_in_a_changing_compartment():
     ],
     ids=["out-of-the-rule", "into-the-rule", "reversible-difference"],
 )
+@pytest.mark.parametrize("arrow", ["->", "=>"])
 def test_a_transfer_between_an_assignment_rule_and_a_rate_rule_compartment(
-    species, law, flux, v_a, v_b
+    species, law, flux, v_a, v_b, arrow
 ):
     """C1 follows an assignment rule and C3 a rate rule, with the same size at
     load. The single divide was by C1's live size for both species, so the one
     in C3 was wrong: [B](5) = 0.302 for 0.251. Each row is now over its own
     compartment's live size.
 
-    An irreversible monomial here is still divided by the load-time size of the
-    assignment-rule compartment (#745)."""
+    Flagged irreversible, a monomial was certified for the SSA's correction and
+    kept the per-species divide, by the load-time size of the assignment-rule
+    compartment (#745): [A](5) = 0.077 for 0.143. The SSA refuses an
+    assignment-rule compartment anyway, so it is written out as the reversible
+    one is."""
     text = (
         "compartment C1 = 2, C3 = 2; C1 := 2 + 0.5*time; C3' = 1;\n"
         f"species {species}; A = 1; B = 0.2; k = {K}; k2 = {K2};\n"
-        f"J1: A -> B; {law};\n"
+        f"J1: A {arrow} B; {law};\n"
     )
     got = _final_of(bngsim.Model.from_antimony_string(text))
     np.testing.assert_allclose(got, _final(flux, v_a, v_b, 2.0, 0.4), rtol=1e-7)
@@ -328,7 +333,8 @@ def test_a_transfer_between_an_assignment_rule_and_a_rate_rule_compartment(
     [("C2' = 1;", lambda t: 2.0), ("C1' = 1; C2' = 1;", _one)],
     ids=["one-changing", "both-in-step"],
 )
-def test_a_transfer_that_mixes_conversion_factors(tmp_path, rules, v_a):
+@pytest.mark.parametrize("arrow", ["->", "=>"])
+def test_a_transfer_that_mixes_conversion_factors(tmp_path, rules, v_a, arrow):
     """A loses 1.5 per unit of flux and B gains 0.5. With only C2 changing, [B]
     was divided by the size at load: 0.212 for 0.145. With the two compartments
     growing in step the single divide happened to be right, and that one is the
@@ -340,7 +346,7 @@ def test_a_transfer_that_mixes_conversion_factors(tmp_path, rules, v_a):
     antimony.loadAntimonyString(
         f"compartment C1 = 2, C2 = 2; {rules}\n"
         "species A in C1, B in C2; A = 1; B = 0.2; k = 0.7; cfA = 1.5; cfB = 0.5;\n"
-        "J1: A -> B; k*A;\n"
+        f"J1: A {arrow} B; k*A;\n"
     )
     doc = libsbml.readSBMLFromString(antimony.getSBMLString(antimony.getMainModuleName()))
     model = doc.getModel()
@@ -411,17 +417,23 @@ def test_a_concentration_and_an_amount_changed_in_one_changing_compartment(
 
 
 def test_the_certified_monomial_keeps_the_emission_its_ssa_correction_is_for():
-    """Control. An irreversible monomial between the same two compartments is the
-    one shape the SSA can correct, and its correction is written for the
-    one-reaction emission. Written out one species at a time it would have no
-    SSA reading and no refusal either."""
+    """Control. An irreversible monomial from a static compartment into one that
+    follows a rate rule is the one shape the SSA can correct, and its correction
+    is written for the one-reaction per-species emission. (Between an
+    assignment-rule compartment and a rate-rule one it is not certified: the SSA
+    refuses an assignment-rule compartment, and the per-species divide there
+    was by its load-time size.)"""
     text = (
-        "compartment C1 = 2, C3 = 2; C1 := 2 + 0.5*time; C3' = 1;\n"
+        "compartment C1 = 2, C3 = 2; C3' = 1;\n"
         "species A in C1, B in C3; A = 1; B = 0.2; k = 0.7;\n"
         "J1: A => B; k*A;\n"
     )
-    reactions = bngsim.Model.from_antimony_string(text)._core.codegen_data()["reactions"]
+    model = bngsim.Model.from_antimony_string(text)
+    reactions = model._core.codegen_data()["reactions"]
     transfer = [r for r in reactions if r.get("function_name") == "J1"]
     assert len(transfer) == 1
     assert transfer[0]["per_species_volume_scaling"]
     assert sorted(transfer[0]["reactants"]) != []
+    want = _final(lambda a, b, t: K * a, lambda t: 2.0, _one, 2.0, 0.4)
+    np.testing.assert_allclose(_final_of(model), want, rtol=1e-7)
+    assert not [i for i in model.validate_for_ssa() if i.severity == "error"]
