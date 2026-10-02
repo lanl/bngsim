@@ -581,22 +581,36 @@ def test_a_choice_that_bends_runs_on_the_difference_quotient(tmp_path, law, want
         ("kb*max(0,min(X,n))", None),
         # A choice on the time alone flips at an instant.
         ("kb*X*(T-3)/abs(T-3)", None),
-        # A step inside a choice, where the choice flips with it.
-        ("kb*abs(floor(X)-thr)", "abs(floor(X) - thr)"),
+        # A step inside a choice is a symbol here, and is found as a step
+        # call in a model.
+        ("kb*abs(floor(X)-thr)", None),
         # A magnitude of what has one sign flips nowhere, and the greater of
         # a rate that is not read and a floor is not asked about: a choice is
         # refused where it is found a jump.
         ("kb*abs(1/(1+X*X))", None),
         ("kb*max(rateOf(X),0.1)", None),
         # A cusp: the root of a magnitude leaves its zero with no bound on
-        # its slope.
-        ("kb*sqrt(abs(X-thr))", "abs(X - thr)"),
+        # its slope, and meets itself there. Not a jump.
+        ("kb*sqrt(abs(X-thr))", None),
     ],
 )
 def test_which_choice_a_rate_law_jumps_across(law, bends):
     from bngsim._switch_sensitivity import _choice_jump
 
     assert _choice_jump(law, {}, frozenset({"T", "kb"})) == bends
+
+
+def test_a_concentration_is_moved_over_positive_values_alone():
+    """``min(c·E, c·R)/c`` written with a magnitude, with c in proportion to
+    CO2 (BIOMD0000000383): the lesser of E and R where CO2 is above 0, and
+    the greater below it. CO2 is a concentration and does not get there."""
+    from bngsim._switch_sensitivity import _choice_jump
+
+    c = "(kc*CO2/(CO2+K))"
+    law = f"(0.21*O2/Ko)/(CO2/Kc)*(({c}*E+{c}*R)-abs({c}*E-{c}*R))/2"
+    held = frozenset({"kc", "K", "Ko", "Kc", "E"})
+    assert _choice_jump(law, {}, held) is not None
+    assert _choice_jump(law, {}, held, positive=frozenset({"CO2", "O2", "R"})) is None
 
 
 def test_a_time_crossing_beside_a_declined_rate_law_runs(tmp_path):
@@ -695,3 +709,229 @@ def test_the_two_readings_of_a_rate_law_agree(expr):
         walked, size = _float_rounding(tree, point)
         assert compiled == float(walked) or (math.isnan(compiled) and math.isnan(walked))
         assert size >= 0.0 and math.isfinite(size)
+
+
+# ─── What an independent review found ───────────────────────────────────────
+
+WIDER = """begin parameters
+    1 A0 {A0!r}
+    2 k {k!r}
+    3 thr 4.4
+    4 kb 3.0
+    5 kc 5.0
+    6 tau 3.4
+    7 P 1.3
+    8 one 1.0
+    9 n {n!r}
+   10 c -4.0
+   11 g 1e-4
+end parameters
+begin functions
+{funcs}
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 Z() 0
+    4 C() 0
+end species
+begin reactions
+    1 {a_rxn} k
+    2 0 2 fY
+    3 0 3 fZ
+    4 0 4 one
+end reactions
+begin groups
+    1 Aobs 1
+    2 Cobs 4
+end groups
+"""
+
+
+def _wider(tmp_path, fy, fz=DECLINED, decays=True, extra=(), k=1.0, n=0.0):
+    """The model above with a counter C that nothing but its own rate moves,
+    an exponent n and a few more parameters."""
+    funcs = [*extra, f"fY() {fy}", f"fZ() {fz}"]
+    path = tmp_path / "wider.net"
+    path.write_text(
+        WIDER.format(
+            funcs="\n".join(f"    {i} {f}" for i, f in enumerate(funcs, 1)),
+            A0=10.0 if decays else 1.0,
+            a_rxn="1 0" if decays else "0 1",
+            k=k,
+            n=n,
+        )
+    )
+    return bngsim.Model.from_net(path)
+
+
+def _refused_run(model, params, **kwargs):
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
+    assert not sim.has_analytic_sens_rhs
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("fy", "fz", "params"),
+    [("if(Aobs>thr,kb,0)", DECLINED, ["k", "thr"]), ("kb", "kc*floor(time()/P)", ["P", "kc"])],
+    ids=["a-state-switch", "a-step-of-time-the-period-moves"],
+)
+def test_every_column_at_once_is_refused_by_its_own_columns(tmp_path, fy, fz, params):
+    """``compute_all_sensitivities(params=...)`` on a simulator built with no
+    columns asked the refusal about the simulator's columns, none, and not
+    its own: no counter was moved and no parameter requested. The model of
+    issue #938 returned 14.52 for 10.2 through it."""
+    sim = bngsim.Simulator(_wider(tmp_path, fy, fz, decays=False), method="ode")
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.compute_all_sensitivities(
+            t_span=(0.0, T_END), n_points=3, params=params, rtol=1e-4, atol=1e-6
+        )
+
+
+@pytest.mark.parametrize(
+    ("fy", "fz", "params"),
+    [
+        ("kb", "kc*floor(Cobs/P)", ["P", "kc"]),
+        ("if(floor(Cobs/P)>2,kb,0)", DECLINED, ["P"]),
+    ],
+    ids=["outside-a-condition", "in-a-condition"],
+)
+def test_a_step_of_a_counter_nothing_moves_is_a_step_of_the_clock(tmp_path, fy, fz, params):
+    """``floor(Cobs/P)`` with C a counter no column moves steps where
+    ``floor(time()/P)`` does, and its steps move with P: dZ/dP came back
+    −56.72 for −50, and −16.17 for −9 with the step in a condition."""
+    _refused_run(_wider(tmp_path, fy, fz, decays=False), params)
+
+
+def test_a_step_table_indexed_through_a_function_is_refused(tmp_path):
+    """``fIdx() = Aobs*1`` owns a parameter slot, and a table indexed by it was
+    taken as indexed by a parameter: dY/dk = 0 for −3.698."""
+    table = 'tfun([0,2,4.4,8],[0,1,3,5],fIdx,method=>"step")'
+    _refused_run(_wider(tmp_path, table, "kc*Aobs", extra=["fIdx() Aobs*1"]), ["k"])
+
+
+@pytest.mark.parametrize(
+    ("law", "n"),
+    [
+        # 0 for the first seven units of time.
+        ("if(Aobs<thr,kb*floor(time()/7),0)", 0.0),
+        # 2 at n = 5, and 0 at a value of n between 0.5 and 2.
+        ("if(Aobs<thr,kb*floor(n/2),0)", 5.0),
+        # A jump of kb at n = 0, and a ramp at n = 1.
+        ("if(Aobs<thr,kb*(thr-Aobs)^n,0)", 0.0),
+        # Most of kb at g = 1e-4, and nothing at g between 0.5 and 2.
+        ("if(Aobs<thr,kb*exp(-2000*g),0)", 0.0),
+        # A second flip, at Aobs = 2, for c = −4 and for no c above 0.
+        ("if((Aobs-thr)*(Aobs*Aobs+c)<0,kb*(thr-Aobs),0)", 0.0),
+    ],
+    ids=["a-step-of-time", "a-step-of-a-parameter", "an-exponent-of-0", "a-factor", "a-flip"],
+)
+def test_a_jump_that_goes_with_what_the_parameters_are_is_refused(tmp_path, law, n):
+    """Each of these laws bends where A is thr for parameters, or a time,
+    between 0.5 and 2, which is where every symbol used to be put, and jumps
+    at the values the model has. A parameter is read at its own value, and a
+    call on the clock is a symbol of its own."""
+    _refused_run(_wider(tmp_path, law, n=n), ["k", "thr"])
+
+
+def test_a_ramp_whose_exponent_is_a_parameter_runs_where_it_is_one(tmp_path):
+    """Control. The same law with n = 1: a ramp, against its closed form."""
+    model = _wider(tmp_path, "if(Aobs<thr,kb*(thr-Aobs)^n,0)", n=1.0)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
+    assert not sim.has_analytic_sens_rhs
+    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
+    t_star = math.log(a0 / thr) / k
+    tail = math.exp(-k * T_END)
+    want = [
+        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
+        kb * (T_END - t_star),
+    ]
+    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
+
+
+def test_the_refusal_is_asked_again_when_a_parameter_changes(tmp_path):
+    """A is made at rate k: at k = 1 it is a counter, which no requested
+    column moves, and its switch at thr is jumped (issue #48). At k = 2 it is
+    a state like any other. A simulator that had run at k = 1 kept the first
+    answer and returned dY/dthr = −4.228 for −1.5."""
+    model = _wider(tmp_path, "if(Aobs>thr,kb,0)", decays=False)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
+    sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
+    model.set_param("k", 2.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
+
+
+@pytest.mark.parametrize("depth", [30, 70])
+def test_a_condition_behind_many_assignment_rules_is_refused(depth):
+    """A jump reached through a chain of assignment rules. Past 64 of them
+    the law is not written out, was read as its bare name, and held no
+    condition: dB/da = 40.72 for 14.45."""
+    text = (
+        "species A, B, Z; A = 10; B = 0; Z = 0; a = 0.5; q = 3; kb = 3;\n"
+        "J0: A -> ; a*A\nJ2: -> Z; max(A, 0.1)\nf0 := piecewise(kb, A<q, 0)\n"
+    )
+    text += "".join(f"f{i} := f{i - 1} + 0\n" for i in range(1, depth))
+    model = bngsim.Model.from_antimony_string(text + f"J1: -> B; f{depth - 1}\n")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["a", "q"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError):
+        sim.run(sample_times=[0.0, 3.0, 6.0], rtol=1e-4, atol=1e-6, timeout=20)
+
+
+SIGNED_RATES = {
+    "a-power-of-one-and-a-half": "Vm*S^1.5/(K^1.5 + S^1.5) - d*Q",
+    "a-power-that-is-a-parameter": "Vm*S^n/(K^n + S^n) - d*Q",
+    "a-square-root": "Vm*(sqrt(S) - sqrt(K*Q))",
+    "a-logarithm": "Vm*ln(S/(K*Q))",
+}
+
+
+@pytest.mark.parametrize("case", sorted(SIGNED_RATES))
+def test_a_signed_rate_that_has_no_value_below_zero_runs(case):
+    """Control. ``if(v > 0, v, 0)`` beside ``if(v < 0, −v·X/max(X, 0.01), 0)``
+    with a power of S that is not a whole number, a root or a logarithm in v:
+    v has no value for S below 0, and a cut that moved S there took the edge
+    of that for a flip with a jump. S is a concentration and is moved over
+    positive values. Against a central difference of plain runs."""
+
+    def build(a=0.5):
+        return bngsim.Model.from_antimony_string(
+            f"species S, Q, X; S = 10; Q = 1; X = 0; a = {a!r}; Vm = 2; K = 2; d = 1; n = 1.5;\n"
+            f"J0: S -> ; a*S\nv := {SIGNED_RATES[case]}\n"
+            "J1: -> X; piecewise(v, v > 0, 0)\n"
+            "J2: X -> ; piecewise(-v*X/max(X, 0.01), v < 0, 0)\n"
+        )
+
+    times = [0.0, 3.0, 6.0]
+    sim = bngsim.Simulator(build(), method="ode", sensitivity_params=["a"])
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(sample_times=times, rtol=1e-10, atol=1e-12, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("X"), 0]
+
+    def plain(a):
+        out = bngsim.Simulator(build(a), method="ode").run(
+            sample_times=times, rtol=1e-12, atol=1e-14, timeout=60
+        )
+        return np.asarray(out.species)[-1, list(out.species_names).index("X")]
+
+    def slope(h):
+        return (plain(0.5 + h) - plain(0.5 - h)) / (2.0 * h)
+
+    want = (4.0 * slope(2.5e-4) - slope(5e-4)) / 3.0
+    assert got == pytest.approx(want, rel=1e-5)
+
+
+def test_a_guard_on_a_concentration_runs():
+    """Control. ``piecewise(Vm·Q/S, S > 0, 0)``: S is a concentration, and is
+    above 0. The comparison comes out one way and is no crossing."""
+    text = (
+        "species S, Q, X; S = 10; Q = 1; X = 0; a = 0.5; Vm = 2;\n"
+        "J0: S -> ; a*S\nJ1: -> X; piecewise(Vm*Q/S, S > 0, 0)\nJ2: -> Q; max(S, 0.1)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["a"])
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-12, timeout=60)
+    assert np.all(np.isfinite(np.asarray(run.sensitivities)))

@@ -3746,13 +3746,17 @@ def _float_sized(node: ast.AST, values: Mapping[str, float]) -> tuple[float, flo
 # exponential overflows, and that is no jump.
 _CONTINUITY_UNDERFLOW = sys.float_info.min / sys.float_info.epsilon
 
-# Where a condition is looked for a flip along one symbol: both signs, 1e-12
-# to 1e9, a third apart. A threshold written as a literal is a count of
-# molecules as readily as a concentration.
+# Where a condition is looked for a flip along one symbol: both signs, a
+# third apart from 1e-12 to 1e9, and five decades apart from there to 1e-300
+# and to 1e300. A threshold written as a literal is a count of molecules as
+# readily as a concentration.
+_CONTINUITY_MAGNITUDES = sorted(
+    {10.0 ** (k / 8.0 - 12.0) for k in range(169)}
+    | {10.0**k for k in range(-300, -12, 5)}
+    | {10.0**k for k in range(10, 301, 5)}
+)
 _CONTINUITY_GRID = tuple(
-    sign * 10.0 ** (k / 8.0 - 12.0)
-    for sign, order in ((-1.0, range(168, -1, -1)), (1.0, range(169)))
-    for k in order
+    [-x for x in reversed(_CONTINUITY_MAGNITUDES)] + list(_CONTINUITY_MAGNITUDES)
 )
 
 
@@ -3991,8 +3995,66 @@ def _blended(body: ast.expr, names: dict[str, str]) -> ast.Expression:
     return ast.fix_missing_locations(ast.Expression(body=_Blended(names).visit(body)))
 
 
+# The calls :data:`_STEP_CALL` names that :data:`_FLOAT_CALLS` evaluates.
+_STEP_NAMES = frozenset({"floor", "ceil", "sign"})
+
+
+def _unmoved_as_symbols(body: ast.expr, names: dict[str, str], fixed, clocks) -> ast.expr:
+    """*body* with every call on clocks alone taken as a symbol of its own,
+    and every step call on what is not fixed.
+
+    ``kb·floor(time/7)`` is 0 for the first seven units of time and
+    ``kb·exp(−(time − 50)²)`` is 0 to a double away from 50, and a jump in
+    proportion to either is no jump at a time picked at random. Whatever
+    such a call comes to, the law has to bend with it; so it is a symbol, the
+    same one wherever it is written. ``fixed`` names what has one value for
+    the run, and ``clocks`` what moves with the time and with nothing else.
+    Arithmetic on a clock is left as it is: a polynomial in the time is 0
+    only where it is 0, and ``kc·Aobs`` and ``kc·0.5`` are the same ``kc``.
+    """
+    fixed_kind, clock_kind, moved_kind = 0, 1, 2
+    logical = ("And", "Or", "Not", "Eq", "Ne")
+
+    def symbol(node: ast.AST) -> ast.Name:
+        name = names.setdefault(ast.dump(node), f"_bngsim_clock_{len(names)}")
+        return ast.Name(id=name, ctx=ast.Load())
+
+    def walk(node):
+        if isinstance(node, ast.Constant):
+            return node, fixed_kind
+        if isinstance(node, ast.Name):
+            if node.id in clocks:
+                return node, clock_kind
+            if node.id in fixed or node.id in _BUILTIN_CONSTANT_VALUES:
+                return node, fixed_kind
+            return node, moved_kind
+        kinds: list[int] = []
+
+        def visit(child):
+            out, kind = walk(child)
+            kinds.append(kind)
+            return out
+
+        out = _rebuilt(node, visit)
+        top = max(kinds, default=fixed_kind)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            called = node.func.id
+            stepping = called in _STEP_NAMES and top != fixed_kind
+            if stepping or (called not in logical and top == clock_kind):
+                return symbol(node), max(top, clock_kind)
+        return out, top
+
+    return walk(body)[0]
+
+
 def _continuous_across(
-    flat: str, atom: str, parsed: dict | None = None, held: AbstractSet[str] = frozenset()
+    flat: str,
+    atom: str,
+    parsed: dict | None = None,
+    held: AbstractSet[str] = frozenset(),
+    positive: AbstractSet[str] = frozenset(),
+    values: Mapping[str, float] | None = None,
+    state: Mapping[str, float] | None = None,
 ) -> bool:
     """Whether the rate law *flat* is continuous wherever the comparison
     *atom* flips.
@@ -4010,13 +4072,19 @@ def _continuous_across(
     that the two are smooth and are compared in every combination of those
     choices at once. Read as written, a jump in proportion to
     ``max(Y − c, 0)`` or to ``if(time > 100, 1, 0)`` is 0 wherever the values
-    picked put it, and was found a bend. A comparison that holds a step call,
+    picked put it, and was found a bend. For the same reason a call on
+    clocks alone, and a step call, is a symbol of its own
+    (:func:`_unmoved_as_symbols`). A comparison that holds a step call,
     ``floor(X/P) > 2``, flips where the step does and not where its two sides
     meet, and is never a bend here.
 
-    Every symbol is given a value between 0.5 and 2, and every choice one
-    between 0.2 and 0.8. Each symbol the atom
-    reads is then moved, in turn, over :data:`_CONTINUITY_GRID`, and wherever
+    A parameter has the value it has (``values``): ``kb·(thr − X)^n`` is a
+    bend for n of 1 and a jump for n of 0, and ``kb·exp(−2000·g)`` is nothing
+    for g of 1 and most of kb for g of 1e-4. A symbol the state moves is put
+    near the value it has now (``state``), at three points between half of it
+    and twice it, and between 0.5 and 2 where that is not known or is 0; a
+    choice is put between 0.2 and 0.8. Each symbol of the atom that the state
+    moves is then moved, in turn, over :data:`_CONTINUITY_GRID`, and wherever
     the atom comes out differently at two neighbouring values the flip
     between them is closed in on by bisection. Along every symbol and at
     every flip along it: the atom of ``if((B − 0.1)·(B − 3) > 0, kb·(B − 3),
@@ -4028,20 +4096,26 @@ def _continuous_across(
     At a flip each of the two laws is read on its own side: a hundredth of a
     hair from the flip, a tenth, and a whole hair. The two have to meet, to
     what their own arithmetic rounds by (:func:`_float_rounding`) and what
-    each does over the tenth, and each has to leave the surface no faster than a power of
-    0.6: a square root turns on with a slope that has no bound. A law with no
-    value on its side, or with a pole there, makes no demand: the engine's
-    right-hand side is not finite there, and a run that ends has not crossed.
+    each does over the tenth, and each has to leave the surface no faster
+    than a power of 0.6: a square root turns on with a slope that has no
+    bound. A law with no value on its side, or with a pole there, makes no
+    demand: the engine's right-hand side is not finite there, and a run that
+    ends has not crossed.
 
     ``held`` names the symbols that are not moved: the ones no run moves and
     no column perturbs across a surface, a parameter or a clock. A condition
     that flips along one of those alone flips at an instant, at one state for
     every column, and is not this question.
 
+    ``positive`` names the symbols that are concentrations, and are moved
+    over positive values alone. ``min(c·E, c·R)/c`` with c in proportion to
+    CO2 is the lesser of E and R where CO2 is above 0 and the greater below
+    it, and CO2 does not get there.
+
     A bend that depends on which way another choice goes is not found one:
-    ``if(X < thr, min(kb·(thr − X), cap), 0)`` meets 0 on the surface because
-    the ramp is the lesser there, and with the choice free it does not. Two
-    flips along one symbol that no grid value separates are not seen.
+    ``if(X > 0, if(X < n, X, n), 0)`` meets 0 on the surface because X is the
+    lesser there, and with the choice free it does not. Two flips along one
+    symbol that no grid value separates are not seen.
 
     The law and the atom are read as plain doubles (:func:`_float_form`), not
     through sympy: sympy puts a condition that holds a conditional into a
@@ -4064,10 +4138,17 @@ def _continuous_across(
     law_tree, atom_tree = parsed[flat], _law_tree(atom)
     if law_tree is None or atom_tree is None:
         return False
-    return _bends(law_tree, atom_tree.body, held) is True
+    return _bends(law_tree, atom_tree.body, held, positive, values, state, parsed) == "bend"
 
 
-def _choice_jump(flat: str, parsed: dict, held: AbstractSet[str]) -> str | None:
+def _choice_jump(
+    flat: str,
+    parsed: dict,
+    held: AbstractSet[str],
+    positive: AbstractSet[str] = frozenset(),
+    values: Mapping[str, float] | None = None,
+    state: Mapping[str, float] | None = None,
+) -> str | None:
     """The first ``abs``, ``max`` or ``min`` of the rate law *flat* that the
     law jumps across, as written, or ``None``.
 
@@ -4081,6 +4162,10 @@ def _choice_jump(flat: str, parsed: dict, held: AbstractSet[str]) -> str | None:
     A condition is refused unless it is found a bend; a choice is refused
     where it is found a jump. ``abs`` of what has one sign and ``max`` of a
     rate that is not read are everywhere, and flip nowhere that can be seen.
+    The root of a magnitude, ``sqrt(abs(d))`` over the discriminant of a
+    binding equilibrium, meets itself across its zero with a slope that has
+    no bound; that is a bend to a choice, and the quotient is out by the root
+    of its step there, a part in ten thousand.
     """
     if len(flat) > _CONTINUITY_MAX_CHARS:
         return None
@@ -4095,42 +4180,110 @@ def _choice_jump(flat: str, parsed: dict, held: AbstractSet[str]) -> str | None:
         if written is None or not isinstance(node, ast.expr) or ast.dump(node) in seen:
             continue
         seen.add(ast.dump(node))
-        if _bends(law_tree, node, held) is False:
+        if _bends(law_tree, node, held, positive, values, state, parsed) == "jump":
             return written
     return None
 
 
-def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> bool | None:
-    """:func:`_continuous_across` on a tree of :func:`_law_tree` and a
-    comparison in it: ``True`` for a bend, ``False`` for a jump or a law that
-    leaves the surface too fast, and ``None`` where neither was found: a law
-    or a comparison that is not read, one no flip was found for."""
-    import random
-
+def _made_ready(law_tree: ast.Expression, atom: ast.expr, fixed, clocks) -> tuple:
+    """``(laws, comparison, forms, choices, unmoved)`` for :func:`_bends`: the
+    law with *atom* held true and held false, and the comparison, each with
+    its choices blended and its calls on clocks taken as symbols; the
+    compiled form of each; and the names given to the choices and to those
+    calls. The first three are ``None`` where one of them is not read or no
+    conditional of the law holds the atom."""
     choices: dict[str, str] = {}
+    unmoved: dict[str, str] = {}
+
+    def ready(body: ast.expr) -> ast.Expression:
+        out = _unmoved_as_symbols(_blended(body, choices).body, unmoved, fixed, clocks)
+        return ast.fix_missing_locations(ast.Expression(body=out))
+
     try:
         laws = []
         for value in (True, False):
             forced = _Forced(atom, value)
             body = forced.visit(law_tree.body)
             if not forced.hits:
-                return None
-            laws.append(_blended(body, choices))
-        cond = _float_form(_blended(atom, choices))
+                return None, None, None, choices, unmoved
+            laws.append(ready(body))
+        cond = _float_form(ready(atom))
         forms = [_float_form(law) for law in laws]
     except (_Unread, RecursionError):
-        return None
-    if cond is None or None in forms:
+        return None, None, None, choices, unmoved
+    return laws, cond, forms, choices, unmoved
+
+
+def _bends(
+    law_tree: ast.Expression,
+    atom: ast.expr,
+    held: AbstractSet[str],
+    positive: AbstractSet[str] = frozenset(),
+    values: Mapping[str, float] | None = None,
+    state: Mapping[str, float] | None = None,
+    parsed: dict | None = None,
+) -> str | None:
+    """:func:`_continuous_across` on a tree of :func:`_law_tree` and a
+    comparison in it: ``"bend"``, ``"jump"``, ``"steep"`` for a law that
+    meets itself and leaves the surface too fast, and ``None`` where none of
+    them was found: a law or a comparison that is not read, one no flip was
+    found for.
+
+    ``parsed`` keeps the two laws and the comparison as they are made ready,
+    which does not change with a parameter's value, and the answer for the
+    values the law reads.
+    """
+    fixed = dict(values or {})
+    clocks = frozenset(held) - set(fixed)
+    key = (id(law_tree), ast.dump(atom), clocks, frozenset(fixed))
+    ready: tuple | None = parsed.get(key) if parsed is not None else None
+    if ready is None:
+        ready = _made_ready(law_tree, atom, fixed, clocks)
+        if parsed is not None:
+            parsed[key] = ready
+    laws, cond, forms, choices, unmoved = ready
+    if laws is None or cond is None or None in forms:
         return None
     cond_at, cond_names, _ = cond
-    names = sorted(set(cond_names) | {name for form in forms for name in form[1]})
-    pivots = [i for i, name in enumerate(names) if name in set(cond_names) - held]
+    read = set(cond_names) | {name for form in forms for name in form[1]}
+    names = sorted(read - set(fixed))
+    # Asked once for one law at one value of each parameter it reads: a model
+    # writes one law in seventy reactions, and a fit moves the parameters of
+    # a few laws between one run and the next.
+    asked = (
+        "asked",
+        key,
+        tuple(fixed[name] for name in sorted(read & set(fixed))),
+        frozenset(positive & read),
+    )
+    if parsed is not None and asked in parsed:
+        return parsed[asked]
+    answer = _bends_at(
+        laws, cond_at, cond_names, names, fixed, held, positive, state, choices, unmoved
+    )
+    if parsed is not None:
+        parsed[asked] = answer
+    return answer
+
+
+def _bends_at(
+    laws, cond_at, cond_names, names, fixed, held, positive, state, choices, unmoved
+) -> str | None:
+    """:func:`_bends` once the two laws and the comparison are made ready."""
+    import random
+
+    chosen = set(choices.values())
+    still = set(held) | chosen | set(unmoved.values())
+    pivots = [i for i, name in enumerate(names) if name in set(cond_names) - still]
     if not pivots:
         return None
 
+    def at_point(point: list[float]) -> dict[str, float]:
+        return {**fixed, **dict(zip(names, point, strict=True))}
+
     def holds(point: list[float]) -> bool | None:
         try:
-            return bool(cond_at(dict(zip(names, point, strict=True))))
+            return bool(cond_at(at_point(point)))
         except Exception:  # noqa: BLE001 - a value that is no number
             return None
 
@@ -4142,13 +4295,15 @@ def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> 
         found: list[tuple[float, float]] = []
         before_x = before = None
         for x in _CONTINUITY_GRID:
+            if x < 0.0 and names[i] in positive:
+                continue
             at[i] = x
             now = holds(at)
             if now is None:
                 return None
             if before is not None and now != before:
                 lo, hi = before_x, x
-                for _ in range(200):
+                for _ in range(1100):
                     mid = 0.5 * (lo + hi)
                     if mid in (lo, hi):
                         break
@@ -4167,7 +4322,7 @@ def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> 
     def leaves(tree: ast.Expression, point: list[float], i: int, steps: Sequence[float]):
         """A law a hundredth of a hair from the flip on one side, with what
         that is good to as its value on the flip; ``None`` where it has no
-        value there or a pole, and ``False`` where it leaves the surface
+        value there or no bound, and ``False`` where it leaves the surface
         faster than a power of 0.6. Read a tenth of a hair and a whole hair
         out as well, for those two.
 
@@ -4176,20 +4331,24 @@ def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> 
         an ulp over an ulp, and what it rounds by is as large as it is.
         """
         at = list(point)
-        values: list[float] = []
+        read_values: list[float] = []
         sizes: list[float] = []
         for step in steps:
             at[i] = step
-            value, size = _float_rounding(tree, dict(zip(names, at, strict=True)))
-            values.append(float(value))
+            value, size = _float_rounding(tree, at_point(at))
+            read_values.append(float(value))
             sizes.append(float(size))
-        if not all(math.isfinite(v) for v in values):
+        if not all(math.isfinite(v) for v in read_values):
             return None
-        rounding = 16.0 * _EPS * max(sizes) + _CONTINUITY_UNDERFLOW
-        near, tenth, whole = values
-        # A pole: ten times as large a tenth of the hair out as a whole hair
-        # out. `K·e/dt` with the gain `K = U/(U + R)` has one where U is −R.
-        if abs(tenth) > rounding and abs(tenth) >= 8.0 * abs(whole):
+        rounds = [16.0 * _EPS * size + _CONTINUITY_UNDERFLOW for size in sizes]
+        rounding = max(rounds)
+        near, tenth, whole = read_values
+        # No bound on the law here: twice as large a hundredth of a hair out
+        # as a whole hair out, which over a millionth of the symbol is a
+        # pole, `K·e/dt` with the gain `K = U/(U + R)` where U is −R, or the
+        # root of one. Against what the nearest reading rounds by itself,
+        # which beside a pole is more than the others are.
+        if abs(near) > rounds[0] and abs(near) >= 2.0 * abs(whole):
             return None
         if abs(tenth - near) > 0.2 * abs(whole - near) + rounding:
             return False
@@ -4198,20 +4357,28 @@ def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> 
         return near, rounding + abs(tenth - near)
 
     rng = random.Random(938)
-    reached = 0
-    chosen = set(choices.values())
-    for _ in range(3):
+
+    def drawn(name: str) -> float:
         # A selector between its two ends, so that a choice between two
         # values a root has a value at is one too.
-        point = [
-            rng.uniform(0.2, 0.8) if name in chosen else rng.uniform(0.5, 2.0) for name in names
-        ]
+        if name in chosen:
+            return rng.uniform(0.2, 0.8)
+        spread = rng.uniform(0.5, 2.0)
+        now = state.get(name) if state else None
+        return now * spread if now else spread
+
+    reached = 0
+    steep = False
+    for _ in range(3):
+        point = [drawn(name) for name in names]
         for i in pivots:
             crossings = flips(point, i)
             if crossings is None:
                 return None
             for lo, hi in crossings:
-                hair = 1e-6 * max(abs(hi), 1.0)
+                # A millionth of where the flip is, or of where the symbol
+                # is for a flip much nearer 0 than that.
+                hair = 1e-6 * max(abs(hi), abs(lo), abs(point[i]))
                 at = list(point)
                 at[i] = hi
                 true_above = holds(at)
@@ -4231,16 +4398,23 @@ def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> 
                 if any(end is None for end in ends):
                     continue
                 if any(end is False for end in ends):
-                    return False
+                    steep = True
+                    continue
                 (one, one_rounds), (two, two_rounds) = ends
                 if abs(one - two) > one_rounds + two_rounds:
-                    return False
+                    return "jump"
                 reached += 1
-    return True if reached else None
+    if steep:
+        return "steep"
+    return "bend" if reached else None
 
 
 def fallback_crossing(
-    core, sens_param_names: Sequence[str] = (), ic_species: Sequence[int] = (), ctx=None
+    core,
+    sens_param_names: Sequence[str] = (),
+    ic_species: Sequence[int] = (),
+    ctx=None,
+    parsed: dict | None = None,
 ) -> str | None:
     """What a time course on CVODES' difference quotient cannot differentiate
     through in this model, as the text of the first one found, or ``None``.
@@ -4271,19 +4445,24 @@ def fallback_crossing(
       constant, its initial amount). A counter nothing moves is read at ``y``
       in both terms of the quotient, and its threshold's parameters are held
       while the quotient is taken (issue #436);
+    - a choice the law makes with no condition written, ``abs``, ``max`` or
+      ``min``, where it is found to jump across it:
+      ``(thr − X)/abs(thr − X)`` (:func:`_choice_jump`);
     - a step call on the state, ``floor(Atot)``, or on a moved counter;
-    - a step call on literal time whose argument reads a requested parameter,
-      ``floor(time()/P)`` with ``P`` requested: the steps move with ``P``, and
-      nothing jumps a column at a step;
-    - a table function that steps, indexed by an observable.
+    - a step call on a clock, literal time or a counter nothing moves, whose
+      argument reads a requested parameter, ``floor(time()/P)`` with ``P``
+      requested: the steps move with ``P``, and nothing jumps a column at a
+      step. In a condition as well as outside one;
+    - a table function that steps, indexed by an observable or by a function;
+    - a rate law whose functions nest too deep to write out, which is not
+      read at all.
 
-    A crossing on literal time is not one of these. Neither is a rate law that
-    jumps with nothing to say so, ``(thr − X)/abs(thr − X)``: this scan reads
-    conditions, step calls and tables, and that is none of them.
+    A crossing on literal time is not one of these.
 
     Scans the reaction rate expressions with their functions inlined, as
     :func:`model_uncompensated_crossing_reason` does. An atom that names no
-    symbol and a comparison over run constants alone are no crossing.
+    symbol, a comparison over run constants alone, and a concentration
+    compared with a number that is not above 0 are no crossing.
     """
     from bngsim._jacobian import _TIME_SYM, _inline_functions, has_condition_construct
 
@@ -4292,16 +4471,35 @@ def fallback_crossing(
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("fallback-crossing scan: codegen data unavailable (%s)", exc)
         data = {}
-    for table in data.get("table_functions", ()):
-        if table.get("step") and table.get("index_kind") not in ("time", "parameter"):
+    stepping = [table for table in data.get("table_functions", ()) if table.get("step")]
+    for table in stepping:
+        if table.get("index_kind") not in ("time", "parameter"):
             return f'tfun {table.get("name")} (method=>"step")'
     if core.n_functions == 0:
         return None
     if ctx is None:
         ctx = core.functional_jacobian_context()
     func_map = dict(ctx["function_map"])
+    # A table indexed by a parameter is indexed by the state where the
+    # parameter is a slot a function owns: ``fIdx() = Aobs``.
+    param_names = list(core.param_names)
+    for table in stepping:
+        index = table.get("index_param_idx", -1)
+        if (
+            table.get("index_kind") == "parameter"
+            and 0 <= index < len(param_names)
+            and param_names[index] in func_map
+        ):
+            return f'tfun {table.get("name")} (method=>"step")'
     texts = [str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]]
-    flats = [_inline_functions(t, func_map) or t for t in texts]
+    flats = []
+    for text in texts:
+        flat = _inline_functions(text, func_map)
+        if flat is None:
+            # Functions nested past what is written out, or a cycle. Read as
+            # its bare name, it would hold no condition at all.
+            return f"{text} (its functions nest too deep to read)"
+        flats.append(flat)
     flats = [
         f
         for f in flats
@@ -4309,32 +4507,46 @@ def fallback_crossing(
     ]
     if not flats:
         return None
-    try:
-        scope = switch_condition_scope(core, ctx)
-        moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("fallback-crossing scan: scope unavailable (%s)", exc)
-        return None
+    scope = switch_condition_scope(core, ctx)
+    moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
     requested = set(sens_param_names)
-    parsed: dict = {}
+    # ``parsed`` keeps what is made of each rate law's text, which does not
+    # change with a parameter's value, between one scan of a model and the next.
+    parsed = {} if parsed is None else parsed
     # What no run moves and no column perturbs across a surface: a parameter,
     # literal time, a counter no requested column moves.
     held = frozenset(scope.run_constants) | frozenset(_BUILTIN_CONSTANT_VALUES)
     held |= {name for name, idx in scope.clocks.items() if idx not in moved}
     held |= {_TIME_SYM}
+    # What each parameter is, and what each observable is now. A
+    # concentration is an observable that is a positive sum of species, none
+    # of them below 0 now, and is moved over positive values alone.
+    values = {name: float(scope.values[scope.param_idx[name]]) for name in scope.run_constants}
+    state: dict[str, float] = {}
+    positive: set[str] = set()
+    amounts = [float(core.get_concentration(name)) for name in core.species_names]
+    for name, parts in ctx.get("observables", ()):
+        state[str(name)] = sum(weight * amounts[index] for index, weight in parts)
+        if (
+            parts
+            and all(weight > 0.0 and amounts[index] >= 0.0 for index, weight in parts)
+            and state[str(name)] > 0.0
+        ):
+            positive.add(str(name))
 
-    def crosses(flat: str, raw: str) -> bool:
+    def crosses(flat: str) -> bool:
         """Whether the quotient reads across the surface *flat* names."""
         if not _IDENTIFIER.search(flat) or condition_cannot_cross(flat, scope):
             return False
         if _reads_clock_and_run_constants(flat, scope):
             read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
             return bool({i for i in read if i >= 0} & moved)
-        return True
+        return not _never_flips(flat, positive, values)
 
     def step_moves(flat: str, raw: str) -> bool:
-        """A step on literal time that a requested parameter moves."""
-        if not _reads_time_and_run_constants(flat, scope):
+        """A step on a clock that a requested parameter moves: on literal
+        time, or on a counter no column moves, which is the same clock."""
+        if not _reads_clock_and_run_constants(flat, scope):
             return False
         return bool((set(_IDENTIFIER.findall(flat)) | set(_IDENTIFIER.findall(raw))) & requested)
 
@@ -4345,19 +4557,45 @@ def fallback_crossing(
         if has_condition_construct(flat):
             for atom in _iter_condition_atoms(flat):
                 atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-                if crosses(atom_flat, atom) and not _continuous_across(
-                    whole, atom_flat, parsed, held
+                if crosses(atom_flat) and not _continuous_across(
+                    whole, atom_flat, parsed, held, positive, values, state
                 ):
                     return atom
+                # A step in a condition on a clock: its edges move with a
+                # requested parameter as they do outside one.
+                if _STEP_CALL.search(atom_flat) and step_moves(atom_flat, atom):
+                    return atom
         if _CHOICE_CALL.search(flat):
-            choice = _choice_jump(whole, parsed, held)
+            choice = _choice_jump(whole, parsed, held, positive, values, state)
             if choice is not None:
                 return choice
         for call, arg in _iter_step_calls(flat):
             arg_flat = _inline_derived_param_refs(arg, scope.derived_exprs) or arg
-            if crosses(arg_flat, arg) or step_moves(arg_flat, arg):
+            if crosses(arg_flat) or step_moves(arg_flat, arg):
                 return call
     return None
+
+
+def _never_flips(atom: str, positive: AbstractSet[str], values: Mapping[str, float]) -> bool:
+    """Whether *atom* compares a concentration with a number that is not
+    above 0: ``S > 0``, the guard of ``if(S > 0, Vm·Q/S, 0)``. A
+    concentration is above 0, and the comparison comes out one way."""
+    tree = _float_tree(atom)
+    body = tree.body if tree is not None else None
+    if not isinstance(body, ast.Compare) or len(body.ops) != 1:
+        return False
+    for one, other in ((body.left, body.comparators[0]), (body.comparators[0], body.left)):
+        if not (isinstance(one, ast.Name) and one.id in positive):
+            continue
+        form = _float_form(ast.fix_missing_locations(ast.Expression(body=other)))
+        if form is None or not set(form[1]) <= set(values):
+            continue
+        try:
+            if float(form[0](dict(values))) <= 0.0:
+                return True
+        except Exception:  # noqa: BLE001 - a value that is no number
+            continue
+    return False
 
 
 def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:

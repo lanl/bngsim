@@ -689,6 +689,7 @@ class Simulator:
         # Issue #938 — what a time course on the difference quotient cannot
         # differentiate through in this model, for the columns it was asked of.
         "_fallback_crossing_memo",
+        "_fallback_scan_cache",
     )
 
     def __init__(
@@ -1173,6 +1174,7 @@ class Simulator:
         # support map; None until first needed by a sensitivity run.
         self._expr_sens_support_memo: dict[str, str | None] | None = None
         self._fallback_crossing_memo: tuple[tuple, str | None] | None = None
+        self._fallback_scan_cache: tuple[tuple, dict] | None = None
         if self._sensitivity_params and dispatch != "ode":
             raise ValueError("sensitivity_params is only supported for method='ode'.")
         if self._sensitivity_ic and dispatch != "ode":
@@ -1553,7 +1555,9 @@ class Simulator:
             detail = " Detail: " + "; ".join(sorted(res.reasons.values())) + "."
         return list(res.compensated), detail, dict(res.blocked)
 
-    def _raise_if_uncompensated_crossing_sensitivities(self, *, time_course: bool = True) -> None:
+    def _raise_if_uncompensated_crossing_sensitivities(
+        self, *, time_course: bool = True, params: Sequence[str] | None = None
+    ) -> None:
         """Refuse a forward-sensitivity run left on the difference quotient over a
         rate-law branch crossing whose time moves (issue #414).
 
@@ -1632,7 +1636,7 @@ class Simulator:
             logger.debug("Uncompensated-crossing sensitivity refusal: scan unavailable (%s)", e)
             return
         if reason is None:
-            self._raise_if_state_crossing_on_fallback(time_course)
+            self._raise_if_state_crossing_on_fallback(time_course, params)
             return
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported for this model: it branches on a "
@@ -1649,7 +1653,9 @@ class Simulator:
             "you need an approximate gradient."
         )
 
-    def _raise_if_state_crossing_on_fallback(self, time_course: bool) -> None:
+    def _raise_if_state_crossing_on_fallback(
+        self, time_course: bool, params: Sequence[str] | None = None
+    ) -> None:
         """Refuse a time-course sensitivity run left on the difference quotient
         in a model with a crossing the quotient reads across (issues #938, #932).
 
@@ -1666,25 +1672,40 @@ class Simulator:
             return
         from bngsim._switch_sensitivity import fallback_crossing
 
-        # The answer is a property of the rate laws' text and of which columns
-        # are requested, neither of which a set_param changes, and the scan
-        # parses every conditional rate law: asked once per simulator.
-        key = (tuple(self._sensitivity_params or ()), tuple(self._sensitivity_ic or ()))
+        core = self._model._core
+        columns = tuple(self._sensitivity_params or ()) if params is None else tuple(params)
+        ic = tuple(self._sensitivity_ic or ())
+        # The answer goes with the rate laws' text, with which columns are
+        # requested and with what the parameters are: a law that bends at one
+        # value of an exponent jumps at another, and a species is a counter
+        # at a rate of exactly 1. Asked again where any of those has changed,
+        # with what was made of the text kept.
+        key = (columns, ic, tuple(float(core.get_param(name)) for name in core.param_names))
         cached = self._fallback_crossing_memo
         if cached is not None and cached[0] == key:
             crossing = cached[1]
         else:
+            kept = self._fallback_scan_cache
+            if kept is None or kept[0] != key[:2]:
+                kept = self._fallback_scan_cache = (key[:2], {})
+            species = list(core.species_names)
             try:
-                core = self._model._core
-                species = list(core.species_names)
                 crossing = fallback_crossing(
                     core,
-                    key[0],
-                    [species.index(n) for n in key[1] if n in species],
+                    columns,
+                    [species.index(n) for n in ic if n in species],
+                    parsed=kept[1],
                 )
-            except Exception as e:  # pragma: no cover - defensive
-                logger.debug("Fallback-crossing sensitivity refusal: scan unavailable (%s)", e)
-                return
+            except Exception as e:
+                # Not let through: a rate law that cannot be read is one whose
+                # crossings are not known.
+                raise SensitivityUnsupportedError(
+                    "Forward sensitivity is not supported for this model: it has no analytic "
+                    "sensitivity right-hand side, and its rate laws could not be read for a "
+                    f"crossing on the state ({type(e).__name__}: {e}). On CVODES' internal "
+                    "difference quotient a column is wrong across one (issues #938, #932), "
+                    "and bngsim refuses rather than run without knowing."
+                ) from e
             self._fallback_crossing_memo = (key, crossing)
         if crossing is None:
             return
@@ -5454,10 +5475,12 @@ class Simulator:
 
         # Issue #414 — refuse an uncompensated moving rate-law crossing left on the
         # difference quotient, the same as run(). Model-structural (it re-derives
-        # from the core, not from this call's target params), so a Simulator built
-        # without sensitivity_params — the way this entry point is often reached —
-        # is gated exactly as a sensitivity-configured one.
-        self._raise_if_uncompensated_crossing_sensitivities()
+        # from the core), so a Simulator built without sensitivity_params — the
+        # way this entry point is often reached — is gated exactly as a
+        # sensitivity-configured one. The state-crossing refusal behind it
+        # (issue #938) is not: which counters a column moves, and which steps a
+        # requested parameter moves, go with this call's columns.
+        self._raise_if_uncompensated_crossing_sensitivities(params=target_params)
 
         # Effective solver options
         effective_rtol = rtol if rtol is not None else self._rtol
