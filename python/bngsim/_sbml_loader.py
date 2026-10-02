@@ -425,37 +425,75 @@ def _math_has_unsupported_delay(node, func_defs: dict, _seen: set | None = None)
     return False
 
 
-def _law_has_a_difference(node, func_defs: dict, _seen: set | None = None) -> bool:
-    """True iff *node* subtracts or negates anything, or carries a negative
-    literal: what a reversible law's forward-minus-reverse flux is written with.
+def _law_is_nonnegative(node, lookup, env: dict | None = None, _seen: set | None = None) -> bool:
+    """True iff *node* is non-negative by its form: a sum, product, quotient,
+    power of a non-negative base, ``exp``, ``abs``, a ``piecewise`` of such
+    pieces, over species, compartments, the time and non-negative constants.
 
-    A law with none of it, ``Vm*A/(Km + A)*c``, has no reverse flux to lose: the
-    reversible flag on it is a label (COPASI sets it by default), and SSA runs
-    it as the one channel it would run the same law as when flagged
-    irreversible. *Called* user-defined functions are expanded, as
-    :func:`_math_has_unsupported_delay` does.
+    A reversible law that is not a difference: ``Vm*A/(Km + A)*c`` has no
+    reverse flux to lose, the reversible flag on it is a label (COPASI sets it
+    by default), and SSA runs it as the one channel it would run the same law as
+    when flagged irreversible. Anything else is taken for a difference, however
+    it is written: a minus, a negative constant, a parameter a rule or an event
+    can make negative, ``ln``, ``sin``, an assignment rule ``v := kf*A - kr*B``
+    the law reads, a reaction's rate. *lookup* names the model: see its use in
+    the reaction loop. Called function definitions and assignment rules are
+    expanded.
     """
     if node is None:
+        return False
+    env = env or {}
+    _seen = set() if _seen is None else _seen
+    t = node.getType()
+    kids = [node.getChild(i) for i in range(node.getNumChildren())]
+
+    def each(nodes) -> bool:
+        return all(_law_is_nonnegative(k, lookup, env, _seen) for k in nodes)
+
+    if t == libsbml.AST_INTEGER:
+        return node.getInteger() >= 0
+    if t in (libsbml.AST_REAL, libsbml.AST_REAL_E):
+        v = node.getReal()
+        return v == v and v >= 0
+    if t == libsbml.AST_RATIONAL:
+        return node.getDenominator() != 0 and node.getNumerator() * node.getDenominator() >= 0
+    if t in (
+        libsbml.AST_CONSTANT_E,
+        libsbml.AST_CONSTANT_PI,
+        libsbml.AST_CONSTANT_TRUE,
+        libsbml.AST_CONSTANT_FALSE,
+        libsbml.AST_NAME_TIME,
+        libsbml.AST_NAME_AVOGADRO,
+    ):
         return True
-    if _seen is None:
-        _seen = set()
-    for n in _iter_ast_subtree(node):
-        t = n.getType()
-        if t == libsbml.AST_MINUS:
-            return True
-        if t == libsbml.AST_INTEGER and n.getInteger() < 0:
-            return True
-        if t in (libsbml.AST_REAL, libsbml.AST_REAL_E) and n.getReal() < 0:
-            return True
-        if t == libsbml.AST_RATIONAL and (n.getNumerator() < 0) != (n.getDenominator() < 0):
-            return True
-        if t == libsbml.AST_FUNCTION:
-            fname = n.getName()
-            if fname in func_defs and fname not in _seen:
-                _seen.add(fname)
-                _params, body = func_defs[fname]
-                if body is _RATEOF_FUNCDEF or _law_has_a_difference(body, func_defs, _seen):
-                    return True
+    if t == libsbml.AST_NAME:
+        name = node.getName()
+        if name in env:
+            return env[name]
+        return lookup(name, _seen)
+    if t in (libsbml.AST_PLUS, libsbml.AST_TIMES, libsbml.AST_DIVIDE):
+        return each(kids)
+    if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+        return len(kids) == 2 and _law_is_nonnegative(kids[0], lookup, env, _seen)
+    if t in (libsbml.AST_FUNCTION_EXP, libsbml.AST_FUNCTION_ABS):
+        return True
+    if t in (libsbml.AST_FUNCTION_FLOOR, libsbml.AST_FUNCTION_CEILING, libsbml.AST_FUNCTION_MIN):
+        return each(kids)
+    if t == libsbml.AST_FUNCTION_ROOT:
+        return bool(kids) and _law_is_nonnegative(kids[-1], lookup, env, _seen)
+    if t == libsbml.AST_FUNCTION_DELAY:
+        return bool(kids) and _law_is_nonnegative(kids[0], lookup, env, _seen)
+    if t == libsbml.AST_FUNCTION_PIECEWISE:
+        # piece, condition, piece, condition, ..., [otherwise]
+        pieces = kids[0::2] if len(kids) % 2 == 0 else kids[0:-1:2] + [kids[-1]]
+        return each(pieces)
+    if t == libsbml.AST_FUNCTION:
+        called = lookup.func_defs.get(node.getName())
+        if called is None or called[1] is _RATEOF_FUNCDEF or len(called[0]) != len(kids):
+            return False
+        formals, body = called
+        bound = {f: _law_is_nonnegative(k, lookup, env, _seen) for f, k in zip(formals, kids)}
+        return _law_is_nonnegative(body, lookup, bound, _seen)
     return False
 
 
@@ -6212,6 +6250,46 @@ def _build_model_from_sbml_doc(doc):
         refs_j.discard(rxn_j.getId())  # drop self-reference
         referenced_reaction_ids |= refs_j
 
+    # What a name in a kinetic law is, for _law_is_nonnegative: a species or a
+    # compartment is, a constant parameter is by its value after initial
+    # assignments, a rule's target is by its rule, anything a rate rule or an
+    # event writes is not (it can be made negative), nor is anything else.
+    _sign_memo: dict[str, bool] = {}
+
+    class _SignLookup:
+        def __init__(self, local_map, local_values):
+            self.func_defs = func_defs
+            self.local_map = local_map or {}
+            self.local_values = local_values or {}
+
+        def __call__(self, name, _seen) -> bool:
+            if name in self.local_map:
+                v = self.local_values.get(self.local_map[name])
+                return v is not None and v == v and v >= 0
+            if name in _sign_memo:
+                return _sign_memo[name]
+            _sign_memo[name] = False  # a cycle reads as not proven
+            if name in assignment_targets:
+                rule = sbml_model.getAssignmentRuleByVariable(name)
+                ok = (
+                    rule is not None
+                    and rule.getMath() is not None
+                    and _law_is_nonnegative(rule.getMath(), self, {}, _seen)
+                )
+            elif name in species_idx or name in comp_volumes:
+                ok = True
+            elif name in rate_rule_targets or name in event_promoted_params:
+                ok = False
+            else:
+                par = sbml_model.getParameter(name)
+                if par is None:
+                    ok = False
+                else:
+                    v = ia_values.get(name, par.getValue() if par.isSetValue() else float("nan"))
+                    ok = v == v and v >= 0
+            _sign_memo[name] = ok
+            return ok
+
     reaction_local_param_maps: dict[int, dict[str, str]] = {}
     for i in range(sbml_model.getNumReactions()):
         rxn = sbml_model.getReaction(i)
@@ -6281,7 +6359,9 @@ def _build_model_from_sbml_doc(doc):
             rate_expr_emitted = True
 
         # A reversible law that is not a difference runs as an irreversible one.
-        _rev_difference = rxn.getReversible() and _law_has_a_difference(math, func_defs)
+        _rev_difference = rxn.getReversible() and not _law_is_nonnegative(
+            math, _SignLookup(local_param_map, local_param_values)
+        )
 
         _varvol_reject: dict = {}
         classification = _classify_mass_action(
