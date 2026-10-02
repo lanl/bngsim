@@ -382,7 +382,9 @@ class TestTheRealModels:
     # than one that drifted, which is why it reproduces where #480 does not.
     # Post-GH #395 both are caught in the RHS instead of in this scan.
     STRUCTURAL = ("BIOMD0000000829", (70.0, 160.0), 201, "n_1")
-    STRUCTURAL_2 = ("BIOMD0000000632", (0.0, 10.0), 201, "Gy")
+    # The second witness of that kind until issue #915: its non-finite
+    # derivative is an event assignment's, and the run is refused at the event.
+    AT_AN_EVENT = ("BIOMD0000000632", (0.0, 10.0), 201, "Gy")
 
     # Issue #384's own witness: `parameter_63` tracks AMICI to six significant
     # figures for 963 of 1001 output points and then all 41 of its rows go NaN
@@ -391,7 +393,7 @@ class TestTheRealModels:
     # trajectory and both come back finite.
     KNIFE_EDGE = ("BIOMD0000000480", (0.0, 10.0), 1001, "parameter_63")
 
-    @pytest.mark.parametrize("case", [STRUCTURAL, STRUCTURAL_2, KNIFE_EDGE], ids=lambda c: c[0])
+    @pytest.mark.parametrize("case", [STRUCTURAL, KNIFE_EDGE], ids=lambda c: c[0])
     def test_the_run_refuses_rather_than_returning_the_tensor(self, case):
         """The wiring: a real solve refuses rather than handing the tensor back.
 
@@ -418,12 +420,25 @@ class TestTheRealModels:
         assert re.search(rf"output point t=[\d.eE+-]+ \(index \d+ of {n_points}\)", msg)
         assert "n_sens_err_test_fails" in msg
 
-    @pytest.mark.parametrize("case", [STRUCTURAL, STRUCTURAL_2], ids=lambda c: c[0])
+    def test_an_event_value_with_no_derivative_is_refused_at_the_event(self):
+        """``BIOMD0000000632`` ships ``Gy = 0``, and its event ``DNADamage``
+        assigns a value whose derivative in Gy there is ``∂√Gy/∂Gy``, an honest
+        ``+inf``. The inf was annihilated to nan on its way to the tensor, and
+        the run was refused for the tensor. It is refused at the event now, by
+        name, with this module's interception on or off (issue #915)."""
+        name, t_span, n_points, column = self.AT_AN_EVENT
+        for recover in (None, "0"):
+            with pytest.raises(bngsim.SimulationError, match="issue #915") as caught:
+                _outcome(name, t_span, n_points, recover=recover)
+            assert "'DNADamage'" in str(caught.value)
+            assert f"'{column}'" in str(caught.value)
+
+    @pytest.mark.parametrize("case", [STRUCTURAL], ids=lambda c: c[0])
     def test_a_divergent_derivative_would_reach_the_tensor_as_nan(self, case):
         """The measurement behind the hedged nan reading (issue #394).
 
-        ``BIOMD0000000632`` ships ``Gy = 0``, so ``∂√Gy/∂Gy`` is an honest
-        ``+inf``; ``BIOMD0000000829``'s ``n_1`` column is the same shape. #394
+        ``BIOMD0000000829``'s ``n_1`` column has a derivative that is an honest
+        ``+inf``, as ``∂√Gy/∂Gy`` at ``Gy = 0`` is in ``BIOMD0000000632``. #394
         expected the tensor to show an ``inf`` for exactly that reason, and the
         message's advice would follow from it. It does not: what would reach the
         tensor is **nan**, because the inf is annihilated on the way there. That
