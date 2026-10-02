@@ -297,8 +297,8 @@ def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path,
         ("if(Aobs<thr,kb*sqrt(thr-Aobs),0)", "Aobs<thr", False),
         ("if(rateOf(A)>-thr,kb,0)", "rateOf(A)>-thr", False),
         ("kc*if(floor(Aobs/P)>2,1,2)", "floor(Aobs/P)>2", False),
-        # The branch not taken is not evaluated: its square root is of a
-        # negative number a hair below the threshold.
+        # The branch not taken has no value a hair below the threshold: its
+        # square root is of a negative number.
         ("if(Aobs<thr,0,kb*(Aobs-thr)*sqrt(Aobs-thr+1e-9))", "Aobs<thr", True),
         # The branch taken is: no value there, and nothing to compare.
         ("if(Aobs<thr,kb*(thr-Aobs)*sqrt(Aobs-thr),0)", "Aobs<thr", False),
@@ -308,6 +308,27 @@ def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path,
         # A call and an operator that are not read as doubles.
         ("if(Aobs<thr,kb*(thr-Aobs)*mratio(1,2,Aobs),0)", "Aobs<thr", False),
         ("if(Aobs<thr,kb*(thr-Aobs)*(Bobs%2),0)", "Aobs<thr", False),
+        # A saturation whose half-point is three hairs from the surface: not
+        # a ramp over the hair, and a bend.
+        ("if(Aobs<thr,kb*(thr-Aobs)/((thr-Aobs)+3e-6),0)", "Aobs<thr", True),
+        # A jump a thousandth of what the ramp beside it does over the hair.
+        ("if(Aobs<thr,kb*(thr-Aobs)+1e-9,0)", "Aobs<thr", False),
+        # Powers under 1 either side of the square root.
+        ("if(Aobs<thr,kb*(thr-Aobs)^0.9,0)", "Aobs<thr", False),
+        ("if(Aobs<thr,kb*(thr-Aobs)^0.2,0)", "Aobs<thr", False),
+        # A pole of the condition and of the law: passed over, and the bend
+        # where the numerator is 0 is what is left.
+        ("if(((A-B)/(U+R))>0,(A-B)/(U+R),0)", "((A-B)/(U+R))>0", True),
+        # 1 − 1/(1 + exp(−x)) is 0 or one ulp of 1 far out, and the law steps
+        # by that: inside what its own arithmetic rounds by.
+        (
+            "if((a*(1-1/(1+exp(-(Q-off)/tmp)))*(S-Q))>0,a*(1-1/(1+exp(-(Q-off)/tmp)))*(S-Q),0)",
+            "(a*(1-1/(1+exp(-(Q-off)/tmp)))*(S-Q))>0",
+            True,
+        ),
+        # A threshold written as a count of molecules.
+        ("if(Aobs>250000,kb*(Aobs-250000),0)", "Aobs>250000", True),
+        ("if(Aobs>250000,kb,0)", "Aobs>250000", False),
     ],
 )
 def test_whether_a_rate_law_is_continuous_where_its_condition_flips(law, atom, continuous):
@@ -321,17 +342,24 @@ GATES = "if(T<4,1,if(T>=16,if(T<20,1,0),0))"
 
 
 @pytest.mark.parametrize(
-    ("law", "continuous"),
+    ("law", "held", "continuous"),
     [
-        (f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)", True),
-        (f"if((({GATES})*fA-V)>0,kb,0)", False),
+        (f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)", {"T"}, True),
+        (f"if((({GATES})*fA-V)>0,kb,0)", {"T"}, False),
+        # With T moved, the condition flips where a gate does, and the law
+        # jumps there.
+        (f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)", set(), False),
     ],
-    ids=["signed-rate", "jump"],
+    ids=["signed-rate", "jump", "signed-rate-on-a-moved-clock"],
 )
-def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(monkeypatch, law, continuous):
-    """A condition that holds a conditional: sympy puts it into a canonical
-    form as it parses, at 2 s a rate law, and one corpus model
-    (mt_music_sequencer) has twelve of them. The law is read as plain doubles."""
+def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(
+    monkeypatch, law, held, continuous
+):
+    """A condition that holds a conditional on a clock T: sympy puts it into a
+    canonical form as it parses, at 2 s a rate law, and one corpus model
+    (mt_music_sequencer) has twelve of them. The law is read as plain doubles.
+    A clock no column moves is held: where the condition flips along it, it
+    flips at an instant and not at a state."""
     from bngsim import _jacobian
     from bngsim._switch_sensitivity import _continuous_across
 
@@ -339,7 +367,37 @@ def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(monkeypatch,
         raise AssertionError(f"parsed through sympy: {expr[:40]}")
 
     monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", parse)
-    assert _continuous_across(law, f"(({GATES})*fA-V)>0") is continuous
+    atom = f"(({GATES})*fA-V)>0"
+    assert _continuous_across(law, atom, held=frozenset(held)) is continuous
+
+
+@pytest.mark.parametrize(
+    ("law", "atom", "continuous"),
+    [
+        # The atom flips at B = 0.1 and at B = 3: a bend at 3, a jump at 0.1.
+        ("if((B-0.1)*(B-3)>0,kb*(B-3),0)", "(B-0.1)*(B-3)>0", False),
+        # A bend at both.
+        ("if((B-0.1)*(B-3)>0,kb*(B-0.1)*(B-3),0)", "(B-0.1)*(B-3)>0", True),
+        # The comparison tends to 0 far out and reaches it only at B = 0.1,
+        # where the law jumps. A secant from B between 0.5 and 2 runs outward.
+        ("if((B-0.1)*exp(-3*B)>0,kb,0)", "(B-0.1)*exp(-3*B)>0", False),
+        # A flip across a pole, with the law finite either side.
+        ("if(1/(B-0.7)>0,kb,2*kb)", "1/(B-0.7)>0", False),
+        # A condition no value of its symbols flips.
+        ("if((A*A+thr*thr)<0,kb,0)", "(A*A+thr*thr)<0", False),
+        # The magnitude of a signed quantity: two flips, a bend at each.
+        ("if(abs(V)>c,kb*(abs(V)-c),0)", "abs(V)>c", True),
+        ("if(abs(V)>c,kb*(V-c),0)", "abs(V)>c", False),
+    ],
+)
+def test_every_flip_of_a_condition_is_asked_about(law, atom, continuous):
+    """A comparison can flip at more than one value of a symbol, and the law
+    can bend at one and jump at another. Asked only at the root a secant came
+    to from a value between 0.5 and 2, the first of these was found
+    continuous, and the third at a root that is none."""
+    from bngsim._switch_sensitivity import _continuous_across
+
+    assert _continuous_across(law, atom) is continuous
 
 
 def test_a_time_crossing_beside_a_declined_rate_law_runs(tmp_path):

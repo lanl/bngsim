@@ -39,7 +39,7 @@ import logging
 import math
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import NamedTuple
 
@@ -3545,9 +3545,10 @@ def _float_tree(expr: str) -> ast.Expression | None:
 
 
 def _float_form(tree: ast.Expression | None):
-    """``(evaluate, names)`` for a tree of :func:`_float_tree`: a function of
-    a ``{name: value}`` mapping, and the names it reads other than the
-    built-in constants. ``None`` for a tree that is not read."""
+    """``(evaluate, names, tree)`` for a tree of :func:`_float_tree`: a
+    function of a ``{name: value}`` mapping, the names it reads other than
+    the built-in constants, and the tree itself, for
+    :func:`_float_rounding`. ``None`` for a tree that is not read."""
     if tree is None:
         return None
     form = _FloatForm()
@@ -3561,29 +3562,204 @@ def _float_form(tree: ast.Expression | None):
     def evaluate(values: dict[str, float]) -> float:
         return eval(code, scope, values)  # noqa: S307 - a tree of whitelisted nodes
 
-    return evaluate, names
+    return evaluate, names, tree
 
 
-def _continuous_across(flat: str, atom: str, parsed: dict | None = None) -> bool:
-    """Whether the rate law *flat* is continuous where the comparison *atom*
-    flips, asked at three points of the comparison's surface.
+# What each call rounds by, as its derivative: the factor an argument's own
+# rounding is carried through with. ``None`` for a call whose value is taken
+# to round by itself alone.
+_FLOAT_SLOPES = {
+    "exp": lambda x, f: abs(f),
+    "log": lambda x, f: _float_div(1.0, abs(x)),
+    "ln": lambda x, f: _float_div(1.0, abs(x)),
+    "log10": lambda x, f: _float_div(1.0, abs(x) * math.log(10.0)),
+    "log2": lambda x, f: _float_div(1.0, abs(x) * math.log(2.0)),
+    "sqrt": lambda x, f: _float_div(0.5, abs(f)),
+    "abs": lambda x, f: 1.0,
+    "sin": lambda x, f: 1.0,
+    "cos": lambda x, f: 1.0,
+    "tan": lambda x, f: 1.0 + f * f,
+    "asin": lambda x, f: _float_div(1.0, math.sqrt(max(1.0 - x * x, 0.0))),
+    "acos": lambda x, f: _float_div(1.0, math.sqrt(max(1.0 - x * x, 0.0))),
+    "atan": lambda x, f: 1.0 / (1.0 + x * x),
+    "sinh": lambda x, f: _FLOAT_CALLS["cosh"](x),
+    "cosh": lambda x, f: abs(_FLOAT_CALLS["sinh"](x)),
+    "tanh": lambda x, f: 1.0,
+}
+
+
+def _float_rounding(node: ast.AST, values: Mapping[str, float]) -> tuple[float, float]:
+    """The value of a tree of :func:`_float_tree` at *values*, and what the
+    arithmetic that makes it rounds by, in ulps of 1.
+
+    ``16·eps`` of a law's own value is not what it rounds by where it is a
+    small difference of large terms: ``1 − 1/(1 + exp(−x))`` is 0 or one ulp
+    of 1 for large x, whatever multiplies it afterwards, and a law that
+    carries it steps by that much. The second number is the size the first
+    was made from: a sum's is the sum of its terms', a product carries each
+    factor's through the other, a call carries its argument's through its
+    slope.
+
+    The second number is kept finite: where an intermediate overflows, as
+    ``exp`` of 700 times its argument's size does, it is the largest double,
+    and a division by what overflowed brings it back down with the value. An
+    exact 0 carries nothing through a product, and a quotient by an infinity
+    is an exact 0.
+
+    A truth value comes back with 0 for the second. Raises :class:`_Unread`
+    for what :class:`_FloatForm` does not read; the two read the same trees
+    and give the same values.
+    """
+    value, size = _float_sized(node, values)
+    if isinstance(value, bool):
+        return value, 0.0
+    return value, size if size <= sys.float_info.max else sys.float_info.max
+
+
+def _carried(factor: float, size: float) -> float:
+    """*size* carried through *factor*, with nothing carried through a 0."""
+    return 0.0 if factor == 0.0 or size == 0.0 else factor * size
+
+
+def _float_sized(node: ast.AST, values: Mapping[str, float]) -> tuple[float, float]:
+    """:func:`_float_rounding` before its second number is capped."""
+    if isinstance(node, ast.Expression):
+        return _float_sized(node.body, values)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return node.value, 0.0
+        if isinstance(node.value, (int, float)):
+            return float(node.value), abs(float(node.value))
+        raise _Unread("constant")
+    if isinstance(node, ast.Name):
+        if node.id in _BUILTIN_CONSTANT_VALUES:
+            value = float(_BUILTIN_CONSTANT_VALUES[node.id])
+        else:
+            value = float(values[node.id])
+        return value, abs(value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value, size = _float_sized(node.operand, values)
+        return (-value if isinstance(node.op, ast.USub) else +value), size
+    if isinstance(node, ast.BinOp):
+        a, size_a = _float_sized(node.left, values)
+        b, size_b = _float_sized(node.right, values)
+        a, b = float(a), float(b)
+        if isinstance(node.op, ast.Add):
+            return a + b, size_a + size_b
+        if isinstance(node.op, ast.Sub):
+            return a - b, size_a + size_b
+        if isinstance(node.op, ast.Mult):
+            return a * b, _carried(abs(a), size_b) + _carried(abs(b), size_a)
+        if isinstance(node.op, ast.Div):
+            value = _float_div(a, b)
+            if math.isinf(b):
+                return value, 0.0
+            return value, _float_div(size_a, abs(b)) + _carried(
+                abs(value), _float_div(size_b, abs(b))
+            )
+        if isinstance(node.op, ast.Pow):
+            value = _float_pow(a, b)
+            if a == 0.0:
+                # 0 to a power: what the base rounds by, to that power.
+                return value, abs(value) + _float_pow(_EPS * size_a, b) / _EPS
+            through = abs(b) * _float_div(size_a, abs(a)) + abs(math.log(abs(a))) * size_b
+            return value, _carried(abs(value), 1.0 + through)
+        raise _Unread("operator")
+    if isinstance(node, ast.Compare):
+        if len(node.ops) != 1 or not isinstance(node.ops[0], _FLOAT_COMPARISONS):
+            raise _Unread("comparison")
+        a = _float_sized(node.left, values)[0]
+        b = _float_sized(node.comparators[0], values)[0]
+        op = node.ops[0]
+        if isinstance(op, ast.Lt):
+            return a < b, 0.0
+        if isinstance(op, ast.LtE):
+            return a <= b, 0.0
+        if isinstance(op, ast.Gt):
+            return a > b, 0.0
+        if isinstance(op, ast.GtE):
+            return a >= b, 0.0
+        return (a == b) if isinstance(op, ast.Eq) else (a != b), 0.0
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
+        name = node.func.id
+        if name == "Piecewise":
+            for pair in node.args:
+                if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
+                    raise _Unread("Piecewise")
+                if _float_sized(pair.elts[1], values)[0]:
+                    return _float_sized(pair.elts[0], values)
+            return math.nan, 0.0
+        if name not in _FLOAT_CALLS:
+            raise _Unread(name)
+        args = [_float_sized(arg, values) for arg in node.args]
+        value = _FLOAT_CALLS[name](*(a for a, _ in args))
+        if isinstance(value, bool):
+            return value, 0.0
+        if name in ("min", "max"):
+            return value, max(size for _, size in args)
+        slope = _FLOAT_SLOPES.get(name)
+        if slope is None or len(args) != 1:
+            return value, abs(value)
+        return value, abs(value) + _carried(slope(float(args[0][0]), value), args[0][1])
+    raise _Unread(type(node).__name__)
+
+
+# Under this a double is within gradual underflow of 0 and has lost digits:
+# a law that carries `1/(1 + exp(x))` goes from 1e-306 to exactly 0 where the
+# exponential overflows, and that is no jump.
+_CONTINUITY_UNDERFLOW = sys.float_info.min / sys.float_info.epsilon
+
+# Where a condition is looked for a flip along one symbol: both signs, 1e-12
+# to 1e9, a third apart. A threshold written as a literal is a count of
+# molecules as readily as a concentration.
+_CONTINUITY_GRID = tuple(
+    sign * 10.0 ** (k / 8.0 - 12.0)
+    for sign, order in ((-1.0, range(168, -1, -1)), (1.0, range(169)))
+    for k in order
+)
+
+
+def _continuous_across(
+    flat: str, atom: str, parsed: dict | None = None, held: AbstractSet[str] = frozenset()
+) -> bool:
+    """Whether the rate law *flat* is continuous wherever the comparison
+    *atom* flips, asked at every flip found from three points.
 
     ``if(v < 0, -v/max(X, 0.01), 0)`` is: its two branches meet where ``v`` is
     0. ``if(X < thr, kb, 0)`` is not. The first is a bend, which a difference
     quotient reads across without harm; the second is a jump (issue #938).
 
-    The surface is where the atom's two sides are equal. Every symbol is given
-    a value between 0.5 and 2, and each symbol the atom reads is moved, in
-    turn, until the two sides meet. There the whole rate law is read a hair
-    either side and a tenth of a hair either side. A jump is as large across
-    the tenth as across the whole; what a continuous law does across the
-    surface is a tenth as large, or less where it turns on as a power. A
-    difference of two readings and not a slope beside them: a jump of a
-    thousandth beside a term that moves by 0.2 over the hair is a jump. Along
-    every symbol, because a jump in proportion to one of them is nothing on
-    the part of the surface where that one is 0.
+    Every symbol is given a value between 0.5 and 2. Each symbol the atom
+    reads is then moved, in turn, over :data:`_CONTINUITY_GRID`, and wherever
+    the atom comes out differently at two neighbouring values the flip
+    between them is closed in on by bisection. There the whole rate law is
+    read a hair either side and a tenth of a hair either side. A jump is as
+    large across the tenth as across the whole; what a ramp does across the
+    surface is a tenth as large. A difference of two readings and not a slope
+    beside them: a jump of a thousandth beside a term that moves by 0.2 over
+    the hair is a jump. Where the tenth is more than a tenth, a hundredth of
+    the hair is read too, which tells a law that curves on the scale of the
+    hair, a bend, from one that jumps or turns on as a power under 1.
 
-    A jump inside the rounding of the rate law's own value is not seen.
+    Along every symbol, because a jump in proportion to one of them is
+    nothing on the part of the surface where that one is 0. And at every flip
+    along it, not at the first one a root finder comes to: the atom of
+    ``if((B − 0.1)·(B − 3) > 0, kb·(B − 3), 0)`` flips at two values of B, and
+    the law bends at the one and jumps at the other. A flip is where the atom
+    changes, which is what the engine evaluates: a comparison that tends to 0
+    without reaching it, ``(B − 0.1)·exp(−3·B)`` far out, is no flip, and one
+    that changes sign across a pole is.
+
+    ``held`` names the symbols that are not moved: the ones no run moves and
+    no column perturbs across a surface, a parameter or a clock. A condition
+    that flips along one of those alone flips at an instant, at one state for
+    every column, and is not this question.
+
+    A jump inside what the rate law's own arithmetic rounds by
+    (:func:`_float_rounding`) is not seen, nor are two flips along one symbol
+    that no grid value separates. A flip the law has a pole at, or no value
+    beside, is passed over: the engine's right-hand side is not finite there,
+    and a run that ends has not crossed it.
 
     The law and the atom are read as plain doubles (:func:`_float_form`), not
     through sympy: sympy puts a condition that holds a conditional into a
@@ -3591,7 +3767,7 @@ def _continuous_across(flat: str, atom: str, parsed: dict | None = None) -> bool
     the signed-rate idiom.
 
     False wherever the question cannot be asked: a rate law or an atom that is
-    not read, a call that is not evaluated, a surface no symbol reaches.
+    not read, a call that is not evaluated, an atom no symbol flips.
 
     ``parsed`` keeps each rate law's compiled form between calls: a law with
     twenty conditions is asked twenty times.
@@ -3602,92 +3778,138 @@ def _continuous_across(flat: str, atom: str, parsed: dict | None = None) -> bool
         return False
     if parsed is None:
         parsed = {}
-    if flat not in parsed:
-        parsed[flat] = _float_form(_float_tree(flat))
-    law = parsed[flat]
-    tree = _float_tree(atom)
-    if law is None or tree is None:
+    for text in (flat, atom):
+        if text not in parsed:
+            parsed[text] = _float_form(_float_tree(text))
+    law, cond = parsed[flat], parsed[atom]
+    if law is None or cond is None:
         return False
-    # The atom's two sides, as their difference.
-    body = tree.body
-    if isinstance(body, ast.Compare) and len(body.ops) == 1:
-        sides = (body.left, body.comparators[0])
-    elif (
-        isinstance(body, ast.Call)
-        and isinstance(body.func, ast.Name)
-        and body.func.id in ("Eq", "Ne")
-        and len(body.args) == 2
-    ):
-        sides = (body.args[0], body.args[1])
-    else:
-        return False
-    gap = _float_form(ast.Expression(body=ast.BinOp(left=sides[0], op=ast.Sub(), right=sides[1])))
-    if gap is None:
-        return False
-    law_at, law_names = law
-    gap_at, gap_names = gap
-    symbols = sorted(set(law_names) | set(gap_names))
-    pivots = [i for i, name in enumerate(symbols) if name in set(gap_names)]
+    _, law_names, law_tree = law
+    cond_at, cond_names, _ = cond
+    symbols = sorted(set(law_names) | set(cond_names))
+    pivots = [i for i, name in enumerate(symbols) if name in set(cond_names) - held]
     if not pivots:
         return False
 
-    def read(fn, point: list[float]) -> float | None:
-        try:
-            value = float(fn(dict(zip(symbols, point, strict=True))))
-        except Exception:  # noqa: BLE001 - a name with no value, a value that is no number
-            return None
-        return value if math.isfinite(value) else None
+    def read(point: list[float]) -> tuple[float, float]:
+        """The law's value and what it rounds by (:func:`_float_rounding`)."""
+        value, size = _float_rounding(law_tree, dict(zip(symbols, point, strict=True)))
+        return float(value), float(size)
 
-    def on_surface(point: list[float], i: int) -> float | None:
-        """The value of symbol *i* at which the atom's two sides meet, or
-        ``None`` where moving it does not bring them together."""
-        at = list(point)
-        start = at[i]
-        x0, x1 = start, 1.1 * start
-        g0 = read(gap_at, at)
-        if g0 is None:
+    def holds(point: list[float]) -> bool | None:
+        try:
+            return bool(cond_at(dict(zip(symbols, point, strict=True))))
+        except Exception:  # noqa: BLE001
             return None
-        size = abs(g0)
-        for _ in range(60):
-            at[i] = x1
-            g1 = read(gap_at, at)
-            # A symbol the gap levels off in runs away, and is not a root
-            # however small the gap has become beside the symbol.
-            if g1 is None or abs(x1) > 1e3 * max(abs(start), 1.0):
+
+    def flips(point: list[float], i: int) -> list[float] | None:
+        """Every value of symbol *i* on the grid's range at which the atom
+        flips, or ``None`` where the atom cannot be read."""
+        at = list(point)
+        found: list[float] = []
+        before_x = before = None
+        for x in _CONTINUITY_GRID:
+            at[i] = x
+            now = holds(at)
+            if now is None:
                 return None
-            size = max(size, abs(g1))
-            if abs(g1) <= 1e-13 * size:
-                return x1
-            if g1 == g0:
+            if before is not None and now != before:
+                lo, hi = before_x, x
+                for _ in range(200):
+                    mid = 0.5 * (lo + hi)
+                    if mid in (lo, hi):
+                        break
+                    at[i] = mid
+                    there = holds(at)
+                    if there is None:
+                        return None
+                    if there == before:
+                        lo = mid
+                    else:
+                        hi = mid
+                found.append(hi)
+            before_x, before = x, now
+        return found
+
+    def beside(point: list[float], i: int, steps: Sequence[float]):
+        """The law's values, what they round by, and the atom's truth, with
+        symbol *i* at each of *steps*; ``None`` where one cannot be read."""
+        at = list(point)
+        values: list[float] = []
+        sizes: list[float] = []
+        sides: list[bool] = []
+        for step in steps:
+            at[i] = step
+            try:
+                value, size = read(at)
+            except Exception:  # noqa: BLE001 - a value that is no number
                 return None
-            x0, x1, g0 = x1, x1 - g1 * (x1 - x0) / (g1 - g0), g1
-        return None
+            side = holds(at)
+            if side is None:
+                return None
+            values.append(value)
+            sizes.append(size)
+            sides.append(side)
+        return values, sizes, sides
 
     rng = random.Random(938)
     reached = 0
     for _ in range(3):
         point = [rng.uniform(0.5, 2.0) for _ in symbols]
         for i in pivots:
-            x = on_surface(point, i)
-            if x is None:
-                continue
-            hair = 1e-6 * max(abs(x), 1.0)
-            values: list[float] = []
-            for steps in (-1.0, -0.1, 0.1, 1.0):
-                at = list(point)
-                at[i] = x + steps * hair
-                value = read(law_at, at)
-                if value is None:
-                    return False
-                values.append(value)
-            wide = abs(values[3] - values[0])
-            narrow = abs(values[2] - values[1])
-            rounding = 16.0 * _EPS * max(abs(v) for v in values)
-            # A part in 1e5 over the tenth: the surface is found to 1e-13, which
-            # is 1e-7 of the hair, and a ramp from it is that far off its tenth.
-            if narrow > (0.1 + 1e-5) * wide + rounding:
+            crossings = flips(point, i)
+            if crossings is None:
                 return False
-            reached += 1
+            for x in crossings:
+                hair = 1e-6 * max(abs(x), 1.0)
+                read_at = beside(point, i, [x + k * hair for k in (-1.0, -0.1, 0.1, 1.0)])
+                if read_at is None:
+                    return False
+                values, sizes, sides = read_at
+                # The law has no value on a side: an overflow, a root of a
+                # negative number. The engine has none there either, and no
+                # run that ends has been there.
+                if not all(math.isfinite(v) for v in values):
+                    continue
+                # One flip inside the hair, and inside the tenth of it.
+                if sides[0] == sides[3] or sides[1] == sides[2]:
+                    return False
+                wide = abs(values[3] - values[0])
+                narrow = abs(values[2] - values[1])
+                rounding = 16.0 * _EPS * max(sizes) + _CONTINUITY_UNDERFLOW
+                # A pole: on one side the law is ten times as large a tenth
+                # of the hair out as a whole hair out. No run that ends has
+                # crossed it, the rate being without bound there, and it is
+                # neither a bend nor a jump: `K·e/dt` with the gain
+                # `K = U/(U + R)` changes sign where U is −R.
+                if any(
+                    abs(inner) > rounding and abs(inner) >= 8.0 * abs(outer)
+                    for inner, outer in ((values[1], values[0]), (values[2], values[3]))
+                ):
+                    continue
+                # A part in 1e5 over the tenth: the flip is found to 1e-13,
+                # which is 1e-7 of the hair, and a ramp from it is that far
+                # off its tenth.
+                if narrow > (0.1 + 1e-5) * wide + rounding:
+                    # Not a ramp over the hair. A law that curves on the
+                    # scale of the hair is not one either, a saturation whose
+                    # half-point is three hairs off, and it is a bend. Read a
+                    # hundredth of the hair either side: how far the tenth is
+                    # off a tenth of the whole goes down with the scale for a
+                    # curve, stays for a power and goes up for a jump. A
+                    # power under 1 stays refused.
+                    finer = beside(point, i, [x - 0.01 * hair, x + 0.01 * hair])
+                    if finer is None or not all(math.isfinite(v) for v in finer[0]):
+                        return False
+                    if finer[2][0] == finer[2][1]:
+                        return False
+                    finest = abs(finer[0][1] - finer[0][0])
+                    rounding = max(rounding, 16.0 * _EPS * max(finer[1]) + _CONTINUITY_UNDERFLOW)
+                    if narrow > 0.3 * wide + rounding:
+                        return False
+                    if finest * wide > narrow * (0.05 * wide + 0.5 * narrow) + rounding * wide:
+                        return False
+                reached += 1
     return reached > 0
 
 
@@ -3737,7 +3959,7 @@ def fallback_crossing(
     :func:`model_uncompensated_crossing_reason` does. An atom that names no
     symbol and a comparison over run constants alone are no crossing.
     """
-    from bngsim._jacobian import _inline_functions, has_condition_construct
+    from bngsim._jacobian import _TIME_SYM, _inline_functions, has_condition_construct
 
     try:
         data = core.codegen_data()
@@ -3765,12 +3987,15 @@ def fallback_crossing(
         return None
     requested = set(sens_param_names)
     parsed: dict = {}
+    # What no run moves and no column perturbs across a surface: a parameter,
+    # literal time, a counter no requested column moves.
+    held = frozenset(scope.run_constants) | frozenset(_BUILTIN_CONSTANT_VALUES)
+    held |= {name for name, idx in scope.clocks.items() if idx not in moved}
+    held |= {_TIME_SYM}
 
     def crosses(flat: str, raw: str) -> bool:
         """Whether the quotient reads across the surface *flat* names."""
         if not _IDENTIFIER.search(flat) or condition_cannot_cross(flat, scope):
-            return False
-        if _reads_time_and_run_constants(flat, scope):
             return False
         if _reads_clock_and_run_constants(flat, scope):
             read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
@@ -3785,9 +4010,14 @@ def fallback_crossing(
 
     for flat in flats:
         if has_condition_construct(flat):
+            # With derived parameters written out, so that what is left to
+            # name is a primary, a clock or the state.
+            whole = _inline_derived_param_refs(flat, scope.derived_exprs) or flat
             for atom in _iter_condition_atoms(flat):
                 atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-                if crosses(atom_flat, atom) and not _continuous_across(flat, atom, parsed):
+                if crosses(atom_flat, atom) and not _continuous_across(
+                    whole, atom_flat, parsed, held
+                ):
                     return atom
         for call, arg in _iter_step_calls(flat):
             arg_flat = _inline_derived_param_refs(arg, scope.derived_exprs) or arg
