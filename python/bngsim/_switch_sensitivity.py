@@ -4438,11 +4438,13 @@ class SwitchCrossing(NamedTuple):
     clock that reads this one. An event on the instant comes apart from it
     under any parameter that moves the event.
 
-    ``instant_clocks`` lists the other clocks with a crossing on this instant,
-    each with the value it crosses at: ``(-1, t*)`` for the time and
-    ``(species, threshold)`` for a counter. A nudge of this crossing's clock
-    does not flip their conditions, and the core's test of whether the
-    conditions on an instant commute needs them all flipped (issue #951).
+    ``instant_clocks`` lists the other crossings on this instant, each as its
+    clock and the value it crosses at: ``(-1, t*)`` for the time and
+    ``(species, threshold)`` for a counter. The core's test of whether the
+    conditions on an instant commute needs them all flipped (issue #951): a
+    nudge of this crossing's clock does not flip a condition on another, and
+    one about this crossing's own time does not reach one on the same clock
+    that is a few ulp on.
     """
 
     t_star: float
@@ -4932,7 +4934,7 @@ def _emit_switch_records(
                                 other.threshold if other.clock_idx0 >= 0 else other.t_star,
                             )
                             for other in group
-                            if other.clock_idx0 != cross.clock_idx0
+                            if other is not cross
                         }
                     ),
                 )

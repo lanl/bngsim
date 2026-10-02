@@ -6742,37 +6742,81 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         // the one before it closes, differs across the nudge by its slope
         // there. And a rate law of another condition that reads the bumped
         // parameter outside its condition moves with the hair. So where the
-        // two differ they are read again over half the nudge, and then at
-        // half the hair, and what is left when those parts are taken out is
-        // the kink. Half, not twice: a wider nudge reaches a condition that
-        // is not on this instant, 70 to 127 ulp away, and what that one adds
-        // is in proportion to the nudge too.
-        auto others_do = [&](double bump, double nudges, std::vector<double> &out) {
-            // f with every clock on the instant `nudges` nudges past it, less
-            // f with every clock as far before it, at this threshold moved by
-            // `bump` hairs.
+        // two differ they are read again over half the nudge and a quarter of
+        // it, and then at half the hair, and what is left when those parts
+        // are taken out is the kink.
+        //
+        // The clocks are put outside the whole instant: before the earliest
+        // threshold on it and past the latest. A neighbour 40 ulp on is on
+        // this instant, and a nudge about this crossing's own time took it in
+        // at its full width and left it out at half of it, which reads as a
+        // slope: two gates of one weight cancelled that way and the run
+        // returned −2 for (−2 | 0).
+        //
+        // The slope's part is taken out by the lengths the clocks were in
+        // fact moved over, which are not as 1 to a half: a time plus 32 ulp
+        // of 3.7 is rounded to a double, and twice the short reading less the
+        // long one left the slope times an ulp or two. Against a rate that
+        // is 0 at its own switch that is far more than rounding allows, and
+        // a ramp from its own switch time was refused beside any neighbour at
+        // about half of all switch times.
+        //
+        // And the two extrapolations have to agree, the one from the whole
+        // and the half with the one from the half and the quarter. They do
+        // where the difference is a jump and a slope. A condition that is not
+        // on this instant and is inside the nudge's reach, 70 to 127 ulp
+        // away, is in some of the readings and not in the others; no single
+        // shorter reading tells that from a slope, and two do.
+        struct InstantSpan {
+            int clock; // species index, or −1 for the time
+            double lo;
+            double hi;
+        };
+        std::vector<InstantSpan> spans;
+        auto widen = [&](int clock, double where) {
+            for (auto &span : spans) {
+                if (span.clock == clock) {
+                    span.lo = std::min(span.lo, where);
+                    span.hi = std::max(span.hi, where);
+                    return;
+                }
+            }
+            spans.push_back({clock, where, where});
+        };
+        widen(time_clock ? -1 : sw.clock_species_idx0, time_clock ? t_cross : sw.threshold);
+        for (const auto &other : sw.instant_clocks) {
+            widen(other.first, other.second);
+        }
+        const double own_clock_was =
+            time_clock ? 0.0 : sw_ywork[static_cast<size_t>(sw.clock_species_idx0)];
+        // The largest value read for each species, which is what the readings
+        // round by.
+        std::vector<double> read_size(static_cast<size_t>(ns), 0.0);
+        // f with every clock on the instant `nudges` nudges past it, less f
+        // with every clock as far before it, at this threshold moved by `bump`
+        // hairs. `moved` takes how far each clock was moved between the two.
+        auto others_do = [&](double bump, double nudges, std::vector<double> &out,
+                             std::vector<double> &moved) {
             for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
                 params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
                     saved[k] + bump * sw.isolate_delta[k];
             }
             model.refresh_derived_params();
             std::vector<double> side[2];
+            moved.assign(spans.size(), 0.0);
             for (int k = 0; k < 2; ++k) {
-                const double sign = (k == 0 ? -1.0 : 1.0) * nudges;
-                double t_at = time_clock ? t_cross + sign * eps_clock : t_evt;
-                if (!time_clock) {
-                    sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] =
-                        sw.threshold + sign * eps_clock;
-                }
-                for (const auto &other : sw.instant_clocks) {
-                    const double eps_other = kSwitchInstantUlps *
-                                             std::numeric_limits<double>::epsilon() *
-                                             std::max(std::fabs(other.second), 1.0);
-                    if (other.first < 0) {
-                        t_at = other.second + sign * eps_other;
+                double t_at = t_evt;
+                for (size_t c = 0; c < spans.size(); ++c) {
+                    const double edge = k == 0 ? spans[c].lo : spans[c].hi;
+                    const double reach = nudges * kSwitchInstantUlps *
+                                         std::numeric_limits<double>::epsilon() *
+                                         std::max(std::fabs(edge), 1.0);
+                    const double where = k == 0 ? edge - reach : edge + reach;
+                    moved[c] = k == 0 ? -where : moved[c] + where;
+                    if (spans[c].clock < 0) {
+                        t_at = where;
                     } else {
-                        sw_ywork[static_cast<size_t>(other.first)] =
-                            other.second + sign * eps_other;
+                        sw_ywork[static_cast<size_t>(spans[c].clock)] = where;
                     }
                 }
                 for (int i = 0; i < ns; ++i) {
@@ -6785,6 +6829,8 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             for (int i = 0; i < ns; ++i) {
                 const auto ui = static_cast<size_t>(i);
                 out[ui] = side[1][ui] - side[0][ui];
+                read_size[ui] =
+                    std::max({read_size[ui], std::fabs(side[0][ui]), std::fabs(side[1][ui])});
             }
         };
         auto put_back = [&] {
@@ -6792,44 +6838,75 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
                 params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
             }
             model.refresh_derived_params();
-            for (const auto &other : sw.instant_clocks) {
-                if (other.first >= 0) {
-                    sw_ywork[static_cast<size_t>(other.first)] =
-                        y_data[static_cast<size_t>(other.first)];
+            for (const auto &span : spans) {
+                if (span.clock >= 0) {
+                    sw_ywork[static_cast<size_t>(span.clock)] =
+                        y_data[static_cast<size_t>(span.clock)];
                 }
+            }
+            if (!time_clock) {
+                sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] = own_clock_was;
             }
         };
         std::vector<double> with_this_before;
         std::vector<double> with_this_after;
-        others_do(+1.0, 1.0, with_this_before);
-        others_do(-1.0, 1.0, with_this_after);
-        auto apart = [&](const std::vector<double> &kink) {
+        std::vector<double> moved_whole;
+        others_do(+1.0, 1.0, with_this_before, moved_whole);
+        others_do(-1.0, 1.0, with_this_after, moved_whole);
+        // Whether `kink` is more than rounding and the tolerance allow, and for
+        // which species; `slack` is added to what is allowed.
+        auto apart = [&](const std::vector<double> &kink, const std::vector<double> *slack) {
             for (int i = 0; i < ns; ++i) {
                 const auto ui = static_cast<size_t>(i);
-                const double size =
-                    std::max({std::fabs(sw_f_plus[ui]), std::fabs(sw_f_minus[ui]),
-                              std::fabs(with_this_before[ui]), std::fabs(with_this_after[ui])});
+                const double size = std::max({std::fabs(sw_f_plus[ui]), std::fabs(sw_f_minus[ui]),
+                                              std::fabs(with_this_before[ui]),
+                                              std::fabs(with_this_after[ui]), read_size[ui]});
                 if (!(std::fabs(kink[ui]) <=
                       kEventJumpRelTol * std::max(std::fabs(with_this_before[ui]),
                                                   std::fabs(with_this_after[ui])) +
-                          kEventJumpUlps * std::numeric_limits<double>::epsilon() * size)) {
+                          kEventJumpUlps * std::numeric_limits<double>::epsilon() * size +
+                          (slack != nullptr ? (*slack)[ui] : 0.0))) {
                     return i;
                 }
             }
             return -1;
         };
-        // The difference at `bump` hairs, with what is in proportion to the
-        // nudge taken out.
-        std::vector<double> short_before;
-        std::vector<double> short_after;
+        // The difference at `bump` hairs with what is in proportion to the
+        // nudge taken out, twice over: from the whole nudge and half of it,
+        // and from half of it and a quarter. `slack` takes what the clocks'
+        // lengths not being in one proportion can leave of a slope.
         auto without_the_nudge = [&](double bump, const std::vector<double> &before,
-                                     const std::vector<double> &after, std::vector<double> &out) {
-            others_do(+bump, 0.5, short_before);
-            others_do(-bump, 0.5, short_after);
-            out.assign(static_cast<size_t>(ns), 0.0);
+                                     const std::vector<double> &after, std::vector<double> &outer,
+                                     std::vector<double> &inner, std::vector<double> &slack) {
+            std::vector<double> half_before;
+            std::vector<double> half_after;
+            std::vector<double> quarter_before;
+            std::vector<double> quarter_after;
+            std::vector<double> moved_half;
+            std::vector<double> moved_quarter;
+            others_do(+bump, 0.5, half_before, moved_half);
+            others_do(-bump, 0.5, half_after, moved_half);
+            others_do(+bump, 0.25, quarter_before, moved_quarter);
+            others_do(-bump, 0.25, quarter_after, moved_quarter);
+            // As the first clock was moved, and how far from that the rest were.
+            const double half = moved_half[0] / moved_whole[0];
+            const double quarter = moved_quarter[0] / moved_whole[0];
+            double uneven = 0.0;
+            for (size_t c = 1; c < spans.size(); ++c) {
+                uneven = std::max({uneven, std::fabs(moved_half[c] / moved_whole[c] - half),
+                                   std::fabs(moved_quarter[c] / moved_whole[c] - quarter)});
+            }
+            outer.assign(static_cast<size_t>(ns), 0.0);
+            inner.assign(static_cast<size_t>(ns), 0.0);
+            slack.assign(static_cast<size_t>(ns), 0.0);
             for (int i = 0; i < ns; ++i) {
                 const auto ui = static_cast<size_t>(i);
-                out[ui] = 2.0 * (short_after[ui] - short_before[ui]) - (after[ui] - before[ui]);
+                const double whole_d = after[ui] - before[ui];
+                const double half_d = half_after[ui] - half_before[ui];
+                const double quarter_d = quarter_after[ui] - quarter_before[ui];
+                outer[ui] = (half_d - half * whole_d) / (1.0 - half);
+                inner[ui] = (quarter_d * half - half_d * quarter) / (half - quarter);
+                slack[ui] = 8.0 * uneven * std::fabs(whole_d - half_d);
             }
         };
         std::vector<double> kink(static_cast<size_t>(ns), 0.0);
@@ -6837,26 +6914,59 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             const auto ui = static_cast<size_t>(i);
             kink[ui] = with_this_after[ui] - with_this_before[ui];
         }
-        int worst = apart(kink);
+        int worst = apart(kink, nullptr);
+        // Not a jump and a slope: the two extrapolations differ.
+        bool within_reach = false;
         if (worst >= 0) {
-            without_the_nudge(1.0, with_this_before, with_this_after, kink);
-            worst = apart(kink);
-        }
-        if (worst >= 0) {
-            std::vector<double> half_before;
-            std::vector<double> half_after;
-            std::vector<double> half_kink;
-            others_do(+0.5, 1.0, half_before);
-            others_do(-0.5, 1.0, half_after);
-            without_the_nudge(0.5, half_before, half_after, half_kink);
+            std::vector<double> outer;
+            std::vector<double> inner;
+            std::vector<double> slack;
+            std::vector<double> between(static_cast<size_t>(ns), 0.0);
+            without_the_nudge(1.0, with_this_before, with_this_after, outer, inner, slack);
             for (int i = 0; i < ns; ++i) {
                 const auto ui = static_cast<size_t>(i);
-                kink[ui] = 2.0 * half_kink[ui] - kink[ui];
+                between[ui] = outer[ui] - inner[ui];
             }
-            worst = apart(kink);
+            const int uneven_at = apart(between, &slack);
+            if (uneven_at >= 0) {
+                within_reach = true;
+                worst = uneven_at;
+            } else {
+                kink = inner;
+                worst = apart(kink, &slack);
+            }
+            if (worst >= 0 && !within_reach) {
+                std::vector<double> half_before;
+                std::vector<double> half_after;
+                std::vector<double> half_outer;
+                std::vector<double> half_inner;
+                std::vector<double> half_slack;
+                std::vector<double> moved_unused;
+                others_do(+0.5, 1.0, half_before, moved_unused);
+                others_do(-0.5, 1.0, half_after, moved_unused);
+                without_the_nudge(0.5, half_before, half_after, half_outer, half_inner, half_slack);
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<size_t>(i);
+                    kink[ui] = 2.0 * half_inner[ui] - kink[ui];
+                    slack[ui] += 2.0 * half_slack[ui];
+                }
+                worst = apart(kink, &slack);
+            }
         }
         put_back();
-        if (worst >= 0) {
+        if (worst >= 0 && within_reach) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the switch time at t=" << t_evt
+                << " has another rate-law condition that switches within a few ulp of it and "
+                   "not on its instant, and what that one does to d["
+                << model.species()[static_cast<size_t>(worst)].name
+                << "]/dt cannot be told from this switch's own jump: the right-hand side "
+                   "across the instant is not a jump and a slope. Under a parameter that moves "
+                   "this switch the result has a kink a few ulp away (issue #951). Separate the "
+                   "two times, or set them equal, or drop the parameters that move them from "
+                   "sensitivity_params.";
+            not_commuting = msg.str();
+        } else if (worst >= 0) {
             const auto uw = static_cast<size_t>(worst);
             std::ostringstream msg;
             msg << "Forward sensitivity: the switch time at t=" << t_evt

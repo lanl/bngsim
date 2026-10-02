@@ -555,8 +555,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "its own jump (issue #375); both empty — every model with distinct "
             "switch times — reads the plain f⁻ − f⁺. fixed_on_instant says a "
             "crossing no requested column moves shares this one's clock and "
-            "instant (issue #767). instant_clocks lists the other clocks with a "
-            "crossing on this instant as (clock_species_idx0, value) pairs, -1 "
+            "instant (issue #767). instant_clocks lists the other crossings on "
+            "this instant as (clock_species_idx0, value) pairs, -1 "
             "for the time (issue #951). Detection and the chain "
             "rule to fitted primaries are done by bngsim._switch_sensitivity; "
             "empty records (the default) leave the integration loop untouched.")
