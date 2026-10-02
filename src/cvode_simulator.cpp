@@ -2095,6 +2095,9 @@ constexpr double kAssignedDerivativeRelTol = 1e-9;
 // across the step where what a smooth value leaves out of its half-step
 // differences is under this fraction of what the value moves by across it.
 constexpr double kAssignedSmoothRelTol = 1e-3;
+// What a value may move by across the whole difference step and still be taken
+// for flat at the point, against the larger of the value and of what is moved.
+constexpr double kAssignedFlatRelTol = 1e-12;
 // The difference is taken over this fraction of what is moved, each way.
 constexpr double kAssignedDifferenceStep = 1e-6;
 // Two shifts ∂t*/∂p are one when they agree to this fraction, or when their
@@ -6214,18 +6217,29 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // not a derivative to those parts in 1e3, and the run is refused as it is
     // for a step.
     auto smooth_across = [&](const std::function<double(double)> &value_at, double h, double lo,
-                             double here, double hi, double reach) {
+                             double here, double hi, double reach, double moved) {
         const double span = std::fabs(hi - here) + std::fabs(here - lo);
         // A value that is not finite at the point or beside it has no
         // derivative there: `1/(X − 3)` read at X = 3 came back as 1.1e11.
         if (!std::isfinite(span)) {
             return false;
         }
-        // A value that reads the same at −h, at the point and at +h is asked
-        // at half the step like any other. `(X + 0.25) − floor(X + 0.25)` with
-        // X at 1e6 has a step of exactly one period, reads 0.25 at all three,
-        // and its difference is 0 for a derivative of 1. A value that does not
-        // read what is moved reads the same at half the step too, and passes.
+        // A value that reads the same at −h, at the point and at +h either
+        // does not read what is moved, or the step is a whole number of its
+        // periods: `(X + 0.25) − floor(X + 0.25)` with X at 1e6 has a step of
+        // exactly one period, reads 0.25 at all three, and its difference is 0
+        // for a derivative of 1. It is asked between them, off any simple
+        // fraction of the step: at half of it a period of half the step reads
+        // the same again.
+        if (span == 0.0) {
+            const double off = 0.6180339887498949 * h;
+            const double may = std::max(
+                std::min(16.0 * std::numeric_limits<double>::epsilon() * reach,
+                         2.0 * kAssignedDifferenceStep * kAssignedSmoothRelTol * std::fabs(here)),
+                std::numeric_limits<double>::min());
+            return std::fabs(value_at(off) - here) <= may &&
+                   std::fabs(value_at(-off) - here) <= may;
+        }
         const double half_hi = value_at(0.5 * h);
         const double half_lo = value_at(-0.5 * h);
         const double whole = (hi - here) - (here - lo);
@@ -6243,34 +6257,36 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             return true;
         }
         // A value that is flat at the point: on each side it leaves the point
-        // as a power of the distance, of order 1.75 or more. `X³/(8 + X³)` with
-        // X at 0 is that, and `(X − Y)³` where X is Y, and its derivative there
-        // is 0, which is what the difference gives to a millionth of a part.
-        // The two tests above take it for a value that turns inside the step,
-        // because the difference over half the step is a quarter or less of
-        // the one over the whole. A step further than half the step out leaves
-        // nothing at half and at a quarter, and a turn there leaves no one
-        // power, so each side is asked at a quarter and at an eighth of the
-        // step as well: a sigmoid a tenth of the step wide, three quarters of
-        // the step out, falls off by the same factor over the first two
-        // halvings and not over the third.
-        auto flat_side = [&](double whole_side, double half_side, double sign) {
+        // as a power of the distance of order 1.75 or more, and by so little
+        // that the difference across it is no slope to speak of. `X³/(8 + X³)`
+        // with X at 0 is that, and `(X − Y)³` where X is Y: the derivative
+        // there is 0, and the difference gives 1e-19. The two tests above take
+        // it for a value that turns inside the step, because the difference
+        // over half the step is a quarter or less of the one over the whole.
+        //
+        // By so little: under 1e-12 of the larger of the value and of what is
+        // moved, of 1 where both are 0, which is a slope under a millionth of
+        // that scale per unit relative change. The shape alone is not enough.
+        // `5·min(max((q − 1)/1e-6, 0), 1)²` at q = 1 leaves the point as a
+        // square and is done inside the step, a Hill function of X at 0 with a
+        // half-saturation of 1e-8 is past it in ten steps, and
+        // `1e6·max(X − 1, 0)^1.81` has a slope of 25 one step on: the
+        // difference gave 2.5e6, 1e6 and 6.9 for a derivative of 0.
+        double flat_scale = std::max(std::fabs(here), moved);
+        if (flat_scale == 0.0) {
+            flat_scale = 1.0;
+        }
+        auto flat_side = [&](double whole_side, double half_side) {
             if (whole_side == 0.0) {
                 return half_side == 0.0;
             }
+            if (!(std::fabs(whole_side) <= kAssignedFlatRelTol * flat_scale)) {
+                return false;
+            }
             const double ratio = half_side / whole_side;
-            if (!(ratio > 1.0 / 4096.0 && ratio <= 0.3)) {
-                return false;
-            }
-            const double quarter_side = value_at(sign * 0.25 * h) - here;
-            if (!(std::fabs(quarter_side / half_side - ratio) <= 0.25 * ratio)) {
-                return false;
-            }
-            const double eighth_side = value_at(sign * 0.125 * h) - here;
-            return std::fabs(eighth_side / quarter_side - ratio) <= 0.25 * ratio;
+            return ratio > 1.0 / 4096.0 && ratio <= 0.3;
         };
-        return flat_side(hi - here, half_hi - here, 1.0) &&
-               flat_side(lo - here, half_lo - here, -1.0);
+        return flat_side(hi - here, half_hi - here) && flat_side(lo - here, half_lo - here);
     };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;
@@ -6404,7 +6420,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     return eval_ref_outer.evaluate(vexpr);
                 };
                 rough_x[static_cast<size_t>(j)] =
-                    smooth_across(value_at, h, f_lo, value_here, f_hi, reach) ? 0 : 1;
+                    smooth_across(value_at, h, f_lo, value_here, f_hi, reach, std::fabs(xj)) ? 0
+                                                                                             : 1;
                 // Taken again over wider steps where it keeps too few digits.
                 widen_difference(value_at, h, value_here, value_size, dcdx[j], dcdx_rounding[j]);
                 xwork[j] = xj; // restore this component
@@ -6440,7 +6457,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     perturbed_sync(pidx, t_evt);
                     return eval_ref_outer.evaluate(vexpr);
                 };
-                const bool smooth = smooth_across(value_at, h, f_lo, value_here, f_hi, reach);
+                const bool smooth =
+                    smooth_across(value_at, h, f_lo, value_here, f_hi, reach, std::fabs(p0));
                 widen_difference(value_at, h, value_here, value_size, dcdp[col], rounding);
                 params[pidx].value = p0; // restore
                 perturbed_sync(pidx, t_evt);
@@ -6481,7 +6499,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 const std::function<double(double)> at_offset = [&](double offset) {
                     return value_at(t_evt + offset);
                 };
-                const bool smooth = smooth_across(at_offset, ht, c_lo, value_here, c_hi, reach);
+                const bool smooth =
+                    smooth_across(at_offset, ht, c_lo, value_here, c_hi, reach, std::fabs(t_evt));
                 sync_state();
                 // Only where a column moves the fire time: a state trigger
                 // takes this path with every shift 0.

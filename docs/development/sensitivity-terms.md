@@ -126,18 +126,24 @@ has to refresh the `rateOf` buffer.
   step (#767) is across a value that is straight there, and is not asked. A
   species is refused only where a column carries something through it, and the
   time only where a column moves the fire time (#915,
-  `test_event_value_time_step_sensitivity.py`). A value that is flat at the
-  point, leaving it on each side as one power of the distance of order 1.75 or
-  more (`X³/(8 + X³)` at X = 0), has derivative 0 there and is not refused. A
-  step or a bend that moves with the event has a derivative, and is refused
-  with the rest.
+  `test_event_value_time_step_sensitivity.py`). A value that reads the same
+  at both ends of the step and at the point is asked between them, off any
+  simple fraction of the step, so a sawtooth whose period divides the step is
+  refused. A value that is flat at the point is not refused: one that leaves
+  it on each side as a power of the distance of order 1.75 or more, and moves
+  by under 1e-12 of its scale across the whole step (`X³/(8 + X³)` at X = 0).
+  Its derivative there is 0 and the difference across it is no slope. A power
+  from the point that is a slope across the step is refused: `1e6·max(X − 1,
+  0)^1.81` at X = 1, or a ramp squared that is done inside the step. A step or
+  a bend that moves with the event has a derivative, and is refused with the
+  rest.
 - **Not caught**, and returned as before:
   - a bend under a value that reads something a million times its own size,
     where the change of slope times what is moved is under about 0.8% of the
     value: `kcat·E0·X/(Km + X) + max(X − 3, 0)` at X = 3 with kcat at 1e9 and
     E0 at 1e-6 returns 0.61 for 0.11 or 1.11, and is refused with kcat at 1e3
     and E0 at 1;
-  - a bend that is under a part in 1e3 of the partial it is in, where the
+  - a bend that changes the partial it is in by under about 0.8%, where the
     column's terms cancel to less than that: `1000·(time − T0) + max(time −
     2.3, 0)` fired at T0 + 1 = 2.3 returns 0.5 for 0 or 1;
   - a smooth value whose difference rounds, in line, by more than it resolves:

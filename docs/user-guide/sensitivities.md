@@ -337,9 +337,9 @@ error names the event, the species, and what the value is not smooth in. Move
 the step away from the event, or leave the parameters that reach it out of
 `sensitivity_params`. A step or a bend that moves exactly with the event does
 have a derivative, and is refused all the same. The test is of the differences
-themselves, to a part in a thousand: a bend that changes the value's slope by
-less than about 1% of the value per unit relative change of what is moved is
-not seen, and is differenced across as before.
+themselves, to a part in a thousand: a bend that changes the value's slope in
+what is moved by less than about 0.8% is not seen, and is differenced across as
+before.
 
 A decline is never silent. Ask the Simulator directly:
 

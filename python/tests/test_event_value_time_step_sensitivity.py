@@ -442,8 +442,9 @@ def test_a_value_that_is_flat_where_it_is_read(case):
     distance, on both sides or on one, so its derivative there is 0. The
     difference over half the step is a quarter or less of the one over the
     whole, which is also what a value that turns inside the step shows; it is
-    told from one by leaving the point as one power, at half the step and at a
-    quarter. X and Y are 0 and q is 0, held by x0."""
+    told from one by how little it moves across the step: under 1e-12 of the
+    scale it is read on, so the difference across it is no slope to speak of.
+    X and Y are 0 and q is 0, held by x0."""
     value, param = FLAT[case]
     text = (
         "species B, X, Y; B = 0; x0 = 0; X = x0; Y = 0; q = 0; T0 = 1.3\n"
@@ -465,11 +466,10 @@ def test_a_value_that_is_flat_where_it_is_read(case):
 def test_a_step_or_a_turn_past_half_the_difference_is_not_taken_for_flat(value):
     """The value is level at the fire instant, 2.3, and steps, or turns over a
     hundredth or a tenth of the difference, three quarters of the way to where
-    the difference is taken. The first two read the same at the point, at a
-    quarter and at half the step, and differ at the whole of it. The third
-    falls off toward the point by one factor over two halvings of the step, as
-    a power does, and by another over the third. dB/dT0 came back 1.09e6 for
-    0, and 4.3e5."""
+    the difference is taken. The first two read the same at the point and at
+    half the step, and differ at the whole of it. The third falls off toward
+    the point as a power does, and moves by the whole of itself across the
+    step. dB/dT0 came back 1.09e6 for 0, and 4.3e5."""
     text = f"species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = {value}\n"
     _refused(text, ["T0"], 5.0, "the time")
 
@@ -498,15 +498,17 @@ ONE_PERIOD = {
 }
 
 
+@pytest.mark.parametrize("periods", [1, 2, 4, 3])
 @pytest.mark.parametrize("case", sorted(ONE_PERIOD))
-def test_a_sawtooth_whose_period_is_the_difference_step_is_refused(case):
+def test_a_sawtooth_whose_period_divides_the_difference_step_is_refused(case, periods):
     """The fractional part of X + 0.25 with X at 1e6: the difference is taken
     over 1e-6 of X, which is one period exactly, so the value reads 0.25 at
     both ends of it and at the point, and steps twice between. The derivative
-    is 1 and came back 0. A value that reads the same at the three is asked at
-    half the step like any other."""
+    is 1 and came back 0. With X at 2e6 or 4e6 it reads 0.25 at half the step
+    and at a quarter of it too. A value that reads the same at the three is
+    asked between them, off any simple fraction of the step."""
     text, param, where = ONE_PERIOD[case]
-    _refused(text, [param], 5.0, where)
+    _refused(text.replace("1e6", f"{periods}e6"), [param], 5.0, where)
 
 
 def test_a_value_that_is_not_finite_where_it_is_read_is_refused():
@@ -522,8 +524,8 @@ def test_a_bend_inside_half_the_difference_is_not_taken_for_flat():
     """``max(time − c, 0)`` with c four tenths of the difference step past the
     fire instant, 2.3. The value is level at the instant and its derivative is
     0. Over the whole step it has risen by 0.6 of the step and over half by
-    0.1, a sixth as much, which is what a power of the distance does; at a
-    quarter of the step it has not left 0. dB/dT0 came back 0.3."""
+    0.1, a sixth as much, which is what a power of the distance does. It has
+    risen by 1.4e-6, which is a slope: dB/dT0 came back 0.3."""
     text = (
         "species B; B = 0; T0 = 1.3\n"
         "E1: at (time >= T0 + 1): B = max(time - 2.3*(1 + 0.4e-6), 0)\n"
@@ -531,15 +533,66 @@ def test_a_bend_inside_half_the_difference_is_not_taken_for_flat():
     _refused(text, ["T0"], 5.0, "the time")
 
 
-def test_a_power_that_starts_inside_the_difference_is_not_taken_for_flat():
-    """``1e6·max(X − c, 0)^1.81`` with X at 1 and c 0.086 of the difference
-    step above it. The value is 0 at the point and so is its derivative. It
-    falls off toward the point by about the same factor over the first two
-    halvings of the step, as a power from the point would, and by three times
-    that over the third. dB/dx0 came back in the units, for 0."""
+STEEP = {
+    # A ramp squared that is done inside the step: 0 to 5 across it.
+    "a-ramp-squared-in-a-parameter": (
+        "species B; B = 0; q = 1\nE1: at (time >= 1): B = 5*min(max((q - 1)/1e-6, 0), 1)^2\n",
+        "q",
+        "the parameter 'q'",
+    ),
+    "a-ramp-squared-in-a-species": (
+        "species B, X; B = 0; x0 = 3; X = x0\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = 5*min(max((X - 3)/3e-6, 0), 1)^2\n",
+        "x0",
+        "the species 'X'",
+    ),
+    "a-ramp-squared-in-time": (
+        "species B; B = 0; T0 = 1.3\n"
+        "E1: at (time >= T0 + 1): B = 5*min(max((time - 2.3)/2.3e-6, 0), 1)^2\n",
+        "T0",
+        "the time",
+    ),
+    # A Hill function of X at 0 whose half-saturation is ten steps away.
+    "a-hill-function-ten-steps-from-half": (
+        "species B, X; B = 0; x0 = 0; X = x0; K = 1e-8\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = X^3/(K^3 + X^3)\n",
+        "x0",
+        "the species 'X'",
+    ),
+    # A power from the point with a slope of 25 one step on.
+    "a-power-with-a-coefficient-of-a-million": (
+        "species B, X; B = 0; x0 = 1; X = x0\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = 1e6*max(X - 1, 0)^1.81\n",
+        "x0",
+        "the species 'X'",
+    ),
+    # The same power starting 0.086 of the step above the point.
+    "a-power-that-starts-inside-the-step": (
+        "species B, X; B = 0; x0 = 1; X = x0\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = 1e6*max(X - 1.000000086, 0)^1.81\n",
+        "x0",
+        "the species 'X'",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STEEP))
+def test_a_power_from_the_point_that_is_a_slope_across_the_step_is_not_flat(case):
+    """Each leaves the point as one power of the distance, of order 1.81 or
+    more, and has derivative 0 there. That is the shape of a value that is flat
+    at the point, and none of these is: the value moves by 1e-5 to 5 across the
+    step, so the difference across it is a slope. It came back 2.5e6, 8.3e5,
+    1.09e6, 1e6, 6.9 and 5.9, for 0."""
+    text, param, where = STEEP[case]
+    _refused(text, [param], 5.0, where)
+
+
+def test_a_hill_function_far_from_half_saturation_is_flat_at_zero():
+    """Control. The same Hill function with K at 2: X at 0 is 2e9 steps from
+    half-saturation, the value moves by 1e-28 across the step, and the
+    difference gives 1e-19 for 0."""
     text = (
-        "species B, X; B = 0; x0 = 1; X = x0\n"
-        "J0: -> B; 0*x0\n"
-        "E1: at (time >= 1): B = 1e6*max(X - 1.000000086, 0)^1.81\n"
+        "species B, X; B = 0; x0 = 0; X = x0; K = 2\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = X^3/(K^3 + X^3)\n"
     )
-    _refused(text, ["x0"], 5.0, "the species 'X'")
+    assert _sens(text, ["x0"], 5.0)[0] == pytest.approx(0.0, abs=1e-12)
