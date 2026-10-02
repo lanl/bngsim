@@ -441,10 +441,10 @@ def test_a_value_that_is_flat_where_it_is_read(case):
     """Control. Each leaves the point as a square or a higher power of the
     distance, on both sides or on one, so its derivative there is 0. The
     difference over half the step is a quarter or less of the one over the
-    whole, which is also what a value that turns inside the step shows; it is
-    told from one by how little it moves across the step: under 1e-12 of the
-    scale it is read on, so the difference across it is no slope to speak of.
-    X and Y are 0 and q is 0, held by x0."""
+    whole, which is also what a value that turns inside the step shows. It is
+    told from one by being even about the point, where the difference is 0 as
+    the derivative is, or by how little it moves across the step: a slope under
+    a millionth of its scale. X and Y are 0 and q is 0, held by x0."""
     value, param = FLAT[case]
     text = (
         "species B, X, Y; B = 0; x0 = 0; X = x0; Y = 0; q = 0; T0 = 1.3\n"
@@ -524,8 +524,9 @@ def test_a_bend_inside_half_the_difference_is_not_taken_for_flat():
     """``max(time − c, 0)`` with c four tenths of the difference step past the
     fire instant, 2.3. The value is level at the instant and its derivative is
     0. Over the whole step it has risen by 0.6 of the step and over half by
-    0.1, a sixth as much, which is what a power of the distance does. It has
-    risen by 1.4e-6, which is a slope: dB/dT0 came back 0.3."""
+    0.1, a sixth as much, which is what a power of the distance does. It is not
+    even about the instant, and it has risen by 1.4e-6, which is a slope:
+    dB/dT0 came back 0.3."""
     text = (
         "species B; B = 0; T0 = 1.3\n"
         "E1: at (time >= T0 + 1): B = max(time - 2.3*(1 + 0.4e-6), 0)\n"
@@ -573,16 +574,54 @@ STEEP = {
         "x0",
         "the species 'X'",
     ),
+    # A Hill function at 0 whose half-saturation is 11,000 steps away: 7.5e-4.
+    "a-hill-function-eleven-thousand-steps-from-half": (
+        "species B, X; B = 0; x0 = 0; X = x0; K = 1.1e-5\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = X^3/(K^3 + X^3)\n",
+        "x0",
+        "the species 'X'",
+    ),
+    # The value's own size is no scale: beside 1000 the same rise is 0.125.
+    "a-hill-function-beside-an-offset": (
+        "species B, X; B = 0; x0 = 0; X = x0; K = 2e-6; Btot = 1000\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = Btot + X^3/(K^3 + X^3)\n",
+        "x0",
+        "the species 'X'",
+    ),
+    # A bend 0.4 of the step out, beside an offset of 1e9: 300.
+    "a-bend-beside-an-offset-of-a-billion": (
+        "species B, X; B = 0; x0 = 1; X = x0\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = 1e9 + 1000*max(X - 1.0000004, 0)\n",
+        "x0",
+        "the species 'X'",
+    ),
+    # Nor is the size of what is moved: the value goes from 1e-3 to 1.5e-3
+    # inside the step of a parameter at 1e9, and from 0 to 1e-7 inside that of
+    # a species at 1e6. 2.5e-7 and 5e-8, where the value changes by half of
+    # itself or all of it.
+    "a-ramp-squared-in-a-parameter-of-a-billion": (
+        "species B; B = 0; q = 1e9\n"
+        "E1: at (time >= 1): B = 1e-3 + 5e-4*min(max((q - 1e9)/1000, 0), 1)^2\n",
+        "q",
+        "the parameter 'q'",
+    ),
+    "a-ramp-squared-in-a-species-of-a-million": (
+        "species B, X; B = 0; x0 = 1e6; X = x0\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = 1e-7*min(max(X - 1e6, 0), 1)^2\n",
+        "x0",
+        "the species 'X'",
+    ),
 }
 
 
 @pytest.mark.parametrize("case", sorted(STEEP))
 def test_a_power_from_the_point_that_is_a_slope_across_the_step_is_not_flat(case):
-    """Each leaves the point as one power of the distance, of order 1.81 or
-    more, and has derivative 0 there. That is the shape of a value that is flat
-    at the point, and none of these is: the value moves by 1e-5 to 5 across the
-    step, so the difference across it is a slope. It came back 2.5e6, 8.3e5,
-    1.09e6, 1e6, 6.9 and 5.9, for 0."""
+    """Each is level at the point and has derivative 0 there, and all but the
+    bend leave it as one power of the distance, of order 1.81 or more. That is
+    the shape of a value that is flat at the point, and none of these is: none
+    is even about it, and the value moves across the step by enough to be a
+    slope, against its own scale and that of what is moved. They came back
+    from 5e-8 to 2.5e6, for 0."""
     text, param, where = STEEP[case]
     _refused(text, [param], 5.0, where)
 
@@ -596,3 +635,33 @@ def test_a_hill_function_far_from_half_saturation_is_flat_at_zero():
         "E1: at (time >= 1): B = X^3/(K^3 + X^3)\n"
     )
     assert _sens(text, ["x0"], 5.0)[0] == pytest.approx(0.0, abs=1e-12)
+
+
+EVEN = {
+    "a-hill-function-of-even-order-near-half": ("X^4/(K^4 + X^4)", 0.0),
+    "a-quartic-a-thousandth-wide": ("((X - 3)/1e-3)^4", 3.0),
+    "a-quartic-with-a-coefficient-of-1e12": ("1e12*(X - 3)^4", 3.0),
+    "the-cube-of-a-distance": ("abs(X - 3)^3/1e-9", 3.0),
+}
+
+
+@pytest.mark.parametrize("case", sorted(EVEN))
+def test_a_value_that_is_even_about_the_point_and_steep(case):
+    """Control. Each is even about the point and leaves it as a third power or
+    a fourth, so its derivative there is 0, and the central difference of an
+    even value is 0 whatever its size: these move by 1e-12 to 1e5 across the
+    step. K is 1e-6, a thousand steps from X at 0."""
+    value, at = EVEN[case]
+    text = (
+        f"species B, X; B = 0; x0 = {at}; X = x0; K = 1e-6\nJ0: -> B; 0*x0\n"
+        f"E1: at (time >= 1): B = {value}\n"
+    )
+    assert _sens(text, ["x0"], 5.0)[0] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_a_bend_too_small_to_be_a_slope():
+    """Control. ``1e-13·max(time − 2.3, 0)`` read at 2.3 bends there, between
+    slopes of 0 and 1e-13. The difference gives 5e-14, which is neither and is
+    within 1e-13 of both."""
+    text = "species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = 1e-13*max(time - 2.3, 0)\n"
+    assert _sens(text, ["T0"], 5.0)[0] == pytest.approx(0.0, abs=2e-13)

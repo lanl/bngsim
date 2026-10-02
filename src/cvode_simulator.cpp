@@ -2095,9 +2095,10 @@ constexpr double kAssignedDerivativeRelTol = 1e-9;
 // across the step where what a smooth value leaves out of its half-step
 // differences is under this fraction of what the value moves by across it.
 constexpr double kAssignedSmoothRelTol = 1e-3;
-// What a value may move by across the whole difference step and still be taken
-// for flat at the point, against the larger of the value and of what is moved.
-constexpr double kAssignedFlatRelTol = 1e-12;
+// The slope a value may have across the difference step and still be taken for
+// flat at the point: per unit relative change of what is moved, against the
+// value's scale.
+constexpr double kAssignedFlatSlope = 1e-6;
 // The difference is taken over this fraction of what is moved, each way.
 constexpr double kAssignedDifferenceStep = 1e-6;
 // Two shifts ∂t*/∂p are one when they agree to this fraction, or when their
@@ -6256,37 +6257,45 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             std::fabs(half - 0.25 * whole) <= allowed) {
             return true;
         }
-        // A value that is flat at the point: on each side it leaves the point
-        // as a power of the distance of order 1.75 or more, and by so little
-        // that the difference across it is no slope to speak of. `X³/(8 + X³)`
-        // with X at 0 is that, and `(X − Y)³` where X is Y: the derivative
-        // there is 0, and the difference gives 1e-19. The two tests above take
-        // it for a value that turns inside the step, because the difference
-        // over half the step is a quarter or less of the one over the whole.
-        //
-        // By so little: under 1e-12 of the larger of the value and of what is
-        // moved, of 1 where both are 0, which is a slope under a millionth of
-        // that scale per unit relative change. The shape alone is not enough.
-        // `5·min(max((q − 1)/1e-6, 0), 1)²` at q = 1 leaves the point as a
-        // square and is done inside the step, a Hill function of X at 0 with a
-        // half-saturation of 1e-8 is past it in ten steps, and
-        // `1e6·max(X − 1, 0)^1.81` has a slope of 25 one step on: the
-        // difference gave 2.5e6, 1e6 and 6.9 for a derivative of 0.
-        double flat_scale = std::max(std::fabs(here), moved);
-        if (flat_scale == 0.0) {
-            flat_scale = 1.0;
-        }
-        auto flat_side = [&](double whole_side, double half_side) {
-            if (whole_side == 0.0) {
-                return half_side == 0.0;
-            }
-            if (!(std::fabs(whole_side) <= kAssignedFlatRelTol * flat_scale)) {
-                return false;
-            }
+        // A value that is flat at the point. `X³/(8 + X³)` with X at 0 is
+        // that, and `(X − Y)³` where X is Y: the derivative there is 0, and
+        // the difference gives 1e-19. The two tests above take it for a value
+        // that turns inside the step, because the difference over half the
+        // step is a quarter or less of the one over the whole. Two kinds pass.
+        const double up = hi - here;
+        const double down = lo - here;
+        const double half_up = half_hi - here;
+        const double half_down = half_lo - here;
+        // One that is even about the point and leaves it as a power of order
+        // 1.75 or more: `X⁴/(K⁴ + X⁴)` at 0, `((X − 3)/1e-3)⁴` at 3. An even
+        // value has derivative 0 at the point where it has one, the central
+        // difference of an even value is 0, and the power is what says it has
+        // one: `abs(X − 3)` is even too, and halves over half the step.
+        auto as_a_power = [](double whole_side, double half_side) {
             const double ratio = half_side / whole_side;
             return ratio > 1.0 / 4096.0 && ratio <= 0.3;
         };
-        return flat_side(hi - here, half_hi - here) && flat_side(lo - here, half_lo - here);
+        const double even = std::max(rounding, std::numeric_limits<double>::min());
+        if (std::fabs(up - down) <= even && std::fabs(half_up - half_down) <= even &&
+            as_a_power(up, half_up) && as_a_power(down, half_down)) {
+            return true;
+        }
+        // And one that does not move to speak of, anywhere it is read across
+        // the step: its slope there, times what is moved (or 1, if that is
+        // larger), is under a millionth of the value (or of 1, if the value is
+        // larger than that or is 0). Then the difference across it is no
+        // slope, relative or absolute, whatever its shape. The shape alone is not
+        // enough. `5·min(max((q − 1)/1e-6, 0), 1)²` at q = 1 leaves the point
+        // as a square and is done inside the step, a Hill function of X at 0
+        // with a half-saturation of 1e-8 is past it in ten steps, and
+        // `1e6·max(X − 1, 0)^1.81` has a slope of 25 one step on: the
+        // difference gave 2.5e6, 1e6 and 6.9 for a derivative of 0. Nor is the
+        // value's own size a scale to measure by: beside an offset of 1e9 a
+        // bend 0.4 of the step out came back as 300.
+        const double scale = here == 0.0 ? 1.0 : std::min(std::fabs(here), 1.0);
+        const double cap = kAssignedFlatSlope * scale * h / std::max(moved, 1.0);
+        return std::max({std::fabs(up), std::fabs(down), std::fabs(half_up),
+                         std::fabs(half_down)}) <= cap;
     };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;
