@@ -425,6 +425,40 @@ def _math_has_unsupported_delay(node, func_defs: dict, _seen: set | None = None)
     return False
 
 
+def _law_has_a_difference(node, func_defs: dict, _seen: set | None = None) -> bool:
+    """True iff *node* subtracts or negates anything, or carries a negative
+    literal: what a reversible law's forward-minus-reverse flux is written with.
+
+    A law with none of it, ``Vm*A/(Km + A)*c``, has no reverse flux to lose: the
+    reversible flag on it is a label (COPASI sets it by default), and SSA runs
+    it as the one channel it would run the same law as when flagged
+    irreversible. *Called* user-defined functions are expanded, as
+    :func:`_math_has_unsupported_delay` does.
+    """
+    if node is None:
+        return True
+    if _seen is None:
+        _seen = set()
+    for n in _iter_ast_subtree(node):
+        t = n.getType()
+        if t == libsbml.AST_MINUS:
+            return True
+        if t == libsbml.AST_INTEGER and n.getInteger() < 0:
+            return True
+        if t in (libsbml.AST_REAL, libsbml.AST_REAL_E) and n.getReal() < 0:
+            return True
+        if t == libsbml.AST_RATIONAL and (n.getNumerator() < 0) != (n.getDenominator() < 0):
+            return True
+        if t == libsbml.AST_FUNCTION:
+            fname = n.getName()
+            if fname in func_defs and fname not in _seen:
+                _seen.add(fname)
+                _params, body = func_defs[fname]
+                if body is _RATEOF_FUNCDEF or _law_has_a_difference(body, func_defs, _seen):
+                    return True
+    return False
+
+
 def _check_unsupported_constructs(sbml_model, func_defs: dict) -> None:
     """Refuse ``delay()`` and ``AlgebraicRule`` models loud-by-default (GH #113).
 
@@ -3382,6 +3416,51 @@ def _split_reversible_kinetic_law(
     return fwd, rev
 
 
+def _rule_reads_no_species(
+    name: str,
+    sbml_model,
+    species_idx,
+    assignment_targets,
+    rate_rule_targets,
+    event_promoted_params,
+    _seen: set | None = None,
+) -> bool:
+    """True iff the assignment rule for *name* reads, through every rule it
+    names, only constant parameters, compartments and the time: a coefficient
+    whose value no species count moves. A species, a reaction rate, a rate-rule
+    or event-assigned variable, or a name it cannot place makes it False.
+    """
+    if _seen is None:
+        _seen = set()
+    if name in _seen:
+        return True
+    _seen.add(name)
+    rule = sbml_model.getAssignmentRuleByVariable(name)
+    if rule is None or rule.getMath() is None:
+        return False
+    for n in _iter_ast_subtree(rule.getMath()):
+        if n.getType() != libsbml.AST_NAME:
+            continue
+        ref = n.getName()
+        if ref in species_idx or ref in rate_rule_targets or ref in event_promoted_params:
+            return False
+        if ref in assignment_targets:
+            if not _rule_reads_no_species(
+                ref,
+                sbml_model,
+                species_idx,
+                assignment_targets,
+                rate_rule_targets,
+                event_promoted_params,
+                _seen,
+            ):
+                return False
+            continue
+        if sbml_model.getParameter(ref) is None and sbml_model.getCompartment(ref) is None:
+            return False
+    return True
+
+
 def _classify_mass_action_ast(
     kl_math,
     reactants_by_id: Counter,
@@ -3424,6 +3503,10 @@ def _classify_mass_action_ast(
     compartment_factors: Counter = Counter()  # comp_id → multiplicity
     species_multiset: Counter = Counter()
     comp_ids = set(comp_volumes.keys())
+    # A factor that reads no species but is not a constant parameter: an
+    # assignment rule over time and parameters (``k2 := k1*f``). It cannot ride
+    # an Elementary rate, but the law stays a monomial in the species.
+    rule_coefficient = False
 
     for f in factors:
         ftype = f.getType()
@@ -3482,6 +3565,16 @@ def _classify_mass_action_ast(
             sbml_p = sbml_model.getParameter(name)
             if sbml_p is None:
                 return None
+            if name in assignment_targets and _rule_reads_no_species(
+                name,
+                sbml_model,
+                species_idx,
+                assignment_targets,
+                rate_rule_targets,
+                event_promoted_params,
+            ):
+                rule_coefficient = True
+                continue
             if (
                 name in rate_rule_targets
                 or name in event_promoted_params
@@ -3495,8 +3588,14 @@ def _classify_mass_action_ast(
             param_value = sbml_p.getValue() if sbml_p.isSetValue() else 0.0
         rate_param_components.append((mangled, param_value))
 
-    if not rate_param_components or numeric_const <= 0:
+    if numeric_const <= 0:
         return None
+    # An Elementary rate needs a constant parameter to carry it. Without one
+    # (``0.3*A*c``, ``3*c``, ``k2*A*c`` with ``k2`` a rule) the reaction takes
+    # the Functional path, which is right for the ODE; what is left to decide
+    # below is only whether it is a monomial the SSA's variable-volume
+    # correction (§9) covers, which reads the species factors alone.
+    elementary = bool(rate_param_components) and not rule_coefficient
 
     # 5. Per-species multiplicity reconciliation. For each species s in the
     #    union of (kinetic-law / SBML-reactants / SBML-products) multisets,
@@ -3670,6 +3769,12 @@ def _classify_mass_action_ast(
             if len(storage_comps) == 1:
                 _record_varvol_reject(next(iter(storage_comps)))
             return None
+
+    if not elementary:
+        storage_comps = {species_comp[s] for s in rxn_species}
+        if len(storage_comps) == 1:
+            _record_varvol_reject(next(iter(storage_comps)))
+        return None
 
     # Amount restoration for hOSU=true reactants is no longer folded into ``sf``
     # here (GH #75). Each species carries an ``amount_valued`` flag (set by the
@@ -6175,6 +6280,9 @@ def _build_model_from_sbml_doc(doc):
             builder.add_function(rid, rate_expr_for_ref)
             rate_expr_emitted = True
 
+        # A reversible law that is not a difference runs as an irreversible one.
+        _rev_difference = rxn.getReversible() and _law_has_a_difference(math, func_defs)
+
         _varvol_reject: dict = {}
         classification = _classify_mass_action(
             rxn,
@@ -6206,10 +6314,10 @@ def _build_model_from_sbml_doc(doc):
         # mass-action only because a variable-volume compartment's power doesn't
         # cancel (case 2) or it carries an hOSU=true law factor (case 1). It must
         # take the Functional path so the ODE is correct, but the SSA propensity
-        # admits the exact scalar live-volume correction §9 will apply. Skip
-        # reversible reactions (their Functional law is a forward-minus-reverse
-        # difference, not a monomial — keep refusing those).
-        if _varvol_reject.get("comp") in varvol_ssa_comps and not rxn.getReversible():
+        # admits the exact scalar live-volume correction §9 will apply. Skip a
+        # reversible law written as a forward-minus-reverse difference, which is
+        # not a monomial — keep refusing those.
+        if _varvol_reject.get("comp") in varvol_ssa_comps and not _rev_difference:
             ssa_varvol_functional[i] = int(_varvol_reject["n_f"])
 
         # (#144 case 4, #172) A cross-compartment variable-volume mass-action
@@ -6219,10 +6327,10 @@ def _build_model_from_sbml_doc(doc):
         # it so §9 lifts the varvol_non_mass_action gate and applies the
         # per-compartment ODE live divide + SSA propensity correction (both keyed on
         # species factors only; an explicit compartment factor lives in base_func and
-        # cancels — see _classify_mass_action_ast). Irreversible only (a reversible
-        # Functional law is a forward-minus-reverse difference, not a monomial).
+        # cancels — see _classify_mass_action_ast). Not a reversible law written
+        # as a forward-minus-reverse difference, which is not a monomial.
         _xcomp_varvol = _varvol_reject.get("xcomp_varvol_comps")
-        if _xcomp_varvol and not rxn.getReversible():
+        if _xcomp_varvol and not _rev_difference:
             ssa_varvol_xcompartment[i] = _xcomp_varvol
 
         # Phase 7: try splitting a reversible kineticLaw of the form
@@ -6269,15 +6377,16 @@ def _build_model_from_sbml_doc(doc):
         # the correct amount/time rate. This closes the latent
         # multi-compartment-hOSU-Functional-under-SSA gap (was Phase 2.7).
 
-        if rxn.getReversible():
+        if _rev_difference:
             ssa_issues.append(
                 SsaIssue(
                     severity="error",
                     code="reversible_non_mass_action",
                     message=(
                         f"Reaction '{rid}' is reversible='true' with a "
-                        "kinetic law that did not classify as mass-action. "
-                        "Under SSA the loader emits a single net-rate "
+                        "kinetic law that is a difference (forward minus "
+                        "reverse) and did not split into two mass-action "
+                        "channels. Under SSA the loader emits a single net-rate "
                         "channel (forward - reverse), so the propensity "
                         "drops to zero at the deterministic equilibrium "
                         "and the trajectory locks at the fixed point "
@@ -6843,13 +6952,25 @@ def _build_model_from_sbml_doc(doc):
                             )
                         )
                     else:
+                        # (b), or (d): a zeroth-order synthesis of hOSU=true
+                        # products with no compartment power, ``=> H; k``,
+                        # whose propensity is k, V-independent as in (c).
                         _product_ids = [species_ids[pi] for pi in products]
-                        _supported = (
-                            _p == 1
-                            and bool(_product_ids)
-                            and all(
-                                not species_hosu.get(sid, False) and species_comp[sid] == _ref_comp
-                                for sid in _product_ids
+                        _supported = bool(_product_ids) and (
+                            (
+                                _p == 1
+                                and all(
+                                    not species_hosu.get(sid, False)
+                                    and species_comp[sid] == _ref_comp
+                                    for sid in _product_ids
+                                )
+                            )
+                            or (
+                                _p == 0
+                                and all(
+                                    species_hosu.get(sid, False) and species_comp[sid] == _ref_comp
+                                    for sid in _product_ids
+                                )
                             )
                         )
                     if _supported:

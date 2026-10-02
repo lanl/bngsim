@@ -1,0 +1,117 @@
+"""SBML models SSA/PSA refused although they run exactly.
+
+- A reaction flagged reversible whose law is no difference (``Vm*A/(Km+A)*c``,
+  COPASI's default flag) was refused as a forward-minus-reverse net flux it is
+  not. It runs as the one channel the same law runs as when flagged
+  irreversible: the same trajectory for the same seed.
+- In a variable-volume compartment a monomial is corrected exactly, and was
+  admitted as ``k*A*c`` but refused as ``0.3*A*c``, ``3*c`` or ``k2*A*c`` with
+  ``k2`` an assignment rule over time: only a constant parameter made the
+  coefficient. The correction reads the species factors alone.
+- A zeroth-order synthesis of an amount-valued species, ``=> H; k``, is
+  volume-independent like ``k*H`` and was refused.
+
+Oracle: the ODE's amounts, which the SSA mean must match for these first- and
+zeroth-order laws, and libRoadRunner for the ODE (it agrees to 1e-4).
+"""
+
+from __future__ import annotations
+
+import bngsim
+import numpy as np
+import pytest
+
+pytest.importorskip("antimony")
+
+
+def _ant(text):
+    return bngsim.Model.from_antimony_string(text)
+
+
+def _errors(text):
+    return {i.code for i in _ant(text).validate_for_ssa() if i.severity == "error"}
+
+
+FORWARD_ONLY = [
+    "compartment c = 2; species A in c = 30; species B in c = 0; Vm = 5; Km = 2;"
+    " J1: A {arr} B; Vm*A/(Km+A)*c;",
+    "compartment c = 2; species A in c = 30; species B in c = 0;"
+    " function mm(s, v, k) v*s/(k+s) end; J1: A {arr} B; mm(A, 5, 2)*c;",
+    "compartment c = 1; c' = 0.1; species A in c = 30; species B in c = 0;"
+    " J1: A {arr} B; 0.3*A*c;",
+]
+
+
+@pytest.mark.parametrize("text", FORWARD_ONLY)
+@pytest.mark.parametrize(("method", "kw"), [("ssa", {}), ("psa", {"poplevel": 10})])
+def test_a_reversible_flag_on_a_law_with_no_difference_is_a_label(text, method, kw):
+    runs = []
+    for arrow in ("=>", "->"):
+        m = _ant(text.format(arr=arrow))
+        r = bngsim.Simulator(m, method=method, **kw).run(t_span=(0, 10), n_points=11, seed=7)
+        runs.append(np.asarray(r.as_roadrunner([s for s in m.species_names if s != "c"])))
+    np.testing.assert_array_equal(runs[0], runs[1])
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        "5*(A - B/2)/(2+A)",  # a difference
+        "5*A/(2+A) + -1*B",  # a negative term
+        "f(3*A, B)",  # a difference inside a called function
+    ],
+)
+def test_a_reversible_difference_is_still_refused(law):
+    text = (
+        "compartment c = 2; species A in c = 30; species B in c = 0;"
+        f" function f(a, b) a - b end; J1: A -> B; {law};"
+    )
+    assert "reversible_non_mass_action" in _errors(text)
+
+
+GROW = "compartment c = 1; c' = 0.1;"
+RESIZE = "compartment c = 1; E1: at time >= 2: c = 2.5;"
+MONOMIALS = [
+    "species A in c = 40; species B in c = 0; J1: A => B; 0.3*A*c;",
+    "species A in c = 40; species B in c = 0; kr := 0.3*(1 + 0.5*sin(time)); J1: A => B; kr*A*c;",
+    "species B in c = 0; J1: => B; 3*c;",
+    "substanceOnly species H in c = 0; k = 3; J1: => H; k;",
+    "substanceOnly species G in c = 40; substanceOnly species H in c = 0; J1: G => H; 0.3*G;",
+]
+
+
+@pytest.mark.parametrize("vol", [GROW, RESIZE], ids=["rate-rule", "event-resize"])
+@pytest.mark.parametrize("body", MONOMIALS)
+def test_a_variable_volume_monomial_runs_with_the_odes_mean(vol, body):
+    text = vol + body
+    assert not _errors(text)
+    m = _ant(text)
+    names = [s for s in m.species_names if s != "c"]
+    ode = np.asarray(
+        bngsim.Simulator(m)
+        .run(t_span=(0, 6), n_points=4, rtol=1e-10, atol=1e-12)
+        .as_roadrunner(names)
+    )
+    sim = bngsim.Simulator(_ant(text), method="ssa")
+    reps = 800
+    runs = []
+    for i in range(reps):
+        sim.model.reset()
+        runs.append(
+            np.asarray(sim.run(t_span=(0, 6), n_points=4, seed=100 + i).as_roadrunner(names))
+        )
+    x = np.array(runs)
+    se = x.std(0, ddof=1) / np.sqrt(reps)
+    assert np.all(np.abs(x.mean(0) - ode) <= 4.5 * se + 1e-9)
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        "A => B; kB*A*c",  # the coefficient reads a species: not a monomial
+        "A => B; 5*A/(2+A)*c",  # no monomial at all
+    ],
+)
+def test_a_variable_volume_law_that_is_no_monomial_is_still_refused(law):
+    text = GROW + f"species A in c = 40; species B in c = 1; kB := 0.3*B; J1: {law};"
+    assert "varvol_non_mass_action" in _errors(text)
