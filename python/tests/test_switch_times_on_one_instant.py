@@ -1,0 +1,883 @@
+"""Rate-law conditions on ``time`` that share an instant (issues #951 and #944).
+
+A fitted switch time's jump is read by nudging the clock across it. Where another
+condition sits on the same instant it flips with the nudge, so the crossing is
+read with its own threshold raised a hair instead (issue #375), which leaves the
+other condition already switched. Two things were wrong with that.
+
+**#951.** The jump read that way is the crossing's with the other condition
+past. If the two conditions are composed, a product of two gates, the later of
+two times, a window of no width, the jump with the other still to come is a
+different one, and a parameter that moves one crossing and not the other has a
+kink there: its derivative from above and from below differ. The run returned
+one of them. What the other conditions do is now read with this crossing still
+to come and with it made, and the run is refused where the two differ.
+
+**#944.** A step call on a clock outside any condition, ``floor(time/3)``, was
+placed as a stop and not counted among the conditions on its instant, so a
+fitted switch that landed on it was read with the step inside its bracket and
+took the step's jump into its own column: dW/dtau = −4.2 for 0. A step that
+sits on a fitted switch's instant is counted now, and the switch is read apart
+from it.
+
+Every expected value is a closed form.
+"""
+
+from __future__ import annotations
+
+import bngsim
+import numpy as np
+import pytest
+
+TIMES = [0.0, 1.5, 3.0, 4.5, 6.0]
+
+
+def _columns(text, params, times=TIMES):
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=list(params)).run(
+        sample_times=list(times), rtol=1e-10, atol=1e-12
+    )
+    return np.asarray(run.sensitivities)[-1]
+
+
+COMPOSED = {
+    # −0.75 from above, −0.375 from below; the run returned −0.75.
+    "a-product-of-a-fitted-and-a-fixed-gate": (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0.25)*piecewise(1, time >= 3, 0.5)\n",
+        ["tau"],
+    ),
+    # (−1, −1) from above and (0, 0) from below; the run returned (−1, −1),
+    # which says moving both by δ moves Y by −2δ where it moves it by −δ.
+    "the-later-of-two-times": (
+        "species Y; Y = 0; r = 1; tau = 3; t2 = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau && time >= t2, 0)\n",
+        ["tau", "t2"],
+    ),
+    # (0, 1) from above and (−1, 0) from below; the run returned (0, 1).
+    "a-window-of-no-width": (
+        "species Y; Y = 0; r = 1; tau = 3; t2 = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau && time < t2, 0)\n",
+        ["tau", "t2"],
+    ),
+    # Two fitted gates with one of them asked for: −0.5 from above and −0.125
+    # from below in t2.
+    "a-product-of-two-fitted-gates-one-requested": (
+        "species Y; Y = 0; r = 1; tau = 3; t2 = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0.25)*piecewise(1, time >= t2, 0.5)\n",
+        ["t2"],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(COMPOSED))
+def test_conditions_on_one_instant_that_do_not_commute_are_refused(case):
+    """Each has a kink in the requested parameter at the value it is run at."""
+    text, params = COMPOSED[case]
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+def test_two_rate_laws_that_switch_together_run():
+    """Control. Y = r·(T − tau) and Z = 2r·(T − t2): each crossing's jump is
+    its own whichever side of the other it is read from."""
+    text = (
+        "species Y, Z; Y = 0; Z = 0; r = 1; tau = 3; t2 = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)\n"
+        "J2: -> Z; piecewise(2*r, time >= t2, 0)\n"
+    )
+    np.testing.assert_allclose(
+        _columns(text, ["tau", "t2"]), [[-1.0, 0.0], [0.0, -2.0]], atol=1e-9
+    )
+
+
+def test_two_gates_summed_in_one_rate_law_run():
+    """Control. One rate law, and the two gates add: dY/dtau = −r and
+    dY/dt2 = −2r."""
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3; t2 = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0) + piecewise(2*r, time >= t2, 0)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["tau", "t2"]), [[-1.0, -2.0]], atol=1e-9)
+
+
+@pytest.mark.parametrize("fixed", [4.0, 2.0], ids=["later", "earlier"])
+def test_a_product_of_two_gates_on_different_instants_runs(fixed):
+    """Control. The same product with the fixed gate at another time: the fitted
+    gate's jump is 0.75·r times the fixed gate's value at t = 3."""
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        f"J1: -> Y; r*piecewise(1, time >= tau, 0.25)*piecewise(1, time >= {fixed}, 0.5)\n"
+    )
+    want = -0.75 * (0.5 if fixed > 3.0 else 1.0)
+    np.testing.assert_allclose(_columns(text, ["tau"]), [[want]], rtol=1e-9)
+
+
+def test_a_composed_pair_no_requested_parameter_moves_runs():
+    """Control. The product of two gates on one instant, with only r asked for:
+    nothing moves either crossing, and Y = r·(0.125·3 + 3) at t = 6."""
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0.25)*piecewise(1, time >= 3, 0.5)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["r"]), [[0.125 * 3 + 3.0]], rtol=1e-9)
+
+
+FLOOR = (
+    "species X, Y, W; X = 0; Y = 0; W = 0; a = 2; k = 0.5; q = 0.7; tau = {tau}\n"
+    "J0: -> X; a\n"
+    "J1: -> Y; piecewise(k*X, time >= tau, 0)\n"
+    "J2: -> W; q*X*{step}\n"
+)
+FLOOR_TIMES = [float(t) for t in np.linspace(0.0, 7.5, 16)]
+
+
+@pytest.mark.parametrize("step", ["floor(time/3)", "ceil(time/3)"])
+def test_a_fitted_switch_on_a_step_of_time_does_not_take_the_step(step):
+    """W's rate law steps at t = 3 whatever tau is, so dW/dtau = 0. Y's switches
+    at tau = 3 with X = 6: dY/dtau = −k·X(tau) = −3. The step's jump, q·X(3),
+    came back in the tau column of W: −4.2."""
+    got = _columns(FLOOR.format(tau=3, step=step), ["tau"], FLOOR_TIMES)
+    np.testing.assert_allclose(got, [[0.0], [-3.0], [0.0]], atol=1e-8)
+
+
+def test_a_fitted_switch_away_from_the_step():
+    """Control. tau = 3.3: dY/dtau = −k·a·tau."""
+    got = _columns(FLOOR.format(tau=3.3, step="floor(time/3)"), ["tau"], FLOOR_TIMES)
+    np.testing.assert_allclose(got, [[0.0], [-3.3], [0.0]], atol=1e-8)
+
+
+def test_an_event_on_a_fitted_switch_and_a_step_is_refused():
+    """The event halves X at tau, on the step: W's column has a kink in tau,
+    −2.1 from one side and −4.2 from the other. It came back −4.2, or −6.3. The
+    step is counted on the instant now, so the event's own test for a fixed
+    switch it does not commute with sees it."""
+    text = FLOOR.format(tau=3, step="floor(time/3)") + "E1: at (time >= tau): X = 0.5*X\n"
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="Forward sensitivity"):
+        sim.run(sample_times=FLOOR_TIMES, rtol=1e-10, atol=1e-12)
+
+
+# ─── What a first cut of this refused, or let through ───────────────────────
+
+BESIDE = "J9: -> Z; piecewise(2, time >= 3, 0.5)\n"
+OWN_TIME = {
+    # Y = r·(T − tau)²/2
+    "a-ramp-from-the-switch": ("piecewise(r*(time - tau), time >= tau, 0)", -3.0),
+    # Y = (r/k)·(1 − e^(−k·(T − tau)))
+    "a-decay-from-the-switch": (
+        "piecewise(r*exp(-k*(time - tau)), time >= tau, 0)",
+        -float(np.exp(-0.5 * 3.0)),
+    ),
+    # Y = r·tau·(T − tau)
+    "the-switch-time-as-a-rate": ("piecewise(r*tau, time >= tau, 0)", 0.0),
+}
+
+
+@pytest.mark.parametrize("case", sorted(OWN_TIME))
+def test_a_rate_law_that_reads_its_own_switch_time_beside_another_switch(case):
+    """Control. The law of Y reads tau outside its condition, and a law of Z
+    switches at the literal 3, which is tau. The two commute. Read as this
+    crossing's own jump from the two sides, its after-branch is a nudge past
+    its onset on one and a whole hair past it on the other, and a first cut of
+    this refused every such model, two of the corpus among them. What the other
+    condition does is the same with this one before and after."""
+    law, want = OWN_TIME[case]
+    text = "species Y, Z; Y = 0; Z = 0; r = 1; k = 0.5; tau = 3\n" + f"J1: -> Y; {law}\n" + BESIDE
+    np.testing.assert_allclose(_columns(text, ["tau"]), [[want], [0.0]], rtol=1e-7, atol=1e-9)
+
+
+TWO_CLOCKS = """begin parameters
+    1 r 1.0
+    2 tau 3
+    3 t2 3
+    4 _rateLaw1 1
+    5 k 0.5
+end parameters
+begin functions
+    1 fY() {law}
+end functions
+begin species
+    1 Y() 0
+    2 Tc() 0
+end species
+begin reactions
+    1 0 1 fY
+    2 0 2 _rateLaw1
+end reactions
+begin groups
+    1 t 2
+end groups
+"""
+ACROSS_CLOCKS = {
+    # −0.75 from above and −0.375 from below; the run returned −0.375.
+    "a-product-of-a-gate-on-time-and-one-on-a-counter": (
+        "r*if(time()>=tau,1,0.25)*if(t>=3,1,0.5)",
+        ["tau"],
+    ),
+    # (−1, −1) from above and (0, 0) from below; the run returned (0, −1).
+    "the-later-of-a-time-and-a-counter": ("if((time()>=tau)&&(t>=t2),r,0)", ["tau", "t2"]),
+    # −0.5 from above and 0 from below; the run returned 0.
+    "a-gate-on-time-and-a-step-of-a-counter": ("if(time()>=tau,k,0)*floor(t/3)", ["tau"]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ACROSS_CLOCKS))
+def test_conditions_on_two_clocks_that_do_not_commute_are_refused(tmp_path, case):
+    """One condition on the time and one on a counter that reads the same
+    instant. A nudge of one clock does not flip the condition on the other, so
+    each was read with the other where it stood, and the two were never
+    compared. Every clock on the instant is nudged now."""
+    law, params = ACROSS_CLOCKS[case]
+    path = tmp_path / "m.net"
+    path.write_text(TWO_CLOCKS.format(law=law))
+    sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode", sensitivity_params=params)
+    with pytest.raises(bngsim.SimulationError, match="Forward sensitivity"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "step", ["floor(time*time/9)", "floor(sqrt(3*time))", "floor(exp(time - 3))"]
+)
+def test_a_fitted_switch_on_a_step_whose_edges_are_not_listed(step):
+    """These step at t = 3 too, and are not steps whose edges bngsim lists. The
+    step is found by evaluating the call a nudge either side of the fitted
+    switch's instant. dW/dtau came back −4.2 for 0."""
+    got = _columns(FLOOR.format(tau=3, step=step), ["tau"], FLOOR_TIMES)
+    np.testing.assert_allclose(got, [[0.0], [-3.0], [0.0]], atol=1e-8)
+
+
+def test_a_fitted_switch_on_a_step_at_the_end_of_the_run():
+    """The run ends on the instant. A step's edge at the end of the window was
+    not listed, and W's column came back −4.2 for 0."""
+    got = _columns(FLOOR.format(tau=3, step="floor(time/3)"), ["tau"], [0.0, 1.5, 3.0])
+    assert got[2, 0] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_a_fitted_switch_on_one_of_twelve_thousand_steps():
+    """``floor(time/0.0005)`` has more edges in the window than are listed, and
+    was then not counted at all: −4.2 for 0."""
+    got = _columns(FLOOR.format(tau=3, step="floor(time/0.0005)"), ["tau"], [0.0, 1.5, 4.5, 6.0])
+    assert got[2, 0] == pytest.approx(0.0, abs=1e-6)
+
+
+TIED = {
+    # Both gates move with p: Y = r·(0.125·p + (T − p)), dY/dp = −0.875.
+    "a-product": "r*piecewise(1, time >= tA, 0.25)*piecewise(1, time >= tB, 0.5)",
+    # dY/dp = −1.
+    "the-later-of-the-two": "piecewise(r, time >= tA && time >= tB, 0)",
+}
+
+
+@pytest.mark.parametrize("case", sorted(TIED))
+def test_two_composed_switches_that_one_parameter_moves_together_are_refused(case):
+    """``tA := p + a`` and ``tB := p + b`` with a = b = 0: one parameter moves
+    both crossings at one rate, so the result has a derivative in p, −0.875 and
+    −1. It came back −1.25 and −2: each crossing's jump was read with the other
+    made, and the two were added. The two are not taken as one crossing, and
+    the run is refused."""
+    text = (
+        "species Y; Y = 0; r = 1; p = 3; a = 0; b = 0; tA := p + a; tB := p + b\n"
+        f"J1: -> Y; {TIED[case]}\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["p"])
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+def test_a_neighbour_whose_rate_law_reads_the_moved_switch_time():
+    """Control. Z's law switches at the literal 3 and is scaled by tau, which is
+    the threshold raised a hair to read Y's switch apart: what Z does across
+    the instant is 1.5·tau, and differs between the two readings by the hair.
+    That part is in proportion to the hair and is taken out. Z = tau·(0.5·3 +
+    2·(T − 3)), so dZ/dtau = 7.5, and dY/dtau = −r. The jump that is applied
+    was read with the threshold a hair up and was a part in a million out for
+    it. It is read at half the hair too and taken to none."""
+    text = (
+        "species Y, Z; Y = 0; Z = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)\n"
+        "J9: -> Z; tau*piecewise(2, time >= 3, 0.5)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["tau"]), [[-1.0], [7.5]], rtol=1e-8)
+
+
+def test_a_gate_a_hundred_ulp_past_the_instant_is_not_taken_for_a_slope():
+    """``r·gate(tau)·(gate(3) + gate(3·(1 + 100·ε)))``: dY/dtau is −2 from
+    above and 0 from below, and came back −1. The second fixed gate is not on
+    the instant, and is inside twice the nudge. Read again over twice the
+    nudge, what it adds doubled with the nudge, as a slope would, and was
+    taken out with it. The second reading is over half the nudge."""
+    late = repr(float(3.0 * (1 + 100 * np.finfo(float).eps)))
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0)"
+        f"*(piecewise(1, time >= 3, 0) + piecewise(1, time >= {late}, 0))\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+COUNTERS = """begin parameters
+    1 a 2
+    2 k 0.5
+    3 q 0.7
+    4 tau {tau}
+    5 _rateLaw1 1
+end parameters
+begin functions
+    1 fY() if(t>=tau,k*Xo,0)
+    2 fW() {step}
+end functions
+begin species
+    1 X() 0
+    2 Y() 0
+    3 W() 0
+    4 Tc() {start}
+    5 Uc() 0
+end species
+begin reactions
+    1 0 1 a
+    2 0 2 fY
+    3 0 3 fW
+    4 0 4 _rateLaw1
+    5 0 5 _rateLaw1
+end reactions
+begin groups
+    1 Xo 1
+    2 t 4
+    3 u 5
+end groups
+"""
+
+
+@pytest.mark.parametrize(
+    ("step", "tau", "start"),
+    [
+        ("q*Xo*floor((t-1e6)/3)", "1000003", "1e6"),
+        ("q*Xo*floor((t-1e6)*(t-1e6)/9)", "1000003", "1e6"),
+        ("q*Xo*floor((t+u)/6)", "3", "0"),
+    ],
+    ids=[
+        "a-counter-that-starts-at-a-million",
+        "a-step-whose-edges-are-not-listed-on-that-counter",
+        "a-step-of-two-counters",
+    ],
+)
+def test_a_fitted_switch_on_a_step_of_a_counter(tmp_path, step, tau, start):
+    """The switch and the step are on a counter clock. A counter at 1e6 is
+    nudged about its own value, not about the time, and a call that reads two
+    counters is on no one clock and is taken to step. dW/dtau came back −4.2
+    for 0 in both."""
+    path = tmp_path / "m.net"
+    path.write_text(COUNTERS.format(step=step, tau=tau, start=start))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["tau"]
+    ).run(sample_times=[0.0, 1.0, 2.0, 4.0, 5.0, 7.5], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, :3, 0]
+    np.testing.assert_allclose(got, [0.0, -3.0, 0.0], atol=1e-7)
+
+
+# ─── What a second cut refused, or let through ──────────────────────────────
+
+RAMPS = {
+    # Y = r·(T − tau)³/3 with T = tau + 3.
+    "a-square-from-the-switch": ("piecewise(r*(time - tau)^2, time >= tau, 0)", lambda tau: -9.0),
+    # Y = r·(T − tau)²/2.
+    "up-from-the-switch": ("piecewise(r*(time - tau), time >= tau, 0)", lambda tau: -3.0),
+    # Y = r·tau²/2.
+    "down-to-the-switch": ("piecewise(0, time >= tau, r*(tau - time))", lambda tau: tau),
+}
+
+
+@pytest.mark.parametrize("tau", [0.05, 2.6, 3.7, 3.835052, 5.3, 17.3, 123.456, 1000.1])
+@pytest.mark.parametrize("shape", sorted(RAMPS))
+def test_a_ramp_beside_another_switch_at_a_time_that_is_not_a_round_number(shape, tau):
+    """Control. A ramp from its own switch time, beside a law of Z that
+    switches at the same number. The ramp's slope is in what the other
+    condition is read to do, in proportion to how far the clock is moved, and
+    is taken out by a second reading over half as far. At tau = 3 half of 64
+    ulp is a double. At 2.6 it is not: the two lengths were not as 1 to a
+    half, the slope times an ulp was left, and against a rate that is 0 at its
+    own switch that read as a kink. About half of all switch times were
+    refused. The lengths the clock was in fact moved over are used now. What
+    is left of a square from the switch, at 0.05 and at 3.835052, is the
+    rounding of the readings themselves, which are a hair's worth of the rate
+    law and not a nudge's: they are allowed that."""
+    law, want = RAMPS[shape]
+    text = (
+        f"species Y, Z; Y = 0; Z = 0; r = 1; tau = {tau!r}\n"
+        f"J1: -> Y; {law}\n"
+        f"J9: -> Z; piecewise(2, time >= {tau!r}, 0.5)\n"
+    )
+    got = _columns(text, ["tau"], [0.0, tau / 2, tau + 1.0, tau + 3.0])
+    np.testing.assert_allclose(got, [[want(tau)], [0.0]], rtol=1e-6, atol=1e-8)
+
+
+BILLION = """begin parameters
+    1 r 1.0
+    2 tau 1000000003
+    3 _rateLaw1 1
+end parameters
+begin functions
+    1 fY() if(t>=tau,r*(t-tau),0)
+    2 fZ() {gate}
+end functions
+begin species
+    1 Y() 0
+    2 Tc() 1e9
+    3 Z() 0
+    4 Uc() 0
+end species
+begin reactions
+    1 0 1 fY
+    2 0 2 _rateLaw1
+    3 0 3 fZ
+    4 0 4 _rateLaw1
+end reactions
+begin groups
+    1 t 2
+    2 u 4
+end groups
+"""
+
+
+@pytest.mark.parametrize(
+    "gate",
+    ["if(t>=1000000003,2,0.5)", "if(time()>=3,2,0.5)", "if(u>=3,2,0.5)"],
+    ids=["a-gate-on-the-same-counter", "a-gate-on-the-time", "a-gate-on-another-counter"],
+)
+def test_a_ramp_on_a_counter_that_starts_at_a_billion(tmp_path, gate):
+    """Control. The same ramp on a counter clock that starts at 1e9, beside a
+    gate on that counter, on the time, and on a second counter. A nudge of a
+    counter at 1e9 is 1.4e-5, and half of it is not half as far in doubles.
+    dY/dtau = −r·(T − tau) = −3, to what a counter at 1e9 resolves."""
+    path = tmp_path / "m.net"
+    path.write_text(BILLION.format(gate=gate))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["tau"]
+    ).run(sample_times=[0.0, 1.0, 2.0, 4.0, 5.0, 6.0], rtol=1e-10, atol=1e-12, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, :, 0]
+    np.testing.assert_allclose(got[[0, 2]], [-3.0, 0.0], rtol=1e-4, atol=1e-8)
+
+
+def _gate(ulps):
+    at = repr(float(3.0 * (1 + ulps * np.finfo(float).eps)))
+    return f"piecewise(1, time >= {at}, 0)"
+
+
+NEAR = {
+    # −2 from above and 0 from below; the run returned −2. The second gate is
+    # inside the nudge and outside half of it, with the weight of the first.
+    "two-gates-of-one-weight-forty-ulp-apart": [0, 40],
+    # Inside half the nudge and outside a quarter of it.
+    "two-gates-of-one-weight-twenty-four-ulp-apart": [0, 24],
+    "two-gates-of-one-weight-sixty-ulp-apart": [0, 60],
+    # Neither fixed gate on the fitted switch's own time.
+    "neither-gate-on-the-switch": [10, 40],
+    "three-gates": [0, 40, 100],
+    # −4 from above and 0 from below; the run returned −4. Weights 1, 1 and 2
+    # at 0, 33 and 66 ulp read 4, 2 and 1 over the whole nudge, half of it and
+    # a quarter, which is a slope. They are all on the instant.
+    "weights-that-read-as-a-slope": [0, 33, 66, 66],
+}
+
+
+@pytest.mark.parametrize("case", sorted(NEAR))
+def test_gates_a_few_ulp_from_the_instant_are_refused(case):
+    """``r·gate(tau)·(gate(3 + a) + gate(3 + b) + …)`` with the fixed gates a
+    few ulp from the fitted switch at 3: dY/dtau has a kink that close. A
+    cut that nudged the clock about the switch's own time had a gate inside
+    the nudge and outside half of it in the long reading and not in the short
+    one, which is what a slope does, and one with the weight of the gate on
+    the instant cancelled that one's part exactly. The gates are on the
+    instant: thresholds that agree to 12 digits are one crossing, kept with
+    the least and the greatest of them, and every clock is put before the one
+    and past the other in every reading."""
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0)*("
+        + " + ".join(_gate(n) for n in NEAR[case])
+        + ")\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+@pytest.mark.parametrize("ulps", [100, -100])
+def test_a_gate_composed_with_the_switch_a_hundred_ulp_away_is_refused(ulps):
+    """``r·gate(tau)·g`` with g going from 0.5 to 1 a hundred ulp from tau,
+    beside a law of Z that switches on tau's own instant: dY/dtau is −1 on one
+    side and −0.5 on the other, and the run returned one of them. Every clock
+    is now put outside the whole instant, before its earliest threshold and
+    past its latest, so the gate is in every reading."""
+    at = repr(float(3.0 * (1 + ulps * np.finfo(float).eps)))
+    text = (
+        "species Y, Z; Y = 0; Z = 0; r = 1; tau = 3\n"
+        f"J1: -> Y; r*piecewise(1, time >= tau, 0)*piecewise(1, time >= {at}, 0.5)\n"
+        "J9: -> Z; piecewise(2, time >= 3, 0.5)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+TWO_SLOPES = """begin parameters
+    1 r 1.0
+    2 tau {tau!r}
+    3 _rateLaw1 1
+end parameters
+begin functions
+    1 fY() if(t>=tau,r*(t-tau)+0.5*r*(time()-{at!r}),0)
+    2 fZ() if(time()>={at!r},2,0.5)
+end functions
+begin species
+    1 Y() 0
+    2 Tc() {start!r}
+    3 Z() 0
+end species
+begin reactions
+    1 0 1 fY
+    2 0 2 _rateLaw1
+    3 0 3 fZ
+end reactions
+begin groups
+    1 t 2
+end groups
+"""
+
+
+@pytest.mark.parametrize(("start", "at"), [(0.7, 3.0), (0.7, 2.6), (41.7, 1.1), (7.77, 123.456)])
+def test_a_rate_law_with_a_slope_on_two_clocks_on_the_instant(tmp_path, start, at):
+    """Control. Y's law switches on a counter that started at `start` and
+    moves with that counter and with the time, beside a law of Z that
+    switches on the time at the same instant. The two clocks are moved over
+    lengths that are not in one proportion from the whole nudge to half of
+    it, each rounding about its own value, so the slope's part cannot be
+    taken out for both at once. What that leaves is allowed for.
+    dY/dtau = −r·(T − t*) = −3."""
+    path = tmp_path / "m.net"
+    path.write_text(TWO_SLOPES.format(tau=start + at, at=at, start=start))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["tau"]
+    ).run(sample_times=[0.0, at / 2, at + 1.0, at + 3.0], rtol=1e-10, atol=1e-12, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, [0, 2], 0]
+    np.testing.assert_allclose(got, [-3.0, 0.0], rtol=1e-8, atol=1e-9)
+
+
+# ─── What a third cut refused, or let through ───────────────────────────────
+
+VANISHING = {
+    # Y = 0.3·(T − tau)²/2 with T = tau + 3.
+    "a-difference-of-two-products": ("0.3*time - 0.3*tau", 2.6, -0.9),
+    # The same at a late switch time, where the two products round by more.
+    "a-difference-of-two-products-at-a-late-time": ("0.3*time - 0.3*tau", 250.5, -0.9),
+    # Y = r·((T − tau) − sin(T − tau)). 1 − cos rounds by an ulp of 1 and has
+    # no slope at its switch.
+    "one-less-a-cosine": ("r*(1 - cos(time - tau))", 33.3, -(1.0 - float(np.cos(3.0)))),
+    # Y = (T − tau)²/14.
+    "a-difference-of-two-quotients": ("time/7 - tau/7", 3.7, -3.0 / 7.0),
+    # Y = r·((T − tau) − (1 − e^(−k·(T − tau)))/k).
+    "a-saturating-onset": ("r*(1 - exp(-k*(time - tau)))", 5.3, -(1.0 - float(np.exp(-1.5)))),
+}
+
+
+@pytest.mark.parametrize("case", sorted(VANISHING))
+def test_a_law_that_vanishes_at_its_switch_as_a_difference_of_two_terms(case):
+    """Control. Each law is 0 at its own switch and is computed there as the
+    difference of two numbers of order 1, so it rounds by an ulp of those,
+    1e-16, where a ramp written ``r·(time − tau)`` rounds by an ulp of
+    itself. What the readings were allowed went with their own size, and each
+    of these was refused beside a law of Z that switches at the same number.
+    No rate law reads the two conditions together, so they cannot be composed
+    and there is nothing to ask: a reaction's rate is one law, and the
+    right-hand side adds reactions up."""
+    law, tau, want = VANISHING[case]
+    text = (
+        f"species Y, Z; Y = 0; Z = 0; r = 1; k = 0.5; tau = {tau!r}\n"
+        f"J1: -> Y; piecewise({law}, time >= tau, 0)\n"
+        f"J9: -> Z; piecewise(2, time >= {tau!r}, 0.5)\n"
+    )
+    got = _columns(text, ["tau"], [0.0, tau / 2, tau + 1.0, tau + 3.0])
+    np.testing.assert_allclose(got, [[want], [0.0]], rtol=1e-6, atol=1e-8)
+
+
+def test_two_gates_past_the_switch_that_cancel_are_read_past_both():
+    """``r·gate(tau)·(g₄₀ − g₁₀₀)`` with the two fixed gates 40 and 100 ulp
+    past tau: the factor is 0 before both and 0 after both, so dY/dtau = 0.
+    The switch's own jump was read 64 ulp past tau, with the one gate made
+    and the other not: −1. It is read past the whole instant."""
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        f"J1: -> Y; r*piecewise(1, time >= tau, 0)*({_gate(40)} - {_gate(100)})\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["tau"]), [[0.0]], atol=1e-9)
+
+
+def test_a_gate_on_the_time_less_the_same_gate_on_a_counter(tmp_path):
+    """``r·gate(tau)·(if(time() >= 3, 1, 0) − if(t >= 3, 1, 0))`` with t a
+    counter that reads the time: the factor is 0 at every time, and
+    dY/dtau = 0. The jump was read with the time a nudge on and the counter
+    where it was: −1. Every clock on the instant is put past it."""
+    law = "r*if(time()>=tau,1,0)*(if(time()>=3,1,0)-if(t>=3,1,0))"
+    path = tmp_path / "m.net"
+    path.write_text(TWO_CLOCKS.format(law=law))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["tau"]
+    ).run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+    assert np.asarray(run.sensitivities)[-1, 0, 0] == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("first", ["Y", "Z"])
+def test_a_refusal_does_not_depend_on_the_order_the_laws_are_written_in(first):
+    """Y's law is ``r·gate(tau)·g`` with g going from 0.5 to 1 a hundred ulp
+    past tau, and Z's switches at the literal 3. The two fixed thresholds
+    agree to 12 digits and are folded into one crossing, which kept the value
+    of whichever was found first: with Z's law written first the instant was
+    taken to end at 3, the gate was outside it, and the run returned −0.5
+    where the other order was refused. The crossing keeps the least and the
+    greatest of what is folded into it."""
+    y = f"J1: -> Y; r*piecewise(1, time >= tau, 0)*{_gate(100).replace(', 0)', ', 0.5)')}\n"
+    z = "J9: -> Z; piecewise(2, time >= 3, 0.5)\n"
+    text = "species Y, Z; Y = 0; Z = 0; r = 1; tau = 3\n" + (y + z if first == "Y" else z + y)
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+IN_ONE_LAW = {
+    # The ramp times a gate on its own switch time: the product is 0 at the
+    # switch whatever the gate does. Y = 0.3·(T − tau)²/2.
+    "a-product-with-a-gate": ("({law})*piecewise(1, time >= {at!r}, 0.5)", -0.9),
+    # The ramp plus a gate: dY/dtau = −0.9 and the gate's part does not move.
+    "a-sum-with-a-gate": ("({law}) + piecewise(2, time >= {at!r}, 0.5)", -0.9),
+}
+
+
+@pytest.mark.parametrize("tau", [2.6, 250.5])
+@pytest.mark.parametrize("case", sorted(IN_ONE_LAW))
+def test_a_vanishing_law_in_one_rate_law_with_another_gate(case, tau):
+    """Control. ``0.3·time − 0.3·tau`` from its switch, in one rate law with a
+    fixed gate on the same number, so the two can be composed and are asked.
+    They commute: the law is 0 where the gate flips. What is left of the
+    difference is the law's own rounding, an ulp of the two products, which
+    at 250.5 is far more than the law's own size there."""
+    template, want = IN_ONE_LAW[case]
+    law = template.format(law="piecewise(0.3*time - 0.3*tau, time >= tau, 0)", at=tau)
+    text = f"species Y; Y = 0; tau = {tau!r}\nJ1: -> Y; {law}\n"
+    got = _columns(text, ["tau"], [0.0, tau / 2, tau + 1.0, tau + 3.0])
+    np.testing.assert_allclose(got, [[want]], rtol=1e-6, atol=1e-8)
+
+
+def test_a_composed_kink_is_refused_whatever_the_units():
+    """The product of a fitted and a fixed gate with r = 1e-9: the kink is
+    −7.5e-10 | −3.75e-10. A cut that allowed a kink no column could show
+    above its absolute tolerance let this through at the default tolerances,
+    and refused it at tighter ones."""
+    text = (
+        "species Y; Y = 0; r = 1e-9; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0.25)*piecewise(1, time >= 3, 0.5)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-8, atol=1e-8)
+
+
+def test_gates_in_other_laws_a_few_thousand_ulp_after_the_switch():
+    """Control. Gates in two other rate laws 2,000 and 9,000 ulp after tau:
+    the nearer agrees with tau to 12 digits and is on its instant, and the
+    farther caps the hair the switch is read apart with. No law reads them
+    with the switch, so its jump is read a nudge past its own time, as it
+    was: dY/dtau = −1. Read past the whole instant, half the hair fell short
+    of the clock and the column came back +1."""
+    eps = float(np.finfo(float).eps)
+    near_gate, far_gate = (repr(3.0 * (1 + n * eps)) for n in (2000, 9000))
+    text = (
+        "species Y, Z, W; Y = 0; Z = 0; W = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)\n"
+        f"J8: -> Z; piecewise(2, time >= {near_gate}, 0.5)\n"
+        f"J9: -> W; piecewise(2, time >= {far_gate}, 0.5)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["tau"]), [[-1.0], [0.0], [0.0]], atol=1e-9)
+
+
+def test_a_hair_that_cannot_clear_the_instant_is_refused():
+    """The same two gates summed into the switch's own rate law, so the three
+    are read together and the clock is put past the nearer gate, 2,000 ulp
+    after tau. The farther gate caps the hair at a quarter of 9,000 ulp, and
+    half of that does not clear the clock: the half reading would have the
+    switch already made. The sum commutes and dY/dtau = −1, which main
+    returns; read that way it came back +1, and it is refused."""
+    eps = float(np.finfo(float).eps)
+    near_gate, far_gate = (repr(3.0 * (1 + n * eps)) for n in (2000, 9000))
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)"
+        f" + piecewise(2, time >= {near_gate}, 0.5) + piecewise(2, time >= {far_gate}, 0.5)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="closer to a neighbouring"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+# ─── What a fifth review found ──────────────────────────────────────────────
+
+GATE_A, GATE_B = "piecewise(1, time >= tau, 0.25)", "piecewise(1, time >= 3, 0.5)"
+RATE_OF = {
+    # −0.75 from above and −0.375 from below; the run returned −0.75.
+    "a-gate-on-the-rate-of-a-gated-species": (
+        f"J1: -> X; r*{GATE_A}\nJ2: -> Y; rateOf(X)*{GATE_B}\n"
+    ),
+    # −2.4375 from above and −1.6875 from below; the run returned −2.4375.
+    "the-square-of-a-rate-two-gated-reactions-make": (
+        f"J1: -> X; r*{GATE_A}\nJ0: -> X; {GATE_B}\nJ2: -> Y; rateOf(X)^2\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(RATE_OF))
+def test_a_gate_composed_through_the_rate_of_a_species_is_refused(case):
+    """A rate law that reads ``rateOf(X)`` reads every rate law that changes
+    X, and the text of neither says so: no law holds both conditions, and the
+    two were taken as not composed. With ``rateOf`` in the model every
+    crossing on an instant is asked about with every other."""
+    text = "species X, Y; X = 0; Y = 0; r = 1; tau = 3\n" + RATE_OF[case]
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+        sim.run(sample_times=[0.0, 1.5, 4.5, 6.0], rtol=1e-10, atol=1e-12)
+
+
+def test_a_gate_added_to_the_rate_of_a_gated_species_runs():
+    """Control. ``rateOf(X) + gate``: the two are asked about, and commute."""
+    text = (
+        "species X, Y; X = 0; Y = 0; r = 1; tau = 3\n"
+        f"J1: -> X; r*{GATE_A}\nJ2: -> Y; rateOf(X) + {GATE_B}\n"
+    )
+    got = _columns(text, ["tau"], [0.0, 1.5, 4.5, 6.0])
+    np.testing.assert_allclose(got, [[-0.75], [-0.75]], rtol=1e-8)
+
+
+ONSET_AND_GATE = """begin parameters
+    1 r 1.0
+    2 tau 3
+    3 _rateLaw1 1
+end parameters
+begin functions
+    1 fY() if(time()>=tau,r*(time()-tau)^0.2,0)
+    2 fZ() if(t>={at},2,0.5)
+end functions
+begin species
+    1 Y() 0
+    2 Tc() 0
+    3 Z() 0
+end species
+begin reactions
+    1 0 1 fY
+    2 0 2 _rateLaw1
+    3 0 3 fZ
+end reactions
+begin groups
+    1 t 2
+end groups
+"""
+
+
+@pytest.mark.parametrize("ulps", [0, 40, -40])
+def test_a_power_onset_beside_a_gate_on_a_counter_in_another_law(tmp_path, ulps):
+    """Y turns on at the fitted tau as ``(time − tau)^0.2``, and Z's law
+    switches on a counter that reads the same instant. Z's gate is fixed:
+    dZ/dtau = 0. Y's column enters a comoving frame at the switch (issue
+    #545), against the whole right-hand side, and no nudge of the time flips a
+    condition on a counter: the frame was entered with Z's gate still to come
+    and left with it made, and Z's row kept the gate's jump, −1.5. Every other
+    clock on the instant is put past it, where the frame is entered and where
+    a sample on the instant is read out of it."""
+    path = tmp_path / "m.net"
+    path.write_text(ONSET_AND_GATE.format(at=repr(float(3.0 * (1 + ulps * np.finfo(float).eps)))))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["tau"]
+    ).run(sample_times=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], rtol=1e-10, atol=1e-12, timeout=60)
+    got = np.asarray(run.sensitivities)[:, [0, 2], 0]
+    # Y = r·(T − tau)^1.2/1.2.
+    np.testing.assert_allclose(got[-1], [-(3.0**0.2), 0.0], rtol=1e-6, atol=1e-8)
+    # Z's row at every sample, the one on the instant among them: what a
+    # comoving column is read out against there has the gate made as well.
+    np.testing.assert_allclose(got[:, 1], 0.0, atol=1e-8)
+
+
+CURVED = {
+    "a-saturating-onset": ("r*(1 - exp(-k*(time - tau)))", -(1.0 - float(np.exp(-1.5)))),
+    "an-exponential-less-one": ("r*(exp(k*(time - tau)) - 1)", -(float(np.exp(1.5)) - 1.0)),
+    "a-hyperbolic-tangent": ("r*tanh(time - tau)", -float(np.tanh(3.0))),
+}
+
+
+@pytest.mark.parametrize("tau", [0.37, 5.3, 41.5])
+@pytest.mark.parametrize("case", sorted(CURVED))
+def test_a_curved_vanishing_law_in_one_rate_law_with_a_gate(case, tau):
+    """Control. A law that is 0 at its own switch and curved from it, times a
+    fixed gate on the same number. The two commute: the law is 0 where the
+    gate flips. What is read is the law's value a hair from its zero, and
+    half the hair takes out the part in proportion to the hair and leaves its
+    square, 4.5e-12 of the rate: a cut that stopped there refused every one
+    of these. A quarter of the hair is read too."""
+    law, want = CURVED[case]
+    text = (
+        f"species Y; Y = 0; r = 1; k = 0.5; tau = {tau!r}\n"
+        f"J1: -> Y; piecewise({law}, time >= tau, 0)*piecewise(1, time >= {tau!r}, 0.5)\n"
+    )
+    got = _columns(text, ["tau"], [0.0, tau / 2, tau + 1.0, tau + 3.0])
+    np.testing.assert_allclose(got, [[want]], rtol=1e-6, atol=1e-8)
+
+
+@pytest.mark.parametrize("weight", [1.9, 2.1])
+def test_three_steps_whose_weights_are_nearly_a_slope_are_refused(weight):
+    """A gate on the instant and two steps of ``floor`` 33 and 66 ulp after
+    it, with weights 1, 1 and w, composed with the fitted switch: the kink is
+    −(2 + w) | 0. At w = 2 the three read 4, 2 and 1 over the whole nudge,
+    half of it and a quarter, which is a slope. An allowance for a law
+    rounding by its slope times a few ulp of the clock let 1.9 and 2.1 through
+    with it. It is gone: nothing was found to need it."""
+    eps = float(np.finfo(float).eps)
+    steps = [f"floor(time/{float(3.0 * (1 + n * eps))!r})" for n in (33, 66)]
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0)"
+        f"*(piecewise(1, time >= 3, 0) + {steps[0]} + {weight}*{steps[1]})\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="issue #951"):
+        sim.run(sample_times=[0.0, 1.5, 3.0, 4.5, 5.5], rtol=1e-10, atol=1e-12)
+
+
+def test_a_quarter_of_the_hair_has_to_clear_the_instant_too():
+    """A gate 700 ulp after tau and one 9,000 ulp after it, summed into the
+    switch's own rate law. The farther caps the hair at a quarter of 9,000
+    ulp; half of that clears the nearer gate and a quarter of it does not,
+    and the commute test may read at a quarter. The sum commutes and
+    dY/dtau = −1, which main returns; a crossing composed with another is
+    refused where the shortest reading would have the switch already made."""
+    eps = float(np.finfo(float).eps)
+    near_gate, far_gate = (repr(3.0 * (1 + n * eps)) for n in (700, 9000))
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)"
+        f" + piecewise(2, time >= {near_gate}, 0.5) + piecewise(2, time >= {far_gate}, 0.5)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="closer to a neighbouring"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)

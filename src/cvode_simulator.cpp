@@ -6924,6 +6924,15 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // bump cannot move a crossing this one does not own; where no such parameter
     // exists it refuses the run instead of reaching here.
     const std::vector<double> *jump_from = &sw_f_minus;
+    // Every other clock on the instant, and the value a nudge past the latest
+    // threshold on it: −1 for the time. What is read on the crossing itself
+    // for a comoving column, below, is read with these past it too.
+    std::vector<std::pair<int, double>> other_clocks_past;
+    // Why the conditions on this instant do not commute, where they do not
+    // (issue #951). Thrown below, once the window's own refusal has had its
+    // say: the edge of a window that closes as a singular power fails this
+    // test too, and that one names what is wrong with it.
+    std::string not_commuting;
     if (!sw.isolate_param_idx0.empty()) {
         auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
         // No hold is passed to refresh_derived_params() below, and that is
@@ -6956,6 +6965,84 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         // that restores from sens.p, which is empty on a run with no parameter
         // columns to probe, and leaving a bumped threshold behind would corrupt
         // the resumed integration rather than one difference.
+        // The instant on each clock, from the earliest threshold on it to the
+        // latest: thresholds that agree to 12 digits are one crossing and need
+        // not be one double, and a gate on the time and one on a counter can
+        // sit on one instant.
+        struct InstantSpan {
+            int clock; // species index, or −1 for the time
+            double lo;
+            double hi;
+        };
+        std::vector<InstantSpan> spans;
+        auto widen = [&](int clock, double where) {
+            for (auto &span : spans) {
+                if (span.clock == clock) {
+                    span.lo = std::min(span.lo, where);
+                    span.hi = std::max(span.hi, where);
+                    return;
+                }
+            }
+            spans.push_back({clock, where, where});
+        };
+        widen(time_clock ? -1 : sw.clock_species_idx0, time_clock ? t_cross : sw.threshold);
+        for (const auto &other : sw.instant_clocks) {
+            widen(other.first, other.second);
+        }
+        // A crossing on another clock is flipped by no nudge of this one, and
+        // a column that enters a comoving frame here enters it against the
+        // whole right-hand side (issue #545): read with a counter's gate still
+        // to come and left, later, with it made, the column kept the gate's
+        // jump. `if(time >= tau, r·(time − tau)^0.2, 0)` beside
+        // `if(t >= 3, 2, 0.5)` on a counter t in another reaction returned
+        // dZ/dtau = −1.5 for 0. So every other clock on the instant is put
+        // past it, whether or not a rate law reads the two together.
+        for (const auto &other : sw.instant_other_clocks) {
+            widen(other.first, other.second);
+        }
+        // The right-hand side with every clock in `spans` a nudge past the
+        // latest threshold on it. `instant_clocks` lists only the crossings a
+        // rate law composes with this one, so on this crossing's own clock
+        // that is a nudge past the latest of those, and past its own time
+        // where there are none: a neighbour in another law 2,000 ulp on is
+        // not read past, and a law that is fast at its own switch is not
+        // read 2.7e-12 late for it. Composed crossings are read past:
+        // `gate(tau)·(g₄₀ − g₁₀₀)` with the two fixed gates 40 and 100 ulp on
+        // is 0 past the instant, and read 64 ulp past tau it had the one gate
+        // and not the other, −1 for 0. The same for a gate on the time less
+        // the same gate on a counter. Where every threshold on the instant is
+        // this crossing's own number, this is the nudge above, bit for bit.
+        auto rhs_past_instant = [&](std::vector<double> &out) {
+            double t_at = t_evt;
+            for (const auto &span : spans) {
+                const double reach = kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+                                     std::max(std::fabs(span.hi), 1.0);
+                if (span.clock < 0) {
+                    t_at = span.hi + reach;
+                } else {
+                    sw_ywork[static_cast<size_t>(span.clock)] = span.hi + reach;
+                }
+            }
+            for (int i = 0; i < ns; ++i) {
+                sp_vec_outer[i].concentration = sw_ywork[i];
+            }
+            model.compute_derivs(t_at, sw_ywork.data(), out.data());
+            for (const auto &span : spans) {
+                if (span.clock >= 0 && span.clock != sw.clock_species_idx0) {
+                    sw_ywork[static_cast<size_t>(span.clock)] =
+                        y_data[static_cast<size_t>(span.clock)];
+                }
+            }
+        };
+        rhs_past_instant(sw_f_plus);
+        for (const auto &span : spans) {
+            if (span.clock != (time_clock ? -1 : sw.clock_species_idx0)) {
+                other_clocks_past.emplace_back(
+                    span.clock, span.hi + kSwitchInstantUlps *
+                                              std::numeric_limits<double>::epsilon() *
+                                              std::max(std::fabs(span.hi), 1.0));
+            }
+        }
         std::vector<double> saved;
         saved.reserve(sw.isolate_param_idx0.size());
         for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
@@ -6969,11 +7056,326 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             params_live[static_cast<size_t>(pi)].value += sw.isolate_delta[k];
         }
         model.refresh_derived_params();
-        rhs_on_branch(+eps_clock, scratch.f_iso);
+        rhs_past_instant(scratch.f_iso);
+        // The parameter that is bumped may be one the rate laws read as well:
+        // a period that sets the threshold and scales the law. The reading
+        // then carries a hair's worth of that, a part in a million of the
+        // jump at each crossing. Read again at half the hair and taken to none.
+        // Where no law reads the parameter the two readings are one and this
+        // returns it, bit for bit.
+        {
+            for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
+                    saved[k] + 0.5 * sw.isolate_delta[k];
+            }
+            model.refresh_derived_params();
+            std::vector<double> half_hair(static_cast<size_t>(ns), 0.0);
+            rhs_past_instant(half_hair);
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                scratch.f_iso[ui] = 2.0 * half_hair[ui] - scratch.f_iso[ui];
+            }
+        }
+
         for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
             params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
         }
         model.refresh_derived_params();
+
+        // ── Does this crossing commute with the others on its instant? (issue #951)
+        // The difference just read is this crossing's jump with every other
+        // condition on its clock and instant already past it. Where the
+        // conditions add, two rate laws that switch together or two gates
+        // summed in one, that is its jump whichever side of the others it is
+        // read from. Where they are composed, a product of two gates, the later
+        // of two times, a window of no width, it is not: what a parameter that
+        // moves this crossing and not the others does depends on which way it
+        // moves it, the run sits on a kink in that parameter, and the column
+        // had one side of it: dY/dtau = −0.75 for (−0.75 | −0.375), with no
+        // warning.
+        //
+        // What is compared is what the OTHERS do, with this one before and with
+        // it after: every clock on the instant nudged across it, once with this
+        // threshold raised a hair and once with it lowered. Not this crossing's
+        // own jump read from the two sides. That reads its after-branch a
+        // nudge past its onset on one side and a whole hair past it on the
+        // other, and a rate law that reads its own switch time,
+        // `if(time > tau, k·exp(−(time − tau)/T), 0)` or a pulse that opens as
+        // `s^0.2`, differs between the two by more than any tolerance: two
+        // corpus models and every pulse were refused for it. The others' jump
+        // has this crossing on one branch in both of its readings.
+        //
+        // Two things that are not a kink are in the difference, each in
+        // proportion to the step it comes from. A rate law that moves with the
+        // clock inside one branch of this condition, a window that opens as
+        // the one before it closes, differs across the nudge by its slope
+        // there. And a rate law of another condition that reads the bumped
+        // parameter outside its condition moves with the hair. So where the
+        // two differ they are read again over half the nudge and a quarter of
+        // it, and then at half the hair and a quarter of it, and what is left
+        // when those parts are taken out is the kink.
+        //
+        // The clocks are put outside the whole instant: before the earliest
+        // threshold on it and past the latest. A neighbour 40 ulp on is on
+        // this instant, and a nudge about this crossing's own time took it in
+        // at its full width and left it out at half of it, which reads as a
+        // slope: two gates of one weight cancelled that way and the run
+        // returned −2 for (−2 | 0).
+        //
+        // The slope's part is taken out by the lengths the clocks were in
+        // fact moved over, which are not as 1 to a half: a time plus 32 ulp
+        // of 3.7 is rounded to a double, and twice the short reading less the
+        // long one left the slope times an ulp or two. Against a rate that
+        // is 0 at its own switch that is far more than rounding allows, and
+        // a ramp from its own switch time was refused beside any neighbour at
+        // about half of all switch times.
+        //
+        // And the two extrapolations have to agree, the one from the whole
+        // and the half with the one from the half and the quarter. They do
+        // where the difference is a jump and a slope. A condition that is not
+        // on this instant and is inside the nudge's reach, 70 to 127 ulp
+        // away, is in some of the readings and not in the others; no single
+        // shorter reading tells that from a slope, and two do.
+        // Asked only where some rate law reads this crossing together with
+        // another on its instant, which is what `instant_clocks` lists. A
+        // reaction's rate is one law, and the right-hand side adds reactions
+        // up, so conditions that no law reads together cannot be composed:
+        // the others do the same whether this one is made or not. Asked of
+        // those all the same, a law that is 0 at its own switch and rounds by
+        // an ulp of the terms it is the difference of, `1 − cos(time − tau)`,
+        // was refused beside a gate in another reaction.
+        if (!sw.instant_clocks.empty()) {
+            const double own_clock_was =
+                time_clock ? 0.0 : sw_ywork[static_cast<size_t>(sw.clock_species_idx0)];
+            // The largest value read for each species, which is what the readings
+            // round by.
+            std::vector<double> read_size(static_cast<size_t>(ns), 0.0);
+            // f with every clock on the instant `nudges` nudges past it, less f
+            // with every clock as far before it, at this threshold moved by `bump`
+            // hairs. `moved` takes how far each clock was moved between the two.
+            auto others_do = [&](double bump, double nudges, std::vector<double> &out,
+                                 std::vector<double> &moved) {
+                for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                    params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value =
+                        saved[k] + bump * sw.isolate_delta[k];
+                }
+                model.refresh_derived_params();
+                std::vector<double> side[2];
+                moved.assign(spans.size(), 0.0);
+                for (int k = 0; k < 2; ++k) {
+                    double t_at = t_evt;
+                    for (size_t c = 0; c < spans.size(); ++c) {
+                        const double edge = k == 0 ? spans[c].lo : spans[c].hi;
+                        const double reach = nudges * kSwitchInstantUlps *
+                                             std::numeric_limits<double>::epsilon() *
+                                             std::max(std::fabs(edge), 1.0);
+                        const double where = k == 0 ? edge - reach : edge + reach;
+                        moved[c] = k == 0 ? -where : moved[c] + where;
+                        if (spans[c].clock < 0) {
+                            t_at = where;
+                        } else {
+                            sw_ywork[static_cast<size_t>(spans[c].clock)] = where;
+                        }
+                    }
+                    for (int i = 0; i < ns; ++i) {
+                        sp_vec_outer[i].concentration = sw_ywork[i];
+                    }
+                    side[k].assign(static_cast<size_t>(ns), 0.0);
+                    model.compute_derivs(t_at, sw_ywork.data(), side[k].data());
+                }
+                out.assign(static_cast<size_t>(ns), 0.0);
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<size_t>(i);
+                    out[ui] = side[1][ui] - side[0][ui];
+                    read_size[ui] =
+                        std::max({read_size[ui], std::fabs(side[0][ui]), std::fabs(side[1][ui])});
+                }
+            };
+            auto put_back = [&] {
+                for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+                    params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
+                }
+                model.refresh_derived_params();
+                for (const auto &span : spans) {
+                    if (span.clock >= 0) {
+                        sw_ywork[static_cast<size_t>(span.clock)] =
+                            y_data[static_cast<size_t>(span.clock)];
+                    }
+                }
+                if (!time_clock) {
+                    sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] = own_clock_was;
+                }
+            };
+            std::vector<double> with_this_before;
+            std::vector<double> with_this_after;
+            std::vector<double> moved_whole;
+            others_do(+1.0, 1.0, with_this_before, moved_whole);
+            others_do(-1.0, 1.0, with_this_after, moved_whole);
+            // Whether `kink` is more than rounding and the tolerance allow, and for
+            // which species; `slack` is added to what is allowed.
+            auto apart = [&](const std::vector<double> &kink, const std::vector<double> *slack) {
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<size_t>(i);
+                    const double size =
+                        std::max({std::fabs(sw_f_plus[ui]), std::fabs(sw_f_minus[ui]),
+                                  std::fabs(with_this_before[ui]), std::fabs(with_this_after[ui]),
+                                  read_size[ui]});
+                    if (!(std::fabs(kink[ui]) <=
+                          kEventJumpRelTol * std::max(std::fabs(with_this_before[ui]),
+                                                      std::fabs(with_this_after[ui])) +
+                              kEventJumpUlps * std::numeric_limits<double>::epsilon() * size +
+                              (slack != nullptr ? (*slack)[ui] : 0.0))) {
+                        return i;
+                    }
+                }
+                return -1;
+            };
+            // The difference at `bump` hairs with what is in proportion to the
+            // nudge taken out, twice over: from the whole nudge and half of it,
+            // and from half of it and a quarter. `slack` takes what the clocks'
+            // lengths not being in one proportion can leave of a slope.
+            auto without_the_nudge = [&](double bump, const std::vector<double> &before,
+                                         const std::vector<double> &after,
+                                         std::vector<double> &outer, std::vector<double> &inner,
+                                         std::vector<double> &slack) {
+                std::vector<double> half_before;
+                std::vector<double> half_after;
+                std::vector<double> quarter_before;
+                std::vector<double> quarter_after;
+                std::vector<double> moved_half;
+                std::vector<double> moved_quarter;
+                others_do(+bump, 0.5, half_before, moved_half);
+                others_do(-bump, 0.5, half_after, moved_half);
+                others_do(+bump, 0.25, quarter_before, moved_quarter);
+                others_do(-bump, 0.25, quarter_after, moved_quarter);
+                // As the first clock was moved, and how far from that the rest were.
+                const double half = moved_half[0] / moved_whole[0];
+                const double quarter = moved_quarter[0] / moved_whole[0];
+                double uneven = 0.0;
+                for (size_t c = 1; c < spans.size(); ++c) {
+                    uneven = std::max({uneven, std::fabs(moved_half[c] / moved_whole[c] - half),
+                                       std::fabs(moved_quarter[c] / moved_whole[c] - quarter)});
+                }
+                outer.assign(static_cast<size_t>(ns), 0.0);
+                inner.assign(static_cast<size_t>(ns), 0.0);
+                slack.assign(static_cast<size_t>(ns), 0.0);
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<size_t>(i);
+                    const double whole_d = after[ui] - before[ui];
+                    const double half_d = half_after[ui] - half_before[ui];
+                    const double quarter_d = quarter_after[ui] - quarter_before[ui];
+                    outer[ui] = (half_d - half * whole_d) / (1.0 - half);
+                    inner[ui] = (quarter_d * half - half_d * quarter) / (half - quarter);
+                    slack[ui] = 8.0 * uneven * std::fabs(whole_d - half_d);
+                }
+            };
+            std::vector<double> kink(static_cast<size_t>(ns), 0.0);
+            for (int i = 0; i < ns; ++i) {
+                const auto ui = static_cast<size_t>(i);
+                kink[ui] = with_this_after[ui] - with_this_before[ui];
+            }
+            int worst = apart(kink, nullptr);
+            // Not a jump and a slope: the two extrapolations differ.
+            bool within_reach = false;
+            if (worst >= 0) {
+                std::vector<double> outer;
+                std::vector<double> inner;
+                std::vector<double> slack;
+                std::vector<double> between(static_cast<size_t>(ns), 0.0);
+                without_the_nudge(1.0, with_this_before, with_this_after, outer, inner, slack);
+                for (int i = 0; i < ns; ++i) {
+                    const auto ui = static_cast<size_t>(i);
+                    between[ui] = outer[ui] - inner[ui];
+                }
+                const int uneven_at = apart(between, &slack);
+                if (uneven_at >= 0) {
+                    within_reach = true;
+                    worst = uneven_at;
+                } else {
+                    kink = inner;
+                    worst = apart(kink, &slack);
+                }
+                if (worst >= 0 && !within_reach) {
+                    std::vector<double> half_before;
+                    std::vector<double> half_after;
+                    std::vector<double> half_outer;
+                    std::vector<double> half_inner;
+                    std::vector<double> half_slack;
+                    std::vector<double> moved_unused;
+                    others_do(+0.5, 1.0, half_before, moved_unused);
+                    others_do(-0.5, 1.0, half_after, moved_unused);
+                    without_the_nudge(0.5, half_before, half_after, half_outer, half_inner,
+                                      half_slack);
+                    const std::vector<double> whole_hair = kink;
+                    const std::vector<double> whole_slack = slack;
+                    for (int i = 0; i < ns; ++i) {
+                        const auto ui = static_cast<size_t>(i);
+                        kink[ui] = 2.0 * half_inner[ui] - whole_hair[ui];
+                        slack[ui] = whole_slack[ui] + 2.0 * half_slack[ui];
+                    }
+                    worst = apart(kink, &slack);
+                    // A law that is 0 at this switch and curved from it,
+                    // `1 − exp(−k·(time − tau))`, in one rate law with a gate
+                    // on the same number: the two commute, the law being 0
+                    // where the gate flips, and what is read is the law's
+                    // value a hair from its zero. Half the hair takes out the
+                    // part in proportion to the hair and leaves the square of
+                    // it, 4.5e-12 of the rate against an allowance of 1e-14.
+                    // A quarter of the hair takes that out too.
+                    if (worst >= 0) {
+                        std::vector<double> quarter_before;
+                        std::vector<double> quarter_after;
+                        std::vector<double> quarter_outer;
+                        std::vector<double> quarter_inner;
+                        std::vector<double> quarter_slack;
+                        others_do(+0.25, 1.0, quarter_before, moved_unused);
+                        others_do(-0.25, 1.0, quarter_after, moved_unused);
+                        without_the_nudge(0.25, quarter_before, quarter_after, quarter_outer,
+                                          quarter_inner, quarter_slack);
+                        for (int i = 0; i < ns; ++i) {
+                            const auto ui = static_cast<size_t>(i);
+                            kink[ui] =
+                                (8.0 * quarter_inner[ui] - 6.0 * half_inner[ui] + whole_hair[ui]) /
+                                3.0;
+                            slack[ui] =
+                                (8.0 * quarter_slack[ui] + 6.0 * half_slack[ui] + whole_slack[ui]) /
+                                3.0;
+                        }
+                        worst = apart(kink, &slack);
+                    }
+                }
+            }
+            put_back();
+            if (worst >= 0 && within_reach) {
+                std::ostringstream msg;
+                msg << "Forward sensitivity: the switch time at t=" << t_evt
+                    << " has another rate-law condition that switches within a few ulp of it and "
+                       "not on its instant, and what that one does to d["
+                    << model.species()[static_cast<size_t>(worst)].name
+                    << "]/dt cannot be told from this switch's own jump: the right-hand side "
+                       "across the instant is not a jump and a slope. Under a parameter that moves "
+                       "this switch the result has a kink a few ulp away (issue #951). Separate "
+                       "the "
+                       "two times, or set them equal, or drop the parameters that move them from "
+                       "sensitivity_params.";
+                not_commuting = msg.str();
+            } else if (worst >= 0) {
+                const auto uw = static_cast<size_t>(worst);
+                std::ostringstream msg;
+                msg << "Forward sensitivity: the switch time at t=" << t_evt
+                    << " shares its instant with another rate-law condition, and the two do not "
+                       "commute: the other changes d["
+                    << model.species()[uw].name << "]/dt by " << with_this_before[uw]
+                    << " with this switch still to come and by " << with_this_after[uw]
+                    << " with it made. Each switch's jump then depends on which of them comes "
+                       "first. Under a parameter that moves one and not the other the result has a "
+                       "kink there and no derivative, and under one that moves both bngsim does "
+                       "not "
+                       "take the two as one (issue #951). Separate the two times, or drop the "
+                       "parameters that move them from sensitivity_params.";
+                not_commuting = msg.str();
+            }
+        }
 
         // An isolated difference of exactly zero is a legitimate answer here and
         // is deliberately not checked for. A condition can flip with no effect
@@ -7002,7 +7404,15 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         if (!time_clock) {
             sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] = sw.threshold;
         }
-        comoving_rhs(t_cross, sw_ywork.data(), ns, f_instant);
+        double t_at = t_cross;
+        for (const auto &other : other_clocks_past) {
+            if (other.first < 0) {
+                t_at = other.second;
+            } else {
+                sw_ywork[static_cast<size_t>(other.first)] = other.second;
+            }
+        }
+        comoving_rhs(t_at, sw_ywork.data(), ns, f_instant);
     }
 
     // Land the clock ON its threshold rather than a few ulp short, so the
@@ -7101,6 +7511,9 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             "other's: read with its own threshold raised a hair, the power is not at its zero "
             "(issue #949). Separate the two times, or drop the parameters that move the window "
             "from sensitivity_params.");
+    }
+    if (!not_commuting.empty()) {
+        throw std::runtime_error(not_commuting);
     }
     for (int c = 0; c < n_sens_all; ++c) {
         const double dtstar = dtstar_all[static_cast<size_t>(c)];
