@@ -69,12 +69,15 @@ def test_a_slide_is_refused(tmp_path, law, s0, rtol, atol):
 
 
 @pytest.mark.parametrize(
-    ("rtol", "n_points"), [(1e-4, 101), (1e-5, 1001), (1e-6, 10001)], ids=["101", "1001", "10001"]
+    ("rtol", "n_points"),
+    [(1e-4, 101), (1e-5, 1001), (1e-6, 10001), (1e-3, 1001), (1e-4, 10001)],
+    ids=["101", "1001", "10001", "loose-1001", "loose-10001"],
 )
 def test_a_slide_between_the_points_of_a_dense_grid_is_refused(tmp_path, rtol, n_points):
     """The same slide reported on a grid: no interval between two points uses a
     batch of 10000 steps up, which was the only place a first cut of this
-    asked, and dS/damp came back 1.5 for 0 at each of these."""
+    asked, and dS/damp came back 1.5 for 0 at each of these. A later cut let
+    the two loose ones through: −1.0 and 1.0 for 0."""
     sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
     with pytest.raises(Exception, match="issue #926"):
         sim.run(t_span=(0.0, 1.5), n_points=n_points, rtol=rtol, atol=1e-2 * rtol, timeout=30.0)
@@ -86,6 +89,35 @@ def test_a_slide_under_a_batch_of_a_million_steps_is_refused(tmp_path):
     sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
     with pytest.raises(Exception, match="issue #926"):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-6, atol=1e-8, max_steps=1000000, timeout=30)
+
+
+def test_a_slide_along_a_surface_that_is_not_a_level_is_refused(tmp_path):
+    """``if(exp(Sobs) < lvl, amp, −amp)``: the surface is S = 0, and the
+    residual is not linear in the state. The states either side of the surface
+    are placed by the residual's own value there, not by a step in S:
+    dS/damp came back 1.5 for 0."""
+    model = _model(tmp_path, "if(exp(Sobs)<lvl,amp,-amp)", s0=-1.0)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["amp"])
+    with pytest.raises(Exception, match="issue #926"):
+        sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-4, atol=1e-6, timeout=30.0)
+
+
+def test_a_slide_reached_within_the_first_steps_is_refused(tmp_path):
+    """At rtol = atol = 1e-3 the state is on the surface before the run has
+    been asked once, so there is no earlier reading to compare the residual
+    with: dS/damp came back 1.5 for 0."""
+    sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
+    with pytest.raises(Exception, match="issue #926"):
+        sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-3, atol=1e-3, timeout=30.0)
+
+
+def test_a_run_that_ends_just_after_the_slide_begins_is_refused(tmp_path):
+    """S starts a thousandth short of the surface and the run ends at
+    t = 0.01, nine thousandths into the slide: dS/damp came back 0.01 for 0."""
+    model = _model(tmp_path, FROM_BELOW, s0=1 - 1e-3)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["amp"])
+    with pytest.raises(Exception, match="issue #926"):
+        sim.run(sample_times=[0.0, 0.005, 0.01], rtol=1e-6, atol=1e-8, timeout=30.0)
 
 
 def test_a_column_that_does_not_move_the_slide_is_refused_too(tmp_path):
@@ -168,7 +200,7 @@ def test_a_crossing_that_carries_on_is_not_a_slide(tmp_path, after):
     np.testing.assert_allclose(got, [0.0, 0.5, after * 1.5, after * 2.0], rtol=1e-6)
 
 
-@pytest.mark.parametrize("steeper", [1, 3], ids=["one-slope", "three-times-steeper-past-it"])
+@pytest.mark.parametrize("steeper", [1, 3, 16, 1000])
 @pytest.mark.parametrize("max_steps", [None, 20, 1])
 def test_a_state_that_comes_to_rest_on_a_continuous_switch_is_not_a_slide(
     tmp_path, max_steps, steeper
@@ -180,8 +212,10 @@ def test_a_state_that_comes_to_rest_on_a_continuous_switch_is_not_a_slide(
     A cut of this fix that asked only which way the two flows point refused a
     corpus model that settles on its own switch this way. In batches of one
     step the run is asked after every step it takes inside the tolerance's
-    band of the surface. The far branch may be three times as steep: the flux
-    is continuous all the same."""
+    band of the surface. The far branch may be 3, 16 or 1000 times as steep:
+    the flux is continuous all the same, and each side's flow runs out at the
+    surface. A cut that compared the two sides' rates a fixed distance from
+    the surface refused the steeper two."""
     model = _model(tmp_path, f"if(Sobs<lvl,k*(lvl-Sobs),(-{steeper}*k)*(Sobs-lvl))")
     extra = {} if max_steps is None else {"max_steps": max_steps}
     run = bngsim.Simulator(model, method="ode", sensitivity_params=["lvl", "k"]).run(
@@ -235,3 +269,53 @@ def test_a_crossing_carried_on_by_a_species_far_smaller_than_the_threshold(tmp_p
     ).run(sample_times=[0.0, 5.0, 12.0, 20.0], rtol=1e-10, atol=1e-12)
     got = np.asarray(run.sensitivities)[-1, 1, :]
     np.testing.assert_allclose(got, [500 * 10 / 1e3, -500 / 1e3], rtol=1e-6)
+
+
+RESTS_ON = """begin parameters
+    1 A0 {a0!r}
+    2 k 1
+    3 thr 2
+    4 kb 3
+end parameters
+begin functions
+    1 src() k*thr
+    2 fW() if(Aobs<thr,kb,0.25*kb)
+end functions
+begin species
+    1 A() A0
+    2 W() 0
+end species
+begin reactions
+    1 0 1 src
+    2 1 0 k
+    3 0 2 fW
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+
+
+@pytest.mark.parametrize("max_steps", [None, 2, 20])
+@pytest.mark.parametrize("a0", [10.0, 0.0], ids=["from-above", "from-below"])
+def test_a_state_at_rest_on_a_threshold_that_gates_another_rate_is_not_a_slide(
+    tmp_path, a0, max_steps
+):
+    """Control. A' = k·(thr − A): A relaxes to thr and rests on it, and
+    ``if(A < thr, kb, kb/4)`` is the rate of W. The right-hand side jumps at
+    the surface and the flow past it points back, but the flow on this side
+    runs out there: the state never arrives, and W stays on the branch it
+    started on. A corpus model whose voltage settles on the threshold of its
+    recovery rate does this. A cut that asked whether the rate law jumps and
+    the far side points back refused it."""
+    path = tmp_path / "m.net"
+    path.write_text(RESTS_ON.format(a0=a0))
+    extra = {} if max_steps is None else {"max_steps": max_steps}
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["k", "thr", "kb"]
+    ).run(sample_times=[0.0, 10.0, 30.0, 100.0], rtol=1e-8, atol=1e-10, timeout=60.0, **extra)
+    rate = 0.75 if a0 > 2.0 else 3.0
+    got = np.asarray(run.sensitivities)[-1]
+    assert np.asarray(run.species)[-1, 1] == pytest.approx(100.0 * rate, rel=1e-9)
+    np.testing.assert_allclose(got[0], [0.0, 1.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(got[1], [0.0, 0.0, 100.0 * rate / 3.0], atol=1e-6)

@@ -76,6 +76,16 @@ def test_a_slow_approach_reported_on_a_grid_is_refused(tmp_path, eps):
         sim.run(t_span=(0.0, 10.0), n_points=101, timeout=30)
 
 
+@pytest.mark.parametrize("n_points", [1001, 10001])
+def test_a_slow_approach_reported_on_a_dense_grid_is_refused(tmp_path, n_points):
+    """eps = 1e-13 on a grid whose intervals take a step or two each: the
+    steps the run is asked after are counted over the whole run, not from the
+    last output. It returned Y(10) = 0 for 15 and dY/dthr = 0."""
+    sim = bngsim.Simulator(_model(tmp_path, 1e-13), method="ode", sensitivity_params=["thr"])
+    with pytest.raises(bngsim.SimulationError, match="issue #952"):
+        sim.run(t_span=(0.0, 10.0), n_points=n_points, timeout=30)
+
+
 @pytest.mark.parametrize("eps", [1e-3, 1e-6, 1e-7])
 def test_a_surface_the_steps_cross_is_jumped(tmp_path, eps):
     """Control. Y(10) = 15 and dY/dthr = −kb/eps."""
@@ -126,9 +136,9 @@ def test_a_state_at_rest_within_the_tolerance_of_the_surface_is_not_a_slide(tmp_
 def test_a_state_that_comes_to_rest_short_of_the_surface_is_not_refused(tmp_path, max_steps):
     """Control. A relaxes to Ainf, 1024 ulp short of thr, and stays there: the
     switch is never taken, Y = 0, and nothing is pinned, whether the run takes
-    its steps in batches of 50 or not. (Within about 64 ulp the root finder
-    reports a crossing the state then does not make, which is refused on main
-    too.)"""
+    its steps in batches of 50 or not. (Nearer than that, or at a looser
+    tolerance, the root finder reports a crossing the state then does not
+    make, and the run is refused as riding the surface, as it is on main.)"""
     thr = 1.5
     Ainf = float(thr - 1024 * np.spacing(thr))
     model = _model(tmp_path, 1.0, thr=thr, fA="eps*(Ainf-Aobs)", Ainf=Ainf)
