@@ -544,3 +544,22 @@ def test_a_fitted_gate_on_a_fixed_switch_in_another_law_is_refused():
     its own jump. Whether the two are composed is not asked."""
     text = HEAD + ("Jx: -> X; piecewise(k, time >= thr, 0)\nJy: -> Y; piecewise(k, S >= 1.5, 0)\n")
     _refused(text, ["thr"], 946)
+
+
+@pytest.mark.parametrize(
+    "gate", ["", "Jx: -> X; piecewise(k, time >= 2, 0)\n"], ids=["alone", "a-gate"]
+)
+def test_a_switch_on_a_species_in_a_fast_exchange_runs(gate):
+    """Control. S and P exchange at 1e9 and S crosses its threshold at t = 6,
+    with a gate in another law at 2 or none. Put a probe step to one side
+    while P is put to the other, S is off the exchange's balance, and the
+    right-hand side changes by 2e-4 of itself for smooth reasons. That
+    change halves with the step, and is not taken for a jump.
+    dY/dthr = −k·dt*/dthr = −1."""
+    text = (
+        "species S, P, X, Y; S = 0; P = 0; X = 0; Y = 0; k = 0.5; thr = 3; kf = 1e9\n"
+        "Js: -> S; 0.5\nJf: S -> P; kf*S\nJr: P -> S; kf*P\n"
+        "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)\n" + gate
+    )
+    got = _columns(text, ["thr"], [0.0, 2.0, 5.0, 7.0, 9.0])
+    assert got[3, 0] == pytest.approx(-1.0, rel=1e-5)
