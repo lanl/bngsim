@@ -195,22 +195,14 @@ REFUSED_WHERE_IT_WAS_RIGHT = {
         "E1: at (time >= T0 + 1): B = u\n",
         "the parameter 'T0'",
     ),
-    # (time − 2.3)³ read at 2.3: smooth, with slope and curvature both 0 there.
-    # The difference is h² over the whole step and h²/4 over half of it, which
-    # is what a value that turns inside the step shows. 5e-12 for 0. It reads
-    # nothing but the time, so there is no larger thing to round against.
-    "a-flat-inflection": (
-        "species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = (time - 2.3)^3\n",
-        "the time",
-    ),
 }
 
 
 @pytest.mark.parametrize("case", sorted(REFUSED_WHERE_IT_WAS_RIGHT))
 def test_what_is_refused_where_the_differences_happened_to_cancel(case):
-    """Each has a derivative, 0, and the run returned it. A bend or a turn
-    exactly at the fire instant is not told from one that makes the difference
-    wrong, so these are refused with the rest."""
+    """It has a derivative, 0, and the run returned it. A bend exactly at the
+    fire instant that moves with the event is not told from one that does not,
+    so it is refused with the rest."""
     text, where = REFUSED_WHERE_IT_WAS_RIGHT[case]
     _refused(text, ["T0"], 5.0, where)
 
@@ -430,3 +422,45 @@ def test_rounding_of_what_the_value_reads_under_a_weak_dependence(large):
         f"E1: at (time >= T0 + 1): B = ({large} + q*time) - {large} + 5\n"
     )
     assert _sens(text, ["T0"], 5.0)[0] == pytest.approx(0.0, abs=1e-3)
+
+
+FLAT = {
+    "an-inflection-in-time": ("(time - 2.3)^3", "T0"),
+    "a-hill-function-of-nothing": ("X^3/(8 + X^3)", "x0"),
+    "a-fourth-power": ("X^4/(16 + X^4)", "x0"),
+    "a-cube-of-a-difference": ("(X - Y)^3 + 0*q", "x0"),
+    "a-cube-of-a-parameter": ("q^3", "q"),
+    "one-sided": ("max(X, 0)^2", "x0"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(FLAT))
+def test_a_value_that_is_flat_where_it_is_read(case):
+    """Control. Each leaves the point as a square or a higher power of the
+    distance, on both sides or on one, so its derivative there is 0. The
+    difference over half the step is a quarter or less of the one over the
+    whole, which is also what a value that turns inside the step shows; it is
+    told from one by leaving the point as one power, at half the step and at a
+    quarter. X and Y are 0 and q is 0, held by x0."""
+    value, param = FLAT[case]
+    text = (
+        "species B, X, Y; B = 0; x0 = 0; X = x0; Y = 0; q = 0; T0 = 1.3\n"
+        "J0: -> B; 0*x0\n"
+        f"E1: at (time >= T0 + 1): B = {value}\n"
+    )
+    assert _sens(text, [param], 5.0)[0] == pytest.approx(0.0, abs=1e-8)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["piecewise(5, time >= 2.3*(1 + 0.75e-6), 0)", "tanh((time - 2.3*(1 + 0.75e-6))/2.3e-8)"],
+    ids=["step", "turn"],
+)
+def test_a_step_or_a_turn_past_half_the_difference_is_not_taken_for_flat(value):
+    """The value is level at the fire instant, 2.3, and steps, or turns over a
+    hundredth of the difference, three quarters of the way to where the
+    difference is taken. It reads the same at the point, at a quarter and at
+    half the step, and differs at the whole of it: flat is not what that is.
+    dB/dT0 came back 1.09e6 for 0, and 4.3e5."""
+    text = f"species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = {value}\n"
+    _refused(text, ["T0"], 5.0, "the time")

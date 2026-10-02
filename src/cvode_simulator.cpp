@@ -6232,8 +6232,32 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         // that is itself denormal.
         const double allowed =
             std::max({kAssignedSmoothRelTol * span, rounding, std::numeric_limits<double>::min()});
-        return std::fabs((hi - lo) - 2.0 * (half_hi - half_lo)) <= allowed &&
-               std::fabs(half - 0.25 * whole) <= allowed;
+        if (std::fabs((hi - lo) - 2.0 * (half_hi - half_lo)) <= allowed &&
+            std::fabs(half - 0.25 * whole) <= allowed) {
+            return true;
+        }
+        // A value that is flat at the point: on each side it leaves the point
+        // as a power of the distance, of order 1.75 or more. `X³/(8 + X³)` with
+        // X at 0 is that, and `(X − Y)³` where X is Y, and its derivative there
+        // is 0, which is what the difference gives to a millionth of a part.
+        // The two tests above take it for a value that turns inside the step,
+        // because the difference over half the step is a quarter or less of
+        // the one over the whole. A step further than half the step out leaves
+        // nothing at half and at a quarter, and a turn there leaves no one
+        // power, so each side is asked at a quarter of the step as well.
+        auto flat_side = [&](double whole_side, double half_side, double sign) {
+            if (whole_side == 0.0) {
+                return half_side == 0.0;
+            }
+            const double ratio = half_side / whole_side;
+            if (!(ratio > 1.0 / 4096.0 && ratio <= 0.3)) {
+                return false;
+            }
+            const double quarter_side = value_at(sign * 0.25 * h) - here;
+            return std::fabs(quarter_side / half_side - ratio) <= 0.25 * ratio;
+        };
+        return flat_side(hi - here, half_hi - here, 1.0) &&
+               flat_side(lo - here, half_lo - here, -1.0);
     };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;

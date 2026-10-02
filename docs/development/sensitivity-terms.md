@@ -125,8 +125,11 @@ has to refresh the `rateOf` buffer.
   (#767) is across a value that is straight there, and is not asked. A species
   is refused only where a column carries something through it, and the time
   only where a column moves the fire time (#915,
-  `test_event_value_time_step_sensitivity.py`). A step or a bend that moves
-  with the event has a derivative, and is refused with the rest.
+  `test_event_value_time_step_sensitivity.py`). A value that is flat at the
+  point, leaving it on each side as one power of the distance of order 1.75 or
+  more (`X³/(8 + X³)` at X = 0), has derivative 0 there and is not refused. A
+  step or a bend that moves with the event has a derivative, and is refused
+  with the rest.
 
 **At `t_start`.** An SBML event with `initialValue=false` whose trigger is already
 true at `t_start` fires there. Then `τ = 0`, and `s⁻` is the seed that is already
