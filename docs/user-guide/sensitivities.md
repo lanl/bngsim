@@ -322,6 +322,10 @@ refused, because one jump would otherwise be moved with the other's `dt*/dθ`.
 A state that slides along the surface is refused too (issue #926): with
 `if(S < 1, amp, -amp)` both branches point into `S = 1`, the state stays on it,
 and the sensitivity there is that of neither branch.
+A state that stays within a few tolerances of such a surface without reaching
+it, turning back five tolerances short, is refused as well: the run cannot
+tell it from one that touches. So is a run that ends within about a tolerance
+of the surface on its way there.
 So is a state held just short of a surface it approaches too slowly for any
 step to cross (issue #952): `if(A > thr, kb, 0)` with `A` rising at 1e-10 a unit
 of time. The step that moves `A` by one ulp fails its error test on the jump,
