@@ -6244,7 +6244,10 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         // because the difference over half the step is a quarter or less of
         // the one over the whole. A step further than half the step out leaves
         // nothing at half and at a quarter, and a turn there leaves no one
-        // power, so each side is asked at a quarter of the step as well.
+        // power, so each side is asked at a quarter and at an eighth of the
+        // step as well: a sigmoid a tenth of the step wide, three quarters of
+        // the step out, falls off by the same factor over the first two
+        // halvings and not over the third.
         auto flat_side = [&](double whole_side, double half_side, double sign) {
             if (whole_side == 0.0) {
                 return half_side == 0.0;
@@ -6254,7 +6257,11 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 return false;
             }
             const double quarter_side = value_at(sign * 0.25 * h) - here;
-            return std::fabs(quarter_side / half_side - ratio) <= 0.25 * ratio;
+            if (!(std::fabs(quarter_side / half_side - ratio) <= 0.25 * ratio)) {
+                return false;
+            }
+            const double eighth_side = value_at(sign * 0.125 * h) - here;
+            return std::fabs(eighth_side / quarter_side - ratio) <= 0.25 * ratio;
         };
         return flat_side(hi - here, half_hi - here, 1.0) &&
                flat_side(lo - here, half_lo - here, -1.0);

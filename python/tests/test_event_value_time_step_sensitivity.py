@@ -410,14 +410,14 @@ def test_a_difference_that_rounds_by_more_than_it_resolves_is_refused(x0):
 
 @pytest.mark.parametrize("large", ["D", "Dsp"], ids=["a-parameter", "a-species"])
 def test_rounding_of_what_the_value_reads_under_a_weak_dependence(large):
-    """Control. ``(D + q·time) − D + 5`` with D at 1e6 and q at 1e-9 is 5 and
-    rounds by an ulp of 1e6, a thousand times what it moves by across the
-    difference in time. The derivative is q, and whatever the difference makes
-    of it is under 1e-4: nothing beside the 5. D is a parameter in one case and
-    a species in the other, and it is what the value reads that says how much
-    it rounds by."""
+    """Control. ``(D + q·time) − D + 5`` with D at 1e6 and q at 1e-4 is 5 and
+    rounds by an ulp of 1e6, a quarter of what it moves by across the
+    difference in time, so its readings are out of line by that much. The
+    derivative is q, and whatever the difference makes of it is under 1e-3:
+    nothing beside the 5. D is a parameter in one case and a species in the
+    other, and it is what the value reads that says how much it rounds by."""
     text = (
-        "species B, Dsp; B = 0; Dsp = 1e6; D = 1e6; q = 1e-9; T0 = 1.3\n"
+        "species B, Dsp; B = 0; Dsp = 1e6; D = 1e6; q = 1e-4; T0 = 1.3\n"
         "J0: -> B; 0*q\n"
         f"E1: at (time >= T0 + 1): B = ({large} + q*time) - {large} + 5\n"
     )
@@ -453,14 +453,28 @@ def test_a_value_that_is_flat_where_it_is_read(case):
 
 @pytest.mark.parametrize(
     "value",
-    ["piecewise(5, time >= 2.3*(1 + 0.75e-6), 0)", "tanh((time - 2.3*(1 + 0.75e-6))/2.3e-8)"],
-    ids=["step", "turn"],
+    [
+        "piecewise(5, time >= 2.3*(1 + 0.75e-6), 0)",
+        "tanh((time - 2.3*(1 + 0.75e-6))/2.3e-8)",
+        "tanh((time - 2.3*(1 + 0.75e-6))/2.3e-7)",
+    ],
+    ids=["step", "sharp-turn", "soft-turn"],
 )
 def test_a_step_or_a_turn_past_half_the_difference_is_not_taken_for_flat(value):
     """The value is level at the fire instant, 2.3, and steps, or turns over a
-    hundredth of the difference, three quarters of the way to where the
-    difference is taken. It reads the same at the point, at a quarter and at
-    half the step, and differs at the whole of it: flat is not what that is.
-    dB/dT0 came back 1.09e6 for 0, and 4.3e5."""
+    hundredth or a tenth of the difference, three quarters of the way to where
+    the difference is taken. The first two read the same at the point, at a
+    quarter and at half the step, and differ at the whole of it. The third
+    falls off toward the point by one factor over two halvings of the step, as
+    a power does, and by another over the third. dB/dT0 came back 1.09e6 for
+    0, and 4.3e5."""
     text = f"species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = {value}\n"
     _refused(text, ["T0"], 5.0, "the time")
+
+
+def test_a_bend_beside_a_value_a_hundred_times_its_size_is_refused():
+    """``100 + max(q − 0.3, 0)`` at q = 0.3 bends by 1 in a value of 100. That
+    is far over what a value of 100 rounds by, whatever it leaves in doubt
+    beside the 100: dB/dq is 0 or 1 and came back 0.5."""
+    text = "species B; B = 0; q = 0.3\nE1: at (time >= 1): B = 100 + max(q - 0.3, 0)\n"
+    _refused(text, ["q"], 5.0, "the parameter 'q'")
