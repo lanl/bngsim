@@ -2034,10 +2034,9 @@ class Result:
         - ``first_reverse_reaction`` (str): label of the first reaction
           reversed; ``""`` if none.
         - ``n_rounded_populations`` (int): molecule counts that were not whole
-          numbers when a fresh run started and were rounded to one (a run that
-          continues the previous one rounds nothing). Event-assigned parameters
-          and compartments and rate-rule targets hold continuous values and are
-          never rounded (issue #718).
+          numbers when the run (or ``run_until`` leg) started and were rounded
+          to one. Event-assigned parameters and compartments and rate-rule
+          targets hold continuous values and are never rounded (issue #718).
         - ``first_rounded_species`` (str): name of the first rounded species;
           ``""`` if none.
 

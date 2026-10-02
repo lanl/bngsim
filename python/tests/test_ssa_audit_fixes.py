@@ -6,8 +6,8 @@
 - An SBML conversionFactor is folded into the rate, which keeps the ODE and the
   SSA mean but not the SSA's noise (each firing should move the species by
   cf x stoichiometry): such a model is refused under SSA/PSA.
-- An event that wrote a fractional molecule count kept it until the next run's
-  start rounded it, so a run split into legs differed from the run whole.
+- (Kept as is: a run_until leg rounds a fractional count an event wrote in the
+  previous leg, with the #718 warning.)
 """
 
 from __future__ import annotations
@@ -79,20 +79,18 @@ def test_a_unit_conversion_factor_is_not_refused():
     bngsim.Simulator(m, method="ssa").run(t_span=(0, 1), n_points=2, seed=1)
 
 
-def test_a_fractional_count_an_event_wrote_is_carried_across_legs():
-    """A = A/2 with A = 7 writes 3.5 molecules, which the run carries (#692).
-    A run_until leg that continues it used to round it at its start, so the
-    legs differed from the run whole."""
+def test_a_fractional_count_an_event_wrote_is_rounded_loudly_by_the_next_leg():
+    """A = A/2 with A = 7 writes 3.5 molecules, which the run carries (#692). A
+    run_until leg that continues it rounds it at its start, as every start
+    rounds a fractional count (#718): the legs then differ from the run whole,
+    but not silently."""
     text = "species A = 7; species B = 0; J: => B; 1; E: at time >= 1: A = A/2;"
     whole = _sim(text).run(t_span=(0, 4), n_points=5, seed=3)
-    a = np.asarray(whole.species)[:, 0]
-    assert a[2] == 3.5
+    assert np.asarray(whole.species)[2, 0] == 3.5
     s = _sim(text)
     s.run_until(2, seed=3)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", bngsim.SsaRoundingWarning)
-        leg = s.run_until(4, seed=4)
-    assert np.asarray(leg.species)[0, 0] == 3.5
+    with pytest.warns(bngsim.SsaRoundingWarning):
+        s.run_until(4, seed=4)
 
 
 def test_an_event_just_past_a_leg_end_fires_once():

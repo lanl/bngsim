@@ -707,14 +707,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     int first_rounded = -1;
     std::vector<double> conc(ns);
     std::vector<double> counts(ns);
-    // A run that continues the previous one (issue #693) starts from that run's
-    // own state, which may hold a fractional count an event assigned (kept, as
-    // store_value keeps it): rounding it here made a run split into legs differ
-    // from the run whole. Only a fresh start's populations are rounded.
-    const bool continuing = model.event_carry_for(times.t_start, model.n_events()) != nullptr;
     for (int i = 0; i < ns; ++i) {
         const auto &sp = model.species()[i];
-        if (!is_count[i] || continuing) {
+        if (!is_count[i]) {
             conc[i] = sp.concentration;
             counts[i] = conc[i] * sp.volume_factor; // a continuous value, not snapped
             continue;
