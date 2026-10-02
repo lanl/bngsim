@@ -666,6 +666,21 @@ def test_every_column_at_once_is_refused_by_its_own_columns(tmp_path, fy, fz, pa
         )
 
 
+def test_one_simulator_is_asked_again_for_other_columns(tmp_path):
+    """The sign of ``Aobs − thr`` with A a counter: with kb requested no
+    column moves A, and the law's answer is kept. Asked next for k, which
+    moves A, the simulator gave the answer it had kept."""
+    law = "kb*(1+(Aobs-thr)/abs(Aobs-thr))/2"
+    sim = bngsim.Simulator(_wider(tmp_path, law, decays=False), method="ode")
+    sim.compute_all_sensitivities(
+        t_span=(0.0, T_END), n_points=3, params=["kb"], rtol=1e-4, atol=1e-6
+    )
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.compute_all_sensitivities(
+            t_span=(0.0, T_END), n_points=3, params=["k"], rtol=1e-4, atol=1e-6
+        )
+
+
 @pytest.mark.parametrize(
     ("fy", "fz", "params"),
     [
