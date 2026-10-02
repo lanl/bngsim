@@ -375,7 +375,7 @@ def test_an_event_whose_time_is_found_as_a_root_runs_where_no_column_moves_eithe
 # ── What the review of this change found ────────────────────────────────────
 
 SWITCH = "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)\n"
-GATES_WITH_NO_STOP = {
+GATES_ON_A_POLYNOMIAL = {
     # dX/dthr = −0.5 for 0, each: the gate's jump with the state switch's shift.
     "a-square-in-another-law": HEAD + "Jx: -> X; piecewise(k, time^2 >= 9, 0)\n" + SWITCH,
     "a-quadratic-in-another-law": (
@@ -392,18 +392,17 @@ GATES_WITH_NO_STOP = {
 }
 
 
-@pytest.mark.parametrize("case", sorted(GATES_WITH_NO_STOP))
-def test_a_gate_the_run_takes_no_stop_for_is_refused_on_the_instant(case):
-    """``time^2 >= 9`` switches at t = 3, a time the run does not know ahead:
-    it is no stop and no record. What else jumps between the probes is asked
-    of the right-hand side itself, with this switch's species held to one
-    side of the crossing and everything else put to the other."""
-    _refused(GATES_WITH_NO_STOP[case], ["thr"], 946)
+@pytest.mark.parametrize("case", sorted(GATES_ON_A_POLYNOMIAL))
+def test_a_gate_on_a_polynomial_in_time_is_refused_on_the_instant(case):
+    """``time^2 >= 9`` switches at t = 3, and the run stops a few ulp past it
+    (issue #714): a fixed crossing like any other, with the stop a little
+    after where the condition flips."""
+    _refused(GATES_ON_A_POLYNOMIAL[case], ["thr"], 946)
 
 
-def test_a_counter_s_gate_the_run_has_no_root_for_is_refused_on_the_instant(tmp_path):
-    """The same on a counter species, ``if(t^2 >= 9, k, 0)``, which a run with
-    sensitivities has no root for at all: dX/dthr = −0.5 for 0."""
+def test_a_gate_on_a_polynomial_in_a_counter_is_refused_on_the_instant(tmp_path):
+    """The same on a counter species, ``if(t^2 >= 9, k, 0)``:
+    dX/dthr = −0.5 for 0."""
     path = tmp_path / "m.net"
     path.write_text(NET.replace("if(t>=thr,k,0)", "if(t^2>=9,k,0)").format(level="0.5*thr"))
     sim = bngsim.Simulator(
@@ -785,3 +784,315 @@ def test_a_bend_beside_an_event_runs(off):
     text = SET.format(x0=1, law=f"q*(V - {at!r})*X", at=repr(at), to="2*X")
     got = _columns(text, ["tau"], EVENT_TIMES)
     assert abs(got[2, 0]) < 1e-8
+
+
+# ── From the second review ──────────────────────────────────────────────────
+
+BYSTANDER = "species B; B = 0; Jb: -> B; {rate}\n"
+HIDDEN_BY_A_BYSTANDER = {
+    # The window closes on the switch's instant: 0 on the kink −0.5 | 0.
+    "a-gate-that-closes-the-window": (
+        HEAD + "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)*piecewise(0, time >= 3, 1)\n",
+        "thr",
+        946,
+        TIMES,
+        "1e6",
+    ),
+    # A fitted gate starts X off the X0 it sat on: dY/dtau = 0 for −0.5.
+    "a-jump-that-a-fitted-gate-starts": (STARTED.format(law="k"), "tau", 946, TIMES, "1e6"),
+    # An event empties what the law reads: −6.3 on the kink −6.3 | −2.1.
+    "an-event-that-empties-what-the-law-reads": (
+        EVENT.replace("X = 0.5*X", "X = 0").format(at=6),
+        "tau",
+        945,
+        EVENT_TIMES,
+        "1e7",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(HIDDEN_BY_A_BYSTANDER))
+def test_a_bystander_made_fast_does_not_hide_a_jump(case):
+    """A species the switch never touches, made at 1e6, set the scale every
+    jump was read against: a millionth of the largest net rate in the model.
+    A jump of 0.5 read as none, and each of these ran. A jump is read
+    against the rate that drives the crossing, as the crossing's own is."""
+    text, param, issue, times, rate = HIDDEN_BY_A_BYSTANDER[case]
+    _refused(text + BYSTANDER.format(rate=rate), [param], issue, times)
+
+
+EVENT_STARTS = {
+    # dY/dtau = 0 for −0.5.
+    "sets-the-rate": (
+        "species X, Y; X = 2; Y = 0; r = 0; k = 0.5; tau = 3; X0 = 2\nJx: -> X; r\n"
+        "Jy: -> Y; piecewise(k, X > X0, 0)\nE1: at (time >= tau): r = 1.5\n",
+        "tau",
+    ),
+    # The trigger is on the state, U = c·t > 3: dY/dc = 0 for 1.5.
+    "on-a-state-trigger": (
+        "species X, Y, U; X = 2; Y = 0; U = 0; r = 0; k = 0.5; c = 1; X0 = 2\nJu: -> U; c\n"
+        "Jx: -> X; r\nJy: -> Y; piecewise(k, X > X0, 0)\nE1: at (U > 3): r = 1.5\n",
+        "c",
+    ),
+    # The event puts a rising X on X0 exactly: dY/dtau = 0 for −0.5.
+    "puts-the-species-on-its-threshold": (
+        "species X, Y; X = -10; Y = 0; k = 0.5; tau = 3; X0 = 2\n"
+        "Jx: -> X; piecewise(1.5, time >= 2.9, 0)\nJy: -> Y; piecewise(k, X > X0, 0)\n"
+        "E1: at (time >= tau): X = X0\n",
+        "tau",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(EVENT_STARTS))
+def test_an_event_that_starts_the_state_off_its_surface_is_refused(case):
+    """As a fitted gate does: the state is on the switch's surface in the
+    state the event leaves, and leaves it without coming through 0. No root
+    is reported and the switch's jump was never made."""
+    text, param = EVENT_STARTS[case]
+    _refused(text, [param], 945)
+
+
+EVENT_SETS_THE_RATE = (
+    "species X, Y; X = 2; Y = 0; r = 0; k = 0.5; tau = 3; X0 = 2\nJx: {made}; r\n"
+    "Jy: -> Y; piecewise({law}, X > X0, 0)\nE1: at (time >= tau): r = 1.5\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("made", "law", "param", "want"),
+    [
+        ("-> X", "k", "k", [0.0, 2.0]),  # nothing moves the event
+        ("-> X", "k*(X - X0)", "tau", [-1.5, -1.5]),  # a bend: Y = k·r·(T − tau)²/2
+        ("X ->", "k", "tau", [1.5, 0.0]),  # pushed away from X > X0: the law stays off
+    ],
+    ids=["a-column-that-does-not-move-it", "a-bend", "pushed-away"],
+)
+def test_an_event_that_starts_the_state_runs_where_no_jump_is_missed(made, law, param, want):
+    """Control."""
+    got = _columns(EVENT_SETS_THE_RATE.format(made=made, law=law), [param])
+    np.testing.assert_allclose(got[:, 0], want, rtol=1e-7, atol=1e-9)
+
+
+READS_THE_TIME = "species S, X, Y; S = 0; X = 0; Y = 0; k = 0.5; thr = 4.5\nJs: -> S; 0.5\n"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        READS_THE_TIME + "Jy: -> Y; piecewise(k, S + time >= thr, 0)*piecewise(0, time >= 3, 1)\n",
+        "species S, Y, Tc; S = 0; Y = 0; Tc = 0; k = 0.5; thr = 4.5\nJs: -> S; 0.5\n"
+        "Jc: -> Tc; 1\nJy: -> Y; piecewise(k, S + Tc >= thr, 0)*piecewise(0, Tc >= 3, 1)\n",
+    ],
+    ids=["the-time", "a-counter"],
+)
+def test_a_switch_that_reads_the_clock_as_well_is_refused_where_a_gate_closes_its_window(text):
+    """``S + time >= thr`` crosses at t = 3, where the gate closes the law:
+    0 on the kink −1/3 | 0. The surface moves with the clock, so with the
+    gate put on its other side the species were a step either side of
+    nothing, and the hidden jump was not seen. They are put as far as it
+    takes to cross the surface there; and on a counter the switch reads, the
+    surface is crossed by the other species."""
+    _refused(text, ["thr"], 946)
+
+
+def test_a_switch_that_reads_the_time_as_well_runs_alone_and_apart_from_a_gate():
+    """Control. S + t reaches thr at t = thr/1.5: dY/dthr = −k/1.5, and
+    dY/dk = T − 3. The same with a gate that closes the law at 3.4."""
+    alone = READS_THE_TIME + "Jy: -> Y; piecewise(k, S + time >= thr, 0)\n"
+    np.testing.assert_allclose(_columns(alone, ["thr", "k"])[2], [-1 / 3, 2.0], rtol=1e-7)
+    apart = READS_THE_TIME + (
+        "Jy: -> Y; piecewise(k, S + time >= thr, 0)*piecewise(0, time >= 3.4, 1)\n"
+    )
+    assert _columns(apart, ["thr"])[2, 0] == pytest.approx(-1 / 3, rel=1e-7)
+
+
+def _two_clocks(opens, other):
+    return (
+        "species S, Y, X, Tc, Tb; S = 1; Y = 0; X = 0; Tc = 0; Tb = 0; k = 0.5; "
+        f"sth = {math.exp(3 + 2.95e-5)!r}\nJs: -> S; S\nJc: -> Tc; 1\nJb: -> Tb; 1\n"
+        f"Jy: -> Y; piecewise(k, S >= sth, 0)*piecewise(1, {opens}, 0)\n"
+        f"Jx: -> X; piecewise(k, {other}, 0)\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("opens", "other"),
+    [("time >= 3", "Tc >= 3"), ("Tc >= 3", "Tb >= 3")],
+    ids=["the-time-behind-a-counter", "a-counter-behind-another"],
+)
+def test_two_clocks_on_one_instant_are_both_put_on_their_other_side(opens, other):
+    """The gate that opens the switched law and a gate in another law switch
+    on one instant, and are one stop: the counter's, with the time's behind
+    it. Only the kept one was put on its other side, and the hidden jump was
+    not seen: dY/dsth = 0 for −0.0249. The clock is put across whole, the
+    time and every counter with it."""
+    _refused(_two_clocks(opens, other), ["sth"], 946, rtol=1e-6, atol=1e-9)
+
+
+def test_a_trigger_that_reads_the_switch_s_species_and_the_time_is_refused():
+    """``at (V + 1e5*time > e^6 + 1e5*tau)`` reads V, the one species the
+    switch reads, and crosses where the time says: it is on no species'
+    trajectory. dW/dtau came back −1.0416 for −3.1248."""
+    text = (
+        "species X, W, V; X = 0; W = 0; V = 1; a = 2; q = 0.7; tau = 3; kv = 2\n"
+        "J0: -> X; a\nJv: -> V; kv*V\n"
+        f"J2: -> W; piecewise(q*X, V >= {math.exp(6 + 6.16e-5)!r}, 0)\n"
+        f"E1: at (V + 1e5*time > {math.exp(6.0)!r} + 1e5*tau): X = 0.5*X\n"
+    )
+    _refused(text, ["tau"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+
+
+FITTED_GATE = (
+    "species X, Y, Z; X = 0; Y = 0; Z = 0; r = 1.5; k = 0.5; tau = 3\n"
+    "Jx: -> X; piecewise(r, time >= tau, 0)\n"
+)
+ON_A_SURFACE_AND_STAYING = {
+    # A guard on a species that is not there.
+    "a-guard-on-an-absent-species": (
+        FITTED_GATE + "Jy: -> Y; piecewise(k, Z > 0, 0)\nJz: Z -> ; 0.1*Z\n",
+        TIMES,
+        1e-10,
+        1e-12,
+        [-1.5, 0.0, 0.0],
+    ),
+    "a-division-guard": (
+        FITTED_GATE + "Jy: -> Y; piecewise(k/Z, Z > 0, 0)\n",
+        TIMES,
+        1e-10,
+        1e-12,
+        [-1.5, 0.0, 0.0],
+    ),
+    # X is on X0 and the gate pushes it down, away from X > X0.
+    "pushed-away": (
+        "species X, Y; X = 2; Y = 0; r = 1.5; k = 0.5; tau = 3; X0 = 2\n"
+        "Jx: X -> ; piecewise(r, time >= tau, 0)\nJy: -> Y; piecewise(k, X > X0, 0)\n",
+        TIMES,
+        1e-10,
+        1e-12,
+        [1.5, 0.0],
+    ),
+    # B = e^(−5t) is long under its guard, and under the absolute tolerance.
+    "a-guard-on-a-species-that-has-decayed": (
+        "species B, X, Y; B = 1; X = 0; Y = 0; lam = 5; k = 0.5; r = 1.5; tau = 8\n"
+        "Jb: B -> ; lam*B\nJy: -> Y; piecewise(k, B > 1e-9, 0)\n"
+        "Jx: -> X; piecewise(r, time >= tau, 0)\n",
+        [0.0, 2.0, 4.0, 8.0, 12.0],
+        1e-8,
+        1e-8,
+        [0.0, -1.5, 0.0],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ON_A_SURFACE_AND_STAYING))
+def test_a_fitted_gate_beside_a_state_that_stays_on_its_surface_runs(case):
+    """Control. A fitted gate, and a switch whose residual is 0 there, or
+    under the tolerance, and is not started off it: nothing flips. An
+    earlier cut asked of every residual the tolerances allow to be 0, and
+    refused each of these."""
+    text, times, rtol, atol, want = ON_A_SURFACE_AND_STAYING[case]
+    model = bngsim.Model.from_antimony_string(text)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"]).run(
+        sample_times=times, rtol=rtol, atol=atol, timeout=60
+    )
+    got = np.asarray(run.sensitivities)[-1][:, 0]
+    np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-8)
+
+
+def _nested_law(tmp_path, law, params):
+    path = tmp_path / "nested.net"
+    assert "if(t>=sched(),k,0)" in NESTED
+    path.write_text(NESTED.replace("if(t>=sched(),k,0)", law))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=params
+    )
+    return sim.run(sample_times=NESTED_TIMES, rtol=1e-10, atol=1e-12, timeout=60)
+
+
+def test_the_run_s_own_stop_for_a_crossing_is_not_another_crossing(tmp_path):
+    """Control. ``t >= if(t < t1, a, b)`` is a root on the counter, and a
+    fixed crossing to the resolver that places stops (issue #714), which
+    stops the run a few ulp past where the counter reaches a. That stop is
+    this crossing seen again. With a gate on the same counter half a unit
+    later in the same law, X = k·(0.5·(1.5 − a) + (t1 − 1.5)) + k·(T − b)."""
+    got = np.asarray(_nested_law(tmp_path, "if(t>=sched(),k,0)", ["a"]).sensitivities)[-1]
+    assert got[0, 0] == pytest.approx(-0.5, rel=1e-7)
+    law = "if(t>=sched(),k,0)*if(t>=1.5,1,0.5)"
+    got = np.asarray(_nested_law(tmp_path, law, ["a"]).sensitivities)[-1]
+    assert got[0, 0] == pytest.approx(-0.25, rel=1e-7)
+
+
+def test_another_gate_on_the_counter_beside_the_crossing_is_refused(tmp_path):
+    """Refused here, where main is right. A gate on the same counter 2e-11
+    after the crossing, in the same law: its stop is not on this switch's
+    surface, and the two are within the 1e-10 the crossing is known to."""
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        _nested_law(tmp_path, "if(t>=sched(),k,0)*if(t>=1.00000000002,1,0.5)", ["a"])
+
+
+def test_a_fitted_gate_on_the_crossing_s_own_threshold_is_refused(tmp_path):
+    """``if(t >= a, 1, 0.5)`` beside ``t >= if(t < t1, a, b)``: a switch time
+    fitted to a, on the crossing's own surface. Its record makes the whole
+    jump there, both conditions flipping with the counter, and the state
+    switch made it again: dX/da came back −1 for −0.5."""
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        _nested_law(tmp_path, "if(t>=sched(),k,0)*if(t>=a,1,0.5)", ["a"])
+
+
+# A condition on a counter that the resolver places no stop for, `exp(t) >= e³`,
+# is a state-dependent switch on the counter: a root, at t = 3.
+EXP_GATE = "exp(t)>=20.085536923187668"
+PROBE_STEP = 256 * 2.220446049250313e-16 * 3
+
+
+def _two_roots(tmp_path, gate, law, level):
+    path = tmp_path / "m.net"
+    text = NET.replace("if(t>=thr,k,0)", gate).replace("if(Sobs>={level},k,0)", law)
+    assert text != NET
+    path.write_text(text.format(level=level))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["thr"]
+    )
+    return np.asarray(
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12, timeout=60).sensitivities
+    )[-1]
+
+
+def test_two_switches_on_one_instant_that_hide_each_other_s_jump_are_refused(tmp_path):
+    """``if(Sobs >= 0.5*thr, k, 0)*if(exp(t) >= e³, 0, 1)``: the law is 0
+    before the two and 0 after them, and k between them where S comes first.
+    Read across both it is continuous, and dY/dthr came back 0 on the kink
+    −0.5 | 0."""
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        _two_roots(tmp_path, "0", f"if(Sobs>={{level}},k,0)*if({EXP_GATE},0,1)", "0.5*thr")
+
+
+def test_two_switches_well_apart_in_one_law_run(tmp_path):
+    """Control. The same with S crossing eight probe steps before the gate
+    closes the law: Y = k·(3 − t_c) and dY/dthr = −0.5."""
+    level = f"0.5*thr-{4 * PROBE_STEP!r}"
+    got = _two_roots(tmp_path, "0", f"if(Sobs>={{level}},k,0)*if({EXP_GATE},0,1)", level)
+    assert got[2, 0] == pytest.approx(-0.5, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("gate", "law"),
+    [
+        (f"if({EXP_GATE},k,0)", "if(Sobs>={level},k,0)"),
+        ("0", f"if(Sobs>={{level}},k,0)*if({EXP_GATE},1,0.5)"),
+        ("0", f"if(Sobs>={{level}},0,k)*if({EXP_GATE},1,0.5)"),
+    ],
+    ids=["another-law", "the-same-law", "a-law-the-switch-closes"],
+)
+@pytest.mark.parametrize("steps", [-1.5, 1.5], ids=["the-switch-first", "the-gate-first"])
+def test_a_jump_between_one_and_two_probe_steps_of_the_crossing_is_refused(
+    tmp_path, gate, law, steps
+):
+    """Refused here, where main is right. The switch's jump is extrapolated
+    from a pair of probes two steps out, and a jump that is not its own
+    between one step and two is in that pair. What else jumps between the
+    probes was asked out to one step."""
+    level = f"0.5*thr+{0.5 * steps * PROBE_STEP!r}"
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        _two_roots(tmp_path, gate, law, level)
