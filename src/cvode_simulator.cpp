@@ -10406,9 +10406,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // error log goes to the null sink with its warnings: a failure still
     // throws, through the flag < 0 checks, with bngsim's own account of it.
     const bool watch = sens.n_total != 0 && n_state_switch > 0;
+    const long watch_batch = std::min<long>(static_cast<long>(impl_->max_steps), kWatchBatchSteps);
+    // Steps taken one at a time for the ladder above since the run was asked.
+    long watch_single_steps = 0;
     if (watch) {
-        CVodeSetMaxNumSteps(cvode_mem,
-                            std::min<long>(static_cast<long>(impl_->max_steps), kWatchBatchSteps));
+        CVodeSetMaxNumSteps(cvode_mem, watch_batch);
         SUNLogger logger = nullptr;
         if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
             SUNLogger_SetErrorFilename(logger, bngsim::null_device);
@@ -10839,6 +10841,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     ++floor_single_steps >= impl_->max_steps) {
                     next_floor_time = floor_times.size();
                     continue;
+                }
+                // A step at a time ends no batch, so the watch counts its own:
+                // a state that starts empty keeps the ladder going for most of
+                // a run.
+                if (watch && ++watch_single_steps >= watch_batch) {
+                    watch_single_steps = 0;
+                    watch_state_switches(static_cast<double>(t_ret), t_before_step);
                 }
                 bool crossed = false;
                 while (next_floor_time < floor_times.size() &&

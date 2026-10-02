@@ -109,12 +109,14 @@ def test_a_run_that_ends_before_the_slide(tmp_path):
 @pytest.mark.parametrize("max_steps", [1, 2, 20])
 def test_a_state_on_its_way_to_the_surface_is_not_a_slide(tmp_path, max_steps):
     """Control. In batches of a step or two the run is asked about a slide while
-    S is still far from the surface it will slide along: at 0.5 with the
-    surface at 1. It is a slide only inside the tolerance's band of it."""
+    S is still on its way to the surface it will slide along: at 0.5, and at
+    0.97, with the surface at 1. At the surface the two flows already point
+    into it. It is a slide only once the state is inside the tolerance's band
+    of it."""
     run = bngsim.Simulator(
         _model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"]
-    ).run(sample_times=[0.0, 0.5, 0.9], rtol=1e-8, atol=1e-10, max_steps=max_steps)
-    np.testing.assert_allclose(np.asarray(run.sensitivities)[:, 0, 0], [0.0, 0.5, 0.9], rtol=1e-8)
+    ).run(sample_times=[0.0, 0.5, 0.97], rtol=1e-8, atol=1e-10, max_steps=max_steps)
+    np.testing.assert_allclose(np.asarray(run.sensitivities)[:, 0, 0], [0.0, 0.5, 0.97], rtol=1e-8)
 
 
 def test_the_trajectory_of_a_slide_without_sensitivities(tmp_path):
@@ -150,8 +152,11 @@ def test_a_crossing_that_carries_on_is_not_a_slide(tmp_path, after):
     np.testing.assert_allclose(got, [0.0, 0.5, after * 1.5, after * 2.0], rtol=1e-6)
 
 
+@pytest.mark.parametrize("steeper", [1, 3], ids=["one-slope", "three-times-steeper-past-it"])
 @pytest.mark.parametrize("max_steps", [None, 20, 1])
-def test_a_state_that_comes_to_rest_on_a_continuous_switch_is_not_a_slide(tmp_path, max_steps):
+def test_a_state_that_comes_to_rest_on_a_continuous_switch_is_not_a_slide(
+    tmp_path, max_steps, steeper
+):
     """Control. ``if(S < lvl, k·(lvl − S), −k·(S − lvl))`` is one field written
     as two branches: S relaxes to lvl and rests on the switch, with a flow that
     points in from both sides and runs out at the surface. Nothing jumps there.
@@ -159,8 +164,9 @@ def test_a_state_that_comes_to_rest_on_a_continuous_switch_is_not_a_slide(tmp_pa
     A cut of this fix that asked only which way the two flows point refused a
     corpus model that settles on its own switch this way. In batches of one
     step the run is asked after every step it takes inside the tolerance's
-    band of the surface."""
-    model = _model(tmp_path, "if(Sobs<lvl,k*(lvl-Sobs),(-k)*(Sobs-lvl))")
+    band of the surface. The far branch may be three times as steep: the flux
+    is continuous all the same."""
+    model = _model(tmp_path, f"if(Sobs<lvl,k*(lvl-Sobs),(-{steeper}*k)*(Sobs-lvl))")
     extra = {} if max_steps is None else {"max_steps": max_steps}
     run = bngsim.Simulator(model, method="ode", sensitivity_params=["lvl", "k"]).run(
         sample_times=[0.0, 2.0, 60.0, 200.0], rtol=1e-8, atol=1e-10, **extra
