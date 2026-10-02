@@ -2599,6 +2599,16 @@ struct CvodeSimulator::Impl {
                          const std::vector<double> &f_minus,
                          const std::vector<std::vector<double>> &s_minus,
                          const SensitivityState &sens, std::vector<double> &tau_out);
+    // What residual_dtstar divides: for each column, how the residual moves
+    // with it at the crossing, ∂g/∂x·s + ∂g/∂θ, and in `size_out` the size of
+    // the terms that makes of. And the residual's flow, and the scale of its
+    // terms. Does not throw on a tangential crossing: a state that sits on its
+    // surface has a shift, 0 where the surface moves with it, and no flow.
+    double residual_shift(int gidx, const std::vector<int> &support, double t_evt, int ns,
+                          const std::vector<double> &x_minus, const std::vector<double> &f_minus,
+                          const std::vector<std::vector<double>> &s_minus,
+                          const SensitivityState &sens, std::vector<double> &shift_out,
+                          std::vector<double> &size_out, double &scale_out);
 
     // The event-trigger entry point to residual_dtstar. Returns false when this
     // event has no usable residual, in which case the caller leaves ∂t*/∂θ at
@@ -5540,13 +5550,13 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
     return flow;
 }
 
-void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &support,
-                                           const std::string &subject, double t_evt, int ns,
-                                           const std::vector<double> &x_minus,
-                                           const std::vector<double> &f_minus,
-                                           const std::vector<std::vector<double>> &s_minus,
-                                           const SensitivityState &sens,
-                                           std::vector<double> &tau_out) {
+double CvodeSimulator::Impl::residual_shift(int gidx, const std::vector<int> &support, double t_evt,
+                                            int ns, const std::vector<double> &x_minus,
+                                            const std::vector<double> &f_minus,
+                                            const std::vector<std::vector<double>> &s_minus,
+                                            const SensitivityState &sens,
+                                            std::vector<double> &shift_out,
+                                            std::vector<double> &size_out, double &scale_out) {
     const int n_sens = sens.n_total;
     const int n_sens_p = sens.n_p;
 
@@ -5599,6 +5609,37 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
     restore_nominal_params(sens);
     sync_model_at(t_evt, x_minus.data(), ns);
 
+    shift_out.assign(static_cast<std::size_t>(n_sens), 0.0);
+    size_out.assign(static_cast<std::size_t>(n_sens), 0.0);
+    for (int c = 0; c < n_sens; ++c) {
+        double num = (c < n_sens_p) ? gp[static_cast<std::size_t>(c)] : 0.0;
+        double size = std::fabs(num);
+        const std::vector<double> &sm = s_minus[c];
+        for (int j : support) {
+            num += gx[j] * sm[j];
+            size += std::fabs(gx[j] * sm[j]);
+        }
+        shift_out[static_cast<std::size_t>(c)] = num;
+        size_out[static_cast<std::size_t>(c)] = size;
+    }
+    scale_out = scale;
+    return flow;
+}
+
+void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &support,
+                                           const std::string &subject, double t_evt, int ns,
+                                           const std::vector<double> &x_minus,
+                                           const std::vector<double> &f_minus,
+                                           const std::vector<std::vector<double>> &s_minus,
+                                           const SensitivityState &sens,
+                                           std::vector<double> &tau_out) {
+    const int n_sens = sens.n_total;
+    std::vector<double> shift;
+    std::vector<double> size;
+    double scale = 0.0;
+    const double flow = residual_shift(gidx, support, t_evt, ns, x_minus, f_minus, s_minus, sens,
+                                       shift, size, scale);
+
     // What makes a crossing non-transversal is CANCELLATION: terms of some size
     // summing to ~0. `scale` is exactly Σ|terms|, so |flow| <= relfloor*scale is
     // that test, and it is the only test made here (issue #322).
@@ -5635,12 +5676,7 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
 
     tau_out.assign(static_cast<std::size_t>(n_sens), 0.0);
     for (int c = 0; c < n_sens; ++c) {
-        double num = (c < n_sens_p) ? gp[static_cast<std::size_t>(c)] : 0.0;
-        const std::vector<double> &sm = s_minus[c];
-        for (int j : support) {
-            num += gx[j] * sm[j];
-        }
-        tau_out[static_cast<std::size_t>(c)] = -num / flow;
+        tau_out[static_cast<std::size_t>(c)] = -shift[static_cast<std::size_t>(c)] / flow;
     }
 }
 
@@ -9823,8 +9859,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // Not asked where the residual itself changes sign with the rest: a
         // condition on the time as well as the state, `time >= 4*S`.
         bool other_jump = false;
+        const double step = dt_used != 0.0 ? dt_used : dt;
         {
-            const double step = dt_used != 0.0 ? dt_used : dt;
             std::vector<char> own(static_cast<std::size_t>(ns), 0);
             for (int j : residual_support) {
                 if (j >= 0 && j < ns) {
@@ -9887,15 +9923,27 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
             sync(x, t_evt);
         }
-        double reach = 2.0 * (dt_used != 0.0 ? dt_used : dt);
+        // A crossing the species comes to with next to no flow, a species
+        // that decays onto its own guard `B > 0`, has a time the tolerances
+        // leave open without bound. It is asked about within a hundred times
+        // their relative size, which is as far as a crossing with any flow
+        // to speak of is ever left open.
+        double reach = 2.0 * step;
+        bool residual_jumps = false;
+        double approach = 0.0; // the residual's flow as the state comes to the surface
         {
             std::vector<double> gx;
             double scale = 0.0;
+            // The probes step along the flow at the crossing, which is what the
+            // residual changes by between them.
+            const double flow_here =
+                residual_flow(sw.residual_expr_idx, sw.species, t_evt, ns, x, f0, gx, scale);
             double flow =
                 residual_flow(sw.residual_expr_idx, sw.species, t_evt, ns, x, f_minus, gx, scale);
             if (!std::isfinite(flow) || flow == 0.0) {
-                flow = residual_flow(sw.residual_expr_idx, sw.species, t_evt, ns, x, f0, gx, scale);
+                flow = flow_here;
             }
+            approach = flow;
             double allowed = 0.0;
             for (int j : sw.species) {
                 const auto uj = static_cast<std::size_t>(j);
@@ -9904,8 +9952,26 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     allowed += std::fabs(gx[uj]) * (run_rtol * std::fabs(x[uj]) + atol_j);
                 }
             }
+            const double most = 100.0 * run_rtol * std::max(std::fabs(t_evt), 1.0);
             if (std::isfinite(flow) && flow != 0.0 && std::isfinite(allowed)) {
-                reach += allowed / std::fabs(flow);
+                reach += std::min(allowed / std::fabs(flow), most);
+            } else {
+                reach += most;
+            }
+            // A residual that is far from 0 on both sides of the probes has
+            // not come through 0: it jumped across it, with a condition on a
+            // clock inside it, `t - if(t < t1, a, b)` at t1. That is the clock's
+            // switch seen again, which its own record jumps, and no crossing
+            // of this switch's own.
+            const double through =
+                1e3 * std::max({std::fabs(flow) * step,
+                                std::isfinite(flow_here) ? std::fabs(flow_here) * step : 0.0,
+                                64.0 * std::numeric_limits<double>::epsilon() * scale});
+            residual_jumps = true;
+            for (std::size_t k = 0; k < nb; ++k) {
+                residual_jumps = residual_jumps && std::isfinite(g_before[k]) &&
+                                 std::isfinite(g_after[k]) &&
+                                 std::min(std::fabs(g_before[k]), std::fabs(g_after[k])) > through;
             }
             sync(x, t_evt);
         }
@@ -9932,6 +9998,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         if (other_jump) {
             near_clock = t_evt;
         }
+        if (residual_jumps) {
+            near_clock = std::numeric_limits<double>::quiet_NaN();
+            near_clock_moves = false;
+        }
         double near_fire = std::numeric_limits<double>::quiet_NaN();
         bool near_fire_moves = false;
         for (auto fire = event_fires.rbegin();
@@ -9945,22 +10015,37 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             near_fire = event_fires.front().t;
             near_fire_moves = true;
         }
+        if (residual_jumps) {
+            near_fire = std::numeric_limits<double>::quiet_NaN();
+        }
         // Whether a column moves this crossing: its own dt*/dθ. Asked where
         // something is near, and where something may yet come near it.
         bool moves = false;
         if (!std::isnan(near_clock) || !std::isnan(near_fire) || model.n_events() > 0) {
+            // By how the residual moves with each column at the crossing,
+            // ∂g/∂x·s + ∂g/∂θ, and not by a dt*/dθ that is not 0. A column
+            // moves the crossing where changing its parameter by the whole of
+            // itself moves the crossing's time by more than the reach: a
+            // species that a gate starts on its way through the threshold it
+            // sat on crosses a few ulp after the gate whatever the rate, and
+            // is found 1e-10 after it with a dt*/dθ of 1e-10. Where there is
+            // no flow to divide by, a state that sits on its surface, it is
+            // a shift over a millionth of the terms it is made of.
             for (const NetworkModel::StateSwitch *one : batch) {
-                std::vector<double> tau_one;
-                try {
-                    residual_dtstar(one->residual_expr_idx, one->species,
-                                    "the state-dependent rate-law condition with residual '" +
-                                        one->residual_source + "' crosses",
-                                    t_evt, ns, x, f_minus, s, sens, tau_one);
-                    moves = moves || std::any_of(tau_one.begin(), tau_one.end(),
-                                                 [](double d) { return d != 0.0; });
-                } catch (const std::exception &) {
-                    // A crossing whose dt*/dθ is not had is not known to stay put.
-                    moves = true;
+                std::vector<double> shift;
+                std::vector<double> size;
+                double scale = 0.0;
+                residual_shift(one->residual_expr_idx, one->species, t_evt, ns, x, f_minus, s, sens,
+                               shift, size, scale);
+                for (std::size_t c = 0; c < shift.size(); ++c) {
+                    const double whole =
+                        c < sens.pbar.size() && sens.pbar[c] > 0.0 ? sens.pbar[c] : 1.0;
+                    if (std::isfinite(approach) && approach != 0.0) {
+                        moves =
+                            moves || !(std::fabs(shift[c]) * whole <= std::fabs(approach) * reach);
+                    } else {
+                        moves = moves || !(std::fabs(shift[c]) <= 1e-6 * size[c]);
+                    }
                 }
             }
             sync(x, t_evt);
@@ -9996,7 +10081,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                          state_crossings.front().t + state_crossings.front().reach);
             state_crossings.erase(state_crossings.begin());
         }
-        state_crossings.push_back({t_evt, reach, sw.residual_source, residual_support, moves});
+        if (!residual_jumps) {
+            state_crossings.push_back({t_evt, reach, sw.residual_source, residual_support, moves});
+        }
     }
 
     if (continuous) {
