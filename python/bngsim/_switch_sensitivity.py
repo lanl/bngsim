@@ -33,6 +33,7 @@ bit-for-bit identical to the pre-#48 path.
 
 from __future__ import annotations
 
+import bisect
 import functools
 import logging
 import math
@@ -4649,8 +4650,8 @@ def _isolation_bump(
     return param_idx[name], delta_threshold / private[name]
 
 
-# How many (step call, moved crossing) pairs are read one at a time before the
-# step calls' own edges are listed instead.
+# How many (step call, moved crossing) pairs are evaluated one at a time, for
+# a step call whose edges cannot be listed. Each is two sympy evaluations.
 _STEP_PROBE_PAIRS = 2048
 
 
@@ -4665,37 +4666,75 @@ def _steps_on_instants(
     """The step calls outside every condition that step on a moved crossing's
     instant, each as a crossing no parameter moves (issue #944).
 
-    Each call is evaluated a nudge before and a nudge after each instant, the
-    nudge the core reads a crossing with. That asks the one thing that matters
-    here, whatever the call is: ``trunc``, ``round`` and ``sign`` step, and so
-    do ``floor(time^2/9)`` and ``floor(exp(time - 3))``, and none of them is a
-    step :func:`_step_edge_stop_times` can list the edges of. A call that
-    cannot be evaluated is taken to step: reading a crossing apart from a step
-    that is not there costs nothing.
+    A call whose edges :func:`_step_edge_stop_times` lists, ``floor(time/3)``
+    or the sawtooth of a dose ramp, is asked from that list, which the stops
+    of the run already paid for: an edge within the core's nudge of a moved
+    crossing is on its instant. The window is taken a nudge past its end,
+    because an edge on the last instant of a run is one too.
 
-    Where the pairs are too many to read one at a time, the edges of the calls
-    that can be listed are taken instead.
+    A call it cannot list, ``floor(time^2/9)``, ``floor(exp(time - 3))`` or
+    one with more edges in the window than are listed, is evaluated a nudge
+    before and a nudge after each moved crossing instead, which asks the one
+    thing that matters here whatever the call is. A call that cannot be
+    evaluated, or that reads two clocks, is taken to step: reading a crossing
+    apart from a step that is not there costs nothing.
+
+    Raises
+    ------
+    SensitivityUnsupportedError
+        Where the calls that have to be evaluated and the moved crossings are
+        more than :data:`_STEP_PROBE_PAIRS` pairs. Leaving the rest unasked
+        would be right for the first two thousand crossings and silently wrong
+        after them.
     """
     calls = time_discontinuity_conditions(core, ctx, steps_only=True)
     if not calls:
         return []
-    if len(calls) * len(moved) > _STEP_PROBE_PAIRS:
-        return [
-            _Crossing(
-                t_star=stop.time,
-                clock_idx0=stop.clock_species_idx,
-                threshold=stop.threshold if stop.clock_species_idx >= 0 else stop.time,
-                dtstar=[],
-                partials={},
-            )
-            for stop in all_fixed_crossings(core, t_start, t_end, calls)
-        ]
+    times = sorted({cross.t_star for cross in moved})
+
+    def reach(t: float, offset: float) -> float:
+        # The nudge of the clock the call reads: a counter is nudged about its
+        # own value, which is the time plus where the counter started.
+        return (_INSTANT_ULPS + 4.0) * _EPS * max(abs(t), abs(t + offset), 1.0)
+
+    def on(t: float, clock_idx: int, offset: float) -> _Crossing:
+        return _Crossing(
+            t_star=t,
+            clock_idx0=clock_idx,
+            threshold=t + offset if clock_idx >= 0 else t,
+            dtstar=[],
+            partials={},
+        )
+
     out: list[_Crossing] = []
+    pairs = 0
     for call in calls:
         rewrite = _rewrite_counter_clock(core, call, scope, t_start)
         if rewrite is None:
+            out.extend(on(t, -1, 0.0) for t in times)
             continue
         text, clock_idx, offset = rewrite
+        edges = _step_edge_stop_times(text, scope, t_start, t_end + 2.0 * reach(t_end, offset))
+        if edges is not None:
+            listed = sorted(edges)
+            for t in times:
+                i = bisect.bisect_left(listed, t)
+                near = [listed[j] for j in (i - 1, i) if 0 <= j < len(listed)]
+                if any(abs(edge - t) <= reach(t, offset) for edge in near):
+                    out.append(on(t, clock_idx, offset))
+            continue
+        pairs += len(times)
+        if pairs > _STEP_PROBE_PAIRS:
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported on this run: the rate law steps at "
+                f"{call!r}, "
+                "a step call whose edges bngsim cannot list, and the requested parameters move "
+                f"{len(times)} switch times in the reported window. Whether one of them lands on "
+                "a step is asked by evaluating the call beside each, and that is not done for "
+                f"more than {_STEP_PROBE_PAIRS} of them: the rest would be read with the step "
+                "inside their bracket (issue #944). Shorten the reported time window, or drop "
+                "the parameters that move the switch times from sensitivity_params."
+            )
 
         def at(t: float, text: str = text) -> float | None:
             try:
@@ -4708,20 +4747,10 @@ def _steps_on_instants(
             except Exception:  # noqa: BLE001 - a call this cannot read is taken to step
                 return None
 
-        for cross in moved:
-            t = cross.t_star
-            reach = (_INSTANT_ULPS + 4.0) * _EPS * max(abs(t), 1.0)
-            before, after = at(t - reach), at(t + reach)
+        for t in times:
+            before, after = at(t - reach(t, offset)), at(t + reach(t, offset))
             if before is None or after is None or before != after:
-                out.append(
-                    _Crossing(
-                        t_star=t,
-                        clock_idx0=clock_idx,
-                        threshold=t + offset if clock_idx >= 0 else t,
-                        dtstar=[],
-                        partials={},
-                    )
-                )
+                out.append(on(t, clock_idx, offset))
     return out
 
 

@@ -6742,9 +6742,11 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         // the one before it closes, differs across the nudge by its slope
         // there. And a rate law of another condition that reads the bumped
         // parameter outside its condition moves with the hair. So where the
-        // two differ they are read again over twice the nudge, and then at
+        // two differ they are read again over half the nudge, and then at
         // half the hair, and what is left when those parts are taken out is
-        // the kink.
+        // the kink. Half, not twice: a wider nudge reaches a condition that
+        // is not on this instant, 70 to 127 ulp away, and what that one adds
+        // is in proportion to the nudge too.
         auto others_do = [&](double bump, double nudges, std::vector<double> &out) {
             // f with every clock on the instant `nudges` nudges past it, less
             // f with every clock as far before it, at this threshold moved by
@@ -6818,16 +6820,16 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         };
         // The difference at `bump` hairs, with what is in proportion to the
         // nudge taken out.
-        std::vector<double> wide_before;
-        std::vector<double> wide_after;
+        std::vector<double> short_before;
+        std::vector<double> short_after;
         auto without_the_nudge = [&](double bump, const std::vector<double> &before,
                                      const std::vector<double> &after, std::vector<double> &out) {
-            others_do(+bump, 2.0, wide_before);
-            others_do(-bump, 2.0, wide_after);
+            others_do(+bump, 0.5, short_before);
+            others_do(-bump, 0.5, short_after);
             out.assign(static_cast<size_t>(ns), 0.0);
             for (int i = 0; i < ns; ++i) {
                 const auto ui = static_cast<size_t>(i);
-                out[ui] = 2.0 * (after[ui] - before[ui]) - (wide_after[ui] - wide_before[ui]);
+                out[ui] = 2.0 * (short_after[ui] - short_before[ui]) - (after[ui] - before[ui]);
             }
         };
         std::vector<double> kink(static_cast<size_t>(ns), 0.0);

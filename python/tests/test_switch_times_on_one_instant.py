@@ -303,3 +303,73 @@ def test_a_neighbour_whose_rate_law_reads_the_moved_switch_time():
         "J9: -> Z; tau*piecewise(2, time >= 3, 0.5)\n"
     )
     np.testing.assert_allclose(_columns(text, ["tau"]), [[-1.0], [7.5]], rtol=1e-5)
+
+
+def test_a_gate_a_hundred_ulp_past_the_instant_is_not_taken_for_a_slope():
+    """``r·gate(tau)·(gate(3) + gate(3·(1 + 100·ε)))``: dY/dtau is −2 from
+    above and 0 from below, and came back −1. The second fixed gate is not on
+    the instant, and is inside twice the nudge. Read again over twice the
+    nudge, what it adds doubled with the nudge, as a slope would, and was
+    taken out with it. The second reading is over half the nudge."""
+    late = repr(float(3.0 * (1 + 100 * np.finfo(float).eps)))
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; r*piecewise(1, time >= tau, 0)"
+        f"*(piecewise(1, time >= 3, 0) + piecewise(1, time >= {late}, 0))\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SimulationError, match="do not commute.*issue #951"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
+
+
+COUNTERS = """begin parameters
+    1 a 2
+    2 k 0.5
+    3 q 0.7
+    4 tau {tau}
+    5 _rateLaw1 1
+end parameters
+begin functions
+    1 fY() if(t>=tau,k*Xo,0)
+    2 fW() {step}
+end functions
+begin species
+    1 X() 0
+    2 Y() 0
+    3 W() 0
+    4 Tc() {start}
+    5 Uc() 0
+end species
+begin reactions
+    1 0 1 a
+    2 0 2 fY
+    3 0 3 fW
+    4 0 4 _rateLaw1
+    5 0 5 _rateLaw1
+end reactions
+begin groups
+    1 Xo 1
+    2 t 4
+    3 u 5
+end groups
+"""
+
+
+@pytest.mark.parametrize(
+    ("step", "tau", "start"),
+    [("q*Xo*floor((t-1e6)/3)", "1000003", "1e6"), ("q*Xo*floor((t+u)/6)", "3", "0")],
+    ids=["a-counter-that-starts-at-a-million", "a-step-of-two-counters"],
+)
+def test_a_fitted_switch_on_a_step_of_a_counter(tmp_path, step, tau, start):
+    """The switch and the step are on a counter clock. A counter at 1e6 is
+    nudged about its own value, not about the time, and a call that reads two
+    counters is on no one clock and is taken to step. dW/dtau came back −4.2
+    for 0 in both."""
+    path = tmp_path / "m.net"
+    path.write_text(COUNTERS.format(step=step, tau=tau, start=start))
+    run = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["tau"]
+    ).run(sample_times=[0.0, 1.0, 2.0, 4.0, 5.0, 7.5], rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1, :3, 0]
+    np.testing.assert_allclose(got, [0.0, -3.0, 0.0], atol=1e-7)
