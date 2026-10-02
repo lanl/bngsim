@@ -774,7 +774,7 @@ class Simulator:
                     "See Lin, Feng, Hlavacek, J. Chem. Phys. 150, "
                     "244101 (2019)."
                 )
-            if poplevel <= 1.0:
+            if not poplevel > 1.0:  # NaN too: it ran as exact SSA
                 raise ValueError(
                     f"poplevel must be > 1 for PSA. Got {poplevel}. "
                     "For exact stochastic simulation, use method='ssa'."

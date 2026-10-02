@@ -539,7 +539,7 @@ Result SsaSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_se
 
 Result SsaSimulator::run_psa(const TimeSpec &times, uint64_t seed, double poplevel,
                              double timeout_seconds) {
-    if (poplevel <= 1.0) {
+    if (!(poplevel > 1.0)) { // NaN too: it read as no scaling, exact SSA
         throw std::invalid_argument(
             "PSA poplevel (N_c) must be > 1. Got " + std::to_string(poplevel) +
             ". For exact stochastic simulation, use run() instead of run_psa().");
@@ -826,13 +826,37 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // exactly 0 at n = j. At V = 1 (every `.net` model) the stored value is the
     // count, and the arithmetic is the old add, bit for bit.
     auto fire_species = [&](int si, double dn) {
-        const double before = conc[si];
         counts[si] += dn;
         conc[si] = counts[si] / species_list[si].volume_factor;
-        if (before >= 0.0 && conc[si] < 0.0) {
-            ++neg_cross_count;
-            if (first_neg_species < 0)
-                first_neg_species = si;
+    };
+    // One firing of a reaction: every reactant down, then every product up. A
+    // crossing below zero is the firing's net effect, judged after both: a
+    // reactant that is also a product (`3A -> A + B`) dips through zero between
+    // them without going there, and was reported as a crossing.
+    std::vector<std::pair<int, double>> fire_before; // (species, value before)
+    auto fire_reaction = [&](const auto &rxn, double rstep) {
+        fire_before.clear();
+        auto touch = [&](int ci, double dn) {
+            const int si = ci - 1; // 1-based → 0-based
+            if (si < 0 || si >= ns || species_list[si].fixed)
+                return;
+            bool seen = false;
+            for (const auto &entry : fire_before)
+                seen = seen || entry.first == si;
+            if (!seen)
+                fire_before.emplace_back(si, conc[si]);
+            fire_species(si, dn);
+        };
+        for (int ri : rxn.reactant_indices)
+            touch(ri, -rstep);
+        for (int pi : rxn.product_indices)
+            touch(pi, rstep);
+        for (const auto &[si, before] : fire_before) {
+            if (before >= 0.0 && conc[si] < 0.0) {
+                ++neg_cross_count;
+                if (first_neg_species < 0)
+                    first_neg_species = si;
+            }
         }
     };
     // An event assignment writes a stored value through here, so the count
@@ -1072,6 +1096,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<std::vector<std::pair<int, double>>> psa_overdraw(use_psa ? nr : 0);
     if (use_psa) {
         for (int r = 0; r < nr; ++r) {
+            // |net| cannot exceed either side's length, so a reaction with both
+            // at most N_c long has nothing to cap, and is skipped unhashed: the
+            // map per reaction cost a 58k-reaction model 36% over short legs.
+            if (static_cast<double>(reactions[r].reactant_indices.size()) <= poplevel &&
+                static_cast<double>(reactions[r].product_indices.size()) <= poplevel)
+                continue;
             std::unordered_map<int, double> net;
             for (int ci : reactions[r].reactant_indices)
                 net[ci - 1] -= 1.0;
@@ -1134,9 +1164,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     // magnitude is direction-agnostic, so a reaction whose rate law goes
     // negative still contributes |rate| to a0 and, when selected, fires in
     // reverse (see the firing step) — making the SSA's expected drift equal the
-    // ODE RHS at every state. The PSA leap bound (n_min) is taken over the
-    // species being *consumed* in the active direction, which flips to the
-    // products under reverse firing.
+    // ODE RHS at every state. The PSA leap (psa_leap) reads both sides, so it
+    // holds whichever direction the reaction fires in.
     auto set_propensity = [&](int r) {
         // GH #81 — a rate-rule ODE reaction (`dX/dt = f`, compiled to `[] → [X]`)
         // is NOT a stochastic channel: its target is integrated deterministically
@@ -1941,20 +1970,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (first_reverse_rxn < 0)
                 first_reverse_rxn = selected;
         }
-        const double rstep = dir * stoich_scale;
-
-        for (int ri : rxn.reactant_indices) {
-            int si = ri - 1; // 1-based → 0-based
-            if (si >= 0 && si < ns && !species_list[si].fixed) {
-                fire_species(si, -rstep);
-            }
-        }
-        for (int pi : rxn.product_indices) {
-            int si = pi - 1;
-            if (si >= 0 && si < ns && !species_list[si].fixed) {
-                fire_species(si, rstep);
-            }
-        }
+        fire_reaction(rxn, dir * stoich_scale);
     };
     // After a firing at the current t: refresh the propensities it affects.
     auto refresh_after_firing = [&](int selected) {
@@ -2176,17 +2192,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 if (first_reverse_rxn < 0)
                     first_reverse_rxn = selected;
             }
-            const double rstep = dir;
-            for (int ri : rxn.reactant_indices) {
-                int si = ri - 1; // 1-based → 0-based
-                if (si >= 0 && si < ns && !species_list[si].fixed)
-                    fire_species(si, -rstep);
-            }
-            for (int pi : rxn.product_indices) {
-                int si = pi - 1;
-                if (si >= 0 && si < ns && !species_list[si].fixed)
-                    fire_species(si, rstep);
-            }
+            fire_reaction(rxn, static_cast<double>(dir));
 
             // Advance time only (see header note: no per-step set_current_time).
             t = t_proposed;

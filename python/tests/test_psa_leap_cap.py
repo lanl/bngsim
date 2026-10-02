@@ -40,10 +40,38 @@ def test_a_leap_with_a_stoichiometry_above_poplevel_never_overdraws(text, name, 
     for seed in range(60):
         model.reset()
         r = bngsim.Simulator(model, method="psa", poplevel=2.0).run(
-            t_span=(0, 50), n_points=51, seed=seed
+            t_span=(0, 50), n_points=51, seed=seed, timeout=20
         )
         x = np.asarray(r.species)
         assert x[:, names.index(name)].min() >= 0
         if conserved:
             total = sum(w * x[:, names.index(s)] for s, w in conserved.items())
             assert np.all(total == total[0])
+
+
+def test_a_reactant_that_is_also_a_product_is_no_negative_crossing():
+    """`3A -> A + B` takes three A and gives one back. The firing subtracted
+    every reactant before adding any product, and A's dip through zero between
+    the two was counted as a crossing: a warning in 36 of 40 runs at
+    poplevel 1.5 whose A never went below 0."""
+    import warnings
+
+    model = bngsim.Model.from_antimony_string(
+        "species A = 3000; species B = 0; k = 1e-7; J: 3A => A + B; k*A*A*A;"
+    )
+    for seed in range(20):
+        model.reset()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", bngsim.SsaBoundaryWarning)
+            r = bngsim.Simulator(model, method="psa", poplevel=1.5).run(
+                t_span=(0, 50), n_points=11, seed=seed, timeout=20
+            )
+        assert np.asarray(r.species)[:, 0].min() >= 0
+
+
+@pytest.mark.parametrize("bad", [1.0, 0.5, float("nan")])
+def test_a_poplevel_not_above_one_is_refused(bad):
+    """NaN passed the `poplevel <= 1` check and ran as exact SSA."""
+    model = bngsim.Model.from_antimony_string("species A = 100; J: A => ; 0.1*A;")
+    with pytest.raises(ValueError, match="poplevel"):
+        bngsim.Simulator(model, method="psa", poplevel=bad)
