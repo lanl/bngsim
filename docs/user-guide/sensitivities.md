@@ -378,7 +378,12 @@ model with (issues #938, #932):
 - a step call on the state, `floor(X)`, or a table function read as a step and
   indexed by an observable or by a function;
 - a step call on time, or on a counter nothing moves, whose argument reads a
-  requested parameter, `floor(time()/P)` with `P` requested.
+  requested parameter, `floor(time()/P)` with `P` requested;
+- a comparison over parameters alone that a requested one is close to flipping:
+  `if(n > 1, kb, 0)` with `n` requested and within a quarter of itself of 1.
+  The quotient moves a parameter as it moves the state, by up to its size times
+  the root of the relative tolerance. Likewise an equality on a requested
+  parameter that holds, and a step call or a step table on one.
 
 The refusal goes by what the rate laws' text says and by the sign of each
 parameter. Nothing is evaluated, so it costs the same before every run, and it
