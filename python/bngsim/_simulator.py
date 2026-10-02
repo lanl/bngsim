@@ -1714,16 +1714,17 @@ class Simulator:
             "Forward sensitivity is not supported for this model: it has no analytic "
             "sensitivity right-hand side"
             + (f" ({why})" if why else "")
-            + f", and its rate law has a crossing at {crossing!r} whose time moves with the "
-            "state or with a requested parameter. Without the analytic right-hand side, "
-            "CVODES' internal difference quotient is used for every column. It reads the "
-            "rate law at the state and the parameter moved along each column, which beside "
-            "such a crossing is on its other side: a column takes part of the rate law's "
-            "jump before the crossing, by more the looser the tolerance, or the step size "
+            + f", and its rate law is not found continuous across {crossing!r}, which "
+            "the state or a requested parameter moves the run across. Without the analytic "
+            "right-hand side, CVODES' internal difference quotient is used for every column. "
+            "It reads the rate law at the state and the parameter moved along each column, "
+            "which beside a jump is on its other side: a column takes part of the jump "
+            "before the crossing, by more the looser the tolerance, or the step size "
             "collapses and the run does not finish (issues #938, #932). bngsim refuses "
             "rather than return it, whether or not this run reaches the crossing: that is "
-            "not known before it. Remove what the analytic path declines, or difference "
-            "plain runs."
+            "not known before it. Remove what the analytic path declines; or write the law "
+            "so that its branches meet where the condition flips, each condition holding "
+            "the difference it switches on, as in if(v > 0, v, 0); or difference plain runs."
         )
 
     def _apply_event_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:

@@ -3292,8 +3292,10 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
     at run time — by
     :meth:`Simulator._apply_switch_time_sens` /
     :meth:`Simulator._apply_state_switch_sens` — even when the analytic
-    sensitivity RHS is declined and the run is on CVODES' difference quotient, and
-    nothing is dropped.
+    sensitivity RHS is declined and the run is on CVODES' difference quotient.
+    That the jump is applied does not make such a run right: the quotient has
+    read across a state crossing before the run gets there, and a run on it is
+    refused by :func:`fallback_crossing` where the rate law jumps (issue #938).
 
     This is the exact fact issue #414's refusal keys on, through the same
     recognizer codegen declines with, so the run-time gate and the build cannot
@@ -5512,9 +5514,12 @@ def uncompensated_condition_reason(
             # resolve, which is what rejects an equality between run-constants
             # (issue #382's ground, not this one) and one whose sides are
             # themselves comparisons (a boolean difference, whose true-set IS an
-            # interval).
+            # interval). An equality that holds a step call holds over an
+            # interval too, `floor(X/thr) == 0` for X under thr, and is not
+            # admitted: read as holding nowhere, it returned a column of 0 for
+            # 2.46 with nothing logged.
             if is_equality_atom(atom):
-                if state_switch_residual(scope.core, atom):
+                if not _STEP_CALL.search(atom) and state_switch_residual(scope.core, atom):
                     continue
             # Ground 3 — issue #150 roots on this crossing and jumps it.
             elif state_switch_residual(scope.core, atom):

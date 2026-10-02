@@ -373,19 +373,25 @@ model with (issues #938, #932):
 - a rate-law condition that reads the state, `if(X < thr, kb, 0)`, unless the
   rate law is continuous wherever the condition flips. A ramp from the threshold,
   `if(X < thr, kb*(thr - X), 0)`, and a signed rate, `if(v < 0, -v/max(X, 0.01), 0)`,
-  are bends, and the quotient is right across a bend. Whether a law bends or
-  jumps is asked of its text before the run, with every other choice in it
-  (`max`, `min`, `abs`, another condition) taken either way: a clamp written as
-  `if(X > 0, if(X < n, X, n), 0)` is a bend and is refused all the same;
+  are bends, and the quotient is right across a bend;
+- an `abs`, `max` or `min` the rate law jumps across, `(thr - X)/abs(thr - X)`.
+  One it only bends across, `kc*max(X, 0.5)`, runs;
 - a condition on a counter species that a requested column moves;
 - a step call on the state, `floor(X)`, or a table function read as a step and
-  indexed by an observable;
-- a step call on time whose argument reads a requested parameter,
-  `floor(time()/P)` with `P` requested.
+  indexed by an observable or by a function;
+- a step call on time, or on a counter nothing moves, whose argument reads a
+  requested parameter, `floor(time()/P)` with `P` requested.
 
-A condition on literal time runs, and so does a steady-state solve. A jump
-written with none of these, `(thr - X)/abs(thr - X)`, is not seen: the run
-returns, and the columns are wrong from the crossing on.
+Whether a law bends or jumps is asked of its text before the run, at the values
+the parameters have, and asked again when one of them is changed. Every other
+choice in the law (`max`, `min`, `abs`, another condition) is taken either way,
+so a bend that depends on one is refused all the same: a clamp written as
+`if(X > 0, if(X < n, X, n), 0)`. Written as `max(0, min(X, n))` it runs. A
+concentration is taken to stay above 0: `if(S > 0, Vm*Q/S, 0)` runs.
+
+A condition on literal time runs, and so does a steady-state solve. What the
+scan does not see is a jump written through a root or a power with no
+condition, `sqrt(X*X)/X`, and a threshold outside 1e-300 to 1e300.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 

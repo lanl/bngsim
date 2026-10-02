@@ -935,3 +935,15 @@ def test_a_guard_on_a_concentration_runs():
     assert not sim.has_analytic_sens_rhs
     run = sim.run(sample_times=[0.0, 1.0, 2.0], rtol=1e-10, atol=1e-12, timeout=60)
     assert np.all(np.isfinite(np.asarray(run.sensitivities)))
+
+
+def test_an_equality_that_holds_a_step_holds_over_an_interval(tmp_path):
+    """``if(floor(Aobs/thr) == 0, kb, 0)`` with nothing declined, so on the
+    analytic path: kb while A is under thr. An equality over the state was
+    taken to hold on no interval, and with a step call in it it holds on one:
+    the columns came back [0, 0] for [2.463, 0.682], with nothing logged. It
+    is not admitted, and the run is refused (issue #414)."""
+    model = _wider(tmp_path, "if(floor(Aobs/thr)==0,kb,0)", "kc*Aobs")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10, timeout=20)
