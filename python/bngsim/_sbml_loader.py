@@ -6329,9 +6329,29 @@ def _build_model_from_sbml_doc(doc):
         # species factors only; an explicit compartment factor lives in base_func and
         # cancels — see _classify_mass_action_ast). Not a reversible law written
         # as a forward-minus-reverse difference, which is not a monomial.
+        #
+        # Nor one the per-species divide cannot serve, which §9 writes out one
+        # species at a time instead and SSA refuses: a reaction that changes a
+        # species in an assignment-rule compartment, which is no state to divide
+        # by (#745), or that mixes conversion factors. Certified, those took the
+        # per-species divide anyway: an irreversible `A + E => B + E` with A and
+        # B in `C1 := 2 + 0.5*time` gave [A](5) = 0.287 for 0.326, and a mixed
+        # factor refused to load, where the same law flagged reversible was right.
         _xcomp_varvol = _varvol_reject.get("xcomp_varvol_comps")
-        if _xcomp_varvol and not _rev_difference:
-            ssa_varvol_xcompartment[i] = _xcomp_varvol
+        if _xcomp_varvol and not _rev_difference and not _cf_mixed:
+            _net: dict[str, float] = {}
+            for _sign, _refs in ((-1.0, rxn.getListOfReactants()), (1.0, rxn.getListOfProducts())):
+                for _sr in _refs:
+                    _st = _resolve_stoich(_sr)
+                    # An unresolved stoichiometry (NaN) is taken for a change.
+                    _net[_sr.getSpecies()] = _net.get(_sr.getSpecies(), 0.0) + _sign * (
+                        float("nan") if _st is None else _st
+                    )
+            if not any(
+                not abs(_n) <= 1e-12 and species_comp[_sid] in ar_comp_targets
+                for _sid, _n in _net.items()
+            ):
+                ssa_varvol_xcompartment[i] = _xcomp_varvol
 
         # Phase 7: try splitting a reversible kineticLaw of the form
         # ``[wrapper *] (forward_rate - reverse_rate)`` into two mass-action
