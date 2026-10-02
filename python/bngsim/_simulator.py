@@ -1760,31 +1760,19 @@ class Simulator:
         conditions = model.time_discontinuity_conditions()
         if not conditions:
             return
-        from bngsim._switch_sensitivity import (
-            CrossingStop,
-            all_fixed_crossings,
-            merge_crossing_stops,
-            periodic_crossing_times,
-        )
+        from bngsim._switch_sensitivity import crossings_with_periodic, merge_crossing_stops
 
         try:
-            crossings = all_fixed_crossings(model._core, float(t_start), float(t_end), conditions)
+            crossings, periodic = crossings_with_periodic(
+                model._core, float(t_start), float(t_end), conditions
+            )
+            # A crossing of a sinusoid or a polynomial in time is a stop too
+            # (issue #714): a window narrower than a step lay wholly inside one,
+            # unseen. To the event sensitivity jump it is one more fixed
+            # crossing on its instant.
+            if periodic:
+                crossings = sorted([*crossings, *periodic], key=lambda stop: stop.time)
             stops = merge_crossing_stops(crossings)
-            # A plain run also stops on each crossing of a sinusoid or a
-            # polynomial in time (issue #714): a window narrower than a step lay
-            # wholly inside one, unseen. Not a sensitivity run, whose jump
-            # machinery reads every stop as a switch of its own.
-            if not (self._sensitivity_params or self._sensitivity_ic):
-                periodic = periodic_crossing_times(
-                    model._core, float(t_start), float(t_end), conditions
-                )
-                if periodic:
-                    stops = merge_crossing_stops(
-                        sorted(
-                            [*stops, *(CrossingStop(tp, -1, 0.0) for tp in periodic)],
-                            key=lambda stop: stop.time,
-                        )
-                    )
         except Exception as e:  # pragma: no cover - defensive
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than
@@ -1843,22 +1831,19 @@ class Simulator:
             conditions = model.time_discontinuity_conditions()
             if conditions:
                 from bngsim._switch_sensitivity import (
-                    fixed_crossing_stops,
-                    periodic_crossing_times,
+                    crossings_with_periodic,
+                    merge_crossing_stops,
                 )
 
                 try:
-                    stops = fixed_crossing_stops(
+                    crossings, periodic = crossings_with_periodic(
                         model._core, float(t_start), float(t_end), conditions
                     )
-                    times = [float(stop.time) for stop in stops]
+                    times = [float(stop.time) for stop in merge_crossing_stops(crossings)]
                     # ...and the crossings of a sinusoid or a polynomial in time,
                     # whose window a step can otherwise lie across unseen.
-                    periodic = periodic_crossing_times(
-                        model._core, float(t_start), float(t_end), conditions
-                    )
                     if periodic:
-                        times = sorted(set(times) | set(periodic))
+                        times = sorted(set(times) | {float(stop.time) for stop in periodic})
                 except Exception as e:  # pragma: no cover - defensive
                     logger.warning(
                         "Discontinuity crossing resolution failed (%s); the SSA "

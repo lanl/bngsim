@@ -2862,12 +2862,37 @@ def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> li
     its own jump (issue #767), and two conditions that cross together, one on
     each of two counters, are two switches.
     """
+    return _resolve_crossings(core, t_start, t_end, conditions, periodic=False)[0]
+
+
+def crossings_with_periodic(
+    core, t_start: float, t_end: float, conditions=()
+) -> tuple[list[CrossingStop], list[CrossingStop]]:
+    """:func:`all_fixed_crossings`, and the stops of the conditions it leaves
+    out whose residual is a sinusoid or a polynomial in time or in a counter
+    (:func:`_periodic_stop_times`), from one pass over the conditions.
+
+    Such a condition is not monotone in time, so none of the fixed resolvers
+    places it, and a window narrower than one integrator step, or than one
+    panel of the SSA's continuous loop, can lie wholly between two of their
+    nodes and be stepped over without a trace (issue #714). Its crossings are
+    constants of the run all the same. They are kept apart from the fixed
+    crossings, which the sensitivity jump also reads by condition: these are
+    only places to stop on.
+    """
+    return _resolve_crossings(core, t_start, t_end, conditions, periodic=True)
+
+
+def _resolve_crossings(
+    core, t_start: float, t_end: float, conditions, periodic: bool
+) -> tuple[list[CrossingStop], list[CrossingStop]]:
     if not conditions:
-        return []
+        return [], []
     ctx = core.functional_jacobian_context()
     scope = switch_condition_scope(core, ctx)
     bodies = _function_slot_bodies(ctx)
     found: list[CrossingStop] = []
+    extra: list[CrossingStop] = []
     for cond in conditions:
         rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
         if rewrite is None:
@@ -2883,6 +2908,11 @@ def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> li
                 times = _step_edge_stop_times(text, scope, t_start, t_end)
             if times is None:
                 times = _inner_step_stop_times(text, scope, t_start, t_end)
+        if times is None and periodic:
+            extra.extend(
+                CrossingStop(tp, clock_idx, tp + offset if clock_idx >= 0 else 0.0)
+                for tp in _periodic_stop_times(text, scope, t_start, t_end, bodies)
+            )
         for t_cross in times or ():
             if not (t_start < t_cross <= t_end):
                 continue
@@ -2895,7 +2925,8 @@ def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> li
             )
     # The sort is stable, so among equal times the conditions keep their order.
     found.sort(key=lambda stop: stop.time)
-    return found
+    extra.sort(key=lambda stop: stop.time)
+    return found, extra
 
 
 # How many crossings of one periodic condition are placed; past this the
@@ -2905,74 +2936,42 @@ _POLY_MAX_DEGREE = 16
 # The evaluator's named constants, as the loaders spell them (SBML <pi/> is
 # `_pi`), read as numbers when no parameter has the name.
 _EVALUATOR_CONSTANTS = {"_pi": math.pi, "pi": math.pi, "_e": math.e, "exponentiale": math.e}
+# What a residual of either shape has and a linear one does not: a sine or a
+# cosine, a power, or the clock read twice. A condition without one is not
+# parsed: sympy costs about a millisecond a condition, on every run.
+_PERIODIC_HINT = re.compile(r"(?<![A-Za-z0-9_])(?:sin|cos|pow)\s*\(|\^|\*\*")
+# A condition's shape, by its residual text and the values of the parameters it
+# reads, which is what a scan or a fit varies; bounded and cleared whole, like
+# _CROSSING_CACHE.
+_PERIODIC_SHAPES: dict[tuple, tuple | None] = {}
+# How far past a crossing its stop lands, as a multiple of the bound on the
+# evaluator's rounding error over the residual's slope, and at most (in ulps of
+# the time) half the core's reach for one instant, so that a root the
+# integrator returns on the crossing still takes the stop with it.
+_STOP_NUDGE_SAFETY = 4.0
+_STOP_NUDGE_MAX_ULPS = 32.0
 
 
-def periodic_crossing_times(core, t_start: float, t_end: float, conditions=()) -> list[float]:
-    """Crossings in ``(t_start, t_end]`` of the conditions on time whose residual
-    is a sinusoid ``a·sin(ω·t + φ) + c`` (or a cosine) or a polynomial in time:
-    ``sin(10*time()) > 0.99``, ``(time - 3)^2 < 4e-4``.
+def _periodic_stop_times(cond, scope, t_start, t_end, bodies) -> list[float]:
+    """The stops of one condition whose residual is a sinusoid
+    ``a·sin(ω·t + φ) + c`` (or a cosine) or a polynomial in time, in
+    ``(t_start, t_end]``: ``sin(10*time()) > 0.99``, ``(time - 3)^2 < 4e-4``.
+    Empty for a condition of any other shape, or that reads any state.
 
-    Such a condition is not monotone in time, so none of the resolvers behind
-    :func:`fixed_crossing_stops` places it, and a window narrower than one
-    integrator step, or than one panel of the SSA's continuous loop, can lie
-    wholly between two of their nodes and be stepped over without a trace. Its
-    crossing times are constants of the run all the same, solved here in closed
-    form. Kept apart from :func:`all_fixed_crossings`, which also feeds the
-    event sensitivity jump: these are only places to stop on.
-
-    The parameters are read at their current values; a condition reading any
-    state, or of any other shape, is left out, as before.
+    A stop lands a few ulps past its crossing, never on it. On the crossing the
+    evaluator's rounding reads either branch, and where it read the one ending
+    there, the restart's first step held the jump within ulps of its start and
+    its step size collapsed: at tight tolerances CVODE gave up.
     """
-    if not conditions:
-        return []
-    ctx = core.functional_jacobian_context()
-    scope = switch_condition_scope(core, ctx)
-    bodies = _function_slot_bodies(ctx)
-    out: set[float] = set()
-    for cond in conditions:
-        rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
-        if rewrite is None:
-            continue
-        text, clock_idx, _ = rewrite
-        if clock_idx >= 0:
-            continue
-        try:
-            times = _sinusoid_or_polynomial_crossings(text, scope, t_start, t_end, bodies)
-        except Exception as e:  # sympy can raise anything on odd input
-            logger.debug("periodic crossing stops: %r declined: %s", cond, e)
-            continue
-        if times is None:
-            continue
-        if len(times) > _PERIODIC_STOP_BUDGET:
-            logger.warning(
-                "The condition %r crosses %d times in (%g, %g], more than the %d "
-                "stops placed for one condition; the integrator approaches the rest "
-                "unclamped and can step over a narrow window.",
-                cond,
-                len(times),
-                t_start,
-                t_end,
-                _PERIODIC_STOP_BUDGET,
-            )
-            continue
-        out.update(times)
-    return sorted(out)
-
-
-def _sinusoid_or_polynomial_crossings(cond, scope, t_start, t_end, bodies) -> list[float] | None:
-    """The crossing times of one condition (see :func:`periodic_crossing_times`),
-    or ``None`` when its residual is not of either shape."""
-    import numpy as np
-    import sympy as sp
-
     split = _relational_split(_strip_redundant_parens(cond.strip()))
     if split is None:
-        return None
+        return []
     lhs, rhs = split
     residual = _inline_function_slots(f"({lhs})-({rhs})", bodies)
     flat = _inline_derived_param_refs(residual, scope.derived_exprs) or residual
-    if not _TIME_REF.search(flat):
-        return None
+    n_clock = len(_TIME_REF.findall(flat))
+    if n_clock == 0 or (n_clock == 1 and not _PERIODIC_HINT.search(flat)):
+        return []
     # Every other name is a parameter (a value for this run), or a call to a
     # builtin; anything else (a species, an observable, a model function) moves.
     probe = _TIME_REF.sub(" 0 ", flat)
@@ -2982,14 +2981,39 @@ def _sinusoid_or_polynomial_crossings(cond, scope, t_start, t_end, bodies) -> li
         name = m.group(0)
         if probe[m.end() :].lstrip().startswith("("):
             if name in scope.function_names or name in bodies:
-                return None
+                return []
             continue
         if name in _EVALUATOR_CONSTANTS and name not in scope.param_idx:
             constants.add(name)
             continue
         if name not in scope.param_idx or name in bodies:
-            return None
+            return []
         params.add(name)
+    key = (flat, tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in params)))
+    if key in _PERIODIC_SHAPES:
+        shape = _PERIODIC_SHAPES[key]
+    else:
+        try:
+            shape = _periodic_shape(flat, params, constants, scope)
+        except Exception as e:  # sympy can raise anything on odd input
+            logger.debug("periodic crossing stops: %r declined: %s", cond, e)
+            shape = None
+        if len(_PERIODIC_SHAPES) >= _CROSSING_CACHE_MAX:
+            _PERIODIC_SHAPES.clear()
+        _PERIODIC_SHAPES[key] = shape
+    if shape is None:
+        return []
+    lo, hi = float(t_start), float(t_end)
+    if shape[0] == "poly":
+        return [min(stop, hi) for t_cross, stop in shape[1] if lo < t_cross <= hi]
+    return _trig_stop_times(shape, cond, lo, hi)
+
+
+def _periodic_shape(flat, params, constants, scope) -> tuple | None:
+    """``("poly", ((crossing, stop), ...))`` over every real root of a
+    polynomial residual, or ``("sin" | "cos", a, ω, φ, c)``, or ``None``."""
+    import sympy as sp
+
     text = _TIME_REF.sub(" bngsim_clock_t ", flat)
     for name in params:
         value = scope.values[scope.param_idx[name]]
@@ -3004,54 +3028,162 @@ def _sinusoid_or_polynomial_crossings(cond, scope, t_start, t_end, bodies) -> li
     t = sp.Symbol("bngsim_clock_t")
     if expr.free_symbols != {t}:
         return None
-
-    lo, hi = float(t_start), float(t_end)
     try:
-        poly = sp.Poly(expr, t)
+        sp.Poly(expr, t)
     except sp.PolynomialError:
-        poly = None
-    if poly is not None:
-        if not 1 <= poly.degree() <= _POLY_MAX_DEGREE:
-            return None
-        coeffs = [float(c) for c in poly.all_coeffs()]
-        if not all(np.isfinite(coeffs)):
-            return None
-        roots = np.roots(coeffs)
-        return sorted(
-            float(r.real)
-            for r in roots
-            if abs(r.imag) <= 1e-9 * max(1.0, abs(r)) and lo < r.real <= hi
-        )
-
+        pass
+    else:
+        return _poly_shape(expr, t)
     a, w, ph, c = (sp.Wild(n, exclude=[t]) for n in ("a", "w", "ph", "c"))
-    for fn in (sp.sin, sp.cos):
+    for fn, kind in ((sp.sin, "sin"), (sp.cos, "cos")):
         fit = expr.match(a * fn(w * t + ph) + c)
         if not fit or not all(fit.get(k) is not None and fit[k].is_number for k in (a, w, ph, c)):
             continue
         av, wv, pv, cv = (float(fit[k]) for k in (a, w, ph, c))
-        if av == 0.0 or wv == 0.0 or not all(np.isfinite((av, wv, pv, cv))):
-            continue
-        v = -cv / av
-        if abs(v) > 1.0:
-            return []  # never reaches its threshold: no crossing
-        if fn is sp.sin:
-            bases = (np.arcsin(v), np.pi - np.arcsin(v))
-        else:
-            bases = (np.arccos(v), -np.arccos(v))
-        two_pi = 2.0 * np.pi
-        times: list[float] = []
-        for th in bases:
-            # t = (th + 2πk − φ)/ω for integer k, inside (lo, hi].
-            ends = sorted(((wv * lo + pv - th) / two_pi, (wv * hi + pv - th) / two_pi))
-            k0, k1 = int(np.floor(ends[0])), int(np.ceil(ends[1]))
-            if k1 - k0 > 2 * _PERIODIC_STOP_BUDGET:
-                return list(range(k1 - k0))  # over budget: the caller declines it
-            for k in range(k0, k1 + 1):
-                tk = (th + two_pi * k - pv) / wv
-                if lo < tk <= hi:
-                    times.append(float(tk))
-        return sorted(times)
+        if not all(math.isfinite(x) for x in (av, wv, pv, cv)):
+            return None
+        return (kind, av, wv, pv, cv)
     return None
+
+
+def _poly_shape(expr, t) -> tuple | None:
+    """Every real root of a polynomial residual, and where its stop lands.
+
+    The roots are those of the polynomial with its coefficients taken exactly:
+    expanded in doubles, ``(time - 50)^8 - 1e-3`` loses its 1e-3 to the 3.9e13
+    beside it, and the roots came back at 49.145 and 50.864 for 49.578 and
+    50.422. A root of even multiplicity touches zero without a sign change, and
+    its stop is on it.
+    """
+    import sympy as sp
+
+    exact = expr.xreplace({f: sp.Rational(f) for f in expr.atoms(sp.Float)})
+    poly = sp.Poly(exact, t)
+    if not 1 <= poly.degree() <= _POLY_MAX_DEGREE:
+        return None
+    slope = poly.diff(t)
+    roots = sorted(
+        (float(sp.N(r, 20)), m) for r, m in poly.real_roots(multiple=False, radicals=False)
+    )
+    out = []
+    for i, (tr, m) in enumerate(roots):
+        gap = min(
+            (abs(tr - roots[j][0]) for j in (i - 1, i + 1) if 0 <= j < len(roots)),
+            default=math.inf,
+        )
+        if m % 2 == 0:
+            nudge = 0.0
+        else:
+            d = abs(float(slope.eval(sp.Rational(tr)))) if m == 1 else 0.0
+            nudge = _STOP_NUDGE_SAFETY * _rounding_bound(expr, t, tr) / d if d else math.inf
+        out.append((tr, tr + _cap_nudge(nudge, tr, gap)))
+    return ("poly", tuple(out))
+
+
+def _cap_nudge(nudge: float, t_cross: float, gap: float) -> float:
+    """*nudge*, at most half the core's reach for one instant at *t_cross* and a
+    quarter of the way to the condition's nearest other crossing."""
+    reach = _STOP_NUDGE_MAX_ULPS * _EPS * max(abs(t_cross), 1.0)
+    return min(nudge, reach, gap / 4.0)
+
+
+def _rounding_bound(expr, t, tv: float) -> float:
+    """A bound on the rounding error of *expr* evaluated in doubles at
+    ``t = tv``, by the usual forward analysis: a sum adds its terms' errors and
+    a rounding of each partial sum, a product its factors' relative errors, and
+    ``sin`` and ``cos`` pass their argument's on. ``inf`` past any other node."""
+    import sympy as sp
+
+    def walk(e) -> tuple[float, float]:
+        if e == t:
+            return tv, 0.0
+        if e.is_Number:
+            v = float(e)
+            return v, _EPS * abs(v)
+        if isinstance(e, sp.Add):
+            parts = [walk(a) for a in e.args]
+            err = sum(ei for _, ei in parts) + _EPS * len(parts) * sum(abs(x) for x, _ in parts)
+            return math.fsum(x for x, _ in parts), err
+        if isinstance(e, sp.Mul):
+            parts = [walk(a) for a in e.args]
+            v = math.prod(x for x, _ in parts)
+            err = _EPS * len(parts) * abs(v)
+            for i, (_, ei) in enumerate(parts):
+                err += ei * math.prod(abs(x) for j, (x, _) in enumerate(parts) if j != i)
+            return v, err
+        if isinstance(e, sp.Pow) and e.exp.is_Integer:
+            b, eb = walk(e.base)
+            n = int(e.exp)
+            if b == 0.0 and n < 1:
+                return math.nan, math.inf
+            v = b**n
+            return v, abs(n) * abs(b) ** (n - 1) * eb + 2.0 * _EPS * abs(v)
+        if isinstance(e, (sp.sin, sp.cos)):
+            x, ex = walk(e.args[0])
+            return (math.sin(x) if isinstance(e, sp.sin) else math.cos(x)), ex + _EPS
+        return math.nan, math.inf
+
+    return walk(expr)[1]
+
+
+def _trig_stop_times(shape, cond, lo: float, hi: float) -> list[float]:
+    """The stops of ``a·sin(ω·t + φ) + c`` (or a cosine) in ``(lo, hi]``."""
+    import numpy as np
+
+    kind, a, w, ph, c = shape
+    if a == 0.0 or w == 0.0:
+        return []  # constant: no crossing
+    v = -c / a
+    if abs(v) > 1.0:
+        return []  # never reaches its threshold: no crossing
+    if kind == "sin":
+        bases = sorted({math.asin(v), math.pi - math.asin(v)})
+    else:
+        bases = sorted({math.acos(v), -math.acos(v)})
+    two_pi = 2.0 * math.pi
+    # Counted before any is placed: sin(1e6*time) over a long run has more
+    # crossings than memory.
+    spans = []
+    total = 0
+    for th in bases:
+        ends = sorted(((w * lo + ph - th) / two_pi, (w * hi + ph - th) / two_pi))
+        if not all(math.isfinite(e) for e in ends):
+            return []
+        k0, k1 = math.floor(ends[0]), math.ceil(ends[1])
+        spans.append((th, k0, k1))
+        total += k1 - k0 - 1
+    if total > _PERIODIC_STOP_BUDGET:
+        logger.warning(
+            "The condition %r crosses about %d times in (%g, %g], more than the %d "
+            "stops placed for one condition; the integrator approaches the rest "
+            "unclamped and can step over a narrow window.",
+            cond,
+            total,
+            lo,
+            hi,
+            _PERIODIC_STOP_BUDGET,
+        )
+        return []
+    times = np.concatenate(
+        [(th + two_pi * np.arange(k0, k1 + 1, dtype=float) - ph) / w for th, k0, k1 in spans]
+    )
+    times = np.sort(times[(times > lo) & (times <= hi)])
+    # At a tangent (|v| = 1) the condition touches its threshold without
+    # crossing it, and the stop is on the touch. Otherwise the nudge: the
+    # rounding of the argument (about |ω·t| + |φ|), of the sine and of the sum,
+    # over the slope |a·ω|·√(1 − v²) every crossing shares.
+    s = math.sqrt(max(0.0, 1.0 - v * v))
+    if times.size == 0 or s == 0.0:
+        return [float(x) for x in times]
+    err = _EPS * (abs(a) * (2.0 * (np.abs(w * times) + abs(ph)) + 2.0) + abs(c))
+    nudge = _STOP_NUDGE_SAFETY * err / (abs(a * w) * s)
+    # The nearest other crossing is the closer of the bases' two separations
+    # round the circle.
+    sep = (bases[1] - bases[0]) % two_pi
+    gap = min(sep, two_pi - sep) / abs(w)
+    reach = _STOP_NUDGE_MAX_ULPS * _EPS * np.maximum(np.abs(times), 1.0)
+    stops = times + np.minimum(np.minimum(nudge, reach), gap / 4.0)
+    return [float(x) for x in np.minimum(stops, hi)]
 
 
 def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
