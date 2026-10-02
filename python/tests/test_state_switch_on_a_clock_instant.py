@@ -725,12 +725,10 @@ def test_a_threshold_that_is_itself_a_condition_on_the_clock_is_refused(tmp_path
         _nested(tmp_path, ["t1"])
 
 
-@pytest.mark.parametrize(("param", "want"), [("k", 4.0), ("a", -0.5)])
-def test_a_threshold_that_is_a_condition_runs_for_what_does_not_move_it(tmp_path, param, want):
-    """Control. With k requested, or the first threshold a, nothing moves
-    the crossing at t1."""
-    got = np.asarray(_nested(tmp_path, [param]).sensitivities)[-1]
-    assert got[0, 0] == pytest.approx(want, rel=1e-7)
+def test_a_threshold_that_is_a_condition_runs_where_no_column_moves_a_crossing(tmp_path):
+    """Control. With k requested nothing moves any of the three crossings."""
+    got = np.asarray(_nested(tmp_path, ["k"]).sensitivities)[-1]
+    assert got[0, 0] == pytest.approx(4.0, rel=1e-7)
 
 
 def test_a_threshold_that_is_a_condition_runs_under_a_law_that_is_continuous_there(tmp_path):
@@ -1010,25 +1008,13 @@ def _nested_law(tmp_path, law, params):
     return sim.run(sample_times=NESTED_TIMES, rtol=1e-10, atol=1e-12, timeout=60)
 
 
-def test_the_run_s_own_stop_for_a_crossing_is_not_another_crossing(tmp_path):
-    """Control. ``t >= if(t < t1, a, b)`` is a root on the counter, and a
-    fixed crossing to the resolver that places stops (issue #714), which
-    stops the run a few ulp past where the counter reaches a. That stop is
-    this crossing seen again. With a gate on the same counter half a unit
-    later in the same law, X = k·(0.5·(1.5 − a) + (t1 − 1.5)) + k·(T − b)."""
-    got = np.asarray(_nested_law(tmp_path, "if(t>=sched(),k,0)", ["a"]).sensitivities)[-1]
-    assert got[0, 0] == pytest.approx(-0.5, rel=1e-7)
-    law = "if(t>=sched(),k,0)*if(t>=1.5,1,0.5)"
-    got = np.asarray(_nested_law(tmp_path, law, ["a"]).sensitivities)[-1]
-    assert got[0, 0] == pytest.approx(-0.25, rel=1e-7)
-
-
-def test_another_gate_on_the_counter_beside_the_crossing_is_refused(tmp_path):
-    """Refused here, where main is right. A gate on the same counter 2e-11
-    after the crossing, in the same law: its stop is not on this switch's
-    surface, and the two are within the 1e-10 the crossing is known to."""
+@pytest.mark.parametrize("at", ["1", "1.00000000002"], ids=["on-it", "beside-it"])
+def test_a_fixed_gate_on_the_counter_at_the_crossing_is_refused(tmp_path, at):
+    """A fixed gate in the same law on the value the counter has at the
+    crossing, or 2e-11 past it: one stop for the two. dX/da came back −0.5
+    on the kink −0.25 | −0.5 with the gate on it."""
     with pytest.raises(bngsim.SimulationError, match="#946"):
-        _nested_law(tmp_path, "if(t>=sched(),k,0)*if(t>=1.00000000002,1,0.5)", ["a"])
+        _nested_law(tmp_path, f"if(t>=sched(),k,0)*if(t>={at},1,0.5)", ["a"])
 
 
 def test_a_fitted_gate_on_the_crossing_s_own_threshold_is_refused(tmp_path):
@@ -1046,13 +1032,13 @@ EXP_GATE = "exp(t)>=20.085536923187668"
 PROBE_STEP = 256 * 2.220446049250313e-16 * 3
 
 
-def _two_roots(tmp_path, gate, law, level):
+def _two_roots(tmp_path, gate, law, level, params=("thr",)):
     path = tmp_path / "m.net"
     text = NET.replace("if(t>=thr,k,0)", gate).replace("if(Sobs>={level},k,0)", law)
     assert text != NET
     path.write_text(text.format(level=level))
     sim = bngsim.Simulator(
-        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["thr"]
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=list(params)
     )
     return np.asarray(
         sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12, timeout=60).sensitivities
@@ -1076,23 +1062,229 @@ def test_two_switches_well_apart_in_one_law_run(tmp_path):
     assert got[2, 0] == pytest.approx(-0.5, rel=1e-6)
 
 
-@pytest.mark.parametrize(
-    ("gate", "law"),
-    [
-        (f"if({EXP_GATE},k,0)", "if(Sobs>={level},k,0)"),
-        ("0", f"if(Sobs>={{level}},k,0)*if({EXP_GATE},1,0.5)"),
-        ("0", f"if(Sobs>={{level}},0,k)*if({EXP_GATE},1,0.5)"),
-    ],
-    ids=["another-law", "the-same-law", "a-law-the-switch-closes"],
+def test_two_switches_on_one_instant_run_where_no_column_moves_them(tmp_path):
+    """Control. The same pair with k requested: the window is empty whatever
+    k is."""
+    law = f"if(Sobs>={{level}},k,0)*if({EXP_GATE},0,1)"
+    got = _two_roots(tmp_path, "0", law, "0.5*thr", params=("k",))
+    np.testing.assert_allclose(got[:, 0], [0.0, 0.0, 0.0, 0.0], atol=1e-9)
+
+
+def test_a_bend_that_reads_the_time_runs_beside_a_ramp_that_starts_on_its_instant():
+    """Control. ``k·(S + time − thr)`` from where S + t reaches thr, at
+    t = 3, and a ramp in another law that starts at the fixed 3. With the
+    clock put on its other side the bend's surface is 4 probe steps off,
+    and the species are put far enough to cross it there: nothing jumps.
+    Y = 0.75·k·(T − thr/1.5)² and dY/dthr = −k·(T − 3)."""
+    text = READS_THE_TIME + (
+        "Jx: -> X; piecewise(k*(time - 3), time >= 3, 0)\n"
+        "Jy: -> Y; piecewise(k*(S + time - thr), S + time >= thr, 0)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["thr"])[:, 0], [0.0, 0.0, -1.0], atol=1e-8)
+
+
+def test_a_crossing_the_time_alone_carries_is_refused_where_a_gate_closes_its_window():
+    """S stands at 1.5 and ``S + time >= thr`` crosses where the time says.
+    There is no flow to put S across its surface by with the gate on its
+    other side, and what cannot be asked is refused: 0 on the kink −0.5 | 0.
+    Alone the switch runs, dY/dthr = −k."""
+    head = "species S, Y; S = 1.5; Y = 0; k = 0.5; thr = 4.5\nJs: -> S; 0\n"
+    alone = head + "Jy: -> Y; piecewise(k, S + time >= thr, 0)\n"
+    assert _columns(alone, ["thr"])[1, 0] == pytest.approx(-0.5, rel=1e-7)
+    closed = head + "Jy: -> Y; piecewise(k, S + time >= thr, 0)*piecewise(0, time >= 3, 1)\n"
+    _refused(closed, ["thr"], 946)
+
+
+def test_a_fixed_gate_between_the_probes_of_a_switch_that_reads_the_time_is_refused():
+    """At rtol 1e-14 the crossing's time is known to 3e-14, and a fixed gate
+    in another law 1e-13 before it is between the probes all the same: a
+    stop is asked about two probe steps either way, whatever the
+    tolerances. dX/dthr came back −1/3 for 0."""
+    text = READS_THE_TIME + (
+        "Jx: -> X; piecewise(k, time >= 3, 0)\n"
+        "Jy: -> Y; piecewise(k, S + time >= thr + 1.5e-13, 0)\n"
+    )
+    _refused(text, ["thr"], 946, rtol=1e-14, atol=1e-16)
+
+
+READS_V_AND_THE_TIME = (
+    "species X, W, V; X = 0; W = 0; V = 0; a = 2; q = 0.7; kv = 2\n"
+    "J0: -> X; a\nJv: -> V; kv\nJ2: -> W; piecewise(q*X, V + time >= 9, 0)\n"
+    "E1: at (V > {at}): X = 0.5*X\n"
 )
-@pytest.mark.parametrize("steps", [-1.5, 1.5], ids=["the-switch-first", "the-gate-first"])
-def test_a_jump_between_one_and_two_probe_steps_of_the_crossing_is_refused(
-    tmp_path, gate, law, steps
+
+
+@pytest.mark.parametrize("off", [-4e-10, 4e-10], ids=["the-event-first", "the-switch-first"])
+def test_a_switch_that_reads_the_time_is_on_no_trajectory_with_a_trigger_on_its_species(off):
+    """The trigger reads V and the switch reads V and the time: one species
+    between them, and two crossings that kv moves differently. dW/dkv is
+    6.825 with the event first and 5.775 with the switch first."""
+    _refused(READS_V_AND_THE_TIME.format(at=repr(6.0 + off)), ["kv"], 945, EVENT_TIMES)
+
+
+def test_a_switch_that_reads_the_time_runs_apart_from_a_trigger_on_its_species():
+    """Control. The event at V = 7, t = 3.5, half a unit after the switch."""
+    got = _columns(READS_V_AND_THE_TIME.format(at="7"), ["kv"], EVENT_TIMES)
+    np.testing.assert_allclose(got[:, 0], [1.75, 4.8125, 7.5], rtol=1e-7)
+
+
+FILLED_AFTER = (
+    "species X, W, V; X = 0; W = 0; V = 0; q = 0.7; tau = {tau}\n"
+    "Jv: -> V; 2\nJ2: -> W; piecewise(q*X, V + time >= 9, 0)\nE1: at (time >= tau): X = 5\n"
+)
+
+
+def test_an_event_that_fills_what_a_switch_that_reads_the_time_reads_is_refused():
+    """Refused here, where main is right. The crossing is continuous as it is
+    found, q·X at an X of 0, and the event 1e-10 later fills X: dW/dtau is
+    −3.5 | 0. The surface has moved with the time by then, and the crossing
+    cannot be read again where it was."""
+    _refused(FILLED_AFTER.format(tau="3.0000000001"), ["tau"], 945, EVENT_TIMES)
+    got = _columns(FILLED_AFTER.format(tau="3.5"), ["tau"], EVENT_TIMES)
+    np.testing.assert_allclose(got[:, 0], [0.0, -3.5, 0.0], atol=1e-8)
+
+
+@pytest.mark.parametrize("param", ["a", "b"])
+def test_a_threshold_that_is_a_condition_is_refused_for_a_column_that_moves_a_crossing(
+    tmp_path, param
 ):
-    """Refused here, where main is right. The switch's jump is extrapolated
-    from a pair of probes two steps out, and a jump that is not its own
-    between one step and two is in that pair. What else jumps between the
-    probes was asked out to one step."""
-    level = f"0.5*thr+{0.5 * steps * PROBE_STEP!r}"
+    """Refused here, where main is right (to 7e-7 with b). The condition is
+    on a counter alone, so each crossing of it is a root here and, to the
+    resolver that places stops (issue #714), a fixed crossing the run stops
+    a few ulp past. With a requested the crossing at t = a is within reach
+    of that stop, and whether the stop is this crossing seen again or
+    another gate on the same value of the counter cannot be told by moving
+    the counter, which flips both. With b requested the residual moves with
+    the column where it jumps across 0, at t1."""
     with pytest.raises(bngsim.SimulationError, match="#946"):
-        _two_roots(tmp_path, gate, law, level)
+        _nested(tmp_path, [param])
+
+
+# ── From the third review ───────────────────────────────────────────────────
+
+ON_ITS_THRESHOLD = (
+    "species X, Y, Z; X = {x0}; Y = 0; Z = 0; r = {r}; k = 0.5; tau = 3; X0 = {x0}\n"
+    "{made}Jy: -> Y; piecewise(k, X > X0, 0)\n{event}"
+)
+GATE_STARTS = "Jx: -> X; piecewise(r, time >= tau, 0)\n"
+LEAVES_ITS_SURFACE = {
+    # The gate starts Z, and X is made at Z: X leaves X0 at second order.
+    "through-another-species": dict(
+        x0=2, r=1.5, made="Jz: -> Z; piecewise(r, time >= tau, 0)\nJx: -> X; Z\n", event=""
+    ),
+    "on-a-ramp": dict(
+        x0=2, r=1.5, made="Jx: -> X; piecewise(r*(time - tau), time >= tau, 0)\n", event=""
+    ),
+    "after-a-fast-follower": dict(
+        x0=2,
+        r=1.5,
+        made="Jz: -> Z; piecewise(r, time >= tau, 0)\nJx: -> X; 1e6*(Z - X + 2)\n",
+        event="",
+    ),
+    "through-another-species-at-an-event": dict(
+        x0=2, r=0, made="Jz: -> Z; r\nJx: -> X; Z\n", event="E1: at (time >= tau): r = 1.5\n"
+    ),
+    # A step of the species along its flow that is under an ulp of 1e5.
+    "from-a-large-value": dict(x0="1e5", r=1.5, made=GATE_STARTS, event=""),
+    "from-a-large-value-at-an-event": dict(
+        x0="1e5", r=0, made="Jx: -> X; r\n", event="E1: at (time >= tau): r = 1.5\n"
+    ),
+    # A jump of 0.5 beside the 1e6 the switch's own species is made at.
+    "at-a-great-rate": dict(x0=2, r="1e6", made=GATE_STARTS, event=""),
+}
+
+
+@pytest.mark.parametrize("case", sorted(LEAVES_ITS_SURFACE))
+def test_a_state_that_leaves_its_surface_at_a_moved_instant_is_refused(case):
+    """X sits on X0 until the gate or the event at the fitted tau, and the
+    law is k from where X > X0: dY/dtau = −0.5, and 0 came back. The way it
+    leaves is read from the flow a moment on where the flow there is 0, the
+    step is taken past the rounding of X itself, and the jump is read
+    against Y's own rate."""
+    spec = LEAVES_ITS_SURFACE[case]
+    _refused(ON_ITS_THRESHOLD.format(**spec), ["tau"], 945 if spec["event"] else 946)
+
+
+TOUCHES = (
+    "species X, Y; X = 0; Y = 0; k = 0.5; tau = 3; X0 = 1.5\n"
+    "Jx: -> X; piecewise({after}, time >= tau, 0.5)\nJy: -> Y; piecewise(k, X {cmp} X0, 0)\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("after", "cmp"), [("-0.5", ">"), ("0", ">=")], ids=["and-turns-back", "and-stops"]
+)
+def test_a_state_that_comes_to_its_surface_as_a_fitted_gate_turns_it_is_refused(after, cmp):
+    """X rises to X0 at t = 3, where the fitted gate turns it back or stops
+    it. With the gate later X is over X0 for a while: dY/dtau is 0 | 1 where
+    it turns back, and Y itself jumps where it stops. No root is reported
+    for a residual that comes to 0 and does not go through, and 0 came
+    back."""
+    _refused(TOUCHES.format(after=after, cmp=cmp), ["tau"], 946)
+
+
+FAST_SPECIES = (
+    "species S, X, Y; S = 0; X = 0; Y = 0; k = 0.5; thr = 3; tau = 3; v = 1e6\nJs: -> S; v\n"
+    "Jy: -> Y; piecewise(k, S >= v*thr, 0)*piecewise(0, time >= {gate}, 1)\n"
+)
+
+
+@pytest.mark.parametrize(("gate", "param"), [("tau", "tau"), ("3", "thr")])
+def test_a_jump_hidden_beside_a_species_made_fast_is_refused(gate, param):
+    """The switch's own species is made at 1e6 and the hidden jump is 0.5:
+    read against a millionth of the rate that drives the crossing it was no
+    jump. 0 came back on the kinks 0 | 0.5 and −0.5 | 0."""
+    _refused(FAST_SPECIES.format(gate=gate), [param], 946)
+
+
+ON_ONE_SPECIES = (
+    "species S, Y; S = 0; Y = 0; k = 0.5; thr = 3; zt = 1.5\nJs: -> S; 0.5\n"
+    "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)*piecewise(0, S >= zt, 1)\n"
+)
+
+
+@pytest.mark.parametrize("param", ["thr", "zt"])
+def test_two_switches_on_one_species_that_a_column_moves_apart_are_refused(param):
+    """The window opens where S reaches 0.5·thr and closes where it reaches
+    zt, on one instant: 0 came back on the kinks −0.5 | 0 and 0 | 1. Two
+    conditions on one species cannot be asked apart by moving the species,
+    so two that a column moves apart are refused."""
+    _refused(ON_ONE_SPECIES, [param], 946)
+
+
+def test_two_switches_on_one_species_run_where_no_column_moves_either():
+    """Control. With k requested the window is empty whatever k is."""
+    np.testing.assert_allclose(_columns(ON_ONE_SPECIES, ["k"])[:, 0], [0.0, 0.0], atol=1e-9)
+
+
+RESET = (
+    "species V, Y; V = 0.5; Y = 0; kv = 1; k = 0.5\nJv: -> V; kv\n"
+    "Jy: -> Y; piecewise(k, V > 0, 0)\nE1: at (V > 1): V = 0\n"
+)
+RESET_TIMES = [0.0, 1.2, 2.6, 3.7, 4.9]
+
+
+def test_an_event_that_resets_a_species_onto_its_guard_runs_for_a_column_that_moves_nothing():
+    """Control. V is reset to 0 under ``piecewise(k, V > 0, 0)`` and leaves 0
+    at once. With k requested no fire moves: dY/dk = T."""
+    got = _columns(RESET, ["k"], RESET_TIMES)
+    assert got[1, 0] == pytest.approx(4.9, rel=1e-6)
+
+
+def test_an_event_that_resets_a_species_onto_its_guard_is_refused_for_a_column_that_moves_it():
+    """With kv requested each fire moves, and the guard flips where V leaves
+    the 0 the event put it on: dY/dkv = 0, and −6.25 came back."""
+    _refused(RESET, ["kv"], 945, RESET_TIMES)
+
+
+def test_a_switch_beside_a_term_that_rounds_as_a_staircase_runs():
+    """Control. No gate and no event: a switch on S, and a law that
+    differences two pools of 1e8. A probe step moves P by an ulp, the
+    difference moves in steps that do not halve, and an earlier cut read
+    that as another jump between the probes and refused the run."""
+    text = (
+        "species S, Y, P, Q, U; S = 0; Y = 0; P = 1e8; Q = 1e8; U = 0; k = 0.5; thr = 3\n"
+        "Js: -> S; 0.5\nJp: -> P; 6.1e4\nJu: -> U; 100*(P - Q)\n"
+        "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)\n"
+    )
+    assert _columns(text, ["thr"])[1, 0] == pytest.approx(-0.5, rel=1e-7)
