@@ -10079,11 +10079,13 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             }
             sync(x, t_evt);
         }
-        // A crossing the species comes to with next to no flow, a species
-        // that decays onto its own guard `B > 0`, has a time the tolerances
-        // leave open without bound. It is asked about within a hundred times
-        // their relative size, which is as far as a crossing with any flow
-        // to speak of is ever left open.
+        // The reach: how well the crossing's time is known. Two probe steps,
+        // and what the run's tolerances allow the residual over the rate the
+        // state comes to the surface at. A crossing the species comes to with
+        // next to no flow has a time the tolerances leave open that far, and
+        // it is asked about that far. With no flow at all, a state started
+        // off the surface it sat on, there is nothing to divide by, and it
+        // is a hundred times the relative tolerance of the time.
         double reach = 2.0 * step;
         bool residual_jumps = false;
         double approach = 0.0; // the residual's flow as the state comes to the surface
@@ -10108,11 +10110,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     allowed += std::fabs(gx[uj]) * (run_rtol * std::fabs(x[uj]) + atol_j);
                 }
             }
-            const double most = 100.0 * run_rtol * std::max(std::fabs(t_evt), 1.0);
             if (std::isfinite(flow) && flow != 0.0 && std::isfinite(allowed)) {
-                reach += std::min(allowed / std::fabs(flow), most);
+                reach += allowed / std::fabs(flow);
             } else {
-                reach += most;
+                reach += 100.0 * run_rtol * std::max(std::fabs(t_evt), 1.0);
             }
             // A residual that is far from 0 on both sides of the probes has
             // not come through 0: it jumped across it, with a condition on a

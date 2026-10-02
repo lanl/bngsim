@@ -385,6 +385,10 @@ GATES_WITH_NO_STOP = {
     "a-square-in-the-same-law": (
         HEAD + "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)*piecewise(1, time^2 >= 9, 0.5)\n"
     ),
+    # 0.5 on the kink 0.25 | 0.5. The gate shows only with S held before its crossing.
+    "a-square-in-a-law-the-switch-closes": (
+        HEAD + "Jy: -> Y; piecewise(0, S >= 0.5*thr, k)*piecewise(1, time^2 >= 9, 0.5)\n"
+    ),
 }
 
 
@@ -436,6 +440,28 @@ def test_a_gate_that_opens_inside_the_reach_is_refused():
         "Jy: -> Y; piecewise(k, S >= sth, 0)*piecewise(1, time >= 3, 0)\n"
     )
     _refused(text, ["sth"], 946, rtol=1e-6, atol=1e-9)
+
+
+def test_a_gate_that_closes_inside_the_reach_is_refused():
+    """The same pair with a gate that closes the law at 3, 1.86e-5 before S
+    reaches its threshold: the window never opens and dY/dsth is 0. The run
+    found the crossing before the gate, and dY/dsth came back −0.0249."""
+    text = (
+        f"species S, Y; S = 1; Y = 0; k = 0.5; sth = {math.exp(3 + 1.86e-5)!r}\nJs: -> S; S\n"
+        "Jy: -> Y; piecewise(k, S >= sth, 0)*piecewise(0, time >= 3, 1)\n"
+    )
+    _refused(text, ["sth"], 946, rtol=1e-6, atol=1e-9)
+
+
+def test_a_crossing_found_after_the_gate_that_closed_its_law_is_refused():
+    """Refused here, where main is right. S is linear and crosses 1e-7 after
+    the gate closes the law, inside the 3e-6 the crossing is known to at rtol
+    1e-6. The law is 0 on both sides of the crossing as the run finds it, and
+    the jump shows only with the time put before the gate. dY/dthr is
+    −0.5 | 0 between the two orders. At rtol 1e-10 the pair runs."""
+    text = HEAD + "Jy: -> Y; piecewise(k, S >= 0.5*thr + 5e-8, 0)*piecewise(0, time >= 3, 1)\n"
+    _refused(text, ["thr"], 946, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(_columns(text, ["thr"])[:, 0], [0.0, 0.0, 0.0], atol=1e-9)
 
 
 COUNTER = "species S, X, Y, Tc; S = 0; X = 0; Y = 0; Tc = 0; k = 0.5; t2 = 3\nJs: -> S; 0.5\n"
@@ -538,6 +564,46 @@ def test_a_switch_that_speeds_its_own_species_is_within_the_reach_it_arrived_wit
     _refused(text, ["thr"], 946, rtol=1e-6, atol=1e-9)
 
 
+def test_a_slow_crossing_is_within_reach_as_far_as_the_tolerances_leave_its_time_open():
+    """Refused here, where main is right. S comes to its threshold of 10 at
+    0.001, and at rtol 1e-6 it is known there to 1e-5: its crossing time, 3,
+    to 0.01. A gate in the same law 0.001 later is inside that, and dY/dthr
+    is −250 with the switch first and −500 with the gate first. (S is linear,
+    so the order the run found was the true one.) At rtol 1e-10 the crossing
+    is known to 1e-6 and the pair runs."""
+    text = (
+        "species S, Y; S = 9.997; Y = 0; k = 0.5; thr = 10\nJs: -> S; 0.001\n"
+        "Jy: -> Y; piecewise(k, S >= thr, 0)*piecewise(1, time >= 3.001, 0.5)\n"
+    )
+    _refused(text, ["thr"], 946, rtol=1e-6, atol=1e-8)
+    assert _columns(text, ["thr"])[1, 0] == pytest.approx(-250.0, rel=1e-6)
+
+
+SPEEDS = (
+    "species S, Y, Tc; S = 0; Y = 0; Tc = 0; k = 0.5; tg = 3.0000001; one = 1\n"
+    "Js: -> S; piecewise(50, S >= 0.015, 0.005)\nJc: -> Tc; one\n"
+    "Jy: -> Y; piecewise(k, S >= 0.015, 0)*piecewise(1, {gate}, 0.5)\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("gate", "param", "want"),
+    [("time >= tg", "tg", -0.25), ("Tc >= 3.0000001", "one", 0.75)],
+    ids=["a-fitted-gate", "a-counter-s-gate"],
+)
+def test_a_moved_gate_within_the_reach_a_fixed_switch_arrived_with_is_refused(gate, param, want):
+    """Refused here, where main is right. The switch is fixed, at t = 3, and
+    the gate in the same law is 1e-7 after it and moved by the one column
+    requested: its fitted time, or the rate of the counter it is on. At the
+    gate S is 5e-6 past its threshold, far outside what the tolerances allow
+    it, so nothing is asked from the clock's side; the crossing's time is
+    known to the 3e-6 it arrived with. dY/dtg is 0 | −0.25. At rtol 1e-10
+    the pair runs."""
+    _refused(SPEEDS.format(gate=gate), [param], 946, rtol=1e-6, atol=1e-9)
+    got = _columns(SPEEDS.format(gate=gate), [param])
+    assert got[1, 0] == pytest.approx(want, rel=1e-6)
+
+
 def test_a_fitted_gate_on_a_fixed_switch_in_another_law_is_refused():
     """Refused here, where main is right. The gate moves and the switch does
     not, on one instant, in different rate laws: they commute, and each has
@@ -596,6 +662,24 @@ def test_a_jump_that_a_fitted_gate_starts_runs_for_what_does_not_move_the_gate()
     np.testing.assert_allclose(got[:, 0], [2.0 * 1.0, 0.0], atol=1e-9)
 
 
+COUNTER_STARTED = (
+    "species X, Y, Tc; X = 2; Y = 0; Tc = 0; r = 1.5; k = 0.5; X0 = 2; one = 1\n"
+    "Jc: -> Tc; one\nJx: -> X; piecewise(r, Tc >= 3, 0)\nJy: -> Y; piecewise(k, X > X0, 0)\n"
+)
+
+
+def test_a_jump_that_a_counter_s_gate_starts_is_refused():
+    """The gate is on a counter whose rate is requested, at t = 3/one:
+    Y = k·(T − 3/one) and dY/d(one) = 1.5. It came back 0."""
+    _refused(COUNTER_STARTED, ["one"], 946)
+
+
+def test_a_jump_that_a_counter_s_gate_starts_runs_where_nothing_moves_the_counter():
+    """Control. With k and r requested the gate is at 3 whatever they are."""
+    got = _columns(COUNTER_STARTED, ["k", "r"])
+    np.testing.assert_allclose(got, [[0.0, 2.0], [2.0, 0.0], [0.0, 0.0]], atol=1e-9)
+
+
 NESTED = """begin parameters
     1 k 0.5
     2 a 1
@@ -622,9 +706,10 @@ end groups
 NESTED_TIMES = [0.0, 2.0, 5.0, 8.0, 12.0]
 
 
-def _nested(tmp_path, params):
+def _nested(tmp_path, params, law="k"):
     path = tmp_path / "nested.net"
-    path.write_text(NESTED)
+    assert "if(t>=sched(),k,0)" in NESTED
+    path.write_text(NESTED.replace("if(t>=sched(),k,0)", f"if(t>=sched(),{law},0)"))
     sim = bngsim.Simulator(
         bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=params
     )
@@ -647,6 +732,15 @@ def test_a_threshold_that_is_a_condition_runs_for_what_does_not_move_it(tmp_path
     the crossing at t1."""
     got = np.asarray(_nested(tmp_path, [param]).sensitivities)[-1]
     assert got[0, 0] == pytest.approx(want, rel=1e-7)
+
+
+def test_a_threshold_that_is_a_condition_runs_under_a_law_that_is_continuous_there(tmp_path):
+    """Control. The same threshold under ``k·(t1 − t)²``, which is 0 where
+    the threshold jumps: the residual jumps across 0 and the law does not,
+    so there is no jump to make twice.
+    dX/dt1 = k·((t1 − a)² + (b − t1)² − (T − t1)²) = −14."""
+    got = np.asarray(_nested(tmp_path, ["t1"], law="k*(t1-t)^2").sensitivities)[-1]
+    assert got[0, 0] == pytest.approx(-14.0, rel=1e-7)
 
 
 def test_a_column_that_moves_the_crossing_by_less_than_the_reach_does_not_move_it():
