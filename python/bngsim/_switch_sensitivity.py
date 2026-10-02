@@ -4026,10 +4026,9 @@ def _continuous_across(
     and one that changes sign across a pole is.
 
     At a flip each of the two laws is read on its own side: a hundredth of a
-    hair from the flip, a tenth, and a whole hair, and carried to the flip
-    from the nearest two. The two have to meet there, to what their own
-    arithmetic rounds by (:func:`_float_rounding`) and what each does over
-    the tenth, and each has to leave the surface no faster than a power of
+    hair from the flip, a tenth, and a whole hair. The two have to meet, to
+    what their own arithmetic rounds by (:func:`_float_rounding`) and what
+    each does over the tenth, and each has to leave the surface no faster than a power of
     0.6: a square root turns on with a slope that has no bound. A law with no
     value on its side, or with a pole there, makes no demand: the engine's
     right-hand side is not finite there, and a run that ends has not crossed.
@@ -4076,7 +4075,8 @@ def _choice_jump(flat: str, parsed: dict, held: AbstractSet[str]) -> str | None:
     and is asked about as one (:func:`_bends`): ``kb·abs(X − thr)`` bends
     where X is thr, and ``kb·(X − thr)/abs(X − thr)`` jumps. One that reads
     nothing but what is held, a parameter or a clock no column moves, flips at
-    an instant and is not asked about.
+    an instant, and nothing is found for it. A step call inside one is found
+    as a step call (:func:`_iter_step_calls`).
 
     A condition is refused unless it is found a bend; a choice is refused
     where it is found a jump. ``abs`` of what has one sign and ``max`` of a
@@ -4095,39 +4095,9 @@ def _choice_jump(flat: str, parsed: dict, held: AbstractSet[str]) -> str | None:
         if written is None or not isinstance(node, ast.expr) or ast.dump(node) in seen:
             continue
         seen.add(ast.dump(node))
-        called = {
-            sub.func.id
-            for sub in ast.walk(node)
-            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-        }
-        names = {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)} - called
-        if not names - held - set(_BUILTIN_CONSTANT_VALUES):
-            continue
-        if called & _STEP_NAMES or _bends(law_tree, node, held) is False:
+        if _bends(law_tree, node, held) is False:
             return written
     return None
-
-
-# The calls :data:`_STEP_CALL` names, as names.
-_STEP_NAMES = frozenset(
-    {
-        "floor",
-        "ceil",
-        "round",
-        "roundn",
-        "rint",
-        "nint",
-        "trunc",
-        "frac",
-        "sign",
-        "sgn",
-        "mod",
-        "fmod",
-        "rem",
-        "iclamp",
-        "inrange",
-    }
-)
 
 
 def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> bool | None:
@@ -4195,10 +4165,11 @@ def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> 
         return found
 
     def leaves(tree: ast.Expression, point: list[float], i: int, steps: Sequence[float]):
-        """A law carried to the flip from a hundredth of a hair, a tenth and
-        a whole hair out on one side, with what that rounds by; ``None``
-        where it has no value there or a pole, and ``False`` where it leaves
-        the surface faster than a power of 0.6.
+        """A law a hundredth of a hair from the flip on one side, with what
+        that is good to as its value on the flip; ``None`` where it has no
+        value there or a pole, and ``False`` where it leaves the surface
+        faster than a power of 0.6. Read a tenth of a hair and a whole hair
+        out as well, for those two.
 
         Not read on the flip itself. A hair is 1e-6 of the symbol and the
         flip is closed in on to an ulp: there, ``(X − thr)/abs(X − thr)`` is
@@ -4222,9 +4193,9 @@ def _bends(law_tree: ast.Expression, atom: ast.expr, held: AbstractSet[str]) -> 
             return None
         if abs(tenth - near) > 0.2 * abs(whole - near) + rounding:
             return False
-        # On the flip, along the line through the two nearest readings; out
-        # by what the law does between them at most.
-        return near - (tenth - near) / 9.0, rounding + abs(tenth - near)
+        # Out, as the value on the flip, by what the law does from here to a
+        # tenth of a hair at most.
+        return near, rounding + abs(tenth - near)
 
     rng = random.Random(938)
     reached = 0

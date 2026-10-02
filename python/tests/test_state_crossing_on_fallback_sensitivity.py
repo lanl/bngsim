@@ -385,6 +385,9 @@ def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path,
         ("if(A<thr,kb*(abs(Y-3)-(3-Y)),0)", "A<thr", False),
         # A condition with the atom and its denial: never true.
         ("if((A<thr)&&not(A<thr),kb,0)", "A<thr", True),
+        # A ramp made as the difference of two numbers of 1e10: it moves in
+        # steps of 2e-6, their ulp, which is more than it does over a hair.
+        ("if(A<thr,(1e10+kb*(thr-A))-1e10,0)", "A<thr", True),
         # Two conditionals on one atom, one a bend and one a jump.
         ("if(Aobs<thr,kb*(thr-Aobs),0)+if(Aobs<thr,kb,0)", "Aobs<thr", False),
         # A pole of the condition and of the law: passed over, and the bend
@@ -468,6 +471,20 @@ def test_a_law_that_underflows_to_zero_does_not_jump():
     # The condition flips there in the engine's arithmetic too, and a law
     # that is 5 more on one side of it steps by 5: what the exponential
     # rounds by near the largest double is not what the law rounds by.
+    assert not _continuous_across(f"if(({v})>0,{v}+5,0)", f"({v})>0", held=held)
+
+
+def test_a_law_that_steps_by_what_it_rounds_by_does_not_jump():
+    """``1 − 1/(1 + exp(−x))`` is one ulp of 1 and then exactly 0 as x grows,
+    whatever multiplies it afterwards, and the signed rate that carries it
+    steps from 1e-16 of its other factors to 0 there, flat either side. That
+    is what the law's own arithmetic rounds by, which is carried through it
+    (:func:`_float_rounding`): 16 ulp of the value itself is far less."""
+    from bngsim._switch_sensitivity import _continuous_across
+
+    v = "a*(1-1/(1+exp(-(Q-off)/tmp)))*(S+Q)"
+    held = frozenset({"tmp", "a"})
+    assert _continuous_across(f"if(({v})>0,{v},0)", f"({v})>0", held=held)
     assert not _continuous_across(f"if(({v})>0,{v}+5,0)", f"({v})>0", held=held)
 
 
@@ -564,8 +581,16 @@ def test_a_choice_that_bends_runs_on_the_difference_quotient(tmp_path, law, want
         ("kb*max(0,min(X,n))", None),
         # A choice on the time alone flips at an instant.
         ("kb*X*(T-3)/abs(T-3)", None),
-        # A step call inside a choice.
+        # A step inside a choice, where the choice flips with it.
         ("kb*abs(floor(X)-thr)", "abs(floor(X) - thr)"),
+        # A magnitude of what has one sign flips nowhere, and the greater of
+        # a rate that is not read and a floor is not asked about: a choice is
+        # refused where it is found a jump.
+        ("kb*abs(1/(1+X*X))", None),
+        ("kb*max(rateOf(X),0.1)", None),
+        # A cusp: the root of a magnitude leaves its zero with no bound on
+        # its slope.
+        ("kb*sqrt(abs(X-thr))", "abs(X - thr)"),
     ],
 )
 def test_which_choice_a_rate_law_jumps_across(law, bends):
