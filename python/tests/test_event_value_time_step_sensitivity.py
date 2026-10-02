@@ -649,8 +649,9 @@ EVEN = {
 def test_a_value_that_is_even_about_the_point_and_steep(case):
     """Control. Each is even about the point and leaves it as a third power or
     a fourth, so its derivative there is 0, and the central difference of an
-    even value is 0 whatever its size: these move by 1e-12 to 1e5 across the
-    step. K is 1e-6, a thousand steps from X at 0."""
+    even value is 0 whatever its size: these move by 1e-12 to 3e-8 across the
+    step, which is a slope of 1e-3 to 9e-3. K is 1e-6, a thousand steps from X
+    at 0."""
     value, at = EVEN[case]
     text = (
         f"species B, X; B = 0; x0 = {at}; X = x0; K = 1e-6\nJ0: -> B; 0*x0\n"
@@ -659,9 +660,29 @@ def test_a_value_that_is_even_about_the_point_and_steep(case):
     assert _sens(text, ["x0"], 5.0)[0] == pytest.approx(0.0, abs=1e-12)
 
 
-def test_a_bend_too_small_to_be_a_slope():
-    """Control. ``1e-13·max(time − 2.3, 0)`` read at 2.3 bends there, between
-    slopes of 0 and 1e-13. The difference gives 5e-14, which is neither and is
-    within 1e-13 of both."""
-    text = "species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = 1e-13*max(time - 2.3, 0)\n"
-    assert _sens(text, ["T0"], 5.0)[0] == pytest.approx(0.0, abs=2e-13)
+SMALL = {
+    # A bend between slopes of 0 and 1e-13: the difference gave 5e-14.
+    "a-bend": ("1e-13*max(time - 2.3, 0)", "the time"),
+    # The step of the issue, 1e-18 high, in a model whose values are that
+    # small: 6.7e-13, which is 670,000 times the value's whole range per unit
+    # of T0.
+    "a-step": ("piecewise(0, time >= T0 + 1, 1e-18)", "the parameter 'T0'"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(SMALL))
+def test_a_step_or_a_bend_at_the_fire_instant_however_small(case):
+    """A value that is 0 at the point has no size to measure what it moves by
+    against, so a step or a bend there is told by its shape: it is not a power
+    of the distance."""
+    value, where = SMALL[case]
+    text = f"species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = {value}\n"
+    _refused(text, ["T0"], 5.0, where)
+
+
+def test_a_flat_value_read_one_rounding_error_from_its_flat_point():
+    """Control. ``(time − 0.3)³`` fired at T0 + 0.1 with T0 at 0.2: 0.2 + 0.1 is
+    not 0.3 in doubles, and the value at the instant is 1.7e-49, not 0. A value
+    smaller than what it moves by across the step is measured as one of 0 is."""
+    text = "species B; B = 0; T0 = 0.2\nE1: at (time >= T0 + 0.1): B = (time - 0.3)^3\n"
+    assert _sens(text, ["T0"], 2.0)[0] == pytest.approx(0.0, abs=1e-12)

@@ -6266,36 +6266,50 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         const double down = lo - here;
         const double half_up = half_hi - here;
         const double half_down = half_lo - here;
-        // One that is even about the point and leaves it as a power of order
-        // 1.75 or more: `X⁴/(K⁴ + X⁴)` at 0, `((X − 3)/1e-3)⁴` at 3. An even
-        // value has derivative 0 at the point where it has one, the central
-        // difference of an even value is 0, and the power is what says it has
-        // one: `abs(X − 3)` is even too, and halves over half the step.
+        // A side leaves the point as a power of order 1.75 or more where what
+        // it has moved by at half the step is 0.3 or less of the whole. A side
+        // that has not moved at the whole step must not have moved at half.
         auto as_a_power = [](double whole_side, double half_side) {
+            if (whole_side == 0.0) {
+                return half_side == 0.0;
+            }
             const double ratio = half_side / whole_side;
             return ratio > 1.0 / 4096.0 && ratio <= 0.3;
         };
+        // One that is even about the point and leaves it as such a power:
+        // `X⁴/(K⁴ + X⁴)` at 0, `((X − 3)/1e-3)⁴` at 3. An even value has
+        // derivative 0 at the point where it has one, and the central
+        // difference of an even value is 0 whatever its size. `abs(X − 3)` is
+        // even too, has none, and halves over half the step. (A kink under an
+        // even term steep enough to hide it, `abs(X − 3) + 1e13·abs(X − 3)³`,
+        // passes: its two slopes are under 1% of the slope a step away.)
         const double even = std::max(rounding, std::numeric_limits<double>::min());
-        if (std::fabs(up - down) <= even && std::fabs(half_up - half_down) <= even &&
-            as_a_power(up, half_up) && as_a_power(down, half_down)) {
+        if (up != 0.0 && std::fabs(up - down) <= even && std::fabs(half_up - half_down) <= even &&
+            as_a_power(up, half_up)) {
             return true;
         }
-        // And one that does not move to speak of, anywhere it is read across
-        // the step: its slope there, times what is moved (or 1, if that is
-        // larger), is under a millionth of the value (or of 1, if the value is
-        // larger than that or is 0). Then the difference across it is no
-        // slope, relative or absolute, whatever its shape. The shape alone is not
-        // enough. `5·min(max((q − 1)/1e-6, 0), 1)²` at q = 1 leaves the point
-        // as a square and is done inside the step, a Hill function of X at 0
-        // with a half-saturation of 1e-8 is past it in ten steps, and
+        // And one that leaves the point as such a power on each side it moves
+        // on, and does not move to speak of: its slope across the step, times
+        // what is moved (or 1, if that is larger), is under a millionth of the
+        // value (or of 1, if the value is larger than that, or is smaller than
+        // what it moves by across the step: `(time − 0.3)³` read at 0.2 + 0.1
+        // is 1.7e-49 there, not 0). Then the difference across it is no slope,
+        // relative or absolute.
+        //
+        // Both are asked. The shape alone is not enough:
+        // `5·min(max((q − 1)/1e-6, 0), 1)²` at q = 1 leaves the point as a
+        // square and is done inside the step, a Hill function of X at 0 with a
+        // half-saturation of 1e-8 is past it in ten steps, and
         // `1e6·max(X − 1, 0)^1.81` has a slope of 25 one step on: the
         // difference gave 2.5e6, 1e6 and 6.9 for a derivative of 0. Nor is the
         // value's own size a scale to measure by: beside an offset of 1e9 a
-        // bend 0.4 of the step out came back as 300.
-        const double scale = here == 0.0 ? 1.0 : std::min(std::fabs(here), 1.0);
+        // bend 0.4 of the step out came back as 300. And the size alone is not
+        // enough: a step of 1e-18 at the fire instant, in a model whose values
+        // are that small, is the step this was written for.
+        const double moves = std::max(std::fabs(up), std::fabs(down));
+        const double scale = std::fabs(here) <= moves ? 1.0 : std::min(std::fabs(here), 1.0);
         const double cap = kAssignedFlatSlope * scale * h / std::max(moved, 1.0);
-        return std::max({std::fabs(up), std::fabs(down), std::fabs(half_up),
-                         std::fabs(half_down)}) <= cap;
+        return as_a_power(up, half_up) && as_a_power(down, half_down) && moves <= cap;
     };
     std::vector<double> xrun(x_minus.begin(), x_minus.end());
     std::vector<double> xread;

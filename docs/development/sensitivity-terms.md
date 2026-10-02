@@ -132,14 +132,16 @@ has to refresh the `rateOf` buffer.
   refused. A value that is flat at the point is not refused, in two cases.
   One that is even about the point and leaves it as a power of the distance
   of order 1.75 or more (`X⁴/(K⁴ + X⁴)` at X = 0): its derivative there is 0
-  and so is the central difference, whatever its size. And one that does not
-  move to speak of anywhere it is read across the step: its slope there, times
-  what is moved (or 1, if that is larger), is under a millionth of the value
-  (or of 1, if the value is larger than that or is 0), as `X³/(8 + X³)` at
-  X = 0. A power from the point that is a
+  and so is the central difference, whatever its size. And one that leaves the
+  point as such a power on each side and does not move to speak of: its slope
+  across the step, times what is moved (or 1, if that is larger), is under a
+  millionth of the value (or of 1, if the value is larger than that, or
+  smaller than what it moves by), as `X³/(8 + X³)` at X = 0. A power from the
+  point that is a
   slope across the step is refused: `1e6·max(X − 1, 0)^1.81` at X = 1, a ramp
   squared that is done inside the step, a Hill function of X at 0 whose
-  half-saturation is within ten thousand steps. A step or a bend that moves
+  half-saturation is within about a hundred thousand steps. A step or a bend
+  that moves
   with the event has a derivative, and is refused with the rest.
 - **Not caught**, and returned as before:
   - a bend under a value that reads something a million times its own size,
@@ -154,7 +156,12 @@ has to refresh the `rateOf` buffer.
     `(1 − exp(−k·time))/k` at k = 1e-10 returns 1.11 for 1;
   - a feature centred on the point, narrower than 0.6 of the step, that
     returns to the point's value at both ends of it:
-    `piecewise(X − 3, abs(X − 3) < 3e-7, 0)` at X = 3 returns 0 for 1.
+    `piecewise(X − 3, abs(X − 3) < 3e-7, 0)` at X = 3 returns 0 for 1;
+  - a sawtooth whose period divides the step, riding on a slope:
+    `(2·X + 0.25) − floor(2·X + 0.25) + 1e-3·X` at X = 1e6 returns 0.001 for
+    2.001;
+  - a kink under an even term steep enough to hide it:
+    `abs(X − 3) + 1e13·abs(X − 3)³` at X = 3 returns 0 for −1 or 1.
 
 **At `t_start`.** An SBML event with `initialValue=false` whose trigger is already
 true at `t_start` fires there. Then `τ = 0`, and `s⁻` is the seed that is already
