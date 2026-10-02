@@ -577,6 +577,12 @@ def test_a_rate_law_with_a_slope_on_two_clocks_on_the_instant(tmp_path, start, a
 VANISHING = {
     # Y = 0.3·(T − tau)²/2 with T = tau + 3.
     "a-difference-of-two-products": ("0.3*time - 0.3*tau", 2.6, -0.9),
+    # The same at a late switch time, where the column's tolerance is under
+    # what the two products round by and the slope's part is what allows it.
+    "a-difference-of-two-products-at-a-late-time": ("0.3*time - 0.3*tau", 250.5, -0.9),
+    # Y = r·((T − tau) − sin(T − tau)). 1 − cos rounds by an ulp of 1 and has
+    # no slope at its switch, so here it is the column's tolerance that does.
+    "one-less-a-cosine": ("r*(1 - cos(time - tau))", 33.3, -(1.0 - float(np.cos(3.0)))),
     # Y = (T − tau)²/14.
     "a-difference-of-two-quotients": ("time/7 - tau/7", 3.7, -3.0 / 7.0),
     # Y = r·((T − tau) − (1 − e^(−k·(T − tau)))/k).
