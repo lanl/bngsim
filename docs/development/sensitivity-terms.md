@@ -267,7 +267,7 @@ sides.
 
 It also sizes a jump that such a term stepped beside. The jump applied is the
 whole right-hand side's change between the probes, extended to the surface, and
-a tread of 22 beside a jump of 3 gave −1826 for 207.9. Where one switch jumps
+a tread of 15 beside a jump of 3 gave −1826 for 207.9. Where one switch jumps
 and its branch change read at one state differs from the one the probes give by
 more than that reading allows, the jump is the one read at one state.
 
