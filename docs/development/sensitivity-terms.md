@@ -111,9 +111,57 @@ has to refresh the `rateOf` buffer.
   refreshes the `rateOf` buffer and re-evaluates the functions after it, and a
   `rateOf` read counts every parameter as support (#764,
   `event-assignment-reads-rateof`).
-- **Open:** an assignment that reads a step in time exactly at the fire instant
-  (`u := piecewise(5, time >= T0, 0)`, `B = u`, fired at `time >= T0`) has no
-  derivative there to difference, and its row is wrong on main and here alike (#915).
+- **Refused:** an assignment whose value is not smooth where the event reads it:
+  a step in time at the fire instant (`u := piecewise(5, time >= T0 + 1, 0)`,
+  `B = u`, fired at `time >= T0 + 1`), a step in a parameter at the parameter's
+  own value, a bend, or a value that turns inside a millionth of what it reads.
+  `∂h/∂p`, `∂h/∂x` and `∂h/∂t` are central differences, and across any of these
+  a central difference is not a derivative. Across a smooth value the
+  difference over half the step is half as large and the second difference
+  about the point a quarter as large; the run is refused where either is out by
+  more than a part in 1e3 of what the value moves by across the step, and by
+  more than what may be rounding: 16 ulp of the largest thing the value reads,
+  and no more than 2e-9 of the value's own size. A value that is not finite at
+  the point or beside it is refused too. A difference retaken over a wider
+  step (#767) is across a value that is straight there, and is not asked. A
+  species is refused only where a column carries something through it, and the
+  time only where a column moves the fire time (#915,
+  `test_event_value_time_step_sensitivity.py`). A value that reads the same
+  at both ends of the step and at the point is asked between them, off any
+  simple fraction of the step, so a sawtooth whose period divides the step is
+  refused. A value that is flat at the point is not refused, in two cases.
+  One that is even about the point and leaves it as a power of the distance
+  of order 1.75 or more (`X⁴/(K⁴ + X⁴)` at X = 0): its derivative there is 0
+  and so is the central difference, whatever its size. And one that leaves the
+  point as such a power on each side and does not move to speak of: its slope
+  across the step, times what is moved (or 1, if that is larger), is under a
+  millionth of the value (or of 1, if the value is larger than that, or
+  smaller than what it moves by), as `X³/(8 + X³)` at X = 0. A power from the
+  point that is a
+  slope across the step is refused: `1e6·max(X − 1, 0)^1.81` at X = 1, a ramp
+  squared that is done inside the step, a Hill function of X at 0 whose
+  half-saturation is within about a hundred thousand steps. A step or a bend
+  that moves
+  with the event has a derivative, and is refused with the rest.
+- **Not caught**, and returned as before:
+  - a bend under a value that reads something a million times its own size,
+    where the change of slope times what is moved is under about 0.8% of the
+    value: `kcat·E0·X/(Km + X) + max(X − 3, 0)` at X = 3 with kcat at 1e9 and
+    E0 at 1e-6 returns 0.61 for 0.11 or 1.11, and is refused with kcat at 1e3
+    and E0 at 1;
+  - a bend that changes the partial it is in by under about 0.8%, where the
+    column's terms cancel to less than that: `1000·(time − T0) + max(time −
+    2.3, 0)` fired at T0 + 1 = 2.3 returns 0.5 for 0 or 1;
+  - a smooth value whose difference rounds, in line, by more than it resolves:
+    `(1 − exp(−k·time))/k` at k = 1e-10 returns 1.11 for 1;
+  - a feature centred on the point, narrower than 0.6 of the step, that
+    returns to the point's value at both ends of it:
+    `piecewise(X − 3, abs(X − 3) < 3e-7, 0)` at X = 3 returns 0 for 1;
+  - a sawtooth whose period divides the step, riding on a slope:
+    `(2·X + 0.25) − floor(2·X + 0.25) + 1e-3·X` at X = 1e6 returns 0.001 for
+    2.001;
+  - a kink under an even term steep enough to hide it:
+    `abs(X − 3) + 1e13·abs(X − 3)³` at X = 3 returns 0 for −1 or 1.
 
 **At `t_start`.** An SBML event with `initialValue=false` whose trigger is already
 true at `t_start` fires there. Then `τ = 0`, and `s⁻` is the seed that is already
