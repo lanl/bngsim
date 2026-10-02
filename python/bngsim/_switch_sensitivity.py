@@ -3600,9 +3600,9 @@ def _float_rounding(node: ast.AST, values: Mapping[str, float]) -> tuple[float, 
     factor's through the other, a call carries its argument's through its
     slope.
 
-    The second number is kept finite: where an intermediate overflows, as
-    ``exp`` of 700 times its argument's size does, it is the largest double,
-    and a division by what overflowed brings it back down with the value. An
+    The size is carried as its logarithm (:func:`_float_sized`): as a double
+    it overflows where ``exp`` is within a factor of its argument's size of
+    the largest double, and an infinite size would let any jump through. An
     exact 0 carries nothing through a product, and a quotient by an infinity
     is an exact 0.
 
@@ -3610,33 +3610,55 @@ def _float_rounding(node: ast.AST, values: Mapping[str, float]) -> tuple[float, 
     for what :class:`_FloatForm` does not read; the two read the same trees
     and give the same values.
     """
-    value, size = _float_sized(node, values)
-    if isinstance(value, bool):
+    value, log_size = _float_sized(node, values)
+    if isinstance(value, bool) or log_size == _NO_SIZE:
         return value, 0.0
-    return value, size if size <= sys.float_info.max else sys.float_info.max
+    return value, math.exp(log_size) if log_size < _LOG_MAX else sys.float_info.max
 
 
-def _carried(factor: float, size: float) -> float:
-    """*size* carried through *factor*, with nothing carried through a 0."""
-    return 0.0 if factor == 0.0 or size == 0.0 else factor * size
+_NO_SIZE = -math.inf  # the logarithm of a size of 0
+_LOG_MAX = math.log(sys.float_info.max)
+
+
+def _log_of(x: float) -> float:
+    """``log|x|``: :data:`_NO_SIZE` for 0, an infinity for what is not finite."""
+    x = abs(x)
+    if x == 0.0:
+        return _NO_SIZE
+    return math.log(x) if x < math.inf else math.inf
+
+
+def _log_sum(*logs: float) -> float:
+    """The logarithm of a sum, from the logarithms of its terms."""
+    top = max(logs)
+    if top in (_NO_SIZE, math.inf) or top != top:
+        return top
+    return top + math.log(sum(math.exp(term - top) for term in logs))
+
+
+def _carried(log_factor: float, log_size: float) -> float:
+    """A size carried through a factor, with nothing carried through a 0."""
+    if _NO_SIZE in (log_factor, log_size):
+        return _NO_SIZE
+    return log_factor + log_size
 
 
 def _float_sized(node: ast.AST, values: Mapping[str, float]) -> tuple[float, float]:
-    """:func:`_float_rounding` before its second number is capped."""
+    """:func:`_float_rounding` with the size as its logarithm."""
     if isinstance(node, ast.Expression):
         return _float_sized(node.body, values)
     if isinstance(node, ast.Constant):
         if isinstance(node.value, bool):
-            return node.value, 0.0
+            return node.value, _NO_SIZE
         if isinstance(node.value, (int, float)):
-            return float(node.value), abs(float(node.value))
+            return float(node.value), _log_of(node.value)
         raise _Unread("constant")
     if isinstance(node, ast.Name):
         if node.id in _BUILTIN_CONSTANT_VALUES:
             value = float(_BUILTIN_CONSTANT_VALUES[node.id])
         else:
             value = float(values[node.id])
-        return value, abs(value)
+        return value, _log_of(value)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         value, size = _float_sized(node.operand, values)
         return (-value if isinstance(node.op, ast.USub) else +value), size
@@ -3645,25 +3667,34 @@ def _float_sized(node: ast.AST, values: Mapping[str, float]) -> tuple[float, flo
         b, size_b = _float_sized(node.right, values)
         a, b = float(a), float(b)
         if isinstance(node.op, ast.Add):
-            return a + b, size_a + size_b
+            return a + b, _log_sum(size_a, size_b)
         if isinstance(node.op, ast.Sub):
-            return a - b, size_a + size_b
+            return a - b, _log_sum(size_a, size_b)
         if isinstance(node.op, ast.Mult):
-            return a * b, _carried(abs(a), size_b) + _carried(abs(b), size_a)
+            return a * b, _log_sum(_carried(_log_of(a), size_b), _carried(_log_of(b), size_a))
         if isinstance(node.op, ast.Div):
             value = _float_div(a, b)
             if math.isinf(b):
-                return value, 0.0
-            return value, _float_div(size_a, abs(b)) + _carried(
-                abs(value), _float_div(size_b, abs(b))
+                return value, _NO_SIZE
+            if b == 0.0:
+                return value, math.inf
+            below = _log_of(b)
+            return value, _log_sum(
+                _carried(size_a, -below), _carried(_log_of(value), _carried(size_b, -below))
             )
         if isinstance(node.op, ast.Pow):
             value = _float_pow(a, b)
             if a == 0.0:
                 # 0 to a power: what the base rounds by, to that power.
-                return value, abs(value) + _float_pow(_EPS * size_a, b) / _EPS
-            through = abs(b) * _float_div(size_a, abs(a)) + abs(math.log(abs(a))) * size_b
-            return value, _carried(abs(value), 1.0 + through)
+                if size_a == _NO_SIZE or b <= 0.0:
+                    return value, _log_of(value)
+                log_eps = math.log(_EPS)
+                return value, _log_sum(_log_of(value), b * (log_eps + size_a) - log_eps)
+            through = _log_sum(
+                _carried(_log_of(b), _carried(size_a, -_log_of(a))),
+                _carried(_log_of(math.log(abs(a))), size_b),
+            )
+            return value, _carried(_log_of(value), _log_sum(0.0, through))
         raise _Unread("operator")
     if isinstance(node, ast.Compare):
         if len(node.ops) != 1 or not isinstance(node.ops[0], _FLOAT_COMPARISONS):
@@ -3672,14 +3703,14 @@ def _float_sized(node: ast.AST, values: Mapping[str, float]) -> tuple[float, flo
         b = _float_sized(node.comparators[0], values)[0]
         op = node.ops[0]
         if isinstance(op, ast.Lt):
-            return a < b, 0.0
+            return a < b, _NO_SIZE
         if isinstance(op, ast.LtE):
-            return a <= b, 0.0
+            return a <= b, _NO_SIZE
         if isinstance(op, ast.Gt):
-            return a > b, 0.0
+            return a > b, _NO_SIZE
         if isinstance(op, ast.GtE):
-            return a >= b, 0.0
-        return (a == b) if isinstance(op, ast.Eq) else (a != b), 0.0
+            return a >= b, _NO_SIZE
+        return (a == b) if isinstance(op, ast.Eq) else (a != b), _NO_SIZE
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
         name = node.func.id
         if name == "Piecewise":
@@ -3688,19 +3719,20 @@ def _float_sized(node: ast.AST, values: Mapping[str, float]) -> tuple[float, flo
                     raise _Unread("Piecewise")
                 if _float_sized(pair.elts[1], values)[0]:
                     return _float_sized(pair.elts[0], values)
-            return math.nan, 0.0
+            return math.nan, _NO_SIZE
         if name not in _FLOAT_CALLS:
             raise _Unread(name)
         args = [_float_sized(arg, values) for arg in node.args]
         value = _FLOAT_CALLS[name](*(a for a, _ in args))
         if isinstance(value, bool):
-            return value, 0.0
+            return value, _NO_SIZE
         if name in ("min", "max"):
             return value, max(size for _, size in args)
         slope = _FLOAT_SLOPES.get(name)
         if slope is None or len(args) != 1:
-            return value, abs(value)
-        return value, abs(value) + _carried(slope(float(args[0][0]), value), args[0][1])
+            return value, _log_of(value)
+        through = _carried(_log_of(slope(float(args[0][0]), value)), args[0][1])
+        return value, _log_sum(_log_of(value), through)
     raise _Unread(type(node).__name__)
 
 
@@ -4087,11 +4119,7 @@ def _continuous_across(
                 at = list(point)
                 at[i] = hi
                 true_above = holds(at)
-                at[i] = hi + hair
-                if true_above is None or holds(at) != true_above:
-                    return False  # a second flip inside the hair
-                at[i] = lo - hair
-                if holds(at) == true_above:
+                if true_above is None:
                     return False
                 above = [hi, hi + 0.1 * hair, hi + hair]
                 below = [lo, lo - 0.1 * hair, lo - hair]

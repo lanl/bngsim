@@ -365,6 +365,23 @@ def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path,
         # continuous though the conditional is not.
         ("if(R<0,0,if(R>0,1,0.5))*kb*R", "R<0", True),
         ("if(R<0,0,if(R>0,1,0.5))*kb*(R+1)", "R<0", False),
+        # A step call in the comparison that does not step at the values
+        # tried: the threshold jumps where Z reaches 1e12.
+        ("if(X>thr+floor(Z/1e12+0.5),kb*(X-thr),0)", "X>thr+floor(Z/1e12+0.5)", False),
+        # A comparison the law does not hold.
+        ("if(Aobs<thr,kb*(thr-Aobs),0)", "Bobs<thr", False),
+        # The jump is along the second symbol the comparison reads.
+        ("if((A-1)*(Z-2)>0,kb*(A-1),0)", "(A-1)*(Z-2)>0", False),
+        # The comparison flips twice along B: a bend first, then a jump.
+        ("if((B-0.1)*(B-3)>0,kb*(B-0.1),0)", "(B-0.1)*(B-3)>0", False),
+        # A magnitude that holds a conditional on the atom is one choice,
+        # made the same way either side.
+        ("kb*abs(if(A<B,A,B)-c)", "A<B", True),
+        # A jump in proportion to a magnitude less its argument: 0 where the
+        # argument is negative, as it is at the values tried.
+        ("if(A<thr,kb*(abs(Y-3)-(3-Y)),0)", "A<thr", False),
+        # A condition with the atom and its denial: never true.
+        ("if((A<thr)&&not(A<thr),kb,0)", "A<thr", True),
         # Two conditionals on one atom, one a bend and one a jump.
         ("if(Aobs<thr,kb*(thr-Aobs),0)+if(Aobs<thr,kb,0)", "Aobs<thr", False),
         # A pole of the condition and of the law: passed over, and the bend
@@ -423,6 +440,49 @@ def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(
 
     monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", parse)
     assert _continuous_across(law, atom, held=frozenset(held)) is continuous
+
+
+def test_a_condition_is_not_moved_along_what_is_held():
+    """``(A − thr)/tau < 0`` flips along tau where tau is 0, across a pole,
+    and the ramp does not meet 0 there. tau is a parameter: no run moves it
+    and no column perturbs it across 0, and it is held."""
+    from bngsim._switch_sensitivity import _continuous_across
+
+    law, atom = "if((A-thr)/tau<0,kb*(thr-A),0)", "(A-thr)/tau<0"
+    assert _continuous_across(law, atom, held=frozenset({"tau", "thr", "kb"}))
+    assert not _continuous_across(law, atom)
+
+
+def test_a_law_that_underflows_to_zero_does_not_jump():
+    """``1/(1 + exp(x))`` is 1e-306 and then exactly 0 where the exponential
+    overflows, and the signed rate that carries it goes from 1e-306 to 0
+    there. Under 1e-292 a double is within gradual underflow of 0."""
+    from bngsim._switch_sensitivity import _continuous_across
+
+    v = "a/(1+exp((QL-QR)/tmp))"
+    held = frozenset({"tmp", "a"})
+    assert _continuous_across(f"if(({v})>0,{v},0)", f"({v})>0", held=held)
+    # The condition flips there in the engine's arithmetic too, and a law
+    # that is 5 more on one side of it steps by 5: what the exponential
+    # rounds by near the largest double is not what the law rounds by.
+    assert not _continuous_across(f"if(({v})>0,{v}+5,0)", f"({v})>0", held=held)
+
+
+def test_a_ramp_whose_condition_divides_by_a_parameter_runs(tmp_path):
+    """Control. The same ramp in a model: its condition changes sign with the
+    parameter it divides by, which nothing in a run moves."""
+    sim = _simulator(
+        tmp_path, "if((Aobs-thr)/tau<0,kb*(thr-Aobs),0)", DECLINED, ["k", "thr"], True
+    )
+    assert not sim.has_analytic_sens_rhs
+    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
+    t_star = math.log(a0 / thr) / k
+    tail = math.exp(-k * T_END)
+    want = [
+        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
+        kb * (T_END - t_star),
+    ]
+    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
 
 
 @pytest.mark.parametrize(
