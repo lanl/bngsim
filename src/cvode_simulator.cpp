@@ -2599,6 +2599,16 @@ struct CvodeSimulator::Impl {
                          const std::vector<double> &f_minus,
                          const std::vector<std::vector<double>> &s_minus,
                          const SensitivityState &sens, std::vector<double> &tau_out);
+    // What residual_dtstar divides: for each column, how the residual moves
+    // with it at the crossing, ∂g/∂x·s + ∂g/∂θ, and in `size_out` the size of
+    // the terms that makes of. And the residual's flow, and the scale of its
+    // terms. Does not throw on a tangential crossing: a state that sits on its
+    // surface has a shift, 0 where the surface moves with it, and no flow.
+    double residual_shift(int gidx, const std::vector<int> &support, double t_evt, int ns,
+                          const std::vector<double> &x_minus, const std::vector<double> &f_minus,
+                          const std::vector<std::vector<double>> &s_minus,
+                          const SensitivityState &sens, std::vector<double> &shift_out,
+                          std::vector<double> &size_out, double &scale_out);
 
     // The event-trigger entry point to residual_dtstar. Returns false when this
     // event has no usable residual, in which case the caller leaves ∂t*/∂θ at
@@ -2638,6 +2648,120 @@ struct CvodeSimulator::Impl {
     // that restart (issue #763): a crossing that follows closely enough for its
     // probe pair to cross one of them again would read that jump a second time.
     std::vector<std::pair<const NetworkModel::StateSwitch *, double>> state_switch_consumed;
+
+    // Issues #946, #945: what a state-dependent switch cannot share its instant
+    // with. Every rate-law crossing on a clock that the run stops at, fitted or
+    // fixed, and not a stop the run takes for a comoving frame, where no rate
+    // law switches.
+    std::vector<double> clock_instants;
+    // Parallel to it: whether a requested parameter moves that crossing's time,
+    // and the counter species it is on, −1 for literal time. A counter moves
+    // with its own column too, which is read where the crossing is asked about.
+    std::vector<char> clock_instant_moves;
+    std::vector<int> clock_instant_species;
+    // What the counter reads there, for a crossing on one.
+    std::vector<double> clock_instant_threshold;
+    // The tolerances of the run under way, which say how well a state
+    // crossing's time is known.
+    double run_rtol = 0.0;
+    double run_atol = 0.0;
+    std::vector<double> run_atol_vec;
+    // The event fires and the state crossings of the run so far, the latest
+    // of each last: one is asked about against every one of the other within
+    // its reach, not the last alone, so that a fire or a crossing that comes
+    // between two does not hide the first.
+    struct EventFire {
+        double t = 0.0;
+        std::vector<int> reads;       // the species the triggers that fired read
+        bool moves = false;           // whether a requested column moves that fire
+        std::vector<double> x_before; // the state the event fired on
+    };
+    std::vector<EventFire> event_fires;
+    struct StateCrossing {
+        double t = 0.0;
+        double reach = 0.0; // how far from t its crossing time is known
+        std::string residual;
+        std::vector<int> reads; // the species its residuals read
+        bool moves = false;     // whether a requested column moves its crossing
+        // Whether the right-hand side read as continuous across it, and what
+        // it takes to read it again in another state: the species it reads,
+        // where they were, the flow they crossed with, and the probe's step.
+        bool continuous = false;
+        std::vector<int> own;
+        std::vector<double> x_own;
+        std::vector<double> f_own;
+        double step = 0.0;
+        bool mapped = false;   // whether the reactions that read it are known
+        std::vector<int> rxns; // and which they are
+    };
+    std::vector<StateCrossing> state_crossings;
+    // No more than this many of each are kept. Where one that was dropped
+    // could still be within reach, the run is refused.
+    static constexpr std::size_t kCrossingsKept = 64;
+    double state_crossings_dropped_until = -std::numeric_limits<double>::infinity();
+    // Whether the right-hand side jumps across a state switch's surface in
+    // the state `rest` at `t_at`: its own species are put a step either side
+    // of where they crossed, along the flow they crossed with. A change that
+    // does not halve with the step is a jump. Leaves the model at the last
+    // state it read.
+    bool jumps_across_surface(const std::vector<int> &own, const std::vector<double> &x_own,
+                              const std::vector<double> &f_own, double step,
+                              std::vector<double> rest, double t_at, const std::vector<int> *rxns);
+    // Whether a change in the right-hand side between two points is a jump.
+    // Species by species: `once` is the change at one step and `twice` at
+    // two, and a jump is a change above `above` that does not halve with the
+    // step. What is read is the flux of the reactions whose rate law reads
+    // the switch, where they are known, and `above` is kHiddenJumpRelTol of
+    // that flux at the two points and the rounding of its gross. Read
+    // against a millionth of the largest net rate in the model, or of the
+    // rate of the species the switch reads, or of the species' whole rate,
+    // a jump of 0.5 was hidden by a bystander, by the switch's species, or
+    // by another source of its own species, made at 1e6. Read against
+    // nothing but rounding, two branches that meet to the nine digits their
+    // constants are written to, `0.333333333*X` and 0.5 at X = 1.5, were a
+    // jump.
+    static constexpr double kHiddenJumpRelTol = 1e-8;
+    static bool some_species_jumps(const std::vector<double> &once,
+                                   const std::vector<double> &above,
+                                   const std::vector<double> &twice) {
+        for (std::size_t u = 0; u < once.size(); ++u) {
+            if (once[u] > above[u] && once[u] > 0.75 * twice[u]) {
+                return true;
+            }
+        }
+        return false;
+    }
+    // Refuses where something that happens at t_evt, `what`, finds a
+    // state-dependent switch on its surface or within what the tolerances
+    // allow of it, and the right-hand side jumps there unseen. `before` and
+    // `after` are the state either side of what happens, with the flow in
+    // each.
+    void refuse_a_switch_on_its_surface_here(double t_evt, int ns,
+                                             const std::vector<double> &before,
+                                             const std::vector<double> &f_before, double t_before,
+                                             const std::vector<double> &after,
+                                             const std::vector<double> &f_after, double t_after,
+                                             const std::vector<int> &reads, const std::string &what,
+                                             int issue);
+    // What a crossing reads beside species: the time itself. `S + time >= thr`
+    // reads S alone among the species and crosses where the time says.
+    static constexpr int kReadsTime = -1;
+    // Whether two crossings are on one trajectory: each reads one species, and
+    // it is the same one. The root finder takes those in the order they come
+    // in, `A < thr1` and `A < thr2` a few hundred ulp apart. Any other two are
+    // each known to the tolerances of the run, and their order is not:
+    // `V > U·e³` and `V >= 6` both read V, and cross where U says.
+    static bool one_trajectory(const std::vector<int> &a, const std::vector<int> &b) {
+        if (a.empty() || b.empty()) {
+            return false;
+        }
+        const int species = a.front();
+        auto only = [species](const std::vector<int> &reads) {
+            return std::all_of(reads.begin(), reads.end(),
+                               [species](int j) { return j == species; });
+        };
+        return only(a) && only(b);
+    }
 
     // Issue #897: whether a plain run should restart at state switch `sw`'s
     // root, located at (t, x) in a step that ended at t_end. True when the
@@ -5486,13 +5610,13 @@ double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &sup
     return flow;
 }
 
-void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &support,
-                                           const std::string &subject, double t_evt, int ns,
-                                           const std::vector<double> &x_minus,
-                                           const std::vector<double> &f_minus,
-                                           const std::vector<std::vector<double>> &s_minus,
-                                           const SensitivityState &sens,
-                                           std::vector<double> &tau_out) {
+double CvodeSimulator::Impl::residual_shift(int gidx, const std::vector<int> &support, double t_evt,
+                                            int ns, const std::vector<double> &x_minus,
+                                            const std::vector<double> &f_minus,
+                                            const std::vector<std::vector<double>> &s_minus,
+                                            const SensitivityState &sens,
+                                            std::vector<double> &shift_out,
+                                            std::vector<double> &size_out, double &scale_out) {
     const int n_sens = sens.n_total;
     const int n_sens_p = sens.n_p;
 
@@ -5545,6 +5669,37 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
     restore_nominal_params(sens);
     sync_model_at(t_evt, x_minus.data(), ns);
 
+    shift_out.assign(static_cast<std::size_t>(n_sens), 0.0);
+    size_out.assign(static_cast<std::size_t>(n_sens), 0.0);
+    for (int c = 0; c < n_sens; ++c) {
+        double num = (c < n_sens_p) ? gp[static_cast<std::size_t>(c)] : 0.0;
+        double size = std::fabs(num);
+        const std::vector<double> &sm = s_minus[c];
+        for (int j : support) {
+            num += gx[j] * sm[j];
+            size += std::fabs(gx[j] * sm[j]);
+        }
+        shift_out[static_cast<std::size_t>(c)] = num;
+        size_out[static_cast<std::size_t>(c)] = size;
+    }
+    scale_out = scale;
+    return flow;
+}
+
+void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &support,
+                                           const std::string &subject, double t_evt, int ns,
+                                           const std::vector<double> &x_minus,
+                                           const std::vector<double> &f_minus,
+                                           const std::vector<std::vector<double>> &s_minus,
+                                           const SensitivityState &sens,
+                                           std::vector<double> &tau_out) {
+    const int n_sens = sens.n_total;
+    std::vector<double> shift;
+    std::vector<double> size;
+    double scale = 0.0;
+    const double flow = residual_shift(gidx, support, t_evt, ns, x_minus, f_minus, s_minus, sens,
+                                       shift, size, scale);
+
     // What makes a crossing non-transversal is CANCELLATION: terms of some size
     // summing to ~0. `scale` is exactly Σ|terms|, so |flow| <= relfloor*scale is
     // that test, and it is the only test made here (issue #322).
@@ -5581,12 +5736,7 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
 
     tau_out.assign(static_cast<std::size_t>(n_sens), 0.0);
     for (int c = 0; c < n_sens; ++c) {
-        double num = (c < n_sens_p) ? gp[static_cast<std::size_t>(c)] : 0.0;
-        const std::vector<double> &sm = s_minus[c];
-        for (int j : support) {
-            num += gx[j] * sm[j];
-        }
-        tau_out[static_cast<std::size_t>(c)] = -num / flow;
+        tau_out[static_cast<std::size_t>(c)] = -shift[static_cast<std::size_t>(c)] / flow;
     }
 }
 
@@ -5606,6 +5756,37 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
 
     if (n_sens == 0 || fired.empty() || s_minus.empty()) {
         return;
+    }
+
+    // What the triggers that fired read (issue #945, below).
+    std::vector<int> fired_reads;
+    // The state the event has left, which the model holds on entry.
+    std::vector<double> x_after(static_cast<std::size_t>(ns), 0.0);
+    for (int i = 0; i < ns; ++i) {
+        x_after[static_cast<std::size_t>(i)] = sp_vec_outer[i].concentration;
+    }
+    bool model_moved = false;
+    for (int ei : fired) {
+        const std::vector<int> &support = model.event_trigger_residual_species(ei);
+        fired_reads.insert(fired_reads.end(), support.begin(), support.end());
+
+        // A trigger that reads the time as well as the state crosses where
+        // the time says, `V + 1e5*time > c`: it is on no species' trajectory.
+        const int gidx = support.empty() ? -1 : model.event_trigger_residual_expr(ei);
+        if (gidx >= 0 && x_minus.size() == static_cast<std::size_t>(ns)) {
+            const double width = 1e-6 * std::max(std::fabs(t_evt), 1.0);
+            sync_model_at(t_evt - width, x_minus.data(), ns);
+            const double g_lo = eval_ref_outer.evaluate(gidx);
+            sync_model_at(t_evt + width, x_minus.data(), ns);
+            const double g_hi = eval_ref_outer.evaluate(gidx);
+            if (!(g_lo == g_hi)) {
+                fired_reads.push_back(kReadsTime);
+            }
+            model_moved = true;
+        }
+    }
+    if (model_moved) {
+        sync_model_at(t_evt, x_after.data(), ns);
     }
 
     auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
@@ -5862,6 +6043,74 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         if (state_trigger_dtstar(ei, t_evt, ns, x_minus, f_minus, s_minus, sens, candidate)) {
             adopt_tau(ei, candidate);
         }
+    }
+    // Issue #945: a state-dependent switch jumped within its reach of this
+    // fire, and which came first is not known. A fire moves where a column
+    // moves its time: a fitted time, or a trigger on a state the column moves.
+    // A trigger on the state that no requested column moves fires when it
+    // fires.
+    const bool fire_moves = std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; });
+    sync_model_at(t_evt, x_after.data(), ns);
+    for (const StateCrossing &crossing : state_crossings) {
+        if (!(std::fabs(t_evt - crossing.t) <= crossing.reach) || !(fire_moves || crossing.moves) ||
+            one_trajectory(fired_reads, crossing.reads)) {
+            continue;
+        }
+        if (crossing.continuous) {
+            // A bend before the event, and one still in the state the event
+            // has left: nothing to be on one side of. A jump that the state
+            // hid, `q·X` at an X of 0 that the event sets, shows now.
+            std::vector<double> after(static_cast<std::size_t>(ns), 0.0);
+            for (int i = 0; i < ns; ++i) {
+                after[static_cast<std::size_t>(i)] = sp_vec_outer[i].concentration;
+            }
+            const bool reads_time = std::find(crossing.reads.begin(), crossing.reads.end(),
+                                              kReadsTime) != crossing.reads.end();
+            const bool shows =
+                reads_time ||
+                jumps_across_surface(crossing.own, crossing.x_own, crossing.f_own, crossing.step,
+                                     after, t_evt, crossing.mapped ? &crossing.rxns : nullptr);
+            sync_model_at(t_evt, after.data(), ns);
+            if (!shows) {
+                continue;
+            }
+        }
+        std::ostringstream msg;
+        msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within " << crossing.reach
+            << " of the state-dependent rate-law switch with residual '" << crossing.residual
+            << "', which crossed at t=" << crossing.t
+            << ". Which of the two comes first is not known to the tolerances of "
+               "the run, and where the event changes what the switched rate law reads the "
+               "result has a kink there and no derivative (issue #945). Separate the two in "
+               "time, or drop sensitivities for this run.";
+        throw std::runtime_error(msg.str());
+    }
+    if (t_evt <= state_crossings_dropped_until) {
+        throw std::runtime_error(
+            "Forward sensitivity: an event fires at t=" + std::to_string(t_evt) +
+            " after more state-dependent rate-law switches than are kept to ask it about, "
+            "within the reach of one of them (issue #945). Drop sensitivities for this run.");
+    }
+    if (event_fires.size() >= kCrossingsKept) {
+        event_fires.erase(event_fires.begin());
+    }
+    event_fires.push_back({t_evt, fired_reads, fire_moves, x_minus});
+    sync_state();
+
+    // Issue #945, as #946 is from the clock's side: a state-dependent switch
+    // that is on its surface where this event fires, or within what the
+    // tolerances allow of it, with a column that moves the fire. An event that
+    // sets the rate a species is made at, or sets the species onto its
+    // threshold, under `piecewise(k, X > X0, 0)`: the residual is 0 in the
+    // state the event leaves and no root is reported for it leaving 0, so the
+    // switch's jump was never made, and dY/dtau came back 0 for −k.
+    if (!state_switch_all.empty() && needs_flow && fire_moves) {
+        std::vector<double> f_after(static_cast<std::size_t>(ns), 0.0);
+        sync_model_at(t_evt, x_after.data(), ns);
+        model.compute_derivs(t_evt, x_after.data(), f_after.data());
+        refuse_a_switch_on_its_surface_here(t_evt, ns, x_minus, f_minus, t_evt, x_after, f_after,
+                                            t_evt, fired_reads, "the event", 945);
+        sync_state();
     }
     if (fixed_event >= 0 && tau_event >= 0 &&
         std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; })) {
@@ -6908,6 +7157,40 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     };
     rhs_on_branch(-eps_clock, sw_f_minus);
     rhs_on_branch(+eps_clock, sw_f_plus);
+
+    // ── A state-dependent switch on its surface here ────────────────────────
+    // Issue #946, from the clock's side. A species that this switch starts off
+    // the threshold it sat on, `-> X; piecewise(r, time >= tau, 0)` with X at
+    // X0 beside `piecewise(k, X > X0, 0)`, crosses with the switch, at a time
+    // that moves as the switch's does. Its residual is exactly 0 until then,
+    // and no root is reported for it leaving 0: the state switch's jump was
+    // never made, and dY/dtau came back 0 for −k. A law that only bends
+    // there, `k·(X − X0)`, has no jump to make and is right.
+    //
+    // Asked where a column moves this switch time.
+    {
+        bool moves = std::any_of(sw.dtstar_dp.begin(), sw.dtstar_dp.end(),
+                                 [](double d) { return d != 0.0; });
+        for (int c = 0; !time_clock && c < sens.n_total; ++c) {
+            moves = moves || N_VGetArrayPointer(yS_guard[c])[sw.clock_species_idx0] != 0.0;
+        }
+        if (moves && !state_switch_all.empty()) {
+            // The state either side of the switch: a counter is on its side
+            // of the threshold, as the flow there was read.
+            std::vector<double> past(sw_ywork.begin(), sw_ywork.begin() + ns);
+            std::vector<double> short_of(past);
+            if (!time_clock) {
+                short_of[static_cast<std::size_t>(sw.clock_species_idx0)] =
+                    sw.threshold - eps_clock;
+            }
+            refuse_a_switch_on_its_surface_here(
+                t_evt, ns, short_of, sw_f_minus, time_clock ? t_cross - eps_clock : t_evt, past,
+                sw_f_plus, time_clock ? t_cross + eps_clock : t_evt,
+                time_clock ? std::vector<int>{} : std::vector<int>{sw.clock_species_idx0},
+                "the switch time", 946);
+            sync_model_at(t_evt, y_data, ns);
+        }
+    }
 
     // ── One crossing's own share of a shared instant (issue #375) ────────────
     // The nudge above moves the CLOCK, so where several conditions threshold it
@@ -8326,6 +8609,224 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     return true;
 }
 
+bool CvodeSimulator::Impl::jumps_across_surface(const std::vector<int> &own,
+                                                const std::vector<double> &x_own,
+                                                const std::vector<double> &f_own, double step,
+                                                std::vector<double> rest, double t_at,
+                                                const std::vector<int> *rxns) {
+    const std::size_t n = rest.size();
+    std::vector<double> lo(n, 0.0);
+    std::vector<double> hi(n, 0.0);
+    std::vector<double> gross_lo(n, 0.0);
+    std::vector<double> gross_hi(n, 0.0);
+    const double eps = std::numeric_limits<double>::epsilon();
+    auto across = [&](double out, std::vector<double> &change, std::vector<double> &above) {
+        auto read = [&](double side, std::vector<double> &net, std::vector<double> &gross) {
+            for (std::size_t k = 0; k < own.size(); ++k) {
+                rest[static_cast<std::size_t>(own[k])] = x_own[k] + side * out * step * f_own[k];
+            }
+            model.compute_flux_split(t_at, rest.data(), rxns, net.data(), gross.data());
+        };
+        read(-1.0, lo, gross_lo);
+        read(+1.0, hi, gross_hi);
+        change.assign(n, 0.0);
+        above.assign(n, 0.0);
+        for (std::size_t u = 0; u < n; ++u) {
+            change[u] = std::fabs(hi[u] - lo[u]);
+            above[u] = kHiddenJumpRelTol * std::max(std::fabs(lo[u]), std::fabs(hi[u])) +
+                       kStateSwitchAgreeRoundoff * eps * std::max(gross_lo[u], gross_hi[u]);
+        }
+    };
+    std::vector<double> once;
+    std::vector<double> twice;
+    std::vector<double> above;
+    std::vector<double> above_twice;
+    across(1.0, once, above);
+    across(2.0, twice, above_twice);
+    return some_species_jumps(once, above, twice);
+}
+
+void CvodeSimulator::Impl::refuse_a_switch_on_its_surface_here(
+    double t_evt, int ns, const std::vector<double> &before, const std::vector<double> &f_before,
+    double t_before, const std::vector<double> &after, const std::vector<double> &f_after,
+    double t_after, const std::vector<int> &reads, const std::string &what, int issue) {
+    const auto n = static_cast<std::size_t>(ns);
+    const double eps = std::numeric_limits<double>::epsilon();
+    auto &eval = model.evaluator();
+    for (const NetworkModel::StateSwitch *held : state_switch_all) {
+        std::vector<int> own;
+        for (int j : held->species) {
+            if (j >= 0 && j < ns && std::find(own.begin(), own.end(), j) == own.end()) {
+                own.push_back(j);
+            }
+        }
+        if (own.empty()) {
+            continue;
+        }
+        // The reactions whose rate law reads this switch, where they are known.
+        auto reads_it = state_switch_rxns.find(held);
+        const std::vector<int> *rxns =
+            reads_it == state_switch_rxns.end() ? nullptr : &reads_it->second;
+        // The residual in a state, its flow there, what the tolerances allow
+        // it, and the rounding of its own terms.
+        struct Reading {
+            double g = 0.0;
+            double flow = 0.0;
+            double allowed = 0.0;
+            double rounding = 0.0;
+            std::vector<double> gx;
+        };
+        auto read = [&](const std::vector<double> &state, const std::vector<double> &f, double t) {
+            Reading out;
+            double scale = 0.0;
+            out.flow = residual_flow(held->residual_expr_idx, held->species, t, ns, state, f,
+                                     out.gx, scale);
+            sync_model_at(t, state.data(), ns);
+            out.g = eval.evaluate(held->residual_expr_idx);
+            double terms = 0.0;
+            for (int j : own) {
+                const auto u = static_cast<std::size_t>(j);
+                const double atol_j = run_atol_vec.empty() ? run_atol : run_atol_vec[u];
+                out.allowed += std::fabs(out.gx[u]) * (run_rtol * std::fabs(state[u]) + atol_j);
+                terms += std::fabs(out.gx[u] * state[u]);
+            }
+            out.rounding = kSwitchInstantUlps * eps * std::max(terms, scale);
+            return out;
+        };
+        bool jumps = false;
+
+        // ── Coming to the surface as this happens ──────────────────────────
+        // Within what the tolerances allow of the surface and on its way to
+        // it, or on it and moving: whether it crossed before this is not
+        // known, and no root says. X rising to X0 as a fitted gate turns it
+        // back touches and never crosses, on a kink 0 | 1. Asked across the
+        // surface along its own slope, on either side of what happens.
+        //
+        // Not one that is within the tolerances and at rest, a guard on a
+        // species that is not there, `Z > 0` at a Z of 0; nor one going away,
+        // a species that has decayed under its guard.
+        //
+        // Nor one on the trajectory of what happens: an event whose trigger
+        // reads the one species this switch reads, `A < thr2` beside
+        // `A < thr1` a few hundred ulp apart, is taken in order with it.
+        std::vector<int> switch_reads(own);
+        {
+            const double width = 1e-6 * std::max(std::fabs(t_before), 1.0);
+            sync_model_at(t_before - width, before.data(), ns);
+            const double g_lo = eval.evaluate(held->residual_expr_idx);
+            sync_model_at(t_before + width, before.data(), ns);
+            const double g_hi = eval.evaluate(held->residual_expr_idx);
+            if (!(g_lo == g_hi)) {
+                switch_reads.push_back(kReadsTime);
+            }
+        }
+        const Reading was = read(before, f_before, t_before);
+        const bool arriving =
+            !one_trajectory(reads, switch_reads) && std::isfinite(was.g) &&
+            std::isfinite(was.flow) && std::fabs(was.g) <= was.allowed &&
+            (std::fabs(was.g) <= was.rounding ? was.flow != 0.0 : was.g * was.flow < 0.0);
+        if (arriving) {
+            double steep = 0.0;
+            for (int j : own) {
+                steep += was.gx[static_cast<std::size_t>(j)] * was.gx[static_cast<std::size_t>(j)];
+            }
+            if (steep > 0.0) {
+                std::vector<double> x_own;
+                std::vector<double> along;
+                for (int j : own) {
+                    const auto u = static_cast<std::size_t>(j);
+                    x_own.push_back(before[u]);
+                    along.push_back(was.gx[u] / steep);
+                }
+                const double across = 4.0 * was.allowed + 4.0 * was.rounding;
+                jumps = jumps_across_surface(own, x_own, along, across, before, t_before, rxns) ||
+                        jumps_across_surface(own, x_own, along, across, after, t_after, rxns);
+            }
+        }
+
+        // ── On the surface, and leaving it ─────────────────────────────────
+        // A residual of 0, to the rounding of its own terms, that the flow
+        // past this takes off: no root is reported for one that leaves 0
+        // without coming through it. Asked along the way it leaves, since
+        // the side it leaves on is the side that matters: `X > X0` pushed
+        // down from X0 stays off. Where the flow there is 0 the way it leaves
+        // is the flow a moment on, up to three moments: a species started
+        // through another, `-> Z; r` and `-> X; Z`, leaves at second order.
+        // One that is still at rest then stays where it is.
+        const Reading is = read(after, f_after, t_after);
+        if (!jumps && std::isfinite(is.g) && std::fabs(is.g) <= is.rounding) {
+            std::vector<double> leaving(f_after.begin(), f_after.begin() + ns);
+            std::vector<double> moved(after);
+            double t_moved = t_after;
+            double leave = is.flow;
+            const double moment = 1e-6 * std::max(std::fabs(t_after), 1.0);
+            for (int order = 0; order < 3 && std::isfinite(leave) && leave == 0.0; ++order) {
+                for (std::size_t u = 0; u < n; ++u) {
+                    moved[u] += moment * leaving[u];
+                }
+                t_moved += moment;
+                sync_model_at(t_moved, moved.data(), ns);
+                model.compute_derivs(t_moved, moved.data(), leaving.data());
+                leave = 0.0;
+                for (int j : own) {
+                    const auto u = static_cast<std::size_t>(j);
+                    leave += is.gx[u] * leaving[u];
+                }
+            }
+            if (std::isfinite(leave) && leave != 0.0) {
+                // Far enough that the residual is past its own rounding.
+                const double h = std::max(256.0 * eps * std::max(std::fabs(t_after), 1.0),
+                                          64.0 * is.rounding / std::fabs(leave));
+                std::vector<double> at(after);
+                std::vector<double> net[3] = {std::vector<double>(n, 0.0),
+                                              std::vector<double>(n, 0.0),
+                                              std::vector<double>(n, 0.0)};
+                std::vector<double> gross[3] = {std::vector<double>(n, 0.0),
+                                                std::vector<double>(n, 0.0),
+                                                std::vector<double>(n, 0.0)};
+                for (int steps = 0; steps < 3; ++steps) {
+                    for (int j : own) {
+                        const auto u = static_cast<std::size_t>(j);
+                        at[u] = after[u] + steps * h * leaving[u];
+                    }
+                    sync_model_at(t_after, at.data(), ns);
+                    model.compute_flux_split(t_after, at.data(), rxns, net[steps].data(),
+                                             gross[steps].data());
+                }
+                std::vector<double> once(n, 0.0);
+                std::vector<double> twice(n, 0.0);
+                std::vector<double> above(n, 0.0);
+                for (std::size_t u = 0; u < n; ++u) {
+                    once[u] = std::fabs(net[1][u] - net[0][u]);
+                    twice[u] = std::fabs(net[2][u] - net[0][u]);
+                    above[u] =
+                        kHiddenJumpRelTol * std::max(std::fabs(net[0][u]), std::fabs(net[1][u])) +
+                        kStateSwitchAgreeRoundoff * eps * std::max(gross[0][u], gross[1][u]);
+                }
+                jumps = some_species_jumps(once, above, twice);
+            }
+        }
+        sync_model_at(t_evt, after.data(), ns);
+        if (jumps) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: at " << what << " at t=" << t_evt
+                << ", which a requested parameter moves, the state is on the surface of the "
+                   "state-dependent rate-law switch with residual '"
+                << held->residual_source
+                << "', or within what the tolerances allow of it, and the right-hand side "
+                   "jumps across that surface. The two cross on one instant, and whether the "
+                   "state switch flips there, and when, is not known: no root is reported for "
+                   "a residual that leaves 0 without coming through it, or that comes to it "
+                   "and turns back (issue #"
+                << issue
+                << "). Start the state off the threshold, or drop the parameters that move "
+                   "that time from sensitivity_params.";
+            throw std::runtime_error(msg.str());
+        }
+    }
+    sync_model_at(t_evt, after.data(), ns);
+}
+
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     void *cvode_mem, N_Vector y, int ns, double t_evt,
     const std::vector<const NetworkModel::StateSwitch *> &batch,
@@ -9684,6 +10185,496 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             judge_as_before(true);
         }
     }
+    // ── A clock switch or an event on this instant (issues #946, #945) ───────
+    // The jump of this switch is the whole right-hand side a probe step before
+    // the crossing less the same a step after it, with the time moved as the
+    // state is. A rate-law condition on a clock that switches between the two
+    // probes is in that difference, and its jump was given this switch's
+    // dt*/dθ: `piecewise(k, time >= thr, 0)` beside `piecewise(k, S >= 0.5*thr,
+    // 0)` with S = 0.5·t returned dX/dthr = −1 for −0.5, the time switch's own
+    // record (issue #48) adding the same jump again, and a fixed gate on the
+    // instant gave a column that should be 0 this switch's shift.
+    //
+    // And where this crossing's time is not known apart from a clock switch's
+    // or an event's, their order is not known either. Composed, in one rate
+    // law or an event that changes what the switched law reads, the result
+    // has a kink there under a parameter that moves one and not the other,
+    // and the run returned one side of it (issue #945): dW/dtau = −3.15 on
+    // the kink −1.05 | −3.15.
+    //
+    // Asked before it is known whether the law jumps here. A gate that closes
+    // the window on the instant, or an event that sets what the law reads to
+    // 0, leaves nothing for this crossing to jump by, and the kink is there
+    // all the same: `piecewise(k, S >= 0.5*thr, 0)*piecewise(0, time >= 3, 1)`
+    // is −0.5 | 0 and read as continuous.
+    //
+    // How far apart is apart: the probes reach two steps either way, and the
+    // root is where the residual is within what the tolerances allow it,
+    // which over the rate it comes to the surface at is a time. That rate is
+    // the flow before the crossing: a law that slows the species it switches
+    // on a thousandfold says nothing of how fast it got there.
+    {
+        // What else switches between the probes is asked of the instants the
+        // run knows. Every condition on a clock that a run with sensitivities
+        // takes is a fitted switch time or a stop the resolvers place (a
+        // threshold, a schedule, a step edge, and since issue #714 a
+        // polynomial or a sinusoid); one they cannot place is refused before
+        // the run. An earlier cut asked the right-hand side itself, with the
+        // switch's species held and the rest put across: a term that rounds as
+        // a staircase read as a jump there, and a switch beside one was
+        // refused with no clock in the model.
+        const double step = dt_used != 0.0 ? dt_used : dt;
+        // The reach: how well the crossing's time is known. Two probe steps,
+        // and what the run's tolerances allow the residual over the rate the
+        // state comes to the surface at. A crossing the species comes to with
+        // next to no flow has a time the tolerances leave open that far, and
+        // it is asked about that far. With no flow at all, a state started
+        // off the surface it sat on, there is nothing to divide by, and it
+        // is a hundred times the relative tolerance of the time.
+        double reach = 2.0 * step;
+        bool residual_jumps = false;
+        double approach = 0.0; // the residual's flow as the state comes to the surface
+        {
+            std::vector<double> gx;
+            double scale = 0.0;
+            // The probes step along the flow at the crossing, which is what the
+            // residual changes by between them.
+            const double flow_here =
+                residual_flow(sw.residual_expr_idx, sw.species, t_evt, ns, x, f0, gx, scale);
+            double flow =
+                residual_flow(sw.residual_expr_idx, sw.species, t_evt, ns, x, f_minus, gx, scale);
+            if (!std::isfinite(flow) || flow == 0.0) {
+                flow = flow_here;
+            }
+            approach = flow;
+            double allowed = 0.0;
+            for (int j : sw.species) {
+                const auto uj = static_cast<std::size_t>(j);
+                if (j >= 0 && j < ns) {
+                    const double atol_j = run_atol_vec.empty() ? run_atol : run_atol_vec[uj];
+                    allowed += std::fabs(gx[uj]) * (run_rtol * std::fabs(x[uj]) + atol_j);
+                }
+            }
+            if (std::isfinite(flow) && flow != 0.0 && std::isfinite(allowed)) {
+                reach += allowed / std::fabs(flow);
+            } else {
+                reach += 100.0 * run_rtol * std::max(std::fabs(t_evt), 1.0);
+            }
+            // A residual that is far from 0 on both sides of the probes has
+            // not come through 0: it jumped across it, with a condition on a
+            // clock inside it, `t - if(t < t1, a, b)` at t1. That is the clock's
+            // switch seen again. Where the right-hand side is continuous
+            // across it there is no jump of this switch's to make, and it is
+            // no crossing of its own (below). Where it jumps, the clock's own
+            // record makes that jump and this switch makes it again: dX/dt1
+            // came back 1 for 0.5. That one is asked about as any other.
+            const double through =
+                1e3 * std::max({std::fabs(flow) * step,
+                                std::isfinite(flow_here) ? std::fabs(flow_here) * step : 0.0,
+                                64.0 * std::numeric_limits<double>::epsilon() * scale});
+            residual_jumps = true;
+            for (std::size_t k = 0; k < nb; ++k) {
+                residual_jumps = residual_jumps && std::isfinite(g_before[k]) &&
+                                 std::isfinite(g_after[k]) &&
+                                 std::min(std::fabs(g_before[k]), std::fabs(g_after[k])) > through;
+            }
+            sync(x, t_evt);
+        }
+        // What the crossing reads: its species, and the time where a residual
+        // reads that too, `S + time >= thr`.
+        std::vector<int> crossing_reads(residual_support);
+        {
+            const double width = 1e-6 * std::max(std::fabs(t_evt), 1.0);
+            bool reads_time = false;
+            for (std::size_t k = 0; k < nb; ++k) {
+                sync(x, t_evt - width);
+                const double g_lo = eval.evaluate(batch[k]->residual_expr_idx);
+                sync(x, t_evt + width);
+                const double g_hi = eval.evaluate(batch[k]->residual_expr_idx);
+                reads_time = reads_time || !(g_lo == g_hi);
+            }
+            sync(x, t_evt);
+            if (reads_time) {
+                crossing_reads.push_back(kReadsTime);
+            }
+        }
+        // What is that near, and whether a column moves it: a fitted switch
+        // time, or a counter that a column moves.
+        //
+        // A condition on a counter alone, `t >= if(t < t1, a, b)`, is a root
+        // here and, to the resolver that places the stops, a fixed crossing
+        // (issue #714): the run stops a few ulp past where the counter
+        // reaches a. That stop is near like any other. Whether it is this
+        // crossing seen again, or a gate on the same value of the counter,
+        // cannot be told by moving the counter, which flips both.
+        double near_clock = std::numeric_limits<double>::quiet_NaN();
+        bool near_clock_moves = false;
+        std::vector<std::size_t> near_clocks;
+        for (auto at =
+                 std::lower_bound(clock_instants.begin(), clock_instants.end(), t_evt - reach);
+             at != clock_instants.end() && *at <= t_evt + reach; ++at) {
+            const auto idx = static_cast<std::size_t>(at - clock_instants.begin());
+            near_clocks.push_back(idx);
+            near_clock = *at;
+            near_clock_moves = near_clock_moves || clock_instant_moves[idx] != 0;
+            const int counter = clock_instant_species[idx];
+            for (int c = 0; counter >= 0 && counter < ns && c < n_sens; ++c) {
+                near_clock_moves =
+                    near_clock_moves ||
+                    s[static_cast<std::size_t>(c)][static_cast<std::size_t>(counter)] != 0.0;
+            }
+        }
+        if (residual_jumps && continuous) {
+            near_clock = std::numeric_limits<double>::quiet_NaN();
+            near_clock_moves = false;
+        }
+        double near_fire = std::numeric_limits<double>::quiet_NaN();
+        bool near_fire_moves = false;
+        std::vector<const EventFire *> near_fires;
+        for (auto fire = event_fires.rbegin();
+             fire != event_fires.rend() && std::fabs(t_evt - fire->t) <= reach; ++fire) {
+            if (!one_trajectory(fire->reads, crossing_reads)) {
+                near_fires.push_back(&*fire);
+                near_fire = fire->t;
+                near_fire_moves = near_fire_moves || fire->moves;
+            }
+        }
+        if (event_fires.size() >= kCrossingsKept && t_evt - event_fires.front().t <= reach) {
+            near_fire = event_fires.front().t;
+            near_fire_moves = true;
+        }
+        if (residual_jumps && continuous) {
+            near_fire = std::numeric_limits<double>::quiet_NaN();
+        }
+        // ── A crossing the right-hand side is continuous across ───────────
+        // A bend, `if(X > X0, k·(X − X0), 0)` where a stimulus starts X off
+        // the X0 it sat on, has nothing to give a shift to and no kink beside
+        // a gate or an event: it is 0 at its surface whichever comes first.
+        // What is not a bend is a jump that is hidden where the crossing is:
+        // by a gate that is closed there, or an event that has set what the
+        // law reads to 0. So a crossing that reads as continuous is asked
+        // about only where the law jumps across the same surface with what is
+        // near put on its other side: the time, or the counter, past the
+        // clock's switch either way, and the rest of the state as it was
+        // before the event.
+        std::vector<int> own_species;
+        std::vector<double> x_own;
+        std::vector<double> f_own;
+        for (int j : residual_support) {
+            if (j >= 0 && j < ns &&
+                std::find(own_species.begin(), own_species.end(), j) == own_species.end()) {
+                own_species.push_back(j);
+                x_own.push_back(x[static_cast<std::size_t>(j)]);
+                f_own.push_back(f0[static_cast<std::size_t>(j)]);
+            }
+        }
+        // Several switches on one instant can hide each other's jump the same
+        // way. `if(Sobs >= lvl, k, 0)*if(exp(t) >= c, 0, 1)`, the two crossing
+        // within what the root finder tells apart: the law is 0 before both
+        // and 0 after both, and k between them where the first comes first.
+        // Read across both it is continuous, and dY/dthr came back 0 on the
+        // kink −k | 0. Which jump hides which cannot be asked of two
+        // conditions on one species, `S >= 0.5*thr` beside `S >= 1.5`. So two
+        // that one rate law reads and a column moves apart are refused where
+        // one shows a jump with the other held to a side, or where they
+        // cannot be asked apart. Two that every column moves
+        // together, one residual written twice, have an order nothing
+        // changes; and two that no rate law reads both of have nothing of
+        // each other's to hide.
+        if (continuous && nb >= 2 && !residual_jumps) {
+            std::vector<std::vector<double>> moved_by(nb);
+            bool known = true;
+            for (std::size_t k = 0; known && k < nb; ++k) {
+                std::vector<double> shift;
+                std::vector<double> size;
+                std::vector<double> gx;
+                double scale = 0.0;
+                residual_shift(batch[k]->residual_expr_idx, batch[k]->species, t_evt, ns, x,
+                               f_minus, s, sens, shift, size, scale);
+                const double flow = residual_flow(batch[k]->residual_expr_idx, batch[k]->species,
+                                                  t_evt, ns, x, f_minus, gx, scale);
+                known = std::isfinite(flow) && flow != 0.0;
+                for (std::size_t c = 0; known && c < shift.size(); ++c) {
+                    moved_by[k].push_back(-shift[c] / flow);
+                }
+            }
+            sync(x, t_evt);
+            // Whether a rate law reads both: only then can one hide the other's
+            // jump. A switch with no reaction map is taken to share with all.
+            auto share_a_law = [&](std::size_t a, std::size_t b) {
+                auto ra = state_switch_rxns.find(batch[a]);
+                auto rb = state_switch_rxns.find(batch[b]);
+                if (ra == state_switch_rxns.end() || rb == state_switch_rxns.end()) {
+                    return true;
+                }
+                return std::any_of(ra->second.begin(), ra->second.end(), [&](int r) {
+                    return std::find(rb->second.begin(), rb->second.end(), r) != rb->second.end();
+                });
+            };
+            // Whether one of two hides a jump of the other's: each is asked
+            // alone, with the species the other reads a step before. Two
+            // clamps added in one law show nothing. Asked only of a pair that
+            // reads no species in common: with a third on the instant, or a
+            // species both read, one cannot be moved alone, and what cannot
+            // be asked is refused.
+            auto may_hide = [&](std::size_t a, std::size_t b) {
+                const auto reads = [&](const NetworkModel::StateSwitch *one, int j) {
+                    return std::find(one->species.begin(), one->species.end(), j) !=
+                           one->species.end();
+                };
+                bool apart = nb == 2;
+                for (int j : batch[a]->species) {
+                    apart = apart && !reads(batch[b], j);
+                }
+                if (!apart) {
+                    return true;
+                }
+                // A jump at the corner that one shows with the other before
+                // it, the other shows with the first after: asked with the
+                // other before, each way round.
+                bool shows = false;
+                for (int way = 0; way < 2 && !shows; ++way) {
+                    const NetworkModel::StateSwitch *one = batch[way == 0 ? a : b];
+                    const NetworkModel::StateSwitch *other = batch[way == 0 ? b : a];
+                    std::vector<int> own_k;
+                    std::vector<double> x_k;
+                    std::vector<double> f_k;
+                    for (int j : one->species) {
+                        if (j >= 0 && j < ns &&
+                            std::find(own_k.begin(), own_k.end(), j) == own_k.end()) {
+                            own_k.push_back(j);
+                            x_k.push_back(x[static_cast<std::size_t>(j)]);
+                            f_k.push_back(f0[static_cast<std::size_t>(j)]);
+                        }
+                    }
+                    std::vector<double> rest(x);
+                    for (int j : other->species) {
+                        if (j >= 0 && j < ns) {
+                            const auto u = static_cast<std::size_t>(j);
+                            rest[u] = x[u] - step * f0[u];
+                        }
+                    }
+                    shows = !own_k.empty() &&
+                            jumps_across_surface(own_k, x_k, f_k, step, rest, t_evt, sub_rxns);
+                }
+                return shows;
+            };
+            // As a batch that jumps has to agree (issue #763): one surface
+            // written twice agrees to the rounding of its two spellings.
+            bool moved_apart = false;
+            for (std::size_t a = 0; known && a < nb; ++a) {
+                for (std::size_t b = a + 1; b < nb; ++b) {
+                    if (!share_a_law(a, b)) {
+                        continue;
+                    }
+                    double worst = 0.0;
+                    double largest = 0.0;
+                    for (std::size_t c = 0; c < moved_by[a].size() && c < moved_by[b].size(); ++c) {
+                        worst = std::max(worst, std::fabs(moved_by[a][c] - moved_by[b][c]));
+                        largest = std::max(
+                            {largest, std::fabs(moved_by[a][c]), std::fabs(moved_by[b][c])});
+                    }
+                    moved_apart = moved_apart ||
+                                  (!(worst <= kStateSwitchTauAgreeTol * largest) && may_hide(a, b));
+                }
+            }
+            sync(x, t_evt);
+            if (moved_apart) {
+                std::ostringstream msg;
+                msg << "Forward sensitivity: " << nb
+                    << " state-dependent rate-law switches cross at the same instant t=" << t_evt
+                    << " (the first with residual '" << sw.residual_source
+                    << "'), in one rate law, and a requested parameter moves one and not "
+                       "another. The right-hand side is the same before and after them "
+                       "together, which does not say it is the same between them: which comes "
+                       "first is not known, and where one hides the other's jump the result "
+                       "has a kink there and no derivative (issue #946). Separate the "
+                       "thresholds, or drop the parameters that move them from "
+                       "sensitivity_params.";
+                throw std::runtime_error(msg.str());
+            }
+        }
+        if (continuous && !residual_jumps && (!std::isnan(near_clock) || !std::isnan(near_fire))) {
+            bool hidden = false;
+            // How far the switch's own species are to be put either side of
+            // where they crossed, in the state `rest` at `t_at`, for every
+            // residual to change sign between the two: 1, 4, 16 or 64 steps,
+            // or 0 where none does. A residual that reads the time, or the
+            // counter the clock is on, has its surface elsewhere once that
+            // is moved.
+            auto straddling = [&](const std::vector<int> &own_at, const std::vector<double> &x_at,
+                                  const std::vector<double> &f_at, std::vector<double> rest,
+                                  double t_at) {
+                for (double hold : {1.0, 4.0, 16.0, 64.0}) {
+                    bool all = true;
+                    for (std::size_t k = 0; all && k < nb; ++k) {
+                        double g_side[2] = {0.0, 0.0};
+                        int slot = 0;
+                        for (double side : {-1.0, 1.0}) {
+                            for (std::size_t o = 0; o < own_at.size(); ++o) {
+                                rest[static_cast<std::size_t>(own_at[o])] =
+                                    x_at[o] + side * hold * step * f_at[o];
+                            }
+                            sync(rest, t_at);
+                            g_side[slot++] = eval.evaluate(batch[k]->residual_expr_idx);
+                        }
+                        all = std::isfinite(g_side[0]) && std::isfinite(g_side[1]) &&
+                              ((g_side[0] < 0.0 && g_side[1] > 0.0) ||
+                               (g_side[0] > 0.0 && g_side[1] < 0.0));
+                    }
+                    if (all) {
+                        return hold;
+                    }
+                }
+                return 0.0;
+            };
+            // Whether the law jumps across this surface in that state. Where
+            // the surface cannot be found there, it cannot be asked.
+            auto shows = [&](const std::vector<int> &own_at, const std::vector<double> &x_at,
+                             std::vector<double> f_at, const std::vector<double> &rest,
+                             double t_at) {
+                const double hold = straddling(own_at, x_at, f_at, rest, t_at);
+                if (hold == 0.0) {
+                    return true;
+                }
+                for (double &f : f_at) {
+                    f *= hold;
+                }
+                return jumps_across_surface(own_at, x_at, f_at, step, rest, t_at, sub_rxns);
+            };
+            for (std::size_t idx : near_clocks) {
+                const int counter = clock_instant_species[idx];
+                // The clock is put on its other side whole: the time, and the
+                // counter where it is on one. Two clocks on one instant are
+                // one stop, and a gate on the time is behind a counter's.
+                // With the counter among the species the switch reads,
+                // `S + Tc >= thr`, the surface is crossed by the others.
+                std::vector<int> own_at;
+                std::vector<double> x_at;
+                std::vector<double> f_at;
+                for (std::size_t o = 0; o < own_species.size(); ++o) {
+                    if (own_species[o] != counter) {
+                        own_at.push_back(own_species[o]);
+                        x_at.push_back(x_own[o]);
+                        f_at.push_back(f_own[o]);
+                    }
+                }
+                if (own_at.empty()) {
+                    continue;
+                }
+                for (double side : {-1.0, 1.0}) {
+                    std::vector<double> rest(x);
+                    const double t_at =
+                        clock_instants[idx] +
+                        side * (4.0 * step + 64.0 * std::numeric_limits<double>::epsilon() *
+                                                 std::max(std::fabs(t_evt), 1.0));
+                    // The rest of the state as it is then, to first order: a
+                    // second counter that reaches its threshold on the same
+                    // instant has no stop of its own to be put across by.
+                    for (int i = 0; i < ns; ++i) {
+                        if (std::find(own_species.begin(), own_species.end(), i) ==
+                            own_species.end()) {
+                            const auto u = static_cast<std::size_t>(i);
+                            rest[u] = x[u] + (t_at - t_evt) * f0[u];
+                        }
+                    }
+                    if (counter >= 0 && counter < ns) {
+                        const double at = clock_instant_threshold[idx];
+                        rest[static_cast<std::size_t>(counter)] =
+                            at +
+                            side * (64.0 * std::numeric_limits<double>::epsilon() *
+                                        std::max(std::fabs(at), 1.0) +
+                                    4.0 * step * std::fabs(f0[static_cast<std::size_t>(counter)]));
+                    }
+                    hidden = hidden || shows(own_at, x_at, f_at, rest, t_at);
+                }
+            }
+            for (const EventFire *fire : near_fires) {
+                if (fire->x_before.size() == static_cast<std::size_t>(ns)) {
+                    hidden = hidden || shows(own_species, x_own, f_own, fire->x_before, fire->t);
+                } else {
+                    hidden = true;
+                }
+            }
+            if (event_fires.size() >= kCrossingsKept && t_evt - event_fires.front().t <= reach) {
+                hidden = true; // a fire that was dropped cannot be asked
+            }
+            sync(x, t_evt);
+            if (!hidden) {
+                near_clock = std::numeric_limits<double>::quiet_NaN();
+                near_fire = std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+        // Whether a column moves this crossing: its own dt*/dθ. Asked where
+        // something is near, and where something may yet come near it.
+        bool moves = false;
+        if (!std::isnan(near_clock) || !std::isnan(near_fire) || model.n_events() > 0) {
+            // By how the residual moves with each column at the crossing,
+            // ∂g/∂x·s + ∂g/∂θ, and not by a dt*/dθ that is not 0. A column
+            // moves the crossing where changing its parameter by the whole of
+            // itself moves the crossing's time by more than the reach: a
+            // species that a gate starts on its way through the threshold it
+            // sat on crosses a few ulp after the gate whatever the rate, and
+            // is found 1e-10 after it with a dt*/dθ of 1e-10. Where there is
+            // no flow to divide by, a state that sits on its surface, it is
+            // a shift over a millionth of the terms it is made of.
+            for (const NetworkModel::StateSwitch *one : batch) {
+                std::vector<double> shift;
+                std::vector<double> size;
+                double scale = 0.0;
+                residual_shift(one->residual_expr_idx, one->species, t_evt, ns, x, f_minus, s, sens,
+                               shift, size, scale);
+                for (std::size_t c = 0; c < shift.size(); ++c) {
+                    const double whole =
+                        c < sens.pbar.size() && sens.pbar[c] > 0.0 ? sens.pbar[c] : 1.0;
+                    if (std::isfinite(approach) && approach != 0.0) {
+                        moves =
+                            moves || !(std::fabs(shift[c]) * whole <= std::fabs(approach) * reach);
+                    } else {
+                        moves = moves || !(std::fabs(shift[c]) <= 1e-6 * size[c]);
+                    }
+                }
+            }
+            sync(x, t_evt);
+        }
+        if (!std::isnan(near_clock) && (moves || near_clock_moves)) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
+                << sw.residual_source << "' crosses at t=" << t_evt << ", within " << reach
+                << " of a condition on a clock, in a rate law or an event's trigger, that "
+                   "switches at t="
+                << near_clock
+                << ". The two are not told apart in time: this switch's jump is read across "
+                   "both, and which comes first is not known. Each is right alone. bngsim "
+                   "refuses rather than give one the other's jump, or one side of a kink "
+                   "(issues #946, #945). Separate the two crossings, or drop the parameters "
+                   "that move them from sensitivity_params.";
+            throw std::runtime_error(msg.str());
+        }
+        if (!std::isnan(near_fire) && (moves || near_fire_moves)) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the state-dependent rate-law switch with residual '"
+                << sw.residual_source << "' crosses at t=" << t_evt << ", within " << reach
+                << " of an event that fired at t=" << near_fire
+                << ". Which of the two comes first is not known to the tolerances of the run, "
+                   "and where the event changes what the switched rate law reads the result has "
+                   "a kink there and no derivative (issue #945). Separate the two in time, or "
+                   "drop sensitivities for this run.";
+            throw std::runtime_error(msg.str());
+        }
+        if (state_crossings.size() >= kCrossingsKept) {
+            state_crossings_dropped_until =
+                std::max(state_crossings_dropped_until,
+                         state_crossings.front().t + state_crossings.front().reach);
+            state_crossings.erase(state_crossings.begin());
+        }
+        if (!(residual_jumps && continuous)) {
+            state_crossings.push_back({t_evt, reach, sw.residual_source, crossing_reads, moves,
+                                       continuous, own_species, x_own, f_own, step,
+                                       judge != Judge::Legacy, batch_rxns});
+        }
+    }
+
     if (continuous) {
         // Issue #545: a continuous crossing is exactly where a comoving column
         // is wanted — a pulse rising from zero past an onset — so ask for
@@ -10097,6 +11088,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     double atol = (opts.atol > 0) ? opts.atol : impl_->atol;
     const std::vector<double> &atol_v = impl_->resolve_atol_vec(opts);
     int max_steps = (opts.max_steps > 0) ? opts.max_steps : impl_->max_steps;
+    impl_->run_rtol = rtol;
+    impl_->run_atol = atol;
+    impl_->run_atol_vec = atol_v;
 
     // Dense vs sparse (KLU) matrix, including the two force flags (GH #102,
     // GH #29) — see Impl::choose_use_sparse.
@@ -10432,6 +11426,45 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     impl_->state_switch_rxns.clear();
     impl_->state_switch_all.clear();
     impl_->state_switch_consumed.clear();
+    {
+        // A stop is a rate-law condition no column moves, or the trigger time
+        // of an event. An event's time may move, and that is asked where it
+        // fires: the stop itself switches nothing.
+        const auto nonzero = [](double d) { return d != 0.0; };
+        struct Instant {
+            double t;
+            char moves;
+            int species;
+            double threshold;
+        };
+        std::vector<Instant> instants;
+        for (const CrossingStop &stop : opts.crossing_stops) {
+            instants.push_back({stop.t_star, 0, stop.clock_species_idx0, stop.threshold});
+        }
+        for (const SwitchTimeSens &record : opts.sensitivity.switch_times) {
+            instants.push_back(
+                {record.t_star,
+                 static_cast<char>(
+                     std::any_of(record.dtstar_dp.begin(), record.dtstar_dp.end(), nonzero) ? 1
+                                                                                            : 0),
+                 record.clock_species_idx0, record.threshold});
+        }
+        std::sort(instants.begin(), instants.end(),
+                  [](const Instant &a, const Instant &b) { return a.t < b.t; });
+        impl_->clock_instants.clear();
+        impl_->clock_instant_moves.clear();
+        impl_->clock_instant_species.clear();
+        impl_->clock_instant_threshold.clear();
+        for (const Instant &one : instants) {
+            impl_->clock_instants.push_back(one.t);
+            impl_->clock_instant_moves.push_back(one.moves);
+            impl_->clock_instant_species.push_back(one.species);
+            impl_->clock_instant_threshold.push_back(one.threshold);
+        }
+    }
+    impl_->event_fires.clear();
+    impl_->state_crossings.clear();
+    impl_->state_crossings_dropped_until = -std::numeric_limits<double>::infinity();
     if (!opts.sensitivity.state_switch_conditions.empty()) {
         const auto &conds = opts.sensitivity.state_switch_conditions;
         const auto &rxn_lists = opts.sensitivity.state_switch_reactions;
@@ -12041,7 +13074,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     evt_s_minus =
                         impl_->capture_event_sens(cvode_mem, ns, static_cast<double>(t_ret), sens);
                 }
-
                 // Issue #545: a comoving column leaves at every restart, and this is
                 // one. A state-switch root does it inside its own jump, against the
                 // probe pair its ladder verifies; any other root here is a GH #72
