@@ -1372,3 +1372,66 @@ def test_an_event_on_a_state_no_column_moves_runs_beside_a_switch_no_column_move
     text = EVENT_ON_STATE.replace("U > {at}", "U > 3.0000000002")
     got = _columns(text, ["q"], EVENT_TIMES)
     np.testing.assert_allclose(got[:, 0], [0.0, 0.0, 33.75, 0.0, 0.0], rtol=1e-7, atol=1e-9)
+
+
+# ── From the fourth review ──────────────────────────────────────────────────
+
+BESIDE_ANOTHER_SOURCE = {
+    # A fitted gate starts X off X0, and Y has another source: dY/dtau = 0 for −0.5.
+    "in-the-same-law": (
+        STARTED.replace("piecewise({law}, X > X0, 0)", "1e6 + piecewise(k, X > X0, 0)"),
+        "tau",
+        946,
+        TIMES,
+    ),
+    "in-another-reaction": (STARTED.format(law="k") + "Jb: -> Y; 1e6\n", "tau", 946, TIMES),
+    # The window closes on the switch's instant: 0 on the kink −0.5 | 0.
+    "a-gate-that-closes-the-window": (
+        HEAD
+        + "Jb: -> Y; 1e6\n"
+        + "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)*piecewise(0, time >= 3, 1)\n",
+        "thr",
+        946,
+        TIMES,
+    ),
+    # An event empties what the law reads: −6.3 on the kink −6.3 | −2.1.
+    "an-event-that-empties-what-the-law-reads": (
+        EVENT.replace("X = 0.5*X", "X = 0").format(at=6) + "Jb: -> W; 1e7\n",
+        "tau",
+        945,
+        EVENT_TIMES,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(BESIDE_ANOTHER_SOURCE))
+def test_a_jump_in_a_species_that_has_another_source_is_seen(case):
+    """The species the switched law makes is also made at 1e6, and the jump
+    is 0.5: read against a millionth of the species' own rate it was no
+    jump. A jump is a change above the rounding of the flux that going
+    further from the surface does not grow, whatever is made beside it."""
+    text, param, issue, times = BESIDE_ANOTHER_SOURCE[case]
+    _refused(text, [param], issue, times)
+
+
+TWO_SPECIES = (
+    "species S, Z, Y; S = 0; Z = 0; Y = 0; k = 0.5; thr = 3; zt = 1.5\n"
+    "Js: -> S; 0.5\nJz: -> Z; 0.5\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("law", "want"),
+    [
+        ("piecewise(S, S < 0.5*thr, 0.5*thr) + piecewise(Z, Z < zt, zt)", 1.0),
+        ("piecewise(S - 0.5*thr, S >= 0.5*thr, 0) + piecewise(Z - 1.5, Z >= 1.5, 0)", -1.0),
+    ],
+    ids=["two-clamps", "two-ramps"],
+)
+def test_two_bends_added_in_one_rate_law_on_one_instant_run(law, want):
+    """Control. One rate law reads both conditions and thr moves one of
+    them, but each is continuous with the other held to either side: there
+    is no jump for either to hide. An earlier cut refused any two in one law
+    that a column moves apart."""
+    got = _columns(TWO_SPECIES + f"Jy: -> Y; {law}\n", ["thr"])
+    assert got[2, 0] == pytest.approx(want, rel=1e-7)

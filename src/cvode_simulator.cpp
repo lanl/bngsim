@@ -2706,13 +2706,14 @@ struct CvodeSimulator::Impl {
                               const std::vector<double> &f_own, double step,
                               std::vector<double> rest, double t_at);
     // Whether a change in the right-hand side between two points is a jump.
-    // Species by species: `once` is the change at one step and `twice` at
-    // two, and a jump is a change above `above` that does not halve with the
-    // step. `above` is kStateSwitchContinuousRelTol of the species' own rate
-    // at the two points and the rounding of its gross flux. One scale over
-    // every species, the largest net rate in the model, let a bystander made
-    // at 1e6 hide a jump of 0.5; and so did the rate of the species the
-    // switch reads, where that is what is made at 1e6.
+    // Species by species: `once` is the change a step either side and
+    // `twice` the change further out, and a jump is a change above `above`,
+    // the rounding of the species' gross flux, that going further out does
+    // not grow. No rate is too large for a jump beside it to matter: read
+    // against a millionth of the largest net rate in the model, of the rate
+    // of the species the switch reads, or of the species' own rate, a jump
+    // of 0.5 was hidden by a bystander, by the switch's species, or by
+    // another source of its own species, made at 1e6.
     static bool some_species_jumps(const std::vector<double> &once,
                                    const std::vector<double> &above,
                                    const std::vector<double> &twice) {
@@ -8609,10 +8610,22 @@ bool CvodeSimulator::Impl::jumps_across_surface(const std::vector<int> &own,
     std::vector<double> hi(n, 0.0);
     std::vector<double> gross_lo(n, 0.0);
     std::vector<double> gross_hi(n, 0.0);
-    auto across = [&](double h, std::vector<double> &change, std::vector<double> &above) {
+    const double eps = std::numeric_limits<double>::epsilon();
+    // The species `out` times as far either side as the step puts them; and
+    // where `wide`, no nearer than a thousand ulp of the species itself. A
+    // term that rounds as a staircase, `k*((B - off) + off - thr)`, moves by
+    // its rounding at one step and at two alike. Out where the species has
+    // moved by more than its own rounding it has grown, and a jump has not.
+    auto across = [&](double out, bool wide, std::vector<double> &change,
+                      std::vector<double> &above) {
         auto read = [&](double side, std::vector<double> &net, std::vector<double> &gross) {
             for (std::size_t k = 0; k < own.size(); ++k) {
-                rest[static_cast<std::size_t>(own[k])] = x_own[k] + side * h * f_own[k];
+                double by = out * step * f_own[k];
+                if (wide && by != 0.0) {
+                    by = std::copysign(std::max(std::fabs(by), 1024.0 * eps * std::fabs(x_own[k])),
+                                       by);
+                }
+                rest[static_cast<std::size_t>(own[k])] = x_own[k] + side * by;
             }
             model.compute_flux_split(t_at, rest.data(), nullptr, net.data(), gross.data());
         };
@@ -8622,17 +8635,15 @@ bool CvodeSimulator::Impl::jumps_across_surface(const std::vector<int> &own,
         above.assign(n, 0.0);
         for (std::size_t u = 0; u < n; ++u) {
             change[u] = std::fabs(hi[u] - lo[u]);
-            above[u] = kStateSwitchContinuousRelTol * std::max(std::fabs(lo[u]), std::fabs(hi[u])) +
-                       kStateSwitchAgreeRoundoff * std::numeric_limits<double>::epsilon() *
-                           std::max(gross_lo[u], gross_hi[u]);
+            above[u] = kStateSwitchAgreeRoundoff * eps * std::max(gross_lo[u], gross_hi[u]);
         }
     };
     std::vector<double> once;
     std::vector<double> twice;
     std::vector<double> above;
     std::vector<double> above_twice;
-    across(step, once, above);
-    across(2.0 * step, twice, above_twice);
+    across(1.0, false, once, above);
+    across(2.0, true, twice, above_twice);
     return some_species_jumps(once, above, twice);
 }
 
@@ -8785,9 +8796,7 @@ void CvodeSimulator::Impl::refuse_a_switch_on_its_surface_here(
                 for (std::size_t u = 0; u < n; ++u) {
                     once[u] = std::fabs(net[1][u] - net[0][u]);
                     twice[u] = std::fabs(net[2][u] - net[0][u]);
-                    above[u] = kStateSwitchContinuousRelTol *
-                                   std::max(std::fabs(net[0][u]), std::fabs(net[1][u])) +
-                               kStateSwitchAgreeRoundoff * eps * std::max(gross[0][u], gross[1][u]);
+                    above[u] = kStateSwitchAgreeRoundoff * eps * std::max(gross[0][u], gross[1][u]);
                 }
                 jumps = some_species_jumps(once, above, twice);
             }
@@ -10361,10 +10370,12 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // Read across both it is continuous, and dY/dthr came back 0 on the
         // kink −k | 0. Which jump hides which cannot be asked of two
         // conditions on one species, `S >= 0.5*thr` beside `S >= 1.5`. So two
-        // that one rate law reads and a column moves apart are refused. Two
-        // that every column moves together, one residual written twice, have
-        // an order nothing changes; and two that no rate law reads both of
-        // have nothing of each other's to hide.
+        // that one rate law reads and a column moves apart are refused where
+        // one shows a jump with the other held to a side, or where they read
+        // the same species and cannot be asked. Two that every column moves
+        // together, one residual written twice, have an order nothing
+        // changes; and two that no rate law reads both of have nothing of
+        // each other's to hide.
         if (continuous && nb >= 2 && !residual_jumps) {
             std::vector<std::vector<double>> moved_by(nb);
             bool known = true;
@@ -10395,6 +10406,49 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                     return std::find(rb->second.begin(), rb->second.end(), r) != rb->second.end();
                 });
             };
+            // Whether one of two hides a jump of the other's: each is asked
+            // alone, with the species only the other reads a step to either
+            // side. Two clamps added in one law, or a ramp under a gate, show
+            // nothing. Two on the same species cannot be asked.
+            auto may_hide = [&](std::size_t a, std::size_t b) {
+                bool asked = false;
+                bool shows = false;
+                for (int way = 0; way < 2 && !shows; ++way) {
+                    const NetworkModel::StateSwitch *one = batch[way == 0 ? a : b];
+                    const NetworkModel::StateSwitch *other = batch[way == 0 ? b : a];
+                    std::vector<int> own_k;
+                    std::vector<double> x_k;
+                    std::vector<double> f_k;
+                    for (int j : one->species) {
+                        if (j >= 0 && j < ns &&
+                            std::find(own_k.begin(), own_k.end(), j) == own_k.end()) {
+                            own_k.push_back(j);
+                            x_k.push_back(x[static_cast<std::size_t>(j)]);
+                            f_k.push_back(f0[static_cast<std::size_t>(j)]);
+                        }
+                    }
+                    std::vector<int> others;
+                    for (int j : other->species) {
+                        if (j >= 0 && j < ns &&
+                            std::find(own_k.begin(), own_k.end(), j) == own_k.end()) {
+                            others.push_back(j);
+                        }
+                    }
+                    if (own_k.empty() || others.empty()) {
+                        continue;
+                    }
+                    asked = true;
+                    for (double side : {-1.0, 1.0}) {
+                        std::vector<double> rest(x);
+                        for (int j : others) {
+                            const auto u = static_cast<std::size_t>(j);
+                            rest[u] = x[u] + side * step * f0[u];
+                        }
+                        shows = shows || jumps_across_surface(own_k, x_k, f_k, step, rest, t_evt);
+                    }
+                }
+                return shows || !asked;
+            };
             // As a batch that jumps has to agree (issue #763): one surface
             // written twice agrees to the rounding of its two spellings.
             bool moved_apart = false;
@@ -10410,9 +10464,11 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                         largest = std::max(
                             {largest, std::fabs(moved_by[a][c]), std::fabs(moved_by[b][c])});
                     }
-                    moved_apart = moved_apart || !(worst <= kStateSwitchTauAgreeTol * largest);
+                    moved_apart = moved_apart ||
+                                  (!(worst <= kStateSwitchTauAgreeTol * largest) && may_hide(a, b));
                 }
             }
+            sync(x, t_evt);
             if (moved_apart) {
                 std::ostringstream msg;
                 msg << "Forward sensitivity: " << nb
