@@ -370,7 +370,7 @@ struct CvodeUserData {
     // or through another derived parameter, in derivation order. Every other
     // derived parameter's inputs are at the nominal point, so its value is the
     // snapshot's. probe_fast[p] says p may take that path; it is 0 for a
-    // derived p, which the full re-derivation overwrites with its expression.
+    // derived p, which takes the full re-derivation, held at its probe value.
     std::vector<std::vector<int>> probe_dependents;
     std::vector<char> probe_fast;
 
@@ -1095,13 +1095,25 @@ static std::vector<Parameter> &sync_sens_params(CvodeUserData *data) {
             return params;
         }
     }
+    // The parameter a probe has moved, where it has moved exactly one.
+    int probed = -1;
+    int n_moved = 0;
     for (int i = 0; i < n; ++i) {
         params[i].value = synced(i);
         if (data->sens_p_nominal != nullptr &&
-            off_nominal(params[i].value, data->sens_p_nominal[i]))
+            off_nominal(params[i].value, data->sens_p_nominal[i])) {
             data->params_off_nominal = true;
+            probed = i;
+            ++n_moved;
+        }
     }
-    const_cast<NetworkModel *>(data->model)->refresh_derived_params();
+    // A probed parameter that is itself derived is held at its probe value
+    // (issue #707). Re-derived with the rest, `kd = 2*k0` went back to 2·k0 at
+    // the unprobed k0 before f was read, the probed right-hand side was the
+    // nominal one, and the column for kd came back exactly 0. What reads kd is
+    // still re-derived, from the probed kd. A probed primary is held by
+    // nothing: it has no expression to go back to.
+    const_cast<NetworkModel *>(data->model)->refresh_derived_params(n_moved == 1 ? probed : -1);
     note_nominal_point(data, params);
     return params;
 }
