@@ -1017,6 +1017,16 @@ struct SwitchTimeSens {
     // one instant of it (issue #767). It has no record, and flips with every
     // nudge of the clock that reads this one.
     bool fixed_on_instant = false;
+    // The other crossings on this instant, each as its clock and the value it
+    // crosses at: (-1, t*) for the time, (species, threshold) for a counter.
+    // The test of whether the instant's conditions commute puts every clock
+    // before the earliest of these and past the latest (issue #951).
+    std::vector<std::pair<int, double>> instant_clocks;
+    // Every crossing on this instant that is on another clock, in the same
+    // form, whether or not a rate law reads it together with this one. No
+    // nudge of this crossing's clock flips those, and the right-hand side a
+    // comoving column enters its frame against has to have them made.
+    std::vector<std::pair<int, double>> instant_other_clocks;
 };
 
 // One event whose crossing time moves with the sensitivity parameters (issue

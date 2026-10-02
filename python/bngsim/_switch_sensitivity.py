@@ -33,12 +33,13 @@ bit-for-bit identical to the pre-#48 path.
 
 from __future__ import annotations
 
+import bisect
 import functools
 import logging
 import math
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import NamedTuple
 
@@ -2170,7 +2171,7 @@ def _reads_clock_and_run_constants(flat: str, scope: SwitchConditionScope) -> bo
     return True
 
 
-def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
+def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -> tuple[str, ...]:
     """Every rate-law branch condition this model switches on a *clock* alone with.
 
     The ``.net``/BNGL answer to the question the SBML loader answers at load
@@ -2206,6 +2207,10 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
     Empty for a model with no functions, and for the far more common model whose
     conditions read state rather than a clock, so nothing about its stepping
     changes.
+
+    ``steps_only`` returns the step calls alone. The sensitivity detector reads
+    the conditions itself, with what each threshold's crossing moves with, and
+    needs only what it does not read (issue #944).
     """
     from bngsim._jacobian import _inline_functions, has_condition_construct
 
@@ -2285,9 +2290,10 @@ def time_discontinuity_conditions(core, ctx=None) -> tuple[str, ...]:
             else:
                 admit(arg)
 
+    n_conditions = len(found)
     for text in stepped:
         admit(_inline_functions(text, func_map) or text)
-    return tuple(found)
+    return tuple(found[n_conditions:] if steps_only else found)
 
 
 # Resolved schedule and step-edge lists, keyed by :func:`_stop_memo_key`: the
@@ -4431,6 +4437,19 @@ class SwitchCrossing(NamedTuple):
     record, so the core cannot see it, and it flips with every nudge of the
     clock that reads this one. An event on the instant comes apart from it
     under any parameter that moves the event.
+
+    ``instant_clocks`` lists the other crossings on this instant that a rate
+    law reads together with this one, each as its clock and the value it
+    crosses at: ``(-1, t*)`` for the time and ``(species, threshold)`` for a
+    counter. The core's test of whether the conditions on an instant commute
+    needs them all flipped (issue #951): a nudge of this crossing's clock does
+    not flip a condition on another, and one about this crossing's own time
+    does not reach one on the same clock that is a few ulp on.
+
+    ``instant_other_clocks`` lists every crossing on the instant that is on
+    another clock, in the same form, composed with this one or not. A column
+    that enters a comoving frame at this crossing enters it against the whole
+    right-hand side, which has to be read with those made.
     """
 
     t_star: float
@@ -4440,6 +4459,8 @@ class SwitchCrossing(NamedTuple):
     isolate_param_idx0: list[int]
     isolate_delta: list[float]
     fixed_on_instant: bool = False
+    instant_clocks: list[tuple[int, float]] = []
+    instant_other_clocks: list[tuple[int, float]] = []
 
 
 class _Crossing(NamedTuple):
@@ -4457,6 +4478,29 @@ class _Crossing(NamedTuple):
     # column a caller reads and the identity two crossings are compared on stay
     # separate questions.
     partials: dict[str, float]
+    # The least and the greatest of the values folded into this crossing, on
+    # its clock, where they are not all one: two thresholds that agree to 12
+    # digits are one crossing (:func:`_is_same_crossing`) and need not be one
+    # double. ``threshold`` is the first one found, which depends on the order
+    # the rate laws are written in; what is on the instant does not.
+    lo: float | None = None
+    hi: float | None = None
+    # The condition atoms, and step calls, this crossing was found from. Which
+    # rate laws read them decides whether two crossings on one instant can be
+    # composed at all (:func:`_emit_switch_records`). Empty where that is not
+    # known, which is read as "any of them".
+    atoms: frozenset[str] = frozenset()
+
+
+def _on_clock(cross: _Crossing) -> float:
+    """Where ``cross`` sits on its own clock: a time, or a counter's value."""
+    return cross.threshold if cross.clock_idx0 >= 0 else cross.t_star
+
+
+def _extent(cross: _Crossing) -> tuple[float, float]:
+    """The least and the greatest value folded into ``cross``, on its clock."""
+    at = _on_clock(cross)
+    return (at if cross.lo is None else cross.lo, at if cross.hi is None else cross.hi)
 
 
 def _q(x: float) -> str:
@@ -4537,7 +4581,10 @@ def _absorb_crossing(
             for c, v in enumerate(cand.dtstar):
                 if abs(v) > abs(merged[c]):
                     merged[c] = v
-            found[i] = seen._replace(dtstar=merged)
+            lo = min(*_extent(seen), _on_clock(cand))
+            hi = max(*_extent(seen), _on_clock(cand))
+            atoms = seen.atoms | cand.atoms if seen.atoms and cand.atoms else frozenset()
+            found[i] = seen._replace(dtstar=merged, lo=lo, hi=hi, atoms=atoms)
             return
     if bucket is not None:
         bucket.append(len(found))
@@ -4561,6 +4608,7 @@ def _isolation_bump(
     group: Sequence[_Crossing],
     param_idx: dict[str, int],
     thresholds_on_clock: AbstractSet[float],
+    composed: Sequence[_Crossing] = (),
 ) -> tuple[int, float]:
     """The ``(param_idx0, delta)`` that takes ``cross`` alone off this instant.
 
@@ -4626,6 +4674,26 @@ def _isolation_bump(
     # worth failing over. Kept as the thing that fails instead, with the margin
     # itself pinned by test_the_quantisation_leaves_room_for_the_isolation_step.
     floor = _ISOLATION_MIN_ULP * _EPS * span
+    # The core reads at the whole hair, at half of it and, where it asks
+    # whether the instant commutes, at a quarter, with the clock a nudge past
+    # the crossing — or, where a rate law reads it together with others on the
+    # instant (``composed``), a nudge past the latest of those. The shortest
+    # reading has to clear that, or it has this condition already made: with
+    # two gates of its own law 2,000 and 9,000 ulp after a switch the hair is
+    # capped at 2,252 ulp, half of it is short of 2,064, and the column came
+    # back +1 for −1.
+    extent = max(
+        (
+            abs(at - _on_clock(cross))
+            for other in composed
+            if other.clock_idx0 == cross.clock_idx0
+            for at in _extent(other)
+        ),
+        default=0.0,
+    )
+    # The quarter is read only where the crossing is composed with another.
+    shortest = 4.0 if any(other is not cross for other in composed) else 2.0
+    floor = max(floor, shortest * (extent + 2.0 * _INSTANT_ULPS * _EPS * span))
     if delta_threshold < floor:
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported on this model: the switch times "
@@ -4635,6 +4703,111 @@ def _isolation_bump(
             "bngsim refuses rather than return a merged jump."
         )
     return param_idx[name], delta_threshold / private[name]
+
+
+# How many (step call, moved crossing) pairs are evaluated one at a time, for
+# a step call whose edges cannot be listed. Each is two sympy evaluations.
+_STEP_PROBE_PAIRS = 2048
+
+
+def _steps_on_instants(
+    core,
+    ctx,
+    scope: SwitchConditionScope,
+    t_start: float,
+    t_end: float,
+    moved: Sequence[_Crossing],
+) -> list[_Crossing]:
+    """The step calls outside every condition that step on a moved crossing's
+    instant, each as a crossing no parameter moves (issue #944).
+
+    A call whose edges :func:`_step_edge_stop_times` lists, ``floor(time/3)``
+    or the sawtooth of a dose ramp, is asked from that list, which the stops
+    of the run already paid for: an edge within the core's nudge of a moved
+    crossing is on its instant. The window is taken a nudge past its end,
+    because an edge on the last instant of a run is one too.
+
+    A call it cannot list, ``floor(time^2/9)``, ``floor(exp(time - 3))`` or
+    one with more edges in the window than are listed, is evaluated a nudge
+    before and a nudge after each moved crossing instead, which asks the one
+    thing that matters here whatever the call is. A call that cannot be
+    evaluated, or that reads two clocks, is taken to step: reading a crossing
+    apart from a step that is not there costs nothing.
+
+    Raises
+    ------
+    SensitivityUnsupportedError
+        Where the calls that have to be evaluated and the moved crossings are
+        more than :data:`_STEP_PROBE_PAIRS` pairs. Leaving the rest unasked
+        would be right for the first two thousand crossings and silently wrong
+        after them.
+    """
+    calls = time_discontinuity_conditions(core, ctx, steps_only=True)
+    if not calls:
+        return []
+    times = sorted({cross.t_star for cross in moved})
+
+    def reach(t: float, offset: float) -> float:
+        # The nudge of the clock the call reads: a counter is nudged about its
+        # own value, which is the time plus where the counter started.
+        return (_INSTANT_ULPS + 4.0) * _EPS * max(abs(t), abs(t + offset), 1.0)
+
+    def on(t: float, clock_idx: int, offset: float, call: str) -> _Crossing:
+        return _Crossing(
+            t_star=t,
+            clock_idx0=clock_idx,
+            threshold=t + offset if clock_idx >= 0 else t,
+            dtstar=[],
+            partials={},
+            atoms=frozenset({call}),
+        )
+
+    out: list[_Crossing] = []
+    pairs = 0
+    for call in calls:
+        rewrite = _rewrite_counter_clock(core, call, scope, t_start)
+        if rewrite is None:
+            out.extend(on(t, -1, 0.0, call) for t in times)
+            continue
+        text, clock_idx, offset = rewrite
+        edges = _step_edge_stop_times(text, scope, t_start, t_end + 2.0 * reach(t_end, offset))
+        if edges is not None:
+            listed = sorted(edges)
+            for t in times:
+                i = bisect.bisect_left(listed, t)
+                near = [listed[j] for j in (i - 1, i) if 0 <= j < len(listed)]
+                if any(abs(edge - t) <= reach(t, offset) for edge in near):
+                    out.append(on(t, clock_idx, offset, call))
+            continue
+        pairs += len(times)
+        if pairs > _STEP_PROBE_PAIRS:
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported on this run: the rate law steps at "
+                f"{call!r}, "
+                "a step call whose edges bngsim cannot list, and the requested parameters move "
+                f"{len(times)} switch times in the reported window. Whether one of them lands on "
+                "a step is asked by evaluating the call beside each, and that is not done for "
+                f"more than {_STEP_PROBE_PAIRS} of them: the rest would be read with the step "
+                "inside their bracket (issue #944). Shorten the reported time window, or drop "
+                "the parameters that move the switch times from sensitivity_params."
+            )
+
+        def at(t: float, text: str = text) -> float | None:
+            try:
+                return _evaluate_threshold(
+                    _TIME_REF.sub(f"({t!r})", text),
+                    scope.param_idx,
+                    scope.values,
+                    scope.derived_exprs,
+                )
+            except Exception:  # noqa: BLE001 - a call this cannot read is taken to step
+                return None
+
+        for t in times:
+            before, after = at(t - reach(t, offset)), at(t + reach(t, offset))
+            if before is None or after is None or before != after:
+                out.append(on(t, clock_idx, offset, call))
+    return out
 
 
 def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int]) -> frozenset[int]:
@@ -4756,9 +4929,20 @@ def _instant_groups(found: Sequence[_Crossing]) -> list[list[_Crossing]]:
 
 
 def _emit_switch_records(
-    found: list[_Crossing], param_idx: dict[str, int], moved_clocks: frozenset[int] = frozenset()
+    found: list[_Crossing],
+    param_idx: dict[str, int],
+    moved_clocks: frozenset[int] = frozenset(),
+    atom_laws: Mapping[str, AbstractSet[int]] | None = None,
 ) -> list[SwitchCrossing]:
     """Turn detected crossings into records, isolating any that coincide.
+
+    ``atom_laws`` says which rate laws read each condition. Two crossings on
+    one instant can be composed only where some rate law reads both: a
+    reaction's rate is one law, and the right-hand side adds reactions up.
+    Each record lists, in ``instant_clocks``, the others on its instant that a
+    rate law reads together with it; where there are none the core has
+    nothing to ask about commuting, and reads the crossing's jump as it
+    always did. Without ``atom_laws`` every crossing on the instant is listed.
 
     A crossing no requested parameter moves emits nothing — but it is still in
     ``found``, and its presence on an instant is exactly what puts the crossings
@@ -4777,6 +4961,20 @@ def _emit_switch_records(
         # its own threshold's parameters like any other member.
         return any(v != 0.0 for v in cross.dtstar) or cross.clock_idx0 in moved_clocks
 
+    def laws(cross: _Crossing) -> AbstractSet[int] | None:
+        if atom_laws is None or not cross.atoms:
+            return None
+        read: set[int] = set()
+        for atom in cross.atoms:
+            if atom not in atom_laws:
+                return None
+            read |= atom_laws[atom]
+        return read
+
+    def one_law(a: _Crossing, b: _Crossing) -> bool:
+        la, lb = laws(a), laws(b)
+        return la is None or lb is None or bool(la & lb)
+
     def one_nudge(a: _Crossing, b: _Crossing) -> bool:
         if a.clock_idx0 != b.clock_idx0:
             return False
@@ -4791,7 +4989,11 @@ def _emit_switch_records(
                 continue
             if len(group) > 1:
                 idx0, delta = _isolation_bump(
-                    cross, group, param_idx, thresholds_on_clock[cross.clock_idx0]
+                    cross,
+                    group,
+                    param_idx,
+                    thresholds_on_clock[cross.clock_idx0],
+                    [other for other in group if other is cross or one_law(other, cross)],
                 )
                 isolate_idx, isolate_delta = [idx0], [delta]
             else:
@@ -4808,10 +5010,34 @@ def _emit_switch_records(
                         other is not cross and not emits(other) and one_nudge(other, cross)
                         for other in group
                     ),
+                    instant_clocks=_composed_with(cross, group, one_law),
+                    instant_other_clocks=sorted(
+                        {
+                            (other.clock_idx0, at)
+                            for other in group
+                            if other.clock_idx0 != cross.clock_idx0
+                            for at in _extent(other)
+                        }
+                    ),
                 )
             )
     records.sort(key=lambda r: r.t_star)
     return records
+
+
+def _composed_with(
+    cross: _Crossing, group: Sequence[_Crossing], one_law
+) -> list[tuple[int, float]]:
+    """The other crossings in ``group`` that a rate law reads together with
+    ``cross``, each as its clock and the least and greatest value folded into
+    it; with ``cross``'s own extent where there is one and it is not a point."""
+    others = [other for other in group if other is not cross and one_law(other, cross)]
+    if not others:
+        return []
+    return sorted(
+        {(other.clock_idx0, at) for other in others for at in _extent(other)}
+        | {(cross.clock_idx0, at) for at in _extent(cross) if at != _on_clock(cross)}
+    )
 
 
 def _columns_of(names: Sequence[str]) -> dict[str, tuple[int, ...]]:
@@ -4941,6 +5167,7 @@ def _absorb_schedule_crossings(
                 threshold=value,
                 dtstar=dtstar,
                 partials=_crossing_identity(partials, scope),
+                atoms=frozenset({atom}),
             ),
             found_index,
         )
@@ -5089,10 +5316,15 @@ def compute_switch_time_sens(
     # its six conditions in twenty rate laws, so that is 120 recognizer passes for
     # 6 answers, and the recognizers are where a detection pass spends its time.
     seen_atoms: set[str] = set()
+    # The rate laws that read each atom, by position in ``function_bodies``,
+    # which are inlined: a law that reads a condition through another function
+    # reads it.
+    atom_laws: dict[str, set[int]] = {}
 
-    for body in function_bodies:
+    for law, body in enumerate(function_bodies):
         for cond in _iter_if_conditions(body):
             for atom in _split_logical_atoms(cond):
+                atom_laws.setdefault(atom, set()).add(law)
                 if atom in seen_atoms:
                     continue
                 seen_atoms.add(atom)
@@ -5194,12 +5426,37 @@ def compute_switch_time_sens(
                             threshold=threshold_value,
                             dtstar=dtstar,
                             partials=_crossing_identity(partials, scope),
+                            atoms=frozenset({atom}),
                         ),
                         found_index,
                     )
 
+    # Issue #944: a step call on a clock outside every condition is on its
+    # instants too. The loop above reads conditions, and `floor(time/3)` as a
+    # factor of a rate law is not one: each of its steps was placed as a stop
+    # (#869) and not grouped with the records, so a fitted switch that landed on
+    # one was read with the step inside its bracket, and took the step's jump
+    # into its own column (dW/dtau = −4.2 for 0). A step that sits on a moved
+    # crossing's instant is absorbed here as a crossing no parameter moves,
+    # which is what puts the record onto the isolation path.
+    moved_clocks = _clocks_moved(core, clocks, names, ic_species)
+    moved = [c for c in found if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks]
+    if moved:
+        for step in _steps_on_instants(core, ctx, scope, float(t_start), float(t_end), moved):
+            for call in step.atoms:
+                if call not in atom_laws:
+                    atom_laws[call] = {
+                        law for law, body in enumerate(function_bodies) if call in body
+                    }
+            _absorb_crossing(found, step._replace(dtstar=[0.0] * len(names)), found_index)
+
+    # A rate law that reads ``rateOf(X)`` reads every rate law that changes X,
+    # which the text of neither says: a gate in X's reaction and one in the
+    # law that reads its rate are composed. With `rateOf` in the model every
+    # crossing on an instant is taken as read together with every other.
+    reads_rates = bool(getattr(core, "uses_rateof", False))
     records = _emit_switch_records(
-        found, param_idx, _clocks_moved(core, clocks, names, ic_species)
+        found, param_idx, moved_clocks, None if reads_rates else atom_laws
     )
     if not records:
         return [], []
