@@ -409,7 +409,9 @@ def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
         ("if(X<thr,kb*(thr-X),0)", True),
         ("if(X<thr,0,kb*(X-thr))", True),
         ("if(X<thr,kb,0)", False),
+        ("if(X<thr,kb*(thr-X),kb)", False),
         ("if((X-thr)<0,(-(X-thr))*kb,0)", True),
+        ("if(2*X<0,(-X)*kb,0)", True),
         ("if((2*X-1)<0,(-(2*X-1))/max(Y,0.01),0)", True),
         ("if((2*X-1)<0,(-(2*X-1))/max(Y,zero),0)", False),
         ("if(X<thr,X,thr)", True),
@@ -1047,6 +1049,20 @@ def test_a_rate_law_that_does_not_parse_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(_switch_sensitivity, "_syntax_tree", lambda expr: None)
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="not read"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+def test_a_bend_is_proved_again_when_a_parameter_changes_sign(tmp_path):
+    """``if(Aobs < thr, (thr − Aobs)·kb/max(Aobs, g), 0)``: a ramp over a
+    floor at g = 1e-4, and over what may be 0 at g = 0, where it is not
+    proved a bend."""
+    model = _wider(tmp_path, "if(Aobs<thr,(thr-Aobs)*kb/max(Aobs,g),0)")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+    assert not sim.has_analytic_sens_rhs
+    sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+    model.set_param("g", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
 def test_what_is_kept_between_runs_does_not_grow(tmp_path):
