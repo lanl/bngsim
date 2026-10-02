@@ -1385,6 +1385,13 @@ BESIDE_ANOTHER_SOURCE = {
         TIMES,
     ),
     "in-another-reaction": (STARTED.format(law="k") + "Jb: -> Y; 1e6\n", "tau", 946, TIMES),
+    # What is read is the flux of the reactions that read the switch.
+    "in-another-reaction-at-1e10": (
+        STARTED.format(law="k") + "Jb: -> Y; 1e10\n",
+        "tau",
+        946,
+        TIMES,
+    ),
     # The window closes on the switch's instant: 0 on the kink −0.5 | 0.
     "a-gate-that-closes-the-window": (
         HEAD
@@ -1425,8 +1432,9 @@ TWO_SPECIES = (
     [
         ("piecewise(S, S < 0.5*thr, 0.5*thr) + piecewise(Z, Z < zt, zt)", 1.0),
         ("piecewise(S - 0.5*thr, S >= 0.5*thr, 0) + piecewise(Z - 1.5, Z >= 1.5, 0)", -1.0),
+        ("piecewise(S - 0.5*thr, S >= 0.5*thr, 0)*piecewise(0, Z >= 1.5, 1)", 0.0),
     ],
-    ids=["two-clamps", "two-ramps"],
+    ids=["two-clamps", "two-ramps", "a-ramp-under-a-gate-that-closes-on-its-onset"],
 )
 def test_two_bends_added_in_one_rate_law_on_one_instant_run(law, want):
     """Control. One rate law reads both conditions and thr moves one of
@@ -1434,4 +1442,55 @@ def test_two_bends_added_in_one_rate_law_on_one_instant_run(law, want):
     is no jump for either to hide. An earlier cut refused any two in one law
     that a column moves apart."""
     got = _columns(TWO_SPECIES + f"Jy: -> Y; {law}\n", ["thr"])
-    assert got[2, 0] == pytest.approx(want, rel=1e-7)
+    assert got[2, 0] == pytest.approx(want, rel=1e-7, abs=1e-9)
+
+
+# ── From the fifth review ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        # Two closers: with one put before, the other still keeps the window shut.
+        "piecewise(k, S >= 0.5*thr, 0)*piecewise(0, Z >= 1.5, 1)*piecewise(0, Q >= 1.5, 1)",
+        # A closer that reads the opener's species: neither can be moved alone.
+        "piecewise(k, S >= 0.5*thr, 0)*piecewise(0, Z + S >= 3, 1)",
+    ],
+    ids=["three-on-the-instant", "a-species-both-read"],
+)
+def test_switches_on_one_instant_that_cannot_be_asked_apart_are_refused(law):
+    """The window opens where S reaches 0.5·thr and is closed on the same
+    instant: 0 came back on the kink −0.5 | 0. A pair on different species
+    is asked, each with the other held before; these cannot be."""
+    text = (
+        "species S, Z, Q, Y; S = 0; Z = 0; Q = 0; Y = 0; k = 0.5; thr = 3\n"
+        "Js: -> S; 0.5\nJz: -> Z; 0.5\nJq: -> Q; 0.5\n"
+        f"Jy: -> Y; {law}\n"
+    )
+    _refused(text, ["thr"], 946)
+
+
+def test_two_bends_on_one_species_in_different_rate_laws_run():
+    """Control. Two ramps from thresholds of one species, in two rate laws,
+    with a column that moves one: no law reads both conditions.
+    dY/dthr = −k·(T − thr)/2."""
+    text = HEAD + (
+        "Jx: -> X; piecewise(k*(S - 1.5), S >= 1.5, 0)\n"
+        "Jy: -> Y; piecewise(k*(S - 0.5*thr), S >= 0.5*thr, 0)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["thr"])[:, 0], [0.0, 0.0, -0.5], atol=1e-9)
+
+
+def test_branches_that_meet_to_the_digits_their_constants_are_written_to_are_no_jump():
+    """Control. ``piecewise(0.333333333*X, X < 1.5, 0.5)`` with X on 1.5 until
+    a fitted gate takes it down: the two branches differ by 5e-10 there, a
+    clamp with its slope written to nine digits. Read against nothing but
+    rounding that was a jump, and the run was refused. Y loses nothing until
+    tau, and dY/dtau = 1 to the gap."""
+    text = (
+        "species X, Y; X = 1.5; Y = 0; r = 1.5; tau = 3\n"
+        "Jx: X -> ; piecewise(r, time >= tau, 0)\n"
+        "Jy: -> Y; piecewise(0.333333333*X, X < 1.5, 0.5)\n"
+    )
+    got = _columns(text, ["tau"])
+    assert got[1, 0] == pytest.approx(1.0, rel=1e-6)
