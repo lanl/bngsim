@@ -976,10 +976,12 @@ def _collect_time_discontinuity_conditions(
     inside the function definitions *node* calls (GH #231).
 
     n-ary relationals (``a < b < c``) are split into the consecutive pairs
-    MathML defines them as, so each emitted condition is a single
-    monotonic-in-time threshold — exactly what CVODE root-finding brackets
-    reliably regardless of step size. piecewise / and / or / nested structure is
-    reached at any depth.
+    MathML defines them as, so each emitted condition is a single threshold.
+    Not necessarily a monotonic one: ``sin(10*time) > 0.99`` is true on windows
+    narrower than a step, which a root on the boolean cannot bracket when a
+    whole window lies inside one. Its crossings are placed as stops instead
+    (:func:`bngsim._switch_sensitivity.crossings_with_periodic`, issue #714).
+    piecewise / and / or / nested structure is reached at any depth.
 
     ``time_names`` are the assignment-rule targets that transitively read the
     ``time`` csymbol. A model routinely aliases it
@@ -8318,11 +8320,18 @@ def _build_model_from_sbml_doc(doc):
                 reaction_local_param_maps.get(i),
                 time_dependent_names,
             )
+    # Which of them an event trigger reads: a trigger that only touches its
+    # threshold (`sin(time) >= 1`) still fires there, and the stop on the touch
+    # that makes it fire would only hurt a rate law (issue #714).
+    event_disc: set[str] = set()
     for i in range(sbml_model.getNumEvents()):
         event = sbml_model.getEvent(i)
         trigger = event.getTrigger()
         if trigger is not None and trigger.getMath() is not None:
-            _collect_relational_edge_conditions(trigger.getMath(), func_defs, disc_conditions)
+            _from_trigger: list[str] = []
+            _collect_relational_edge_conditions(trigger.getMath(), func_defs, _from_trigger)
+            disc_conditions.extend(_from_trigger)
+            event_disc.update(_from_trigger)
 
     # The same per-atom edge routine over the RHS-feeding math (GH #194), for
     # the relationals that read integrated state rather than time. Splitting the
@@ -8422,6 +8431,7 @@ def _build_model_from_sbml_doc(doc):
     # set itself, rather than re-deriving one from the rule text, is what keeps
     # the stops a subset of the roots.
     model._time_disc_conditions = tuple(sorted(seen_disc))
+    model._event_disc_conditions = frozenset(event_disc & seen_disc)
 
     # AR-target species report map. An AssignmentRule target species is
     # emitted ``fixed`` (its ODE derivative is zeroed), so the integrator
