@@ -1731,10 +1731,13 @@ class Simulator:
             "beside a jump is on its other side: a column takes part of the jump before the "
             "crossing, by more the looser the tolerance, or the step size collapses and the "
             "run does not finish (issues #938, #932). bngsim refuses rather than return it, "
-            "whether or not this run reaches the crossing and whether the law jumps there "
-            "or only bends: neither is known from its text. Remove what the analytic path "
-            "declines, so that the crossing is taken on the analytic right-hand side; or "
-            "write a bend with max or min, max(v, 0) for if(v > 0, v, 0); or difference "
+            "whether or not this run reaches the crossing: that is not known before it. A "
+            "law that only bends at a condition runs where that is proved from its text: one "
+            "branch 0 and the other a multiple of what the condition compares, "
+            "if(v > 0, v, 0), or the two sides of the comparison, if(a < b, a, b), with "
+            "every division in the law by what is known to be nonzero. Remove what the "
+            "analytic path declines, so that the crossing is taken on the analytic "
+            "right-hand side; or write the bend that way, or with max or min; or difference "
             "plain runs."
         )
 

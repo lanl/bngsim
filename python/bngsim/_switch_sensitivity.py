@@ -1987,7 +1987,9 @@ def _inline_function_slots(expr: str, bodies: dict[str, str]) -> str:
         before = expr
         for name in present:
             expr = re.sub(
-                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])", f"({bodies[name]})", expr
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])",
+                f"({bodies[name]})",
+                expr,
             )
         if expr == before:
             break
@@ -2070,7 +2072,10 @@ def _crossing_time_of_condition(
 
     def at(t: float) -> float | None:
         return _evaluate_threshold(
-            _TIME_REF.sub(f"({t!r})", residual), scope.param_idx, scope.values, scope.derived_exprs
+            _TIME_REF.sub(f"({t!r})", residual),
+            scope.param_idx,
+            scope.values,
+            scope.derived_exprs,
         )
 
     def resolve() -> float | None:
@@ -2652,7 +2657,11 @@ def _resolve_step_edge_stop_times(
         a = read(residual_slope, held, to_integer=False)
         if a == 0.0:
             return 0.0, read(residual_intercept, held, to_integer=False), 0.0
-        return a, float(residual_intercept[0](*held)), float(residual_intercept[1](*held))
+        return (
+            a,
+            float(residual_intercept[0](*held)),
+            float(residual_intercept[1](*held)),
+        )
 
     def at(a: float, b: float, size: float, x: float) -> float:
         """The residual at the bound *x*, 0 where it is rounding away from 0."""
@@ -3457,7 +3466,11 @@ def _facts_of(
         if isinstance(node.op, ast.USub):
             positive, negative = one.negative, one.positive
         elif isinstance(node.op, ast.UAdd):
-            positive, nonnegative, negative = one.positive, one.nonnegative, one.negative
+            positive, nonnegative, negative = (
+                one.positive,
+                one.nonnegative,
+                one.negative,
+            )
     elif isinstance(node, ast.BinOp) and len(under) == 2:
         left, right = under
         if isinstance(node.op, ast.Add):
@@ -3531,6 +3544,37 @@ def _facts_of(
     return facts
 
 
+def _facts_of_tree(
+    tree: ast.Expression,
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> tuple[list[ast.AST], dict[int, _Facts]]:
+    """Every node of *tree*, parents before what is under them, and the facts
+    of each by its ``id``."""
+    order: list[ast.AST] = []
+    stack: list[ast.AST] = [tree.body]
+    while stack:
+        node = stack.pop()
+        order.append(node)
+        stack.extend(_operands(node))
+    facts: dict[int, _Facts] = {}
+    for node in reversed(order):
+        facts[id(node)] = _facts_of(
+            node, [facts[id(child)] for child in _operands(node)], values, clocks, asked
+        )
+    return order, facts
+
+
+def _either_way(node: ast.AST) -> list[str]:
+    """*node* as text, and a difference with its sides swapped as well:
+    ``X − thr`` is 0 where ``thr − X`` is."""
+    out = [ast.dump(node)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
+        out.append(ast.dump(ast.BinOp(left=node.right, op=ast.Sub(), right=node.left)))
+    return out
+
+
 def _power(node: ast.AST) -> tuple[ast.AST, ast.AST] | None:
     """``(base, power)`` of a power, written ``a^b`` or ``pow(a, b)``."""
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
@@ -3540,10 +3584,15 @@ def _power(node: ast.AST) -> tuple[ast.AST, ast.AST] | None:
     return None
 
 
-def _factors(node: ast.AST, facts: Mapping[int, _Facts]) -> list[ast.AST]:
+def _factors(node: ast.AST, facts: Mapping[int, _Facts], vanishing: bool = False) -> list[ast.AST]:
     """What *node* is a product of, so that it is 0 where one of them is:
     through a sign, a product, the numerator of a quotient, a square root,
-    and a power that no column moves and that is not below 0."""
+    and a power that is known not to be below 0.
+
+    With *vanishing*, what *node* goes to 0 with, no faster than in
+    proportion: not through a root, and through a power only where it is a
+    number of 1 or more. ``e^0`` is 1 where ``e`` is 0, and ``sqrt(e)``
+    leaves 0 with a slope that has no bound."""
     out: list[ast.AST] = []
     stack = [node]
     while stack:
@@ -3555,9 +3604,13 @@ def _factors(node: ast.AST, facts: Mapping[int, _Facts]) -> list[ast.AST]:
             stack.extend((one.left, one.right))
         elif isinstance(one, ast.BinOp) and isinstance(one.op, ast.Div):
             stack.append(one.left)
-        elif _call_name(one) == "sqrt" and len(one.args) == 1:  # type: ignore[attr-defined]
+        elif not vanishing and _call_name(one) == "sqrt" and len(one.args) == 1:  # type: ignore[attr-defined]
             stack.append(one.args[0])  # type: ignore[attr-defined]
-        elif power is not None and _divides_by_nothing(facts[id(power[1])]):
+        elif power is not None and (
+            (_number(power[1]) or 0.0) >= 1.0
+            if vanishing
+            else _divides_by_nothing(facts[id(power[1])])
+        ):
             stack.append(power[0])
         else:
             out.append(one)
@@ -3607,31 +3660,14 @@ def _quotient_across_a_choice(
     quotient written differently, ``abs(X − thr)/(X/thr − 1)``. Nor is a
     pole cut off on both sides, ``min(max(k/(X − thr), −5), 5)``.
     """
-    # Parents before what is under them; read backwards, operands first.
-    order: list[ast.AST] = []
-    stack: list[ast.AST] = [tree.body]
-    while stack:
-        node = stack.pop()
-        order.append(node)
-        stack.extend(_operands(node))
-    facts: dict[int, _Facts] = {}
-    for node in reversed(order):
-        facts[id(node)] = _facts_of(
-            node, [facts[id(child)] for child in _operands(node)], values, clocks, asked
-        )
+    order, facts = _facts_of_tree(tree, values, clocks, asked)
     if not facts[id(tree.body)].choice:
         return None
 
     def small(node: ast.AST) -> bool:
         return facts[id(node)].live and facts[id(node)].size <= _FLIP_MAX_NODES
 
-    def either_way(node: ast.AST) -> list[str]:
-        """*node* as text, and a difference with its sides swapped as well:
-        ``X − thr`` is 0 where ``thr − X`` is."""
-        out = [ast.dump(node)]
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
-            out.append(ast.dump(ast.BinOp(left=node.right, op=ast.Sub(), right=node.left)))
-        return out
+    either_way = _either_way
 
     # What each live choice flips on: the factors of an ``abs``'s argument,
     # and of one side where the other is 0; else the difference of the two
@@ -3675,6 +3711,151 @@ def _quotient_across_a_choice(
             if small(factor) and ast.dump(factor) in flips:
                 return _clipped(node)
     return None
+
+
+# Calls that are continuous wherever they have a value. A logarithm is one
+# only of what is known to be above 0, and a step call is asked about on its
+# own, as a step.
+_CONTINUOUS_CALLS = frozenset(
+    {"exp", "sin", "cos", "sinh", "cosh", "tanh", "atan", "sqrt", "erf", "erfc"}
+    | {"abs", "max", "min", "pow", "Piecewise", "And", "Or", "Not"}
+)
+_LOG_CALLS = frozenset({"log", "ln", "log2", "log10"})
+_STEP_NAMES = frozenset(
+    {"floor", "ceil", "round", "roundn", "rint", "nint", "trunc", "frac", "sign", "sgn"}
+    | {"mod", "fmod", "rem", "iclamp", "inrange"}
+)
+
+
+def _only_bends(
+    tree: ast.Expression,
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> bool:
+    """Whether the rate law *tree* is continuous across every condition in it
+    that reads the state, by what it is made of.
+
+    The difference quotient is right across a bend, and whether a law bends
+    or jumps where a condition flips is not told by evaluating it (issue
+    #938). It is proved here, for the two ways a bend is written, or not at
+    all:
+
+    - ``if(e > 0, e·g, 0)``: one branch is 0 and the other is a product with
+      everything ``e`` is 0 with among its factors, where ``e`` is the
+      difference the condition compares. The signed rate
+      ``if(v < 0, −v/max(X, 0.01), 0)`` and a ramp ``if(X < thr,
+      kb·(thr − X), 0)`` are this;
+    - ``if(a < b, a, b)``: the two branches are the two sides of the one
+      comparison, the lesser or the greater of two written out.
+
+    And the law is made of nothing else that could jump there: every division
+    is by what is known to be nonzero, every power is to what is known not to
+    be below 0, and every call is one that is continuous
+    (:data:`_CONTINUOUS_CALLS`). An equality, a condition of more than two
+    branches, a comparison outside a condition, and anything this does not
+    read, is not proved.
+    """
+    order, facts = _facts_of_tree(tree, values, clocks, asked)
+    proved: set[int] = set()
+    for node in order:
+        name = _call_name(node)
+        known = facts[id(node)]
+        if isinstance(node, (ast.Name, ast.Constant, ast.Tuple, ast.Compare)):
+            if isinstance(node, ast.Compare) and len(node.ops) != 1:
+                return False
+        elif isinstance(node, ast.UnaryOp):
+            if not isinstance(node.op, (ast.USub, ast.UAdd)):
+                return False
+        elif isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.Div):
+                divisor = facts[id(node.right)]
+                if not (divisor.positive or divisor.negative):
+                    return False
+            elif isinstance(node.op, ast.Pow):
+                if not (
+                    _divides_by_nothing(facts[id(node.right)]) or facts[id(node.left)].positive
+                ):
+                    return False
+            elif not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+                return False
+        elif name in _LOG_CALLS:
+            if len(node.args) != 1 or not facts[id(node.args[0])].positive:  # type: ignore[attr-defined]
+                return False
+        elif name in _STEP_NAMES:
+            if known.state:
+                return False
+        elif name == "pow":
+            base, power = _operands(node)
+            if not (_divides_by_nothing(facts[id(power)]) or facts[id(base)].positive):
+                return False
+        elif name not in _CONTINUOUS_CALLS:
+            return False
+        if name != "Piecewise":
+            continue
+        pairs = node.args  # type: ignore[attr-defined]
+        if not (
+            len(pairs) == 2
+            and all(isinstance(pair, ast.Tuple) and len(pair.elts) == 2 for pair in pairs)
+            and isinstance(pairs[1].elts[1], ast.Constant)
+            and pairs[1].elts[1].value is True
+        ):
+            continue
+        (taken, condition), (other, _always) = pairs[0].elts, pairs[1].elts
+        # The comparisons the condition is made of, through And, Or and Not.
+        atoms: list[ast.Compare] = []
+        stack = [condition]
+        while stack:
+            one = stack.pop()
+            if isinstance(one, ast.Compare):
+                atoms.append(one)
+            elif _call_name(one) in ("And", "Or", "Not"):
+                stack.extend(one.args)  # type: ignore[attr-defined]
+        for atom in atoms:
+            if not facts[id(atom)].state or len(atom.ops) != 1:
+                continue
+            if not isinstance(atom.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+                continue
+            left, right = atom.left, atom.comparators[0]
+            if _number(other) == 0.0:
+                product = taken
+            elif _number(taken) == 0.0:
+                product = other
+            else:
+                # The lesser or the greater of the two sides, written out.
+                if (
+                    atom is condition
+                    and facts[id(taken)].size + facts[id(other)].size <= _FLIP_MAX_NODES
+                    and {ast.dump(taken), ast.dump(other)} == {ast.dump(left), ast.dump(right)}
+                ):
+                    proved.add(id(atom))
+                continue
+            # What the comparison's difference is 0 with: each factor of one
+            # side where the other is 0, else the difference itself.
+            if _number(right) == 0.0:
+                needed = [f for f in _factors(left, facts) if facts[id(f)].live]
+            elif _number(left) == 0.0:
+                needed = [f for f in _factors(right, facts) if facts[id(f)].live]
+            else:
+                needed = [ast.BinOp(left=left, op=ast.Sub(), right=right)]
+                facts[id(needed[0])] = _Facts(
+                    state=True, size=facts[id(left)].size + facts[id(right)].size + 1
+                )
+            if not needed or any(facts[id(f)].size > _FLIP_MAX_NODES for f in needed):
+                continue
+            has = {
+                text
+                for factor in _factors(product, facts, vanishing=True)
+                if facts[id(factor)].size <= _FLIP_MAX_NODES
+                for text in _either_way(factor)
+            }
+            if all(ast.dump(f) in has for f in needed):
+                proved.add(id(atom))
+    return all(
+        id(node) in proved
+        for node in order
+        if isinstance(node, ast.Compare) and facts[id(node)].state
+    )
 
 
 def _clipped(node: ast.AST, width: int = 120) -> str:
@@ -3786,10 +3967,11 @@ def fallback_crossing(
     refused before a time course starts:
 
     - a rate-law condition that reads the state, ``Aobs < thr`` or
-      ``rateOf(X) > 0``, whatever the law does where it flips. A law that
-      only bends there, ``if(v > 0, v, 0)``, is one the quotient is right
-      across; telling a bend from a jump by the law's text was tried and is
-      not sound (issue #938), so it is not told;
+      ``rateOf(X) > 0``, unless the law is proved to bend there and not jump
+      (:func:`_only_bends`): ``if(v > 0, v, 0)`` and ``if(a < b, a, b)``,
+      with nothing in the law dividing by what could be 0. The quotient is
+      right across a bend. Telling one from a jump by evaluating the law was
+      tried and is not sound (issue #938), so what is not proved is refused;
     - a condition on a counter species that a requested column moves (its rate
       constant, its initial amount). A counter nothing moves is read at ``y``
       in both terms of the quotient, and its threshold's parameters are held
@@ -3893,18 +4075,45 @@ def fallback_crossing(
         values.setdefault(name, float(value))
     clocks = frozenset({_TIME_SYM}) | {n for n, idx in scope.clocks.items() if idx not in moved}
 
-    def crosses(flat: str) -> bool:
-        """Whether the quotient reads across the surface *flat* names."""
+    def crosses(flat: str) -> str:
+        """Whether the quotient reads across the surface *flat* names, and
+        in what: ``"parameter"``, ``"state"``, or ``""`` for neither."""
         if not _IDENTIFIER.search(flat):
-            return False
+            return ""
         if condition_cannot_cross(flat, scope):
-            return _parameter_crossing(flat, scope, requested)
+            return "parameter" if _parameter_crossing(flat, scope, requested) else ""
         if _equality_of_smooth_sides(flat):
-            return False
+            return ""
         if _reads_clock_and_run_constants(flat, scope):
             read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
-            return bool({i for i in read if i >= 0} & moved)
-        return True
+            return "state" if {i for i in read if i >= 0} & moved else ""
+        return "state"
+
+    def went_by(law: _Law) -> tuple:
+        """What an answer about *law*'s tree goes by: the sign of each
+        parameter it reads, which of its names are clocks, and which are
+        requested."""
+        return (
+            tuple(
+                (n, values[n] > 0.0, values[n] >= 0.0, values[n] < 0.0)
+                for n in sorted(law.names)
+                if n in values
+            ),
+            law.names & clocks,
+            law.names & requested,
+        )
+
+    def bends(law: _Law) -> bool:
+        """Whether *law* is proved continuous across its conditions on the
+        state (:func:`_only_bends`)."""
+        if law.tree is None:
+            return False
+        key = went_by(law)
+        last = parsed.get(("bends", law.text))
+        if last is None or last[0] != key:
+            last = (key, _only_bends(law.tree, values, clocks, requested))
+            parsed[("bends", law.text)] = last
+        return last[1]
 
     def step_moves(flat: str, raw: str) -> bool:
         """A step on a clock that a requested parameter moves: on literal
@@ -3915,7 +4124,8 @@ def fallback_crossing(
 
     for law in laws:
         for atom, atom_flat in law.atoms:
-            if crosses(atom_flat):
+            across = crosses(atom_flat)
+            if across == "parameter" or (across == "state" and not bends(law)):
                 return atom
             # A step in a condition on a clock: its edges move with a
             # requested parameter as they do outside one.
@@ -3927,20 +4137,13 @@ def fallback_crossing(
         if law.choice:
             if law.tree is None:
                 return f"{_clip_text(law.flat)} (not read)"
-            # The answer goes by the sign of each parameter the law reads,
-            # by which of its names are clocks and by which are requested.
-            went_by = (
-                tuple(
-                    (n, values[n] > 0.0, values[n] >= 0.0, values[n] < 0.0)
-                    for n in sorted(law.names)
-                    if n in values
-                ),
-                law.names & clocks,
-                law.names & requested,
-            )
+            key = went_by(law)
             last = parsed.get(("quotient", law.text))
-            if last is None or last[0] != went_by:
-                last = (went_by, _quotient_across_a_choice(law.tree, values, clocks, requested))
+            if last is None or last[0] != key:
+                last = (
+                    key,
+                    _quotient_across_a_choice(law.tree, values, clocks, requested),
+                )
                 parsed[("quotient", law.text)] = last
             if last[1] is not None:
                 return last[1]
@@ -3976,7 +4179,7 @@ def _read_law(text: str, flat: str, derived_exprs, has_condition_construct) -> _
     choice = _CHOICE_CALL.search(flat) is not None
     tree = None
     names: frozenset[str] = frozenset()
-    if choice:
+    if choice or atoms:
         # With derived parameters written out, so that what is left to name
         # is a primary, a clock or the state.
         tree = _syntax_tree(_inline_derived_param_refs(flat, derived_exprs) or flat)

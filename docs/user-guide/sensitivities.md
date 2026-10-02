@@ -370,8 +370,8 @@ looser the tolerance.
 A time course on the fallback is therefore refused, before it starts, for a
 model with (issues #938, #932):
 
-- a rate-law condition that reads the state, `if(X < thr, kb, 0)`, whatever the
-  law does where the condition flips;
+- a rate-law condition that reads the state, `if(X < thr, kb, 0)`, unless the
+  law is proved to bend there and not jump (below);
 - a sign or a step written by dividing by an `abs`, `max` or `min` where it is 0,
   or by what it flips on: `(thr - X)/abs(thr - X)`, `max(X - thr, 0)/(X - thr)`;
 - a condition on a counter species that a requested column moves;
@@ -386,12 +386,21 @@ model with (issues #938, #932):
   parameter that holds, and a step call or a step table on one.
 
 The refusal goes by what the rate laws' text says and by the sign of each
-parameter. Nothing is evaluated, so it costs the same before every run, and it
-does not tell a law that jumps where its condition flips from one that only
-bends there: `if(X < thr, kb*(thr - X), 0)` is refused, though the quotient is
-right across a bend. Write a bend with `max` or `min`, which are continuous by
-what they are and run: `kb*max(thr - X, 0)`, `max(0, min(X, n))`,
-`v/max(X, 0.01)`.
+parameter. Nothing is evaluated. The quotient is right across a bend, and a
+condition is let through where the law is proved to bend at it:
+
+- one branch is 0 and the other is a product with the condition's own
+  difference among its factors: `if(v > 0, v, 0)`, `if(X < thr, kb*(thr - X), 0)`,
+  `if(v < 0, -v/max(X, 0.01), 0)`;
+- or the two branches are the two sides of the comparison: `if(a < b, a, b)`;
+- and every division in the law is by what is known to be nonzero, by the signs
+  of numbers and parameters: `max(X, 0.01)`, `Km + abs(X)` at a `Km` above 0.
+  Nothing is assumed of the state, so `Km + X` is not known to be.
+
+A bend written any other way is refused, though main ran it: a root,
+`if(X < thr, kb*sqrt(thr - X), 0)`, a power that is a parameter, a guard
+`if(S > 0, Vm*Q/S, 0)`. `max` and `min` are continuous by what they are and
+run: `kb*max(thr - X, 0)`, `max(0, min(X, n))`, `v/max(X, 0.01)`.
 
 A condition on literal time runs, and so does a steady-state solve. What the
 scan does not see is a jump written with no condition and not as one of the

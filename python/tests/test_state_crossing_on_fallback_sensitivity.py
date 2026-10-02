@@ -325,33 +325,149 @@ def _ramp_columns():
     ]
 
 
-BENDS_AS_CONDITIONS = {
+BENDS_PROVED = {
     "a-ramp": "if(Aobs<thr,kb*(thr-Aobs),0)",
     "a-signed-rate": "if((Aobs-thr)<0,(-(Aobs-thr))*kb,0)",
     "a-ramp-whose-condition-divides-by-a-parameter": "if((Aobs-thr)/tau<0,kb*(thr-Aobs),0)",
-    "a-window-written-as-a-product": "if((Aobs-4.4)*(Aobs-5)<0,kb*(Aobs-4.4)*(5-Aobs),0)",
-    "a-guard": "if(Aobs>0,kb/Aobs,0)",
+    "a-ramp-over-a-floor": "if(Aobs<thr,(thr-Aobs)*kb*max(Aobs,0.01)/max(Aobs,0.01),0)",
+    "the-greater-of-two-written-out": "kb*(if(thr>Aobs,thr,Aobs)-Aobs)",
 }
 
 
-@pytest.mark.parametrize("case", sorted(BENDS_AS_CONDITIONS))
-def test_a_bend_written_as_a_condition_is_refused(tmp_path, case):
+@pytest.mark.parametrize("case", sorted(BENDS_PROVED))
+def test_a_bend_that_is_proved_one_runs(tmp_path, case):
+    """Control. A decays through thr and the rate law turns on from 0 there.
+    One branch is 0 and the other a multiple of the difference the condition
+    compares, or the two branches are the two sides of the comparison, and
+    nothing in the law divides by what could be 0: continuous by what it is
+    made of, and the quotient is right across a bend."""
+    sim = _simulator(tmp_path, BENDS_PROVED[case], DECLINED, ["k", "thr"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), _ramp_columns(), rtol=1e-6)
+
+
+def test_a_ramp_from_a_counter_s_threshold_runs(tmp_path):
+    """Control. The rate law turns on as a ramp from the counter's threshold:
+    Y = kb·k·(T − t*)²/2 with t* = (thr − A0)/k, so
+    dY/dk = kb·(T − t*)²/2 + kb·(T − t*)·t* = 36.66."""
+    sim = _simulator(tmp_path, "if(Aobs>4.4,kb*(Aobs-4.4),0)", DECLINED, ["k"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [36.66], rtol=1e-6)
+
+
+def test_a_window_written_as_a_product_runs(tmp_path):
+    """Control. ``(A − 4.4)·(A − 5) < 0`` is 0 with each of its two factors,
+    and the law has both. Against a central difference of plain runs."""
+    law = "if((Aobs-4.4)*(Aobs-5)<0,kb*(Aobs-4.4)*(5-Aobs),0)"
+
+    def build(k):
+        return _wider(tmp_path, law, k=k)
+
+    sim = bngsim.Simulator(build(1.0), method="ode", sensitivity_params=["k"])
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), 0]
+
+    def plain(k):
+        out = bngsim.Simulator(build(k), method="ode").run(
+            t_span=(0.0, T_END), n_points=3, rtol=1e-12, atol=1e-14, timeout=60
+        )
+        return np.asarray(out.species)[-1, list(out.species_names).index("Y()")]
+
+    def slope(h):
+        return (plain(1.0 + h) - plain(1.0 - h)) / (2.0 * h)
+
+    assert got == pytest.approx((4.0 * slope(5e-4) - slope(1e-3)) / 3.0, rel=1e-5)
+
+
+BENDS_NOT_PROVED = {
+    # Continuous, each of them, and main is right on it.
+    "a-guard": "if(Aobs>0,kb/Aobs,0)",
+    "a-ramp-as-a-root": "if(Aobs<thr,kb*sqrt(thr-Aobs),0)",
+    "a-ramp-to-a-power-that-is-a-parameter": "if(Aobs<thr,kb*(thr-Aobs)^one,0)",
+    "a-clamp-written-as-two-conditions": "kb*if(Aobs>0,if(Aobs<thr,Aobs,thr),0)",
+    "a-ramp-over-what-is-not-known-nonzero": "if(Aobs<thr,kb*(thr-Aobs)/(1+Cobs),0)",
+    "a-condition-scaled-on-both-sides": "if(2*Aobs<2*thr,kb*(thr-Aobs),0)",
+}
+
+
+@pytest.mark.parametrize("case", sorted(BENDS_NOT_PROVED))
+def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
     """Refused here, where main is right. Each of these laws is continuous
-    where its condition flips, and the quotient is right across it. Whether a
-    law bends or jumps where a condition flips is not told from its text: a
+    where its condition flips, and is not one of the two shapes that is
+    proved so. Whether a law bends or jumps is not told by evaluating it: a
     reading that tried took a jump in proportion to ``exp(−2000·B)`` for none
     where B was large, a jump beside a slope of 1e8 for rounding, and a ramp
-    with an exponent of 0 for a ramp. So a condition on the state is refused,
-    and the bend is written with ``max`` or ``min``."""
-    sim = _simulator(tmp_path, BENDS_AS_CONDITIONS[case], DECLINED, ["k", "thr"], decays=True)
-    _refused(sim, "Aobs", rtol=1e-4)
+    to a power of 0 for a ramp. What is not proved is refused."""
+    model = _wider(tmp_path, BENDS_NOT_PROVED[case])
+    _refused_run(model, ["k", "thr"])
 
 
-def test_a_ramp_from_a_counter_s_threshold_is_refused(tmp_path):
-    """Refused here, where main is right. A counter a requested column moves
-    is a state like any other."""
-    sim = _simulator(tmp_path, "if(Aobs>4.4,kb*(Aobs-4.4),0)", DECLINED, ["k"])
-    _refused(sim, "Aobs>4.4")
+@pytest.mark.parametrize(
+    ("law", "proved"),
+    [
+        ("if(X<thr,kb*(thr-X),0)", True),
+        ("if(X<thr,0,kb*(X-thr))", True),
+        ("if(X<thr,kb,0)", False),
+        ("if((X-thr)<0,(-(X-thr))*kb,0)", True),
+        ("if((2*X-1)<0,(-(2*X-1))/max(Y,0.01),0)", True),
+        ("if((2*X-1)<0,(-(2*X-1))/max(Y,zero),0)", False),
+        ("if(X<thr,X,thr)", True),
+        ("if(X>thr,X,thr)", True),
+        ("if(X<thr,thr,X)", True),
+        ("if(X<thr,X,Y)", False),
+        ("if(X<thr&&Y>0,X,thr)", False),
+        # A power is 0 with its base where it is a number of 1 or more.
+        ("if(X<thr,kb*(thr-X)^2,0)", True),
+        ("if(X<thr,kb*(thr-X)^1,0)", True),
+        ("if(X<thr,kb*(thr-X)^pos,0)", False),
+        ("if(X<thr,kb*(thr-X)^zero,0)", False),
+        ("if(X<thr,kb*(thr-X)^0.5,0)", False),
+        ("if(X<thr,kb*(thr-X)^Y,0)", False),
+        ("if(X<thr,kb*sqrt(thr-X),0)", False),
+        ("if(X<thr,kb*abs(thr-X),0)", False),
+        # What the product is of besides: continuous, or not known to be.
+        ("if(X<thr,kb*(thr-X)*exp(-Y),0)", True),
+        ("if(X<thr,kb*(thr-X)/Y,0)", False),
+        ("if(X<thr,kb*(thr-X)/pos,0)", True),
+        ("if(X<thr,kb*(thr-X)/zero,0)", False),
+        ("if(X<thr,kb*(thr-X),0)+kb/Y", False),
+        ("if(X<thr,kb*(thr-X)*log(Y),0)", False),
+        ("if(X<thr,kb*(thr-X)*log(Y*Y+pos),0)", True),
+        ("if(X<thr,kb*(thr-X)*tan(Y),0)", False),
+        ("if(X<thr,kb*(thr-X)*Y^neg,0)", False),
+        ("if(X<thr,kb*(thr-X)*pow(Y,neg),0)", False),
+        ("if(X<thr,kb*(thr-X)*(Y*Y+pos)^neg,0)", True),
+        ("if(X<thr,kb*(thr-X)*floor(T),0)", True),
+        ("if(X<thr,kb*(thr-X)*floor(Y),0)", False),
+        ("if(X<thr,kb*(thr-X)*(Y%2),0)", False),
+        # Every factor the comparison is 0 with.
+        ("if((X-4.4)*(X-5)<0,kb*(X-4.4)*(5-X),0)", True),
+        ("if((X-4.4)*(X-5)<0,kb*(X-4.4),0)", False),
+        ("if((X-thr)/pos<0,kb*(thr-X),0)", True),
+        ("if(X>0,kb/X,0)", False),
+        # Each comparison of a condition, through and, or and not.
+        ("if(X>0&&Y>0,kb*X*Y,0)", True),
+        ("if(X>0&&Y>0,kb*X,0)", False),
+        ("if(X>0||Y>0,kb*X*Y,0)", True),
+        ("if(not(X>0),0,kb*X)", True),
+        # Every condition in the law, and none on a clock.
+        ("if(X<thr,kb*(thr-X),0)*if(Y>1,2,3)", False),
+        ("if(X<thr,kb*(thr-X),0)*if(T>1,2,3)", True),
+        ("if(X>0,if(X<pos,X,pos),0)", False),
+        ("if(if(X<thr,Y-1,1-Y)>0,kb*(if(X<thr,Y-1,1-Y))^2,0)", False),
+        ("if(X==thr,kb,0)", False),
+        ("if(2*X<2*thr,kb*(thr-X),0)", False),
+        ("kb*max(X,0.5)", True),
+    ],
+)
+def test_which_rate_law_is_proved_to_bend(law, proved):
+    """What :func:`_only_bends` proves: X and Y are the state, T a clock,
+    ``pos``, ``zero`` and ``neg`` parameters above, at and below 0."""
+    from bngsim._switch_sensitivity import _only_bends, _syntax_tree
+
+    values = {"kb": 3.0, "thr": 4.4, "pos": 2.0, "zero": 0.0, "neg": -2.0}
+    assert _only_bends(_syntax_tree(law), values, frozenset({"T"}), set()) is proved
 
 
 @pytest.mark.parametrize(
