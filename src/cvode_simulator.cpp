@@ -1045,7 +1045,9 @@ static void note_nominal_point(CvodeUserData *data, const std::vector<Parameter>
 // The sensitivity sync both RHS callbacks run before evaluating f: mirror
 // sens_p (which CVODES perturbs during a difference-quotient probe) into the
 // model's parameters, and re-derive the derived ones so a perturbed primary
-// reaches them (issues #2, #568). A pinned switch-time parameter ignores the
+// reaches them (issues #2, #568). A perturbed parameter that is itself derived
+// is held, and what reads it is re-derived from it (issue #707). A pinned
+// switch-time parameter ignores the
 // probe (issue #48): ∂f/∂p is 0 in the branch interior, and letting the probe
 // move the switch instead drags the kink into the approach and stalls the
 // solver. See CvodeUserData::sens_param_pinned.
@@ -6853,11 +6855,12 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     if (!sw.isolate_param_idx0.empty()) {
         auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
         // No hold is passed to refresh_derived_params() below, and that is
-        // correct rather than an oversight — the other three finite-difference
+        // correct rather than an oversight — the other four finite-difference
         // probe sites DO pass one (residual_dtstar, apply_event_sensitivity_jump,
-        // SteadyStateRhs::sync_params), so the asymmetry is worth a sentence.
+        // SteadyStateRhs::sync_params, and sync_sens_params since issue #707),
+        // so the asymmetry is worth a sentence.
         //
-        // Those three perturb a *sensitivity* parameter, which since issue #475
+        // Those four perturb a *sensitivity* parameter, which since issue #475
         // can be a derived one; re-deriving it would undo the probe. This site
         // perturbs a detector-chosen ISOLATION parameter, and that is
         // structurally a primary: `_isolation_bump` picks it out of
