@@ -319,6 +319,18 @@ there read as a jump (issue #763). Two independent thresholds that the
 trajectory crosses within about 1e-13 of each other in time are one stop for
 the solver. If both jump and the requested columns move them apart, the run is
 refused, because one jump would otherwise be moved with the other's `dt*/dθ`.
+A state that slides along the surface is refused too (issue #926): with
+`if(S < 1, amp, -amp)` both branches point into `S = 1`, the state stays on it,
+and the sensitivity there is that of neither branch.
+A state that stays within a few tolerances of such a surface without reaching
+it, turning back five tolerances short, is refused as well: the run cannot
+tell it from one that touches. So is a run that ends within about a tolerance
+of the surface on its way there.
+So is a state held just short of a surface it approaches too slowly for any
+step to cross (issue #952): `if(A > thr, kb, 0)` with `A` rising at 1e-10 a unit
+of time. The step that moves `A` by one ulp fails its error test on the jump,
+so no crossing is located and there is no crossing time for the sensitivities
+to move with. A run without sensitivities is carried across.
 A conjunction or a negation is split into its comparisons first. What the
 analytic path declines is a crossing nothing can locate: a comparison outside any
 `if()`, such as `k*(X > 1)`, and one whose sides
@@ -326,6 +338,20 @@ are themselves comparisons, such as `(X > 1) == (Y > 1)`. A parameter that both
 sets a switch time and acts inside a branch is answered on the analytic path,
 which adds the in-branch term to the jump (issue #358), and rejected on the
 fallback, which cannot.
+
+An event that assigns a value which is not smooth at the point the event reads
+it is refused. The jump needs the value's derivative in each parameter, in the
+state, and in the fire time, and takes each as a central difference over a
+millionth of what it moves. Across a step, a bend, or a value that turns inside
+that span, the difference is not a derivative to a part in a thousand: `u := piecewise(5, time >= T0 + 1, 0)`
+assigned at `time >= T0 + 1` gave dB/dT0 in the millions, for 0 (issue #915). The
+error names the event, the species, and what the value is not smooth in. Move
+the step away from the event, or leave the parameters that reach it out of
+`sensitivity_params`. A step or a bend that moves exactly with the event does
+have a derivative, and is refused all the same. The test is of the differences
+themselves, to a part in a thousand: a bend that changes the value's slope in
+what is moved by less than about 0.8% is not seen, and is differenced across as
+before.
 
 A decline is never silent. Ask the Simulator directly:
 
