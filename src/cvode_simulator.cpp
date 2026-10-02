@@ -2659,6 +2659,8 @@ struct CvodeSimulator::Impl {
     // with its own column too, which is read where the crossing is asked about.
     std::vector<char> clock_instant_moves;
     std::vector<int> clock_instant_species;
+    // What the counter reads there, for a crossing on one.
+    std::vector<double> clock_instant_threshold;
     // The tolerances of the run under way, which say how well a state
     // crossing's time is known.
     double run_rtol = 0.0;
@@ -2670,8 +2672,9 @@ struct CvodeSimulator::Impl {
     // between two does not hide the first.
     struct EventFire {
         double t = 0.0;
-        std::vector<int> reads; // the species the triggers that fired read
-        bool moves = false;     // whether a requested column moves that fire
+        std::vector<int> reads;       // the species the triggers that fired read
+        bool moves = false;           // whether a requested column moves that fire
+        std::vector<double> x_before; // the state the event fired on
     };
     std::vector<EventFire> event_fires;
     struct StateCrossing {
@@ -2680,17 +2683,33 @@ struct CvodeSimulator::Impl {
         std::string residual;
         std::vector<int> reads; // the species its residuals read
         bool moves = false;     // whether a requested column moves its crossing
+        // Whether the right-hand side read as continuous across it, and what
+        // it takes to read it again in another state: the species it reads,
+        // where they were, the flow they crossed with, and the probe's step.
+        bool continuous = false;
+        std::vector<int> own;
+        std::vector<double> x_own;
+        std::vector<double> f_own;
+        double step = 0.0;
     };
     std::vector<StateCrossing> state_crossings;
     // No more than this many of each are kept. Where one that was dropped
     // could still be within reach, the run is refused.
-    static constexpr std::size_t kCrossingsKept = 256;
+    static constexpr std::size_t kCrossingsKept = 64;
     double state_crossings_dropped_until = -std::numeric_limits<double>::infinity();
     // Whether two crossings are on one trajectory: each reads one species, and
     // it is the same one. The root finder takes those in the order they come
     // in, `A < thr1` and `A < thr2` a few hundred ulp apart. Any other two are
     // each known to the tolerances of the run, and their order is not:
     // `V > U·e³` and `V >= 6` both read V, and cross where U says.
+    // Whether the right-hand side jumps across a state switch's surface in
+    // the state `rest` at `t_at`: its own species are put a step either side
+    // of where they crossed, along the flow they crossed with. A change that
+    // does not halve with the step is a jump. Leaves the model at the last
+    // state it read.
+    bool jumps_across_surface(const std::vector<int> &own, const std::vector<double> &x_own,
+                              const std::vector<double> &f_own, double step,
+                              std::vector<double> rest, double t_at);
     static bool one_trajectory(const std::vector<int> &a, const std::vector<int> &b) {
         if (a.empty() || b.empty()) {
             return false;
@@ -5719,6 +5738,21 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             one_trajectory(fired_reads, crossing.reads)) {
             continue;
         }
+        if (crossing.continuous) {
+            // A bend before the event, and one still in the state the event
+            // has left: nothing to be on one side of. A jump that the state
+            // hid, `q·X` at an X of 0 that the event sets, shows now.
+            std::vector<double> after(static_cast<std::size_t>(ns), 0.0);
+            for (int i = 0; i < ns; ++i) {
+                after[static_cast<std::size_t>(i)] = sp_vec_outer[i].concentration;
+            }
+            const bool shows = jumps_across_surface(crossing.own, crossing.x_own, crossing.f_own,
+                                                    crossing.step, after, t_evt);
+            sync_model_at(t_evt, after.data(), ns);
+            if (!shows) {
+                continue;
+            }
+        }
         std::ostringstream msg;
         msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within " << crossing.reach
             << " of the state-dependent rate-law switch with residual '" << crossing.residual
@@ -5738,7 +5772,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     if (event_fires.size() >= kCrossingsKept) {
         event_fires.erase(event_fires.begin());
     }
-    event_fires.push_back({t_evt, fired_reads, fire_moves});
+    event_fires.push_back({t_evt, fired_reads, fire_moves, x_minus});
 
     auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
 
@@ -7040,6 +7074,90 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     };
     rhs_on_branch(-eps_clock, sw_f_minus);
     rhs_on_branch(+eps_clock, sw_f_plus);
+
+    // ── A state that sits on a state-dependent switch's surface here ────────
+    // Issue #946, from the clock's side. A species that this switch starts off
+    // the threshold it sat on, `-> X; piecewise(r, time >= tau, 0)` with X at
+    // X0 beside `piecewise(k, X > X0, 0)`, crosses with the switch, at a time
+    // that moves as the switch's does. Its residual is exactly 0 until then,
+    // and no root is reported for it leaving 0: the state switch's jump was
+    // never made, and dY/dtau came back 0 for −k. A law that only bends
+    // there, `k·(X − X0)`, has no jump to make and is right.
+    //
+    // So where a column moves this switch time, every state-dependent switch
+    // whose residual is within what the tolerances allow it of 0 here is
+    // asked whether the right-hand side jumps across its surface, on either
+    // side of this switch. One that does is refused.
+    {
+        bool moves = std::any_of(sw.dtstar_dp.begin(), sw.dtstar_dp.end(),
+                                 [](double d) { return d != 0.0; });
+        for (int c = 0; !time_clock && c < sens.n_total; ++c) {
+            moves = moves || N_VGetArrayPointer(yS_guard[c])[sw.clock_species_idx0] != 0.0;
+        }
+        const std::vector<double> here(y_data, y_data + ns);
+        for (std::size_t k = 0; moves && k < state_switch_all.size(); ++k) {
+            const NetworkModel::StateSwitch &held = *state_switch_all[k];
+            sync_model_at(t_evt, here.data(), ns);
+            const double g = model.evaluator().evaluate(held.residual_expr_idx);
+            std::vector<double> gx;
+            double scale = 0.0;
+            residual_flow(held.residual_expr_idx, held.species, t_evt, ns, here, sw_f_plus, gx,
+                          scale);
+            double allowed = 0.0;
+            double steep = 0.0;
+            std::vector<int> own;
+            for (int j : held.species) {
+                if (j < 0 || j >= ns || std::find(own.begin(), own.end(), j) != own.end()) {
+                    continue;
+                }
+                const auto uj = static_cast<std::size_t>(j);
+                const double atol_j = run_atol_vec.empty() ? run_atol : run_atol_vec[uj];
+                allowed += std::fabs(gx[uj]) * (run_rtol * std::fabs(here[uj]) + atol_j);
+                steep += gx[uj] * gx[uj];
+                own.push_back(j);
+            }
+            if (!std::isfinite(g) || !(std::fabs(g) <= allowed) || !(steep > 0.0)) {
+                continue;
+            }
+            // Across the surface along the residual's own slope, far enough
+            // to be past what the residual is known to.
+            std::vector<double> x_own;
+            std::vector<double> along;
+            for (int j : own) {
+                const auto uj = static_cast<std::size_t>(j);
+                x_own.push_back(here[uj]);
+                along.push_back(gx[uj] / steep);
+            }
+            const double across =
+                4.0 * allowed + 64.0 * std::numeric_limits<double>::epsilon() * scale;
+            bool jumps = false;
+            for (double side : {-1.0, 1.0}) {
+                std::vector<double> rest(here);
+                double t_at = t_evt;
+                if (time_clock) {
+                    t_at = t_cross + side * eps_clock;
+                } else {
+                    rest[static_cast<std::size_t>(sw.clock_species_idx0)] =
+                        sw.threshold + side * eps_clock;
+                }
+                jumps = jumps || jumps_across_surface(own, x_own, along, across, rest, t_at);
+            }
+            sync_model_at(t_evt, here.data(), ns);
+            if (jumps) {
+                std::ostringstream msg;
+                msg << "Forward sensitivity: at the switch time t=" << t_evt
+                    << ", which a requested parameter moves, the state is on the surface of the "
+                       "state-dependent rate-law switch with residual '"
+                    << held.residual_source
+                    << "', and the right-hand side jumps across that surface. The two cross on "
+                       "one instant, and the state switch's jump is not made: its residual does "
+                       "not come through 0, it leaves it (issue #946). Start the state off the "
+                       "threshold, or drop the parameters that move the switch time from "
+                       "sensitivity_params.";
+                throw std::runtime_error(msg.str());
+            }
+        }
+    }
 
     // ── One crossing's own share of a shared instant (issue #375) ────────────
     // The nudge above moves the CLOCK, so where several conditions threshold it
@@ -8456,6 +8574,44 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
                                  std::to_string(rf));
     }
     return true;
+}
+
+bool CvodeSimulator::Impl::jumps_across_surface(const std::vector<int> &own,
+                                                const std::vector<double> &x_own,
+                                                const std::vector<double> &f_own, double step,
+                                                std::vector<double> rest, double t_at) {
+    const std::size_t n = rest.size();
+    std::vector<double> lo(n, 0.0);
+    std::vector<double> hi(n, 0.0);
+    std::vector<double> gross(n, 0.0);
+    auto across = [&](double h, double &above) {
+        double size = 0.0;
+        double rounds = 0.0;
+        auto read = [&](double side, std::vector<double> &net) {
+            for (std::size_t k = 0; k < own.size(); ++k) {
+                rest[static_cast<std::size_t>(own[k])] = x_own[k] + side * h * f_own[k];
+            }
+            model.compute_flux_split(t_at, rest.data(), nullptr, net.data(), gross.data());
+            for (std::size_t u = 0; u < n; ++u) {
+                size = std::max(size, std::fabs(net[u]));
+                rounds = std::max(rounds, gross[u]);
+            }
+        };
+        read(-1.0, lo);
+        read(+1.0, hi);
+        double change = 0.0;
+        for (std::size_t u = 0; u < n; ++u) {
+            change = std::max(change, std::fabs(hi[u] - lo[u]));
+        }
+        above = kStateSwitchContinuousRelTol * size +
+                kStateSwitchAgreeRoundoff * std::numeric_limits<double>::epsilon() * rounds;
+        return change;
+    };
+    double above = 0.0;
+    double above_twice = 0.0;
+    const double once = across(step, above);
+    const double twice = across(2.0 * step, above_twice);
+    return once > above && once > 0.75 * twice;
 }
 
 void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
@@ -9979,10 +10135,12 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // time, or a counter that a column moves.
         double near_clock = std::numeric_limits<double>::quiet_NaN();
         bool near_clock_moves = false;
+        std::vector<std::size_t> near_clocks;
         for (auto at =
                  std::lower_bound(clock_instants.begin(), clock_instants.end(), t_evt - reach);
              at != clock_instants.end() && *at <= t_evt + reach; ++at) {
             const auto idx = static_cast<std::size_t>(at - clock_instants.begin());
+            near_clocks.push_back(idx);
             near_clock = *at;
             near_clock_moves = near_clock_moves || clock_instant_moves[idx] != 0;
             const int counter = clock_instant_species[idx];
@@ -10004,9 +10162,11 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         }
         double near_fire = std::numeric_limits<double>::quiet_NaN();
         bool near_fire_moves = false;
+        std::vector<const EventFire *> near_fires;
         for (auto fire = event_fires.rbegin();
              fire != event_fires.rend() && std::fabs(t_evt - fire->t) <= reach; ++fire) {
             if (!one_trajectory(fire->reads, residual_support)) {
+                near_fires.push_back(&*fire);
                 near_fire = fire->t;
                 near_fire_moves = near_fire_moves || fire->moves;
             }
@@ -10017,6 +10177,69 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         }
         if (residual_jumps) {
             near_fire = std::numeric_limits<double>::quiet_NaN();
+        }
+        // ── A crossing the right-hand side is continuous across ───────────
+        // A bend, `if(X > X0, k·(X − X0), 0)` where a stimulus starts X off
+        // the X0 it sat on, has nothing to give a shift to and no kink beside
+        // a gate or an event: it is 0 at its surface whichever comes first.
+        // What is not a bend is a jump that is hidden where the crossing is:
+        // by a gate that is closed there, or an event that has set what the
+        // law reads to 0. So a crossing that reads as continuous is asked
+        // about only where the law jumps across the same surface with what is
+        // near put on its other side: the time, or the counter, past the
+        // clock's switch either way, and the rest of the state as it was
+        // before the event.
+        std::vector<int> own_species;
+        std::vector<double> x_own;
+        std::vector<double> f_own;
+        for (int j : residual_support) {
+            if (j >= 0 && j < ns &&
+                std::find(own_species.begin(), own_species.end(), j) == own_species.end()) {
+                own_species.push_back(j);
+                x_own.push_back(x[static_cast<std::size_t>(j)]);
+                f_own.push_back(f0[static_cast<std::size_t>(j)]);
+            }
+        }
+        if (continuous && !other_jump && !residual_jumps &&
+            (!std::isnan(near_clock) || !std::isnan(near_fire))) {
+            bool hidden = false;
+            for (std::size_t idx : near_clocks) {
+                const int counter = clock_instant_species[idx];
+                for (double side : {-1.0, 1.0}) {
+                    std::vector<double> rest(x);
+                    double t_at = t_evt;
+                    if (counter >= 0 && counter < ns) {
+                        const double at = clock_instant_threshold[idx];
+                        rest[static_cast<std::size_t>(counter)] =
+                            at +
+                            side * (64.0 * std::numeric_limits<double>::epsilon() *
+                                        std::max(std::fabs(at), 1.0) +
+                                    4.0 * step * std::fabs(f0[static_cast<std::size_t>(counter)]));
+                    } else {
+                        t_at = clock_instants[idx] +
+                               side * (4.0 * step + 64.0 * std::numeric_limits<double>::epsilon() *
+                                                        std::max(std::fabs(t_evt), 1.0));
+                    }
+                    hidden =
+                        hidden || jumps_across_surface(own_species, x_own, f_own, step, rest, t_at);
+                }
+            }
+            for (const EventFire *fire : near_fires) {
+                if (fire->x_before.size() == static_cast<std::size_t>(ns)) {
+                    hidden = hidden || jumps_across_surface(own_species, x_own, f_own, step,
+                                                            fire->x_before, fire->t);
+                } else {
+                    hidden = true;
+                }
+            }
+            if (event_fires.size() >= kCrossingsKept && t_evt - event_fires.front().t <= reach) {
+                hidden = true; // a fire that was dropped cannot be asked
+            }
+            sync(x, t_evt);
+            if (!hidden) {
+                near_clock = std::numeric_limits<double>::quiet_NaN();
+                near_fire = std::numeric_limits<double>::quiet_NaN();
+            }
         }
         // Whether a column moves this crossing: its own dt*/dθ. Asked where
         // something is near, and where something may yet come near it.
@@ -10082,7 +10305,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             state_crossings.erase(state_crossings.begin());
         }
         if (!residual_jumps) {
-            state_crossings.push_back({t_evt, reach, sw.residual_source, residual_support, moves});
+            state_crossings.push_back({t_evt, reach, sw.residual_source, residual_support, moves,
+                                       continuous, own_species, x_own, f_own, step});
         }
     }
 
@@ -10846,10 +11070,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             double t;
             char moves;
             int species;
+            double threshold;
         };
         std::vector<Instant> instants;
         for (const CrossingStop &stop : opts.crossing_stops) {
-            instants.push_back({stop.t_star, 0, stop.clock_species_idx0});
+            instants.push_back({stop.t_star, 0, stop.clock_species_idx0, stop.threshold});
         }
         for (const SwitchTimeSens &record : opts.sensitivity.switch_times) {
             instants.push_back(
@@ -10857,17 +11082,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                  static_cast<char>(
                      std::any_of(record.dtstar_dp.begin(), record.dtstar_dp.end(), nonzero) ? 1
                                                                                             : 0),
-                 record.clock_species_idx0});
+                 record.clock_species_idx0, record.threshold});
         }
         std::sort(instants.begin(), instants.end(),
                   [](const Instant &a, const Instant &b) { return a.t < b.t; });
         impl_->clock_instants.clear();
         impl_->clock_instant_moves.clear();
         impl_->clock_instant_species.clear();
+        impl_->clock_instant_threshold.clear();
         for (const Instant &one : instants) {
             impl_->clock_instants.push_back(one.t);
             impl_->clock_instant_moves.push_back(one.moves);
             impl_->clock_instant_species.push_back(one.species);
+            impl_->clock_instant_threshold.push_back(one.threshold);
         }
     }
     impl_->event_fires.clear();

@@ -563,3 +563,27 @@ def test_a_switch_on_a_species_in_a_fast_exchange_runs(gate):
     )
     got = _columns(text, ["thr"], [0.0, 2.0, 5.0, 7.0, 9.0])
     assert got[3, 0] == pytest.approx(-1.0, rel=1e-5)
+
+
+STARTED = (
+    "species X, Y; X = 2; Y = 0; r = 1.5; k = 0.5; tau = 3; X0 = 2\n"
+    "Jx: -> X; piecewise(r, time >= tau, 0)\nJy: -> Y; piecewise({law}, X > X0, 0)\n"
+)
+
+
+def test_a_bend_that_a_fitted_gate_starts_runs():
+    """Control. X sits on X0 until the gate at the fitted tau starts it, and
+    the law is a ramp from X0: a bend, 0 at its surface whichever of the two
+    comes first, a few ulp after the gate where the run finds it.
+    Y = k·r·(T − tau)²/2. (The stimulus of BIOMD0000000161, which a cut that
+    asked at every crossing refused.)"""
+    got = _columns(STARTED.format(law="k*(X - X0)"), ["tau", "r"])
+    np.testing.assert_allclose(got[1], [-0.5 * 1.5 * 2.0, 0.5 * 2.0**2 / 2.0], rtol=1e-7)
+
+
+def test_a_jump_that_a_fitted_gate_starts_is_refused():
+    """The same with a law that jumps where X leaves X0, ``k`` from there:
+    Y = k·(T − tau). X's residual is exactly 0 until the gate, and leaves 0
+    without coming through it: no root is reported, the state switch's jump
+    was never made, and dY/dtau came back 0 for −0.5."""
+    _refused(STARTED.format(law="k"), ["tau", "r"], 946)
