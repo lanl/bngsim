@@ -650,7 +650,7 @@ def test_a_value_that_is_even_about_the_point_and_steep(case):
     """Control. Each is even about the point and leaves it as a third power or
     a fourth, so its derivative there is 0, and the central difference of an
     even value is 0 whatever its size: these move by 1e-12 to 3e-8 across the
-    step, which is a slope of 1e-3 to 9e-3. K is 1e-6, a thousand steps from X
+    step, which is a slope of 3e-5 to 9e-3. K is 1e-6, a thousand steps from X
     at 0."""
     value, at = EVEN[case]
     text = (
@@ -664,7 +664,7 @@ SMALL = {
     # A bend between slopes of 0 and 1e-13: the difference gave 5e-14.
     "a-bend": ("1e-13*max(time - 2.3, 0)", "the time"),
     # The step of the issue, 1e-18 high, in a model whose values are that
-    # small: 6.7e-13, which is 670,000 times the value's whole range per unit
+    # small: 1.7e-13, which is 170,000 times the value's whole range per unit
     # of T0.
     "a-step": ("piecewise(0, time >= T0 + 1, 1e-18)", "the parameter 'T0'"),
 }
@@ -673,8 +673,10 @@ SMALL = {
 @pytest.mark.parametrize("case", sorted(SMALL))
 def test_a_step_or_a_bend_at_the_fire_instant_however_small(case):
     """A value that is 0 at the point has no size to measure what it moves by
-    against, so a step or a bend there is told by its shape: it is not a power
-    of the distance."""
+    against. A step or a bend there is not a power of the distance, which a
+    flat value is, and is refused however small. (A step that opens as a square
+    is such a power, and passes where what it leaves in the column is under
+    1e-6.)"""
     value, where = SMALL[case]
     text = f"species B; B = 0; T0 = 1.3\nE1: at (time >= T0 + 1): B = {value}\n"
     _refused(text, ["T0"], 5.0, where)
