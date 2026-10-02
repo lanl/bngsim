@@ -229,6 +229,10 @@ inline double resolve_ic_from_param(const Species &sp, double param_value) {
 //   * Species names were not rebound to the cloned evaluator. Event
 //     trigger expressions referencing species failed to compile in the
 //     clone with `ExprTk ERR239 — Undefined symbol`.
+//   * `Event::assignment_rescale_size_expr` (issue #936) kept the source's
+//     expression index, so every clone read another expression as a resized
+//     compartment's size. Any new evaluator-indexed field must be recompiled
+//     in `clone()` too.
 //
 // Both bugs were latent because the .net regression corpus has no events
 // and no species-referencing trigger expressions. Convention is the only
