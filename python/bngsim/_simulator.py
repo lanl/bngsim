@@ -3987,10 +3987,17 @@ class Simulator:
             # fresh seed per replicate makes each trajectory independent.
             model.reset()
             used = base_seed + i
-            if self._method == "psa":
-                cr = sim.run_psa(times, used, self._poplevel, eff_timeout)
-            else:
-                cr = sim.run(times, used, eff_timeout)
+            # Translated as run() translates them, so `except SimulationError`
+            # sees a refusal on the sequential path as it does on the threaded one.
+            try:
+                if self._method == "psa":
+                    cr = sim.run_psa(times, used, self._poplevel, eff_timeout)
+                else:
+                    cr = sim.run(times, used, eff_timeout)
+            except SimulationTimeout:
+                raise
+            except RuntimeError as e:
+                raise SimulationError(f"Simulation failed: {e}") from e
             r = self._stamp(Result(cr), seed=used, model=model)
             self._warn_ssa_boundary(r)
             return r

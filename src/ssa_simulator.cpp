@@ -507,9 +507,33 @@ void SsaSimulator::set_propensity_library(const std::string &so_path) {
     impl_->propensity_lib_path = so_path;
 }
 
+// A run that raises leaves the model as it found it. The loop writes its
+// running state into the model as it goes (the species it syncs for observables,
+// functions and triggers, and the clock), so a run stopped part way, by a
+// timeout or a refusal, left a mid-run state under a clock and events still at
+// t_start, and the next run continued from it with no error.
+template <class Run> static Result restoring_on_raise(NetworkModel &model, Run &&run) {
+    auto &species = const_cast<std::vector<Species> &>(model.species());
+    std::vector<double> conc(species.size());
+    for (std::size_t i = 0; i < species.size(); ++i)
+        conc[i] = species[i].concentration;
+    const double t0 = model.current_time();
+    try {
+        return run();
+    } catch (...) {
+        for (std::size_t i = 0; i < species.size(); ++i)
+            species[i].concentration = conc[i];
+        model.set_current_time(t0);
+        model.update_observables(conc.data());
+        model.evaluate_functions(t0);
+        throw;
+    }
+}
+
 Result SsaSimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
     // poplevel = 0.0 means no scaling (exact SSA)
-    return run_internal(times, seed, 0.0, timeout_seconds);
+    return restoring_on_raise(impl_->model,
+                              [&] { return run_internal(times, seed, 0.0, timeout_seconds); });
 }
 
 Result SsaSimulator::run_psa(const TimeSpec &times, uint64_t seed, double poplevel,
@@ -519,7 +543,8 @@ Result SsaSimulator::run_psa(const TimeSpec &times, uint64_t seed, double poplev
             "PSA poplevel (N_c) must be > 1. Got " + std::to_string(poplevel) +
             ". For exact stochastic simulation, use run() instead of run_psa().");
     }
-    return run_internal(times, seed, poplevel, timeout_seconds);
+    return restoring_on_raise(impl_->model,
+                              [&] { return run_internal(times, seed, poplevel, timeout_seconds); });
 }
 
 // ─── Unified SSA/PSA simulation loop ─────────────────────────────────────────
@@ -1748,6 +1773,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<char> probe_prev, probe_cur; // the continuous loop's scan
     auto probe_events_in_window = [&](double t_lo, double t_hi) -> double {
         double t_event = std::numeric_limits<double>::infinity();
+        // Nothing past the run's end can fire in it. The discrete loop asks up
+        // to its next firing, which with a tiny total propensity lies far past
+        // t_end: the grid then ran to it (millions of looks, past the timeout,
+        // and past INT_MAX in the look count).
+        t_hi = std::min(t_hi, times.t_end);
         if (time_triggers.empty() || !(t_hi > t_lo))
             return t_event;
         // Until a trigger changes, its recorded truth is what each look compares

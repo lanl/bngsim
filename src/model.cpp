@@ -268,8 +268,9 @@ NetworkModel NetworkModel::clone() const {
 
     // Deep-copy events and re-compile their expressions in the new evaluator.
     // Each event carries indices into the evaluator's expression table for
-    // its trigger, optional delay, optional priority, and per-assignment
-    // value expressions. These indices are evaluator-specific; without
+    // its trigger, optional delay, optional priority, per-assignment value
+    // expressions, and a resize rescale's compartment size (issue #936).
+    // These indices are evaluator-specific; without
     // re-compilation in the cloned evaluator, the cloned model's events
     // would be silent no-ops (DSMTS event cases 00028/29/32/33 hit this
     // pre-Phase-5b but the SSA simulator did not consult events at all,
@@ -299,6 +300,14 @@ NetworkModel NetworkModel::clone() const {
             if (assign.second >= 0) {
                 const auto &cached = impl_->evaluator->preprocessed_expr(assign.second);
                 assign.second = copy.impl_->evaluator->compile_preprocessed(cached);
+            }
+        }
+        // ...and a resize rescale's compartment size (issue #936). Left as the
+        // source's index, every clone read some other expression as the size.
+        for (auto &idx : ev.assignment_rescale_size_expr) {
+            if (idx >= 0) {
+                const auto &cached = impl_->evaluator->preprocessed_expr(idx);
+                idx = copy.impl_->evaluator->compile_preprocessed(cached);
             }
         }
     }
