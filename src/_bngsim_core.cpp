@@ -1675,10 +1675,23 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     throw py::value_error("_eval_rhs: expected " + std::to_string(ns) +
                                           " species values, got " + std::to_string(conc.size()));
                 std::vector<double> y = conc, dydt(ns, 0.0);
+                // A diagnostic leaves the model as it found it: compute_derivs
+                // evaluates the observables and functions at (t, conc), and the
+                // clock-detection probe that runs before every SSA run would
+                // otherwise leave them, and the clock, there.
+                const auto &sp = self.species();
+                std::vector<double> y_model(sp.size());
+                for (std::size_t i = 0; i < sp.size(); ++i)
+                    y_model[i] = sp[i].concentration;
+                const double t_model = self.current_time();
                 self.compute_derivs(t, y.data(), dydt.data());
+                self.set_current_time(t_model);
+                self.update_observables(y_model.data());
+                self.evaluate_functions(t_model);
                 return dydt;
             },
-            py::arg("t"), py::arg("conc"), "Evaluate dy/dt at (t, conc). Test/diagnostic hook.")
+            py::arg("t"), py::arg("conc"),
+            "Evaluate dy/dt at (t, conc), leaving the model as it was. Test/diagnostic hook.")
         .def(
             "_dense_analytical_jacobian",
             [](bngsim::NetworkModel &self, double t, const std::vector<double> &conc) {
