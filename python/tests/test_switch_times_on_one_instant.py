@@ -857,3 +857,23 @@ def test_three_steps_whose_weights_are_nearly_a_slope_are_refused(weight):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
     with pytest.raises(bngsim.SimulationError, match="issue #951"):
         sim.run(sample_times=[0.0, 1.5, 3.0, 4.5, 5.5], rtol=1e-10, atol=1e-12)
+
+
+def test_a_quarter_of_the_hair_has_to_clear_the_instant_too():
+    """A gate 700 ulp after tau and one 9,000 ulp after it, summed into the
+    switch's own rate law. The farther caps the hair at a quarter of 9,000
+    ulp; half of that clears the nearer gate and a quarter of it does not,
+    and the commute test may read at a quarter. The sum commutes and
+    dY/dtau = −1, which main returns; a crossing composed with another is
+    refused where the shortest reading would have the switch already made."""
+    eps = float(np.finfo(float).eps)
+    near_gate, far_gate = (repr(3.0 * (1 + n * eps)) for n in (700, 9000))
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)"
+        f" + piecewise(2, time >= {near_gate}, 0.5) + piecewise(2, time >= {far_gate}, 0.5)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="closer to a neighbouring"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
