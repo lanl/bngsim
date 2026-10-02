@@ -110,6 +110,7 @@ class Model:
         "_varvol_event_resize_map",
         "_periodic_disc_max_step",
         "_time_disc_conditions",
+        "_event_disc_conditions",
         "_derived_time_disc_conditions",
         "_state_switch_root_conditions",
         "_ssa_reads_clock",
@@ -252,6 +253,9 @@ class Model:
         # to crossing times and stops the step on each, because a registered
         # root is only reachable on a step CVODE accepts. See _sbml_loader.py.
         self._time_disc_conditions: tuple[str, ...] = ()
+        # The ones an event trigger reads (issue #714): a touch of the threshold
+        # is a stop for these alone.
+        self._event_disc_conditions: frozenset[str] = frozenset()
         # Issue #440: the same thing for a model whose loader registered
         # nothing, derived from the built core on first ask and cached here.
         # None means "not looked yet"; a tuple (often empty) means the scan has
@@ -1030,6 +1034,7 @@ class Model:
         m._varvol_event_resize_map = dict(self._varvol_event_resize_map)
         m._periodic_disc_max_step = self._periodic_disc_max_step
         m._time_disc_conditions = self._time_disc_conditions
+        m._event_disc_conditions = self._event_disc_conditions
         m._derived_time_disc_conditions = self._derived_time_disc_conditions
         m._state_switch_root_conditions = self._state_switch_root_conditions
         m._ssa_reads_clock = self._ssa_reads_clock
