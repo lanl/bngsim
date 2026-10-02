@@ -18,6 +18,8 @@ Both are refused. Every expected value is a closed form.
 
 from __future__ import annotations
 
+import math
+
 import bngsim
 import numpy as np
 import pytest
@@ -35,11 +37,11 @@ def _columns(text, params, times=TIMES):
     return np.asarray(run.sensitivities)[-1]
 
 
-def _refused(text, params, issue, times=TIMES):
+def _refused(text, params, issue, times=TIMES, rtol=1e-10, atol=1e-12, ic=None):
     model = bngsim.Model.from_antimony_string(text)
-    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params, sensitivity_ic=ic)
     with pytest.raises(bngsim.SimulationError, match=f"#{issue}"):
-        sim.run(sample_times=times, rtol=1e-10, atol=1e-12, timeout=60)
+        sim.run(sample_times=times, rtol=rtol, atol=atol, timeout=60)
 
 
 ON_ONE_INSTANT = {
@@ -368,3 +370,177 @@ def test_an_event_whose_time_is_found_as_a_root_runs_where_no_column_moves_eithe
     """Control. The same with q requested: W = q·X integrated from 3."""
     got = _columns(ROOTED.format(at=6), ["q"], EVENT_TIMES)
     np.testing.assert_allclose(got[:, 0], [0.0, 0.0, 33.75, 0.0], rtol=1e-7, atol=1e-9)
+
+
+# ── What the review of this change found ────────────────────────────────────
+
+SWITCH = "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)\n"
+GATES_WITH_NO_STOP = {
+    # dX/dthr = −0.5 for 0, each: the gate's jump with the state switch's shift.
+    "a-square-in-another-law": HEAD + "Jx: -> X; piecewise(k, time^2 >= 9, 0)\n" + SWITCH,
+    "a-quadratic-in-another-law": (
+        HEAD + "Jx: -> X; piecewise(k, time^2 + time >= 12, 0)\n" + SWITCH
+    ),
+    # −0.5 on the kink −0.25 | −0.5.
+    "a-square-in-the-same-law": (
+        HEAD + "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)*piecewise(1, time^2 >= 9, 0.5)\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(GATES_WITH_NO_STOP))
+def test_a_gate_the_run_takes_no_stop_for_is_refused_on_the_instant(case):
+    """``time^2 >= 9`` switches at t = 3, a time the run does not know ahead:
+    it is no stop and no record. What else jumps between the probes is asked
+    of the right-hand side itself, with this switch's species held to one
+    side of the crossing and everything else put to the other."""
+    _refused(GATES_WITH_NO_STOP[case], ["thr"], 946)
+
+
+def test_a_counter_s_gate_the_run_has_no_root_for_is_refused_on_the_instant(tmp_path):
+    """The same on a counter species, ``if(t^2 >= 9, k, 0)``, which a run with
+    sensitivities has no root for at all: dX/dthr = −0.5 for 0."""
+    path = tmp_path / "m.net"
+    path.write_text(NET.replace("if(t>=thr,k,0)", "if(t^2>=9,k,0)").format(level="0.5*thr"))
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["thr"]
+    )
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12, timeout=60)
+
+
+def test_a_gate_that_closes_the_window_on_the_instant_is_refused():
+    """``piecewise(k, S >= 0.5*thr, 0)*piecewise(0, time >= 3, 1)``: the gate
+    closes the window on the instant the switch would open it. With thr under
+    3 the window is open for 3 − thr, and dY/dthr is −0.5; above 3 it never
+    opens. The law is 0 after the crossing either way, so the switch reads as
+    one that does not jump, and nothing was asked: the run returned 0."""
+    text = HEAD + "Jy: -> Y; piecewise(k, S >= 0.5*thr, 0)*piecewise(0, time >= 3, 1)\n"
+    _refused(text, ["thr"], 946)
+
+
+def test_an_event_that_empties_what_the_law_reads_is_refused():
+    """The event sets X to 0 on the instant V reaches 6: the switched law
+    q·X is 0 past it and the switch reads as one that does not jump. dW/dtau
+    is −6.3 with the switch first and −2.1 with the event first, and the run
+    returned −6.3."""
+    _refused(EVENT.replace("X = 0.5*X", "X = 0").format(at=6), ["tau"], 945, EVENT_TIMES)
+
+
+def test_a_gate_that_opens_inside_the_reach_is_refused():
+    """S = e^t reaches its threshold 1.86e-5 after the gate at 3 opens the
+    law, and at rtol 1e-6 the run finds that crossing before the gate, where
+    the law is 0: dY/dsth came back 0 for −0.0249."""
+    text = (
+        f"species S, Y; S = 1; Y = 0; k = 0.5; sth = {math.exp(3 + 1.86e-5)!r}\nJs: -> S; S\n"
+        "Jy: -> Y; piecewise(k, S >= sth, 0)*piecewise(1, time >= 3, 0)\n"
+    )
+    _refused(text, ["sth"], 946, rtol=1e-6, atol=1e-9)
+
+
+COUNTER = "species S, X, Y, Tc; S = 0; X = 0; Y = 0; Tc = 0; k = 0.5; t2 = 3\nJs: -> S; 0.5\n"
+
+
+def test_a_counter_moved_by_its_own_initial_value_is_refused():
+    """The gate is on a counter at the literal 3 and the switch is fixed, with
+    the counter's initial value requested: the gate moves with its own
+    column and no record says so. dY/dTc(0) is 0.25 | 0, and the run
+    returned 0."""
+    text = COUNTER + (
+        "Jc: -> Tc; 1\nJy: -> Y; piecewise(k, S >= 1.5, 0)*piecewise(1, Tc >= 3, 0.5)\n"
+    )
+    _refused(text, None, 946, ic=["Tc"])
+
+
+def test_a_counter_moved_by_its_own_rate_is_refused():
+    """The same with the counter's rate requested and the switch, on S = e^t,
+    3.17e-5 after the gate: inside the reach at rtol 1e-6. dY/d(one) came
+    back 0.75 for 0."""
+    text = (
+        "species S, Y, Tc; S = 1; Y = 0; Tc = 0; k = 0.5; one = 1\nJs: -> S; S\nJc: -> Tc; one\n"
+        f"Jy: -> Y; piecewise(k, S >= {math.exp(3 + 3.17e-5)!r}, 0)*piecewise(1, Tc >= 3, 0.5)\n"
+    )
+    _refused(text, ["one"], 946, rtol=1e-6, atol=1e-9)
+
+
+def test_an_event_between_the_two_does_not_hide_the_first():
+    """The event on U = e^(c·t) is 5e-7 after the switch on V, inside the
+    reach at rtol 1e-6, and an event that does nothing fires on V between
+    them. Only the last fire was remembered: dW/dc came back 9.45 for 3.15."""
+    text = (
+        "species X, W, V, U; X = 0; W = 0; V = 0; U = 1; a = 2; q = 0.7; c = 1\n"
+        "J0: -> X; a\nJv: -> V; 2\nJu: -> U; c*U\nJ2: -> W; piecewise(q*X, V >= 6, 0)\n"
+        f"E1: at (U > {math.exp(3 + 5e-7)!r}): X = 0.5*X\nE2: at (V >= 5.9999998): W = W + 0\n"
+    )
+    _refused(text, ["c"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+
+
+def test_a_switch_between_the_two_does_not_hide_the_first():
+    """The switch on V = e^(2t) is 1.99e-5 after the event at tau, found
+    before it at rtol 1e-6, and a second switch that jumps, on Z through 0,
+    crosses between them. Only the last crossing was remembered: dW/dtau came
+    back −1.05 for −3.15."""
+    text = (
+        "species X, W, V, Z, Q; X = 0; W = 0; V = 1; Z = 5.9999996; Q = 0; a = 2; q = 0.7;"
+        " tau = 3; kv = 2\n"
+        "J0: -> X; a\nJv: -> V; kv*V\nJz: Z -> ; 2\nJq: -> Q; piecewise(1, Z <= 0, 0)\n"
+        f"J2: -> W; piecewise(q*X, V >= {math.exp(6 + 2 * 1.99e-5)!r}, 0)\n"
+        "E1: at (time >= tau): X = 0.5*X\n"
+    )
+    _refused(text, ["tau"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+
+
+def test_a_trigger_that_reads_the_switch_s_species_and_another_is_refused():
+    """``at (V > U·e³)`` reads V, which the switch reads, and U. It fires
+    where U says, not where V is on its way through 6: the two are not on one
+    trajectory. dW/dc came back −9.45 for −3.15."""
+    text = (
+        "species X, W, V, U; X = 0; W = 0; V = 1; U = 1; a = 2; q = 0.7; c = 1; kv = 2\n"
+        "J0: -> X; a\nJv: -> V; kv*V\nJu: -> U; c*U\n"
+        f"J2: -> W; piecewise(q*X, V >= {math.exp(6 - 2 * 2.4329e-5)!r}, 0)\n"
+        f"E1: at (V > U*{math.exp(3.0)!r}): X = 0.5*X\n"
+    )
+    _refused(text, ["c"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("rate", "column", "want"),
+    [("50", 1, 0.0), ("piecewise(0.005, S >= 50*thr, 50)", 0, 49.995)],
+    ids=["a-steady-rate", "a-rate-the-switch-slows"],
+)
+def test_the_reach_goes_by_the_rate_the_species_arrives_at(rate, column, want):
+    """Control. S comes to its threshold at a rate of 50, with a gate in
+    another law 0.02 later: 7,000 reaches away at rtol 1e-6. A switch that
+    slows S to 0.005 past the crossing says nothing of how fast it got there;
+    read from the flow after the crossing the reach was 0.03, and the run was
+    refused."""
+    law = "" if "piecewise" in rate else "Jy: -> Y; piecewise(k, S >= 50*thr, 0)\n"
+    text = (
+        "species S, X, Y; S = 0; X = 0; Y = 0; k = 0.5; thr = 3\n"
+        f"Js: -> S; {rate}\n{law}Jx: -> X; piecewise(k, time >= 3.02, 0)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
+    run = sim.run(sample_times=TIMES, rtol=1e-6, atol=1e-9, timeout=60)
+    assert np.asarray(run.sensitivities)[-1][column, 0] == pytest.approx(want, rel=1e-5, abs=1e-8)
+
+
+def test_a_switch_that_speeds_its_own_species_is_within_the_reach_it_arrived_with():
+    """S comes to its threshold at 0.005 and leaves at 50, with a gate in the
+    same law 1e-7 later: inside the 3e-6 that rtol 1e-6 allows at the rate of
+    arrival. Read from the flow after the crossing the reach was 3e-10, and
+    the pair ran. (S is linear, so the order it ran in was the true one.)"""
+    text = (
+        "species S, Y; S = 0; Y = 0; k = 0.5; thr = 3\n"
+        "Js: -> S; piecewise(50, S >= 0.005*thr, 0.005)\n"
+        "Jy: -> Y; piecewise(k, S >= 0.005*thr, 0)*piecewise(1, time >= 3.0000001, 0.5)\n"
+    )
+    _refused(text, ["thr"], 946, rtol=1e-6, atol=1e-9)
+
+
+def test_a_fitted_gate_on_a_fixed_switch_in_another_law_is_refused():
+    """Refused here, where main is right. The gate moves and the switch does
+    not, on one instant, in different rate laws: they commute, and each has
+    its own jump. Whether the two are composed is not asked."""
+    text = HEAD + ("Jx: -> X; piecewise(k, time >= thr, 0)\nJy: -> Y; piecewise(k, S >= 1.5, 0)\n")
+    _refused(text, ["thr"], 946)
