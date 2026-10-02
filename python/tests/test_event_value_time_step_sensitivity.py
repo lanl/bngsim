@@ -680,6 +680,19 @@ def test_a_step_or_a_bend_at_the_fire_instant_however_small(case):
     _refused(text, ["T0"], 5.0, where)
 
 
+def test_a_tooth_on_one_side_of_a_flat_point_is_refused():
+    """``X²`` above 0 and a sawtooth of X below it, with a period of 1e-9, which
+    is the step a species at 0 is differenced over: the value reads 0 at the
+    point and one step below it, and half a tooth between. From above the
+    derivative is 0 and from below it is 1. A side that has not moved at the
+    whole step is flat only if it has not moved at half of it either."""
+    text = (
+        "species B, X; B = 0; x0 = 0; X = x0\nJ0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = piecewise(X - 1e-9*floor(X/1e-9), X < 0, X^2)\n"
+    )
+    _refused(text, ["x0"], 5.0, "the species 'X'")
+
+
 def test_a_flat_value_read_one_rounding_error_from_its_flat_point():
     """Control. ``(time − 0.3)³`` fired at T0 + 0.1 with T0 at 0.2: 0.2 + 0.1 is
     not 0.3 in doubles, and the value at the instant is 1.7e-49, not 0. A value
