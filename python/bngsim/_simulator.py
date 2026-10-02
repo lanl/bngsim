@@ -686,6 +686,9 @@ class Simulator:
         "_sensitivity_method",
         # GH #198 — memoized expression output-sensitivity support map; lazily filled.
         "_expr_sens_support_memo",
+        # Issue #938 — what a time course on the difference quotient cannot
+        # differentiate through in this model, for the columns it was asked of.
+        "_fallback_crossing_memo",
     )
 
     def __init__(
@@ -1169,6 +1172,7 @@ class Simulator:
         # GH #198 — lazily computed (memoized) expression output-sensitivity
         # support map; None until first needed by a sensitivity run.
         self._expr_sens_support_memo: dict[str, str | None] | None = None
+        self._fallback_crossing_memo: tuple[tuple, str | None] | None = None
         if self._sensitivity_params and dispatch != "ode":
             raise ValueError("sensitivity_params is only supported for method='ode'.")
         if self._sensitivity_ic and dispatch != "ode":
@@ -1662,17 +1666,26 @@ class Simulator:
             return
         from bngsim._switch_sensitivity import fallback_crossing
 
-        try:
-            core = self._model._core
-            species = list(core.species_names)
-            crossing = fallback_crossing(
-                core,
-                self._sensitivity_params or (),
-                [species.index(n) for n in self._sensitivity_ic or () if n in species],
-            )
-        except Exception as e:  # pragma: no cover - defensive
-            logger.debug("Fallback-crossing sensitivity refusal: scan unavailable (%s)", e)
-            return
+        # The answer is a property of the rate laws' text and of which columns
+        # are requested, neither of which a set_param changes, and the scan
+        # parses every conditional rate law: asked once per simulator.
+        key = (tuple(self._sensitivity_params or ()), tuple(self._sensitivity_ic or ()))
+        cached = self._fallback_crossing_memo
+        if cached is not None and cached[0] == key:
+            crossing = cached[1]
+        else:
+            try:
+                core = self._model._core
+                species = list(core.species_names)
+                crossing = fallback_crossing(
+                    core,
+                    key[0],
+                    [species.index(n) for n in key[1] if n in species],
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Fallback-crossing sensitivity refusal: scan unavailable (%s)", e)
+                return
+            self._fallback_crossing_memo = (key, crossing)
         if crossing is None:
             return
         why = self.sens_rhs_decline_reason

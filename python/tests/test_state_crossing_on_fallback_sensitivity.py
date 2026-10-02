@@ -23,6 +23,8 @@ Every expected value is a closed form.
 
 from __future__ import annotations
 
+import math
+
 import bngsim
 import numpy as np
 import pytest
@@ -233,27 +235,111 @@ def test_a_run_that_stalled_short_of_a_jump_is_refused_by_name(model):
         sim.run(sample_times=np.linspace(0.0, 6.0, 7), rtol=1e-10, atol=1e-12, timeout=10)
 
 
+def test_a_jump_no_requested_column_moves_is_refused_all_the_same(tmp_path):
+    """kb and kc move neither A nor thr, so neither column reads across the
+    surface, and main returns them: dY/dkb = T − t* and dY/dkc = 0. Whether a
+    column moves the crossing is not known before the run, and a model whose
+    rate law jumps where the state crosses is refused on the quotient whichever
+    it is."""
+    sim = _simulator(tmp_path, "if(Aobs<thr,kb,0)", DECLINED, ["kb", "kc"], decays=True)
+    _refused(sim, "Aobs<thr")
+
+
+def test_a_counter_threshold_the_rate_law_does_not_jump_at_runs(tmp_path):
+    """Control. The rate law turns on as a ramp from the counter's threshold:
+    Y = kb·k·(T − t*)²/2 with t* = (thr − A0)/k, so
+    dY/dk = kb·(T − t*)²/2 + kb·(T − t*)·t* = 36.66. A bend, which the
+    quotient reads across without harm."""
+    sim = _simulator(tmp_path, "if(Aobs>4.4,kb*(Aobs-4.4),0)", DECLINED, ["k"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [36.66], rtol=1e-6)
+
+
 @pytest.mark.parametrize(
-    ("fy", "fz", "params", "decays"),
-    [
-        ("if(Aobs<thr,kb,0)", DECLINED, ["kb", "kc"], True),
-        ("if(Aobs>4.4,kb*(Aobs-4.4),0)", DECLINED, ["k"], False),
-        ("if(Aobs<thr,kb*(thr-Aobs),0)", DECLINED, ["k", "thr"], True),
-        ("if((Aobs-thr)<0,(-(Aobs-thr))*kb,0)", DECLINED, ["k", "thr"], True),
-    ],
-    ids=["columns-that-do-not-move-it", "a-ramp-on-a-counter", "a-ramp", "a-signed-rate"],
+    "law",
+    ["if(Aobs<thr,kb*(thr-Aobs),0)", "if((Aobs-thr)<0,(-(Aobs-thr))*kb,0)"],
+    ids=["ramp", "signed-rate"],
 )
-def test_crossings_the_quotient_gets_right_are_refused_all_the_same(
-    tmp_path, fy, fz, params, decays
-):
-    """Four the difference quotient is right for, and main returns: columns
-    that move neither the state nor the threshold, and rate laws that turn on
-    from 0 at the crossing, so that there is no jump to read across. Whether a
-    rate law jumps where the state will cross, and whether a column moves the
-    crossing, are not known before the run; a model with a crossing on the
-    state is refused on the quotient whichever it is."""
-    sim = _simulator(tmp_path, fy, fz, params, decays=decays)
-    _refused(sim, "Aobs")
+def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path, law):
+    """Control. A decays through thr and the rate law turns on from 0 there, as
+    a ramp, or in the signed-rate idiom. The rate law is continuous wherever
+    its condition flips, which is asked of it before the run, at three points
+    of the condition's surface: there is no jump for the quotient to straddle,
+    and the columns are right on it."""
+    sim = _simulator(tmp_path, law, DECLINED, ["k", "thr"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    a0, k, thr, kb = 10.0, 1.0, 4.4, 3.0
+    t_star = math.log(a0 / thr) / k
+    tail = math.exp(-k * T_END)
+    want = [
+        kb * (thr * t_star / k + thr / k**2 - a0 * T_END * tail / k - a0 * tail / k**2),
+        kb * (T_END - t_star),
+    ]
+    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("law", "atom", "continuous"),
+    [
+        ("if((k*(thr-Aobs))<0,(-(k*(thr-Aobs)))/max(Bobs,0.01),0)", "(k*(thr-Aobs))<0", True),
+        ("if(Aobs<thr,kb*(thr-Aobs)^2,0)", "Aobs<thr", True),
+        ("if(Aobs<thr,kb*(thr-Aobs)+1e6*Aobs,1e6*Aobs)", "Aobs<thr", True),
+        ("if((Aobs>thr)&&(Bobs<2),kb*(Aobs-thr),0)", "Aobs>thr", True),
+        # The same law jumps where its other comparison flips.
+        ("if((Aobs>thr)&&(Bobs<2),kb*(Aobs-thr),0)", "Bobs<2", False),
+        # A jump in proportion to another species: nothing where that one is 0.
+        ("if(Aobs<thr,kb*Bobs,0)", "Aobs<thr", False),
+        # In proportion to a symbol the condition itself reads.
+        ("if(k*(Aobs-thr)<0,k*kb,0)", "k*(Aobs-thr)<0", False),
+        # A jump of a thousandth beside a term that moves by 1.3 over the hair.
+        ("if(Aobs<thr,kb,0)*1e-3+1e6*Aobs", "Aobs<thr", False),
+        # Continuous and not a bend: its slope has no bound at the surface.
+        ("if(Aobs<thr,kb*sqrt(thr-Aobs),0)", "Aobs<thr", False),
+        ("if(rateOf(A)>-thr,kb,0)", "rateOf(A)>-thr", False),
+        ("kc*if(floor(Aobs/P)>2,1,2)", "floor(Aobs/P)>2", False),
+        # The branch not taken is not evaluated: its square root is of a
+        # negative number a hair below the threshold.
+        ("if(Aobs<thr,0,kb*(Aobs-thr)*sqrt(Aobs-thr+1e-9))", "Aobs<thr", True),
+        # The branch taken is: no value there, and nothing to compare.
+        ("if(Aobs<thr,kb*(thr-Aobs)*sqrt(Aobs-thr),0)", "Aobs<thr", False),
+        # A parameter named with a Python keyword.
+        ("if(lambda<thr,kb*(thr-lambda),0)", "lambda<thr", True),
+        ("if(lambda<thr,kb,0)", "lambda<thr", False),
+        # A call and an operator that are not read as doubles.
+        ("if(Aobs<thr,kb*(thr-Aobs)*mratio(1,2,Aobs),0)", "Aobs<thr", False),
+        ("if(Aobs<thr,kb*(thr-Aobs)*(Bobs%2),0)", "Aobs<thr", False),
+    ],
+)
+def test_whether_a_rate_law_is_continuous_where_its_condition_flips(law, atom, continuous):
+    """The question the refusal turns on, asked of the rate law's text."""
+    from bngsim._switch_sensitivity import _continuous_across
+
+    assert _continuous_across(law, atom) is continuous
+
+
+GATES = "if(T<4,1,if(T>=16,if(T<20,1,0),0))"
+
+
+@pytest.mark.parametrize(
+    ("law", "continuous"),
+    [
+        (f"if((({GATES})*fA-V)>0,(({GATES})*fA-V),0)", True),
+        (f"if((({GATES})*fA-V)>0,kb,0)", False),
+    ],
+    ids=["signed-rate", "jump"],
+)
+def test_a_gate_schedule_inside_the_condition_is_read_without_sympy(monkeypatch, law, continuous):
+    """A condition that holds a conditional: sympy puts it into a canonical
+    form as it parses, at 2 s a rate law, and one corpus model
+    (mt_music_sequencer) has twelve of them. The law is read as plain doubles."""
+    from bngsim import _jacobian
+    from bngsim._switch_sensitivity import _continuous_across
+
+    def parse(expr):
+        raise AssertionError(f"parsed through sympy: {expr[:40]}")
+
+    monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", parse)
+    assert _continuous_across(law, f"(({GATES})*fA-V)>0") is continuous
 
 
 def test_a_time_crossing_beside_a_declined_rate_law_runs(tmp_path):

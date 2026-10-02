@@ -33,6 +33,7 @@ bit-for-bit identical to the pre-#48 path.
 
 from __future__ import annotations
 
+import ast
 import functools
 import logging
 import math
@@ -3359,6 +3360,337 @@ def _reads_time_and_run_constants(flat: str, scope: SwitchConditionScope) -> boo
     return True
 
 
+# A rate law longer than this is not asked whether it is continuous across a
+# condition: reading it costs more than the answer is worth, and it is refused.
+_CONTINUITY_MAX_CHARS = 20000
+
+
+def _float_call(fn):
+    """*fn* as ExprTk has it on a double: NaN outside its domain and an
+    infinity past the range of one, where Python's ``math`` raises."""
+
+    def call(*args):
+        try:
+            return float(fn(*(float(a) for a in args)))
+        except OverflowError:
+            return math.inf
+        except (ValueError, TypeError):
+            return math.nan
+
+    return call
+
+
+def _float_log(fn):
+    def call(x):
+        x = float(x)
+        if x > 0.0:
+            return fn(x) if x != math.inf else math.inf
+        return -math.inf if x == 0.0 else math.nan
+
+    return call
+
+
+def _float_div(a, b):
+    a, b = float(a), float(b)
+    if b != 0.0:
+        return a / b
+    if a == 0.0 or a != a:
+        return math.nan
+    return math.copysign(math.inf, a) * math.copysign(1.0, b)
+
+
+def _float_pow(a, b):
+    try:
+        value = float(a) ** float(b)
+    except OverflowError:
+        return math.inf
+    except ZeroDivisionError:
+        return math.inf
+    # A negative base to a fractional power is NaN on a double, and complex here.
+    return value if isinstance(value, float) else math.nan
+
+
+def _float_sign(x):
+    x = float(x)
+    return 1.0 if x > 0.0 else -1.0 if x < 0.0 else x
+
+
+# What a rate law may call and still be read as plain doubles. A call that is
+# not here (``rateOf``, ``mratio``, a table function with an argument) leaves
+# the law unread, and a law that is not read is not found continuous.
+_FLOAT_CALLS = {
+    "exp": _float_call(math.exp),
+    "log": _float_log(math.log),
+    "ln": _float_log(math.log),
+    "log10": _float_log(math.log10),
+    "log2": _float_log(math.log2),
+    "sqrt": _float_call(math.sqrt),
+    "abs": _float_call(math.fabs),
+    "sign": _float_sign,
+    "sin": _float_call(math.sin),
+    "cos": _float_call(math.cos),
+    "tan": _float_call(math.tan),
+    "asin": _float_call(math.asin),
+    "acos": _float_call(math.acos),
+    "atan": _float_call(math.atan),
+    "sinh": _float_call(math.sinh),
+    "cosh": _float_call(math.cosh),
+    "tanh": _float_call(math.tanh),
+    "min": _float_call(min),
+    "max": _float_call(max),
+    "floor": _float_call(math.floor),
+    "ceil": _float_call(math.ceil),
+    "And": lambda *args: all(bool(a) for a in args),
+    "Or": lambda *args: any(bool(a) for a in args),
+    "Not": lambda a: not a,
+    "Eq": lambda a, b: a == b,
+    "Ne": lambda a, b: a != b,
+}
+_FLOAT_HELPERS = {"__builtins__": {}, "_bngsim_div": _float_div, "_bngsim_pow": _float_pow}
+_FLOAT_COMPARISONS = (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
+
+
+class _Unread(Exception):
+    """The expression has something :func:`_float_form` does not read."""
+
+
+class _FloatForm(ast.NodeTransformer):
+    """An ExprTk expression, as :func:`bngsim._jacobian._preprocess_exprtk`
+    writes it, made into Python that evaluates it on doubles.
+
+    ``Piecewise((v, c), ..., (w, True))`` becomes a chain of conditional
+    expressions, so that only the branch taken is evaluated, and ``/`` and
+    ``**`` become calls that return what a double does where Python raises.
+    Anything outside the arithmetic, the comparisons and :data:`_FLOAT_CALLS`
+    raises :class:`_Unread`.
+    """
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def generic_visit(self, node):
+        raise _Unread(type(node).__name__)
+
+    def visit_Expression(self, node):
+        return ast.Expression(body=self.visit(node.body))
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, (bool, int, float)):
+            return node
+        raise _Unread("constant")
+
+    def visit_Name(self, node):
+        self.names.add(node.id)
+        return node
+
+    def visit_UnaryOp(self, node):
+        if not isinstance(node.op, (ast.USub, ast.UAdd)):
+            raise _Unread("unary")
+        return ast.UnaryOp(op=node.op, operand=self.visit(node.operand))
+
+    def visit_BinOp(self, node):
+        left, right = self.visit(node.left), self.visit(node.right)
+        if isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+            return ast.BinOp(left=left, op=node.op, right=right)
+        if isinstance(node.op, ast.Div):
+            helper = "_bngsim_div"
+        elif isinstance(node.op, ast.Pow):
+            helper = "_bngsim_pow"
+        else:
+            raise _Unread("operator")
+        return ast.Call(func=ast.Name(id=helper, ctx=ast.Load()), args=[left, right], keywords=[])
+
+    def visit_Compare(self, node):
+        if len(node.ops) != 1 or not isinstance(node.ops[0], _FLOAT_COMPARISONS):
+            raise _Unread("comparison")
+        return ast.Compare(
+            left=self.visit(node.left),
+            ops=node.ops,
+            comparators=[self.visit(node.comparators[0])],
+        )
+
+    def visit_Call(self, node):
+        if not isinstance(node.func, ast.Name) or node.keywords:
+            raise _Unread("call")
+        name = node.func.id
+        if name == "Piecewise":
+            # No branch taken is no value: NaN, which no reading accepts.
+            out: ast.expr = ast.Constant(value=math.nan)
+            for pair in reversed(node.args):
+                if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
+                    raise _Unread("Piecewise")
+                value, cond = self.visit(pair.elts[0]), self.visit(pair.elts[1])
+                out = ast.IfExp(test=cond, body=value, orelse=out)
+            return out
+        if name not in _FLOAT_CALLS:
+            raise _Unread(name)
+        return ast.Call(func=node.func, args=[self.visit(a) for a in node.args], keywords=[])
+
+
+def _float_tree(expr: str) -> ast.Expression | None:
+    """The Python syntax tree of an ExprTk expression, or ``None`` where it
+    is not Python once :func:`bngsim._jacobian._preprocess_exprtk` has it."""
+    from bngsim._codegen import _PY_KEYWORD_PARAM_NAMES, _alias_keyword_param
+    from bngsim._jacobian import _LITERAL_KEYWORDS, _preprocess_exprtk
+
+    try:
+        text = _preprocess_exprtk(expr)
+        # A parameter named with a Python keyword, ``lambda``, under the alias
+        # the symbolic path gives it.
+        for name in set(_IDENTIFIER.findall(text)) & (_PY_KEYWORD_PARAM_NAMES - _LITERAL_KEYWORDS):
+            text = re.sub(rf"\b{re.escape(name)}\b", _alias_keyword_param(name), text)
+        return ast.parse(text.strip(), mode="eval")
+    except Exception:  # noqa: BLE001 - not an expression this reads
+        return None
+
+
+def _float_form(tree: ast.Expression | None):
+    """``(evaluate, names)`` for a tree of :func:`_float_tree`: a function of
+    a ``{name: value}`` mapping, and the names it reads other than the
+    built-in constants. ``None`` for a tree that is not read."""
+    if tree is None:
+        return None
+    form = _FloatForm()
+    try:
+        code = compile(ast.fix_missing_locations(form.visit(tree)), "<rate law>", "eval")
+    except (_Unread, RecursionError, ValueError, TypeError, SyntaxError):
+        return None
+    scope = {**_FLOAT_HELPERS, **_FLOAT_CALLS, **_BUILTIN_CONSTANT_VALUES}
+    names = sorted(form.names - set(_BUILTIN_CONSTANT_VALUES))
+
+    def evaluate(values: dict[str, float]) -> float:
+        return eval(code, scope, values)  # noqa: S307 - a tree of whitelisted nodes
+
+    return evaluate, names
+
+
+def _continuous_across(flat: str, atom: str, parsed: dict | None = None) -> bool:
+    """Whether the rate law *flat* is continuous where the comparison *atom*
+    flips, asked at three points of the comparison's surface.
+
+    ``if(v < 0, -v/max(X, 0.01), 0)`` is: its two branches meet where ``v`` is
+    0. ``if(X < thr, kb, 0)`` is not. The first is a bend, which a difference
+    quotient reads across without harm; the second is a jump (issue #938).
+
+    The surface is where the atom's two sides are equal. Every symbol is given
+    a value between 0.5 and 2, and each symbol the atom reads is moved, in
+    turn, until the two sides meet. There the whole rate law is read a hair
+    either side and a tenth of a hair either side. A jump is as large across
+    the tenth as across the whole; what a continuous law does across the
+    surface is a tenth as large, or less where it turns on as a power. A
+    difference of two readings and not a slope beside them: a jump of a
+    thousandth beside a term that moves by 0.2 over the hair is a jump. Along
+    every symbol, because a jump in proportion to one of them is nothing on
+    the part of the surface where that one is 0.
+
+    A jump inside the rounding of the rate law's own value is not seen.
+
+    The law and the atom are read as plain doubles (:func:`_float_form`), not
+    through sympy: sympy puts a condition that holds a conditional into a
+    canonical form as it parses, at 2 s a rate law for a gate schedule inside
+    the signed-rate idiom.
+
+    False wherever the question cannot be asked: a rate law or an atom that is
+    not read, a call that is not evaluated, a surface no symbol reaches.
+
+    ``parsed`` keeps each rate law's compiled form between calls: a law with
+    twenty conditions is asked twenty times.
+    """
+    import random
+
+    if len(flat) > _CONTINUITY_MAX_CHARS:
+        return False
+    if parsed is None:
+        parsed = {}
+    if flat not in parsed:
+        parsed[flat] = _float_form(_float_tree(flat))
+    law = parsed[flat]
+    tree = _float_tree(atom)
+    if law is None or tree is None:
+        return False
+    # The atom's two sides, as their difference.
+    body = tree.body
+    if isinstance(body, ast.Compare) and len(body.ops) == 1:
+        sides = (body.left, body.comparators[0])
+    elif (
+        isinstance(body, ast.Call)
+        and isinstance(body.func, ast.Name)
+        and body.func.id in ("Eq", "Ne")
+        and len(body.args) == 2
+    ):
+        sides = (body.args[0], body.args[1])
+    else:
+        return False
+    gap = _float_form(ast.Expression(body=ast.BinOp(left=sides[0], op=ast.Sub(), right=sides[1])))
+    if gap is None:
+        return False
+    law_at, law_names = law
+    gap_at, gap_names = gap
+    symbols = sorted(set(law_names) | set(gap_names))
+    pivots = [i for i, name in enumerate(symbols) if name in set(gap_names)]
+    if not pivots:
+        return False
+
+    def read(fn, point: list[float]) -> float | None:
+        try:
+            value = float(fn(dict(zip(symbols, point, strict=True))))
+        except Exception:  # noqa: BLE001 - a name with no value, a value that is no number
+            return None
+        return value if math.isfinite(value) else None
+
+    def on_surface(point: list[float], i: int) -> float | None:
+        """The value of symbol *i* at which the atom's two sides meet, or
+        ``None`` where moving it does not bring them together."""
+        at = list(point)
+        start = at[i]
+        x0, x1 = start, 1.1 * start
+        g0 = read(gap_at, at)
+        if g0 is None:
+            return None
+        size = abs(g0)
+        for _ in range(60):
+            at[i] = x1
+            g1 = read(gap_at, at)
+            # A symbol the gap levels off in runs away, and is not a root
+            # however small the gap has become beside the symbol.
+            if g1 is None or abs(x1) > 1e3 * max(abs(start), 1.0):
+                return None
+            size = max(size, abs(g1))
+            if abs(g1) <= 1e-13 * size:
+                return x1
+            if g1 == g0:
+                return None
+            x0, x1, g0 = x1, x1 - g1 * (x1 - x0) / (g1 - g0), g1
+        return None
+
+    rng = random.Random(938)
+    reached = 0
+    for _ in range(3):
+        point = [rng.uniform(0.5, 2.0) for _ in symbols]
+        for i in pivots:
+            x = on_surface(point, i)
+            if x is None:
+                continue
+            hair = 1e-6 * max(abs(x), 1.0)
+            values: list[float] = []
+            for steps in (-1.0, -0.1, 0.1, 1.0):
+                at = list(point)
+                at[i] = x + steps * hair
+                value = read(law_at, at)
+                if value is None:
+                    return False
+                values.append(value)
+            wide = abs(values[3] - values[0])
+            narrow = abs(values[2] - values[1])
+            rounding = 16.0 * _EPS * max(abs(v) for v in values)
+            # A part in 1e5 over the tenth: the surface is found to 1e-13, which
+            # is 1e-7 of the hair, and a ramp from it is that far off its tenth.
+            if narrow > (0.1 + 1e-5) * wide + rounding:
+                return False
+            reached += 1
+    return reached > 0
+
+
 def fallback_crossing(
     core, sens_param_names: Sequence[str] = (), ic_species: Sequence[int] = (), ctx=None
 ) -> str | None:
@@ -3383,8 +3715,10 @@ def fallback_crossing(
     refused before a time course starts:
 
     - a rate-law condition that reads the state, ``Aobs < thr`` or
-      ``rateOf(X) > 0``, whether or not the rate law jumps there: that is not
-      known before the run;
+      ``rateOf(X) > 0``, unless the rate law is continuous wherever that
+      condition flips (:func:`_continuous_across`): a ramp from the threshold,
+      or the signed-rate idiom ``if(v < 0, -v/max(X, 0.01), 0)``, is a bend,
+      and the quotient is right across a bend;
     - a condition on a counter species that a requested column moves (its rate
       constant, its initial amount). A counter nothing moves is read at ``y``
       in both terms of the quotient, and its threshold's parameters are held
@@ -3430,6 +3764,7 @@ def fallback_crossing(
         logger.debug("fallback-crossing scan: scope unavailable (%s)", exc)
         return None
     requested = set(sens_param_names)
+    parsed: dict = {}
 
     def crosses(flat: str, raw: str) -> bool:
         """Whether the quotient reads across the surface *flat* names."""
@@ -3451,7 +3786,8 @@ def fallback_crossing(
     for flat in flats:
         if has_condition_construct(flat):
             for atom in _iter_condition_atoms(flat):
-                if crosses(_inline_derived_param_refs(atom, scope.derived_exprs) or atom, atom):
+                atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+                if crosses(atom_flat, atom) and not _continuous_across(flat, atom, parsed):
                     return atom
         for call, arg in _iter_step_calls(flat):
             arg_flat = _inline_derived_param_refs(arg, scope.derived_exprs) or arg
