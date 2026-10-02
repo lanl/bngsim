@@ -319,3 +319,42 @@ def test_a_state_at_rest_on_a_threshold_that_gates_another_rate_is_not_a_slide(
     assert np.asarray(run.species)[-1, 1] == pytest.approx(100.0 * rate, rel=1e-9)
     np.testing.assert_allclose(got[0], [0.0, 1.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(got[1], [0.0, 0.0, 100.0 * rate / 3.0], atol=1e-6)
+
+
+BLOWS_UP = """begin parameters
+    1 k 1.0
+    2 kb 3.0
+end parameters
+begin functions
+    1 fX() k*Xobs*Xobs
+    2 fY() if(Xobs>2,kb,0)
+end functions
+begin species
+    1 X() 1.0
+    2 Y() 0.0
+end species
+begin reactions
+    1 0 1 fX
+    2 0 2 fY
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+
+def test_a_blow_up_beside_a_state_switch_fails_as_it_did(tmp_path):
+    """Control. X' = k·X² is infinite at t = 1, and the run ends in CVODE on a
+    sensitivity right-hand side that is not finite, which the error names. A
+    run that carries sensitivities through a state switch is taken in batches
+    of 50 steps, and a stall is a whole ``max_steps`` of them that do not move
+    the time. Counted from wherever the time stopped moving, and not in the
+    windows a run in whole batches has, that was reached a few steps before
+    CVODE failed, and the run was called stalled at a discontinuity."""
+    path = tmp_path / "m.net"
+    path.write_text(BLOWS_UP)
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", sensitivity_params=["k", "kb"]
+    )
+    with pytest.raises(bngsim.SimulationError, match="CV_REPTD_SRHSFUNC_ERR.*non-finite"):
+        sim.run(sample_times=[0.0, 2.0], rtol=1e-8, atol=1e-10, timeout=60.0)

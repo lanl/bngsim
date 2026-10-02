@@ -108,17 +108,25 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
                                   CvodeUserData &data, const std::function<void()> &check_budget,
                                   const std::function<bool(double)> &handled = nullptr,
                                   long stall_batches = 1) {
-    // Batches in a row that have not moved the time. A run taken in shorter
-    // batches than its max_steps (see the watch in run()) is stalled once as
-    // many steps as one max_steps batch have gone by without moving it, not
-    // after the first short batch: CVODE gets to report what it would have.
-    long idle = 0;
+    // A run taken in shorter batches than its max_steps (see the watch in
+    // run()) is stalled where `stall_batches` of them, one max_steps batch's
+    // worth, have not moved the time between them. They are counted in the
+    // windows a run in whole batches has: the caller's own call was the
+    // first batch, and a window ends every `stall_batches` after it. Counted
+    // from wherever the time stopped moving instead, a blow-up was called a
+    // stall a few steps before CVODE failed on it and named the column that
+    // was not finite.
+    long batch = 1;
+    sunrealtype window_from = 0.0;
     while (flag == CV_TOO_MUCH_WORK) {
         if (check_budget)
             check_budget();
 
         sunrealtype t_before = 0.0;
         CVodeGetCurrentTime(cvode_mem, &t_before);
+        if (batch % stall_batches == 0) {
+            window_from = t_before;
+        }
 
         flag = CVode(cvode_mem, t_target, y, t_ret, CV_NORMAL);
         if (flag != CV_TOO_MUCH_WORK)
@@ -128,12 +136,11 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
 
         sunrealtype t_after = 0.0;
         CVodeGetCurrentTime(cvode_mem, &t_after);
-        if (t_after > t_before) {
-            idle = 0;
+        const bool window_ends =
+            batch >= stall_batches && batch % stall_batches == stall_batches - 1;
+        ++batch;
+        if (!window_ends || t_after > window_from) {
             continue; // still climbing, however slowly — keep going
-        }
-        if (++idle < stall_batches) {
-            continue;
         }
 
         sunrealtype h_now = 0.0;
@@ -7292,12 +7299,16 @@ void CvodeSimulator::Impl::refuse_slide_along_state_switch(
         }
         // A root has the state on the surface, whatever the tolerance.
         const bool beside = at_root || (band > 0.0 && std::fabs(g) <= band);
+        // Kept wherever it was measured, beside the surface or not: a residual
+        // inside a tenth of its largest and outside its band was measured
+        // again at every asking, and 300 of them at rest a thousandth short of
+        // their thresholds took 72 times main's time on a grid of 10,001.
+        if (band_out != nullptr && std::isfinite(band) && band > 0.0) {
+            (*band_out)[which] = band;
+        }
         if (!std::isfinite(g) || !std::isfinite(flow) || !beside || !(norm2 > 0.0) ||
             !(ulp > 0.0) || side == 0.0) {
             continue; // not beside the surface
-        }
-        if (band_out != nullptr) {
-            (*band_out)[which] = band;
         }
         // The four states, by moving the species the residual reads along its
         // gradient until it reads `target`: a hair is a few ulp of the
@@ -7446,6 +7457,9 @@ static constexpr long kStalledRefuseSteps = 200;
 // The batch of steps a run that carries sensitivities through state switches
 // is taken in, to be asked about them after each (issues #926, #952).
 static constexpr long kWatchBatchSteps = 50;
+// How many steps go by between two askings at output points. One asking reads
+// every residual, and on a grid finer than the steps that was one per step.
+static constexpr long kWatchOutputSteps = 8;
 
 bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     void *cvode_mem, double t, double t_batch, N_Vector y, int ns,
@@ -10412,7 +10426,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // and is asked after each. CVODE counts a batch from each call, and a
     // dense grid ends every call before 50 are spent, so the run's own count
     // of steps is kept: it is asked wherever 50 have gone by since it last
-    // was, and at each output point that took a step to reach.
+    // was, at an output point where 8 have, and at the last output point
+    // where any has.
     //
     // One sync reads every residual. The surface itself is read only for a
     // residual inside four times the tolerance's band of its surface as it
@@ -10911,9 +10926,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 continue;
             }
 
-            // An output point that took a step to reach.
+            // An output point: asked where a few steps have gone by, and at
+            // the run's last one where any has, so that a run of fewer steps
+            // than a batch is asked before it returns.
             if (watch && flag == CV_SUCCESS) {
-                watch_after(1, static_cast<double>(t_ret), t_before_step);
+                watch_after(i + 1 == n_out ? 1 : kWatchOutputSteps, static_cast<double>(t_ret),
+                            t_before_step);
             }
 
             // ─── Event handling: CV_ROOT_RETURN ───────────────────────────────
