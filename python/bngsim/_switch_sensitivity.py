@@ -4472,6 +4472,24 @@ class _Crossing(NamedTuple):
     # column a caller reads and the identity two crossings are compared on stay
     # separate questions.
     partials: dict[str, float]
+    # The least and the greatest of the values folded into this crossing, on
+    # its clock, where they are not all one: two thresholds that agree to 12
+    # digits are one crossing (:func:`_is_same_crossing`) and need not be one
+    # double. ``threshold`` is the first one found, which depends on the order
+    # the rate laws are written in; what is on the instant does not.
+    lo: float | None = None
+    hi: float | None = None
+
+
+def _on_clock(cross: _Crossing) -> float:
+    """Where ``cross`` sits on its own clock: a time, or a counter's value."""
+    return cross.threshold if cross.clock_idx0 >= 0 else cross.t_star
+
+
+def _extent(cross: _Crossing) -> tuple[float, float]:
+    """The least and the greatest value folded into ``cross``, on its clock."""
+    at = _on_clock(cross)
+    return (at if cross.lo is None else cross.lo, at if cross.hi is None else cross.hi)
 
 
 def _q(x: float) -> str:
@@ -4552,7 +4570,9 @@ def _absorb_crossing(
             for c, v in enumerate(cand.dtstar):
                 if abs(v) > abs(merged[c]):
                     merged[c] = v
-            found[i] = seen._replace(dtstar=merged)
+            lo = min(*_extent(seen), _on_clock(cand))
+            hi = max(*_extent(seen), _on_clock(cand))
+            found[i] = seen._replace(dtstar=merged, lo=lo, hi=hi)
             return
     if bucket is not None:
         bucket.append(len(found))
@@ -4929,12 +4949,10 @@ def _emit_switch_records(
                     ),
                     instant_clocks=sorted(
                         {
-                            (
-                                other.clock_idx0,
-                                other.threshold if other.clock_idx0 >= 0 else other.t_star,
-                            )
+                            (other.clock_idx0, at)
                             for other in group
-                            if other is not cross
+                            for at in _extent(other)
+                            if other is not cross or at != _on_clock(cross)
                         }
                     ),
                 )
