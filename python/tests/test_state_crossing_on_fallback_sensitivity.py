@@ -311,8 +311,11 @@ def test_a_crossing_that_does_not_jump_runs_on_the_difference_quotient(tmp_path,
         # A saturation whose half-point is three hairs from the surface: not
         # a ramp over the hair, and a bend.
         ("if(Aobs<thr,kb*(thr-Aobs)/((thr-Aobs)+3e-6),0)", "Aobs<thr", True),
-        # A jump a thousandth of what the ramp beside it does over the hair.
-        ("if(Aobs<thr,kb*(thr-Aobs)+1e-9,0)", "Aobs<thr", False),
+        # A jump ten times what the ramp beside it does over a hair, and one
+        # a thousandth of it: the second is inside what the law does between
+        # the two readings it is carried to the flip from, and is not seen.
+        ("if(Aobs<thr,kb*(thr-Aobs)+1e-5,0)", "Aobs<thr", False),
+        ("if(Aobs<thr,kb*(thr-Aobs)+1e-9,0)", "Aobs<thr", True),
         # Powers under 1: 0.9 leaves the surface slowly enough, 0.2 does not.
         ("if(Aobs<thr,kb*(thr-Aobs)^0.9,0)", "Aobs<thr", True),
         ("if(Aobs<thr,kb*(thr-Aobs)^0.2,0)", "Aobs<thr", False),
@@ -512,6 +515,63 @@ def test_every_flip_of_a_condition_is_asked_about(law, atom, continuous):
     from bngsim._switch_sensitivity import _continuous_across
 
     assert _continuous_across(law, atom) is continuous
+
+
+@pytest.mark.parametrize(
+    "law",
+    ["kb*(1+(Aobs-thr)/abs(Aobs-thr))/2", "kb*(max(Aobs,thr)-thr)/(Aobs-thr)"],
+    ids=["a-ratio-to-its-magnitude", "a-ratio-of-the-greater"],
+)
+def test_a_jump_written_with_no_condition_is_refused(tmp_path, law):
+    """``(X − thr)/abs(X − thr)`` is −1 below thr and 1 above it, with no
+    condition written and no step call. ``abs``, ``max`` and ``min`` are
+    choices the law makes on the state, each with a surface, and each is
+    asked about as a condition is. dY/dk came back 18.37 for 10.2 at a loose
+    tolerance, and the run ended in CVODE's no-progress error at a tight one."""
+    _refused(_simulator(tmp_path, law, DECLINED, ["k"]), "Aobs")
+
+
+@pytest.mark.parametrize(
+    ("law", "want"),
+    [
+        # Y = kb·((T − t*)² + t*²)/2 with A = 1 + k·t crossing thr at t* = 3.4/k.
+        ("kb*abs(Aobs-thr)", 3.0 * (6.0 * (6.0 - 3.4) * 6.0 / 2.0 - 3.4 * 3.4 * 6.0 / 2.0) / 6.0),
+    ],
+    ids=["a-magnitude"],
+)
+def test_a_choice_that_bends_runs_on_the_difference_quotient(tmp_path, law, want):
+    """Control. ``kb·abs(Aobs − thr)`` is continuous where A is thr, and so is
+    the declined law beside it, ``kc·max(Aobs, 0.5)``: bends, which the
+    quotient is right across. dY/dk in closed form."""
+    sim = _simulator(tmp_path, law, DECLINED, ["k"])
+    assert not sim.has_analytic_sens_rhs
+    k, thr, kb = 1.0, 4.4, 3.0
+    t_star = (thr - 1.0) / k
+    # dY/dk = kb·(∫ t dt over [t*, T] − ∫ t dt over [0, t*]).
+    want = kb * ((T_END**2 - t_star**2) / 2.0 - t_star**2 / 2.0)
+    np.testing.assert_allclose(_y_columns(sim), [want], rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("law", "bends"),
+    [
+        ("kb*abs(X-thr)", None),
+        ("kb*(X-thr)/abs(X-thr)", "abs(X - thr)"),
+        ("kb*max(X,thr)", None),
+        ("kb*(max(X,thr)-thr)/(X-thr)", "max(X, thr)"),
+        ("kb*min(X,thr,c)", None),
+        # A clamp written with the two calls is a bend at each.
+        ("kb*max(0,min(X,n))", None),
+        # A choice on the time alone flips at an instant.
+        ("kb*X*(T-3)/abs(T-3)", None),
+        # A step call inside a choice.
+        ("kb*abs(floor(X)-thr)", "abs(floor(X) - thr)"),
+    ],
+)
+def test_which_choice_a_rate_law_jumps_across(law, bends):
+    from bngsim._switch_sensitivity import _choice_jump
+
+    assert _choice_jump(law, {}, frozenset({"T", "kb"})) == bends
 
 
 def test_a_time_crossing_beside_a_declined_rate_law_runs(tmp_path):
