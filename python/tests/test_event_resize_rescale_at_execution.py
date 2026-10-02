@@ -270,3 +270,45 @@ def test_a_species_only_an_output_reads_in_a_rule_sized_compartment(
     )
     assert _conc(r, "W", 2) == pytest.approx(conc, rel=1e-6)
     assert _amount(r, "W", 2) == pytest.approx(amount, rel=1e-6)
+
+
+CLONED = (
+    "compartment c = 1; species A in c = 10; J0: => A; 4*c; J1: A => ; 0.3*A*c;"
+    " E1: at time >= 3: c = 2"
+)
+
+
+def test_a_clone_rescales_as_the_model_does():
+    """``Model.clone()`` recompiles the rescale's size expression into its own
+    evaluator; it used to keep the source's index and read some other
+    expression as the size. run_batch rows and parallel workers run on clones."""
+    m = bngsim.Model.from_antimony_string(CLONED)
+    want = np.asarray(bngsim.Simulator(m).run(t_span=(0, 4), n_points=5).species)
+    got = np.asarray(
+        bngsim.Simulator(bngsim.Model.from_antimony_string(CLONED).clone())
+        .run(t_span=(0, 4), n_points=5)
+        .species
+    )
+    np.testing.assert_allclose(got, want, rtol=1e-8)
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(CLONED))
+    for n in (None, 2):
+        rows = sim.run_batch(t_span=(0, 4), n_points=5, params=[{}, {}], num_processors=n)
+        for row in rows:
+            np.testing.assert_allclose(np.asarray(row.species), want, rtol=1e-8)
+
+
+def test_a_clone_runs_the_sensitivities_the_model_does():
+    """The stale index also made a clone refuse a single resize's sensitivity."""
+    text = (
+        "compartment Cc = 1; species Y in Cc = 1; q = 2; k = 0.3; J: Y => ; k*Y;"
+        " E: at time >= 2: Cc = q"
+    )
+    kw = {"sensitivity_params": ["q", "k"]}
+    m = bngsim.Model.from_antimony_string(text)
+    want = bngsim.Simulator(m, **kw).run(t_span=(0, 4), n_points=5).sensitivities
+    got = (
+        bngsim.Simulator(bngsim.Model.from_antimony_string(text).clone(), **kw)
+        .run(t_span=(0, 4), n_points=5)
+        .sensitivities
+    )
+    np.testing.assert_allclose(np.asarray(got), np.asarray(want), rtol=1e-6, atol=1e-12)
