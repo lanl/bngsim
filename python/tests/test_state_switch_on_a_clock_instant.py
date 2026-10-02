@@ -138,3 +138,130 @@ def test_a_state_switch_well_after_the_event_runs():
     q·X integrated from 3.2, with X halved at tau: dW/dtau = −q·a·(T − 3.2)/2."""
     got = _columns(EVENT.format(at=6.4), ["tau"], EVENT_TIMES)
     assert got[2, 0] == pytest.approx(-0.7 * 2.0 * (7.5 - 3.2) / 2.0, rel=1e-7)
+
+
+@pytest.mark.parametrize(
+    ("param", "want"),
+    [("q", [0.0, 0.0, 33.75, 0.0]), ("a", [6.0, 0.0, 11.8125, 0.0])],
+    ids=["the-switched-rate", "what-the-event-scales"],
+)
+def test_an_event_on_the_switch_runs_where_no_column_moves_either(param, want):
+    """Control. The event at the fixed tau = 3 and V's crossing at t = 3, with
+    neither tau nor anything V reads requested: no column moves either, there
+    is no shift to give and no kink to be on one side of. X is 1.5·a at 3+ and
+    W is q·X integrated from there."""
+    got = _columns(EVENT.format(at=6), [param], EVENT_TIMES)
+    np.testing.assert_allclose(got[:, 0], want, rtol=1e-7, atol=1e-9)
+
+
+def test_a_fixed_gate_on_the_switch_runs_where_no_column_moves_either():
+    """Control. The gate at t = 3 and S's crossing of 0.5·thr at t = 3, with
+    k requested and thr not: X and Y are both k·(T − 3)."""
+    text = HEAD + (
+        "Jx: -> X; piecewise(k, time >= 3, 0)\nJy: -> Y; piecewise(k, S >= 0.5*thr, 0)\n"
+    )
+    np.testing.assert_allclose(_columns(text, ["k"]), [[0.0], [2.0], [2.0]], atol=1e-8)
+
+
+def test_a_fitted_gate_on_a_state_switch_nothing_moves_is_refused():
+    """The state crossing is fixed, S = 1.5 at t = 3, and the gate in the same
+    law is at the fitted thr = 3: Y is k·(T − 3) for thr below 3 and
+    k·(T − 3) − 0.5·k·(thr − 3) above it. dY/dthr is 0 | −0.25."""
+    text = HEAD + "Jy: -> Y; piecewise(k, S >= 1.5, 0)*piecewise(1, time >= thr, 0.5)\n"
+    _refused(text, ["thr"], 946)
+
+
+EVENT_ON_STATE = (
+    "species X, Y, W, V, U; X = 0; Y = 0; W = 0; V = 0; U = 0; a = 2; k = 0.5; q = 0.7; c = 1\n"
+    "J0: -> X; a\nJv: -> V; 2\nJu: -> U; c\nJ1: -> Y; k\nJ2: -> W; piecewise(q*X, V >= 6, 0)\n"
+    "E1: at (U > {at}): X = 0.5*X\n"
+)
+
+
+def test_an_event_on_another_species_on_the_instant_of_a_state_switch_is_refused():
+    """Control. The event fires where U = c·t reaches 3, at t = 3/c, and V
+    reaches 6 at t = 3: two crossings on two species, on one instant, with the
+    event's time moved by c. dW/dc has a kink there. Refused before this, as a
+    switch on the instant of an event."""
+    model = bngsim.Model.from_antimony_string(EVENT_ON_STATE.format(at=3))
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["c"])
+    with pytest.raises(bngsim.SimulationError, match="Forward sensitivity"):
+        sim.run(sample_times=EVENT_TIMES, rtol=1e-10, atol=1e-12, timeout=60)
+
+
+def test_an_event_on_another_species_after_the_state_switch_runs():
+    """Control. The event at t_e = 3.3/c, the switch at 3. X(T) = a·T − 0.5·a·t_e
+    and dW/dt_e = 0.5·q·a·(2·t_e − T), with dt_e/dc = −3.3."""
+    got = _columns(EVENT_ON_STATE.format(at=3.3), ["c"], EVENT_TIMES)[:, 0]
+    want = [3.3, 0.0, 0.5 * 0.7 * 2.0 * (6.6 - 7.5) * -3.3, 0.0, 7.5]
+    np.testing.assert_allclose(got, want, rtol=1e-7, atol=1e-9)
+
+
+def test_the_reach_is_the_tolerance_of_the_run():
+    """At rtol 1e-6 the state S is known to 1.5e-6 where it crosses and its
+    crossing time to 3e-6. A gate in the same law 1e-7 later is not told from
+    one on the instant, and dY/dthr has a kink between the two orders: −0.25
+    with the switch first, −0.5 with the gate first. (S is linear and the run
+    has it exactly, so the order the run found here was the true one; a state
+    that carries its integration error has no such luck.) At rtol 1e-10 the
+    same pair is hundreds of reaches apart and runs."""
+    text = HEAD + "Jy: -> Y; piecewise(k, S >= 0.5*thr - 5e-8, 0)*piecewise(1, time >= 3, 0.5)\n"
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        sim.run(sample_times=TIMES, rtol=1e-6, atol=1e-8, timeout=60)
+    assert _columns(text, ["thr"])[2, 0] == pytest.approx(-0.25, rel=1e-6)
+
+
+NET = """begin parameters
+    1 k 0.5
+    2 thr 3
+    3 one 1
+    4 half 0.5
+end parameters
+begin functions
+    1 fX() if(t>=thr,k,0)
+    2 fY() if(Sobs>={level},k,0)
+end functions
+begin species
+    1 S() 0
+    2 X() 0
+    3 Y() 0
+    4 Tc() 0
+end species
+begin reactions
+    1 0 1 half
+    2 0 2 fX
+    3 0 3 fY
+    4 0 4 one
+end reactions
+begin groups
+    1 Sobs 1
+    2 t 4
+end groups
+"""
+
+
+def _net_columns(tmp_path, level):
+    path = tmp_path / "m.net"
+    path.write_text(NET.format(level=level))
+    model = bngsim.Model.from_net(str(path))
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
+    return np.asarray(
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12, timeout=60).sensitivities
+    )[-1]
+
+
+def test_a_state_switch_on_the_instant_of_a_counter_s_switch_is_refused(tmp_path):
+    """The clock is a counter species, ``Tc`` with rate 1, and X's law
+    switches where it reaches the fitted thr, on the instant S reaches
+    0.5·thr. dX/dthr came back −1 for −0.5."""
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        _net_columns(tmp_path, "0.5*thr")
+
+
+def test_a_state_switch_after_a_counter_s_switch_runs(tmp_path):
+    """Control. S reaches 0.5·thr + 0.05 a tenth after the counter reaches thr."""
+    np.testing.assert_allclose(
+        _net_columns(tmp_path, "0.5*thr+0.05"), [[0.0], [-0.5], [-0.5], [0.0]], atol=1e-8
+    )
