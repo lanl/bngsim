@@ -711,3 +711,23 @@ def test_gates_in_other_laws_a_few_thousand_ulp_after_the_switch():
         f"J9: -> W; piecewise(2, time >= {far_gate}, 0.5)\n"
     )
     np.testing.assert_allclose(_columns(text, ["tau"]), [[-1.0], [0.0], [0.0]], atol=1e-9)
+
+
+def test_a_hair_that_cannot_clear_the_instant_is_refused():
+    """The same two gates summed into the switch's own rate law, so the three
+    are read together and the clock is put past the nearer gate, 2,000 ulp
+    after tau. The farther gate caps the hair at a quarter of 9,000 ulp, and
+    half of that does not clear the clock: the half reading would have the
+    switch already made. The sum commutes and dY/dtau = −1, which main
+    returns; read that way it came back +1, and it is refused."""
+    eps = float(np.finfo(float).eps)
+    near_gate, far_gate = (repr(3.0 * (1 + n * eps)) for n in (2000, 9000))
+    text = (
+        "species Y; Y = 0; r = 1; tau = 3\n"
+        "J1: -> Y; piecewise(r, time >= tau, 0)"
+        f" + piecewise(2, time >= {near_gate}, 0.5) + piecewise(2, time >= {far_gate}, 0.5)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="closer to a neighbouring"):
+        sim.run(sample_times=TIMES, rtol=1e-10, atol=1e-12)
