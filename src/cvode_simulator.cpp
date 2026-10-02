@@ -2641,7 +2641,8 @@ struct CvodeSimulator::Impl {
 
     // Issues #946, #945: what a state-dependent switch that jumps cannot share
     // its instant with. Every rate-law crossing on a clock in this run, fitted
-    // or fixed; the last event fire; and the last such switch, with how far
+    // or fixed, and not a stop the run takes for a comoving frame, where no rate
+    // law switches; the last event fire; and the last such switch, with how far
     // from it its crossing time is known, for the event that fires after it.
     std::vector<double> clock_instants;
     // Parallel to it: whether a requested column moves that crossing.
@@ -10591,17 +10592,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     impl_->state_switch_consumed.clear();
     {
         // A stop is a rate-law condition no column moves, or the trigger time
-        // of an event, which a column may move: the records that say so name
-        // the event and not its time, so any one of them counts for every stop.
+        // of an event. An event's time may move, and that is asked where it
+        // fires: the stop itself switches nothing.
         const auto nonzero = [](double d) { return d != 0.0; };
-        const bool an_event_time_moves =
-            std::any_of(opts.sensitivity.event_times.begin(), opts.sensitivity.event_times.end(),
-                        [&](const EventTimeSens &one) {
-                            return std::any_of(one.dtstar_dp.begin(), one.dtstar_dp.end(), nonzero);
-                        });
         std::vector<std::pair<double, char>> instants;
         for (const CrossingStop &stop : opts.crossing_stops) {
-            instants.emplace_back(stop.t_star, an_event_time_moves ? 1 : 0);
+            instants.emplace_back(stop.t_star, 0);
         }
         for (const SwitchTimeSens &record : opts.sensitivity.switch_times) {
             instants.emplace_back(
@@ -11889,14 +11885,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     stop.t_star = at;
                     crossing_stops.insert(where, stop);
                     mine.push_back(at);
-                    // A frame's own stop: it is there for a column that moves a
-                    // switch time.
-                    const auto slot = std::upper_bound(impl_->clock_instants.begin(),
-                                                       impl_->clock_instants.end(), at);
-                    impl_->clock_instant_moves.insert(impl_->clock_instant_moves.begin() +
-                                                          (slot - impl_->clock_instants.begin()),
-                                                      1);
-                    impl_->clock_instants.insert(slot, at);
                 };
                 std::vector<double *> cols(static_cast<size_t>(sens.n_p));
                 for (int c = 0; c < sens.n_p; ++c) {

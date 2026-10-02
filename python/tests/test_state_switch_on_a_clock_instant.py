@@ -117,8 +117,8 @@ def test_a_falling_species_on_the_instant_of_a_fixed_gate_is_refused():
 
 
 EVENT = (
-    "species X, Y, W, V; X = 0; Y = 0; W = 0; V = 0; a = 2; k = 0.5; q = 0.7; tau = 3\n"
-    "J0: -> X; a\nJv: -> V; 2\nJ1: -> Y; k\nJ2: -> W; piecewise(q*X, V >= {at}, 0)\n"
+    "species X, Y, W, V; X = 0; Y = 0; W = 0; V = 0; a = 2; k = 0.5; q = 0.7; tau = 3; kv = 2\n"
+    "J0: -> X; a\nJv: -> V; kv\nJ1: -> Y; k\nJ2: -> W; piecewise(q*X, V >= {at}, 0)\n"
     "E1: at (time >= tau): X = 0.5*X\n"
 )
 EVENT_TIMES = [float(t) for t in np.linspace(0.0, 7.5, 16)]
@@ -126,8 +126,8 @@ EVENT_TIMES = [float(t) for t in np.linspace(0.0, 7.5, 16)]
 
 def test_a_state_switch_on_the_instant_of_an_event_is_refused():
     """V = 2·t reaches 6 at t = 3, where the event halves X, and the switched
-    law reads X: dW/dtau is −1.05 with the event first and −3.15 with the
-    switch first. V's crossing is known to the tolerance of the run and not to
+    law reads X: dW/dtau is −1.05 with the switch first and −3.15 with the
+    event first. V's crossing is known to the tolerance of the run and not to
     the last bit, so the two came as two stops, each handled as if the other
     were not there, and the run returned −3.15."""
     _refused(EVENT.format(at=6), ["tau"], 945, EVENT_TIMES)
@@ -265,3 +265,106 @@ def test_a_state_switch_after_a_counter_s_switch_runs(tmp_path):
     np.testing.assert_allclose(
         _net_columns(tmp_path, "0.5*thr+0.05"), [[0.0], [-0.5], [-0.5], [0.0]], atol=1e-8
     )
+
+
+@pytest.mark.parametrize("off", [-4e-10, 4e-10], ids=["the-switch-first", "the-event-first"])
+def test_a_state_switch_within_reach_of_an_event_is_refused_in_either_order(off):
+    """V reaches its threshold 2e-10 before the event and 2e-10 after it, at
+    rtol 1e-10: inside what the run knows V's crossing time to, 3e-10. The
+    refusal is made at the second of the two to come, the switch or the fire.
+    (V is linear and the run has it exactly, so the side it would have
+    returned here was the true one.)"""
+    _refused(EVENT.format(at=repr(6.0 + off)), ["tau"], 945, EVENT_TIMES)
+
+
+@pytest.mark.parametrize("off", [-4e-9, 4e-9], ids=["the-switch-first", "the-event-first"])
+def test_a_state_switch_outside_the_reach_of_an_event_runs(off):
+    """Control. 2e-9 apart at rtol 1e-10: −1.05 with the switch first, −3.15
+    with the event first."""
+    got = _columns(EVENT.format(at=repr(6.0 + off)), ["tau"], EVENT_TIMES)
+    assert got[2, 0] == pytest.approx(-1.05 if off < 0 else -3.15, rel=1e-7)
+
+
+@pytest.mark.parametrize("off", [-4e-10, 0.0, 4e-10], ids=["before", "on", "after"])
+def test_a_state_switch_a_column_moves_on_a_fixed_event_is_refused(off):
+    """The event's time is fixed and V's rate kv is requested: the switch
+    moves through the event. dW/dkv is 6.3 with the switch first, where X is
+    not yet halved, and 3.15 with the event first. On the instant the run
+    returned 3.15."""
+    _refused(EVENT.format(at=repr(6.0 + off)), ["kv"], 945, EVENT_TIMES)
+
+
+@pytest.mark.parametrize("off", [-2e-10, 2e-10], ids=["the-event-first", "the-switch-first"])
+def test_an_event_on_another_species_within_reach_of_a_state_switch_is_refused(off):
+    """The event fires where U = c·t reaches its threshold, 2e-10 before V's
+    crossing and 2e-10 after it: dW/dc is 9.45 on one side and 3.15 on the
+    other, and the two crossings are on two species, each known to 3e-10."""
+    _refused(EVENT_ON_STATE.format(at=repr(3.0 + off)), ["c"], 945, EVENT_TIMES)
+
+
+FALLING = (
+    "species Y, u; Y = 0; u = 10; r = 1; ua = 0\nJd: u -> ; 1\n"
+    "J1: -> Y; piecewise(r, u <= ua, 0)*piecewise(2, time >= {gate}, 0.5)\n"
+)
+FALLING_TIMES = [0.0, 5.0, 9.0, 11.0, 12.0]
+
+
+def _falling(off):
+    model = bngsim.Model.from_antimony_string(FALLING.format(gate=repr(10.0 + off)))
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["ua"])
+    return sim.run(sample_times=FALLING_TIMES, rtol=1e-10, atol=1e-8, timeout=60)
+
+
+@pytest.mark.parametrize("off", [-1e-9, 1e-9], ids=["the-gate-first", "the-switch-first"])
+def test_the_reach_at_a_state_of_zero_is_the_absolute_tolerance(off):
+    """u falls through 0 at t = 10, where the relative tolerance allows
+    nothing: its crossing time is known to atol over its rate, 1e-8. A gate in
+    the same law 1e-9 away is not told from one on the instant, and dY/dua is
+    2 with the gate first and 0.5 with the switch first."""
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        _falling(off)
+
+
+def test_a_gate_outside_the_absolute_tolerance_s_reach_runs():
+    """Control. The gate 1e-6 after the crossing: dY/dua = 0.5."""
+    got = np.asarray(_falling(1e-6).sensitivities)[-1]
+    assert got[0, 0] == pytest.approx(0.5, rel=1e-7)
+
+
+def test_a_time_switch_between_the_probes_is_refused_at_any_tolerance():
+    """The jump is read two probe steps either side of the crossing, whatever
+    the tolerances: at rtol 1e-14 they put the crossing time within 3e-14,
+    and a fitted time switch 2e-13 before it is still between the probes,
+    where its jump is read as this switch's. dX/dthr came back 3e-14 for
+    −0.5."""
+    text = HEAD + (
+        "Jx: -> X; piecewise(k, time >= thr, 0)\nJy: -> Y; piecewise(k, S >= 0.5*thr + 1e-13, 0)\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["thr"])
+    with pytest.raises(bngsim.SimulationError, match="#946"):
+        sim.run(sample_times=TIMES, rtol=1e-14, atol=1e-16, timeout=60)
+
+
+ROOTED = (
+    "species X, Y, W, V; X = 0; Y = 0; W = 0; V = 0; a = 2; k = 0.5; q = 0.7; kv = 2\n"
+    "J0: -> X; a\nJv: -> V; kv\nJ1: -> Y; k\nJ2: -> W; piecewise(q*X, V >= {at}, 0)\n"
+    "E1: at (time + 0.1*sin(time) >= 3.0141120008059867): X = 0.5*X\n"
+)
+
+
+@pytest.mark.parametrize("off", [-4e-10, 0.0, 4e-10], ids=["before", "on", "after"])
+def test_a_moved_switch_on_an_event_whose_time_is_found_as_a_root_is_refused(off):
+    """The trigger ``time + 0.1·sin(time) >= 3 + 0.1·sin(3)`` is true from
+    t = 3, a time the run finds as a root and takes no stop for. V's rate kv
+    is requested and moves the switch through the fire: dW/dkv is 6.3 with
+    the switch first and 3.15 with the event first. With the switch first
+    the refusal is made at the fire, which no column moves, for the switch
+    that one does."""
+    _refused(ROOTED.format(at=repr(6.0 + off)), ["kv"], 945, EVENT_TIMES)
+
+
+def test_an_event_whose_time_is_found_as_a_root_runs_where_no_column_moves_either():
+    """Control. The same with q requested: W = q·X integrated from 3."""
+    got = _columns(ROOTED.format(at=6), ["q"], EVENT_TIMES)
+    np.testing.assert_allclose(got[:, 0], [0.0, 0.0, 33.75, 0.0], rtol=1e-7, atol=1e-9)
