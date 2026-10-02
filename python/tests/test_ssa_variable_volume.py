@@ -728,11 +728,12 @@ def test_gh170_bare_hosu_bimolecular_matches_extrande():
         assert z < 5.0, f"#170 bimol t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
 
 
-# Negative scope (#170): the fix must stay confined to the volume-INDEPENDENT
-# sub-case. A bare law with a MIXED hOSU set — ``k*A*B`` with A hOSU=true but B
-# hOSU=false — keeps a surviving V_static from B's concentration factor, so it is
-# NOT volume-independent and the Elementary ODE bakes the static volume (the #131
-# finding 4 hazard). It must stay refused ``varvol_non_mass_action``.
+# A bare law with a MIXED hOSU set — ``k*A*B`` with A hOSU=true but B hOSU=false
+# — is not volume-independent: the rate is k·n_A·n_B/V(t). It was refused here
+# because the Elementary ODE baked the static volume into B's and P's rows, and
+# (no single divide serving the amount A and the concentrations B and P) it now
+# takes the per-species emission, each row over its own size, with the SSA
+# correction (V_static/V_live)^1 for B's stale concentration factor.
 _C170_MIXED = """
 model c170_mixed
   compartment cell = 1.0;
@@ -744,10 +745,31 @@ end
 """
 
 
-def test_gh170_mixed_hosu_bare_law_still_refused():
+def test_gh170_mixed_hosu_bare_law_matches_extrande():
+    k, g, reps, seed = 0.01, 0.15, 2000, 47
     model = bngsim.Model.from_antimony_string(_C170_MIXED)
-    errs = [i for i in bngsim.validate_for_ssa(model) if i.severity == "error"]
-    assert [i.code for i in errs] == ["varvol_non_mass_action"]
+    assert not [i for i in bngsim.validate_for_ssa(model) if i.severity == "error"]
+    names, arr = _ssa_counts(model, 10.0, 11, reps=reps, seed=seed)
+    n_p = arr[:, :, names.index("P")]  # hOSU=false, V_static = 1 ⇒ counts
+    t = np.linspace(0.0, 10.0, 11)
+    ref = ext.RefModel(
+        species=["A", "B", "P"],
+        x0={"A": 60, "B": 90, "P": 0},
+        reactions=[
+            ext.ReactionSpec(
+                stoich={"A": -1, "B": -1, "P": 1},
+                propensity=lambda s: k * s["A"] * s["B"] / s["cell"],
+            )
+        ],
+        cont={"cell": lambda s: g},
+        c0={"cell": 1.0},
+    )
+    oref = ext.simulate_batch(ref, t, reps, seed=seed + 1, look_ahead=0.05)
+    pb, pe = n_p.mean(0), oref[:, :, 2].mean(0)
+    se = np.sqrt(n_p.var(0, ddof=1) / reps + oref[:, :, 2].var(0, ddof=1) / reps)
+    for i in range(1, len(t)):
+        z = abs(pb[i] - pe[i]) / (se[i] + 1e-12)
+        assert z < 5.0, f"#170 mixed t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
 
 
 # ── Case 2 (GH #144): bare (p≠1) concentration-rate law in a varvol comp ──────
