@@ -120,16 +120,28 @@ has to refresh the `rateOf` buffer.
   difference over half the step is half as large and the second difference
   about the point a quarter as large; the run is refused where either is out by
   more than a part in 1e3 of what the value moves by across the step, and by
-  more than 16 ulp of the largest thing the value reads or of what the moved
-  variable's own last digit moves it by. A difference retaken over a wider step
-  (#767) is across a value that is straight there, and is not asked. A species
-  is refused only where a column carries something through it, and the time
-  only where a column moves the fire time (#915,
+  more than what may be rounding: 16 ulp of the largest thing the value reads,
+  and no more than 2e-9 of the value's own size. A value that is not finite at
+  the point or beside it is refused too. A difference retaken over a wider
+  step (#767) is across a value that is straight there, and is not asked. A
+  species is refused only where a column carries something through it, and the
+  time only where a column moves the fire time (#915,
   `test_event_value_time_step_sensitivity.py`). A value that is flat at the
   point, leaving it on each side as one power of the distance of order 1.75 or
   more (`X³/(8 + X³)` at X = 0), has derivative 0 there and is not refused. A
   step or a bend that moves with the event has a derivative, and is refused
   with the rest.
+- **Not caught**, and returned as before:
+  - a bend under a value that reads something a million times its own size,
+    where the change of slope times what is moved is under about 0.8% of the
+    value: `kcat·E0·X/(Km + X) + max(X − 3, 0)` at X = 3 with kcat at 1e9 and
+    E0 at 1e-6 returns 0.61 for 0.11 or 1.11, and is refused with kcat at 1e3
+    and E0 at 1;
+  - a bend that is under a part in 1e3 of the partial it is in, where the
+    column's terms cancel to less than that: `1000·(time − T0) + max(time −
+    2.3, 0)` fired at T0 + 1 = 2.3 returns 0.5 for 0 or 1;
+  - a smooth value whose difference rounds, in line, by more than it resolves:
+    `(1 − exp(−k·time))/k` at k = 1e-10 returns 1.11 for 1.
 
 **At `t_start`.** An SBML event with `initialValue=false` whose trigger is already
 true at `t_start` fires there. Then `τ = 0`, and `s⁻` is the seed that is already

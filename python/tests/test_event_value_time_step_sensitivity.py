@@ -17,10 +17,10 @@ the run is now refused there. Across a smooth value the difference over half
 the step is half as large and the second difference about the point a quarter
 as large. A value is refused where either is out by more than a part in 1e3 of
 what the value moves by across the step. What is out by no more than the
-rounding of the largest thing the value reads is let pass where it leaves the
-derivative in doubt by under a part in 1e3 of the value per unit relative
-change of what is moved. Where the value is smooth, the derivative is taken
-exactly as it was.
+rounding of the largest thing the value reads is let pass, up to 2e-9 of the
+value's own size, which leaves the derivative in doubt by a few parts in 1e3 of
+the value per unit relative change of what is moved. Where the run is not
+refused, the derivative is taken exactly as it was.
 
 Every expected value is a closed form: nothing changes B after the event.
 """
@@ -408,16 +408,18 @@ def test_a_difference_that_rounds_by_more_than_it_resolves_is_refused(x0):
     _refused(text, ["x0"], 5.0, "the species 'X'")
 
 
+@pytest.mark.parametrize("q", [1e-4, 5.1e-5, 3.3e-5])
 @pytest.mark.parametrize("large", ["D", "Dsp"], ids=["a-parameter", "a-species"])
-def test_rounding_of_what_the_value_reads_under_a_weak_dependence(large):
-    """Control. ``(D + q·time) − D + 5`` with D at 1e6 and q at 1e-4 is 5 and
-    rounds by an ulp of 1e6, a quarter of what it moves by across the
-    difference in time, so its readings are out of line by that much. The
-    derivative is q, and whatever the difference makes of it is under 1e-3:
-    nothing beside the 5. D is a parameter in one case and a species in the
-    other, and it is what the value reads that says how much it rounds by."""
+def test_rounding_of_what_the_value_reads_under_a_weak_dependence(large, q):
+    """Control. ``(D + q·time) − D + 5`` with D at 1e6 is 5 and rounds by an
+    ulp of 1e6, which is a half of what it moves by across the difference in
+    time at q = 1e-4 and more than all of it at 3.3e-5, so its readings are out
+    of line by that much. The derivative is q, and whatever the difference
+    makes of it is under 1e-3: nothing beside the 5. D is a parameter in one
+    case and a species in the other, and it is what the value reads that says
+    how much it rounds by."""
     text = (
-        "species B, Dsp; B = 0; Dsp = 1e6; D = 1e6; q = 1e-4; T0 = 1.3\n"
+        f"species B, Dsp; B = 0; Dsp = 1e6; D = 1e6; q = {q}; T0 = 1.3\n"
         "J0: -> B; 0*q\n"
         f"E1: at (time >= T0 + 1): B = ({large} + q*time) - {large} + 5\n"
     )
@@ -478,3 +480,66 @@ def test_a_bend_beside_a_value_a_hundred_times_its_size_is_refused():
     beside the 100: dB/dq is 0 or 1 and came back 0.5."""
     text = "species B; B = 0; q = 0.3\nE1: at (time >= 1): B = 100 + max(q - 0.3, 0)\n"
     _refused(text, ["q"], 5.0, "the parameter 'q'")
+
+
+ONE_PERIOD = {
+    "a-species": (
+        "species B, X; B = 0; x0 = 1e6; X = x0\n"
+        "J0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = (X + 0.25) - floor(X + 0.25)\n",
+        "x0",
+        "the species 'X'",
+    ),
+    "a-parameter": (
+        "species B; B = 0; q = 1e6\nE1: at (time >= 1): B = (q + 0.25) - floor(q + 0.25)\n",
+        "q",
+        "the parameter 'q'",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ONE_PERIOD))
+def test_a_sawtooth_whose_period_is_the_difference_step_is_refused(case):
+    """The fractional part of X + 0.25 with X at 1e6: the difference is taken
+    over 1e-6 of X, which is one period exactly, so the value reads 0.25 at
+    both ends of it and at the point, and steps twice between. The derivative
+    is 1 and came back 0. A value that reads the same at the three is asked at
+    half the step like any other."""
+    text, param, where = ONE_PERIOD[case]
+    _refused(text, [param], 5.0, where)
+
+
+def test_a_value_that_is_not_finite_where_it_is_read_is_refused():
+    """``1/(X − 3)`` read at X = 3 is not a number with a derivative. dB/dx0
+    came back 1.1e11."""
+    text = (
+        "species B, X; B = 0; x0 = 3; X = x0\nJ0: -> B; 0*x0\nE1: at (time >= 1): B = 1/(X - 3)\n"
+    )
+    _refused(text, ["x0"], 5.0, "the species 'X'")
+
+
+def test_a_bend_inside_half_the_difference_is_not_taken_for_flat():
+    """``max(time − c, 0)`` with c four tenths of the difference step past the
+    fire instant, 2.3. The value is level at the instant and its derivative is
+    0. Over the whole step it has risen by 0.6 of the step and over half by
+    0.1, a sixth as much, which is what a power of the distance does; at a
+    quarter of the step it has not left 0. dB/dT0 came back 0.3."""
+    text = (
+        "species B; B = 0; T0 = 1.3\n"
+        "E1: at (time >= T0 + 1): B = max(time - 2.3*(1 + 0.4e-6), 0)\n"
+    )
+    _refused(text, ["T0"], 5.0, "the time")
+
+
+def test_a_power_that_starts_inside_the_difference_is_not_taken_for_flat():
+    """``1e6·max(X − c, 0)^1.81`` with X at 1 and c 0.086 of the difference
+    step above it. The value is 0 at the point and so is its derivative. It
+    falls off toward the point by about the same factor over the first two
+    halvings of the step, as a power from the point would, and by three times
+    that over the third. dB/dx0 came back in the units, for 0."""
+    text = (
+        "species B, X; B = 0; x0 = 1; X = x0\n"
+        "J0: -> B; 0*x0\n"
+        "E1: at (time >= 1): B = 1e6*max(X - 1.000000086, 0)^1.81\n"
+    )
+    _refused(text, ["x0"], 5.0, "the species 'X'")

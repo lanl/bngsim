@@ -6206,20 +6206,26 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // the value is a difference of larger things: `(D + q·time) − D` with D at
     // 1e6 rounds by an ulp of 1e6. What is out by no more than 16 ulp of
     // `reach`, the largest of the value and of everything it reads, may be
-    // that rounding. It is let pass where it leaves the derivative in doubt by
-    // under a part in 1e3 of the value per unit relative change of what is
-    // moved, which is what a saturated `X³/(8 + X³)` at X = 2000 is, and a
-    // term with a coefficient of 1e-9. Where it leaves more in doubt than
-    // that, `(X + Y) − Y` with Y at 1e9, the difference is not a derivative to
-    // that part in 1e3, and the run is refused as it is for a step.
+    // that rounding. It is let pass up to 2e-9 of the value's size, which
+    // leaves the derivative in doubt by a few parts in 1e3 of the value per
+    // unit relative change of what is moved: a saturated `X³/(8 + X³)` at
+    // X = 2000 is inside that, and a term with a coefficient of 1e-9. Where
+    // it leaves more in doubt, `(X + Y) − Y` with Y at 1e9, the difference is
+    // not a derivative to those parts in 1e3, and the run is refused as it is
+    // for a step.
     auto smooth_across = [&](const std::function<double(double)> &value_at, double h, double lo,
                              double here, double hi, double reach) {
         const double span = std::fabs(hi - here) + std::fabs(here - lo);
-        // A value that is not finite is refused elsewhere, and one that does
-        // not move across the step has nothing in it to ask about.
-        if (!std::isfinite(span) || span == 0.0) {
-            return true;
+        // A value that is not finite at the point or beside it has no
+        // derivative there: `1/(X − 3)` read at X = 3 came back as 1.1e11.
+        if (!std::isfinite(span)) {
+            return false;
         }
+        // A value that reads the same at −h, at the point and at +h is asked
+        // at half the step like any other. `(X + 0.25) − floor(X + 0.25)` with
+        // X at 1e6 has a step of exactly one period, reads 0.25 at all three,
+        // and its difference is 0 for a derivative of 1. A value that does not
+        // read what is moved reads the same at half the step too, and passes.
         const double half_hi = value_at(0.5 * h);
         const double half_lo = value_at(-0.5 * h);
         const double whole = (hi - here) - (here - lo);
@@ -6354,7 +6360,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     model.species()[static_cast<size_t>(k)].name +
                     "' at t=" + std::to_string(t_evt) + " is not smooth in " + in +
                     " where it is read: it steps, bends or turns within a part in a million of "
-                    "that point, or rounds by more than a part in 1e3 of what it moves by there, "
+                    "that point, is not finite there, or rounds by more than a part in 1e3 of "
+                    "what it moves by there, "
                     "so the derivative the sensitivity needs is not defined, or is not what a "
                     "difference across it gives (issue #915). Move the step away from the event, "
                     "or drop the parameters that reach it from sensitivity_params.");
