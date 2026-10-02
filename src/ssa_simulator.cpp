@@ -34,6 +34,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -1062,6 +1063,27 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<char> is_dyn(nr, 0);
     std::vector<int> dyn;
 
+    // The species a fire of reaction r changes by more than poplevel molecules
+    // (|net stoichiometry| > N_c), with that change. The leap below takes no
+    // more than floor(n/N_c) of the smallest population, which can overdraw
+    // only such a species: `3A ->` at N_c = 2 with A = 4 leapt by 2 and took 6.
+    // Empty for every reaction when N_c is at least the largest stoichiometry,
+    // which is every usual setting, and then the leap is run_network's exactly.
+    std::vector<std::vector<std::pair<int, double>>> psa_overdraw(use_psa ? nr : 0);
+    if (use_psa) {
+        for (int r = 0; r < nr; ++r) {
+            std::unordered_map<int, double> net;
+            for (int ci : reactions[r].reactant_indices)
+                net[ci - 1] -= 1.0;
+            for (int ci : reactions[r].product_indices)
+                net[ci - 1] += 1.0;
+            for (const auto &[si, d] : net) {
+                if (si >= 0 && si < ns && !species_list[si].fixed && std::fabs(d) > poplevel)
+                    psa_overdraw[r].emplace_back(si, std::fabs(d));
+            }
+        }
+    }
+
     // GH #14 — the PSA leap m_r for reaction r at the current populations,
     // updating the peak-population diagnostic (GH #15).
     auto psa_leap = [&](int r) -> double {
@@ -1094,7 +1116,15 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // sentinel; it changes nothing, so leave it unscaled.
         if (n_min == std::numeric_limits<double>::max())
             n_min = 0.0;
-        return std::max(1.0, std::floor(n_min / poplevel));
+        double m = std::max(1.0, std::floor(n_min / poplevel));
+        // ...and never more than a species changed by more than N_c per fire
+        // holds (see psa_overdraw). Either direction: a reverse fire consumes
+        // the products.
+        for (const auto &[si, d] : psa_overdraw[r]) {
+            const double count = conc[si] * species_list[si].volume_factor;
+            m = std::min(m, std::max(1.0, std::floor(count / d)));
+        }
+        return m;
     };
 
     // Helper: (re)compute one reaction's propensity, direction, PSA scaling,
