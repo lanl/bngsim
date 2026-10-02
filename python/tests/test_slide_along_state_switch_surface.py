@@ -13,7 +13,7 @@ dS/damp = t, 1.5 for 0 at t = 1.5, with no warning.
 
 The slide is now refused, at the root where the flow on the far side points
 back, and where no root is reported: a run that carries sensitivities through
-a state switch is taken in batches of 50 steps and asked after each. The
+a state switch is taken in batches of 8 steps and asked after each. The
 trajectory, without sensitivities, is as it was.
 """
 
@@ -85,7 +85,7 @@ def test_a_slide_between_the_points_of_a_dense_grid_is_refused(tmp_path, rtol, n
 
 def test_a_slide_under_a_batch_of_a_million_steps_is_refused(tmp_path):
     """``max_steps`` is the batch the caller asks for, and the run is asked
-    about its switches after 50 steps whatever it is."""
+    about its switches after 8 steps whatever it is."""
     sim = bngsim.Simulator(_model(tmp_path, FROM_BELOW), method="ode", sensitivity_params=["amp"])
     with pytest.raises(Exception, match="issue #926"):
         sim.run(sample_times=[0.0, 0.5, 1.5], rtol=1e-6, atol=1e-8, max_steps=1000000, timeout=30)
@@ -347,7 +347,7 @@ def test_a_blow_up_beside_a_state_switch_fails_as_it_did(tmp_path):
     """Control. X' = k·X² is infinite at t = 1, and the run ends in CVODE on a
     sensitivity right-hand side that is not finite, which the error names. A
     run that carries sensitivities through a state switch is taken in batches
-    of 50 steps, and a stall is a whole ``max_steps`` of them that do not move
+    of 8 steps, and a stall is a whole ``max_steps`` of them that do not move
     the time. Counted from wherever the time stopped moving, and not in the
     windows a run in whole batches has, that was reached a few steps before
     CVODE failed, and the run was called stalled at a discontinuity."""
@@ -375,8 +375,8 @@ def test_a_short_slide_at_a_loose_tolerance_is_refused(tmp_path, tol, s0, times)
     from it, and slides for most of a short run: dS/damp came back the length
     of the run, 0.2 for 0.001 in the first. A state that starts inside the
     band is no nearer the surface than it has ever been, so every switch is
-    read at the first asking; and a run of 55 steps is asked at its output
-    points, not only where 50 steps have gone by."""
+    read at the first asking, and a state inside what the tolerance allows
+    the residual is held: the run cannot tell it from one on the surface."""
     sim = bngsim.Simulator(
         _model(tmp_path, FROM_BELOW, s0), method="ode", sensitivity_params=["amp"]
     )
@@ -389,11 +389,145 @@ def test_a_state_inside_a_wide_band_that_has_not_arrived_is_not_a_slide(tmp_path
     """Control. S goes from 0.9 to 0.95, with the surface at 1. At a tolerance
     of a hundredth the band is a quarter of the state, S is inside it all the
     way, and the two flows at the surface are those of the slide that begins
-    at t = 0.1. The state is not there yet: the near side's flow has not had
-    the time to bring it. dS/damp = t."""
+    at t = 0.1. The state is not held there: its residual is closing on the
+    surface at the rate its own flow closes at. dS/damp = t."""
     run = bngsim.Simulator(
         _model(tmp_path, FROM_BELOW, 0.9), method="ode", sensitivity_params=["amp"]
     ).run(sample_times=[0.0, 0.01, 0.05], rtol=tol, atol=tol)
     np.testing.assert_allclose(
         np.asarray(run.sensitivities)[:, 0, 0], [0.0, 0.01, 0.05], rtol=1e-6
     )
+
+
+MOVING = """begin parameters
+    1 a 1.0
+    2 b 1.0
+    3 lvl {lvl!r}
+    4 r 1.0
+    5 k 1.0
+end parameters
+begin functions
+    1 f() {law}
+    2 fZ() 1
+    3 fX() 9*sin(10*Zobs)
+end functions
+begin species
+    1 S() {s0!r}
+    2 Z() 0
+    3 X() 0.1
+end species
+begin reactions
+    1 0 1 f
+    2 0 2 fZ
+    3 0 3 fX
+end reactions
+begin groups
+    1 Sobs 1
+    2 Zobs 2
+    3 Xobs 3
+end groups
+"""
+
+
+def _moving(tmp_path, law, s0, lvl=1.0):
+    path = tmp_path / "m.net"
+    path.write_text(MOVING.format(law=law, s0=s0, lvl=lvl))
+    return bngsim.Model.from_net(path)
+
+
+NOT_THERE = {
+    # S' = a·t until t = 0.4 and −a after: S peaks at 0.98 and comes back.
+    # S(1) = 0.9 + a·0.08 − a·0.6, so dS/da = −0.52.
+    "a-flow-that-turns-back-short-of-the-surface": (
+        "if(Sobs<lvl,if(Zobs<0.4,a*Zobs,-a),-b)",
+        "a",
+        1e-3,
+        {"t_span": (0.0, 1.0), "n_points": 101},
+        0.38,
+        -0.52,
+        5e-2,
+    ),
+    # S = 0.9 + r·t²/2: 0.9648 at t = 0.36, dS/dr = 0.0648.
+    "a-flow-that-speeds-up": (
+        "if(Sobs<lvl,r*Zobs,-b)",
+        "r",
+        1e-2,
+        {"sample_times": [0.0, 0.36]},
+        0.9648,
+        0.0648,
+        8e-2,
+    ),
+    # X = 1 − 0.9·cos(10·t): S = 0.9 + a·(t − 0.09·sin(10·t)), 0.970 at 0.16.
+    "a-flow-that-comes-and-goes": (
+        "if(Sobs<lvl,a*Xobs,-b)",
+        "a",
+        1e-3,
+        {"sample_times": [0.0, 0.16]},
+        0.9700,
+        0.0700,
+        2e-2,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(NOT_THERE))
+def test_a_state_in_the_band_whose_flow_changes_on_the_way_is_not_a_slide(tmp_path, case):
+    """Control. Each ends short of the surface, inside the band, with the flows
+    of a slide at the surface. A cut that asked whether the flow at the
+    surface had had the time to bring the state there refused all three: a
+    flow that speeds up on the way, or comes and goes with another state,
+    covers less ground than its value at the surface says. The state is asked
+    whether its residual has stopped closing, which these have not."""
+    law, par, tol, when, s_end, want, rel = NOT_THERE[case]
+    sim = bngsim.Simulator(_moving(tmp_path, law, 0.9), method="ode", sensitivity_params=[par])
+    run = sim.run(rtol=tol, atol=tol, timeout=30.0, **when)
+    assert np.asarray(run.species)[-1, 0] == pytest.approx(s_end, rel=rel)
+    assert np.asarray(run.sensitivities)[-1, 0, 0] == pytest.approx(want, rel=rel)
+
+
+HELD = {
+    # S closes on the surface as k·(lvl + 0.1 − S), a tenth of k where it gets
+    # there at t = ln(11)/k, and is held: dS/dk = 0. It came back 0.216.
+    "a-flow-that-slows-toward-the-surface": (
+        "if(Sobs<lvl,k*(lvl+0.1-Sobs),-b)",
+        "k",
+        0.0,
+        1.0,
+        [0.0, 2.6],
+        1e-3,
+        1e-3,
+    ),
+    # The surface is sqrt(S) = 1.5: S rises from 1.25 to 2.25 at t = 1 and is
+    # held. dS/da came back 1.0 for 0.
+    "a-surface-that-is-a-square-root": (
+        "if(sqrt(Sobs)<lvl,a,-b)",
+        "a",
+        1.25,
+        1.5,
+        [0.0, 0.5, 1.5],
+        1e-4,
+        1e-6,
+    ),
+    # S' = ±1 − 0.25·t: held on the surface from t = 0.87 to t = 4, where the
+    # upward flow no longer reaches it. dS/da came back 6 for 2.
+    "a-slide-that-ends": (
+        "if(Sobs<lvl,a,-b)-0.25*Zobs",
+        "a",
+        0.0,
+        1.0,
+        [0.0, 2.0, 6.0],
+        1e-4,
+        1e-6,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(HELD))
+def test_a_slide_whose_flow_is_not_what_it_is_at_the_surface_is_refused(tmp_path, case):
+    """Three slides the same cut let through, or left to the wall clock at a
+    tight tolerance: a flow that slows toward the surface needs longer to
+    arrive than its value there says, and was never taken to have arrived."""
+    law, par, s0, lvl, times, rtol, atol = HELD[case]
+    sim = bngsim.Simulator(_moving(tmp_path, law, s0, lvl), method="ode", sensitivity_params=[par])
+    with pytest.raises(Exception, match="issue #926"):
+        sim.run(sample_times=times, rtol=rtol, atol=atol, timeout=30.0)
