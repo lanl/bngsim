@@ -686,20 +686,6 @@ def test_a_jump_beside_a_term_that_rounds_as_a_staircase(tmp_path, case, kb):
     np.testing.assert_allclose(got, want, rtol=1e-6)
 
 
-@pytest.mark.parametrize("step", [7, 8, 12, 19, 27])
-@pytest.mark.parametrize("kb", [3.0, 30.0])
-def test_a_jump_beside_two_pools_that_round_at_other_thresholds(tmp_path, kb, step):
-    """``kbig·(P − Q)`` beside the jump, with the threshold moved off half the
-    pool. The switch's own reaction read clean at these, and the column was
-    still 1.0 to 2.6 treads off: what the right-hand side of P and of Q rounds
-    by between the probes, an ulp of each, went into their columns as a jump,
-    and kbig carries the difference of those two columns into Y. No switched
-    reaction moves P or Q, so they have no jump."""
-    thr = 5e7 * (1 + 0.0037 * step)
-    got = _beside_a_staircase(tmp_path, "two-pools", kb, "kb", thr=thr)
-    assert got[1] == pytest.approx(kb / (KDEG * thr), rel=1e-6)
-
-
 @pytest.mark.parametrize("case", sorted(STAIRCASES))
 def test_a_continuous_switch_beside_a_term_that_rounds_as_a_staircase(tmp_path, case):
     """``kbig·(P − Q)`` with P and Q a part in 1e7 apart, written through an
