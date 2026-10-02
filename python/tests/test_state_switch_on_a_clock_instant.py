@@ -1494,3 +1494,20 @@ def test_branches_that_meet_to_the_digits_their_constants_are_written_to_are_no_
     )
     got = _columns(text, ["tau"])
     assert got[1, 0] == pytest.approx(1.0, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        "piecewise(k, S >= 0.5*thr, 0)*piecewise(0, Z >= 1.5, 1)",
+        "piecewise(0, S >= 0.5*thr, k)*piecewise(1, Z >= 1.5, 0)",
+    ],
+    ids=["the-first-opens", "the-first-closes"],
+)
+def test_a_pair_on_one_instant_is_asked_each_way_round(law):
+    """One switch opens the law and the other closes it, on one instant and
+    on different species: the law is 0 before both and after both. A jump
+    that the one shows with the other before it, the other shows with the
+    first after, so each is asked with the other before. 0 came back on the
+    kinks −0.5 | 0 and 0 | 0.5."""
+    _refused(TWO_SPECIES + f"Jy: -> Y; {law}\n", ["thr"], 946)
