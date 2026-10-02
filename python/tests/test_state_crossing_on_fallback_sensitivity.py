@@ -842,7 +842,7 @@ def test_a_divisor_is_asked_about_again_when_a_parameter_changes_sign(tmp_path):
         sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
-@pytest.mark.parametrize("n", [1.0 + 1e-6, 1.0, 1.0 - 1e-6, 1.001, 0.8])
+@pytest.mark.parametrize("n", [1.0 + 1e-6, 1.0, 1.0 - 1e-6, 1.001, 0.9])
 def test_a_condition_a_requested_parameter_is_near_flipping_is_refused(tmp_path, n):
     """``if(n > 1, kb, 0)`` holds one way for the whole run, and is a surface
     in n. The quotient reads the law at n moved by up to its size times the
@@ -880,10 +880,28 @@ def test_a_jump_in_a_requested_parameter_is_refused(tmp_path, law, n):
     _refused_run(_wider(tmp_path, law, n=n), ["n", "k"])
 
 
+@pytest.mark.parametrize(
+    ("law", "param", "value"),
+    [("if((n-1)*(n-1.1)<0,kb,0)", "n", 0.95), ("if(g>0.1,kb,0)", "g", 0.0)],
+    ids=["a-window-a-tenth-wide", "a-parameter-at-0"],
+)
+def test_how_far_a_requested_parameter_is_moved(tmp_path, law, param, value):
+    """Refused here, where main is right at an ordinary tolerance. The
+    comparison is asked about with the parameter moved a quarter of itself
+    and by halves of that down, either way, which is the quotient's reach at
+    a relative tolerance of 0.06: a window from 1 to 1.1 is found from
+    n = 0.95, though it is the same on both sides of it. A parameter at 0 is
+    moved by a quarter."""
+    model = _wider(tmp_path, law, n=0.95)
+    model.set_param(param, value)
+    _refused_run(model, [param, "k"])
+
+
 def test_an_equality_on_a_parameter_that_does_not_hold_runs(tmp_path):
-    """Control. ``n == 1`` at n = 1.5 holds nowhere the quotient reads."""
+    """Control. ``n == 1`` at n = 1.1 holds at one value of n, which the
+    quotient does not read at."""
     sim = bngsim.Simulator(
-        _wider(tmp_path, "if(n==1,kb,0)", n=1.5), method="ode", sensitivity_params=["n", "k"]
+        _wider(tmp_path, "if(n==1,kb,0)", n=1.1), method="ode", sensitivity_params=["n", "k"]
     )
     assert not sim.has_analytic_sens_rhs
     np.testing.assert_allclose(_y_columns(sim), [0.0, 0.0], atol=1e-9)
