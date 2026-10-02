@@ -109,6 +109,28 @@ def test_a_column_that_does_not_move_the_counter_runs(tmp_path):
     np.testing.assert_allclose(_y_columns(sim), [-3.0], rtol=1e-8)
 
 
+@pytest.mark.parametrize("param", ["k", "A0", "thr"])
+def test_a_state_switch_that_jumps_is_refused_at_the_crossing(tmp_path, param):
+    """A decays through thr and Y is made at kb from there. At rtol 1e-4 the run
+    gets to the crossing on the quotient: dY/dk came back 6.94 for 2.46,
+    dY/dA0 −0.846 for −0.3 and dY/dthr 1.92 for 0.68, each with the jump taken
+    nearly three times over. At tighter tolerances it stalls short of the
+    crossing instead, which is refused by name below."""
+    sim = _simulator(tmp_path, "if(Aobs<thr,kb,0)", DECLINED, [param], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    with pytest.raises(bngsim.SimulationError, match="issue #938"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=60)
+
+
+def test_columns_that_do_not_move_the_crossing_run(tmp_path):
+    """Control. kb and kc move neither A nor thr, so neither column reads across
+    the surface: dY/dkb = T − t* and dY/dkc = 0."""
+    sim = _simulator(tmp_path, "if(Aobs<thr,kb,0)", DECLINED, ["kb", "kc"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    t_star = math.log(10.0 / 4.4)
+    np.testing.assert_allclose(_y_columns(sim), [T_END - t_star, 0.0], rtol=1e-8, atol=1e-10)
+
+
 def test_a_counter_threshold_the_rate_law_does_not_jump_at_runs(tmp_path):
     """Control. The rate law turns on as a ramp from the counter's threshold:
     Y = kb·k·(T − t*)²/2 with t* = (thr − A0)/k, so

@@ -8505,28 +8505,6 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // and the resumed integration must not see the nudge.
     sync(x, t_evt);
 
-    // Issue #938: a crossing that jumps, in a run on CVODES' difference
-    // quotient. That quotient reads f at y + σ·s, which beside the surface is
-    // on the other branch for a column whose sensitivity moves the state
-    // across it: the column has taken part of this jump already, on the way
-    // here, and the jump below would be added to it. `if(Aobs>thr,kb,0)`
-    // beside a rate law the analytic path declines returned dY/dk = 14.52 for
-    // 10.2. A crossing that does not jump has nothing for the quotient to
-    // straddle, and is left as it was.
-    if (sens.difference_quotient) {
-        throw std::runtime_error(
-            "Forward sensitivity: the state-dependent rate-law condition with residual '" +
-            sw.residual_source + "' crosses at t=" + std::to_string(t_evt) +
-            " with a jump in the rate law, and this run has no analytic sensitivity "
-            "right-hand side: one of the model's rate laws could not be differentiated, so "
-            "CVODES' internal difference quotient is used for every column. That quotient "
-            "reads the rate law at the state moved along each sensitivity, which beside this "
-            "surface is on the other branch, so a column has taken part of the jump before "
-            "the crossing and would be given all of it again here (issue #938). bngsim "
-            "refuses rather than return it. Remove what the analytic path declines (see "
-            "Simulator.sens_rhs_decline_reason), or difference plain runs.");
-    }
-
     auto subject_of = [](const NetworkModel::StateSwitch &one) {
         return "the state-dependent rate-law condition with residual '" + one.residual_source +
                "' crosses";
@@ -8605,6 +8583,33 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     std::vector<double> tau;
     residual_dtstar(lead.residual_expr_idx, lead.species, subject_of(lead), t_evt, ns, x, f_minus,
                     s, sens, tau);
+    // Issue #938: a crossing that jumps, in a run on CVODES' difference
+    // quotient. That quotient reads f at y + σ·s and at p + σ, which beside the
+    // surface is on the other branch for a column that moves the crossing: the
+    // column has taken part of this jump already, on the way here, and the
+    // jump below would be added to it. `if(Aobs<thr,kb,0)` beside a rate law
+    // the analytic path declines returned dY/dk = 6.94 for 2.46 at rtol 1e-4.
+    // A column that does not move the crossing reads nothing across it and is
+    // right, and a crossing that does not jump has nothing to straddle.
+    auto refuse_on_quotient = [&](const NetworkModel::StateSwitch &which,
+                                  const std::vector<double> &shift) {
+        if (!sens.difference_quotient ||
+            std::none_of(shift.begin(), shift.end(), [](double v) { return v != 0.0; })) {
+            return;
+        }
+        throw std::runtime_error(
+            "Forward sensitivity: the state-dependent rate-law condition with residual '" +
+            which.residual_source + "' crosses at t=" + std::to_string(t_evt) +
+            " with a jump in the rate law, a requested column moves the crossing, and this run "
+            "has no analytic sensitivity right-hand side: one of the model's rate laws could "
+            "not be differentiated, so CVODES' internal difference quotient is used for every "
+            "column. That quotient reads the rate law at the state and the parameter moved "
+            "along each column, which beside this surface is on the other branch, so a column "
+            "has taken part of the jump before the crossing and would be given all of it again "
+            "here (issue #938). bngsim refuses rather than return it. Remove what the analytic "
+            "path declines (see Simulator.sens_rhs_decline_reason), or difference plain runs.");
+    };
+    refuse_on_quotient(lead, tau);
     double tau_scale = 0.0;
     for (int c = 0; c < n_sens; ++c) {
         tau_scale = std::max(tau_scale, std::fabs(tau[static_cast<std::size_t>(c)]));
@@ -8724,6 +8729,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         const Reader &r = *aside.reader;
         residual_dtstar(r.sw->residual_expr_idx, r.sw->species, subject_of(*r.sw), t_evt, ns, x,
                         f_minus, s, sens, aside.tau);
+        refuse_on_quotient(*r.sw, aside.tau);
         const bool moved = std::any_of(r.sw->species.begin(), r.sw->species.end(), [&](int j) {
             const auto uj = static_cast<std::size_t>(j);
             return j >= 0 && j < ns && !(std::fabs(change[uj] - aside.own[uj]) <= tol);
