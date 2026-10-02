@@ -1668,6 +1668,15 @@ class SwitchConditionScope(NamedTuple):
     function_names: frozenset[str]
 
 
+@functools.lru_cache(maxsize=65536)
+def _whole_word(name: str) -> re.Pattern:
+    """*name* as a whole word. Kept: the scope is built before every run that
+    asks about a crossing, and a model with more parameters than :mod:`re`
+    keeps patterns for compiled every one of them again each time, 20 ms a
+    run at 800."""
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
+
+
 def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
     """Assemble the model-level context both switch-condition callers read.
 
@@ -1686,9 +1695,7 @@ def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
         clocks=clocks,
         clock_symbols=clock_symbols,
         param_names=tuple(param_names),
-        param_pats={
-            n: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])") for n in param_names
-        },
+        param_pats={n: _whole_word(n) for n in param_names},
         primary_names=frozenset(n for i, n in enumerate(param_names) if not is_expr[i]),
         param_idx={n: i for i, n in enumerate(param_names)},
         values=tuple(core.get_param(n) for n in param_names),
@@ -3852,27 +3859,33 @@ def fallback_crossing(
             and param_names[index] in func_map
         ):
             return f'tfun {table.get("name")} (method=>"step")'
-    texts = [str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]]
-    flats = []
-    for text in texts:
-        flat = _inline_functions(text, func_map)
-        if flat is None:
-            # Functions nested past what is written out, or a cycle. Read as
-            # its bare name, it would hold no condition at all.
-            return f"{text} (its functions nest too deep to read)"
-        flats.append(flat)
-    flats = [
-        f
-        for f in flats
-        if has_condition_construct(f) or _STEP_CALL.search(f) or _CHOICE_CALL.search(f)
-    ]
-    if not flats:
-        return None
-    scope = switch_condition_scope(core, ctx)
-    moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
-    # ``parsed`` keeps the syntax tree of each rate law's text between one
-    # scan of a model and the next.
+    # ``parsed`` keeps what is made of each rate law's text, which no
+    # parameter's value changes, between one scan of a model and the next;
+    # and beside it the last answer for the law, with what it went by.
     parsed = {} if parsed is None else parsed
+    scope = None
+    laws: list[_Law] = []
+    for reaction in ctx["functional_reactions"]:
+        text = str(reaction.get("rate_expr", ""))
+        law = parsed.get(text)
+        if law is None:
+            flat = _inline_functions(text, func_map)
+            if flat is None:
+                # Functions nested past what is written out, or a cycle. Read
+                # as its bare name, it would hold no condition at all.
+                return f"{text} (its functions nest too deep to read)"
+            if scope is None:
+                scope = switch_condition_scope(core, ctx)
+            law = parsed[text] = _read_law(
+                text, flat, scope.derived_exprs, has_condition_construct
+            )
+        if law.atoms or law.steps or law.choice:
+            laws.append(law)
+    if not laws:
+        return None
+    if scope is None:
+        scope = switch_condition_scope(core, ctx)
+    moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
     # What each parameter is; and the clocks no column moves, literal time
     # and a counter with nothing requested that moves it.
     values = {name: float(scope.values[scope.param_idx[name]]) for name in scope.run_constants}
@@ -3900,33 +3913,76 @@ def fallback_crossing(
             return False
         return bool((set(_IDENTIFIER.findall(flat)) | set(_IDENTIFIER.findall(raw))) & requested)
 
-    for flat in flats:
-        if has_condition_construct(flat):
-            for atom in _iter_condition_atoms(flat):
-                atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-                if crosses(atom_flat):
-                    return atom
-                # A step in a condition on a clock: its edges move with a
-                # requested parameter as they do outside one.
-                if _STEP_CALL.search(atom_flat) and step_moves(atom_flat, atom):
-                    return atom
-        for call, arg in _iter_step_calls(flat):
-            arg_flat = _inline_derived_param_refs(arg, scope.derived_exprs) or arg
+    for law in laws:
+        for atom, atom_flat in law.atoms:
+            if crosses(atom_flat):
+                return atom
+            # A step in a condition on a clock: its edges move with a
+            # requested parameter as they do outside one.
+            if _STEP_CALL.search(atom_flat) and step_moves(atom_flat, atom):
+                return atom
+        for call, arg, arg_flat in law.steps:
             if crosses(arg_flat) or step_moves(arg_flat, arg):
                 return call
-        if _CHOICE_CALL.search(flat):
-            # With derived parameters written out, so that what is left to
-            # name is a primary, a clock or the state.
-            whole = _inline_derived_param_refs(flat, scope.derived_exprs) or flat
-            if whole not in parsed:
-                parsed[whole] = _syntax_tree(whole)
-            tree = parsed[whole]
-            if tree is None:
-                return f"{_clip_text(flat)} (not read)"
-            quotient = _quotient_across_a_choice(tree, values, clocks, requested)
-            if quotient is not None:
-                return quotient
+        if law.choice:
+            if law.tree is None:
+                return f"{_clip_text(law.flat)} (not read)"
+            # The answer goes by the sign of each parameter the law reads,
+            # by which of its names are clocks and by which are requested.
+            went_by = (
+                tuple(
+                    (n, values[n] > 0.0, values[n] >= 0.0, values[n] < 0.0)
+                    for n in sorted(law.names)
+                    if n in values
+                ),
+                law.names & clocks,
+                law.names & requested,
+            )
+            last = parsed.get(("quotient", law.text))
+            if last is None or last[0] != went_by:
+                last = (went_by, _quotient_across_a_choice(law.tree, values, clocks, requested))
+                parsed[("quotient", law.text)] = last
+            if last[1] is not None:
+                return last[1]
     return None
+
+
+class _Law(NamedTuple):
+    """What a rate law's text comes to, which no parameter's value changes."""
+
+    text: str
+    flat: str  # with its functions inlined
+    # Each condition atom, as written and with derived parameters inlined.
+    atoms: tuple[tuple[str, str], ...]
+    # Each step call outside a condition: the call, its argument, and the
+    # argument with derived parameters inlined.
+    steps: tuple[tuple[str, str, str], ...]
+    choice: bool  # holds an abs, max or min
+    tree: ast.Expression | None  # its syntax tree, where it holds one
+    names: frozenset[str]  # what the tree reads
+
+
+def _read_law(text: str, flat: str, derived_exprs, has_condition_construct) -> _Law:
+    atoms: tuple[tuple[str, str], ...] = ()
+    if has_condition_construct(flat):
+        atoms = tuple(
+            (atom, _inline_derived_param_refs(atom, derived_exprs) or atom)
+            for atom in _iter_condition_atoms(flat)
+        )
+    steps = tuple(
+        (call, arg, _inline_derived_param_refs(arg, derived_exprs) or arg)
+        for call, arg in _iter_step_calls(flat)
+    )
+    choice = _CHOICE_CALL.search(flat) is not None
+    tree = None
+    names: frozenset[str] = frozenset()
+    if choice:
+        # With derived parameters written out, so that what is left to name
+        # is a primary, a clock or the state.
+        tree = _syntax_tree(_inline_derived_param_refs(flat, derived_exprs) or flat)
+        if tree is not None:
+            names = frozenset(n.id for n in ast.walk(tree) if isinstance(n, ast.Name))
+    return _Law(text, flat, atoms, steps, choice, tree, names)
 
 
 def _clip_text(text: str, width: int = 120) -> str:

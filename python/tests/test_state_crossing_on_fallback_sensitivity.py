@@ -919,17 +919,18 @@ def test_a_rate_law_that_does_not_parse_is_refused(tmp_path, monkeypatch):
 
 
 def test_what_is_kept_between_runs_does_not_grow(tmp_path):
-    """One syntax tree a rate law, whatever the parameters are set to: a fit
-    that changes them ten thousand times keeps what it kept after the first."""
+    """What is made of each rate law's text, and the last answer for it,
+    whatever the parameters are set to: a fit that changes them ten thousand
+    times keeps what it kept after the first run."""
     model = _wider(tmp_path, "kb*abs(Aobs-thr)", decays=False)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
     sizes = set()
-    for kb in (3.0, 3.5, 4.0, 4.5):
+    for kb in (3.0, 3.5, 4.0, 4.5, -1.0):
         model.set_param("kb", kb)
         model.reset()
         sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
         sizes.add(len(sim._fallback_scan_cache))
-    assert sizes == {2}
+    assert len(sizes) == 1 and sizes.pop() <= 4
 
 
 def test_a_branch_scan_that_fails_refuses(tmp_path, monkeypatch):
