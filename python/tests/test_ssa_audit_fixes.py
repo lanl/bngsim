@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import time
-import warnings
 
 import bngsim
 import numpy as np
