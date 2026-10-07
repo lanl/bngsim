@@ -486,13 +486,15 @@ def test_a_window_written_in_numbers_runs_in_a_column_that_moves_nothing(tmp_pat
     ids=["its-seed", "its-rate", "an-opening-edge"],
 )
 def test_a_counter_edge_found_as_a_root_is_refused(tmp_path, shape, a, params):
-    """The window opens where ``t - z >= on`` with z a species nothing makes:
-    a root of the state, with no switch time for the counter's crossing. The
-    seed's column is refused where the run starts, before an opening edge can
-    stall it, and the rate constant's, which has moved nothing by then, where
-    it ends: dX/dT0 was 1.1e-4 off at a tolerance of 1e-6."""
+    """The window opens where ``t - z >= on`` and closes where
+    ``t - z <= on + D``, with z a species nothing makes: roots of the state,
+    with no switch time for either of the counter's crossings. The seed's
+    column is refused where the run starts, before an opening edge can stall
+    it, and the rate constant's, which has moved nothing by then, where it
+    ends: dX/dT0 was 1.1e-4 off at a tolerance of 1e-6."""
     text = (
         COUNTER.replace("if(t>=on,", "if((t-Zobs)>=on,")
+        .replace("if(t<=(on+D),", "if((t-Zobs)<=(on+D),")
         .replace("    2 Tc() T0\n", "    2 Tc() T0\n    3 Z() 0\n")
         .replace("    1 t 2\n", "    1 t 2\n    2 Zobs 3\n")
     )
