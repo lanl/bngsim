@@ -188,6 +188,9 @@ def test_the_core_solver_refuses_too(tmp_path):
 SWITCHED = {
     "a-rate-switched-on": "if(time()>5,k,0)",
     "a-table-on-the-time": "k*tfun([0,50,51,1e9],[0,0,1,1],time)",
+    # No condition and no knot: the run is on the solver's warm path, which
+    # has an early stop of its own. The rate is 1.5e-13·k at t = 1.
+    "a-smooth-rate-that-starts-at-nothing": "k*time()^8/(40^8+time()^8)",
 }
 
 
@@ -237,6 +240,12 @@ def test_a_time_course_of_a_model_that_reads_no_time_stops_early(tmp_path):
     out, species = _early(bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode"))
     assert len(species) < 201 and out.solver_stats["steady_state_reached"]
     np.testing.assert_allclose(species[-1], [0.0, 1.0], atol=1e-6)
+    # And with a sensitivity requested, which takes the solver's other path.
+    sens = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["k"]
+    )
+    out, species = _early(sens)
+    assert len(species) < 201 and out.solver_stats["steady_state_reached"]
 
 
 def test_a_rate_that_reads_its_own_derivative_is_not_refused():
