@@ -276,20 +276,21 @@ def test_without_the_event_a_state_crossing_enters_the_frame(jump, a):
     np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-4)
 
 
-def _only_a_root(on, event):
+def _only_a_root(on, event, a=1.9):
     """The window opens where the state crosses and never closes."""
     return bngsim.Model.from_antimony_string(
-        f"species X, Z; X = 1; Z = 0; k0 = 0.1; k1 = 1; a = 1.9; on = {on!r}; D = 20; q = 0\n"
+        f"species X, Z; X = 1; Z = 0; k0 = 0.1; k1 = 1; a = {a}; on = {on!r}; D = 20; q = 0\n"
         "J0: -> X; (k0 + k1*piecewise(((time - on)/D)^(a - 1), time - Z >= on, 0))*X\n"
         + ("E1: at (time > 15): q = 1\n" if event else "")
     )
 
 
-def test_a_singular_edge_that_is_only_a_root_beside_an_event_is_refused():
+@pytest.mark.parametrize("a", [1.9, 1.999], ids=["read-as-a-jump", "read-as-continuous"])
+def test_a_singular_edge_that_is_only_a_root_beside_an_event_is_refused(a):
     """No switch time moves at the rate the edge does, so nothing is known
     before the run: the column is refused at the root, where it would have
-    entered its frame."""
-    sim = bngsim.Simulator(_only_a_root(10.0, True), method="ode", sensitivity_params=["on"])
+    entered its frame, whichever way the run reads the law there."""
+    sim = bngsim.Simulator(_only_a_root(10.0, True, a), method="ode", sensitivity_params=["on"])
     with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #958\)"):
         sim.run(sample_times=[0.0, 5.0, 12.0, 18.0], rtol=1e-8, atol=1e-10, timeout=120)
 
