@@ -560,9 +560,15 @@ observable denotes an *amount*, not the stored concentration — matching what
 `update_observables` uses for the value and what the CVODE `run()` path uses for
 its derivative (issue #119).
 
-A stable steady state forgets its initial conditions (`∂x*/∂x(0) = 0`), so the
-initial-condition axis is structurally zero and is not computed;
-`output_sensitivities(..., axis="ic")` raises rather than return zeros.
+A stable steady state keeps nothing of its initial conditions but the conserved
+totals. In a model with a conservation law, `A <-> B` with `A + B` fixed by
+where the run starts, a parameter that sets an initial amount moves the steady
+state through the total, and its `dY_ss/dp` column carries that: `[1/3, 2/3]`
+for `A0` at `kf = 1`, `kr = 0.5` (issue #704). The seeding is the one a time
+course starts from (`Model.effective_ic_sensitivity`), read from the state the
+solve starts at, so a species that has been moved off its initial condition
+contributes nothing. The initial-condition axis itself is not computed, and
+`output_sensitivities(..., axis="ic")` raises.
 
 ### Pre-equilibration / carry-over output sensitivities (`carry_sensitivities=True`)
 

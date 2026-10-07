@@ -6020,9 +6020,9 @@ class Simulator:
             # of the same emitted sensitivity RHS and solves J·(dY/dp) = −∂f/∂p,
             # so it inherits whatever that column is: right for a writable size
             # now that stage 3 emits the storage half, and refusable for exactly
-            # the sizes whose write is refused. (dY_ss/dp carries no IC seed — a
-            # steady state has forgotten x(0) — so only the ∂f/∂V half is in play
-            # here, and it is the half that is complete.)
+            # the sizes whose write is refused. (Of x(0), a steady state keeps
+            # only its conserved totals, whose seed is handed over below, issue
+            # #704; the ∂f/∂V half is the one in play here, and it is complete.)
             self._raise_if_compartment_size_params(list(sensitivity_params))
             # Issue #329 — a function's backing slot is refused here for the
             # same reason the constructor refuses it: ∂f/∂p is read out of that
@@ -6080,6 +6080,15 @@ class Simulator:
             opts.codegen_c_source = self._codegen_c_source
         if sensitivity_params:
             opts.sensitivity_params = list(sensitivity_params)
+            # Issue #704 — ∂x(0)/∂p, the seeding a time course starts from. A
+            # conserved total is Σ L·x(0), so a parameter that sets an initial
+            # amount moves the steady state through it: dY_ss/dA0 = [1/3, 2/3]
+            # for A <-> B started at A0, where the totals held fixed gave
+            # [0, 0]. From the same triples run() seeds with, so the two cannot
+            # drift; with none injected the core's identity seeding applies.
+            triples, injected = self._model._ic_sensitivity_triples()
+            if injected:
+                opts.set_ic_param_sens([t for t in triples if t[2] != 0.0] or [(-1, 0, 0.0)])
         # GH #247 — an AssignmentRule-target species is emitted ``fixed``, so its
         # RHS row is identically zero and it is not an unknown of f(y) = 0 at all:
         # its value is dictated by the rule. Leaving it in makes J structurally
@@ -8010,10 +8019,13 @@ class SteadyStateResult:
         selectors : str or iterable of str
             Selectors accepted by :meth:`resolve_outputs`.
         axis : {"parameter"}, optional
-            Only ``"parameter"`` (the default) is meaningful here. A stable
-            steady state is independent of its initial conditions
-            (``∂x*/∂x(0) = 0``), so the ``"ic"`` axis is structurally zero and is
-            not computed; requesting it raises :class:`ValueError`.
+            Only ``"parameter"`` (the default) is computed here. A stable
+            steady state keeps nothing of its initial conditions but the
+            conserved totals, so the ``"ic"`` axis is zero in a model with no
+            conservation law and the projection onto the totals in one with
+            any; it is not computed, and requesting it raises
+            :class:`ValueError`. A parameter that sets an initial amount has its
+            share of the totals in its own ``"parameter"`` column (issue #704).
 
         Returns
         -------
@@ -8040,9 +8052,11 @@ class SteadyStateResult:
         if axis == "ic":
             raise ValueError(
                 "output_sensitivities: the 'ic' (initial-condition) axis is not "
-                "available on a steady-state result. A stable steady state forgets "
-                "its initial conditions (∂x*/∂x(0) = 0), so IC-axis output "
-                "sensitivities are structurally zero and are not computed."
+                "available on a steady-state result. A stable steady state keeps "
+                "nothing of its initial conditions but the conserved totals, and the "
+                "IC-axis output sensitivities are not computed. A parameter that sets "
+                "an initial amount carries its share of the totals in its own "
+                "parameter column (issue #704)."
             )
         if axis != "parameter":
             raise ValueError(f"output_sensitivities: axis must be 'parameter', got {axis!r}.")
