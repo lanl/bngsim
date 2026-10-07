@@ -3423,7 +3423,14 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         }
     }
 
-    const bool check_ss = opts.steady_state;
+    // Issue #710 — what a time course's early stop tests is ‖f(t, y)‖ at an
+    // output point, which says the trajectory has settled only for a model
+    // whose right-hand side does not read the time and that has no event still
+    // to fire: `if(time() > 5, k, 0)` is 0 at the first output point, and the
+    // run stopped there with the initial state marked steady. Such a run is
+    // integrated to the end of its span, and never marked.
+    const bool check_ss =
+        opts.steady_state && !(model.functions_use_time() || model.n_events() > 0);
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
     if (check_ss) {
@@ -12350,7 +12357,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // criterion is a single norm over every species and has no per-species
     // reading to take. A caller running with a vector atol and wanting the
     // early stop should say what "steady" means with steady_state_tol.
-    const bool check_ss = opts.steady_state;
+    // Issue #710 — what a time course's early stop tests is ‖f(t, y)‖ at an
+    // output point, which says the trajectory has settled only for a model
+    // whose right-hand side does not read the time and that has no event still
+    // to fire: `if(time() > 5, k, 0)` is 0 at the first output point, and the
+    // run stopped there with the initial state marked steady. Such a run is
+    // integrated to the end of its span, and never marked.
+    const bool check_ss =
+        opts.steady_state && !(model.functions_use_time() || model.n_events() > 0);
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
     if (check_ss) {

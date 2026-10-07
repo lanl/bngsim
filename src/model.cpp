@@ -1544,17 +1544,14 @@ NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std:
             while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
                 ++k;
             const bool call = k < e.size() && e[k] == '(';
-            if (clock && id == "time" && (call || !time_declared)) {
+            if (clock && id == "time" && (call || !time_declared))
                 deps.time = true;
-                deps.clock = true;
-            }
             auto tit = tables.find(id);
             if (tit != tables.end()) {
                 const std::string &idx = tit->second->index_name();
                 const std::string key = strip_paren_suffix(idx);
                 if (is_time_index(idx)) {
                     deps.time = true;
-                    deps.clock = true;
                 } else if (auto pit = sd.param_name_to_idx.find(key);
                            pit != sd.param_name_to_idx.end()) {
                     params.push_back(pit->second);
@@ -1669,16 +1666,6 @@ bool NetworkModel::reaction_rate_reads_time(int rxn_idx0,
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
         return false;
     return reaction_rate_dependencies_(rxn_idx0, pc_functions).time;
-}
-
-bool NetworkModel::rates_read_the_clock() const {
-    const int nr = static_cast<int>(impl_->shared->reactions.size());
-    for (int r = 0; r < nr; ++r) {
-        if (reaction_rate_dependencies_(r).clock) {
-            return true;
-        }
-    }
-    return false;
 }
 
 bool NetworkModel::event_trigger_reads_time(int event_idx0) const {

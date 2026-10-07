@@ -11,9 +11,14 @@ goes to 0; and ``A' = kp − kd·A`` with an event that sets ``kp = 1`` at
 ``−1/kd²``. Nothing was logged.
 
 A rate that reads the time has no ``f(y) = 0`` without a time being chosen, and
-an event needs a trajectory. Both are refused now, by name, and
-``run(steady_state=True)`` is what the message points at: it integrates at the
-true time with the model's events.
+an event needs a trajectory. Both are refused now, by name, as is a model
+where a reported quantity reads the time and no rate does: that came back at
+its value at ``t = 0`` beside a state marked converged.
+
+The early stop of ``run(steady_state=True)`` tests ``‖f(t, y)‖`` at an output
+point, which for such a model says nothing of the next: a rate switched on at
+``t = 5`` is 0 at ``t = 1``, and the run stopped there. It goes to the end of
+its span now.
 """
 
 from __future__ import annotations
@@ -114,24 +119,124 @@ def test_a_batch_is_refused_for_both(tmp_path):
 
 
 def test_the_run_the_message_points_at_reaches_the_steady_state(tmp_path):
-    """Control. ``run(steady_state=True)`` integrates at the true time, with
-    the event."""
+    """Control. ``run()`` integrates at the true time, with the event."""
     ramped = bngsim.Simulator(_ramped(tmp_path), method="ode")
-    out = ramped.run(t_span=(0.0, 200.0), n_points=201, steady_state=True)
+    out = ramped.run(t_span=(0.0, 200.0), n_points=201)
     np.testing.assert_allclose(np.asarray(out.species)[-1], [0.0, 1.0], atol=1e-6)
     event = bngsim.Simulator(bngsim.Model.from_antimony_string(EVENT), method="ode")
-    out = event.run(t_span=(0.0, 200.0), n_points=201, steady_state=True)
+    out = event.run(t_span=(0.0, 200.0), n_points=201)
     names = list(out.species_names)
     assert np.asarray(out.species)[-1, names.index("A")] == pytest.approx(1.0, abs=1e-6)
 
 
-def test_a_function_that_reads_the_time_and_is_in_no_rate_is_not_refused(tmp_path):
-    """Control. ``seen()`` reads the time and no reaction reads it: the
-    right-hand side does not move with the time."""
+def test_a_reported_function_that_reads_the_time_is_refused(tmp_path):
+    """``seen() = 2*time()`` is read by no reaction, and is reported: it came
+    back 0, its value at t = 0, beside a state marked converged."""
     sim = bngsim.Simulator(_ramped(tmp_path, law="k"), method="ode")
-    out = sim.steady_state()
-    assert out.converged
-    np.testing.assert_allclose(out.concentrations, [0.0, 1.0], atol=1e-6)
+    _refused(sim.steady_state, "reads the time")
+
+
+def test_the_time_written_bare_is_refused(tmp_path):
+    sim = bngsim.Simulator(_ramped(tmp_path, law="k*(1-exp(-time))"), method="ode")
+    _refused(sim.steady_state, "reads the time")
+
+
+RULE_ON_TIME = (
+    "species A, B, S; A = 1; B = 0; kf = 1; kr = 0.5\n"
+    "S := B*(1 - exp(-time)); J1: A -> B; kf*A; J2: B -> A; kr*B\n"
+)
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+def test_a_species_set_by_a_rule_on_the_time_is_refused(method):
+    """No rate reads the time, and S does: it came back 0 for 2/3, converged,
+    with dS/dkf = 0 for 2/9."""
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(RULE_ON_TIME), method="ode")
+    _refused(lambda: sim.steady_state(method=method), "reads the time")
+    _refused(lambda: sim.steady_state(sensitivity_params=["kf"]), "reads the time")
+    _refused(lambda: sim.steady_state_batch([{"kf": 1.0}]), "reads the time")
+
+
+def test_a_kinetic_law_that_reads_the_time_in_sbml_is_refused():
+    text = "species A, B; A = 1; B = 0; k = 1\nJ1: A -> B; k*(1 - exp(-time))*A\n"
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+    _refused(sim.steady_state, "reads the time")
+
+
+def test_a_compartment_sized_by_a_rule_on_the_time_is_refused():
+    """A and B are amounts in a compartment that grows from 1 to 2: their
+    concentrations came back 0.5 each, for 0.25."""
+    text = (
+        "compartment C; C := 1 + time/(1+time); substanceOnly species A in C, B in C;"
+        " A = 1; B = 0; k = 1\nJ: A -> B; k*A\nJ2: B -> A; k*B\n"
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+    _refused(sim.steady_state, "reads the time")
+
+
+def test_the_core_solver_refuses_too(tmp_path):
+    """The solver itself, under the Python layer."""
+    from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
+
+    for model in (_ramped(tmp_path), bngsim.Model.from_antimony_string(EVENT)):
+        with pytest.raises(RuntimeError, match=r"issue #710"):
+            find_steady_state(model._core, SteadyStateOptions())
+
+
+# ─── The early stop of a time course ────────────────────────────────────────
+
+SWITCHED = {
+    "a-rate-switched-on": "if(time()>5,k,0)",
+    "a-table-on-the-time": "k*tfun([0,50,51,1e9],[0,0,1,1],time)",
+}
+
+
+def _early(sim, **kw):
+    out = sim.run(t_span=(0.0, 200.0), n_points=201, steady_state=True, **kw)
+    return out, np.asarray(out.species)
+
+
+@pytest.mark.parametrize("case", sorted(SWITCHED))
+def test_a_time_course_does_not_stop_before_a_rate_is_switched_on(tmp_path, case):
+    """``A -> B`` at a rate that is 0 until t = 5, or t = 50: ‖f‖ is 0 at the
+    first output point, and the run stopped at t = 1 with [1, 0] marked
+    steady, for [0, 1]."""
+    out, species = _early(bngsim.Simulator(_ramped(tmp_path, law=SWITCHED[case]), method="ode"))
+    assert len(species) == 201 and out.time[-1] == 200.0
+    assert not out.solver_stats["steady_state_reached"]
+    np.testing.assert_allclose(species[-1], [0.0, 1.0], atol=1e-6)
+
+
+def test_a_time_course_does_not_stop_before_an_event():
+    """``A' = kp − kd·A`` from 1 with kp = 0 until an event at t = 50 sets it to
+    1: the run stopped at t = 19 with A = 0, for 1."""
+    text = EVENT.replace("time >= 2", "time >= 50")
+    out, species = _early(bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode"))
+    assert len(species) == 201 and not out.solver_stats["steady_state_reached"]
+    assert species[-1, list(out.species_names).index("A")] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_a_batch_row_does_not_stop_early_either(tmp_path):
+    sim = bngsim.Simulator(_ramped(tmp_path, law=SWITCHED["a-rate-switched-on"]), method="ode")
+    rows = sim.run_batch(
+        params=[{"k": 1.0}, {"k": 2.0}], t_span=(0.0, 200.0), n_points=201, steady_state=True
+    )
+    for row in rows:
+        assert len(np.asarray(row.species)) == 201
+        np.testing.assert_allclose(np.asarray(row.species)[-1], [0.0, 1.0], atol=1e-6)
+
+
+def test_a_time_course_of_a_model_that_reads_no_time_stops_early(tmp_path):
+    """Control. A -> B at k, with neither an event nor the time anywhere."""
+    path = tmp_path / "plain.net"
+    path.write_text(
+        "begin parameters\n 1 k 1\nend parameters\n"
+        "begin species\n 1 A() 1\n 2 B() 0\nend species\n"
+        "begin reactions\n 1 1 2 k\nend reactions\n"
+    )
+    out, species = _early(bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode"))
+    assert len(species) < 201 and out.solver_stats["steady_state_reached"]
+    np.testing.assert_allclose(species[-1], [0.0, 1.0], atol=1e-6)
 
 
 def test_a_rate_that_reads_its_own_derivative_is_not_refused():

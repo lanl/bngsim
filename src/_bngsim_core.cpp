@@ -1151,13 +1151,6 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "a rate rule (whose target may be a clock): the SSA then needs the model's "
             "breakpoints (issue #719). Decided from the model's text.")
 
-        .def_property_readonly(
-            "rates_read_the_clock", &bngsim::NetworkModel::rates_read_the_clock,
-            "Whether any reaction's rate reads the clock itself, a time() call or a table "
-            "function indexed by time, directly or through a function or a derived "
-            "parameter (issue #710). Decided from the model's text. A rateOf accessor does "
-            "not count.")
-
         // T1: RHS observable/function-eval gate instrumentation. For a pure
         // mass-action model the RHS skips update_observables + evaluate_functions
         // (dead work); these expose that gate so tests/benchmarks can prove it.

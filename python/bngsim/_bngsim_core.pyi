@@ -145,7 +145,7 @@ class NetworkModel:
         """
     def _eval_rhs(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> list[float]:
         """
-        Evaluate dy/dt at (t, conc), leaving the model as it was. Test/diagnostic hook.
+        Evaluate dy/dt at (t, conc). Test/diagnostic hook.
         """
     def add_table_function_arrays(self, name: str, xs: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], ys: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], index_name: str = 'time', method: str = 'linear') -> None:
         """
@@ -439,11 +439,6 @@ class NetworkModel:
     def pending_sensitivity_seed_param_names(self) -> list[str]:
         """
         Parameter names labeling the columns of pending_sensitivity_seed() (GH #210).
-        """
-    @property
-    def rates_read_the_clock(self) -> bool:
-        """
-        Whether any reaction's rate reads the clock itself, a time() call or a table function indexed by time, directly or through a function or a derived parameter (issue #710). Decided from the model's text. A rateOf accessor does not count.
         """
     @property
     def rhs_eval_count(self) -> int:
