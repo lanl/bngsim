@@ -476,6 +476,9 @@ def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
         ("if(X<thr,kb*(thr-X)*floor(T),0)", True),
         ("if(X<thr,kb*(thr-X)*floor(Y),0)", False),
         ("if(X<thr,kb*(thr-X)*(Y%2),0)", False),
+        # An operator this does not read, and a comparison used as a number.
+        ("if(X<thr,kb*(thr-X)*(~Y),0)", False),
+        ("if(X<thr,kb*(thr-X)*(0<Y<5),0)", False),
         # Every factor the comparison is 0 with.
         ("if((X-4.4)*(X-5)<0,kb*(X-4.4)*(5-X),0)", True),
         ("if((X-4.4)*(X-5)<0,kb*(X-4.4),0)", False),
@@ -1140,6 +1143,22 @@ def test_a_rate_law_that_does_not_parse_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(_switch_sensitivity, "_syntax_tree", lambda expr: None)
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="not read"):
         sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+def test_a_condition_in_a_rate_law_that_does_not_parse_is_refused(tmp_path, monkeypatch):
+    """A bend is proved from the law's syntax tree. With none there is no
+    proof, and the condition is refused as any other on the state."""
+    from bngsim import _switch_sensitivity
+
+    law = "if(Aobs<thr,kb*(thr-Aobs),0)"
+    sim = _simulator(tmp_path, law, DECLINED, ["k"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+    monkeypatch.setattr(_switch_sensitivity, "_syntax_tree", lambda expr: None)
+    unread = _simulator(tmp_path, law, DECLINED, ["k"], decays=True)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        unread.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
 def test_a_bend_is_proved_again_when_a_parameter_changes_sign(tmp_path):

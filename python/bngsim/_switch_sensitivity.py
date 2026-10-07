@@ -4500,8 +4500,8 @@ def _only_bends(
         name = _call_name(node)
         known = facts[id(node)]
         if isinstance(node, (ast.Name, ast.Constant, ast.Tuple, ast.Compare)):
-            if isinstance(node, ast.Compare) and len(node.ops) != 1:
-                return False
+            # A comparison is asked about below, where it is proved or not.
+            pass
         elif isinstance(node, ast.UnaryOp):
             if not isinstance(node.op, (ast.USub, ast.UAdd)):
                 return False
