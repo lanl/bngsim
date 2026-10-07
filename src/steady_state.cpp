@@ -2465,7 +2465,11 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                 for (int i = 0; i < ns; ++i)
                     if (i != dep)
                         s += cl.coefficients[k][i] * result.sensitivity[i * np + p];
-                result.sensitivity[dep * np + p] = (dT[static_cast<size_t>(k) * np + p] - s) / cd;
+                // Written as it was where the total does not move, so that such
+                // a column is the same to the last bit, the sign of a 0 included.
+                const double moved_total = dT[static_cast<size_t>(k) * np + p];
+                result.sensitivity[dep * np + p] =
+                    moved_total != 0.0 ? (moved_total - s) / cd : -s / cd;
             }
         }
 
