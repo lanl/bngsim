@@ -297,7 +297,11 @@ Four cases are refused:
 Whether a power is singular is asked at the run's own parameter values, for
 the last two: with `a = 3` nothing is unbounded there, every column is right in
 `S`, and neither is refused. An exponent that is not a parameter, a species or
-what an event assigns, cannot be asked and is taken to be singular.
+what an event assigns, cannot be asked and is taken to be singular. The last is
+asked of every power of a counter with an exponent under 1, whether or not the
+run reaches its zero: `sqrt(t/tau)` on a counter that starts at 0.5 is refused
+in the counter's own columns, the rate constant `compute_all_sensitivities()`
+asks for by default among them, and runs in every other.
 A parameter that moves no such crossing keeps its plain column. A model with no such power
 emits the code it always did, and that includes a logistic onset
 `1/(1+exp(-k*(t-on)))`, whose base is never 0.

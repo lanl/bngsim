@@ -8698,6 +8698,83 @@ def _comoving_derived_axes(names: set[str], upstream, inline_map, derived_aliase
     ]
 
 
+def _exponent_over_parameters(exponent, resolve_symbol, sympy_to_c) -> str | None:
+    """The exponent as C over ``p[]``, to be asked at the run's parameter
+    values, or ``None`` where it cannot be asked and is taken to be under 1. A
+    number is under 1 already, or the power would not be here. One that reads
+    anything but parameters, a species or what an event assigns, has no value
+    in ``p[]``; written out all the same, it named ``obs[]`` in a function that
+    has none, and the model did not build."""
+    if exponent.is_number:
+        return None
+    for symbol in exponent.free_symbols:
+        ref = resolve_symbol(symbol.name)
+        if symbol.name not in _MATH_CONSTANT_C and not (ref or "").startswith("p["):
+            return None
+    return sympy_to_c(exponent, resolve_symbol)
+
+
+def _counter_powers(
+    reactions,
+    frxn_by_idx: dict,
+    scope: _FunctionalDfdpScope,
+    counter_names: set[str],
+) -> tuple[tuple[int, ...], tuple[str, ...]] | None:
+    """``(counter species, C tests)`` where a rate law has a power of a counter
+    clock that can be singular, or ``None`` (issue #948).
+
+    Read off the powers themselves and not off the comoving cases: a window
+    written in numbers, ``(t - 4)/4``, has no parameter in its base and so no
+    case, and its power is as singular. ``counter_names`` is every name that
+    moves with a counter species: the clocks' own, and each observable that
+    sums one, whatever its weight.
+
+    Not under the derivation budget, and it does not give up: a rate law that
+    cannot be read is taken to hold such a power. What the solver refuses by
+    this is a wrong number, and an export that was there or not by how busy the
+    machine was would be worse than none."""
+    import sympy as sp
+
+    from bngsim._jacobian import _exprtk_to_sympy, _inline_functions, sympy_to_c
+
+    sw = scope.switch_scope
+    if sw is None:
+        return None
+    species = tuple(sorted({i for i in sw.clocks.values() if i >= 0}))
+    if not species or not counter_names:
+        return None
+
+    def resolve_symbol(name: str) -> str | None:
+        mapped = scope.c_ref.get(name)
+        return mapped if mapped is not None else _MATH_CONSTANT_C.get(name)
+
+    tests: list[str] = []
+    seen: set[str] = set()
+    for rxn_idx, rxn in enumerate(reactions):
+        frxn = frxn_by_idx.get(rxn_idx) if rxn["type"] == "functional" else None
+        if frxn is None or frxn["rate_expr"] in seen:
+            continue
+        seen.add(frxn["rate_expr"])
+        try:
+            inlined = _inline_functions(frxn["rate_expr"], scope.func_map)
+            parsed = _exprtk_to_sympy(inlined) if inlined is not None else None
+        except Exception:  # noqa: BLE001 - a law that is not read
+            parsed = None
+        if parsed is None:
+            tests.append("1")
+            continue
+        if not {symbol.name for symbol in parsed.free_symbols} & counter_names:
+            continue
+        for node in _pow_nodes_in_values(parsed, sp):
+            if not _singular_power(node, counter_names, sp):
+                continue
+            # An exponent of exactly 0 is the constant 1, with nothing
+            # unbounded in it for a column that moves the counter.
+            e_c = _exponent_over_parameters(node.exp, resolve_symbol, sympy_to_c)
+            tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
+    return (species, tuple(dict.fromkeys(tests))) if tests else None
+
+
 def _functional_comoving_plan(
     reactions,
     frxn_by_idx: dict,
@@ -8706,7 +8783,6 @@ def _functional_comoving_plan(
     n_params: int,
     observable_clock_weights: dict[str, float] | None = None,
     unshiftable: frozenset[str] = frozenset(),
-    counter_powers_out: list | None = None,
 ) -> _ComovingPlan | None:
     """The comoving cases of a model whose plain ``∂f/∂p`` has already derived
     (see the note above), or ``None`` when it has none. Never declines the model:
@@ -8716,12 +8792,7 @@ def _functional_comoving_plan(
     ``observable_clock_weights`` is ``{aliased observable: weight}`` for every
     observable that sums a clock species without being the clock's own name
     (issue #749). ``unshiftable`` names the ones whose weight has no number: a
-    model with a rate law that reads one gets no case.
-
-    ``counter_powers_out``, where given, is appended ``(counter species, C
-    tests)`` when a rate law has a power of a counter clock that can be singular
-    (issue #948). That is read off the powers and not off the cases: a window
-    written in numbers has no case, and its power is as singular."""
+    model with a rate law that reads one gets no case."""
     import sympy as sp
 
     from bngsim._jacobian import (
@@ -8729,7 +8800,6 @@ def _functional_comoving_plan(
         _DerivationBudgetExceeded,
         _exprtk_to_sympy,
         _inline_functions,
-        _value_symbol_names,
         sympy_to_c,
     )
 
@@ -8880,40 +8950,8 @@ def _functional_comoving_plan(
         return None
 
     def over_parameters(exponent) -> str | None:
-        """The exponent as C over ``p[]``, to be asked at the run's parameter
-        values, or ``None`` where it cannot be asked and is taken to be under
-        1. A number is under 1 already, or the power would not be here. One
-        that reads anything but parameters, a species or what an event assigns,
-        has no value in ``p[]``; written out all the same, it named ``obs[]``
-        in a function that has none, and the model did not build."""
-        if exponent.is_number:
-            return None
-        for symbol in exponent.free_symbols:
-            ref = resolve_symbol(symbol.name)
-            if symbol.name not in _MATH_CONSTANT_C and not (ref or "").startswith("p["):
-                return None
-        return sympy_to_c(exponent, resolve_symbol)
+        return _exponent_over_parameters(exponent, resolve_symbol, sympy_to_c)
 
-    def under_one(exponent) -> str:
-        """The C test of an exponent under 1 at the run's values, 0 included."""
-        e_c = over_parameters(exponent)
-        return "1" if e_c is None else f"(({e_c}) < 1.0)"
-
-    if counter_powers_out is not None:
-        # Issue #948: every power of a counter clock that can be singular,
-        # before any case is looked for.
-        counters = clock_names - {_TIME_SYM}
-        tests = [
-            under_one(node.exp)
-            for text in rxns_of_law
-            for node in _pow_nodes_in_values(parsed_laws[text], sp)
-            if _singular_power(node, clock_names, sp)
-            and _value_symbol_names(node.base, sp) & counters
-        ]
-        if tests:
-            counter_powers_out.append(
-                (tuple(sorted(i for i in clock_species if i >= 0)), tuple(dict.fromkeys(tests)))
-            )
     laws: dict[str, list[tuple]] = {
         text: [
             (_split_shared_scale(on_cell, clock_names, sp), cond)
@@ -9009,17 +9047,21 @@ def _functional_comoving_plan(
             # Every power of the case is asked once more, for the run that
             # cannot put the column in its frame (issue #958): with an
             # exponent under 1 the plain column's forcing is unbounded at the
-            # crossing, and at exactly 0 it is 0·∞ there. Where none is, the
-            # plain column is right.
+            # crossing. At exactly 0 the power is the constant 1: a closing
+            # one then has nothing behind it, and an opening one is 0·∞ on its
+            # edge, which the plain column does not survive. Where none
+            # fails, the plain column is right.
             tests, bounded, plain_fails = [], [], []
             opens = False
             for way, exponent in shifts[c]:
-                plain_fails.append(under_one(exponent))
+                e_c = over_parameters(exponent)
+                singular = "1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)"
                 if way != "close":
                     opens = True
+                    plain_fails.append("1" if e_c is None else f"(({e_c}) < 1.0)")
                     continue
-                e_c = over_parameters(exponent)
-                tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
+                plain_fails.append(singular)
+                tests.append(singular)
                 bounded.append("0" if e_c is None else f"(({e_c}) >= 1.0)")
             idle = "0" if opens or not tests else " && ".join(dict.fromkeys(bounded))
             approach.append(
@@ -9340,8 +9382,15 @@ def _functional_dfdp_terms(
                 weight += float(factor) * av_factor.get(int(si), 1.0)
             if weight != 0.0 and name not in unshiftable:
                 weights[name] = weight
-        comoving_out.append(
-            lambda counter_powers_out: _functional_comoving_plan(
+        counter_names = set(clock_names) | set(weights) | set(unshiftable)
+
+        def comoving(counter_powers_out: list) -> _ComovingPlan | None:
+            # Issue #948: the counters' powers first, and whatever becomes of
+            # the plan after them.
+            found = _counter_powers(reactions, frxn_by_idx, scope, counter_names)
+            if found is not None:
+                counter_powers_out.append(found)
+            return _functional_comoving_plan(
                 reactions,
                 frxn_by_idx,
                 scope,
@@ -9349,9 +9398,9 @@ def _functional_dfdp_terms(
                 len(params),
                 weights,
                 frozenset(unshiftable),
-                counter_powers_out,
             )
-        )
+
+        comoving_out.append(comoving)
     return out, None
 
 

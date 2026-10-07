@@ -513,8 +513,8 @@ MIXED = (
 
 def test_a_power_of_the_counter_that_is_not_singular_beside_one_of_the_time(tmp_path):
     """Control. The window is on literal time and closes as a singular power;
-    the law is also a square of the counter. Each power is asked for itself:
-    the counter's is not singular, and its own column runs."""
+    the law is also a square of the counter. The counter's power is not
+    singular, and its own column runs."""
     model = _on_a_counter(tmp_path, "closing", 1.1, text=MIXED)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["T0"])
     out = sim.run(sample_times=T, rtol=1e-9, atol=1e-11, timeout=120)
@@ -540,11 +540,24 @@ def test_a_closing_edge_beside_an_event_is_refused_before_the_run(rtol):
     _refused(_with_event("closing", 1.1), ["D"], 958, rtol=rtol)
 
 
+def test_an_opening_edge_at_an_exponent_of_exactly_0_beside_an_event_is_refused():
+    """At a = 1 the power is the constant 1 and the window steps on, and the
+    plain column's forcing is 0·∞ on the edge: CV_FIRST_SRHSFUNC_ERR."""
+    _refused(_with_event("opening", 1.0), ["on"], 958)
+
+
+def test_a_closing_edge_at_an_exponent_of_exactly_0_runs_beside_an_event():
+    """Control. The closing power is the constant 1 there, with nothing
+    unbounded before its edge, and the plain column is right."""
+    got = _run(_with_event("closing", 1.0), ["D"])[:, 0]
+    np.testing.assert_allclose(got, _expected("closing", 1.0, "D"), rtol=2e-5, atol=2e-7)
+
+
 @pytest.mark.parametrize("shape", ["closing", "opening"])
-def test_an_exponent_of_exactly_0_beside_an_event_is_refused(shape):
-    """At a = 1 the power is the constant 1 and the window steps, and the plain
-    column's forcing is 0·∞ on the edge: CV_FIRST_SRHSFUNC_ERR."""
-    _refused(_with_event(shape, 1.0), ["on"], 958)
+def test_a_counter_under_an_exponent_of_exactly_0_runs_in_its_own_column(tmp_path, shape):
+    """Control. The same for a column that moves the counter."""
+    got = _run(_on_a_counter(tmp_path, shape, 1.0), ["T0"])[:, 0]
+    np.testing.assert_allclose(got, _expected(shape, 1.0, "T0"), rtol=2e-5, atol=2e-7)
 
 
 @pytest.mark.parametrize("shape", ["closing", "opening"])
@@ -554,16 +567,18 @@ def test_an_exponent_of_exactly_0_runs_with_no_event(shape):
     np.testing.assert_allclose(got, _expected(shape, 1.0, "on"), rtol=2e-5, atol=2e-7)
 
 
-def test_an_exponent_that_is_a_species_builds(tmp_path):
-    """The exponent of an opening power read from a species: asked for at the
-    run's parameter values it has none, and written out it named ``obs[]`` in
-    a function that has no such thing, so no sensitivity could be run on the
-    model at all. It is taken to be under 1, and a column that moves nothing
-    runs."""
+@pytest.mark.parametrize("shape", ["closing", "opening"])
+def test_an_exponent_that_is_a_species_builds(shape):
+    """The exponent of a power read from a species: asked for at the run's
+    parameter values it has none, and written out it named ``obs[]`` in a
+    function that has no such thing, so no sensitivity could be run on the
+    model at all, on main for a closing power. It is taken to be under 1, and
+    a column that moves nothing runs."""
+    law = SHAPES[shape][0].format(s="((time-on)/D)").replace("(a-1)", "E")
     text = (
         "species X, E; X = 0; E = 0.5; k0 = 0.1; k1 = 2; on = 3; D = 4; kdeg = 0.3\n"
-        "J1: -> X; k0 + piecewise(piecewise(k1*((time-on)/D)^E*(1-(time-on)/D), "
-        "time < on + D, 0), time >= on, 0)\nJ2: X -> ; kdeg*X\n"
+        f"J1: -> X; k0 + piecewise(piecewise(k1*{law}, time < on + D, 0), time >= on, 0)\n"
+        "J2: X -> ; kdeg*X\n"
     )
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["k1"]
@@ -573,9 +588,40 @@ def test_an_exponent_that_is_a_species_builds(tmp_path):
     names = list(out.species_names)
     got = np.asarray(out.sensitivities)[:, names.index("X"), 0]
     want = np.array(
-        [(_x("opening", 1.5, t, ON, WIDTH) - K0 * (1 - np.exp(-KDEG * t)) / KDEG) / K1 for t in T]
+        [(_x(shape, 1.5, t, ON, WIDTH) - K0 * (1 - np.exp(-KDEG * t)) / KDEG) / K1 for t in T]
     )
     np.testing.assert_allclose(got, want, rtol=2e-5, atol=2e-7)
+
+
+WEIGHTED = COUNTER.replace("    1 s() (t-on)/D\n", "    1 s() (t2/2-on)/D\n").replace(
+    "    1 t 2\n", "    1 t 2\n    2 t2 2*2\n"
+)
+
+
+@pytest.mark.parametrize("params", [["T0"], ["r"]])
+def test_a_power_that_reads_the_counter_through_a_weighted_observable(tmp_path, params):
+    """The gate reads the counter and the power reads an observable that sums
+    it with a weight of 2: no clock symbol is in the power's base. dX/dT0 came
+    back -0.681383 for -0.684294."""
+    _refused(_on_a_counter(tmp_path, "closing", 1.1, text=WEIGHTED), params, 948)
+
+
+def test_the_counters_are_listed_whatever_becomes_of_the_plan(tmp_path, monkeypatch):
+    """The plan of the comoving cases runs under the derivation budget, and
+    where that ran out the source was written without the counters' export:
+    the counter's column then came back as it did before, and the library
+    written that way was kept."""
+    from bngsim import _codegen
+    from bngsim._jacobian import _DerivationBudgetExceeded
+
+    def out_of_budget(*args, **kwargs):
+        raise _DerivationBudgetExceeded
+
+    monkeypatch.setattr(_codegen, "_functional_comoving_plan", out_of_budget)
+    core = _on_a_counter(tmp_path, "closing", 1.1)._core
+    src = _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
+    assert "int bngsim_codegen_counter_power(int k, const double* p)" in src
+    assert "bngsim_codegen_comoving_approach" not in src
 
 
 # ─── What the generator says of a case ──────────────────────────────────────
