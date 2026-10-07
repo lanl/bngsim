@@ -75,6 +75,16 @@ def test_a_rate_that_reads_the_time_through_a_derived_rate_is_refused(tmp_path):
     _refused(sim.steady_state, "reads the time")
 
 
+def test_a_rate_that_reads_the_time_in_a_later_reaction_is_refused(tmp_path):
+    """Every reaction is asked, not the first alone."""
+    path = tmp_path / "later.net"
+    text = RAMPED.format(law="k*(1-exp(-time()))", rate="kt")
+    assert "    1 1 2 kt\n" in text
+    path.write_text(text.replace("    1 1 2 kt\n", "    1 1 2 k\n    2 2 1 kt\n"))
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    _refused(sim.steady_state, "reads the time")
+
+
 def test_a_table_indexed_by_time_is_refused(tmp_path):
     law = "k*tfun([0,1,2,50],[0,0.5,1,1],time)"
     sim = bngsim.Simulator(_ramped(tmp_path, law=law), method="ode")
