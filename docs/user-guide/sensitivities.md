@@ -274,10 +274,26 @@ that is *approached* through such a power, the closing edge of a window
 `s*(1-s)^(a-1)`, needs the column in `V` before it: the solver switches at a
 stop it takes shortly before that crossing, and switches a column in `V` back
 to `S` shortly before any crossing that is not the column's own (issue #760).
-Two cases are refused: a restart within about 7e-10 of the time of such an
-edge, where no stop can stand off from it, and another rate-law condition that
-crosses on the edge itself. A model that has an event keeps every column in
-`S`, and is 0.4% off at such an edge (issue #958).
+Four cases are refused:
+
+- a restart within about 7e-10 of the time of such an edge, where no stop can
+  stand off from it;
+- another rate-law condition that crosses on the edge itself;
+- a model that has an event (issue #958). An event restarts the integration
+  under the column, so such a model keeps every column in `S`, and a column
+  that moves the edge of a power that is singular was 0.4% off there, at any
+  tolerance. The run is refused at the crossing where the column would have
+  switched to `V`;
+- a column that moves a counter clock itself, the counter's initial value, its
+  rate constant or its initial-condition axis, where a rate law opens or closes
+  as a singular power of a counter (issue #948). `β` is emitted for the
+  parameters the power is written in, `on` and `D`, and not for the counter's
+  own. The onset's column moves the edge the same way and can be asked for
+  instead.
+
+Whether a power is singular is asked at the run's own parameter values: with
+`a = 3` nothing is unbounded, every column is right in `S`, and none of these
+is refused.
 A parameter that moves no such crossing keeps its plain column. A model with no such power
 emits the code it always did, and that includes a logistic onset
 `1/(1+exp(-k*(t-on)))`, whose base is never 0.
@@ -294,12 +310,14 @@ The comoving column is used when:
 
 - the run has the analytic sensitivity RHS (`sim.has_analytic_sens_rhs`);
 - the model has no events (a state-dependent switch or an SBML discontinuity
-  trigger is fine);
+  trigger is fine). With an event, a column that would have needed it is
+  refused (issue #958);
 - the crossing moves at the shift the generator derived from the power's own
   base. `t - on` shifts at `c = 1`, and so does a season's `t - (730 + d_2023)`
   written through a year selection.
 
-Elsewhere the plain column meets the singular forcing as before, and the
+Without the analytic RHS, or at a crossing that moves at another shift, the
+plain column meets the singular forcing as before, and the
 failure says so. It names the sensitivity column and `∂f/∂on` when the RHS goes
 non-finite at the onset, or the restart where the step gave out. An exponent of
 2 or more (`a >= 2`) keeps the derivative finite, and leaving the onset
