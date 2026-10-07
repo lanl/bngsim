@@ -459,6 +459,9 @@ def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
         ("if(X<thr,kb*(thr-X)/Y,0)", False),
         ("if(X<thr,kb*(thr-X)/pos,0)", True),
         ("if(X<thr,kb*(thr-X)/zero,0)", False),
+        # A sign turns what is known of it: pos less what is below 0 is above 0.
+        ("if(X<thr,kb*(thr-X)/(pos-(-exp(Y))),0)", True),
+        ("if(X<thr,kb*(thr-X)/(pos-exp(Y)),0)", False),
         ("if(X<thr,kb*(thr-X),0)+kb/Y", False),
         ("if(X<thr,kb*(thr-X)*log(Y),0)", False),
         ("if(X<thr,kb*(thr-X)*log(Y*Y+pos),0)", True),
@@ -722,6 +725,10 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         # Through the numerator of a quotient, and through a sign.
         ("kb*X/(abs(X)/pos)", True),
         ("kb*X/(-abs(X))", True),
+        # Through a root: a step written as the greater of e and 0 over the
+        # root of e squared.
+        ("kb*max(X-thr,0)/sqrt((X-thr)*(X-thr))", True),
+        ("kb*max(X-thr,0)/sqrt((X-thr)*(X-thr)+pos)", False),
     ],
 )
 def test_which_quotient_is_named(law, found):
