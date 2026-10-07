@@ -89,6 +89,21 @@ def test_a_parameter_that_sets_a_conserved_amount(tmp_path, method):
 
 
 @METHODS
+def test_each_species_of_a_total_has_its_own_seed(tmp_path, method):
+    """A <-> B from A = A0 and B = B0: the total moves with either, whichever
+    of the two species the law is solved for."""
+    path = _net(
+        tmp_path,
+        "ab2",
+        [("A0", 3), ("B0", 1.5), ("kf", 1), ("kr", 0.5)],
+        ["A() A0", "B() B0"],
+        ["1 2 kf", "2 1 kr"],
+    )
+    got, _ = _columns(path, ["A0", "B0"], method)
+    np.testing.assert_allclose(got, [[1 / 3, 1 / 3], [2 / 3, 2 / 3]], rtol=1e-7, atol=1e-9)
+
+
+@METHODS
 def test_a_parameter_that_is_an_initial_amount_and_a_rate_constant(tmp_path, method):
     """A0 seeds A and is the B -> A rate constant: A* = A0²/(kf + A0), so
     dA*/dA0 = 15/16 and dB*/dA0 = 1/16 at A0 = 3, kf = 1. With the total held

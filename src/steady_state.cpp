@@ -2384,10 +2384,11 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         // (0.1875 for 0.9375, and the wrong sign on the other species).
         //
         // `moved[k][p]` is ∂y_dep_k/∂p with the unknowns held: what the
-        // reconstruction gives its dependent when the total alone moves, in
-        // reconstruct_full()'s ordering, as D is in ss_reduce_jacobian. It
-        // forces the unknowns through ∂f/∂y_dep, and is added back to the
-        // dependent below.
+        // reconstruction gives its dependent when the total alone moves. A
+        // law's dependent is in no other law (L[:, dependent] is the identity,
+        // see detect_conservation_laws), so that is dT_k/dp over its own
+        // coefficient. It forces the unknowns through ∂f/∂y_dep, and is added
+        // back to the dependent below.
         std::vector<double> dT(static_cast<size_t>(cl.n_laws) * np, 0.0);
         std::vector<double> moved(static_cast<size_t>(cl.n_laws) * np, 0.0);
         bool totals_move = false;
@@ -2403,15 +2404,8 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                 if (std::abs(cd) < 1e-15) {
                     continue; // degenerate: reconstruct_full skips it too
                 }
-                double acc = total;
-                for (int kp = 0; kp < k; ++kp) {
-                    const int dep_p = cl.dependent[kp];
-                    if (dep_p != dep) {
-                        acc -= cl.coefficients[k][dep_p] * moved[static_cast<size_t>(kp) * np + p];
-                    }
-                }
-                moved[static_cast<size_t>(k) * np + p] = acc / cd;
-                totals_move = totals_move || acc != 0.0;
+                moved[static_cast<size_t>(k) * np + p] = total / cd;
+                totals_move = totals_move || total != 0.0;
             }
         }
         if (totals_move) {
