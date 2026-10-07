@@ -270,8 +270,9 @@ _compile_counter = itertools.count()
 # approached through a singular power (bngsim_codegen_comoving_approach), and the
 # solver enters those before the crossing. A cached v35 .so has no such table,
 # and its closing-edge columns would stay 0.03% to 0.6% off. Invalidate v35.
-# v37: lanl/bngsim #958, #948 — the same table says which cases have a power that
-# opens singular at the run's values, and which read a counter clock. The solver
+# v37: lanl/bngsim #958, #948 — the same table says which cases have a power
+# with an exponent under 1 at the run's values, opening or closing, and a new
+# export says whether a rate law has such a power of a counter clock. The solver
 # refuses by them where a column that needs its frame cannot have it (a model
 # with an event, a column that moves the counter itself). A cached v36 .so says
 # neither, and such a run would keep its plain column. Invalidate v36.
@@ -3332,7 +3333,8 @@ def _emit_sens_rhs_body(
     comoving_cases: list[tuple[int, int, str]] | None = None,
     comoving_clock_species: tuple[int, ...] = (),
     comoving_clock_lines: tuple[list[str], list[str]] | None = None,
-    comoving_approach: tuple[tuple[int, tuple[str, ...], str, tuple[str, ...], bool], ...] = (),
+    comoving_approach: tuple[tuple[int, tuple[str, ...], str, tuple[str, ...]], ...] = (),
+    counter_powers: tuple[tuple[int, ...], tuple[str, ...]] | None = None,
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -4147,19 +4149,18 @@ def _emit_sens_rhs_body(
         _emit("      puts the column in its frame before the crossing.")
         _emit("   2: every power it has closes, with an exponent of 1 or more now, so the frame")
         _emit("      is of no use and the column stays plain. (Issue #760)")
-        _emit("   4: one of its powers opens at its crossing and is singular now, so the plain")
-        _emit("      column's forcing is unbounded after the crossing. (Issue #958)")
-        _emit("   8: one of its powers reads a counter clock, a species, and not time itself.")
-        _emit("      (Issue #948) */")
+        _emit("   4: one of its powers, opening or closing, has an exponent under 1 now, so the")
+        _emit("      plain column's forcing is unbounded at the crossing, or no number there.")
+        _emit("      (Issue #958) */")
         _emit(
             "BNGSIM_EXPORT int bngsim_codegen_comoving_approach(int case_idx, const double *p) {"
         )
-        for virtual, closing, idle, opening, counter in sorted(comoving_approach):
+        for virtual, closing, idle, under_one in sorted(comoving_approach):
             singular = " || ".join(closing) or "0"
-            opens = " || ".join(opening) or "0"
+            plain_fails = " || ".join(under_one) or "0"
             _emit(
                 f"    if (case_idx == {int(virtual)}) return (({singular}) ? 1 : ({idle}) ? 2 : 0)"
-                f" | (({opens}) ? 4 : 0) | {8 if counter else 0};"
+                f" | (({plain_fails}) ? 4 : 0);"
             )
         _emit("    (void)case_idx;")
         _emit("    (void)p;")
@@ -4175,9 +4176,31 @@ def _emit_sens_rhs_body(
         _emit("    return -1;")
         _emit("}")
 
+    def _emit_counter_power_export() -> None:
+        """Issue #948: whether a rate law has a power of a counter clock that is
+        singular at the run's values, and which species the counters are. Read
+        off the powers themselves, so a window written in numbers, which has no
+        comoving case at all, says so too."""
+        if not counter_powers:
+            return
+        species, tests = counter_powers
+        _emit("")
+        _emit("/* The k-th counter clock species, where a rate law has a power of a counter with")
+        _emit("   an exponent under 1 at these parameter values; -1 past the last, and for every")
+        _emit("   k where no such power is singular now. A column that moves a counter itself has")
+        _emit("   no comoving frame under such a power. (Issue #948) */")
+        _emit("BNGSIM_EXPORT int bngsim_codegen_counter_power(int k, const double* p) {")
+        _emit("    (void)p;")
+        _emit(f"    if (!({' || '.join(tests)})) return -1;")
+        for k, species_idx in enumerate(species):
+            _emit(f"    if (k == {k}) return {int(species_idx)};")
+        _emit("    return -1;")
+        _emit("}")
+
     # ── Term scale of the sensitivity RHS (issue #177) ──────────────────────
     if not emit_term_scale:
         _emit_comoving_exports()
+        _emit_counter_power_export()
         return "\n".join(lines) + "\n"
 
     # A separate entry point rather than an extra output on the RHS above: the
@@ -4215,6 +4238,7 @@ def _emit_sens_rhs_body(
     _emit("    return 0;")
     _emit("}")
     _emit_comoving_exports()
+    _emit_counter_power_export()
 
     return "\n".join(lines) + "\n"
 
@@ -8399,10 +8423,10 @@ class _ComovingPlan(NamedTuple):
     # any of which makes its power singular at the run's values, and the C test
     # of whether the case is of no use there: it has no power that opens at its
     # crossing, and every closing one has an exponent of 1 or more. Then the C
-    # tests of the powers that open at its crossing, any of which makes its
-    # power singular there, and whether any power of the case reads a counter
-    # clock (issues #958, #948). Every case has an entry.
-    approach: tuple[tuple[int, tuple[str, ...], str, tuple[str, ...], bool], ...] = ()
+    # tests of every power of the case, opening or closing, for an exponent
+    # under 1, 0 included: the plain column's forcing is then unbounded at the
+    # crossing or is 0·∞ there (issue #958). Every case has an entry.
+    approach: tuple[tuple[int, tuple[str, ...], str, tuple[str, ...]], ...] = ()
 
 
 def _pow_nodes_in_values(expr, sp):
@@ -8581,7 +8605,7 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
     at a real onset is a plain rational — 1 for every onset in the corpus — and a
     ``Piecewise`` left over is a guard the cells did not resolve, where the shift
     could not cancel anyway."""
-    from bngsim._jacobian import _TIME_SYM, _value_symbol_names
+    from bngsim._jacobian import _value_symbol_names
 
     out: dict[str, dict] = {}
     for node in _pow_nodes_in_values(expr, sp):
@@ -8589,10 +8613,9 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
             continue
         # The power's exponent, and which way its base goes: ``close`` for one
         # the crossing is approached through, live before it, and ``open`` for
-        # one that starts from 0 there (issue #760). And whether the clock its
-        # base vanishes on is a counter species, which a column can move, and
-        # not time itself (issue #948).
+        # one that starts from 0 there (issue #760).
         way = "close" if _base_closes(node.base, clock_names, sp) else "open"
+        power = ((way, node.exp),)
         written = sp.numer(sp.together(node.base))
         for inline, aliases, allowed in axes(_value_symbol_names(written, sp)):
             numerator = written.xreplace(inline) if inline else written
@@ -8614,9 +8637,7 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
                         if not {s.name for s in leaf.free_symbols} <= allowed:
                             continue
                         seen = out.setdefault(p_alias, {})
-                        seen[leaf] = seen.get(leaf, ()) + (
-                            (way, node.exp, clock_name != _TIME_SYM),
-                        )
+                        seen[leaf] = seen.get(leaf, ()) + power
     return out
 
 
@@ -8685,6 +8706,7 @@ def _functional_comoving_plan(
     n_params: int,
     observable_clock_weights: dict[str, float] | None = None,
     unshiftable: frozenset[str] = frozenset(),
+    counter_powers_out: list | None = None,
 ) -> _ComovingPlan | None:
     """The comoving cases of a model whose plain ``∂f/∂p`` has already derived
     (see the note above), or ``None`` when it has none. Never declines the model:
@@ -8694,7 +8716,12 @@ def _functional_comoving_plan(
     ``observable_clock_weights`` is ``{aliased observable: weight}`` for every
     observable that sums a clock species without being the clock's own name
     (issue #749). ``unshiftable`` names the ones whose weight has no number: a
-    model with a rate law that reads one gets no case."""
+    model with a rate law that reads one gets no case.
+
+    ``counter_powers_out``, where given, is appended ``(counter species, C
+    tests)`` when a rate law has a power of a counter clock that can be singular
+    (issue #948). That is read off the powers and not off the cases: a window
+    written in numbers has no case, and its power is as singular."""
     import sympy as sp
 
     from bngsim._jacobian import (
@@ -8702,6 +8729,7 @@ def _functional_comoving_plan(
         _DerivationBudgetExceeded,
         _exprtk_to_sympy,
         _inline_functions,
+        _value_symbol_names,
         sympy_to_c,
     )
 
@@ -8850,6 +8878,42 @@ def _functional_comoving_plan(
         for node in _pow_nodes_in_values(parsed_laws[text], sp)
     ):
         return None
+
+    def over_parameters(exponent) -> str | None:
+        """The exponent as C over ``p[]``, to be asked at the run's parameter
+        values, or ``None`` where it cannot be asked and is taken to be under
+        1. A number is under 1 already, or the power would not be here. One
+        that reads anything but parameters, a species or what an event assigns,
+        has no value in ``p[]``; written out all the same, it named ``obs[]``
+        in a function that has none, and the model did not build."""
+        if exponent.is_number:
+            return None
+        for symbol in exponent.free_symbols:
+            ref = resolve_symbol(symbol.name)
+            if symbol.name not in _MATH_CONSTANT_C and not (ref or "").startswith("p["):
+                return None
+        return sympy_to_c(exponent, resolve_symbol)
+
+    def under_one(exponent) -> str:
+        """The C test of an exponent under 1 at the run's values, 0 included."""
+        e_c = over_parameters(exponent)
+        return "1" if e_c is None else f"(({e_c}) < 1.0)"
+
+    if counter_powers_out is not None:
+        # Issue #948: every power of a counter clock that can be singular,
+        # before any case is looked for.
+        counters = clock_names - {_TIME_SYM}
+        tests = [
+            under_one(node.exp)
+            for text in rxns_of_law
+            for node in _pow_nodes_in_values(parsed_laws[text], sp)
+            if _singular_power(node, clock_names, sp)
+            and _value_symbol_names(node.base, sp) & counters
+        ]
+        if tests:
+            counter_powers_out.append(
+                (tuple(sorted(i for i in clock_species if i >= 0)), tuple(dict.fromkeys(tests)))
+            )
     laws: dict[str, list[tuple]] = {
         text: [
             (_split_shared_scale(on_cell, clock_names, sp), cond)
@@ -8871,7 +8935,7 @@ def _functional_comoving_plan(
 
     cases: list[tuple[int, int, str]] = []
     terms: dict[int, dict[int, str]] = {}
-    approach: list[tuple[int, tuple[str, ...], str, tuple[str, ...], bool]] = []
+    approach: list[tuple[int, tuple[str, ...], str, tuple[str, ...]]] = []
 
     def derive(p_alias: str, shifts: dict) -> None:
         """The cases of one parameter, one per shift that removes a singular power."""
@@ -8942,30 +9006,24 @@ def _functional_comoving_plan(
             # before the crossing, and nothing is left after it. At 0 the power
             # is the constant 1 and the frame is entered at the crossing, as it
             # was before there were cases to enter ahead of.
-            # A power that opens at its crossing is asked the same way, for
-            # the run that cannot put the column in its frame (issue #958):
-            # where none is singular at its values and no closing one is, the
-            # plain column has nothing unbounded in it and is right.
-            tests, bounded, opening = [], [], []
-            counter = False
-            for way, exponent, on_counter in shifts[c]:
-                e_c = None if exponent.is_number else sympy_to_c(exponent, resolve_symbol)
-                singular = "1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)"
-                counter = counter or on_counter
+            # Every power of the case is asked once more, for the run that
+            # cannot put the column in its frame (issue #958): with an
+            # exponent under 1 the plain column's forcing is unbounded at the
+            # crossing, and at exactly 0 it is 0·∞ there. Where none is, the
+            # plain column is right.
+            tests, bounded, plain_fails = [], [], []
+            opens = False
+            for way, exponent in shifts[c]:
+                plain_fails.append(under_one(exponent))
                 if way != "close":
-                    opening.append(singular)
+                    opens = True
                     continue
-                tests.append(singular)
+                e_c = over_parameters(exponent)
+                tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
                 bounded.append("0" if e_c is None else f"(({e_c}) >= 1.0)")
-            idle = "0" if opening or not tests else " && ".join(dict.fromkeys(bounded))
+            idle = "0" if opens or not tests else " && ".join(dict.fromkeys(bounded))
             approach.append(
-                (
-                    virtual,
-                    tuple(dict.fromkeys(tests)),
-                    idle,
-                    tuple(dict.fromkeys(opening)),
-                    counter,
-                )
+                (virtual, tuple(dict.fromkeys(tests)), idle, tuple(dict.fromkeys(plain_fails)))
             )
             for text, c_text in law_c.items():
                 for rxn_idx in rxns_of_law[text]:
@@ -9283,7 +9341,7 @@ def _functional_dfdp_terms(
             if weight != 0.0 and name not in unshiftable:
                 weights[name] = weight
         comoving_out.append(
-            lambda: _functional_comoving_plan(
+            lambda counter_powers_out=None: _functional_comoving_plan(
                 reactions,
                 frxn_by_idx,
                 scope,
@@ -9291,6 +9349,7 @@ def _functional_dfdp_terms(
                 len(params),
                 weights,
                 frozenset(unshiftable),
+                counter_powers_out,
             )
         )
     return out, None
@@ -9576,9 +9635,12 @@ def generate_sens_from_model(
     # column needs — so they spend only the budget that is left, and a model that
     # runs out keeps the plain column it has always had instead of declining.
     comoving_plan: _ComovingPlan | None = None
+    # Issue #948: filled by the plan before it looks for a case, and kept
+    # whatever becomes of the plan.
+    counter_powers: list = []
     if comoving_thunks:
         try:
-            comoving_plan = comoving_thunks[0]()
+            comoving_plan = comoving_thunks[0](counter_powers)
         except _DerivationBudgetExceeded:
             comoving_plan = None
         except Exception as exc:  # pragma: no cover - defensive
@@ -9828,6 +9890,7 @@ def generate_sens_from_model(
         comoving_clock_species=comoving_plan.clock_species if comoving_plan is not None else (),
         comoving_clock_lines=comoving_clock_lines,
         comoving_approach=comoving_plan.approach if comoving_plan is not None else (),
+        counter_powers=counter_powers[0] if counter_powers else None,
     )
     if src is None and functional_terms:
         # Every Functional rate law differentiated, but the emitter could not give

@@ -282,18 +282,22 @@ Four cases are refused:
 - a model that has an event (issue #958). An event restarts the integration
   under the column, so such a model keeps every column in `S`, and a column
   that moves the edge of a power that is singular was 0.4% off there, at any
-  tolerance. The run is refused at the crossing where the column would have
-  switched to `V`;
+  tolerance. The run is refused for every crossing where the column would have
+  switched to `V`: before it starts for the switch times it has, and at the
+  crossing for one that is found as a root. That is every crossing the
+  parameter moves at the rate it moves the edge, which a run that ends short of
+  the edge has too;
 - a column that moves a counter clock itself, the counter's initial value, its
-  rate constant or its initial-condition axis, where a rate law opens or closes
-  as a singular power of a counter (issue #948). `β` is emitted for the
+  rate constant or its initial-condition axis, in a model with a rate law that
+  has a singular power of a counter (issue #948). `β` is emitted for the
   parameters the power is written in, `on` and `D`, and not for the counter's
-  own. The onset's column moves the edge the same way and can be asked for
-  instead.
+  own. It is asked of the powers themselves, so a window written in numbers,
+  `(t - 4)/4`, is refused as one written in parameters is.
 
-Whether a power is singular is asked at the run's own parameter values: with
-`a = 3` nothing is unbounded, every column is right in `S`, and none of these
-is refused.
+Whether a power is singular is asked at the run's own parameter values, for
+the last two: with `a = 3` nothing is unbounded there, every column is right in
+`S`, and neither is refused. An exponent that is not a parameter, a species or
+what an event assigns, cannot be asked and is taken to be singular.
 A parameter that moves no such crossing keeps its plain column. A model with no such power
 emits the code it always did, and that includes a logistic onset
 `1/(1+exp(-k*(t-on)))`, whose base is never 0.

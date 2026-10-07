@@ -197,7 +197,7 @@ def test_an_event_keeps_every_column_plain():
     sim = bngsim.Simulator(evented, method="ode", sensitivity_params=list(PARAMS))
     # Refused by name where the onset column would have entered its frame
     # (issue #958); it was a solver error that named neither.
-    with pytest.raises(bngsim.SimulationError, match=r"singular power.*\(issue #958\)"):
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #958\)"):
         sim.run(t_span=(0.0, 40.0), n_points=41, rtol=1e-8, atol=1e-10)
 
 

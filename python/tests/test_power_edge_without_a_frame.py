@@ -113,7 +113,7 @@ def _run(model, params, rtol=1e-8, **kw):
 
 def _refused(model, params, issue, rtol=1e-8, **kw):
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params, **kw)
-    with pytest.raises(bngsim.SimulationError, match=rf"singular power.*\(issue #{issue}\)"):
+    with pytest.raises(bngsim.SimulationError, match=rf"singular.*\(issue #{issue}\)"):
         sim.run(sample_times=T, rtol=rtol, atol=rtol * 1e-2, timeout=120)
 
 
@@ -249,7 +249,7 @@ def test_a_singular_edge_on_a_state_crossing_beside_an_event_is_refused(jump, a)
     sim = bngsim.Simulator(
         _on_a_state_crossing(10.0, jump, True, a), method="ode", sensitivity_params=["on"]
     )
-    with pytest.raises(bngsim.SimulationError, match=r"singular power.*\(issue #958\)"):
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #958\)"):
         sim.run(sample_times=STATE_T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -330,7 +330,7 @@ def test_the_counters_own_initial_condition_axis_is_refused(tmp_path, shape):
     """The same column, asked for as an initial-condition axis."""
     model = _on_a_counter(tmp_path, shape, 1.1)
     sim = bngsim.Simulator(model, method="ode", sensitivity_ic=["Tc()"])
-    with pytest.raises(bngsim.SimulationError, match=r"singular power.*\(issue #948\)"):
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #948\)"):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
@@ -413,30 +413,170 @@ def test_the_counters_column_is_asked_again_after_set_param(tmp_path, shape):
                     sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
+# A window written in numbers: nothing requested moves its edges, so it has no
+# comoving case at all.
+NUMBERS = COUNTER.replace("    1 s() (t-on)/D\n", "    1 s() (t-4)/4\n").replace(
+    "k0+if(t>=on,if(t<=(on+D),k1*{shape},0),0)", "k0+if(t>=4,if(t<=8,k1*{shape},0),0)"
+)
+
+
+@pytest.mark.parametrize("params", [["T0"], ["r"], ["k1", "T0"]])
+def test_a_window_written_in_numbers_is_as_singular(tmp_path, params):
+    """``s = (t - 4)/4`` and ``if(t >= 4, if(t <= 8, ...))``: no parameter is in
+    the power's base, so the model has no comoving case, and the refusal went
+    by the cases. dX/dT0 came back -0.6816449 for -0.6842936 and dX/dr
+    -6.2537523 for -6.2693167."""
+    _refused(_on_a_counter(tmp_path, "closing", 1.1, text=NUMBERS), params, 948)
+
+
+def test_a_window_written_in_numbers_and_the_counters_own_axis(tmp_path):
+    model = _on_a_counter(tmp_path, "closing", 1.1, text=NUMBERS)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_ic=["Tc()"])
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #948\)"):
+        sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
+
+
+def test_a_window_written_in_numbers_runs_in_a_column_that_moves_nothing(tmp_path):
+    """Control. k1 scales the pulse."""
+    got = _run(_on_a_counter(tmp_path, "closing", 1.1, text=NUMBERS), ["k1"])[:, 0]
+    np.testing.assert_allclose(got, _expected("closing", 1.1, "k1"), rtol=2e-5, atol=2e-7)
+
+
+def test_a_counter_edge_found_as_a_root_is_refused(tmp_path):
+    """The window opens where ``t - z >= on`` with z a species nothing makes:
+    a root of the state, with no switch time for the counter's crossing. The
+    counter's column is refused where the run starts all the same."""
+    text = (
+        COUNTER.replace("if(t>=on,", "if((t-Zobs)>=on,")
+        .replace("    2 Tc() T0\n", "    2 Tc() T0\n    3 Z() 0\n")
+        .replace("    1 t 2\n", "    1 t 2\n    2 Zobs 3\n")
+    )
+    _refused(_on_a_counter(tmp_path, "closing", 1.5, text=text), ["T0"], 948)
+
+
+MIXED = (
+    COUNTER.replace(
+        "k0+if(t>=on,if(t<=(on+D),k1*{shape},0),0)",
+        "k0+if(time()>=on,if(time()<=(on+D),k1*{shape}*((t/8)^(b-1)),0),0)",
+    )
+    .replace("    1 s() (t-on)/D\n", "    1 s() (time()-on)/D\n")
+    .replace("    8 T0 1.0\n", "    8 T0 1.0\n    9 b 3\n")
+)
+
+
+def test_a_power_of_the_counter_that_is_not_singular_beside_one_of_the_time(tmp_path):
+    """Control. The window is on literal time and closes as a singular power;
+    the law is also a square of the counter. Each power is asked for itself:
+    the counter's is not singular, and its own column runs."""
+    model = _on_a_counter(tmp_path, "closing", 1.1, text=MIXED)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["T0"])
+    out = sim.run(sample_times=T, rtol=1e-9, atol=1e-11, timeout=120)
+    got = np.asarray(out.sensitivities)[:, 0, 0]
+
+    def plain(t0):
+        m = _on_a_counter(tmp_path, "closing", 1.1, text=MIXED)
+        m.set_param("T0", t0)
+        run = bngsim.Simulator(m, method="ode").run(sample_times=T, rtol=1e-12, atol=1e-14)
+        return np.asarray(run.species)[:, 0]
+
+    def d(h):
+        return (plain(1.0 + h) - plain(1.0 - h)) / (2 * h)
+
+    np.testing.assert_allclose(got, (4 * d(5e-4) - d(1e-3)) / 3, rtol=1e-5, atol=1e-7)
+
+
+@pytest.mark.parametrize("rtol", [1e-4, 1e-10, 1e-12])
+def test_a_closing_edge_beside_an_event_is_refused_before_the_run(rtol):
+    """Refused where the run starts, for the switch times it has. Asked only
+    at the crossing, the plain column was first carried up to the edge, and at
+    a tolerance of 1e-10 the run ended there in CVODE's no-progress error."""
+    _refused(_with_event("closing", 1.1), ["D"], 958, rtol=rtol)
+
+
+@pytest.mark.parametrize("shape", ["closing", "opening"])
+def test_an_exponent_of_exactly_0_beside_an_event_is_refused(shape):
+    """At a = 1 the power is the constant 1 and the window steps, and the plain
+    column's forcing is 0·∞ on the edge: CV_FIRST_SRHSFUNC_ERR."""
+    _refused(_with_event(shape, 1.0), ["on"], 958)
+
+
+@pytest.mark.parametrize("shape", ["closing", "opening"])
+def test_an_exponent_of_exactly_0_runs_with_no_event(shape):
+    """Control. In its frame the same column is right."""
+    got = _run(_with_event(shape, 1.0, event=False), ["on"])[:, 0]
+    np.testing.assert_allclose(got, _expected(shape, 1.0, "on"), rtol=2e-5, atol=2e-7)
+
+
+def test_an_exponent_that_is_a_species_builds(tmp_path):
+    """The exponent of an opening power read from a species: asked for at the
+    run's parameter values it has none, and written out it named ``obs[]`` in
+    a function that has no such thing, so no sensitivity could be run on the
+    model at all. It is taken to be under 1, and a column that moves nothing
+    runs."""
+    text = (
+        "species X, E; X = 0; E = 0.5; k0 = 0.1; k1 = 2; on = 3; D = 4; kdeg = 0.3\n"
+        "J1: -> X; k0 + piecewise(piecewise(k1*((time-on)/D)^E*(1-(time-on)/D), "
+        "time < on + D, 0), time >= on, 0)\nJ2: X -> ; kdeg*X\n"
+    )
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["k1"]
+    )
+    assert sim.has_analytic_sens_rhs
+    out = sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
+    names = list(out.species_names)
+    got = np.asarray(out.sensitivities)[:, names.index("X"), 0]
+    want = np.array(
+        [(_x("opening", 1.5, t, ON, WIDTH) - K0 * (1 - np.exp(-KDEG * t)) / KDEG) / K1 for t in T]
+    )
+    np.testing.assert_allclose(got, want, rtol=2e-5, atol=2e-7)
+
+
 # ─── What the generator says of a case ──────────────────────────────────────
 
 
-def test_the_generator_says_which_cases_open_singular_and_read_a_counter(tmp_path):
-    """Every case has an entry now: whether a power of it opens singular at the
-    run's values (4), and whether one reads a counter and not time itself (8)."""
+def test_the_generator_says_where_the_plain_column_fails_and_which_counters_are_under_a_power(
+    tmp_path,
+):
+    """Every case has an entry now, with a bit for an exponent under 1 in any
+    of its powers (4). And whether a rate law has such a power of a counter is
+    said on its own, with the counter species, whether or not there is a case:
+    a window written in numbers has none."""
     from bngsim import _codegen
 
-    def entries(core):
-        src = _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
+    def source(core):
+        return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
+
+    def entries(src):
         head = "int bngsim_codegen_comoving_approach(int case_idx, const double *p)"
         body = src.split(head)[1].split("\n}")[0]
         return [
             line.split("return ", 1)[1] for line in body.splitlines() if "if (case_idx ==" in line
         ]
 
-    # On a counter: both cases of a closing window close; `on` alone moves an
-    # opening power's edge.
-    closing = entries(_on_a_counter(tmp_path, "closing", 1.1)._core)
-    assert len(closing) == 2 and all(e.endswith("| ((0) ? 4 : 0) | 8;") for e in closing)
-    opening = entries(_on_a_counter(tmp_path, "opening", 1.1)._core)
-    assert len(opening) == 1
-    assert opening[0].startswith("((0) ? 1 : (0) ? 2 : 0) | ((") and opening[0].endswith("| 8;")
-    assert "? 4 : 0)" in opening[0] and "((0) ? 4 : 0)" not in opening[0]
-    # On literal time nothing reads a counter.
-    timed = entries(_with_event("closing", 1.1)._core) + entries(_with_event("opening", 1.1)._core)
-    assert len(timed) == 3 and all(e.endswith("| 0;") for e in timed)
+    def counters(src):
+        head = "int bngsim_codegen_counter_power(int k, const double* p)"
+        if head not in src:
+            return None
+        body = src.split(head)[1].split("\n}")[0]
+        return [
+            int(line.split("return ")[1].rstrip(";"))
+            for line in body.splitlines()
+            if "if (k ==" in line
+        ]
+
+    closing = source(_on_a_counter(tmp_path, "closing", 1.1)._core)
+    assert len(entries(closing)) == 2
+    assert all("? 4 : 0);" in e and "((0) ? 4 : 0)" not in e for e in entries(closing))
+    assert counters(closing) == [1]
+    opening = source(_on_a_counter(tmp_path, "opening", 1.1)._core)
+    assert len(entries(opening)) == 1
+    assert entries(opening)[0].startswith("((0) ? 1 : (0) ? 2 : 0) | ((")
+    assert counters(opening) == [1]
+    # A window written in numbers: no parameter moves its edges, so no case,
+    # and the power of the counter is said all the same.
+    numbers = source(_on_a_counter(tmp_path, "closing", 1.1, text=NUMBERS)._core)
+    assert "bngsim_codegen_comoving_approach" not in numbers
+    assert counters(numbers) == [1]
+    # On literal time there is no counter.
+    for shape in ("closing", "opening"):
+        assert counters(source(_with_event(shape, 1.1)._core)) is None
