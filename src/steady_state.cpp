@@ -2198,7 +2198,7 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
         }
         return dx0;
     }
-    if (model.ic_baseline_saved() || model.ic_state_dirty()) {
+    if (model.ic_baseline_saved()) {
         return dx0;
     }
     const auto &species = model.species();

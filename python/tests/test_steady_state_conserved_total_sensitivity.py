@@ -595,3 +595,27 @@ def test_a_fixed_species_set_by_hand_is_set_by_no_parameter(tmp_path):
     got = np.asarray(out.sensitivity)
     np.testing.assert_allclose(got[:2, 0], [0.0, 0.0], atol=1e-12)
     np.testing.assert_allclose(got[:2, 1], [0.0, 10.0], rtol=1e-7, atol=1e-12)
+
+
+def _a_pair_and_a_pool(tmp_path):
+    """A <-> B started by A0, and X made and lost with nothing conserved,
+    started by X0."""
+    return _net(
+        tmp_path,
+        "pool",
+        [("A0", 3), ("X0", 2), ("kf", 1), ("kr", 0.5), ("kp", 1), ("kd", 0.5)],
+        ["A() A0", "B() 0", "X() X0"],
+        ["1 2 kf", "2 1 kr", "0 3 kp", "3 0 kd"],
+    )
+
+
+def test_on_an_advanced_state_a_parameter_that_sets_no_conserved_amount_runs(tmp_path):
+    """X0 sets a species that is in no law: the steady state keeps nothing of
+    it, on an advanced state as on a fresh one, and it is not refused where A0
+    is."""
+    sim = bngsim.Simulator(bngsim.Model.from_net(_a_pair_and_a_pool(tmp_path)), method="ode")
+    sim.run(t_span=(0.0, 0.7), n_points=3)
+    out = sim.steady_state(sensitivity_params=["X0", "kp"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[2], [0.0, 2.0], rtol=1e-7, atol=1e-12)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+        sim.steady_state(sensitivity_params=["A0"], tol=1e-12)

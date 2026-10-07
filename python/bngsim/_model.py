@@ -1751,8 +1751,6 @@ class Model:
             return out
         # Nothing injected ⇒ the C++ fallback identity loop seeds this run, so
         # report *its* rows. Reporting {} here would be a silent under-count.
-        if self._core.ic_baseline_saved:
-            return out
         live = np.asarray(self.get_state(), dtype=np.float64)
         baseline = np.asarray(self._core.get_initial_state(), dtype=np.float64)
         for sp_i, p_i in self._core.species_ic_param_refs:
