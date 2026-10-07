@@ -1556,7 +1556,11 @@ class Simulator:
         return list(res.compensated), detail, dict(res.blocked)
 
     def _raise_if_uncompensated_crossing_sensitivities(
-        self, *, time_course: bool = True, params: Sequence[str] | None = None, core=None
+        self,
+        *,
+        time_course: bool = True,
+        params: Sequence[str] | None = None,
+        state_crossings: bool = True,
     ) -> None:
         """Refuse a forward-sensitivity run left on the difference quotient over a
         rate-law branch crossing whose time moves (issue #414).
@@ -1565,9 +1569,11 @@ class Simulator:
         at one state and crosses nothing: the state-crossing refusal at the end
         of this method (issue #938) is for a run that integrates through one.
 
-        ``core`` is the model asked about where that is not this Simulator's
-        own: a batch row's clone, with the row's parameters set. Which species
-        is a counter and which denominator is known nonzero go with them.
+        ``state_crossings`` is false for a batch's check ahead of its rows. The
+        state-crossing refusal goes with what the parameters are (which species
+        is a counter, which denominator is known nonzero), so each row is asked
+        of its own, by :meth:`_raise_if_state_crossing_on_fallback`, and the
+        model's own values, which no row may run at, are not.
 
         The rate-law twin of :meth:`_raise_if_event_sensitivities`. When a rate
         law branches on a condition whose crossing time moves with the trajectory
@@ -1630,9 +1636,8 @@ class Simulator:
             return
         from bngsim._switch_sensitivity import model_uncompensated_crossing_reason
 
-        asked = self._model._core if core is None else core
         try:
-            reason = model_uncompensated_crossing_reason(asked)
+            reason = model_uncompensated_crossing_reason(self._model._core)
         except Exception as e:
             # Not let through: a model whose rate laws cannot be read is one
             # whose crossings are not known.
@@ -1644,7 +1649,8 @@ class Simulator:
                 "refuses rather than run without knowing."
             ) from e
         if reason is None:
-            self._raise_if_state_crossing_on_fallback(time_course, params, core)
+            if state_crossings:
+                self._raise_if_state_crossing_on_fallback(time_course, params)
             return
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported for this model: it branches on a "
@@ -1724,8 +1730,9 @@ class Simulator:
             "Forward sensitivity is not supported for this model: it has no analytic "
             "sensitivity right-hand side"
             + (f" ({why})" if why else "")
-            + f", and a rate law of it switches on {crossing!r}, which the state or a "
-            "requested parameter moves the run across. Without the analytic right-hand "
+            + f", and a rate law of it holds {crossing!r}: a condition, a step, a jump "
+            "written as a quotient or a call that is not read, which the state or a "
+            "requested parameter moves the run across, or may. Without the analytic right-hand "
             "side, CVODES' internal difference quotient is used for every column. It reads "
             "the rate law at the state and the parameter moved along each column, which "
             "beside a jump is on its other side: a column takes part of the jump before the "
@@ -3945,8 +3952,9 @@ class Simulator:
             self._raise_if_event_sensitivities()
             # Issue #414 — same rate-law moving-crossing refusal run() applies,
             # hoisted out of the per-row loop (the crossing is a model-structural
-            # property, not a per-row one).
-            self._raise_if_uncompensated_crossing_sensitivities()
+            # property, not a per-row one). The state-crossing refusal behind
+            # it (issue #938) is a per-row one, and is asked of each row.
+            self._raise_if_uncompensated_crossing_sensitivities(state_crossings=False)
 
         n_sims = len(params)
         logger.info(
@@ -5102,11 +5110,12 @@ class Simulator:
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
-                    # Issues #414, #938 — asked again of this row's parameters.
-                    # The batch asked of the model's own before any row ran,
-                    # and a row that makes a species a counter, or changes the
-                    # sign of what a rate law divides by, is another model.
-                    self._raise_if_uncompensated_crossing_sensitivities(core=clone._core)
+                    # Issue #938 — asked of this row's parameters: a row that
+                    # makes a species a counter, or changes the sign of what a
+                    # rate law divides by, is another model. The branch scan
+                    # before it (issue #414) was made once, ahead of the rows.
+                    if not self._codegen_provides_sens_rhs():
+                        self._raise_if_state_crossing_on_fallback(True, None, clone._core)
                     opts.set_sensitivity_method(self._sensitivity_method)
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone. Outside

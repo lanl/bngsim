@@ -1668,7 +1668,7 @@ class SwitchConditionScope(NamedTuple):
     function_names: frozenset[str]
 
 
-@functools.lru_cache(maxsize=65536)
+@functools.lru_cache(maxsize=16384)
 def _whole_word(name: str) -> re.Pattern:
     """*name* as a whole word. Kept: the scope is built before every run that
     asks about a crossing, and a model with more parameters than :mod:`re`
@@ -3855,14 +3855,9 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
     conditional = [f for f in flats if has_condition_construct(f)]
     if not conditional:
         return None
-    try:
-        scope = switch_condition_scope(core, ctx)
-    except Exception as exc:  # pragma: no cover - defensive
-        # Same fallback as the gate's and model_moving_crossings': with no scope
-        # nothing can be classified, so report no uncompensated crossing rather
-        # than refuse a run over a crossing we cannot actually name.
-        logger.debug("uncompensated-crossing scan: scope unavailable (%s)", exc)
-        return None
+    # Not caught: the gate that calls this refuses a model whose conditions
+    # cannot be classified (issue #938), where it used to be run.
+    scope = switch_condition_scope(core, ctx)
     for flat in conditional:
         reason = uncompensated_condition_reason(flat, scope)
         if reason is not None:
@@ -3886,7 +3881,9 @@ def _syntax_tree(expr: str) -> ast.Expression | None:
         text = _preprocess_exprtk(expr)
         # A parameter named with a Python keyword, ``lambda``, under the alias
         # the symbolic path gives it.
-        for name in set(_IDENTIFIER.findall(text)) & (_PY_KEYWORD_PARAM_NAMES - _LITERAL_KEYWORDS):
+        for name in set(_IDENTIFIER.findall(text)) & (
+            _PY_KEYWORD_PARAM_NAMES - _LITERAL_KEYWORDS - {"and", "or", "not"}
+        ):
             text = re.sub(rf"\b{re.escape(name)}\b", _alias_keyword_param(name), text)
         return ast.parse(text.strip(), mode="eval")
     except Exception:  # noqa: BLE001 - not an expression this reads
@@ -3901,7 +3898,8 @@ class _Facts(NamedTuple):
     clock: bool = False  # reads literal time or a counter nothing moves
     asked: bool = False  # reads a requested parameter
     choice: bool = False  # holds an abs, max or min that is live
-    exotic: bool = False  # holds a live call this does not know: clamp
+    exotic: bool = False  # holds a live call this does not know to be smooth: clamp
+    unknown: bool = False  # holds a live call this does not know at all: atan2
     # Holds one of those with no sum over it, so that it may be 0 where the
     # choice is: ``sqrt(abs(e))``, ``exp(log(abs(e)))``, and not ``1 + abs(e)``.
     bare: bool = False
@@ -4060,6 +4058,7 @@ def _facts_of(
             return facts._replace(
                 choice=any(f.choice for f in under) or (name in _CHOICE_NAMES and reads_asked),
                 exotic=any(f.exotic for f in under),
+                unknown=any(f.unknown for f in under),
             )
     positive = nonnegative = negative = False
     finite = all(f.finite for f in under)
@@ -4155,6 +4154,7 @@ def _facts_of(
         asked=reads_asked,
         choice=any(f.choice for f in under),
         exotic=any(f.exotic for f in under),
+        unknown=any(f.unknown for f in under),
         bare=bare,
         positive=positive,
         nonnegative=nonnegative or positive,
@@ -4165,13 +4165,21 @@ def _facts_of(
     if name in _CHOICE_NAMES and facts.live:
         facts = facts._replace(choice=True, bare=True)
     elif facts.live and _unknown_call(name):
-        facts = facts._replace(exotic=True, bare=True)
+        facts = facts._replace(
+            exotic=True, bare=True, unknown=facts.unknown or name not in _BEND_CALLS
+        )
     return facts
+
+
+# A call that is known to be continuous and to bend: asked about as a choice
+# is, by what the law divides by. Any other call this does not know could be
+# anything, a branch cut (``atan2``) or a pole, and is refused where it is live.
+_BEND_CALLS = frozenset({"clamp"})
 
 
 def _unknown_call(name: str) -> bool:
     """Whether *name* is a call this does not know to be smooth, a choice or
-    a step: ``clamp``."""
+    a step: ``clamp``, ``atan2``."""
     return bool(name) and not (
         name in _SMOOTH_CALLS
         or name in _CHOICE_NAMES
@@ -4322,6 +4330,10 @@ def _flips_with_a_parameter(
     return False
 
 
+# The least power of a bend the quotient is let read across (see below).
+_LEAST_POWER_OF_A_BEND = 0.5
+
+
 def _quotient_across_a_choice(
     tree: ast.Expression,
     values: Mapping[str, float],
@@ -4368,6 +4380,11 @@ def _quotient_across_a_choice(
     root = facts[id(tree.body)]
     if not root.choice and not root.exotic:
         return None
+    if root.unknown:
+        for node in order:
+            name = _call_name(node)
+            if _unknown_call(name) and name not in _BEND_CALLS and facts[id(node)].live:
+                return _clipped(node)
 
     def small(node: ast.AST) -> bool:
         return facts[id(node)].live and facts[id(node)].size <= _FLIP_MAX_NODES
@@ -4418,6 +4435,34 @@ def _quotient_across_a_choice(
     for node in order:
         divisor: ast.AST | None = None
         power = _power(node)
+        # A power under a half of what may be 0 where a choice is:
+        # ``max(thr − X, 0)^0.1`` is continuous and leaves 0 with a slope that
+        # has no bound, and the quotient reads it much as it reads a jump. At
+        # a relative tolerance of 1e-6 the column was 2.5e-5 off at a power of
+        # 0.5, which follows the tolerance, 1.3e-4 at 0.4, 3.8e-3 at 0.3, 1.9e-2
+        # at 0.2 and 10% at 0.1, where the run does not finish at 1e-8. A root
+        # is let through, and anything under it is named.
+        if power is not None:
+            under = facts[id(power[0])]
+            if under.live and under.bare and not (under.positive or under.negative):
+                by = facts[id(power[1])]
+                if (
+                    by.value is None
+                    or by.value < _LEAST_POWER_OF_A_BEND
+                    or (
+                        by.asked
+                        and _flips_with_a_parameter(
+                            ast.BinOp(
+                                left=power[1],  # type: ignore[arg-type]
+                                op=ast.Sub(),
+                                right=ast.Constant(value=_LEAST_POWER_OF_A_BEND),
+                            ),
+                            values,
+                            asked,
+                        )
+                    )
+                ):
+                    return _clipped(node)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             divisor = node.right
         elif power is not None and not _divides_by_nothing(facts[id(power[1])]):
@@ -4716,13 +4761,24 @@ def fallback_crossing(
       and a step call on a requested parameter
       (:func:`_parameter_crossing`): the quotient moves a parameter as it
       moves the state;
+    - a power under a half of an ``abs``, ``max`` or ``min`` where it may be
+      0, ``max(thr − X, 0)^0.1``: continuous, with a slope that has no bound;
+    - an equality written with ExprTk's single ``=``, and a call this does
+      not know, ``atan2``, where a column moves what it reads;
     - a rate law that is not read: its functions nest too deep to write out,
       or it holds one of the above in a form the scan does not parse.
 
+    A derived parameter that holds any of these is read as a rate law is,
+    written into the laws that read it and as a law of its own: it may be the
+    rate constant of a reaction no function writes. A requested derived
+    parameter is asked about both as its own column moves it, held where it
+    is set, and as the column of a primary it is written in does.
+
     A crossing on literal time is not one of these.
 
-    What is asked is what the text says and what each parameter is.
-    Nothing is evaluated, and nothing is assumed of the state.
+    What is asked is what the text says and what each parameter is when the
+    scan is made: no rate law is evaluated at a state, nothing is integrated,
+    and nothing is assumed of the state.
 
     Scans the reaction rate expressions with their functions inlined, as
     :func:`model_uncompensated_crossing_reason` does. An atom that names no
@@ -4730,20 +4786,28 @@ def fallback_crossing(
     """
     from bngsim._jacobian import _TIME_SYM, _inline_functions, has_condition_construct
 
-    try:
-        data = core.codegen_data()
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("fallback-crossing scan: codegen data unavailable (%s)", exc)
-        data = {}
+    # Not caught here: the caller refuses a model whose scan fails, and a
+    # model whose tables cannot be listed is one whose step tables are not known.
+    data = core.codegen_data()
     stepping = [table for table in data.get("table_functions", ()) if table.get("step")]
     requested = frozenset(sens_param_names)
     param_names = list(core.param_names)
-    if stepping:
-        is_expr = list(core.param_is_expression)
-        exprs = list(core.param_expressions)
-        derived = {
-            param_names[i]: exprs[i] for i in range(len(param_names)) if is_expr[i] and exprs[i]
-        }
+    is_expr = list(core.param_is_expression)
+    exprs = list(core.param_expressions)
+    derived = {
+        param_names[i]: exprs[i] for i in range(len(param_names)) if is_expr[i] and exprs[i]
+    }
+    # ``parsed`` keeps what is made of each rate law's text between one scan
+    # of a model and the next, and beside it the last answer for the law with
+    # what it went by. What is made of a law has its derived parameters
+    # written in, so it is kept for as long as they are written as they were:
+    # one that ``set_param`` overrides is a number from then on, and a law
+    # that read it is another law.
+    kept_all: dict = {} if parsed is None else parsed
+    written_as = tuple(sorted(derived.items()))
+    if kept_all.get(_WRITTEN_AS) != written_as:
+        kept_all.clear()
+        kept_all[_WRITTEN_AS] = written_as
     for table in stepping:
         index = table.get("index_param_idx", -1)
         moved_index = False
@@ -4755,7 +4819,14 @@ def fallback_crossing(
             moved_index = bool(({name} | set(_IDENTIFIER.findall(written))) & requested)
         if table.get("index_kind") not in ("time", "parameter") or moved_index:
             return f'tfun {table.get("name")} (method=>"step")'
-    if core.n_functions == 0:
+    # The derived parameters that hold a condition, a step call, a choice or
+    # a call this does not know, themselves or through one they are written
+    # in: ``kd = if(n > 1, 3, 0)`` is a rate constant that jumps in n.
+    found_marked: frozenset[str] | None = kept_all.get(_MARKED)
+    if found_marked is None:
+        found_marked = kept_all[_MARKED] = _marked_derived(derived, has_condition_construct)
+    marked: frozenset[str] = found_marked
+    if core.n_functions == 0 and not marked:
         return None
     if ctx is None:
         ctx = core.functional_jacobian_context()
@@ -4770,119 +4841,176 @@ def fallback_crossing(
             and param_names[index] in func_map
         ):
             return f'tfun {table.get("name")} (method=>"step")'
-    # ``parsed`` keeps what is made of each rate law's text, which no
-    # parameter's value changes, between one scan of a model and the next;
-    # and beside it the last answer for the law, with what it went by.
-    parsed = {} if parsed is None else parsed
-    scope = None
-    laws: list[_Law] = []
-    for reaction in ctx["functional_reactions"]:
-        text = str(reaction.get("rate_expr", ""))
-        law = parsed.get(text)
-        if law is None:
-            flat = _inline_functions(text, func_map)
-            if flat is None:
-                # Functions nested past what is written out, or a cycle. Read
-                # as its bare name, it would hold no condition at all.
-                return f"{text} (its functions nest too deep to read)"
-            if scope is None:
-                scope = switch_condition_scope(core, ctx)
-            law = parsed[text] = _read_law(
-                text, flat, scope.derived_exprs, has_condition_construct
-            )
-        if law.atoms or law.steps or law.choice:
-            laws.append(law)
-    if not laws:
-        return None
-    if scope is None:
-        scope = switch_condition_scope(core, ctx)
-    moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
-    # What each parameter is; and the clocks no column moves, literal time
-    # and a counter with nothing requested that moves it.
-    values = {name: float(scope.values[scope.param_idx[name]]) for name in scope.run_constants}
-    for name, value in _BUILTIN_CONSTANT_VALUES.items():
-        values.setdefault(name, float(value))
-    clocks = frozenset({_TIME_SYM}) | {n for n, idx in scope.clocks.items() if idx not in moved}
+    texts = [str(reaction.get("rate_expr", "")) for reaction in ctx["functional_reactions"]]
 
-    def crosses(flat: str) -> str:
-        """Whether the quotient reads across the surface *flat* names, and
-        in what: ``"parameter"``, ``"state"``, or ``""`` for neither."""
-        if not _IDENTIFIER.search(flat):
-            return ""
-        if condition_cannot_cross(flat, scope):
-            # Asked again only where a parameter the comparison reads has
-            # changed, or the columns have.
-            key = (
-                tuple(
-                    float(scope.values[scope.param_idx[n]])
-                    for n in sorted(set(_IDENTIFIER.findall(flat)) & set(scope.param_idx))
-                ),
-                requested,
-            )
-            last = parsed.get(("parameter", flat))
-            if last is None or last[0] != key:
-                last = (key, _parameter_crossing(flat, scope, requested))
-                parsed[("parameter", flat)] = last
-            return "parameter" if last[1] else ""
-        if _reads_clock_and_run_constants(flat, scope):
-            read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
-            return "state" if {i for i in read if i >= 0} & moved else ""
-        return "state"
-
-    def went_by(law: _Law) -> tuple:
-        """What an answer about *law*'s tree goes by: what each parameter it
-        reads is, which of its names are clocks, and which are requested."""
-        return (
-            tuple((n, values[n]) for n in sorted(law.names) if n in values),
-            law.names & clocks,
-            law.names & requested,
-        )
-
-    def bends(law: _Law) -> bool:
-        """Whether *law* is proved continuous across its conditions on the
-        state (:func:`_only_bends`)."""
-        if law.tree is None:
-            return False
-        key = went_by(law)
-        last = parsed.get(("bends", law.text))
-        if last is None or last[0] != key:
-            last = (key, _only_bends(law.tree, values, clocks, requested))
-            parsed[("bends", law.text)] = last
-        return last[1]
-
-    def step_moves(flat: str, raw: str) -> bool:
-        """A step on a clock that a requested parameter moves: on literal
-        time, or on a counter no column moves, which is the same clock."""
-        if not _reads_clock_and_run_constants(flat, scope):
-            return False
-        return bool((set(_IDENTIFIER.findall(flat)) | set(_IDENTIFIER.findall(raw))) & requested)
-
-    for law in laws:
-        for atom, atom_flat in law.atoms:
-            across = crosses(atom_flat)
-            if across == "parameter" or (across == "state" and not bends(law)):
-                return atom
-            # A step in a condition on a clock: its edges move with a
-            # requested parameter as they do outside one.
-            if _STEP_CALL.search(atom_flat) and step_moves(atom_flat, atom):
-                return atom
-        for call, arg, arg_flat in law.steps:
-            if crosses(arg_flat) or step_moves(arg_flat, arg):
-                return call
-        if law.choice:
-            if law.tree is None:
-                return f"{_clip_text(law.flat)} (not read)"
-            key = went_by(law)
-            last = parsed.get(("quotient", law.text))
-            if last is None or last[0] != key:
-                last = (
-                    key,
-                    _quotient_across_a_choice(law.tree, values, clocks, requested),
+    def scan(held: frozenset[str]) -> str | None:
+        """The scan with the derived parameters in *held* left as names, at
+        the values they have, and every other one written out."""
+        kept = kept_all.setdefault((_VIEW, held), {})
+        live = {n: e for n, e in derived.items() if n not in held} if held else derived
+        laws: list[_Law] = []
+        for text in texts:
+            law = kept.get(text)
+            if law is None:
+                flat = _inline_functions(text, func_map)
+                if flat is None:
+                    # Functions nested past what is written out, or a cycle. Read
+                    # as its bare name, it would hold no condition at all.
+                    return f"{text} (its functions nest too deep to read)"
+                law = kept[text] = _read_law(
+                    text, flat, live, has_condition_construct, marked - held
                 )
-                parsed[("quotient", law.text)] = last
-            if last[1] is not None:
-                return last[1]
+            if law.atoms or law.steps or law.choice or law.unread:
+                laws.append(law)
+        # A marked derived parameter may be the rate constant of a reaction no
+        # function writes, which is in none of the texts above. Each is read
+        # as a rate law of its own, over parameters alone.
+        for name in sorted(marked - held):
+            law = kept.get((_DERIVED_LAW, name))
+            if law is None:
+                law = kept[(_DERIVED_LAW, name)] = _read_law(
+                    f"{name} := {derived[name]}",
+                    derived[name],
+                    live,
+                    has_condition_construct,
+                    marked - held,
+                )
+            if law.atoms or law.steps or law.choice or law.unread:
+                laws.append(law)
+        if not laws:
+            return None
+        scope = switch_condition_scope(core, ctx)
+        if held:
+            scope = scope._replace(
+                derived_exprs=live,
+                primary_names=scope.primary_names | held,
+                run_constants=scope.run_constants
+                | (held - scope.function_names - scope.clock_symbols),
+            )
+        moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
+        # What each parameter is; and the clocks no column moves, literal time
+        # and a counter with nothing requested that moves it.
+        values = {name: float(scope.values[scope.param_idx[name]]) for name in scope.run_constants}
+        for name, value in _BUILTIN_CONSTANT_VALUES.items():
+            values.setdefault(name, float(value))
+        clocks = frozenset({_TIME_SYM}) | {
+            n for n, idx in scope.clocks.items() if idx not in moved
+        }
+
+        def crosses(flat: str) -> str:
+            """Whether the quotient reads across the surface *flat* names, and
+            in what: ``"parameter"``, ``"state"``, or ``""`` for neither."""
+            if not _IDENTIFIER.search(flat):
+                return ""
+            if condition_cannot_cross(flat, scope):
+                # Asked again only where a parameter the comparison reads has
+                # changed, or the columns have.
+                key = (
+                    tuple(
+                        float(scope.values[scope.param_idx[n]])
+                        for n in sorted(set(_IDENTIFIER.findall(flat)) & set(scope.param_idx))
+                    ),
+                    requested,
+                )
+                last = kept.get(("parameter", flat))
+                if last is None or last[0] != key:
+                    last = (key, _parameter_crossing(flat, scope, requested))
+                    kept[("parameter", flat)] = last
+                return "parameter" if last[1] else ""
+            if _reads_clock_and_run_constants(flat, scope):
+                read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
+                return "state" if {i for i in read if i >= 0} & moved else ""
+            return "state"
+
+        def moved_by_a_column(flat: str) -> bool:
+            """Whether a column moves anything *flat* reads: the state, a
+            counter one moves, or a requested parameter."""
+            names = set(_IDENTIFIER.findall(flat))
+            if names & requested:
+                return True
+            if condition_cannot_cross(flat, scope):
+                return False
+            if _reads_clock_and_run_constants(flat, scope):
+                read = {scope.clocks[n] for n in names if n in scope.clocks}
+                return bool({i for i in read if i >= 0} & moved)
+            return True
+
+        def went_by(law: _Law) -> tuple:
+            """What an answer about *law*'s tree goes by: what each parameter it
+            reads is, which of its names are clocks, and which are requested."""
+            return (
+                tuple((n, values[n]) for n in sorted(law.names) if n in values),
+                law.names & clocks,
+                law.names & requested,
+            )
+
+        def bends(law: _Law) -> bool:
+            """Whether *law* is proved continuous across its conditions on the
+            state (:func:`_only_bends`)."""
+            if law.tree is None:
+                return False
+            key = went_by(law)
+            last = kept.get(("bends", law.text))
+            if last is None or last[0] != key:
+                last = (key, _only_bends(law.tree, values, clocks, requested))
+                kept[("bends", law.text)] = last
+            return last[1]
+
+        def step_moves(flat: str, raw: str) -> bool:
+            """A step on a clock that a requested parameter moves: on literal
+            time, or on a counter no column moves, which is the same clock."""
+            if not _reads_clock_and_run_constants(flat, scope):
+                return False
+            return bool(
+                (set(_IDENTIFIER.findall(flat)) | set(_IDENTIFIER.findall(raw))) & requested
+            )
+
+        for law in laws:
+            if law.unread and moved_by_a_column(law.full):
+                return f"{_clip_text(law.full)} ({law.unread})"
+            for atom, atom_flat in law.atoms:
+                across = crosses(atom_flat)
+                if across == "parameter" or (across == "state" and not bends(law)):
+                    return atom
+                # A step in a condition on a clock: its edges move with a
+                # requested parameter as they do outside one.
+                if _STEP_CALL.search(atom_flat) and step_moves(atom_flat, atom):
+                    return atom
+            for call, arg, arg_flat in law.steps:
+                if crosses(arg_flat) or step_moves(arg_flat, arg):
+                    return call
+            if law.choice:
+                if law.tree is None:
+                    return f"{_clip_text(law.full)} (not read)"
+                key = went_by(law)
+                last = kept.get(("quotient", law.text))
+                if last is None or last[0] != key:
+                    last = (
+                        key,
+                        _quotient_across_a_choice(law.tree, values, clocks, requested),
+                    )
+                    kept[("quotient", law.text)] = last
+                if last[1] is not None:
+                    return last[1]
+        return None
+
+    # A requested derived parameter is asked about twice. Its column moves it
+    # where it is set, with what it is written in held (issue #750): it is a
+    # name there, at the value it has. And the column of a primary it is
+    # written in moves it through that: there it is written out.
+    held = frozenset(requested & derived.keys())
+    for view in (frozenset(), held) if held else (frozenset(),):
+        found = scan(view)
+        if found is not None:
+            return found
     return None
+
+
+# Keys of what a scan keeps that are not a rate law's text.
+_WRITTEN_AS = ("derived parameters, as written",)
+_MARKED = ("derived parameters that hold what is asked about",)
+_VIEW = "held"
+_DERIVED_LAW = "derived"
 
 
 class _Law(NamedTuple):
@@ -4890,44 +5018,102 @@ class _Law(NamedTuple):
 
     text: str
     flat: str  # with its functions inlined
+    # And with every derived parameter that holds a condition, a step call, a
+    # choice or an unknown call written out, so that those are in the text.
+    full: str
     # Each condition atom, as written and with derived parameters inlined.
     atoms: tuple[tuple[str, str], ...]
     # Each step call outside a condition: the call, its argument, and the
     # argument with derived parameters inlined.
     steps: tuple[tuple[str, str, str], ...]
     choice: bool  # holds an abs, max or min, or a call this does not know
+    unread: str  # what it holds that is not read at all, or ""
     tree: ast.Expression | None  # its syntax tree, where it holds one
     names: frozenset[str]  # what the tree reads
 
 
 # A name written as a call.
 _ANY_CALL = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# Words ExprTk and the loaders write before a parenthesis that are no call:
+# ``a and (b)``, which is what an SBML ``<and/>`` arrives as.
+_NOT_CALLS = frozenset(
+    {"if", "time", "and", "or", "not", "nand", "nor", "xor", "xnor", "true", "false"}
+)
+# ExprTk's equality written with one ``=``: ``kb*(max(A - thr, 0) = 0)`` is a
+# step, outside any ``if()``, that neither the condition scan nor the syntax
+# tree reads.
+_SINGLE_EQUALS = re.compile(r"(?<![<>=!:~])=(?![=>])")
 
 
-def _read_law(text: str, flat: str, derived_exprs, has_condition_construct) -> _Law:
+def _calls_what_is_not_known(text: str) -> bool:
+    return any(
+        _unknown_call(m.group(1)) and m.group(1) not in _NOT_CALLS
+        for m in _ANY_CALL.finditer(text)
+    )
+
+
+def _marked_derived(derived: Mapping[str, str], has_condition_construct) -> frozenset[str]:
+    """The derived parameters whose value can jump or bend with what they are
+    written in: one that holds a condition, a step call, an ``abs``, ``max``
+    or ``min``, a call this does not know or a single ``=``, and every one
+    written in such a one."""
+    marked = {
+        name
+        for name, text in derived.items()
+        if has_condition_construct(text)
+        or _STEP_CALL.search(text)
+        or _CHOICE_CALL.search(text)
+        or _SINGLE_EQUALS.search(text)
+        or _calls_what_is_not_known(text)
+    }
+    if not marked:
+        return frozenset()
+    reads = {
+        name: set(_IDENTIFIER.findall(text)) & derived.keys() for name, text in derived.items()
+    }
+    grew = True
+    while grew:
+        grew = False
+        for name, read in reads.items():
+            if name not in marked and read & marked:
+                marked.add(name)
+                grew = True
+    return frozenset(marked)
+
+
+def _read_law(
+    text: str,
+    flat: str,
+    derived_exprs,
+    has_condition_construct,
+    marked: AbstractSet[str] = frozenset(),
+) -> _Law:
+    # Written out only where it shows something: flattening every derived
+    # parameter of a law is exponential in how deep they are defined.
+    full = flat
+    if marked and not marked.isdisjoint(_IDENTIFIER.findall(flat)):
+        full = _inline_derived_param_refs(flat, derived_exprs) or flat
     atoms: tuple[tuple[str, str], ...] = ()
-    if has_condition_construct(flat):
+    if has_condition_construct(full):
         atoms = tuple(
             (atom, _inline_derived_param_refs(atom, derived_exprs) or atom)
-            for atom in _iter_condition_atoms(flat)
+            for atom in _iter_condition_atoms(full)
         )
     steps = tuple(
         (call, arg, _inline_derived_param_refs(arg, derived_exprs) or arg)
-        for call, arg in _iter_step_calls(flat)
+        for call, arg in _iter_step_calls(full)
     )
-    choice = _CHOICE_CALL.search(flat) is not None or any(
-        _unknown_call(m.group(1)) and m.group(1) not in ("if", "time")
-        for m in _ANY_CALL.finditer(flat)
-    )
+    choice = _CHOICE_CALL.search(full) is not None or _calls_what_is_not_known(full)
+    unread = "an equality written with a single =" if _SINGLE_EQUALS.search(full) else ""
     tree = None
     names: frozenset[str] = frozenset()
     if choice or atoms:
         # With derived parameters written out, so that what is left to name
         # is a primary, a clock or the state.
-        tree = _syntax_tree(_inline_derived_param_refs(flat, derived_exprs) or flat)
+        tree = _syntax_tree(_inline_derived_param_refs(full, derived_exprs) or full)
         if tree is not None:
             names = frozenset(n.id for n in ast.walk(tree) if isinstance(n, ast.Name))
-    return _Law(text, flat, atoms, steps, choice, tree, names)
+    return _Law(text, flat, full, atoms, steps, choice, unread, tree, names)
 
 
 def _clip_text(text: str, width: int = 120) -> str:

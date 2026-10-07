@@ -723,7 +723,23 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         # A requested parameter is moved as the state is.
         ("kb*X*(asked-3)/abs(asked-3)", True),
         ("kb*X/abs(asked)", False),
-        ("kb*X*abs(X)^(Y*Y)", False),
+        # A power that may be under a half, of what may be 0 where a choice
+        # is. A root follows the tolerance and runs.
+        ("kb*X*abs(X)^(Y*Y)", True),
+        ("kb*max(thr-X,0)^0.1", True),
+        ("kb*max(thr-X,0)^0.49", True),
+        ("kb*max(thr-X,0)^0.5", False),
+        ("kb*sqrt(max(thr-X,0))", False),
+        ("kb*max(thr-X,0)^near", False),
+        ("kb*max(thr-X,0)^(near-1)", False),
+        ("kb*max(thr-X,0)^(near-1.6)", True),
+        ("kb*max(thr-X,0)^(asked-2.1)", True),
+        ("kb*max(X,0.5)^0.1", False),
+        ("kb*(1+abs(X))^0.1", False),
+        # A call this does not know at all, where a column moves what it reads.
+        ("kb*(atan2(thr-X,-1)/3+1)", True),
+        ("kb*atan2(pos,-1)*X", False),
+        ("kb*atan2(asked,-1)*X", True),
         ("kb*X/max(Y*Y+pos,X)", False),
         ("kb*X/max(Y*X+pos,X)", True),
         # Nothing is assumed of the state: X + pos is not known to be above 0.
@@ -764,7 +780,7 @@ def test_which_quotient_is_named(law, found):
 
 
 def test_a_long_rate_law_is_read(tmp_path):
-    """Control. 3,000 terms in a sum, with a ``max`` among them: read without
+    """3,000 terms in a sum, with a ``max`` among them: read without
     going as deep as the law is long."""
     from bngsim._switch_sensitivity import _quotient_across_a_choice, _syntax_tree
 
@@ -1161,7 +1177,7 @@ def test_a_condition_in_a_rate_law_that_does_not_parse_is_refused(tmp_path, monk
     unread = _simulator(tmp_path, law, declined, ["k"], decays=True)
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
         unread.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
-    assert "switches on 'Aobs<thr'" in str(caught.value)
+    assert "holds 'Aobs<thr'" in str(caught.value)
 
 
 def test_a_bend_is_proved_again_when_a_parameter_changes_sign(tmp_path):
@@ -1353,3 +1369,227 @@ def test_a_batch_row_s_refusal_is_a_refusal(tmp_path):
                 atol=1e-6,
                 num_processors=workers,
             )
+
+
+# ─── What the fourth review found ───────────────────────────────────────────
+
+DERIVED = """begin parameters
+    1 A0 {A0!r}
+    2 k 1.0
+    3 thr 4.4
+    4 kb 3.0
+    5 kc 5.0
+    6 one 1.0
+    7 n {n!r}
+{params}
+end parameters
+begin functions
+    1 fY() {fy}
+    2 fZ() kc*max(Aobs,0.5)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+    3 Z() 0
+end species
+begin reactions
+    1 1 0 k
+    2 0 2 fY
+    3 0 3 fZ
+{reactions}
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+
+
+def _with_derived(tmp_path, fy, params=(), reactions=(), n=0.0):
+    """A decays at k·A from 10, Y' = fY, with more parameters, which may be
+    derived, and more reactions."""
+    path = tmp_path / "derived.net"
+    path.write_text(
+        DERIVED.format(
+            fy=fy,
+            A0=10.0,
+            n=n,
+            params="\n".join(f"   {8 + i} {text}" for i, text in enumerate(params)),
+            reactions="\n".join(f"    {4 + i} {text}" for i, text in enumerate(reactions)),
+        )
+    )
+    return bngsim.Model.from_net(path)
+
+
+RAMP_TO_A_POWER = "if(Aobs<thr,kb*(thr-Aobs)^pw,0)"
+
+
+def test_a_derived_parameter_that_is_overridden_is_read_again(tmp_path):
+    """``pw = 2*half`` is 1, and the law a ramp that is proved to bend.
+    ``set_param("pw", 0)`` makes pw a number and the law a step. What was kept
+    of the law had the old expression written in: the same Simulator returned
+    [6.94, 1.92] for [2.46, 0.68]."""
+    model = _with_derived(tmp_path, RAMP_TO_A_POWER, ["half 0.5", "pw 2*half"])
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), _ramp_columns(), rtol=1e-6)
+    model.set_param("pw", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
+    # And back: a number again, at which the law is the ramp.
+    model.set_param("pw", 1.0)
+    model.reset()
+    np.testing.assert_allclose(_y_columns(sim), _ramp_columns(), rtol=1e-6)
+
+
+@pytest.mark.parametrize("num_processors", [None, 2])
+def test_a_batch_row_that_overrides_a_derived_parameter_is_read_again(tmp_path, num_processors):
+    model = _with_derived(tmp_path, RAMP_TO_A_POWER, ["half 0.5", "pw 2*half"])
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run_batch(
+            params=[{"pw": 0.0}, {"pw": 0.0}],
+            t_span=(0.0, T_END),
+            n_points=3,
+            rtol=1e-4,
+            atol=1e-6,
+            num_processors=num_processors,
+        )
+
+
+def test_every_column_at_once_reads_an_overridden_derived_parameter_again(tmp_path):
+    model = _with_derived(tmp_path, RAMP_TO_A_POWER, ["half 0.5", "pw 2*half"])
+    sim = bngsim.Simulator(model, method="ode")
+    kwargs = dict(t_span=(0.0, T_END), n_points=3, params=["k", "thr"], rtol=1e-4, atol=1e-6)
+    sim.compute_all_sensitivities(**kwargs)
+    model.set_param("pw", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.compute_all_sensitivities(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("fy", "params", "reactions", "n"),
+    [
+        ("kb*kd", ["kd if(n>1,3,0)"], [], 1.001),
+        ("kb", ["kd if(n>1,3,0)"], ["0 2 kd"], 1.001),
+        ("kb*kd", ["kd floor(n)"], [], 5.01),
+        ("kb*kd", ["kd min(n,one)"], [], 1.001),
+        ("kb*kd2", ["kd if(n>1,3,0)", "kd2 2*kd"], [], 1.001),
+    ],
+    ids=["in-a-function", "a-rate-constant", "a-step-call", "a-choice", "through-another"],
+)
+def test_a_jump_in_a_derived_parameter_is_refused(tmp_path, fy, params, reactions, n):
+    """A derived parameter that jumps or bends in a requested one: the rate
+    law's own text, ``kb*kd``, holds nothing to ask about, and a rate constant
+    is in no function at all. dY/dn came back 9.35, 6.24, 1.56 and 2.26, for 0."""
+    model = _with_derived(tmp_path, fy, params, reactions, n=n)
+    _refused_run(model, ["n"])
+
+
+@pytest.mark.parametrize(
+    ("params", "n", "requested"),
+    [(["kd if(n>1,3,0)"], 1.001, ["k"]), (["kd if(n>1,3,0)"], 2.0, ["n"])],
+    ids=["not-requested", "far-from-flipping"],
+)
+def test_a_derived_parameter_that_does_not_jump_here_runs(tmp_path, params, n, requested):
+    """Control. The same derived parameter with n not requested, and with n a
+    long way from 1."""
+    model = _with_derived(tmp_path, "kb*kd", params, n=n)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=requested)
+    assert not sim.has_analytic_sens_rhs
+    sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+def test_a_requested_derived_parameter_near_its_threshold_is_refused(tmp_path):
+    """``tD = 2*n`` requested itself, with ``if(tD > 1, kb, 0)`` at tD = 1.001.
+    Written out, the condition reads n and names nothing requested: dY/dtD came
+    back 3.12 for 0. With tD at 3 it runs."""
+    law = "if(tD>1,kb,0)"
+    _refused_run(_with_derived(tmp_path, law, ["tD 2*n"], n=0.5005), ["tD"])
+    far = _with_derived(tmp_path, law, ["tD 2*n"], n=1.5)
+    sim = bngsim.Simulator(far, method="ode", sensitivity_params=["tD"])
+    assert not sim.has_analytic_sens_rhs
+    sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+def test_an_equality_written_with_one_equals_sign_is_refused(tmp_path):
+    """ExprTk's ``=`` outside any ``if()``: ``kb*(max(Aobs − thr, 0) = 0)`` is a
+    step that neither the condition scan nor the syntax tree reads. dY/dk came
+    back 4.41 for 2.46."""
+    sim = _simulator(tmp_path, "kb*(max(Aobs-thr,0)=0)", DECLINED, ["k", "thr"], decays=True)
+    _refused(sim, "single =", rtol=1e-4)
+
+
+def test_an_equality_of_numbers_written_with_one_equals_sign_runs(tmp_path):
+    """Control. Nothing a column moves is in it."""
+    sim = _simulator(tmp_path, "kb*(tau=3.4)", DECLINED, ["k"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0], atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "law",
+    ["kb*max(thr-Aobs,0)^0.1", "kb*max(thr-Aobs,0)^0.3", "kb*(atan2(thr-Aobs,-1)/3.14159+1)/2"],
+    ids=["a-tenth-power-of-a-bend", "a-power-of-0.3", "a-branch-cut"],
+)
+def test_a_bend_with_no_bound_on_its_slope_and_an_unknown_call_are_refused(tmp_path, law):
+    """``max(thr − A, 0)^0.1`` is continuous and leaves 0 with a slope that has
+    no bound: [3.89, 1.33] for [3.38, 1.19] at a tolerance of 1e-4, and no
+    finish at 1e-6. At 0.3 it was 1.6% off at 1e-4 and 0.4% at 1e-6. ``atan2``
+    has a branch cut: [-1.17, -0.42] for [1.30, 0.26] at any tolerance."""
+    sim = _simulator(tmp_path, law, DECLINED, ["k", "thr"], decays=True)
+    _refused(sim, "", rtol=1e-4)
+
+
+@pytest.mark.parametrize("power, rtol, within", [("0.5", 1e-8, 2e-6), ("0.75", 1e-6, 1e-4)])
+def test_a_root_of_a_bend_follows_the_tolerance(tmp_path, power, rtol, within):
+    """Control. From a half up the column is off by a few tens of the
+    tolerance and no more: 2.7e-7 at 1e-8 for a root. Against central
+    differences of plain runs, extrapolated."""
+    law = f"kb*max(thr-Aobs,0)^{power}"
+
+    def plain(k):
+        out = bngsim.Simulator(_wider(tmp_path, law, k=k), method="ode").run(
+            t_span=(0.0, T_END), n_points=3, rtol=1e-12, atol=1e-14, timeout=60
+        )
+        return np.asarray(out.species)[-1, list(out.species_names).index("Y()")]
+
+    def slope(h):
+        return (plain(1.0 + h) - plain(1.0 - h)) / (2.0 * h)
+
+    want = (4.0 * slope(5e-4) - slope(1e-3)) / 3.0
+    sim = bngsim.Simulator(_wider(tmp_path, law), method="ode", sensitivity_params=["k"])
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=rtol, atol=rtol * 1e-2, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), 0]
+    assert got == pytest.approx(want, rel=within)
+
+
+def test_windows_written_with_the_word_and_are_read(tmp_path):
+    """Control. Twenty-five windows on the time, each written ``(a) and (b)``
+    as an SBML ``<and/>`` arrives: no call, and nothing this does not know.
+    Refused as "(not read)" by an earlier cut of this scan."""
+    law = "0"
+    for i in range(25, 0, -1):
+        law = f"if(((time()>={i}.0))and((time()<={i}.5)),{i}.0,{law})"
+    sim = _simulator(tmp_path, f"kb*{law}", DECLINED, ["kb", "k"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10, timeout=60)
+    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()"), :]
+    # Y(6) = kb·0.5·(1 + 2 + 3 + 4 + 5).
+    np.testing.assert_allclose(got, [7.5, 0.0], rtol=1e-6, atol=1e-9)
+
+
+def test_a_batch_is_asked_row_by_row_and_not_of_the_models_own_values(tmp_path):
+    """The model's own k makes A a counter that a requested column moves, and
+    the one row does not: asked of the row, the batch runs."""
+    model = _wider(tmp_path, "if(Cobs>3.4,kb,0)", decays=True)
+    model.set_param("one", 2.0)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kb"])
+    assert not sim.has_analytic_sens_rhs
+    rows = sim.run_batch(
+        params=[{"one": 1.0}], t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10
+    )
+    got = np.asarray(rows[0].sensitivities)[-1, list(rows[0].species_names).index("Y()"), 0]
+    np.testing.assert_allclose(got, T_END - 3.4, rtol=1e-6)

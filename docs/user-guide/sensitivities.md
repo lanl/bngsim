@@ -383,11 +383,22 @@ model with (issues #938, #932):
   `if(n > 1, kb, 0)` with `n` requested and within a quarter of itself of 1.
   The quotient moves a parameter as it moves the state, by up to its size times
   the root of the relative tolerance. Likewise an equality on a requested
-  parameter that holds, and a step call or a step table on one.
+  parameter that holds, and a step call or a step table on one. A derived
+  parameter is read too, as the rate constant it may be: `kd = if(n > 1, 3, 0)`;
+- a power under a half of an `abs`, `max` or `min` where it may be 0,
+  `max(thr - X, 0)^0.1`: continuous, with a slope that has no bound. From a half
+  up the column follows the tolerance (2.5e-5 off at a relative tolerance of
+  1e-6 for a root) and the run goes through; at 0.2 it was 2% off at 1e-6;
+- an equality written with ExprTk's single `=`, and a call the scan does not
+  know, `atan2`, where a column moves what it reads;
+- a rate law that could not be read.
 
-The refusal goes by what the rate laws' text says and by the sign of each
-parameter. Nothing is evaluated. The quotient is right across a bend, and a
-condition is let through where the law is proved to bend at it:
+The refusal goes by what the rate laws' text says and by what each parameter is
+when the run starts: its sign, whether a power is a whole number, and which side
+of a comparison a requested parameter is on with the parameter moved a quarter
+of itself either way. Nothing is integrated, and nothing is assumed of the
+state. It is asked again when a parameter is set. The quotient is right across
+a bend, and a condition is let through where the law is proved to bend at it:
 
 - one branch is 0 and the other is a product with the condition's own
   difference among its factors: `if(v > 0, v, 0)`, `if(X < thr, kb*(thr - X), 0)`,
@@ -402,10 +413,14 @@ A bend written any other way is refused, though main ran it: a root,
 `if(S > 0, Vm*Q/S, 0)`. `max` and `min` are continuous by what they are and
 run: `kb*max(thr - X, 0)`, `max(0, min(X, n))`, `v/max(X, 0.01)`.
 
-A condition on literal time runs, and so does a steady-state solve. What the
-scan does not see is a jump written with no condition and not as one of the
-quotients above: `sqrt(X*X)/X`, `tanh(1e9*(X - thr))`, and a pole cut off on
-both sides, `min(max(k/(X - thr), -5), 5)`.
+A condition on literal time runs. A steady-state solve is not a time course
+and is not asked: it differences `f` in the parameter at one state, which is
+wrong only for a parameter that sits on its own threshold, `if(n > 1, kb, 0)`
+at `n = 1`, where no derivative exists. What the scan does not see is a jump
+written with no condition and not as one of the quotients above:
+`sqrt(X*X)/X`, a regularised sign `(thr - X)/(abs(thr - X) + 1e-9)` or
+`tanh(1e9*(X - thr))`, and a pole cut off on both sides,
+`min(max(k/(X - thr), -5), 5)`.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 
