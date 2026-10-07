@@ -433,6 +433,9 @@ def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
         ("if(X<thr,kb*(thr-X)*abs(Y)^1.5,0)", True),
         ("if(X<thr,kb*(thr-X)^zero,0)", False),
         ("if(X<thr,kb*(thr-X)^0.5,0)", False),
+        # A root of a square is in its domain, and leaves 0 with a slope that
+        # has no bound: not through a power under 1.
+        ("if(X<thr,kb*((thr-X)^2)^half,0)", False),
         ("if(X<thr,kb*(thr-X)^Y,0)", False),
         ("if(X<thr,kb*sqrt(thr-X),0)", False),
         # A root has no value below 0, and a comparison with no number is
@@ -469,12 +472,14 @@ def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
         ("if(X<thr,kb*(thr-X)*Y^neg,0)", False),
         ("if(X<thr,kb*(thr-X)*pow(Y,neg),0)", False),
         ("if(X<thr,kb*(thr-X)*(Y*Y+pos)^neg,0)", True),
+        ("if(X<thr,kb*(thr-X)*(Y*Y)^neg,0)", False),
         ("if(X<thr,kb*(thr-X)*floor(T),0)", True),
         ("if(X<thr,kb*(thr-X)*floor(Y),0)", False),
         ("if(X<thr,kb*(thr-X)*(Y%2),0)", False),
         # Every factor the comparison is 0 with.
         ("if((X-4.4)*(X-5)<0,kb*(X-4.4)*(5-X),0)", True),
         ("if((X-4.4)*(X-5)<0,kb*(X-4.4),0)", False),
+        ("if((X-4.4)*(X-5)<0,kb*(5-X),0)", False),
         ("if((X-thr)/pos<0,kb*(thr-X),0)", True),
         ("if(X>0,kb/X,0)", False),
         # Each comparison of a condition, through and, or and not.
@@ -486,6 +491,11 @@ def test_a_bend_that_is_not_proved_one_is_refused(tmp_path, case):
         ("if(X<thr,kb*(thr-X),0)*if(Y>1,2,3)", False),
         ("if(X<thr,kb*(thr-X),0)*if(T>1,2,3)", True),
         ("if(X>0,if(X<pos,X,pos),0)", False),
+        # The lesser of two is asked for only where the comparison is the
+        # whole condition. Beside a condition on a clock it bends as well, and
+        # is refused.
+        ("if(X<Y,X,Y)", True),
+        ("if(X<Y&&T>1,X,Y)", False),
         ("if(if(X<thr,Y-1,1-Y)>0,kb*(if(X<thr,Y-1,1-Y))^2,0)", False),
         ("if(X==thr,kb,0)", False),
         ("if(2*X<2*thr,kb*(thr-X),0)", False),
@@ -683,6 +693,13 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         ("kb*(1+X/exp(log(abs(X))))", True),
         ("kb*(1+X/2^log2(abs(X)))", True),
         ("kb*(1+X/exp(-abs(X)))", False),
+        ("kb*(1+X/pow(2,log2(abs(X))))", True),
+        # exp of a quotient or a power that has no value where its divisor is
+        # 0, and of a call this does not know, is not known to be above 0.
+        ("kb*X/max(exp(-1/(Y*Y)),X)", True),
+        ("kb*X/max(exp(-1/(Y*Y+pos)),X)", False),
+        ("kb*X/max(exp(-(Y*Y)^neg),X)", True),
+        ("kb*X/max(exp(clamp(0,Y,1)),X)", True),
         # The greater of e and −e is its magnitude.
         ("kb*(1+max(X-thr,-(X-thr))/(X-thr))", True),
         ("kb*(1+max(-(X-thr),X-thr)/(X-thr))", True),
@@ -1137,6 +1154,43 @@ def test_a_bend_is_proved_again_when_a_parameter_changes_sign(tmp_path):
     model.reset()
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
         sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+def test_a_bend_with_no_choice_in_it_is_proved_again(tmp_path):
+    """``if(Aobs < thr, (thr − Aobs)·kb/(Aobs² + g), 0)``: the divisor is above
+    0 at g = 1e-4 and may be 0 at g = 0. Nothing but the proof of the bend
+    reads g, each way round."""
+    law = "if(Aobs<thr,(thr-Aobs)*kb/(Aobs*Aobs+g),0)"
+    for first, then in ((1e-4, 0.0), (0.0, 1e-4)):
+        model = _wider(tmp_path, law)
+        model.set_param("g", first)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+        assert not sim.has_analytic_sens_rhs
+        for g in (first, then):
+            model.set_param("g", g)
+            model.reset()
+            if g > 0.0:
+                sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+            else:
+                with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+                    sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+def test_a_condition_on_a_requested_parameter_is_asked_again(tmp_path):
+    """``if(n > 1, kb, 0)`` with n requested: refused at n = 1.001 and run at
+    n = 2, on one Simulator, each way round."""
+    for first, then in ((1.001, 2.0), (2.0, 1.001)):
+        model = _wider(tmp_path, "if(n>1,kb,0)", n=first)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n", "k"])
+        assert not sim.has_analytic_sens_rhs
+        for n in (first, then):
+            model.set_param("n", n)
+            model.reset()
+            if n == 2.0:
+                sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+            else:
+                with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+                    sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
 def test_what_is_kept_between_runs_does_not_grow(tmp_path):

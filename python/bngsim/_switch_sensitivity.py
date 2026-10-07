@@ -4752,9 +4752,7 @@ def fallback_crossing(
             # one: the quotient moves the index.
             name = param_names[index]
             written = _inline_derived_param_refs(name, derived)
-            moved_index = written is None or bool(
-                ({name} | set(_IDENTIFIER.findall(written))) & requested
-            )
+            moved_index = bool(({name} | set(_IDENTIFIER.findall(written))) & requested)
         if table.get("index_kind") not in ("time", "parameter") or moved_index:
             return f'tfun {table.get("name")} (method=>"step")'
     if core.n_functions == 0:
