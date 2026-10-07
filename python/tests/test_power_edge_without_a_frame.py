@@ -276,6 +276,43 @@ def test_without_the_event_a_state_crossing_enters_the_frame(jump, a):
     np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-4)
 
 
+def _only_a_root(on, event):
+    """The window opens where the state crosses and never closes."""
+    return bngsim.Model.from_antimony_string(
+        f"species X, Z; X = 1; Z = 0; k0 = 0.1; k1 = 1; a = 1.9; on = {on!r}; D = 20; q = 0\n"
+        "J0: -> X; (k0 + k1*piecewise(((time - on)/D)^(a - 1), time - Z >= on, 0))*X\n"
+        + ("E1: at (time > 15): q = 1\n" if event else "")
+    )
+
+
+def test_a_singular_edge_that_is_only_a_root_beside_an_event_is_refused():
+    """No switch time moves at the rate the edge does, so nothing is known
+    before the run: the column is refused at the root, where it would have
+    entered its frame."""
+    sim = bngsim.Simulator(_only_a_root(10.0, True), method="ode", sensitivity_params=["on"])
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #958\)"):
+        sim.run(sample_times=[0.0, 5.0, 12.0, 18.0], rtol=1e-8, atol=1e-10, timeout=120)
+
+
+def test_without_the_event_an_edge_that_is_only_a_root_enters_the_frame():
+    """Control. Against central differences of plain runs in `on`."""
+    times = [0.0, 5.0, 12.0, 18.0]
+
+    def plain(on):
+        out = bngsim.Simulator(_only_a_root(on, False), method="ode").run(
+            sample_times=times, rtol=1e-12, atol=1e-14
+        )
+        return np.asarray(out.species)[:, list(out.species_names).index("X")]
+
+    def d(h):
+        return (plain(10.0 + h) - plain(10.0 - h)) / (2 * h)
+
+    sim = bngsim.Simulator(_only_a_root(10.0, False), method="ode", sensitivity_params=["on"])
+    out = sim.run(sample_times=times, rtol=1e-8, atol=1e-10, timeout=120)
+    got = np.asarray(out.sensitivities)[:, list(out.species_names).index("X"), 0]
+    np.testing.assert_allclose(got, (4 * d(5e-4) - d(1e-3)) / 3, rtol=1e-5, atol=1e-6)
+
+
 # ─── A column that moves the counter itself (issue #948) ────────────────────
 
 COUNTER = """begin parameters
