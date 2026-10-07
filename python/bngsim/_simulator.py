@@ -778,7 +778,7 @@ class Simulator:
                     "See Lin, Feng, Hlavacek, J. Chem. Phys. 150, "
                     "244101 (2019)."
                 )
-            if poplevel <= 1.0:
+            if not poplevel > 1.0:  # NaN too: it ran as exact SSA
                 raise ValueError(
                     f"poplevel must be > 1 for PSA. Got {poplevel}. "
                     "For exact stochastic simulation, use method='ssa'."
@@ -1865,11 +1865,25 @@ class Simulator:
         conditions = model.time_discontinuity_conditions()
         if not conditions:
             return
-        from bngsim._switch_sensitivity import all_fixed_crossings, merge_crossing_stops
+        from bngsim._switch_sensitivity import crossings_with_periodic, merge_crossing_stops
 
         try:
-            crossings = all_fixed_crossings(model._core, float(t_start), float(t_end), conditions)
-            stops = merge_crossing_stops(crossings)
+            crossings, periodic, periodic_at = crossings_with_periodic(
+                model._core,
+                float(t_start),
+                float(t_end),
+                conditions,
+                touches=getattr(model, "_event_disc_conditions", frozenset()),
+            )
+            # A crossing of a sinusoid or a polynomial in time is a stop too
+            # (issue #714): a window narrower than a step lay wholly inside one,
+            # unseen. The stop lands a little past the crossing; to the event
+            # sensitivity jump the crossing is one more fixed one on its instant.
+            stops = merge_crossing_stops(
+                sorted([*crossings, *periodic], key=lambda stop: stop.time)
+            )
+            if periodic_at:
+                crossings = sorted([*crossings, *periodic_at], key=lambda stop: stop.time)
         except Exception as e:  # pragma: no cover - defensive
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than
@@ -1894,7 +1908,9 @@ class Simulator:
             probes = dict.fromkeys(
                 (stop.time, stop.clock_species_idx, stop.threshold) for stop in crossings
             )
-            opts.set_crossing_probes(list(probes) if len(probes) > len(stops) else [])
+            opts.set_crossing_probes(
+                list(probes) if len(probes) > len(stops) or periodic_at else []
+            )
 
     @staticmethod
     def _apply_ssa_breakpoints(sims, model, t_start, t_end) -> None:
@@ -1927,13 +1943,24 @@ class Simulator:
         if reads_clock:
             conditions = model.time_discontinuity_conditions()
             if conditions:
-                from bngsim._switch_sensitivity import fixed_crossing_stops
+                from bngsim._switch_sensitivity import (
+                    crossings_with_periodic,
+                    merge_crossing_stops,
+                )
 
                 try:
-                    stops = fixed_crossing_stops(
-                        model._core, float(t_start), float(t_end), conditions
+                    crossings, periodic, _ = crossings_with_periodic(
+                        model._core,
+                        float(t_start),
+                        float(t_end),
+                        conditions,
+                        touches=getattr(model, "_event_disc_conditions", frozenset()),
                     )
-                    times = [float(stop.time) for stop in stops]
+                    times = [float(stop.time) for stop in merge_crossing_stops(crossings)]
+                    # ...and the crossings of a sinusoid or a polynomial in time,
+                    # whose window a step can otherwise lie across unseen.
+                    if periodic:
+                        times = sorted(set(times) | {float(stop.time) for stop in periodic})
                 except Exception as e:  # pragma: no cover - defensive
                     logger.warning(
                         "Discontinuity crossing resolution failed (%s); the SSA "
