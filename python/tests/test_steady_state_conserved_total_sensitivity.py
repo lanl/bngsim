@@ -223,6 +223,32 @@ def test_a_species_moved_off_its_initial_condition_is_not_seeded(tmp_path):
     )
 
 
+def test_a_declared_seed_for_a_state_set_by_hand(tmp_path):
+    """A is set to 5 by hand and declared to move at 2 per unit of A0: the
+    total does, and dA*/dA0 = 2/3, dB*/dA0 = 4/3."""
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    model.set_concentration("A()", 5.0)
+    model.declare_ic_sensitivity({"A()": {"A0": 2.0}})
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["A0"], method="newton", tol=1e-12
+    )
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [2 / 3, 4 / 3], rtol=1e-7)
+
+
+def test_a_declared_zero_is_kept(tmp_path):
+    """Control. A species still at its initial condition, declared not to move
+    with any parameter: the core is told so, and does not fall back on the
+    loader's record that A starts at A0."""
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    model.declare_ic_sensitivity({"A()": {}})
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["A0", "kf"], method="newton", tol=1e-12
+    )
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity), [[0.0, -2 / 3], [0.0, 2 / 3]], rtol=1e-7, atol=1e-12
+    )
+
+
 def test_the_models_state_is_left_where_it_was(tmp_path):
     """The seed is read before the model is moved to the steady state, and the
     model is put back (issue #705): a second solve gives the same columns."""
