@@ -311,3 +311,40 @@ def test_the_steady_state_agrees_with_a_long_time_course(tmp_path):
         bngsim.Model.from_net(path), method="ode", sensitivity_params=["A0", "B0"]
     ).run(t_span=(0.0, 200.0), n_points=3, rtol=1e-11, atol=1e-13)
     np.testing.assert_allclose(got, np.asarray(run.sensitivities)[-1], rtol=1e-6, atol=1e-8)
+
+
+COMPARTMENT = (
+    "compartment C; C = 2; species A in C, B in C; A = 3; B = 0; kf = 1; kr = 0.5\n"
+    "J1: A -> B; kf*A\nJ2: B -> A; kr*B\n"
+)
+
+
+def test_a_compartment_size_in_a_model_with_a_total_is_refused():
+    """What is conserved is an amount, and the solve holds a total of
+    concentrations: the column of the size came back 0 where the steady state
+    moves with it, and with the total differentiated it is right in some
+    models and far off in others. It is refused."""
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(COMPARTMENT), method="ode")
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"compartment size.*#704"):
+        sim.steady_state(sensitivity_params=["C", "kf"])
+
+
+def test_a_rate_constant_beside_a_compartment_runs():
+    """Control. The same model in a column that is no size."""
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(COMPARTMENT), method="ode")
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    names = list(out.species_names)
+    got = np.asarray(out.sensitivity)[[names.index("A"), names.index("B")], 0]
+    np.testing.assert_allclose(got, [-2 / 3, 2 / 3], rtol=1e-7)
+
+
+def test_a_compartment_size_with_no_conservation_law_is_not_refused():
+    """Control. -> A at kp, A -> at kd: nothing is conserved, and the size's
+    column is what it was."""
+    text = (
+        "compartment C; C = 2; species A in C; A = 3; kp = 1; kd = 0.5\n"
+        "J1: -> A; kp\nJ2: A -> ; kd*A\n"
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+    out = sim.steady_state(sensitivity_params=["C", "kd"], tol=1e-12)
+    assert out.converged

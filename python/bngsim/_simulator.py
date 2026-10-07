@@ -6089,6 +6089,25 @@ class Simulator:
             triples, injected = self._model._ic_sensitivity_triples()
             if injected:
                 opts.set_ic_param_sens([t for t in triples if t[2] != 0.0] or [(-1, 0, 0.0)])
+            # A compartment size is not such a parameter. What is conserved is
+            # an amount, which a size does not move, and what the solve holds
+            # is a total of concentrations, with the laws found for the sizes
+            # the model loaded at (issue #758). Over the corpus the column of a
+            # size was 0 where the truth was not in 21 of 23 models with a
+            # conservation law, and with the seed above it was right in 13 of
+            # them and as much as 1e7 for -6e4 in another. Neither is returned.
+            sizes = sorted(set(sensitivity_params) & set(self._model.compartment_size_params))
+            if sizes and int(self._model._core.conservation_laws["n_laws"]) > 0:
+                raise SensitivityUnsupportedError(
+                    "steady_state(sensitivity_params=...) is not supported for the compartment "
+                    f"size{'s' if len(sizes) != 1 else ''} {sizes} of a model with a conservation "
+                    "law. A conserved total is an amount, which a compartment's size does not "
+                    "move, and the steady-state solve holds totals of concentrations: the size's "
+                    "column came back 0 where the steady state moves with it, and is not right "
+                    "with the totals differentiated either (issues #704, #758). Difference "
+                    "steady states solved again at a moved size, or take the column from a time "
+                    "course run to the steady state."
+                )
         # GH #247 — an AssignmentRule-target species is emitted ``fixed``, so its
         # RHS row is identically zero and it is not an unknown of f(y) = 0 at all:
         # its value is dictated by the rule. Leaving it in makes J structurally
