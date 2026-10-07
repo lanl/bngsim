@@ -2541,7 +2541,7 @@ struct CvodeSimulator::Impl {
                                          const std::vector<double> &dtstar_dp, double rel_tol);
     // The same asked of every switch time the run has ahead of `t`, so that a
     // closing edge is refused before the plain column is carried up to it.
-    void comoving_refuse_ahead_without_a_frame(const SensitivityState &sens, double t);
+    void comoving_refuse_ahead_without_a_frame(const SensitivityState &sens);
     // Issue #948: refuses a column, parameter or initial-condition axis, with a
     // nonzero row of a counter species under a power that is singular at the
     // run's values. `cols` holds all n_total columns.
@@ -5194,19 +5194,17 @@ void CvodeSimulator::Impl::comoving_refuse_without_a_frame(const SensitivityStat
     }
 }
 
-void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_frame(const SensitivityState &sens,
-                                                                 double t) {
+void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_frame(const SensitivityState &sens) {
     const ComovingFrames &frames = sens.comoving;
     if (!frames.off_for_events || frames.switches == nullptr) {
         return;
     }
-    // By the threshold's own ∂t*/∂p. A counter's crossing moves with the
-    // clock's own sensitivity as well (issue #725), and a column that has any
-    // is refused on its own account under a power of a counter (issue #948).
+    // Every switch time the run has: the list holds the ones after its start
+    // and up to its end. By the threshold's own ∂t*/∂p. A counter's crossing
+    // moves with the clock's own sensitivity as well (issue #725), and a
+    // column that has any is refused on its own account under a power of a
+    // counter (issue #948).
     for (const SwitchTimeSens *sw : *frames.switches) {
-        if (sw->t_star <= t || one_switch_instant(sw->t_star, t)) {
-            continue;
-        }
         comoving_refuse_without_a_frame(sens, sw->t_star, sw->dtstar_dp, 1e-9);
     }
 }
@@ -12220,7 +12218,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             start_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(sens.yS[c]);
         }
         impl_->comoving_refuse_a_moved_counter(sens, start_cols.data(), times.t_start);
-        impl_->comoving_refuse_ahead_without_a_frame(sens, times.t_start);
+        impl_->comoving_refuse_ahead_without_a_frame(sens);
     }
     // Issue #545: S of the comoving columns at an output, which is not what yS holds.
     std::vector<std::vector<double>> comoving_out_scratch;
