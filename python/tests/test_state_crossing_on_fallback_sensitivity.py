@@ -1147,18 +1147,21 @@ def test_a_rate_law_that_does_not_parse_is_refused(tmp_path, monkeypatch):
 
 def test_a_condition_in_a_rate_law_that_does_not_parse_is_refused(tmp_path, monkeypatch):
     """A bend is proved from the law's syntax tree. With none there is no
-    proof, and the condition is refused as any other on the state."""
+    proof, and the condition is refused as any other on the state. What the
+    analytic path declines here is a step on the time, which has no tree to
+    read and is not refused for it."""
     from bngsim import _switch_sensitivity
 
-    law = "if(Aobs<thr,kb*(thr-Aobs),0)"
-    sim = _simulator(tmp_path, law, DECLINED, ["k"], decays=True)
+    law, declined = "if(Aobs<thr,kb*(thr-Aobs),0)", "kc*floor(time()/100+1)"
+    sim = _simulator(tmp_path, law, declined, ["k"], decays=True)
     assert not sim.has_analytic_sens_rhs
     sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
     monkeypatch.setattr(_switch_sensitivity, "_syntax_tree", lambda expr: None)
-    unread = _simulator(tmp_path, law, DECLINED, ["k"], decays=True)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+    unread = _simulator(tmp_path, law, declined, ["k"], decays=True)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
         unread.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+    assert "switches on 'Aobs<thr'" in str(caught.value)
 
 
 def test_a_bend_is_proved_again_when_a_parameter_changes_sign(tmp_path):
