@@ -1506,6 +1506,25 @@ def test_a_derived_parameter_that_does_not_jump_here_runs(tmp_path, params, n, r
     sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
 
 
+def test_a_derived_parameter_that_is_in_no_rate_is_not_asked_about(tmp_path):
+    """Control. ``kd = if(n > 1, 3, 0)`` and ``c0 = rint(4.4*n)`` with n
+    requested and beside the threshold, where kd is nothing's rate constant
+    and c0 is an initial amount: the seed of an initial amount is
+    differentiated, not differenced."""
+    text = DERIVED.format(
+        fy="kb",
+        A0=10.0,
+        n=1.001,
+        params="    8 kd if(n>1,3,0)\n    9 c0 rint(4.4*n)",
+        reactions="",
+    ).replace("    3 Z() 0\n", "    3 Z() c0\n")
+    path = tmp_path / "unused.net"
+    path.write_text(text)
+    sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode", sensitivity_params=["n"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0], atol=1e-9)
+
+
 def test_a_requested_derived_parameter_near_its_threshold_is_refused(tmp_path):
     """``tD = 2*n`` requested itself, with ``if(tD > 1, kb, 0)`` at tD = 1.001.
     Written out, the condition reads n and names nothing requested: dY/dtD came

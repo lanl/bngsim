@@ -4773,9 +4773,10 @@ def fallback_crossing(
     - a rate law that is not read: its functions nest too deep to write out,
       or it holds one of the above in a form the scan does not parse.
 
-    A derived parameter that holds any of these is read as a rate law is,
-    written into the laws that read it and as a law of its own: it may be the
-    rate constant of a reaction no function writes. A requested derived
+    A derived parameter that holds any of these is read as a rate law is:
+    written into the laws that read it, and as a law of its own where it is
+    the rate constant of a reaction no function writes, or is written in one.
+    One that is in no rate, an initial amount, is not asked about. A requested derived
     parameter is asked about both as its own column moves it, held where it
     is set, and as the column of a primary it is written in does.
 
@@ -4831,7 +4832,27 @@ def fallback_crossing(
     if found_marked is None:
         found_marked = kept_all[_MARKED] = _marked_derived(derived, has_condition_construct)
     marked: frozenset[str] = found_marked
-    if core.n_functions == 0 and not marked:
+    # Of those, the ones a reaction's rate constant is, or is written in. One
+    # that only sets an initial amount, ``R0 = rint(7.47e4*f)``, is in no rate:
+    # its seed is differentiated and not differenced.
+    found_rates: frozenset[str] | None = kept_all.get(_IN_A_RATE)
+    if found_rates is None:
+        reach: set[str] = set()
+        stack = [
+            param_names[i]
+            for reaction in data.get("reactions", ())
+            if reaction.get("type") != "functional"
+            for i in reaction.get("rate_param_indices", ())
+            if 0 <= i < len(param_names) and param_names[i] in derived
+        ]
+        while stack:
+            name = stack.pop()
+            if name not in reach:
+                reach.add(name)
+                stack.extend(set(_IDENTIFIER.findall(derived[name])) & derived.keys())
+        found_rates = kept_all[_IN_A_RATE] = frozenset(reach)
+    rate_constants: frozenset[str] = marked & found_rates
+    if core.n_functions == 0 and not rate_constants:
         return None
     if ctx is None:
         ctx = core.functional_jacobian_context()
@@ -4868,9 +4889,9 @@ def fallback_crossing(
             if law.atoms or law.steps or law.choice or law.unread:
                 laws.append(law)
         # A marked derived parameter may be the rate constant of a reaction no
-        # function writes, which is in none of the texts above. Each is read
-        # as a rate law of its own, over parameters alone.
-        for name in sorted(marked - held):
+        # function writes, which is in none of the texts above. Each such is
+        # read as a rate law of its own, over parameters alone.
+        for name in sorted(rate_constants - held):
             law = kept.get((_DERIVED_LAW, name))
             if law is None:
                 law = kept[(_DERIVED_LAW, name)] = _read_law(
@@ -5014,6 +5035,7 @@ def fallback_crossing(
 # Keys of what a scan keeps that are not a rate law's text.
 _WRITTEN_AS = ("derived parameters, as written",)
 _MARKED = ("derived parameters that hold what is asked about",)
+_IN_A_RATE = ("derived parameters a rate constant is, or is written in",)
 _VIEW = "held"
 _DERIVED_LAW = "derived"
 
