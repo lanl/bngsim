@@ -132,7 +132,14 @@ using CodegenComovingClockFn = int (*)(int k);
 //   2: every power the case has closes at its crossing, with an exponent of 1
 //      or more at these values. The frame is of no use, and the column stays
 //      plain.
-// Resolved with try_symbol; a .so without it enters only at the crossing.
+//   4: a power of the case opens at its crossing, `s^(a-1)`, and is singular at
+//      these values. The forcing of the plain column is unbounded AFTER that
+//      crossing (issue #958).
+//   8: a power of the case reads a counter clock, a species made at rate 1, and
+//      not time itself (issue #948).
+// Bits 4 and 8 are read only to refuse a run whose column needs a frame it
+// cannot have. Resolved with try_symbol; a .so without it enters only at the
+// crossing.
 using CodegenComovingApproachFn = int (*)(int case_idx, const double *p);
 
 // Dense analytical Jacobian into an n×n COLUMN-MAJOR buffer

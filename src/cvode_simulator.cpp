@@ -1879,7 +1879,14 @@ static int cvode_event_root_fn(sunrealtype t, N_Vector y, sunrealtype *gout, voi
 // leaves it at the next restart of any kind; outputs, the error floor's term scale
 // and the carry-over seed read S from V in between.
 struct ComovingFrames {
-    bool enabled = false;        // the .so has the cases and the run has no event
+    bool enabled = false; // the .so has the cases and the run has no event
+    // The .so has the cases and the run has an event, so every column is plain
+    // (issue #958). A column that would have entered a frame for a power that
+    // is singular at the run's values is refused where it would have entered.
+    bool off_for_events = false;
+    // Whether some case of the model has a power on a counter clock that is
+    // singular at the run's values (issue #948): -1 until it is asked.
+    int singular_on_a_counter = -1;
     std::vector<int> plist;      // per column: the case the comoving RHS reads, or -1
     std::vector<double> c;       // per column: the shift the column was entered with
     std::vector<char> clock_row; // per species: a unit-rate clock, whose row stays S
@@ -2106,6 +2113,8 @@ constexpr double kComovingEntryFraction = 1.0 / 16.0;
 // The bits of bngsim_codegen_comoving_approach (see codegen_abi.hpp).
 constexpr int kComovingApproached = 1;
 constexpr int kComovingIdle = 2;
+constexpr int kComovingOpensSingular = 4; // issue #958
+constexpr int kComovingCounterClock = 8;  // issue #948
 // How long a frame entered at a crossing has to have run before the next restart,
 // and how long the stretch a column enters ahead on has to be, in ulp of the
 // time. A restart closer than this to a window edge that opens or closes as a
@@ -2524,6 +2533,14 @@ struct CvodeSimulator::Impl {
                        const std::vector<double> &f_before, const std::vector<double> &f_after,
                        const std::vector<double> &f_instant, const std::vector<double> &dtstar_dp,
                        double rel_tol);
+    // Issue #958: on a run whose frames are off for its events, refuses the
+    // crossing at `t` where a column would have entered one for a power that
+    // is singular at the run's values.
+    void comoving_refuse_without_a_frame(const SensitivityState &sens, double t,
+                                         const std::vector<double> &dtstar_dp, double rel_tol);
+    // Issue #948: whether some case of the model has a power on a counter
+    // clock that is singular at the run's values.
+    bool comoving_singular_on_a_counter(SensitivityState &sens);
     // S = V − c·f for an output at t: comoving columns are copied into `scratch`
     // and their pointers redirected there, so sens.yS keeps the V CVODES integrates.
     void comoving_read_plain(SensitivityState &sens, int ns, double t, const double *y,
@@ -5060,10 +5077,20 @@ void CvodeSimulator::Impl::setup_comoving_frames(SensitivityState &sens, int ns,
     // A state-switch root has f on the branch the column was integrated with in its
     // own probe pair, and a discontinuity root reads time alone, so f a little
     // before it; both convert where they restart.
-    if (sens.n_p <= 0 || n_event_roots > 0 || user_data.codegen_plist == nullptr ||
-        user_data.codegen_sens_fn == nullptr || user_data.codegen_sens_comoving_fn == nullptr ||
-        codegen_comoving_case_fn == nullptr || codegen_comoving_clock_fn == nullptr ||
-        user_data.codegen_param_values == nullptr) {
+    if (user_data.codegen_plist == nullptr || user_data.codegen_sens_fn == nullptr ||
+        user_data.codegen_sens_comoving_fn == nullptr || codegen_comoving_case_fn == nullptr ||
+        codegen_comoving_clock_fn == nullptr || user_data.codegen_param_values == nullptr) {
+        return;
+    }
+    // What the case table is asked at, by the refusals too (issues #958, #948).
+    frames.param_values = user_data.codegen_param_values;
+    if (sens.n_p <= 0) {
+        return;
+    }
+    if (n_event_roots > 0) {
+        // A column that needed its frame is refused where it would have
+        // entered it (issue #958).
+        frames.off_for_events = true;
         return;
     }
     frames.enabled = true;
@@ -5081,8 +5108,95 @@ void CvodeSimulator::Impl::setup_comoving_frames(SensitivityState &sens, int ns,
     }
     frames.f_entry_after.assign(static_cast<size_t>(ns), 0.0);
     frames.f_entry_instant.assign(static_cast<size_t>(ns), 0.0);
-    frames.param_values = user_data.codegen_param_values;
     user_data.comoving_plist = frames.plist.data();
+}
+
+// ─── A column that needs a frame it cannot have (issues #958, #948) ──────────
+//
+// A run with an event keeps every column plain. A column whose crossing is the
+// edge of a power that is singular at the run's values then integrates a
+// forcing no step resolves: (1-s)^(a-2) before a closing edge, s^(a-2) after
+// an opening one. dX/dD came back 0.4% off with any event in the model, flat in
+// the tolerance, and an opening edge ended in CV_FIRST_SRHSFUNC_ERR, the plain
+// right-hand side being no number on the edge itself. Such a run is refused at
+// the crossing where the column would have entered its frame, which is every
+// crossing its parameter moves at the case's c.
+
+void CvodeSimulator::Impl::comoving_refuse_without_a_frame(const SensitivityState &sens, double t,
+                                                           const std::vector<double> &dtstar_dp,
+                                                           double rel_tol) {
+    const ComovingFrames &frames = sens.comoving;
+    if (codegen_comoving_approach_fn == nullptr || frames.param_values == nullptr) {
+        return;
+    }
+    for (int c = 0; c < sens.n_p && static_cast<size_t>(c) < dtstar_dp.size(); ++c) {
+        const double dtstar = dtstar_dp[static_cast<size_t>(c)];
+        if (dtstar == 0.0 || !std::isfinite(dtstar)) {
+            continue;
+        }
+        const int param = sens.plist[static_cast<size_t>(c)];
+        for (int k = 0; k < 64; ++k) {
+            double shift = 0.0;
+            const int case_idx = codegen_comoving_case_fn(param, k, frames.param_values, &shift);
+            if (case_idx < 0) {
+                break;
+            }
+            if (!(std::fabs(shift - dtstar) <= rel_tol * std::max(1.0, std::fabs(shift)))) {
+                continue;
+            }
+            const int doing = codegen_comoving_approach_fn(case_idx, frames.param_values);
+            if ((doing & (kComovingApproached | kComovingOpensSingular)) == 0) {
+                continue; // nothing unbounded at these values: the plain column is right
+            }
+            std::ostringstream msg;
+            msg << "Forward sensitivity: the crossing at t=" << std::setprecision(17) << t
+                << " is the edge of a window that opens or closes as a singular power, a rate "
+                   "law that goes as a power under 1 of the time from its edge, and a requested "
+                   "parameter moves that edge. The column for such a parameter is integrated in "
+                   "a frame that moves with the edge, and a model with an event has none: its "
+                   "plain column has a forcing that is unbounded at the edge, and comes back a "
+                   "few parts in a thousand off before a closing edge, whatever the tolerance, "
+                   "or ends in a solver error after an opening one (issue #958). Drop the "
+                   "parameters that move the window from sensitivity_params, or difference "
+                   "plain runs.";
+            throw std::runtime_error(msg.str());
+        }
+    }
+}
+
+// A column that moves a counter clock itself, by the counter's initial value
+// or its rate, moves every edge the counter crosses and has no case: the cases
+// are of the parameters a rate law's power is written in. Under a power on that
+// counter that is singular, the column's share of J·S is the unbounded one.
+// dX/dT0 came back 0.2% to 0.4% off under a closing power, and the run stalled
+// under an opening one (issue #948).
+bool CvodeSimulator::Impl::comoving_singular_on_a_counter(SensitivityState &sens) {
+    ComovingFrames &frames = sens.comoving;
+    if (frames.singular_on_a_counter >= 0) {
+        return frames.singular_on_a_counter == 1;
+    }
+    frames.singular_on_a_counter = 0;
+    if (frames.param_values == nullptr || codegen_comoving_case_fn == nullptr ||
+        codegen_comoving_approach_fn == nullptr) {
+        return false;
+    }
+    const int n_params = static_cast<int>(model.parameters().size());
+    for (int param = 0; param < n_params; ++param) {
+        for (int k = 0; k < 64; ++k) {
+            double shift = 0.0;
+            const int case_idx = codegen_comoving_case_fn(param, k, frames.param_values, &shift);
+            if (case_idx < 0) {
+                break;
+            }
+            const int doing = codegen_comoving_approach_fn(case_idx, frames.param_values);
+            if ((doing & kComovingCounterClock) != 0 &&
+                (doing & (kComovingApproached | kComovingOpensSingular)) != 0) {
+                frames.singular_on_a_counter = 1;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void CvodeSimulator::Impl::comoving_rhs(double t, const double *y, int ns,
@@ -5326,6 +5440,9 @@ int CvodeSimulator::Impl::comoving_enter(SensitivityState &sens, int ns, double 
                                          const std::vector<double> &dtstar_dp, double rel_tol) {
     ComovingFrames &frames = sens.comoving;
     if (!frames.enabled) {
+        if (frames.off_for_events) {
+            comoving_refuse_without_a_frame(sens, t, dtstar_dp, rel_tol);
+        }
         return 0;
     }
     int entered = 0;
@@ -7754,6 +7871,27 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             d -= N_VGetArrayPointer(yS_guard[c])[sw.clock_species_idx0];
         }
         dtstar_all[static_cast<size_t>(c)] = d;
+    }
+    // Issue #948: a column that moves the counter itself has no frame under a
+    // power on a counter that is singular at the run's values.
+    if (!time_clock && comoving_singular_on_a_counter(sens)) {
+        for (int c = 0; c < n_sens_all; ++c) {
+            if (N_VGetArrayPointer(yS_guard[c])[sw.clock_species_idx0] == 0.0) {
+                continue;
+            }
+            std::ostringstream msg;
+            msg << "Forward sensitivity: at t=" << std::setprecision(17) << t_evt
+                << " a counter species crosses a rate-law threshold, a requested column moves "
+                   "the counter itself (its initial value or its rate), and a rate law of the "
+                   "model opens or closes as a singular power of a counter, a power under 1 of "
+                   "the time from its edge. The column for a parameter the power is written in "
+                   "is integrated in a frame that moves with the edge; one that moves the "
+                   "counter has no such frame, and comes back 0.2% to 0.4% off under a closing "
+                   "power, or stalls under an opening one (issue #948). Ask for the "
+                   "sensitivity to the window's own onset instead, which moves the edge the "
+                   "same way, or difference plain runs.";
+            throw std::runtime_error(msg.str());
+        }
     }
     const std::vector<double> dtstar_p(dtstar_all.begin(), dtstar_all.begin() + n_sens_p);
 
@@ -10681,8 +10819,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // dt*/dθ after all, but only on a run that can use it.
         // A refusal there (a near-tangential crossing) is the reason this path
         // never asked, and it must not turn a run that works into one that
-        // does not: the columns stay plain.
-        if (sens.comoving.enabled) {
+        // does not: the columns stay plain. A run whose frames are off for its
+        // events asks too, to refuse the column that needed one (issue #958).
+        if (sens.comoving.enabled || sens.comoving.off_for_events) {
             sync(x, t_evt);
             std::vector<double> tau_enter;
             try {
@@ -10970,8 +11109,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     }
 
     // Issue #545: a column this crossing moves at an emitted c enters V = S⁻ + c·f⁻,
-    // which does not jump, before the others take theirs.
-    if (sens.comoving.enabled) {
+    // which does not jump, before the others take theirs. With the frames off
+    // for the run's events, a column that needed one is refused (issue #958).
+    if (sens.comoving.enabled || sens.comoving.off_for_events) {
         comoving_enter(sens, ns, comoving_cols.data(), t_evt, f_minus, f_plus, f_plus, tau,
                        kComovingStateSwitchRelTol);
     }
