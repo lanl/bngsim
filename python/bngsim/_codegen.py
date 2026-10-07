@@ -9341,7 +9341,7 @@ def _functional_dfdp_terms(
             if weight != 0.0 and name not in unshiftable:
                 weights[name] = weight
         comoving_out.append(
-            lambda counter_powers_out=None: _functional_comoving_plan(
+            lambda counter_powers_out: _functional_comoving_plan(
                 reactions,
                 frxn_by_idx,
                 scope,
@@ -9505,7 +9505,7 @@ def generate_sens_from_model(
     # Elementary models never enter here (and the gate above already returned).
     functional_terms: dict[int, list[tuple[int, str]]] = {}
     functional_jacv_groups: list[list[str]] = []
-    comoving_thunks: list[Callable[[], _ComovingPlan | None]] = []
+    comoving_thunks: list[Callable[[list], _ComovingPlan | None]] = []
     if functional:
         functional_terms, decline = _functional_dfdp_terms(
             core, data, deadline, comoving_out=comoving_thunks
