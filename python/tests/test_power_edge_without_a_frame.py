@@ -92,13 +92,14 @@ def _expected(shape, a, param, times=T):
 # ─── A model with an event (issue #958) ─────────────────────────────────────
 
 
-def _with_event(shape, a, event=True):
+def _with_event(shape, a, event=True, extra=""):
     """The window on literal time. The event assigns a parameter nothing reads."""
     law = SHAPES[shape][0].format(s="((time-on)/D)")
     return bngsim.Model.from_antimony_string(
         f"species X; X = 0; k0 = {K0}; k1 = {K1}; a = {a}; on = {ON}; D = {WIDTH}; "
-        f"kdeg = {KDEG}; q = 0\n"
-        f"J1: -> X; k0 + piecewise(piecewise(k1*{law}, time < on + D, 0), time >= on, 0)\n"
+        f"kdeg = {KDEG}; q = 0; kj = 1.5\n"
+        f"J1: -> X; k0 + piecewise(piecewise(k1*{law}, time < on + D, 0), time >= on, 0)"
+        f"{extra}\n"
         "J2: X -> ; kdeg*X\n" + ("E1: at (time > 5): q = 1\n" if event else "")
     )
 
@@ -163,6 +164,20 @@ def test_a_run_that_ends_before_the_window_opens_is_not_refused():
     assert np.all(np.asarray(out.sensitivities) == 0.0)
 
 
+def test_a_crossing_the_parameter_moves_at_another_rate_is_not_the_frames():
+    """Control. A step at D/2 moves with D at a half, and the window's edge at
+    1: the D column has a case for the edge and none for the step, where it
+    would have stayed plain with its frames on. The run ends before the window
+    opens."""
+    model = _with_event("closing", 1.1, extra=" + piecewise(kj, time >= D/2, 0)")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["D"])
+    times = [0.0, 1.0, 2.25, 2.5]
+    out = sim.run(sample_times=times, rtol=1e-9, atol=1e-11)
+    # X gains kj from D/2 on, so dX/dD = -(kj/2)·e^(-kdeg·(t - D/2)) past it.
+    want = [0.0 if t < WIDTH / 2 else -0.75 * np.exp(-KDEG * (t - WIDTH / 2)) for t in times]
+    np.testing.assert_allclose(np.asarray(out.sensitivities)[:, 0, 0], want, rtol=1e-6, atol=1e-9)
+
+
 @pytest.mark.parametrize("shape, param", [("closing", "D"), ("opening", "on")])
 def test_the_exponent_is_asked_again_after_set_param(shape, param):
     """Singular at a = 1.1 and not at a = 3, on one Simulator, each way round."""
@@ -183,6 +198,66 @@ def test_the_exponent_is_asked_again_after_set_param(shape, param):
             else:
                 with pytest.raises(bngsim.SimulationError, match=r"\(issue #958\)"):
                     sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
+
+
+# A window that opens where the state crosses: `time - Z >= on` with Z a species
+# nothing makes. The run roots on it, and a column enters its frame at the root.
+STATE_T = [0.0, 5.0, 12.0, 20.0, 29.0, 33.0, 38.0]
+
+
+def _on_a_state_crossing(on, jump, event, a=1.9):
+    return bngsim.Model.from_antimony_string(
+        f"species X, Z; X = 1; Z = 0; k0 = 0.1; k1 = 1; a = {a}; on = {on!r}; D = 20; "
+        "kj = 0.05; q = 0\n"
+        "s := piecewise((time - on)/D, (time - Z >= on) && (time <= on + D), 0)\n"
+        "J0: -> X; (k0 + k1*s^(a - 1)*(1 - s)"
+        + (" + piecewise(kj, time - Z >= on, 0)" if jump else "")
+        + ")*X\n"
+        + ("E1: at (time > 35): q = 1\n" if event else "")
+    )
+
+
+STATE_CASES = pytest.mark.parametrize(
+    "jump, a",
+    [(False, 1.9), (False, 1.999), (True, 1.9)],
+    ids=["opens-from-0", "opens-nearly-as-a-ramp", "opens-with-a-step"],
+)
+
+
+@STATE_CASES
+def test_a_singular_edge_on_a_state_crossing_beside_an_event_is_refused(jump, a):
+    """The crossing is a root of the state and not a switch time. The run reads
+    the law as jumping there at a = 1.9, with a step or without one, and as
+    continuous at a = 1.999, and asks in each place. All three ended in
+    CV_FIRST_SRHSFUNC_ERR."""
+    sim = bngsim.Simulator(
+        _on_a_state_crossing(10.0, jump, True, a), method="ode", sensitivity_params=["on"]
+    )
+    with pytest.raises(bngsim.SimulationError, match=r"singular power.*\(issue #958\)"):
+        sim.run(sample_times=STATE_T, rtol=1e-8, atol=1e-10, timeout=120)
+
+
+@STATE_CASES
+def test_without_the_event_a_state_crossing_enters_the_frame(jump, a):
+    """Control. Against central differences of plain runs in `on`, extrapolated."""
+
+    def plain(on):
+        out = bngsim.Simulator(_on_a_state_crossing(on, jump, False, a), method="ode").run(
+            sample_times=STATE_T, rtol=1e-12, atol=1e-14
+        )
+        return np.asarray(out.species)[:, list(out.species_names).index("X")]
+
+    def d(h):
+        return (plain(10.0 + h) - plain(10.0 - h)) / (2 * h)
+
+    want = (4 * d(5e-4) - d(1e-3)) / 3
+    sim = bngsim.Simulator(
+        _on_a_state_crossing(10.0, jump, False, a), method="ode", sensitivity_params=["on"]
+    )
+    out = sim.run(sample_times=STATE_T, rtol=1e-8, atol=1e-10, timeout=120)
+    got = np.asarray(out.sensitivities)[:, list(out.species_names).index("X"), 0]
+    # X is of order 1e3 past the window, where the column is 0.
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-4)
 
 
 # ─── A column that moves the counter itself (issue #948) ────────────────────
@@ -280,6 +355,23 @@ def test_a_plain_gate_runs_in_the_counters_column(tmp_path, param):
         "r": lambda h, t: x(t, ON / (1 + h), 1 + h),
     }[param]
     want = np.array([_slope(lambda h, t=t: moved(h, t)) for t in T])
+    np.testing.assert_allclose(got, want, rtol=2e-5, atol=2e-7)
+
+
+ON_TIME = COUNTER.replace("    1 s() (t-on)/D\n", "    1 s() (time()-(on-1))/D\n").replace(
+    "k0+if(t>=on,if(t<=(on+D),k1*{shape},0),0)",
+    "k0+if(time()>=(on-1),if(time()<=(on-1+D),k1*{shape},0),0)+if(t>=5.5,1.5,0)",
+)
+
+
+@pytest.mark.parametrize("shape", ["closing", "opening"])
+def test_a_singular_power_on_time_itself_is_not_the_counters(tmp_path, shape):
+    """Control. The window is on literal time, which no column moves, and the
+    counter gates a step. The counter's own column has nothing unbounded in
+    it."""
+    got = _run(_on_a_counter(tmp_path, shape, 1.1, text=ON_TIME), ["T0"])[:, 0]
+    # The counter reads 5.5 at t = 4.5 - (T0 - 1), and X gains 1.5 from there on.
+    want = [0.0 if t < 4.5 else 1.5 * np.exp(-KDEG * (t - 4.5)) for t in T]
     np.testing.assert_allclose(got, want, rtol=2e-5, atol=2e-7)
 
 
