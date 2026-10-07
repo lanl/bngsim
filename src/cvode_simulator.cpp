@@ -2539,8 +2539,8 @@ struct CvodeSimulator::Impl {
     // is singular at the run's values.
     void comoving_refuse_without_a_frame(const SensitivityState &sens, double t,
                                          const std::vector<double> &dtstar_dp, double rel_tol);
-    // The same asked of every switch time the run has ahead of `t`, so that a
-    // closing edge is refused before the plain column is carried up to it.
+    // The same asked of every switch time the run has, before it starts, so
+    // that a closing edge is refused before the plain column is carried up to it.
     void comoving_refuse_ahead_without_a_frame(const SensitivityState &sens);
     // Issue #948: refuses a column, parameter or initial-condition axis, with a
     // nonzero row of a counter species under a power that is singular at the
