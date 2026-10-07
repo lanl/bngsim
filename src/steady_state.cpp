@@ -2168,7 +2168,10 @@ static RootCertificate certify_root_stability(NetworkModel &model, SteadyStateRh
 // amount (issue #704). The seeds Python derives from the parameter graph where
 // it supplied any, as the time-course seeding takes them (issue #43); else the
 // loader's identity references, for a species still at its initial condition
-// (issue #113). Read while the model still holds the starting state.
+// (issue #113), none once save_concentrations() has made the state its own
+// baseline (issue #79), and each over the volume the loader divides an
+// amount-valued species by. Read while the model still holds the starting
+// state.
 static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
                                                       const SteadyStateOptions &opts, int ns) {
     const int np = static_cast<int>(opts.sensitivity_params.size());
@@ -2195,8 +2198,14 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
         }
         return dx0;
     }
+    if (model.ic_baseline_saved() || model.ic_state_dirty()) {
+        return dx0;
+    }
     const auto &species = model.species();
-    for (const auto &ref : model.species_ic_param_refs()) {
+    const auto &refs = model.species_ic_param_refs();
+    const std::vector<double> divisors = model.species_ic_param_ref_divisors();
+    for (size_t r = 0; r < refs.size(); ++r) {
+        const auto &ref = refs[r];
         const auto it = columns.find(ref.second);
         if (it == columns.end() || ref.first < 0 || ref.first >= ns) {
             continue;
@@ -2206,7 +2215,7 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
             continue;
         }
         for (const int p : it->second) {
-            dx0[static_cast<size_t>(ref.first) * np + p] = 1.0;
+            dx0[static_cast<size_t>(ref.first) * np + p] = 1.0 / divisors[r];
         }
     }
     return dx0;
@@ -2389,12 +2398,25 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         // see detect_conservation_laws), so that is dT_k/dp over its own
         // coefficient. It forces the unknowns through ∂f/∂y_dep, and is added
         // back to the dependent below.
+        //
+        // A law with a species the mask left out is not differentiated. That
+        // species is held where the integration left it, and what it took of
+        // the total is what moved: for S + E <-> ES -> E + P with P masked
+        // out, P ends at S0 and S and ES at 0 whatever S0 is. The total stays
+        // fixed for such a law, as it was.
         std::vector<double> dT(static_cast<size_t>(cl.n_laws) * np, 0.0);
         std::vector<double> moved(static_cast<size_t>(cl.n_laws) * np, 0.0);
         bool totals_move = false;
         for (int k = 0; k < cl.n_laws; ++k) {
             const int dep = cl.dependent[k];
             const double cd = cl.coefficients[k][dep];
+            bool held = false;
+            for (const int i : sub.excluded) {
+                held = held || cl.coefficients[k][i] != 0.0;
+            }
+            if (held) {
+                continue;
+            }
             for (int p = 0; p < np; ++p) {
                 double total = 0.0;
                 for (int i = 0; i < ns; ++i) {
@@ -2420,6 +2442,32 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                         dfdp_red[p * n_ind + i] += Jcol_dep[solve_idx[i]] * m;
                     }
                 }
+            }
+        }
+
+        // A fixed species is no unknown and is in no law, and stays where it
+        // started: where a parameter sets that, `$A() A0`, its row is the
+        // seed, and it forces the unknowns through ∂f/∂x_fixed. Both were
+        // left at 0: dX*/dA0 = 0 for kp/kd = 2 in `$A -> $A + X`, `X ->`.
+        std::vector<int> set_by_a_parameter;
+        for (int i = 0; i < ns; ++i) {
+            if (!model.species()[static_cast<size_t>(i)].fixed) {
+                continue;
+            }
+            bool seeded = false;
+            for (int p = 0; p < np; ++p) {
+                const double seed = dx0[static_cast<size_t>(i) * np + p];
+                if (seed == 0.0) {
+                    continue;
+                }
+                seeded = true;
+                const double *Jcol = J.data() + static_cast<size_t>(i) * ns;
+                for (int r = 0; r < n_ind; ++r) {
+                    dfdp_red[p * n_ind + r] += Jcol[solve_idx[r]] * seed;
+                }
+            }
+            if (seeded) {
+                set_by_a_parameter.push_back(i);
             }
         }
 
@@ -2451,6 +2499,10 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             // Fill the solved species' sensitivity
             for (int i = 0; i < n_ind; ++i)
                 result.sensitivity[solve_idx[i] * np + p] = x_data[i];
+            for (const int i : set_by_a_parameter) {
+                result.sensitivity[static_cast<size_t>(i) * np + p] =
+                    dx0[static_cast<size_t>(i) * np + p];
+            }
 
             // Reconstruct dependent species sensitivity from conservation:
             // Σ L[k,i] * dy_i/dp = dT_k/dp →

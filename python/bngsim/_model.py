@@ -1751,6 +1751,8 @@ class Model:
             return out
         # Nothing injected ⇒ the C++ fallback identity loop seeds this run, so
         # report *its* rows. Reporting {} here would be a silent under-count.
+        if self._core.ic_baseline_saved:
+            return out
         live = np.asarray(self.get_state(), dtype=np.float64)
         baseline = np.asarray(self._core.get_initial_state(), dtype=np.float64)
         for sp_i, p_i in self._core.species_ic_param_refs:
@@ -1787,7 +1789,16 @@ class Model:
         # difference says 0. ``compute_ic_param_sens_seed`` now supplies both
         # halves, and they cancel to that 0.
         declared = self._declared_ic_sens
-        retired = self._superseded_ic_rows(seeds, declared) if seeds else set()
+        if seeds and self._core.ic_baseline_saved:
+            # save_concentrations() made the state its own baseline: the
+            # declared initial conditions no longer describe it, and
+            # ``set_param`` no longer moves it (issue #79). No parameter reaches
+            # it through them. The rows were kept, and a run from a saved
+            # baseline was seeded as from the model file: dY/dA0 = [1/3, 2/3]
+            # at the steady state of A <-> B for an A(0) that A0 does not set.
+            retired = {entry[0] for entry in seeds}
+        else:
+            retired = self._superseded_ic_rows(seeds, declared) if seeds else set()
         if retired:
             seeds = [entry for entry in seeds if entry[0] not in retired]
         if declared:

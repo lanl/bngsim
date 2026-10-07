@@ -348,3 +348,250 @@ def test_a_compartment_size_with_no_conservation_law_is_not_refused():
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
     out = sim.steady_state(sensitivity_params=["C", "kd"], tol=1e-12)
     assert out.converged
+
+
+# ─── What the first review found ────────────────────────────────────────────
+
+
+def _michaelis(tmp_path):
+    """S + E <-> ES -> E + P: P is a pure sink, and is in the law S + ES + P."""
+    return _net(
+        tmp_path,
+        "mm",
+        [("S0", 4), ("E0", 1.2), ("kf", 1), ("kr", 0.5), ("kc", 0.3)],
+        ["S() S0", "E() E0", "ES() 0", "P() 0"],
+        ["1,2 3 kf", "3 1,2 kr", "3 2,4 kc"],
+    )
+
+
+@METHODS
+def test_a_total_with_a_species_the_mask_leaves_out_is_held(tmp_path, method):
+    """With P masked out, as the documented ``mask=~is_pure_sink()`` has it,
+    P ends at S0 and S and ES at 0 whatever S0 is: the total is what the sink
+    takes, and the S0 column is 0 as it was (an earlier cut of this branch
+    gave the total to the law's dependent, [0.4, -0.6, 0.6]). The enzyme's
+    total has no sink in it and moves E, which came back 0."""
+    model = bngsim.Model.from_net(_michaelis(tmp_path))
+    mask = ~np.asarray(model.is_pure_sink())
+    assert list(mask) == [True, True, True, False]
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["S0", "E0"], method=method, tol=1e-12, mask=mask
+    )
+    got = np.asarray(out.sensitivity)
+    np.testing.assert_allclose(got[:3, 0], [0.0, 0.0, 0.0], atol=1e-9)
+    assert np.isnan(got[3]).all()
+    np.testing.assert_allclose(got[:3, 1], [0.0, 1.0, 0.0], atol=1e-9)
+
+
+def test_a_drain_through_a_masked_sink_is_held(tmp_path):
+    """Control. A <-> B -> P with P masked out: A* = B* = 0 whatever A0 is."""
+    path = _net(
+        tmp_path,
+        "drain",
+        [("A0", 3), ("kf", 1), ("kr", 0.5), ("kp", 0.7)],
+        ["A() A0", "B() 0", "P() 0"],
+        ["1 2 kf", "2 1 kr", "2 3 kp"],
+    )
+    model = bngsim.Model.from_net(path)
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["A0"], tol=1e-12, mask=~np.asarray(model.is_pure_sink())
+    )
+    got = np.asarray(out.sensitivity)[:, 0]
+    np.testing.assert_allclose(got[:2], [0.0, 0.0], atol=1e-9)
+    assert np.isnan(got[2])
+
+
+def _saved(tmp_path, set_after=None):
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    model.set_concentration("A()", 5.0)
+    model.save_concentrations()
+    if set_after is not None:
+        model.set_param("A0", set_after)
+    return model
+
+
+@pytest.mark.parametrize("set_after", [None, 7.0])
+def test_a_saved_baseline_is_set_by_no_parameter(tmp_path, set_after):
+    """``save_concentrations()`` makes the state its own baseline: A(0) is 5
+    whatever A0 is, and ``set_param`` no longer moves it. The steady state does
+    not move with A0."""
+    model = _saved(tmp_path, set_after)
+    assert model.effective_ic_sensitivity(["A0"]) == {}
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["A0", "kf"], tol=1e-12
+    )
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 1], [-10 / 9, 10 / 9], rtol=1e-7)
+
+
+def test_a_time_course_from_a_saved_baseline_is_seeded_by_no_parameter(tmp_path):
+    """The same rule for the seeding a time course starts from, which the
+    steady state takes its own from: dY/dA0 came back [1/3, 2/3] at t = 400
+    for an A(0) that A0 does not set."""
+    model = _saved(tmp_path)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["A0", "kf"])
+    run = sim.run(t_span=(0.0, 400.0), n_points=3, rtol=1e-10, atol=1e-12)
+    got = np.asarray(run.sensitivities)[-1]
+    np.testing.assert_allclose(got[:, 0], [0.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(got[:, 1], [-10 / 9, 10 / 9], rtol=1e-6)
+
+
+def test_the_core_seeds_nothing_from_a_saved_baseline(tmp_path):
+    """Control. Asked with no seeds at all, the core follows the same rule."""
+    from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
+
+    opts = SteadyStateOptions()
+    opts.method = "newton"
+    opts.tol = 1e-12
+    opts.sensitivity_params = ["A0"]
+    out = find_steady_state(_saved(tmp_path)._core, opts)
+    np.testing.assert_allclose(np.asarray(out.sensitivity_data).ravel(), [0.0, 0.0], atol=1e-12)
+
+
+def test_the_core_seed_is_over_the_volume_of_an_amount_valued_species():
+    """An amount-declared species in a compartment of size 2 starts at A0/2:
+    the core's own seed was 1, and the column [1/3, 2/3] for [1/6, 1/3]."""
+    from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
+
+    text = (
+        "compartment C; C = 2; substanceOnly species A in C, B in C; A0 = 3; A = A0; B = 0;"
+        " kf = 1; kr = 0.5\nJ1: A -> B; kf*A\nJ2: B -> A; kr*B\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    opts = SteadyStateOptions()
+    opts.method = "newton"
+    opts.tol = 1e-12
+    opts.sensitivity_params = ["A0"]
+    out = find_steady_state(model._core, opts)
+    np.testing.assert_allclose(np.asarray(out.sensitivity_data).ravel(), [1 / 6, 1 / 3], rtol=1e-7)
+
+
+def test_a_state_a_run_advanced_is_refused_for_the_parameter_that_set_it(tmp_path):
+    """After ``run()`` to t = 0.7 the total is still A0, and the state no
+    longer says so: the seed is retired with the initial condition it
+    described, and dY/dA0 came back [0, 0] for [1/3, 2/3]. A time course
+    refuses sensitivities on such a state (GH #210). A rate constant's column
+    does not go through the total and is what it is from a fresh start, and
+    ``reset()`` brings the other back."""
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    sim = bngsim.Simulator(model, method="ode")
+    sim.run(t_span=(0.0, 0.7), n_points=3)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+        sim.steady_state(sensitivity_params=["A0", "kf"], tol=1e-12)
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-2 / 3, 2 / 3], rtol=1e-7)
+    model.reset()
+    out = sim.steady_state(sensitivity_params=["A0"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [1 / 3, 2 / 3], rtol=1e-7)
+
+
+def test_an_advanced_state_is_refused_for_a_declared_seed_too(tmp_path):
+    """A seed the caller declared for a conserved species is of the state it
+    was declared on."""
+    model = bngsim.Model.from_net(_isomerization(tmp_path, a0="3"))
+    model.declare_ic_sensitivity({"A()": {"kr": 2.0}})
+    sim = bngsim.Simulator(model, method="ode")
+    sim.run(t_span=(0.0, 0.7), n_points=3)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+        sim.steady_state(sensitivity_params=["kr"], tol=1e-12)
+
+
+def test_an_advanced_state_with_no_conservation_law_is_not_refused(tmp_path):
+    """Control. With nothing conserved the steady state keeps nothing of the
+    start, advanced or not."""
+    path = _net(
+        tmp_path,
+        "open",
+        [("A0", 3), ("kp", 1), ("kd", 0.5)],
+        ["A() A0"],
+        ["0 1 kp", "1 0 kd"],
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode")
+    sim.run(t_span=(0.0, 0.7), n_points=3)
+    out = sim.steady_state(sensitivity_params=["A0", "kp"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[0], [0.0, 2.0], rtol=1e-7, atol=1e-12)
+
+
+TWO_COMPARTMENTS = (
+    "compartment C1, C2; C1 = 1; C2 = {c2}; species A in C1, B in C2; A0 = 3; A = A0; B = 0;"
+    " kf = 1; kr = 0.5\nJ1: A -> B; kf*A\nJ2: B -> A; kr*B\n"
+)
+
+
+@pytest.mark.parametrize("params", [["A0"], ["kf"], ["A0", "kf"]])
+def test_a_law_across_compartments_of_different_size_is_refused(params):
+    """A in a compartment of size 1 and B in one of size 3: what is conserved
+    is A + 3·B, and the law is found as A + B (issue #758). Every column of the
+    reduced solve is off: dA*/dkf = -0.286 for -0.367, and dA*/dA0 = 1/3 for
+    1/7 with the total differentiated."""
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(TWO_COMPARTMENTS.format(c2=3)), method="ode"
+    )
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"different size.*#758"):
+        sim.steady_state(sensitivity_params=params, tol=1e-12)
+
+
+def test_a_law_across_compartments_of_one_size_runs():
+    """Control for the refusal. With both at size 1 the law found is the one
+    that holds."""
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(TWO_COMPARTMENTS.format(c2=1)), method="ode"
+    )
+    out = sim.steady_state(sensitivity_params=["A0", "kf"], tol=1e-12)
+    names = list(out.species_names)
+    got = np.asarray(out.sensitivity)[[names.index("A"), names.index("B")]]
+    np.testing.assert_allclose(got[:, 0], [1 / 3, 2 / 3], rtol=1e-7)
+    np.testing.assert_allclose(got[:, 1], [-2 / 3, 2 / 3], rtol=1e-7)
+
+
+def test_a_fixed_species_set_by_a_parameter_moves_what_reads_it():
+    """``$A`` at A0 makes X at kp·A and X decays at kd: X* = kp·A0/kd, and
+    Y := 2·X. A fixed species is no unknown and is in no law, so its seed
+    never reached the solve: dY/dA0 came back [0, 0, 0] for [1, 2, 4]."""
+    text = (
+        "species $A, X, $Y; A0 = 3; A = A0; X = 0; kp = 1; kd = 0.5; Y := 2*X\n"
+        "J1: -> X; kp*A\nJ2: X -> ; kd*X\n"
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+    out = sim.steady_state(sensitivity_params=["A0", "kp"], tol=1e-12)
+    names = list(out.species_names)
+    got = np.asarray(out.sensitivity)[[names.index(n) for n in ("A", "X", "Y")]]
+    np.testing.assert_allclose(got[:, 0], [1.0, 2.0, 4.0], rtol=1e-7)
+    np.testing.assert_allclose(got[:, 1], [0.0, 6.0, 12.0], rtol=1e-7, atol=1e-12)
+
+
+def _fixed_source(tmp_path):
+    """$A at A0 makes X at kp; X decays at kd and leaves a count in P."""
+    return _net(
+        tmp_path,
+        "fixed",
+        [("A0", 3), ("kp", 1), ("kd", 0.5), ("ks", 0.2)],
+        ["$A() A0", "X() 0", "P() 0"],
+        ["1 1,2 kp", "2 0 kd", "2 2,3 ks"],
+    )
+
+
+def test_a_fixed_species_in_a_net_model_with_a_mask(tmp_path):
+    """The same in a ``.net`` model, on the masked path: [0, 0, nan] for
+    [1, 2, nan]."""
+    model = bngsim.Model.from_net(_fixed_source(tmp_path))
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["A0", "kp"], tol=1e-12, mask=~np.asarray(model.is_pure_sink())
+    )
+    got = np.asarray(out.sensitivity)
+    np.testing.assert_allclose(got[:2, 0], [1.0, 2.0], rtol=1e-7)
+    np.testing.assert_allclose(got[:2, 1], [0.0, 6.0], rtol=1e-7, atol=1e-12)
+    assert np.isnan(got[2]).all()
+
+
+def test_a_fixed_species_set_by_hand_is_set_by_no_parameter(tmp_path):
+    """Control. Moved off its initial condition, the fixed species is where it
+    was put whatever A0 is (issue #113)."""
+    model = bngsim.Model.from_net(_fixed_source(tmp_path))
+    model.set_concentration("A()", 5.0)
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["A0", "kp"], tol=1e-12, mask=~np.asarray(model.is_pure_sink())
+    )
+    got = np.asarray(out.sensitivity)
+    np.testing.assert_allclose(got[:2, 0], [0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(got[:2, 1], [0.0, 10.0], rtol=1e-7, atol=1e-12)

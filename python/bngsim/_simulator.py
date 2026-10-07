@@ -1444,6 +1444,90 @@ class Simulator:
                 f"Model.from_sbml(path, compartment_sizes={{...}})."
             )
 
+    def _raise_if_conserved_total_sensitivity_unknown(self, params: Sequence[str]) -> None:
+        """Refuse a steady-state column whose conserved totals' own derivative
+        is not known (issue #704).
+
+        ``steady_state(sensitivity_params=...)`` solves the reduced system with
+        each conserved total ``T_k = Σ L[k,i]·x_i`` held, and differentiates the
+        total through ``∂x(0)/∂p``. Three models have a column that does not
+        give:
+
+        - **a compartment size**, in a model with a conservation law. What is
+          conserved is an amount, which a size does not move, and what the solve
+          holds is a total of concentrations, with the laws found for the sizes
+          the model loaded at (issue #758). Over the corpus the size's column
+          was 0 where the truth was not in 21 of 23 models with a conservation
+          law, and with the total differentiated it was right in 13 of them and
+          as much as 1e7 for −6e4 in another;
+        - **any parameter**, where a law spans compartments of different size.
+          The law is found as a total of concentrations, ``A + B``, where the
+          conserved quantity is ``V1·A + V2·B`` (issue #758): every column of
+          the reduced solve is off, dA*/dkf = −0.286 for −0.367;
+        - **a parameter that sets the initial amount of a conserved species**,
+          on a state a run has advanced. The total is still what the parameter
+          made it, and the state no longer says so: its seed is retired with
+          the initial condition it described, and the column came back 0 for
+          1/3. A time course refuses sensitivities on such a state (GH #210).
+        """
+        model = self._model
+        core = model._core
+        laws = core.conservation_laws
+        if int(laws["n_laws"]) == 0:
+            return
+        sizes = sorted(set(params) & set(model.compartment_size_params))
+        if sizes:
+            raise SensitivityUnsupportedError(
+                "steady_state(sensitivity_params=...) is not supported for the compartment "
+                f"size{'s' if len(sizes) != 1 else ''} {sizes} of a model with a conservation "
+                "law. A conserved total is an amount, which a compartment's size does not "
+                "move, and the steady-state solve holds totals of concentrations: the size's "
+                "column came back 0 where the steady state moves with it, and is not right "
+                "with the totals differentiated either (issues #704, #758). Difference "
+                "steady states solved again at a moved size, or take the column from a time "
+                "course run to the steady state."
+            )
+        coefficients = [list(row) for row in laws["coefficients"]]
+        if len(model.compartment_size_params) > 1:
+            volumes = [float(sp["volume_factor"]) for sp in core.codegen_data()["species"]]
+            names = model.species_names
+            for row in coefficients:
+                members = [i for i, c in enumerate(row) if c != 0.0]
+                if len({volumes[i] for i in members}) > 1:
+                    raise SensitivityUnsupportedError(
+                        "steady_state(sensitivity_params=...) is not supported for this "
+                        "model: a conservation law of it spans compartments of different "
+                        f"size ({', '.join(names[i] for i in members[:4])}"
+                        f"{', ...' if len(members) > 4 else ''}). The law is found as a total "
+                        "of concentrations where what is conserved is a total of amounts, so "
+                        "the reduced solve the steady-state sensitivity is taken from holds "
+                        "the wrong quantity and every column of it is off (issues #704, "
+                        "#758). Take the columns from a time course run to the steady state."
+                    )
+        if not core.ic_state_dirty:
+            return
+        from bngsim._codegen import compute_ic_param_sens_seed
+
+        in_a_law = {i for row in coefficients for i, c in enumerate(row) if c != 0.0}
+        pnames, species = model.param_names, model.species_names
+        seeded = {pnames[p] for sp, p, coeff in compute_ic_param_sens_seed(core) if sp in in_a_law}
+        for name, declared in model._declared_ic_sens.items():
+            if name in species and species.index(name) in in_a_law:
+                seeded |= set(declared)
+        moved = sorted(seeded & set(params))
+        if moved:
+            raise SensitivityUnsupportedError(
+                "steady_state(sensitivity_params=...) is not supported for "
+                f"{moved} on a carried-over species state (the model was advanced by a "
+                "previous run() or set manually, with no reset since). "
+                f"{'Each sets' if len(moved) != 1 else 'It sets'} the initial amount of a "
+                "species in a conservation law, so the steady state moves with it through "
+                "the conserved total, and the state no longer says by how much: the column "
+                "came back 0 where the total moves (issue #704; a time course refuses "
+                "sensitivities on such a state too, GH #210). reset() the model to solve "
+                "from its initial condition."
+            )
+
     def _raise_if_event_sensitivities(self, param_names: list[str] | None = None) -> None:
         """Refuse output sensitivities only for unsupported event subclasses.
 
@@ -6030,6 +6114,9 @@ class Simulator:
             # rewrites rather than a coordinate, so the column is structurally
             # zero at steady state too.
             self._raise_if_function_backed_params(list(sensitivity_params))
+            # Issue #704 — what a conserved total does to a column, before
+            # anything is compiled for it.
+            self._raise_if_conserved_total_sensitivity_unknown(list(sensitivity_params))
             # Issue #63 — the same hard codegen requirement run() and
             # compute_all_sensitivities() apply (GH #214): dY_ss/dp wants the
             # analytical ∂f/∂p the codegen sensitivity RHS emits, so a request
@@ -6089,25 +6176,6 @@ class Simulator:
             triples, injected = self._model._ic_sensitivity_triples()
             if injected:
                 opts.set_ic_param_sens([t for t in triples if t[2] != 0.0] or [(-1, 0, 0.0)])
-            # A compartment size is not such a parameter. What is conserved is
-            # an amount, which a size does not move, and what the solve holds
-            # is a total of concentrations, with the laws found for the sizes
-            # the model loaded at (issue #758). Over the corpus the column of a
-            # size was 0 where the truth was not in 21 of 23 models with a
-            # conservation law, and with the seed above it was right in 13 of
-            # them and as much as 1e7 for -6e4 in another. Neither is returned.
-            sizes = sorted(set(sensitivity_params) & set(self._model.compartment_size_params))
-            if sizes and int(self._model._core.conservation_laws["n_laws"]) > 0:
-                raise SensitivityUnsupportedError(
-                    "steady_state(sensitivity_params=...) is not supported for the compartment "
-                    f"size{'s' if len(sizes) != 1 else ''} {sizes} of a model with a conservation "
-                    "law. A conserved total is an amount, which a compartment's size does not "
-                    "move, and the steady-state solve holds totals of concentrations: the size's "
-                    "column came back 0 where the steady state moves with it, and is not right "
-                    "with the totals differentiated either (issues #704, #758). Difference "
-                    "steady states solved again at a moved size, or take the column from a time "
-                    "course run to the steady state."
-                )
         # GH #247 — an AssignmentRule-target species is emitted ``fixed``, so its
         # RHS row is identically zero and it is not an unknown of f(y) = 0 at all:
         # its value is dictated by the rule. Leaving it in makes J structurally

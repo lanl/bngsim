@@ -566,8 +566,26 @@ where the run starts, a parameter that sets an initial amount moves the steady
 state through the total, and its `dY_ss/dp` column carries that: `[1/3, 2/3]`
 for `A0` at `kf = 1`, `kr = 0.5` (issue #704). The seeding is the one a time
 course starts from (`Model.effective_ic_sensitivity`), read from the state the
-solve starts at, so a species that has been moved off its initial condition
-contributes nothing. The initial-condition axis itself is not computed, and
+solve starts at: a species that has been moved off its initial condition
+contributes nothing, and neither does any species once `save_concentrations()`
+has made the state its own baseline. A fixed species that a parameter sets,
+`$A() A0`, moves what reads it by the same seed.
+
+Three columns are refused, with `SensitivityUnsupportedError`:
+
+- a parameter that sets the initial amount of a conserved species, on a state a
+  `run()` has advanced. The total is still what the parameter made it, and the
+  state no longer says so (a time course refuses sensitivities there too).
+  `reset()` first;
+- a compartment size, in a model with a conservation law;
+- any parameter, where a conservation law spans compartments of different size:
+  the law is found as a total of concentrations where what is conserved is a
+  total of amounts (issue #758), and every column of the reduced solve is off.
+
+With `mask=`, a conservation law that holds a masked-out species keeps its
+total fixed, as before: what a pure sink takes of the total is what moved.
+
+The initial-condition axis itself is not computed, and
 `output_sensitivities(..., axis="ic")` raises.
 
 ### Pre-equilibration / carry-over output sensitivities (`carry_sensitivities=True`)
@@ -628,8 +646,9 @@ derivative with the state:
 * `save_concentrations()` (unlabeled) redefines the IC baseline to the current
   state, so the new baseline **inherits** its `dx/dθ` — the state did not change,
   so neither did its derivative — and `reset()` restores both. A baseline saved
-  with no carried derivative is θ-independent literal ICs, i.e. fresh-start
-  seeding as before.
+  with no carried derivative is θ-independent literal ICs: no parameter seeds
+  it, where a fresh start is seeded from the model's own initial-condition
+  expressions (issue #704).
 * `save_concentrations(label=...)` / `restore_concentrations(label)` capture and
   restore a named snapshot's `dx/dθ` the same way.
 * `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
