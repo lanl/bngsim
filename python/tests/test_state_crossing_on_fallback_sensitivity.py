@@ -600,7 +600,7 @@ def test_a_sign_of_the_time_that_a_requested_parameter_moves_is_refused(tmp_path
 CHOICES_THAT_BEND = {
     "a-floor-under-a-divisor": "kb*Aobs/max(Aobs,0.01)",
     "a-magnitude-in-a-sum-it-divides-by": "kb/(1+abs(Aobs-thr))",
-    "a-root-of-a-magnitude-in-a-sum": "kb*Aobs/(1+0.5*(Aobs+sqrt(abs(Aobs*Aobs-thr))))",
+    "a-root-of-what-is-above-zero": "kb*Aobs/(1+0.5*(Aobs+sqrt(1+abs(Aobs*Aobs-thr))))",
     "a-clamp": "kb*max(0,min(Aobs,thr))",
     "the-lesser-of-two-rates": "min(kb*Aobs/(thr+Aobs),kb*Aobs/(1+Aobs))",
     "a-positive-power-of-a-magnitude": "kb*abs(thr-Aobs)^1.5",
@@ -728,10 +728,9 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         ("kb*X*abs(X)^(Y*Y)", True),
         ("kb*max(thr-X,0)^0.1", True),
         ("kb*max(thr-X,0)^0.49", True),
-        ("kb*max(thr-X,0)^0.5", False),
-        ("kb*sqrt(max(thr-X,0))", False),
         ("kb*max(thr-X,0)^near", False),
-        ("kb*max(thr-X,0)^(near-1)", False),
+        ("kb*max(thr-X,0)^(near-0.5)", False),
+        ("kb*max(thr-X,0)^(near-1)", True),
         ("kb*max(thr-X,0)^(near-1.6)", True),
         ("kb*max(thr-X,0)^(asked-2.1)", True),
         ("kb*max(X,0.5)^0.1", False),
@@ -770,6 +769,35 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         # root of e squared.
         ("kb*max(X-thr,0)/sqrt((X-thr)*(X-thr))", True),
         ("kb*max(X-thr,0)/sqrt((X-thr)*(X-thr)+pos)", False),
+        # A power under 1, a root or a logarithm of what holds a choice and
+        # may be 0, wherever in it the choice is.
+        ("kb*max(thr-X,0)^0.5", True),
+        ("kb*max(thr-X,0)^0.99", True),
+        ("kb*max(thr-X,0)^1", False),
+        ("kb*max(thr-X,0)^1.5", False),
+        ("kb*max(thr-X,0)^zero", False),
+        ("kb*max(thr-X,0)^Y", True),
+        ("kb*pow(max(thr-X,0),0.5)", True),
+        ("kb*(thr-min(X,thr))^0.1", True),
+        ("kb*(abs(thr-X)+(thr-X))^0.1", True),
+        ("kb*sqrt(max(thr-X,0))", True),
+        ("kb*sqrt(sqrt(max(thr-X,0)))", True),
+        ("kb*(max(thr-X,0)^0.5)^0.5", True),
+        ("kb*exp(0.1*log(max(thr-X,0)))", True),
+        ("kb*log(abs(X))", True),
+        ("kb*hypot(max(thr-X,0),0)", True),
+        ("kb*hypot(max(thr-X,0),pos)", False),
+        ("kb*acos(min(X,1))", True),
+        ("kb*asin(max(X,-1))", True),
+        # Known above 0, and a root of what holds no choice.
+        ("kb*sqrt(pos+max(thr-X,0))", False),
+        ("kb*max(X,0.01)^0.5", False),
+        ("kb*log(max(X,pos))", False),
+        ("kb*sqrt(X)*abs(Y)", False),
+        ("kb*acos(X)*abs(Y)", False),
+        # An exponent that is requested and within a quarter of itself of 1.
+        ("kb*max(thr-X,0)^near1", True),
+        ("kb*max(thr-X,0)^asked", False),
     ],
 )
 def test_which_quotient_is_named(law, found):
@@ -780,7 +808,9 @@ def test_which_quotient_is_named(law, found):
 
     values = {"kb": 3.0, "thr": 4.4, "pos": 2.0, "neg": -2.0, "asked": 3.0, "zero": 0.0}
     values["near"] = 2.001
-    got = _quotient_across_a_choice(_syntax_tree(law), values, frozenset({"T"}), {"asked", "near"})
+    values["near1"] = 1.2
+    asked = {"asked", "near", "near1"}
+    got = _quotient_across_a_choice(_syntax_tree(law), values, frozenset({"T"}), asked)
     assert (got is not None) is found
 
 
@@ -1247,8 +1277,9 @@ def test_what_is_kept_between_runs_does_not_grow(tmp_path):
         model.set_param("kb", kb)
         model.reset()
         sim.run(t_span=(0.0, 1.0), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
-        sizes.add(len(sim._fallback_scan_cache))
-    assert len(sizes) == 1 and sizes.pop() <= 4
+        (store,) = sim._fallback_scan_cache.values()
+        sizes.add(sum(len(view) if isinstance(view, dict) else 1 for view in store.values()))
+    assert len(sizes) == 1 and sizes.pop() <= 6
 
 
 def test_a_branch_scan_that_fails_refuses(tmp_path, monkeypatch):
@@ -1539,10 +1570,10 @@ def test_a_requested_derived_parameter_near_its_threshold_is_refused(tmp_path):
 
 def test_an_equality_written_with_one_equals_sign_is_refused(tmp_path):
     """ExprTk's ``=`` outside any ``if()``: ``kb*(max(Aobs − thr, 0) = 0)`` is a
-    step that neither the condition scan nor the syntax tree reads. dY/dk came
-    back 4.41 for 2.46."""
+    step that the scan of conditions does not read. dY/dk came back 4.41 for
+    2.46."""
     sim = _simulator(tmp_path, "kb*(max(Aobs-thr,0)=0)", DECLINED, ["k", "thr"], decays=True)
-    _refused(sim, "single =", rtol=1e-4)
+    _refused(sim, "Eq(max(Aobs - thr, 0), 0)", rtol=1e-4)
 
 
 def test_an_equality_of_numbers_written_with_one_equals_sign_runs(tmp_path):
@@ -1552,25 +1583,49 @@ def test_an_equality_of_numbers_written_with_one_equals_sign_runs(tmp_path):
     np.testing.assert_allclose(_y_columns(sim), [0.0], atol=1e-9)
 
 
-@pytest.mark.parametrize(
-    "law",
-    ["kb*max(thr-Aobs,0)^0.1", "kb*max(thr-Aobs,0)^0.3", "kb*(atan2(thr-Aobs,-1)/3.14159+1)/2"],
-    ids=["a-tenth-power-of-a-bend", "a-power-of-0.3", "a-branch-cut"],
-)
-def test_a_bend_with_no_bound_on_its_slope_and_an_unknown_call_are_refused(tmp_path, law):
+SHARP_BENDS = {
+    "a-tenth-power-of-a-bend": "kb*max(thr-Aobs,0)^0.1",
+    "a-power-of-0.3": "kb*max(thr-Aobs,0)^0.3",
+    "a-root": "kb*max(thr-Aobs,0)^0.5",
+    "a-power-of-0.75": "kb*max(thr-Aobs,0)^0.75",
+    "the-choice-inside-a-difference": "kb*(thr-min(Aobs,thr))^0.1",
+    "the-choice-inside-a-sum": "kb*(abs(thr-Aobs)+(thr-Aobs))^0.1",
+    "two-roots": "kb*sqrt(sqrt(max(thr-Aobs,0)))",
+    "two-powers-of-a-half": "kb*(max(thr-Aobs,0)^0.5)^0.5",
+    "a-power-written-with-exp-and-log": "kb*exp(0.1*log(max(thr-Aobs,0)))",
+    "a-root-of-a-magnitude": "kb*Aobs/(1+0.5*(Aobs+sqrt(abs(Aobs*Aobs-thr))))",
+    "a-branch-cut": "kb*(atan2(thr-Aobs,-1)/3.14159+1)/2",
+}
+
+
+@pytest.mark.parametrize("case", sorted(SHARP_BENDS))
+def test_a_bend_with_no_bound_on_its_slope_and_an_unknown_call_are_refused(tmp_path, case):
     """``max(thr − A, 0)^0.1`` is continuous and leaves 0 with a slope that has
     no bound: [3.89, 1.33] for [3.38, 1.19] at a tolerance of 1e-4, and no
-    finish at 1e-6. At 0.3 it was 1.6% off at 1e-4 and 0.4% at 1e-6. ``atan2``
-    has a branch cut: [-1.17, -0.42] for [1.30, 0.26] at any tolerance."""
-    sim = _simulator(tmp_path, law, DECLINED, ["k", "thr"], decays=True)
+    finish at 1e-6. At 0.3 it was 1.6% off at 1e-4 and 0.4% at 1e-6. At a
+    half dY/dk follows the tolerance and dY/dthr does not: 2.6e-4 off at 1e-6
+    and 5.8e-5 at 1e-8. The same function written with the choice inside a
+    difference or a sum, as two roots, or with ``exp`` and ``log``, is the
+    same. ``atan2`` has a branch cut: [-1.17, -0.42] for [1.30, 0.26] at any
+    tolerance."""
+    sim = _simulator(tmp_path, SHARP_BENDS[case], DECLINED, ["k", "thr"], decays=True)
     _refused(sim, "", rtol=1e-4)
 
 
-@pytest.mark.parametrize("power, rtol, within", [("0.5", 1e-8, 2e-6), ("0.75", 1e-6, 1e-4)])
-def test_a_root_of_a_bend_follows_the_tolerance(tmp_path, power, rtol, within):
-    """Control. From a half up the column is off by a few tens of the
-    tolerance and no more: 2.7e-7 at 1e-8 for a root. Against central
-    differences of plain runs, extrapolated."""
+def test_a_power_that_a_requested_exponent_may_take_under_one_is_refused(tmp_path):
+    """``max(thr − A, 0)^n`` with n requested: at n = 1.2 the quotient moves it
+    under 1. At n = 2 it runs."""
+    law = "kb*max(thr-Aobs,0)^n"
+    _refused_run(_wider(tmp_path, law, n=1.2), ["n"])
+    sim = bngsim.Simulator(_wider(tmp_path, law, n=2.0), method="ode", sensitivity_params=["n"])
+    assert not sim.has_analytic_sens_rhs
+    sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8, timeout=20)
+
+
+@pytest.mark.parametrize("power, rtol, within", [("1", 1e-8, 1e-6), ("1.5", 1e-8, 1e-6)])
+def test_a_power_of_one_or_more_of_a_bend_runs(tmp_path, power, rtol, within):
+    """Control. From 1 up the slope has a bound. Against central differences
+    of plain runs, extrapolated."""
     law = f"kb*max(thr-Aobs,0)^{power}"
 
     def plain(k):
@@ -1606,8 +1661,9 @@ def test_windows_written_with_the_word_and_are_read(tmp_path):
 
 
 def test_a_batch_is_asked_row_by_row_and_not_of_the_models_own_values(tmp_path):
-    """The model's own k makes A a counter that a requested column moves, and
-    the one row does not: asked of the row, the batch runs."""
+    """Control. The model's own values make C a species that is no counter,
+    and the one row makes it one that no requested column moves: asked of the
+    row, the batch runs."""
     model = _wider(tmp_path, "if(Cobs>3.4,kb,0)", decays=True)
     model.set_param("one", 2.0)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kb"])
@@ -1617,3 +1673,233 @@ def test_a_batch_is_asked_row_by_row_and_not_of_the_models_own_values(tmp_path):
     )
     got = np.asarray(rows[0].sensitivities)[-1, list(rows[0].species_names).index("Y()"), 0]
     np.testing.assert_allclose(got, T_END - 3.4, rtol=1e-6)
+
+
+# ─── What the fifth review found ────────────────────────────────────────────
+
+
+def test_two_scans_of_one_model_written_two_ways_keep_their_own_laws(tmp_path, monkeypatch):
+    """The rows of a threaded batch share what the scan keeps. A row that
+    overrides ``pw`` (a step) scanned while a row that does not (a ramp) is,
+    was handed the ramp's laws, and 4 batches in 3,000 returned the step's row
+    with [6.94, 1.92] for [2.46, 0.68]. Here the second scan is made inside
+    the first, where another thread's would land."""
+    import bngsim._switch_sensitivity as ss
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    step = _with_derived(tmp_path / "a", RAMP_TO_A_POWER, ["half 0.5", "pw 2*half"])
+    step.set_param("pw", 0.0)
+    ramp = _with_derived(tmp_path / "b", RAMP_TO_A_POWER, ["half 0.5", "pw 2*half"])
+    shared: dict = {}
+    real = ss._marked_derived
+    inside: list = []
+
+    def interleaved(derived, has_condition_construct):
+        if not inside:
+            inside.append("under way")
+            inside[0] = ss.fallback_crossing(ramp._core, ["k", "thr"], parsed=shared)
+        return real(derived, has_condition_construct)
+
+    monkeypatch.setattr(ss, "_marked_derived", interleaved)
+    outside = ss.fallback_crossing(step._core, ["k", "thr"], parsed=shared)
+    assert inside == [None]
+    assert outside is not None
+    assert len(shared) == 2
+
+
+def test_what_is_kept_for_each_way_a_model_is_written_has_a_bound(tmp_path):
+    """One store for each way the derived parameters are written, and no more
+    than eight of them."""
+    import bngsim._switch_sensitivity as ss
+
+    params = [f"d{i} {i + 1}*half" for i in range(12)]
+    shared: dict = {}
+    for i in range(12):
+        (tmp_path / str(i)).mkdir()
+        model = _with_derived(tmp_path / str(i), "kb*abs(Aobs-thr)", ["half 0.5", *params])
+        model.set_param(f"d{i}", 1.0)
+        assert ss.fallback_crossing(model._core, ["k"], parsed=shared) is None
+        assert 1 <= len(shared) <= ss._STORES_KEPT
+
+
+@pytest.mark.parametrize(
+    ("params", "n", "requested"),
+    [
+        (["tD 2*n", "kd if(tD>1,3,0)"], 0.5005, ["tD", "kd"]),
+        (["tD 2*n", "kd if(tD>1,3,0)"], 0.5005, ["kd", "tD"]),
+        (["tD 2*n", "kd min(tD,one)"], 0.5005, ["tD", "kd"]),
+        (["tD 2*n", "kd floor(tD)"], 2.505, ["tD", "kd"]),
+        (["tD 2*n", "mid 1*tD", "kd if(mid>1,3,0)"], 0.5005, ["tD", "kd"]),
+    ],
+    ids=["a-condition", "the-other-way-round", "a-choice", "a-step-call", "through-another"],
+)
+def test_two_requested_derived_parameters_one_written_in_the_other(tmp_path, params, n, requested):
+    """``tD = 2*n`` and ``kd = if(tD > 1, 3, 0)``, both requested. Held as
+    names together, ``kd`` was not read as tD's column moves it: requesting kd
+    as well took away the refusal that tD alone gets, and dY/dtD came back
+    9.35 for 0."""
+    _refused_run(_with_derived(tmp_path, "kb*kd", params, n=n), requested)
+
+
+def test_two_requested_derived_parameters_far_from_flipping_run(tmp_path):
+    """Control. The same two with tD at 3."""
+    model = _with_derived(tmp_path, "kb*kd", ["tD 2*n", "kd if(tD>1,3,0)"], n=1.5)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["tD", "kd"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0, 18.0], rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("fy", "params", "reactions"),
+    [
+        ("kb*kd", ["kd 3*(n>1)"], []),
+        ("kb*kd", ["kd n>1?3:0"], []),
+        ("kb*kd", ["kd 3*((n>1)and(n<5))"], []),
+        ("kb*kd", ["kd 3*(n>1)", "kd2 2*kd"], []),
+        ("kb", ["kd 3*(n>1)"], ["0 2 kd"]),
+        ("kb", ["kd 3*(n=1.001)"], ["0 2 kd"]),
+    ],
+    ids=["times-a-comparison", "a-ternary", "two-comparisons", "unread", "a-rate-constant", "="],
+)
+def test_a_comparison_outside_an_if_in_a_derived_parameter_is_refused(
+    tmp_path, fy, params, reactions
+):
+    """``kd = 3*(n > 1)`` is a rate constant that jumps in n, with no ``if()``
+    for the scan of conditions to read, and the branch scan (issue #414) does
+    not read a derived parameter: dY/dn came back 9.35 for 0, and 6.24 as the
+    rate constant of a reaction."""
+    _refused_run(_with_derived(tmp_path, fy, params, reactions, n=1.001), ["n"])
+
+
+@pytest.mark.parametrize(
+    ("fy", "params", "n", "requested", "want"),
+    [
+        ("kb*kd", ["kd 3*(n>1)"], 2.0, ["n"], [0.0]),
+        ("kb*kd", ["kd 3*(n>1)"], 1.001, ["kb"], [18.0]),
+        ("kb*kd", ["kd 3*((n>1)and(n<5))"], 2.0, ["n"], [0.0]),
+        ("kb*kd", ["kd 3*(n=2)"], 1.0, ["n"], [0.0]),
+    ],
+    ids=["far-from-flipping", "not-requested", "two-far", "an-equality-that-does-not-hold"],
+)
+def test_a_comparison_in_a_derived_parameter_that_no_column_moves_runs(
+    tmp_path, fy, params, n, requested, want
+):
+    """Control. The comparison is read off the law's syntax tree, and is asked
+    about as the condition of an ``if()`` is."""
+    model = _with_derived(tmp_path, fy, params, n=n)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=requested)
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6, atol=1e-9)
+
+
+def test_a_constant_equality_beside_the_state_runs(tmp_path):
+    """Control. ``kb*(one = 1)*Aobs/10`` with k requested: the equality reads
+    nothing a column moves. Y(6) = kb·(1 − e^(−6k))/k."""
+    sim = _simulator(tmp_path, "kb*(P=1.3)*Aobs/10", DECLINED, ["k"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    want = 3.0 * (6.0 * math.exp(-6.0) - (1.0 - math.exp(-6.0)))
+    np.testing.assert_allclose(_y_columns(sim), [want], rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("law", "moved"),
+    [
+        ("kb*(X>1)", True),
+        ("kb*(asked>1)", False),
+        ("kb*(near>2)", True),
+        ("kb*(pos>1)*X", False),
+        ("kb*(T>asked)", True),
+        ("kb*(T>pos)", False),
+        ("kb*((asked>1)and(X>1))", True),
+        ("kb*((asked>1)and(pos>1))", False),
+        ("kb*((near>2)or(pos>1))", True),
+        ("kb*not(near>2)", True),
+        ("kb*(asked==3)", True),
+        ("kb*(asked==4)", False),
+        ("kb*(asked!=3)", True),
+        ("kb*(zero<asked)", False),
+        ("if(near>2,kb,0)*(pos>1)", True),
+    ],
+)
+def test_which_comparison_a_column_moves(law, moved):
+    """What :func:`_comparison_a_column_moves` names: X is the state, T a
+    clock, ``asked`` (3) and ``near`` (2.001) requested parameters."""
+    from bngsim._switch_sensitivity import _comparison_a_column_moves, _syntax_tree
+
+    values = {"kb": 3.0, "pos": 2.0, "asked": 3.0, "near": 2.001, "zero": 0.0}
+    got = _comparison_a_column_moves(
+        _syntax_tree(law), values, frozenset({"T"}), {"asked", "near"}
+    )
+    assert (got is not None) is moved
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ("kb*(X>1)", True),
+        ("if(X>1,kb,0)", False),
+        ("if(X>1,kb,0)*(Y<2)", True),
+        ("if((X>1) and (Y<2),kb,0)", False),
+        ("kb*(X=1)", True),
+        ("if(X=1,kb,0)", True),
+        ("X>1?kb:0", True),
+        ("kb*not(X)", True),
+        ("kb*(!X)", True),
+        ("kb*X/(1+X)", False),
+        ("kb*((X>1) or (Y<2))", True),
+    ],
+)
+def test_which_rate_law_compares_outside_an_if(text, found):
+    from bngsim._switch_sensitivity import _compares_outside_an_if
+
+    assert _compares_outside_an_if(text) is found
+
+
+TWO_CROSSINGS = "if((time()-tau)*(time()-P)>0,kb,0)"
+
+
+def test_a_batch_row_that_puts_two_crossings_on_one_instant_is_refused(tmp_path):
+    """Y' = kb outside the window between tau and P. A row with P = tau has
+    the two crossings on one instant, where dY/dtau has no value: ``run``
+    refuses it (issue #414), and a batch asked only of the model's own values
+    returned 0 for the row."""
+    sim = _simulator(tmp_path, TWO_CROSSINGS, DECLINED, ["tau"], decays=True)
+    assert not sim.has_analytic_sens_rhs
+    kwargs = dict(t_span=(0.0, T_END), n_points=3, rtol=1e-8, atol=1e-10)
+    for workers in (None, 2):
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match="#414"):
+            sim.run_batch(params=[{"P": 1.0}, {"P": 3.4}], num_processors=workers, **kwargs)
+    # Control: the rows either side of it. Y(T) = kb·(T − |P − tau|).
+    rows = sim.run_batch(params=[{"P": 1.0}, {"P": 5.0}], **kwargs)
+    got = [
+        np.asarray(row.sensitivities)[-1, list(row.species_names).index("Y()"), 0] for row in rows
+    ]
+    np.testing.assert_allclose(got, [-3.0, 3.0], rtol=1e-6)
+
+
+def test_a_batch_row_is_scanned_for_a_branch_only_where_it_changes_what_a_law_reads(
+    tmp_path, monkeypatch
+):
+    """The branch scan's answer for a law is kept by what the law reads: a
+    row that changes another parameter is not scanned again, and a row that
+    changes one the condition reads is."""
+    import bngsim._switch_sensitivity as ss
+
+    sim = _simulator(tmp_path, TWO_CROSSINGS, DECLINED, ["tau"], decays=True)
+    real = ss.uncompensated_condition_reason
+    scanned: list[str] = []
+
+    def counted(flat, scope):
+        scanned.append(flat)
+        return real(flat, scope)
+
+    monkeypatch.setattr(ss, "uncompensated_condition_reason", counted)
+    kwargs = dict(t_span=(0.0, T_END), n_points=3, rtol=1e-6, atol=1e-8)
+    sim.run_batch(params=[{"kc": 5.0}], **kwargs)
+    first = len(scanned)
+    assert first >= 1
+    sim.run_batch(params=[{"kc": 6.0}, {"kc": 7.0}, {"k": 2.0}], **kwargs)
+    assert len(scanned) == first
+    sim.run_batch(params=[{"P": 1.5}], **kwargs)
+    assert len(scanned) == first + 1

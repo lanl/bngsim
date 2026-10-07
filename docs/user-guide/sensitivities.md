@@ -385,20 +385,24 @@ model with (issues #938, #932):
   the root of the relative tolerance. Likewise an equality on a requested
   parameter that holds, and a step call or a step table on one. A derived
   parameter is read too, as the rate constant it may be: `kd = if(n > 1, 3, 0)`;
-- a power under a half of an `abs`, `max` or `min` where it may be 0,
-  `max(thr - X, 0)^0.1`: continuous, with a slope that has no bound. From a half
-  up the column follows the tolerance (2.5e-5 off at a relative tolerance of
-  1e-6 for a root) and the run goes through; at 0.2 it was 2% off at 1e-6;
-- an equality written with ExprTk's single `=`, and a call the scan does not
-  know, `atan2`, where a column moves what it reads;
+- a power under 1, a root or a logarithm of what holds an `abs`, `max` or `min`
+  and may be 0, `max(thr - X, 0)^0.1`, `sqrt(thr - min(X, thr))`: continuous,
+  with a slope that has no bound. At a power of 0.2 the column was 2% off at a
+  relative tolerance of 1e-6; at a half, the threshold's column was 2.6e-4 off
+  at 1e-6 and 5.8e-5 at 1e-8. An inverse sine or cosine of one likewise;
+- a comparison that is not the condition of an `if()`, `kb*(X > 1)`, or ExprTk's
+  single `=`, on what a column moves, in a rate law or in a derived parameter:
+  `kd = 3*(n > 1)` with `n` requested and close to 1;
+- a call the scan does not know, `atan2`, where a column moves what it reads;
 - a rate law that could not be read.
 
 The refusal goes by what the rate laws' text says and by what each parameter is
 when the run starts: its sign, whether a power is a whole number, and which side
 of a comparison a requested parameter is on with the parameter moved a quarter
 of itself either way. Nothing is integrated, and nothing is assumed of the
-state. It is asked again when a parameter is set. The quotient is right across
-a bend, and a condition is let through where the law is proved to bend at it:
+state. It is asked again when a parameter is set, and of each row of a batch,
+as the scan for a branch crossing no machinery locates (issue #414) is. The
+quotient is right across a bend, and a condition is let through where the law is proved to bend at it:
 
 - one branch is 0 and the other is a product with the condition's own
   difference among its factors: `if(v > 0, v, 0)`, `if(X < thr, kb*(thr - X), 0)`,
@@ -415,8 +419,9 @@ run: `kb*max(thr - X, 0)`, `max(0, min(X, n))`, `v/max(X, 0.01)`.
 
 A condition on literal time runs. A steady-state solve is not a time course
 and is not asked: it differences `f` in the parameter at one state, which is
-wrong only for a parameter that sits on its own threshold, `if(n > 1, kb, 0)`
-at `n = 1`, where no derivative exists. What the scan does not see is a jump
+wrong for a parameter within the difference step, about 1.5e-8 of itself, of a
+threshold or a kink of its own: `if(n > 1, kb, 0)` at `n = 1`, where no
+derivative exists, and at `n = 1 - 1e-9`. What the scan does not see is a jump
 written with no condition and not as one of the quotients above:
 `sqrt(X*X)/X`, a regularised sign `(thr - X)/(abs(thr - X) + 1e-9)` or
 `tanh(1e9*(X - thr))`, and a pole cut off on both sides,
