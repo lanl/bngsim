@@ -739,6 +739,11 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         # A call this does not know at all, where a column moves what it reads.
         ("kb*(atan2(thr-X,-1)/3+1)", True),
         ("kb*atan2(pos,-1)*X", False),
+        # The engine's own calls are known: analytic where they have a value,
+        # which is not claimed for them.
+        ("kb*X*mratio(1,2,-Y)", False),
+        ("kb*abs(X)*tgamma(Y)", False),
+        ("kb*X/max(exp(-tgamma(Y)),X)", True),
         ("kb*atan2(asked,-1)*X", True),
         ("kb*X/max(Y*Y+pos,X)", False),
         ("kb*X/max(Y*X+pos,X)", True),

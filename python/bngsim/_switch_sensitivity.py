@@ -3934,7 +3934,12 @@ _SMOOTH_CALLS = frozenset(
     {"exp", "expm1", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh"}
     | {"asinh", "acosh", "atanh", "erf", "erfc", "log", "ln", "log2", "log10", "log1p", "pow"}
     | {"avg", "sum", "mul", "hypot"}
+    # The engine's own: Kummer's ratio and the gamma function, analytic where
+    # they have a value.
+    | {"mratio", "tgamma"}
 )
+# Of those, the ones with poles: no value is claimed for them.
+_POLE_CALLS = frozenset({"mratio", "tgamma"})
 _LOG_CALLS = frozenset({"log", "ln", "log2", "log10"})
 _STEP_NAMES = frozenset(
     {"floor", "ceil", "round", "roundn", "rint", "nint", "trunc", "frac", "sign", "sgn"}
@@ -4138,7 +4143,7 @@ def _facts_of(
             under[0].negative,
             under[0].finite,
         )
-    elif name and name not in _SMOOTH_CALLS and name not in _STRUCTURE_CALLS:
+    elif name and (name in _POLE_CALLS or not (name in _SMOOTH_CALLS or name in _STRUCTURE_CALLS)):
         finite = False
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
         bare = False
