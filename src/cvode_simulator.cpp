@@ -3425,12 +3425,12 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
 
     // Issue #710 — what a time course's early stop tests is ‖f(t, y)‖ at an
     // output point, which says the trajectory has settled only for a model
-    // whose right-hand side does not read the time and that has no event still
-    // to fire: `if(time() > 5, k, 0)` is 0 at the first output point, and the
-    // run stopped there with the initial state marked steady. Such a run is
-    // integrated to the end of its span, and never marked.
-    const bool check_ss =
-        opts.steady_state && !(model.functions_use_time() || model.n_events() > 0);
+    // whose right-hand side does not read the time: a rate that starts at
+    // nothing, `k*t^8/(40^8 + t^8)`, is 1.5e-13·k at the first output point,
+    // and the run stopped there with the initial state marked steady. Such a
+    // run is integrated to the end of its span, and never marked. (A model
+    // with an event is not on this path.)
+    const bool check_ss = opts.steady_state && !model.functions_use_time();
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
     if (check_ss) {

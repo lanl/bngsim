@@ -65,7 +65,7 @@ def test_a_rate_that_reads_the_time_is_refused(tmp_path, method):
     """A(t) = exp(−k·(t − 1 + e^(−t))) goes to 0. It came back [1, 0],
     converged, with a residual of 0."""
     sim = bngsim.Simulator(_ramped(tmp_path), method="ode")
-    _refused(lambda: sim.steady_state(method=method), "reads the time")
+    _refused(lambda: sim.steady_state(method=method), "it reads the time, through")
 
 
 def test_a_rate_that_reads_the_time_through_a_derived_rate_is_refused(tmp_path):
@@ -77,7 +77,7 @@ def test_a_rate_that_reads_the_time_through_a_derived_rate_is_refused(tmp_path):
         )
     )
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
-    _refused(sim.steady_state, "reads the time")
+    _refused(sim.steady_state, "it reads the time, through")
 
 
 def test_a_rate_that_reads_the_time_in_a_later_reaction_is_refused(tmp_path):
@@ -87,13 +87,13 @@ def test_a_rate_that_reads_the_time_in_a_later_reaction_is_refused(tmp_path):
     assert "    1 1 2 kt\n" in text
     path.write_text(text.replace("    1 1 2 kt\n", "    1 1 2 k\n    2 2 1 kt\n"))
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
-    _refused(sim.steady_state, "reads the time")
+    _refused(sim.steady_state, "it reads the time, through")
 
 
 def test_a_table_indexed_by_time_is_refused(tmp_path):
     law = "k*tfun([0,1,2,50],[0,0.5,1,1],time)"
     sim = bngsim.Simulator(_ramped(tmp_path, law=law), method="ode")
-    _refused(sim.steady_state, "reads the time")
+    _refused(sim.steady_state, "it reads the time, through")
 
 
 @pytest.mark.parametrize("method", ["integration", "newton"])
@@ -113,7 +113,9 @@ def test_the_sensitivity_of_a_model_with_an_event_is_refused():
 def test_a_batch_is_refused_for_both(tmp_path):
     """steady_state_batch came back converged at [1, 6e-9] and at A = 0."""
     ramped = bngsim.Simulator(_ramped(tmp_path), method="ode")
-    _refused(lambda: ramped.steady_state_batch([{"k": 1.0}, {"k": 2.0}]), "reads the time")
+    _refused(
+        lambda: ramped.steady_state_batch([{"k": 1.0}, {"k": 2.0}]), "it reads the time, through"
+    )
     event = bngsim.Simulator(bngsim.Model.from_antimony_string(EVENT), method="ode")
     _refused(lambda: event.steady_state_batch([{"kd": 1.0}, {"kd": 2.0}]), "1 event")
 
@@ -133,12 +135,12 @@ def test_a_reported_function_that_reads_the_time_is_refused(tmp_path):
     """``seen() = 2*time()`` is read by no reaction, and is reported: it came
     back 0, its value at t = 0, beside a state marked converged."""
     sim = bngsim.Simulator(_ramped(tmp_path, law="k"), method="ode")
-    _refused(sim.steady_state, "reads the time")
+    _refused(sim.steady_state, "it reads the time, through")
 
 
 def test_the_time_written_bare_is_refused(tmp_path):
     sim = bngsim.Simulator(_ramped(tmp_path, law="k*(1-exp(-time))"), method="ode")
-    _refused(sim.steady_state, "reads the time")
+    _refused(sim.steady_state, "it reads the time, through")
 
 
 RULE_ON_TIME = (
@@ -152,15 +154,15 @@ def test_a_species_set_by_a_rule_on_the_time_is_refused(method):
     """No rate reads the time, and S does: it came back 0 for 2/3, converged,
     with dS/dkf = 0 for 2/9."""
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(RULE_ON_TIME), method="ode")
-    _refused(lambda: sim.steady_state(method=method), "reads the time")
-    _refused(lambda: sim.steady_state(sensitivity_params=["kf"]), "reads the time")
-    _refused(lambda: sim.steady_state_batch([{"kf": 1.0}]), "reads the time")
+    _refused(lambda: sim.steady_state(method=method), "it reads the time, through")
+    _refused(lambda: sim.steady_state(sensitivity_params=["kf"]), "it reads the time, through")
+    _refused(lambda: sim.steady_state_batch([{"kf": 1.0}]), "it reads the time, through")
 
 
 def test_a_kinetic_law_that_reads_the_time_in_sbml_is_refused():
     text = "species A, B; A = 1; B = 0; k = 1\nJ1: A -> B; k*(1 - exp(-time))*A\n"
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
-    _refused(sim.steady_state, "reads the time")
+    _refused(sim.steady_state, "it reads the time, through")
 
 
 def test_a_compartment_sized_by_a_rule_on_the_time_is_refused():
@@ -171,7 +173,7 @@ def test_a_compartment_sized_by_a_rule_on_the_time_is_refused():
         " A = 1; B = 0; k = 1\nJ: A -> B; k*A\nJ2: B -> A; k*B\n"
     )
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
-    _refused(sim.steady_state, "reads the time")
+    _refused(sim.steady_state, "it reads the time, through")
 
 
 def test_the_core_solver_refuses_too(tmp_path):
