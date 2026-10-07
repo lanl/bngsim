@@ -186,8 +186,10 @@ STEP_TABLE = NET.replace(
 @pytest.mark.parametrize("method", ["step", "linear"])
 def test_a_table_that_steps_on_the_state_is_refused(tmp_path, method):
     """A table function read as a step, indexed by an observable: no condition,
-    no step call and no root. dY/dk came back 4.42 for 2.46. Read with linear
-    interpolation the same table is continuous, and runs."""
+    no step call and no root. dY/dk came back 4.42 for 2.46.
+
+    Control (the linear case). Read with linear interpolation the same table is
+    continuous, and runs as it did."""
     path = tmp_path / "m.net"
     path.write_text(STEP_TABLE.format(method=method, fz="kc*Aobs", A0=10.0, a_rxn="1 0"))
     sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode", sensitivity_params=["k"])
