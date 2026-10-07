@@ -6004,6 +6004,7 @@ class Simulator:
             raise ValueError(
                 f"steady_state() is only supported for method='ode', not method='{self._method}'."
             )
+        self._raise_if_no_steady_state_to_solve_for("steady_state()")
 
         # Issue #74 — resolve the convergence-test subspace before anything
         # expensive runs, so a bad mask is an immediate error rather than a solve
@@ -6118,6 +6119,46 @@ class Simulator:
         self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    def _raise_if_no_steady_state_to_solve_for(self, where: str) -> None:
+        """Refuse a steady-state solve of a model with an event, or with a
+        reaction rate that reads the time (issue #710).
+
+        Both solvers look for a root of ``f(y)``, and evaluate the right-hand
+        side at ``t = 0`` for the residual, the Newton step, the Jacobian and
+        ``∂f/∂p``; the march integrates at the true time and tests convergence at
+        ``t = 0``. Neither registers a root or fires an event. So a rate that is 0
+        at ``t = 0``, ``k*(1 - exp(-time()))``, returned the initial state as
+        converged in one step, and a model whose event sets a production rate at
+        ``t = 2`` returned the state from before it, ``A = 0`` for ``1/kd``, with
+        ``dA/dkd = 0`` for ``-1/kd²``. A rate that reads the time has no
+        ``f(y) = 0`` to solve without a time being chosen, and an event needs a
+        trajectory: :meth:`run` with ``steady_state=True`` has both.
+
+        A ``rateOf`` accessor is not a read of the time: it reads the state's own
+        derivatives, which are 0 at a steady state.
+        """
+        core = self._model._core
+        n_events = int(self._model.n_events)
+        if n_events:
+            raise SimulationError(
+                f"{where} is not supported for this model: it has {n_events} "
+                f"event{'s' if n_events != 1 else ''}. The steady-state solvers look for a "
+                "root of the right-hand side and fire no event, so an event's assignment is "
+                "never made, and the state they return is one the model's dynamics may never "
+                "reach (issue #710). Use run(..., steady_state=True), which integrates the "
+                "model with its events and stops where the trajectory has settled."
+            )
+        if core.rates_read_the_clock:
+            raise SimulationError(
+                f"{where} is not supported for this model: a reaction rate reads the time, "
+                "through time() or a table function indexed by time. The steady-state solvers "
+                "look for a root of f(y) with the right-hand side read at t = 0, which is the "
+                "model's steady state only where the rate has stopped changing by then: a rate "
+                "that is 0 at t = 0 returned the initial state as converged (issue #710). Use "
+                "run(..., steady_state=True), which integrates at the true time and stops "
+                "where the trajectory has settled."
+            )
 
     def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
         """Drop AssignmentRule-target species from the steady-state subspace (#247).
@@ -6499,6 +6540,8 @@ class Simulator:
             )
         if not params:
             raise ValueError("params must be non-empty")
+        # Issue #710 — a row sets parameter values, not what the rates read.
+        self._raise_if_no_steady_state_to_solve_for("steady_state_batch()")
 
         mask_selector = _resolve_ss_mask(mask, self._model)
 

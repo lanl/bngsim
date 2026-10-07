@@ -13,8 +13,19 @@ the same quantity `run(steady_state=True)` checks (see below).
 **`method="integration"` (default)**: CVODE BDF integration that marches
 forward one step at a time and stops when the parity residual
 `||f(y)||_2 / n_species` drops below `tol` (capped at `max_time`). This is the
-strict BNG2.pl-parity path, and it always returns the steady state the
-dynamics actually reach.
+strict BNG2.pl-parity path, and for a model whose right-hand side does not read
+the time it returns the steady state the dynamics reach.
+
+**A model with an event, or with a reaction rate that reads the time, is
+refused** by `steady_state()` and `steady_state_batch()` (issue #710). Both
+solvers look for a root of `f(y)` with the right-hand side read at `t = 0`, and
+fire no event: `A -> B` at `k*(1 - exp(-time()))`, whose rate is 0 at `t = 0`,
+came back at its initial state as converged, and a model whose event switches a
+production rate on came back at the state from before it. Use
+`run(..., steady_state=True)`, which integrates at the true time with the
+model's events and stops where the trajectory has settled. A `time()` call or a
+table function indexed by time in a rate, directly or through a function, is a
+read of the time; `rateOf` is not.
 
 **`method="newton"`**: the two-tier integrate-first solver. Tier 1 is the
 *same* CVODE burst as `"integration"`, carrying the state into the physical
