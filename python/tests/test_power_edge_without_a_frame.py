@@ -178,6 +178,22 @@ def test_a_crossing_the_parameter_moves_at_another_rate_is_not_the_frames():
     np.testing.assert_allclose(np.asarray(out.sensitivities)[:, 0, 0], want, rtol=1e-6, atol=1e-9)
 
 
+def test_a_step_on_the_closing_edge_beside_an_event_is_refused():
+    """Issue #949's crossing, a step on the instant the window closes, in a
+    model with an event. The frames are off, so the #949 refusal was never
+    reached, and dX/dD at t = 8 came back 1.0784 for 0.8047."""
+    model = _with_event("closing", 1.1, extra=" + piecewise(kj, time >= 7, 0)")
+    _refused(model, ["D"], 958)
+
+
+def test_a_step_on_the_closing_edge_is_refused_with_no_event():
+    """Control. The same crossing with the frames on is issue #949's refusal."""
+    model = _with_event("closing", 1.1, event=False, extra=" + piecewise(kj, time >= 7, 0)")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["D"])
+    with pytest.raises(bngsim.SimulationError, match=r"\(issue #949\)"):
+        sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
+
+
 @pytest.mark.parametrize("shape, param", [("closing", "D"), ("opening", "on")])
 def test_the_exponent_is_asked_again_after_set_param(shape, param):
     """Singular at a = 1.1 and not at a = 3, on one Simulator, each way round."""
