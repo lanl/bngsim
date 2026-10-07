@@ -2541,8 +2541,7 @@ struct CvodeSimulator::Impl {
                                          const std::vector<double> &dtstar_dp, double rel_tol);
     // The same asked of every switch time the run has ahead of `t`, so that a
     // closing edge is refused before the plain column is carried up to it.
-    void comoving_refuse_ahead_without_a_frame(const SensitivityState &sens, double *const *cols,
-                                               double t);
+    void comoving_refuse_ahead_without_a_frame(const SensitivityState &sens, double t);
     // Issue #948: refuses a column, parameter or initial-condition axis, with a
     // nonzero row of a counter species under a power that is singular at the
     // run's values. `cols` holds all n_total columns.
@@ -5196,27 +5195,19 @@ void CvodeSimulator::Impl::comoving_refuse_without_a_frame(const SensitivityStat
 }
 
 void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_frame(const SensitivityState &sens,
-                                                                 double *const *cols, double t) {
+                                                                 double t) {
     const ComovingFrames &frames = sens.comoving;
     if (!frames.off_for_events || frames.switches == nullptr) {
         return;
     }
-    std::vector<double> moves(static_cast<size_t>(sens.n_p), 0.0);
+    // By the threshold's own ∂t*/∂p. A counter's crossing moves with the
+    // clock's own sensitivity as well (issue #725), and a column that has any
+    // is refused on its own account under a power of a counter (issue #948).
     for (const SwitchTimeSens *sw : *frames.switches) {
-        if (sw->t_star <= t || one_switch_instant(sw->t_star, t) ||
-            sw->dtstar_dp.size() < static_cast<size_t>(sens.n_p)) {
+        if (sw->t_star <= t || one_switch_instant(sw->t_star, t)) {
             continue;
         }
-        for (int c = 0; c < sens.n_p; ++c) {
-            const auto uc = static_cast<size_t>(c);
-            moves[uc] = sw->dtstar_dp[uc];
-            if (sw->clock_species_idx0 >= 0) {
-                // A counter's crossing moves with the clock's own sensitivity
-                // too (issue #725), as it stands when the run starts.
-                moves[uc] -= cols[c][sw->clock_species_idx0];
-            }
-        }
-        comoving_refuse_without_a_frame(sens, sw->t_star, moves, 1e-9);
+        comoving_refuse_without_a_frame(sens, sw->t_star, sw->dtstar_dp, 1e-9);
     }
 }
 
@@ -12229,7 +12220,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             start_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(sens.yS[c]);
         }
         impl_->comoving_refuse_a_moved_counter(sens, start_cols.data(), times.t_start);
-        impl_->comoving_refuse_ahead_without_a_frame(sens, start_cols.data(), times.t_start);
+        impl_->comoving_refuse_ahead_without_a_frame(sens, times.t_start);
     }
     // Issue #545: S of the comoving columns at an output, which is not what yS holds.
     std::vector<std::vector<double>> comoving_out_scratch;

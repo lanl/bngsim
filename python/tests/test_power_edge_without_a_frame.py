@@ -442,16 +442,23 @@ def test_a_window_written_in_numbers_runs_in_a_column_that_moves_nothing(tmp_pat
     np.testing.assert_allclose(got, _expected("closing", 1.1, "k1"), rtol=2e-5, atol=2e-7)
 
 
-def test_a_counter_edge_found_as_a_root_is_refused(tmp_path):
+@pytest.mark.parametrize(
+    "shape, a, params",
+    [("closing", 1.5, ["T0"]), ("closing", 1.5, ["r"]), ("opening", 1.1, ["T0"])],
+    ids=["its-seed", "its-rate", "an-opening-edge"],
+)
+def test_a_counter_edge_found_as_a_root_is_refused(tmp_path, shape, a, params):
     """The window opens where ``t - z >= on`` with z a species nothing makes:
     a root of the state, with no switch time for the counter's crossing. The
-    counter's column is refused where the run starts all the same."""
+    seed's column is refused where the run starts, before an opening edge can
+    stall it, and the rate constant's, which has moved nothing by then, where
+    it ends: dX/dT0 was 1.1e-4 off at a tolerance of 1e-6."""
     text = (
         COUNTER.replace("if(t>=on,", "if((t-Zobs)>=on,")
         .replace("    2 Tc() T0\n", "    2 Tc() T0\n    3 Z() 0\n")
         .replace("    1 t 2\n", "    1 t 2\n    2 Zobs 3\n")
     )
-    _refused(_on_a_counter(tmp_path, "closing", 1.5, text=text), ["T0"], 948)
+    _refused(_on_a_counter(tmp_path, shape, a, text=text), params, 948)
 
 
 MIXED = (
