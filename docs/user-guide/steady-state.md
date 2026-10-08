@@ -605,9 +605,9 @@ Four requests are refused, with `SensitivityUnsupportedError`:
   model whose laws each lie within one size gets a warning there. With sizes
   in a law, a steady state that is one of a continuum has a pivot that is
   rounding where one size leaves an exact zero, and the columns that came back
-  were not a gradient (-329,603 for 0.0774). The ratio falls with the square
-  of a size ratio too, so sizes 1e5 apart are refused though the root is
-  isolated.
+  were not a gradient (-329,603 for 0.0774). With unknowns in compartments of
+  both sizes the ratio also falls with the square of the size ratio, so an
+  isolated root there is refused from sizes about 1e5 apart.
 
 A law across compartments of different size is a total of amounts, and carries
 the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in

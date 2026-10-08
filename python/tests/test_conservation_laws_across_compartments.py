@@ -464,6 +464,18 @@ def test_a_one_compartment_reaction_in_a_resized_compartment_keeps_its_law():
     assert _kept(model) < 1e-12
 
 
+def test_which_laws_span_sizes():
+    """A law spans sizes where its species have different volume factors and
+    a reaction divides by them: ``A + 2*B`` does, and the plain law of a
+    built model with no such reaction does not, whatever its species' volume
+    factors are."""
+    spans = bngsim.Simulator._laws_across_sizes
+    assert spans(_two()) == [[0, 1]]
+    assert spans(_two(1.0)) == []
+    assert spans(bngsim.Model(_core=_unscaled(5.0))) == []
+    assert spans(bngsim.Model(_core=_built())) == [[0, 1]]
+
+
 def test_compartments_of_one_size_are_as_they_were():
     """Control. With both at size 1 the law is ``A + B``, as the plain
     stoichiometry gives it."""
@@ -578,8 +590,8 @@ def test_rounding_left_on_a_species_in_no_law_is_not_the_law(tmp_path):
     ``S0 -> S1`` runs, so nothing flows through the three species of the law,
     and the rounding times S0's rate was the whole of its total and of what
     it was measured against. The law is asked over the species it holds,
-    which do not move. (MODEL1009150002, 1,604 species, was refused for
-    this.)"""
+    which do not move. (MODEL1009150002, 1,604 species, has laws in that
+    state where the question is asked.)"""
     path = tmp_path / "crumbs.net"
     path.write_text(CRUMBS.format(k=0.0))
     model = bngsim.Model.from_net(str(path))
@@ -718,7 +730,7 @@ def test_the_continuum_in_amounts_under_a_rate_rule_is_refused():
     """The same network with its species held as amounts and ``c2`` under a
     rate rule that settles at 2.3. ``c2`` is then a species and not a size
     parameter, and the law still spans two sizes: dP*/dkp came back 396,941
-    on a pivot of 2e-17, for 0.089. Whether a law spans sizes is asked of the
+    on a pivot of 6e-17 of the largest, for 0.089. Whether a law spans sizes is asked of the
     species it holds, not of how many size parameters the model has."""
     model = bngsim.Model.from_antimony_string(
         "compartment c1, c2; c1 = 0.7; c2 = 1.1; c2' = 0.9*(2.3 - c2);\n"

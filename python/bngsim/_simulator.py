@@ -1628,10 +1628,9 @@ class Simulator:
         # refused while its law was found without the sizes, and stays so.
         ruled = sorted(set(model.compartment_size_params) & set(model.function_names))
         if ruled:
-            volumes = [float(sp["volume_factor"]) for sp in core.codegen_data()["species"]]
             names = model.species_names
-            for members in core.conservation_law_members():
-                if len({volumes[i] for i in members}) > 1:
+            for members in self._laws_across_sizes(model):
+                if members:
                     raise SensitivityUnsupportedError(
                         "steady_state(sensitivity_params=...) is not supported for this "
                         "model: a conservation law of it spans compartments of different "
@@ -6992,6 +6991,22 @@ class Simulator:
         self._warn_about_ss_sensitivity(result)
         return result
 
+    @staticmethod
+    def _laws_across_sizes(model: Model) -> list[list[int]]:
+        """The species of each conservation law that spans compartments of
+        different size (issue #758). None where no reaction has the
+        per-species divide: no law carries a size there, whatever volume
+        factors its species have."""
+        data = model._core.codegen_data()
+        if not any(r.get("per_species_volume_scaling", False) for r in data["reactions"]):
+            return []
+        volumes = [float(sp["volume_factor"]) for sp in data["species"]]
+        return [
+            members
+            for members in model._core.conservation_law_members()
+            if len({volumes[i] for i in members}) > 1
+        ]
+
     def _raise_if_badly_conditioned_across_sizes(self, result: SteadyStateResult) -> None:
         """Refuse ``dY_ss/dp`` where a conservation law spans compartments of
         different size and the reduced Jacobian is badly conditioned (issue
@@ -7011,9 +7026,10 @@ class Simulator:
         derivative (BIOMD0000000328: 3.88 for -6.32, at 7e-18). A model whose
         laws each lie within one size gets the warning there, as it did.
 
-        The ratio is not invariant to scale: a size 1e5 of another's brings an
-        isolated root to 1e-10 by itself, so a model with sizes that far apart
-        stays refused though its columns are right.
+        The ratio is not invariant to scale. With unknowns in compartments of
+        both sizes it falls with the square of the size ratio, 1.3e-10 at 1e5
+        for an isolated root, so such a model is refused though its columns
+        are right.
         """
         rcond = result.sens_jacobian_rcond
         if result.sensitivity is None or not 0.0 <= rcond < self._SS_SENS_RCOND_FLOOR:
@@ -7025,10 +7041,9 @@ class Simulator:
         finite[list(result.excluded_species)] = True
         if not np.all(finite):
             return
-        volumes = [float(sp["volume_factor"]) for sp in model._core.codegen_data()["species"]]
         names = model.species_names
-        for members in model._core.conservation_law_members():
-            if len({volumes[i] for i in members}) > 1:
+        for members in self._laws_across_sizes(model):
+            if members:
                 raise SensitivityUnsupportedError(
                     "steady_state(sensitivity_params=...) is not supported for this model "
                     "at this steady state: a conservation law of it spans compartments of "
