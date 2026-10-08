@@ -301,10 +301,15 @@ def _model_path(name):
 
 def _targets(m):
     """The parameter list amici_parity negotiates: budget-capped, no
-    function-backed slots and no compartment sizes (both are refused by name,
-    which would mask what this module is testing)."""
+    function-backed slots, no compartment sizes and no parameter the model was
+    built with as a number (each is refused by name, which would mask what this
+    module is testing)."""
     cap = max(1, 20000 // max(len(m.species_names), 1))
-    skip = (m._internal_param_names() & set(m.function_names)) | set(m.compartment_size_params)
+    skip = (
+        (m._internal_param_names() & set(m.function_names))
+        | set(m.compartment_size_params)
+        | set(m.frozen_params)
+    )
     return [n for n in m.primary_param_names if n not in skip][:cap]
 
 

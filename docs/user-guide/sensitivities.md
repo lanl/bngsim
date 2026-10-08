@@ -648,18 +648,29 @@ def dloss_dV(v, h):
 A few things an SBML document writes over its parameters are evaluated once,
 when the model is loaded, and the model holds the number from then on:
 
-- the size of a compartment that an `initialAssignment` sets, `c = 2*p`;
+- the size of a compartment that an `initialAssignment` sets, `c = 2*p`, or
+  that an assignment rule sets from parameters alone, `c := 2*p`;
 - a stoichiometry: an L2 `<stoichiometryMath>`, an `initialAssignment` onto a
   `speciesReference` id, and the id itself;
 - a `conversionFactor`;
-- a parameter's initial value, where its `initialAssignment` reads something
-  that is not a parameter (a reaction rate, a species under a rule) and cannot
-  be kept as an expression.
+- an initial value, of a parameter or of a species, where its
+  `initialAssignment` reads something that is not a parameter (a reaction rate,
+  the time, a species under a rule) and cannot be kept as an expression.
 
-A parameter that reaches the model only that way does not move it afterwards.
-`set_param` on one used to take the value and change nothing, and its
-sensitivity column was an exact 0 where the model moves with it (issues #695,
-#696). Both are refused now, by name, with what the parameter was folded into:
+The number came from every symbol the expression names and from whatever gave
+each of those its value at load, so what it reads is followed all the way down:
+through another `initialAssignment`, an assignment rule, a reaction id to its
+kinetic law (and the law's own parameters, `_lp_<reaction>_<id>`), a species to
+its initial value, and to the size of the species' compartment where the
+species is declared in the unit it is not read in. `c = J0`, `c = q` under
+`q := 3*p`, and `c = S0` under `S0 = 2*p` each make `p` such a parameter.
+
+A write to one does not move what it was folded into. `set_param` used to take
+the value all the same: where nothing else reads the parameter the model did
+not move at all and its sensitivity column was an exact 0, and where a rate law
+reads it too the write was half applied and the column was a part of the
+derivative (issues #695, #696). Both are refused now, by name, with what the
+parameter was folded into:
 
 ```python
 m = bngsim.Model.from_sbml("model.xml")
@@ -668,11 +679,16 @@ m.set_param("p", 2.0)               # ParameterError: ... the size of compartmen
 bngsim.Simulator(m, sensitivity_params=["p"])   # SensitivityUnsupportedError
 ```
 
-A write of the value the parameter already holds is not a change, so a whole
-parameter vector still goes back in. `compute_all_sensitivities()` with no list
-leaves these columns out and says so. To move one, change it in the document
-and load the model again, and difference over that for a gradient. The size
-itself (`c` above) is an ordinary writable, differentiable parameter.
+A write of exactly the value the parameter holds is not a change, so a whole
+parameter vector read off the model goes back in; a value that has been through
+a text round trip or an arithmetic identity and differs in the last digit is a
+change, and is refused. `compute_all_sensitivities()` with no list leaves these
+columns out and says so. `bngsim.jax.differentiable_solve` takes its vector in
+the order of `primary_param_names`, these included: it solves at the values the
+model holds and refuses another value for one, and a gradient through it is
+refused for a model that has one. To move such a parameter, change it in the
+document and load the model again, and difference over that for a gradient.
+The size itself (`c` above) is an ordinary writable, differentiable parameter.
 
 **A compartmental BNGL model has such parameters too** (issue #711). BNG2.pl
 writes each reaction's volume factor into its rate constant as a number,

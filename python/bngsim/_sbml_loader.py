@@ -8422,18 +8422,50 @@ def _build_model_from_sbml_doc(doc):
     # holds from then on: the size of a compartment that an initialAssignment
     # sets (`c = 2*p`), a stoichiometry (a <stoichiometryMath>, or an
     # initialAssignment onto a speciesReference id, or the id itself), a
-    # conversionFactor, and a parameter initialAssignment the lift above could
-    # not keep symbolic. A parameter that reaches the model only through one of
-    # them is a dangling constant: `set_param` on it took the value and moved
-    # nothing (P(1) stayed 2 where a rebuild gives 6), and its forward
-    # sensitivity was an exact 0 at every species and time. Such a parameter
-    # is named here with what it was folded into, and `Model.set_param` and the
-    # sensitivity request refuse it by that.
+    # conversionFactor, and an initialAssignment the loader could not keep
+    # symbolic, onto a parameter or onto a species. A parameter that reaches
+    # the model through one of them does not move it afterwards: `set_param` on
+    # it took the value and left the number (P(1) stayed 12.64 where a rebuild
+    # gives 37.93), and its forward sensitivity lacked everything that goes
+    # through the number, an exact 0 where nothing else reads the parameter.
+    # Such a parameter is named here with what it was folded into, and
+    # `Model.set_param` and the sensitivity request refuse it by that.
     #
-    # What a fold reads is followed down through a lifted (derived) parameter,
-    # whose value a write to what it is written in still moves, with nothing
-    # here following. (A parameter whose own initialAssignment was folded has
-    # what that reads named by the first loop below.)
+    # What a fold reads is followed all the way down. The number came from
+    # every symbol the expression names and from whatever gave each of those
+    # its value at load: an initialAssignment, an assignment rule, a kinetic
+    # law for a reaction id (with the law's own parameters, which the built
+    # model has as `_lp_<reaction>_<id>`), a <stoichiometryMath> for a
+    # speciesReference id, and the size of a species' compartment where the
+    # species is declared in the unit it is not read in. (A lifted parameter is
+    # read through the initialAssignment it was lifted from.) `c = J0`, `c = q`
+    # under `q := 3*p`, and `c = S0` under `S0 = 2*p` each leave `p` as stale as
+    # `c = 2*p` does.
+    _reads: dict[str, set[str]] = {}
+    for _sym, _m in _taint_edges:
+        _reads.setdefault(_sym, set()).update(_ast_name_set(_m))
+    for _rxn_i in range(sbml_model.getNumReactions()):
+        _rxn_f = sbml_model.getReaction(_rxn_i)
+        _kl_f = _rxn_f.getKineticLaw()
+        _rid_f = _rxn_f.getId()
+        if not _rid_f or _kl_f is None or _rid_f not in _reads:
+            continue
+        _own = {_kl_f.getLocalParameter(_j).getId() for _j in range(_kl_f.getNumLocalParameters())}
+        if not _own:
+            _own = {_kl_f.getParameter(_j).getId() for _j in range(_kl_f.getNumParameters())}
+        if _own:
+            _reads[_rid_f] = {f"_lp_{_rid_f}_{_n}" if _n in _own else _n for _n in _reads[_rid_f]}
+    for _j in range(sbml_model.getNumSpecies()):
+        _sp_f = sbml_model.getSpecies(_j)
+        if _sp_f.getId() in _ia_math:
+            continue  # its value is the assignment's, in the unit it is read in
+        if (
+            _sp_f.isSetInitialConcentration()
+            if _sp_f.getHasOnlySubstanceUnits()
+            else (_sp_f.isSetInitialAmount() and not _sp_f.isSetInitialConcentration())
+        ):
+            _reads.setdefault(_sp_f.getId(), set()).add(_sp_f.getCompartment())
+
     _folded_into: dict[str, str] = {}
 
     def _fold(names, what: str) -> None:
@@ -8444,11 +8476,14 @@ def _build_model_from_sbml_doc(doc):
             if _n in seen:
                 continue
             seen.add(_n)
-            if _n in _lift_expr:
-                stack.extend(_lift_deps.get(_n, ()))
+            stack.extend(_reads.get(_n, ()))
             if _n in compartment_write_refused:
                 continue  # a size §10.7 refuses by name already, with its own reason
-            if (_n in _param_decl_index and _n not in _ar_targets) or _n in comp_param_idx:
+            if (
+                (_n in _param_decl_index and _n not in _ar_targets)
+                or _n in comp_param_idx
+                or _n.startswith("_lp_")
+            ):
                 _folded_into.setdefault(_safe_name(_n), what)
 
     # (#313) the residue of the lift, which was only warned about.
@@ -8458,12 +8493,35 @@ def _build_model_from_sbml_doc(doc):
         if _pid in _ar_targets:
             continue
         _fold(_ast_name_set(_m), f"the initial value of {_pid!r}, which an initialAssignment sets")
+    # The same for a species, and for a parameter a rate rule or an event makes
+    # a state of: an initialAssignment that is not lowered to an expression of
+    # parameters (it reads a reaction's rate, the time, a species under a rule)
+    # leaves the state's initial value a number.
+    for _sym in sorted(_ia_state_targets):
+        if _sym in ia_param_expr:
+            continue
+        if _sym in ia_single_param_ref and ia_single_param_ref[_sym] in _declared_param_ids:
+            continue
+        if _sym in _ia_math:
+            _fold(
+                _ast_name_set(_ia_math[_sym]),
+                f"the initial value of {_sym!r}, which an initialAssignment sets",
+            )
     # (#696) a compartment's size.
     for _cid in comp_param_idx:
         if _cid in _ia_math:
             _fold(
                 _ast_name_set(_ia_math[_cid]),
                 f"the size of compartment {_cid!r}, which an initialAssignment sets",
+            )
+    # The same where an assignment rule sizes it from parameters alone: the
+    # rule's value at load is the size the model holds (`c := 2*p`).
+    for _j in range(sbml_model.getNumCompartments()):
+        _cid = sbml_model.getCompartment(_j).getId()
+        if _cid in _ic_const_ar and _cid in _ar_math:
+            _fold(
+                _ast_name_set(_ar_math[_cid]),
+                f"the size of compartment {_cid!r}, which an assignment rule sets",
             )
     # (#695) a stoichiometry, and a conversionFactor.
     for _rxn_i in range(sbml_model.getNumReactions()):
@@ -8474,18 +8532,30 @@ def _build_model_from_sbml_doc(doc):
         ):
             for _j in range(_n_refs):
                 _sr = _getter(_j)
-                if _variable_stoich_expr(_sr) is not None:
+                _srid = _sr.getId() if hasattr(_sr, "getId") else ""
+                _named = bool(
+                    _srid and _srid in _species_ref_initial_values and _srid not in _reserved_ids
+                )
+                _sm = _sr.getStoichiometryMath() if hasattr(_sr, "getStoichiometryMath") else None
+                _has_math = _sm is not None and _sm.getMath() is not None
+                if not _named and not _has_math:
+                    continue  # a plain number: nothing to name
+                _kept = _variable_stoich_expr(_sr) is not None
+                if not _named and _kept:
                     continue  # kept symbolic (§6c): a write to what it reads moves it
                 _what = f"the stoichiometry of {_sr.getSpecies()!r} in reaction {_rxn_f.getId()!r}"
-                _sm = _sr.getStoichiometryMath() if hasattr(_sr, "getStoichiometryMath") else None
-                if _sm is not None and _sm.getMath() is not None:
-                    _fold(_ast_name_set(_sm.getMath()), _what)
-                _srid = _sr.getId() if hasattr(_sr, "getId") else ""
-                if _srid and _srid in _species_ref_initial_values and _srid not in _reserved_ids:
-                    # §6b registered the id as a parameter that holds the number.
+                if _named and _srid not in _ar_targets:
+                    # §6b registered the id as a parameter that holds the number
+                    # at load. Kept symbolic or not, the stoichiometry does not
+                    # read that parameter back. (An id a rule sets is the rule's
+                    # slot, which no write reaches.)
                     _folded_into.setdefault(_safe_name(_srid), _what)
-                    if _srid in _ia_math:
-                        _fold(_ast_name_set(_ia_math[_srid]), _what)
+                if _kept:
+                    continue  # a write to what it reads moves it
+                if _has_math:
+                    _fold(_ast_name_set(_sm.getMath()), _what)
+                if _named and _srid in _ia_math:
+                    _fold(_ast_name_set(_ia_math[_srid]), _what)
     if sbml_model.isSetConversionFactor():
         _fold([sbml_model.getConversionFactor()], "the model's conversionFactor")
     for _sid in species_ids:

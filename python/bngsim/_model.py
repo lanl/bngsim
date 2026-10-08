@@ -1197,14 +1197,20 @@ class Model:
         (issues #313, #695, #696).
 
         An SBML document may write a compartment's size, a stoichiometry or a
-        conversion factor over its parameters, or set a parameter's initial
-        value by an initialAssignment that bngsim cannot keep symbolic. Each is
-        evaluated once, at load, and the model holds the number. A parameter
-        that reaches the model that way does not move it afterwards, so
+        conversion factor over its parameters, or set an initial value, of a
+        parameter or of a species, by an initialAssignment that bngsim cannot
+        keep symbolic. Each is evaluated once, at load, and the model holds
+        the number. Every parameter that number was read from is listed: the
+        ones the expression names, and the ones that gave each symbol it names
+        its value at load (through another assignment, a rule, a reaction's
+        kinetic law, a species' initial value or its compartment's size).
+
+        A write to one does not move what it was folded into, so
         :meth:`set_param` refuses to change one, and a forward-sensitivity
         column for one is refused, where both used to be silent: the write took
-        the value and changed nothing, and the column was 0. Edit the document
-        and load it again to move one.
+        the value and left the number, and the column lacked everything that
+        goes through it (an exact 0 where nothing else reads the parameter).
+        Edit the document and load it again to move one.
 
         A compartmental BNGL model has them too (issue #711). BNG2.pl writes
         each reaction's volume factor into its rate constant as a number,
