@@ -92,6 +92,8 @@ class Model:
         "_core",
         "_codegen_so_path",
         "_codegen_c_source",
+        "_codegen_attachment",
+        "_codegen_for_sens",
         "_codegen_sec",
         "_codegen_cache_hit",
         "_codegen_sens_decline",
@@ -143,6 +145,19 @@ class Model:
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
+        # Issue #708: what the artifact above was built for, beyond the model's
+        # structure: which parameters were attached to an expression
+        # (``tuple(param_is_expression)``) and what the switch gate made of the
+        # rate-law conditions at the parameter values of the time. The
+        # generated sensitivity code carries the chain rule through each
+        # attached parameter, and has an analytic right-hand side or not by the
+        # gate's verdict, so an artifact built for one is the wrong code after
+        # a ``set_param`` changes either. ``None`` with no artifact.
+        self._codegen_attachment: tuple | None = None
+        # Whether that artifact was built for a sensitivity run. Kept beside
+        # it: ``_want_output_sens`` above is what the next build is to emit,
+        # and every Simulator built on the model writes it.
+        self._codegen_for_sens: bool = False
         # Wall seconds the model's codegen prepare spent (T0.3). Set by the
         # _codegen.prepare_* entry points (~0 for ExprTk models that never
         # codegen or a cache hit; the cc compile time on a cold large model).
@@ -1004,6 +1019,8 @@ class Model:
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path
         m._codegen_c_source = self._codegen_c_source
+        m._codegen_attachment = self._codegen_attachment
+        m._codegen_for_sens = self._codegen_for_sens
         m._codegen_sec = self._codegen_sec
         m._codegen_cache_hit = self._codegen_cache_hit
         m._codegen_sens_decline = self._codegen_sens_decline
