@@ -45,6 +45,21 @@ def _check_jax():
         ) from None
 
 
+def _write_params(clone, names, values, flat: bool) -> None:
+    """Write the vector onto *clone*, a parameter at a time.
+
+    Through the core, for ``force_override`` (issue #188), which is past the
+    check :meth:`Model.set_param` makes of a parameter the model was built with
+    as a number (issues #695, #696). So that check is made here: a value that
+    differs from the one such a parameter holds would be taken and move nothing
+    it was folded into, and the solve returned the trajectory of the old value.
+    """
+    for i, name in enumerate(names):
+        value = float(values[i])
+        clone._raise_if_folded_at_load(name, value)
+        clone._core.set_param(name, value, force_override=flat)
+
+
 def differentiable_solve(
     model,
     params,
@@ -334,8 +349,7 @@ def _run_primal(model, params_jnp, t_span, n_points, opts):
     # overrides only while the value differs, writing ``_rateLaw1`` its own
     # nominal value would leave it tracking ``kon``, and a gradient JAX is told
     # is zero would not be. ``force_override`` pins it regardless of value.
-    for i, name in enumerate(diff_param_names):
-        clone._core.set_param(name, float(params_np[i]), force_override=flat)
+    _write_params(clone, diff_param_names, params_np, flat)
     clone.reset()
 
     # Through Simulator.run, not a bare CvodeSimulator (issues #902, #913). The
@@ -397,8 +411,7 @@ def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
         # every parameter as its own axis under ``flat=True`` (issue #188; see
         # ``_solve_impl``).
         clone = model.clone()
-        for i, name in enumerate(diff_param_names):
-            clone._core.set_param(name, float(params_np[i]), force_override=flat)
+        _write_params(clone, diff_param_names, params_np, flat)
         clone.reset()
 
         sim = Simulator(clone, method="ode")
@@ -431,8 +444,7 @@ def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
     from bngsim._simulator import Simulator
 
     clone = model.clone()
-    for i, name in enumerate(diff_param_names):
-        clone._core.set_param(name, float(params_np[i]), force_override=flat)
+    _write_params(clone, diff_param_names, params_np, flat)
     clone.reset()
 
     result = Simulator(clone, method="ode", sensitivity_params=list(diff_param_names)).run(

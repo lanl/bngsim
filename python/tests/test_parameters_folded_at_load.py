@@ -186,7 +186,7 @@ def test_a_sensitivity_column_for_one_is_refused(shape):
     """It was an exact 0 at every species and time."""
     load, frozen, what = SHAPES[shape]
     with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696") as caught:
-        bngsim.Simulator(load(), method="ode", sensitivity_params=[frozen[-1], "k"])
+        bngsim.Simulator(load(), method="ode", sensitivity_params=[frozen[-1]])
     assert what in str(caught.value)
     sim = bngsim.Simulator(load(), method="ode")
     with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696"):
@@ -279,8 +279,8 @@ def test_a_steady_state_column_for_one_is_refused():
     ids=["an-assignment-that-is-kept-symbolic", "a-size-that-is-a-number", "a-number"],
 )
 def test_a_model_with_nothing_folded_freezes_nothing(text):
-    """Control. An initial assignment over parameters alone is kept as an
-    expression of them, and a write to what it reads moves it."""
+    """An initial assignment over parameters alone is kept as an expression
+    of them, and a write to what it reads moves it."""
     model = bngsim.Model.from_antimony_string(text)
     assert model.frozen_params == []
     for name in model.primary_param_names:
@@ -294,8 +294,8 @@ def test_a_model_with_nothing_folded_freezes_nothing(text):
 
 
 def test_a_stoichiometry_that_a_rule_sets_is_not_frozen():
-    """Control. A stoichiometry that moves in time is kept symbolic, and what
-    it reads is a parameter the model reads."""
+    """A stoichiometry that moves in time is kept symbolic, and what it reads
+    is a parameter the model reads."""
     text = "species A, P; A = 10; P = 0; k = 1; g = 2; f := g*(1 + time);\nJ: A -> f P; k*A\n"
     model = bngsim.Model.from_antimony_string(text)
     assert model.frozen_params == []
@@ -308,7 +308,7 @@ def test_a_stoichiometry_that_a_rule_sets_is_not_frozen():
 
 
 def test_a_net_model_freezes_nothing(tmp_path):
-    """Control."""
+    """A network that is not an SBML document has none."""
     path = tmp_path / "ab.net"
     path.write_text(
         "begin parameters\n 1 kf 1\nend parameters\n"
@@ -316,3 +316,249 @@ def test_a_net_model_freezes_nothing(tmp_path):
         "begin reactions\n 1 1 2 kf\nend reactions\n"
     )
     assert bngsim.Model.from_net(str(path)).frozen_params == []
+
+
+# ── What a fold reads, all the way down ──────────────────────────────────────
+#
+# The number a fold holds came from every symbol its expression names and from
+# whatever gave each of those its value at load. Each of these left the
+# parameter as stale as `c = 2*p` does, and was read one level deep.
+
+HIDDEN_SIZE = (
+    L3.replace(
+        '<compartment id="c" size="1" constant="true"/>',
+        '<compartment id="c" size="1" constant="true"/>'
+        '<compartment id="d" size="3" constant="true"/>',
+    )
+    .replace(
+        "    </listOfSpecies>",
+        '      <species id="B" compartment="d" initialAmount="3" hasOnlySubstanceUnits="false"\n'
+        '               boundaryCondition="true" constant="true"/>\n    </listOfSpecies>',
+    )
+    .format(
+        model_attrs=' conversionFactor="cf"',
+        species_attrs="",
+        reference_id="",
+        assignments=(
+            '<listOfInitialAssignments><initialAssignment symbol="cf">'
+            '<math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>B</ci>'
+            "<ci>z</ci></apply></math></initialAssignment></listOfInitialAssignments>"
+        ),
+    )
+)
+LOCAL = L3.replace(
+    "<kineticLaw><math",
+    '<kineticLaw><listOfLocalParameters><localParameter id="kl" value="1"/>'
+    "</listOfLocalParameters><math",
+).replace("<ci>k</ci><ci>A</ci>", "<ci>kl</ci><ci>A</ci>")
+VARYING = L2.replace(
+    '<speciesReference species="P">', '<speciesReference species="P" id="Xref">'
+).replace(
+    "<apply><times/><cn>2</cn><ci>f</ci></apply></math>\n        </stoichiometryMath>",
+    "<apply><times/><cn>2</cn><ci>f</ci><apply><plus/><cn>1</cn>"
+    '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
+    "</apply></apply></math>\n        </stoichiometryMath>",
+)
+_SIZE = "compartment c; species S in c; S = 1; k = 1;\nJ: S -> ; k*S\n"
+CHAINS = {
+    "a-size-from-a-rate": (
+        lambda: bngsim.Model.from_antimony_string(
+            "compartment c; species A in c, S in c; A = 4; S = 1; k1 = 0.5; k = 1; c = J0;\n"
+            "J0: A -> ; k1*A\nJ: S -> ; k*S\n"
+        ),
+        {"k1"},
+        "size of compartment 'c'",
+    ),
+    "a-size-through-a-rule": (
+        lambda: bngsim.Model.from_antimony_string("p = 1; q := 3*p; c = 2*q; " + _SIZE),
+        {"p"},
+        "size of compartment 'c'",
+    ),
+    "a-size-through-a-species": (
+        lambda: bngsim.Model.from_antimony_string(
+            "compartment d; d = 1; species S0 in d; p = 1; S0 = 2*p; c = S0; " + _SIZE
+        ),
+        {"p"},
+        "size of compartment 'c'",
+    ),
+    "a-size-an-assignment-rule-sets": (
+        lambda: bngsim.Model.from_antimony_string("p = 1; c := 2*p; " + _SIZE),
+        {"p"},
+        "size of compartment 'c', which an assignment rule sets",
+    ),
+    "a-stoichiometry-through-a-rate": (
+        lambda: bngsim.Model.from_antimony_string(
+            "species A, P, B; A = 10; P = 0; B = 1; kb = 2; k = 1; f = JB + 1;\n"
+            "J: A -> f P; k*A\nJB: B -> ; kb*B\n"
+        ),
+        {"kb", "f"},
+        "stoichiometry of 'P' in reaction 'J'",
+    ),
+    "a-conversion-factor-through-a-rate": (
+        lambda: _l3(
+            model_attrs=' conversionFactor="cf"',
+            assignments=(
+                '<listOfInitialAssignments><initialAssignment symbol="cf">'
+                '<math xmlns="http://www.w3.org/1998/Math/MathML"><ci>J</ci></math>'
+                "</initialAssignment></listOfInitialAssignments>"
+            ),
+        ),
+        {"k", "cf"},
+        "conversionFactor",
+    ),
+    "a-conversion-factor-through-a-species-and-its-compartment": (
+        lambda: bngsim.Model.from_sbml_string(HIDDEN_SIZE),
+        {"z", "d", "cf"},
+        "conversionFactor",
+    ),
+    "a-rate-s-own-parameter": (
+        lambda: bngsim.Model.from_sbml_string(
+            LOCAL.format(
+                model_attrs="",
+                species_attrs="",
+                reference_id="",
+                assignments=(
+                    '<listOfInitialAssignments><initialAssignment symbol="z">'
+                    '<math xmlns="http://www.w3.org/1998/Math/MathML"><ci>J</ci></math>'
+                    "</initialAssignment></listOfInitialAssignments>"
+                ),
+            )
+        ),
+        {"_lp_J_kl"},
+        "initial value of 'z'",
+    ),
+    "a-species-initial-value-that-reads-a-rate": (
+        lambda: bngsim.Model.from_antimony_string(
+            "species A, S; A = 10; p = 2; k1 = 0.5; S = p*J0;\nJ0: A -> ; k1*A\nJ1: S -> ; k1*S\n"
+        ),
+        {"p", "k1"},
+        "initial value of 'S'",
+    ),
+    "a-species-initial-value-that-reads-the-time": (
+        lambda: bngsim.Model.from_antimony_string(
+            "species S; p = 2; k = 1; S = p*(1 + time);\nJ: S -> ; k*S\n"
+        ),
+        {"p"},
+        "initial value of 'S'",
+    ),
+    "a-rate-rule-s-initial-value-that-reads-a-rate": (
+        lambda: bngsim.Model.from_antimony_string(
+            "species A; A = 10; p = 2; k1 = 0.5; k = 1; x = p*J0; x' = -k*x;\nJ0: A -> ; k1*A\n"
+        ),
+        {"p", "k1"},
+        "initial value of 'x'",
+    ),
+    "the-id-of-a-stoichiometry-that-moves-in-time": (
+        lambda: bngsim.Model.from_sbml_string(VARYING),
+        {"Xref"},
+        "stoichiometry of 'P' in reaction 'J'",
+    ),
+}
+
+
+@pytest.mark.parametrize("chain", sorted(CHAINS))
+def test_what_a_fold_reads_is_followed_down(chain):
+    load, frozen, what = CHAINS[chain]
+    model = load()
+    assert set(model.frozen_params) == frozen
+    for name in sorted(frozen):
+        model = load()
+        before = model.get_param(name)
+        with pytest.raises(bngsim.ParameterError, match=r"#695, #696") as caught:
+            model.set_param(name, before * 1.5 + 0.25)
+        assert repr(name) in str(caught.value)
+        assert model.get_param(name) == before
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696"):
+            bngsim.Simulator(load(), method="ode", sensitivity_params=[name])
+    assert any(what in w for w in load()._frozen_params.values())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "species S; p = 2; k = 1; S = 2*p;\nJ: S -> ; k*S\n",
+        "species S; p = 2; k = 1; S = p;\nJ: S -> ; k*S\n",
+        "species A; A = 10; p = 2; k = 1; x = 2*p; x' = -k*x;\nJ0: A -> ; k*A\n",
+        "compartment c; p = 1; c = 2*p; c' = 0.1; species S in c; S = 1; k = 1;\nJ: S -> ; k*S\n",
+    ],
+    ids=[
+        "a-species",
+        "a-species-set-to-a-parameter",
+        "a-rate-rule-parameter",
+        "a-rate-rule-compartment",
+    ],
+)
+def test_an_initial_value_kept_as_an_expression_freezes_nothing(text):
+    """An initial assignment over parameters alone onto a state is kept as an
+    expression of them, and a write to what it reads moves it."""
+    model = bngsim.Model.from_antimony_string(text)
+    assert model.frozen_params == []
+    model.set_param("p", 3.0)
+
+
+def test_a_stoichiometry_that_moves_in_time_still_reads_its_parameter():
+    """Control. Its id holds the number at load and nothing more, and what its
+    math reads is live: at ``f = 2`` the product is made twice as fast."""
+    model = bngsim.Model.from_sbml_string(VARYING)
+    run, p = _end(model, "P")
+    before = float(np.asarray(run.species)[-1, p])
+    model = bngsim.Model.from_sbml_string(VARYING)
+    model.set_param("f", 2.0)
+    run, p = _end(model, "P")
+    assert float(np.asarray(run.species)[-1, p]) == pytest.approx(2.0 * before, rel=1e-6)
+
+
+# ── Every route that writes ──────────────────────────────────────────────────
+
+
+def test_a_forced_write_a_scan_and_a_steady_state_batch_are_refused():
+    model = bngsim.Model.from_antimony_string(SIZED)
+    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+        model.set_param("p", 2.0, force_override=True)
+    sim = bngsim.Simulator(model, method="ode")
+    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+        sim.parameter_scan("p", [1.0, 2.0], t_span=(0.0, 1.0), n_points=3)
+    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+        sim.bifurcate("p", [1.0, 2.0], t_span=(0.0, 1.0), n_points=3)
+    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+        sim.steady_state_batch([{"p": 2.0}])
+
+
+def test_a_subset_model_keeps_the_record():
+    """``make_subset_model`` builds a model from another's core. It holds the
+    same numbers, and came back with nothing frozen: the write was taken and
+    [S](1) stayed 0.6065."""
+    from bngsim import coupling
+
+    sub = coupling.make_subset_model(bngsim.Model.from_antimony_string(SIZED))
+    assert sub.frozen_params == ["p"]
+    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+        sub.set_param("p", 2.0)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"#695, #696"):
+        bngsim.Simulator(sub, method="ode", sensitivity_params=["p"])
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_a_solve_through_jax_does_not_write_past_the_refusal(flat):
+    """``differentiable_solve`` writes its vector onto the core, past
+    ``Model.set_param``. At ``p = 2`` it returned the trajectory of ``p = 1``,
+    [S](1) = 0.6065 for 0.7788. The vector the model already holds is solved
+    as it was."""
+    pytest.importorskip("jax")
+    import jax.numpy as jnp
+    from bngsim.jax import differentiable_solve
+
+    model = bngsim.Model.from_antimony_string(SIZED)
+    internal = model._internal_param_names()
+    names = (
+        [n for n in model.param_names if n not in internal] if flat else model.primary_param_names
+    )
+    held = jnp.asarray([model.get_param(n) for n in names])
+    solved = differentiable_solve(model, held, (0.0, 1.0), 3, rtol=1e-10, atol=1e-12, flat=flat)
+    run, s = _end(bngsim.Model.from_antimony_string(SIZED), "S")
+    assert float(np.asarray(solved)[-1, s]) == pytest.approx(
+        float(np.asarray(run.species)[-1, s]), rel=1e-6
+    )
+    moved = held.at[list(names).index("p")].set(2.0)
+    with pytest.raises(bngsim.ParameterError, match=r"#695, #696"):
+        differentiable_solve(model, moved, (0.0, 1.0), 3, flat=flat)
