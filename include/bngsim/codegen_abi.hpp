@@ -143,7 +143,10 @@ using CodegenComovingApproachFn = int (*)(int case_idx, const double *p);
 // parameter values p, and -1 past the last. A power of a counter is singular
 // with an exponent between 0 and 1, and with one under 0 where its base is 0 at
 // a condition the same law has on that counter: a pole on the window's own
-// edge. A species none of whose powers is singular at p is not counted. Read
+// edge. Where that is not worked out (a condition that is not linear in the
+// counter, or reads a state, a selection or the counter under another name; a
+// base that holds a selection) it is taken to be. A species none of whose
+// powers is singular at p is not counted. Read
 // off the powers themselves, so it is emitted for a model with no comoving case
 // too. Resolved with try_symbol.
 using CodegenCounterPowerFn = int (*)(int k, const double *p);

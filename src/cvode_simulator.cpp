@@ -5266,13 +5266,13 @@ void CvodeSimulator::Impl::comoving_refuse_a_moved_counter(const SensitivityStat
                 << "), and a rate law of the model has a power of that counter that is singular "
                    "at this run's values: one with an exponent between 0 and 1, one with an "
                    "exponent under 0 whose base is 0 where the law's own condition on the counter "
-                   "flips (or is taken to be, where that condition reads a state, a selection or "
-                   "the counter under another name), or one whose exponent cannot be asked "
-                   "there. The columns of the parameters such a power is written in are "
-                   "integrated in a frame that moves with its edge. A column that moves the "
-                   "counter has none: it comes back 0.2% to 0.4% off under a closing power, or "
-                   "stalls under an opening one (issue #948). Drop that column, or difference "
-                   "plain runs.";
+                   "flips (or is taken to be: where that condition is not linear in the counter, "
+                   "reads a state, a selection or the counter under another name, or the base "
+                   "holds a selection), or one whose exponent cannot be asked there. The columns "
+                   "of the parameters such a power is written in are integrated in a frame that "
+                   "moves with its edge. A column that moves the counter has none: it comes back "
+                   "0.2% to 0.4% off under a closing power, or stalls under an opening one (issue "
+                   "#948). Drop that column, or difference plain runs.";
             throw std::runtime_error(msg.str());
         }
     }

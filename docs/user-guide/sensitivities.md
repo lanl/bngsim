@@ -309,11 +309,13 @@ law does not close on, a kernel `t^(-0.3)` whose step is somewhere else, is on
 no edge and does not count. Where the base is 0 on the condition at some values
 only, `1 - (t - on)/D` under `t <= off`, that is asked at the run's values, to
 a part in 1e9 of the base's terms. It is worked out for a condition that is
-linear in the counter. One that reads a state (`t - z >= on`), one written
-through a selection (an onset chosen by year), and one on the counter under
-another name are taken to be on the zero, so a power with an exponent under 0
-beside such a condition is refused in the counter's own columns whether or not
-it has a pole there. A gate a hair short of a strong pole is not refused and is
+linear in the counter. One that is not (`(t - 6)^2 <= 4`), one that reads a
+state (`t - z >= on`), one written through a selection (an onset chosen by
+year), and one on the counter under another name are taken to be on the zero,
+and so is any condition where the power's own base holds a selection
+(`1/(1 + ramp())` with `ramp() = if(t >= on, (t - on)/D, 0)`). A power with an
+exponent under 0 beside such a condition is refused in the counter's own
+columns whether or not it has a pole there. A gate a hair short of a strong pole is not refused and is
 a matter of tolerance: at an exponent of -0.5 and a gate 1e-6 short, dX/dT0 is
 1.5e-3 off at `rtol=1e-8` and 5e-5 off at `1e-12`. An exponent that a condition
 chooses,

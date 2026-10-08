@@ -8811,10 +8811,13 @@ def _counter_powers(
         no selection in it or in the base. Solving a threshold written through
         a year chain cost a model's whole derivation budget (SIR_v4: 50 s, and
         no frame for any column after it), so such a law is taken to gate on
-        the base's zero."""
+        the base's zero, as is one whose condition reads a state or the
+        counter under another name."""
         reads = _value_symbol_names(base, sp) & names
         at: list[str] = []
-        for rel in law.atoms(sp.core.relational.Relational):
+        # In a fixed order: the tests are written out in the order found, and
+        # a set's order goes by the hash seed.
+        for rel in sorted(law.atoms(sp.core.relational.Relational), key=sp.srepr):
             on = [s for s in rel.free_symbols if s.name in names]
             if len(on) != 1:
                 continue

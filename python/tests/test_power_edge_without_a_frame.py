@@ -895,6 +895,46 @@ def test_a_pole_on_a_gate_that_reads_a_state_is_refused(tmp_path):
     _refused(_on_a_counter(tmp_path, "closing", 0.99, text=text), ["T0"], 948)
 
 
+def test_the_export_is_written_the_same_whatever_the_hash_seed(tmp_path):
+    """A base that is 0 at three gates at some values only: three tests, which
+    were written in the order a set gave the conditions, so the source, and
+    with it the compiled library's name, went by ``PYTHONHASHSEED``."""
+    import os
+    import subprocess
+    import sys
+
+    text = (
+        COUNTER.replace(
+            "    8 T0 1.0\n", "    8 T0 1.0\n    9 off 8.0\n   10 off2 9.0\n   11 off3 9.5\n"
+        )
+        .replace("if(t<=(on+D),", "if(t<=off,")
+        .replace("k1*{shape},0),0)", "k1*{shape},0),0)+if(t<=off2,0.1,0)+if(t<=off3,0.1,0)")
+    )
+    path = tmp_path / "three.net"
+    path.write_text(text.format(a=0.99, shape=SHAPES["closing"][0].format(s="s()")))
+    code = (
+        "import sys, bngsim\n"
+        "from bngsim import _codegen\n"
+        "core = bngsim.Model.from_net(sys.argv[1])._core\n"
+        "src = _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)\n"
+        "head = 'int bngsim_codegen_counter_power(int k, const double* p)'\n"
+        "print(src.split(head)[1].split(chr(10) + '}')[0])\n"
+    )
+    written = set()
+    for seed in ("0", "2", "3"):
+        out = subprocess.run(
+            [sys.executable, "-c", code, str(path)],
+            env=dict(os.environ, PYTHONHASHSEED=seed),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=True,
+        ).stdout
+        assert out.count("fabs(") >= 6, out
+        written.add(out)
+    assert len(written) == 1
+
+
 BY_YEAR = COUNTER.replace(
     "    1 s() (t-on)/D\n", "    1 s() (t-onx())/D\n    3 onx() if(t<100,on,on+1)\n"
 ).replace("if(t>=on,if(t<=(on+D),", "if(t>=onx(),if(t<=(onx()+D),")
