@@ -1451,11 +1451,12 @@ class Simulator:
                 f"(issue #170 stage 3). For these, rebuild at V +/- h: "
                 f"Model.from_sbml(path, compartment_sizes={{...}})."
             )
-        # Issues #313, #695, #696 — and a parameter the loader folded to a
+        # Issues #313, #695, #696, #711 — and a parameter the loader folded to a
         # number. It reaches the model through what it was folded into and
         # nothing else follows it, so its column was an exact 0 at every
         # species and time: dS/dp = 0 for 0.303 with a compartment sized
-        # `c = 2*p`, dP/df = 0 for 2 with a stoichiometry of `2*f`.
+        # `c = 2*p`, dP/df = 0 for 2 with a stoichiometry of `2*f`, dLf/dVe = 0
+        # for 0.19 with a cBNGL volume BNG2.pl wrote into the rates.
         frozen = self._model._frozen_params
         folded = [name for name in dict.fromkeys(param_names) if name in frozen]
         if folded:
@@ -1465,8 +1466,8 @@ class Simulator:
                 + ". The model holds the number each gave and no rate law or initial "
                 "condition reads the parameter, so set_param refuses to change it and its "
                 "column would be an exact 0 where the model moves with it (issues #313, "
-                "#695, #696; Model.frozen_params lists every such parameter). Difference "
-                "models loaded from the document at p +/- h."
+                "#695, #696, #711; Model.frozen_params lists every such parameter). "
+                "Difference models loaded from the source at p +/- h."
             )
 
     def _raise_if_conserved_total_sensitivity_unknown(self, params: Sequence[str]) -> None:
@@ -5551,9 +5552,10 @@ class Simulator:
                     f"compute_all_sensitivities: skipping {len(folded)} parameter(s) "
                     f"{_abbreviate(folded)} that the model was built with as numbers: "
                     "each was read once at load (for a compartment's size, a "
-                    "stoichiometry, a conversion factor or an initial value), nothing in "
-                    "the model reads it afterwards, and its column would be an exact 0 "
-                    "where the model moves with it (issues #313, #695, #696; "
+                    "stoichiometry, a conversion factor, an initial value, or a volume "
+                    "BNG2.pl wrote into a rate constant), nothing in the model reads it "
+                    "afterwards, and its column would be an exact 0 where the model "
+                    "moves with it (issues #313, #695, #696, #711; "
                     "Model.frozen_params). The returned tensor has "
                     f"{len(target_params)} parameter columns; result.sensitivity_params "
                     "lists them.",

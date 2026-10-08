@@ -7,6 +7,7 @@ helpers for loading models, updating parameters, and inspecting model state.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -658,6 +659,7 @@ class Model:
         m = cls(_core=core)
         m._net_path = str(path)
         m._ar_report_map = _ar_report_map_from_net(core)
+        m._frozen_params = _unit_conversion_folds(path, core)
         # GH #145: the analytical Functional Jacobian (GH #76) is consumed only by
         # ODE solves, so it is no longer derived here at load — it is deferred to
         # the first ODE-solve setup (Simulator.__init__ →
@@ -1204,7 +1206,14 @@ class Model:
         the value and changed nothing, and the column was 0. Edit the document
         and load it again to move one.
 
-        Empty for ``.net`` models and for most SBML models.
+        A compartmental BNGL model has them too (issue #711). BNG2.pl writes
+        each reaction's volume factor into its rate constant as a number,
+        ``0.1*kb`` for ``1/Ve`` at ``Ve = 10``, and leaves the expression in a
+        comment, ``unit_conversion=1/Ve``. Every parameter such a comment names
+        is listed, with what a derived one among them reads: the network holds
+        the number, and it is the BNGL source that has to change.
+
+        Empty for most models.
 
         Returns
         -------
@@ -1231,10 +1240,17 @@ class Model:
             f"Parameter {name!r} cannot be changed after the model is loaded: it was read "
             f"once, when the model was built, for {what}, and the model holds the number "
             "that gave. A write would take the new value and move nothing it was folded "
-            "into, which used to happen without a word (issues #313, #695, #696). Change "
-            "it in the SBML document and load the model again. Model.frozen_params lists "
-            "every such parameter."
+            "into, which used to happen without a word (issues #313, #695, #696, #711). "
+            f"Change it in {self._where_a_folded_parameter_is_changed()}. "
+            "Model.frozen_params lists every such parameter."
         )
+
+    def _where_a_folded_parameter_is_changed(self) -> str:
+        """What to edit to move a parameter folded at load, for a refusal's
+        last line: the network BNG2.pl wrote, or the SBML document."""
+        if self._net_path:
+            return "the BNGL source and generate the network again"
+        return "the SBML document and load the model again"
 
     @property
     def compartment_size_params(self) -> list[str]:
@@ -2486,6 +2502,76 @@ class Model:
             f"Model(species={self.n_species}, reactions={self.n_reactions}, "
             f"observables={self.n_observables}, parameters={self.n_parameters})"
         )
+
+
+_UNIT_CONVERSION = re.compile(r"\bunit_conversion=(\S+)")
+# A number first, so that the ``e`` of ``6.0221e+23`` is not read as a name.
+_NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w*)")
+
+
+def _names_in(expression: str) -> list[str]:
+    """The identifiers of an expression, in order, numbers' exponents left out."""
+    return [m.group(1) for m in _NUMBER_OR_NAME.finditer(expression) if m.group(1)]
+
+
+def _unit_conversion_folds(path: Path, core: Any) -> dict[str, str]:
+    """The parameters BNG2.pl folded into rate constants as numbers (issue #711).
+
+    For a reaction of a compartmental model BNG2.pl evaluates the volume factor
+    and writes it into the ``.net`` rate as a number, ``0.1*kb``, with the
+    expression it came from in a trailing comment, ``#_R1 unit_conversion=1/Ve``.
+    The loader reads the number. ``Ve`` stays a parameter that no rate reads:
+    ``set_param("Ve", 20)`` took the value and moved nothing (Lf(5) = 14.90
+    where a network generated at 20 gives 16.76), and dLf/dVe was an exact 0.
+
+    Returns ``{name: what it was folded into}`` for every parameter such a
+    comment names, and for every parameter a derived one among them reads: with
+    ``vol = 4*r^3`` in the comment, ``r`` set the number too. The same registry
+    as the SBML loader's (:attr:`Model.frozen_params`), so the write and the
+    sensitivity column are refused the same way.
+    """
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:  # pragma: no cover - the core has just read it
+        return {}
+    if "unit_conversion=" not in text:
+        return {}
+    start = text.find("begin reactions")
+    stop = text.find("end reactions", start)
+    if start < 0 or stop < 0:
+        return {}
+    names = set(core.param_names)
+    folded: dict[str, str] = {}
+    for line in text[start:stop].splitlines():
+        found = _UNIT_CONVERSION.search(line.partition("#")[2])
+        if not found:
+            continue
+        index = line.split(None, 1)[0]
+        for name in _names_in(found.group(1)):
+            if name in names and name not in folded:
+                folded[name] = (
+                    "the volume factor BNG2.pl wrote into a rate constant as a number "
+                    f"(reaction {index}: unit_conversion={found.group(1)})"
+                )
+    if not folded:
+        return {}
+    # What a derived parameter among them reads set the number as well.
+    try:
+        written = {
+            str(q["name"]): str(q.get("expression", "") or "")
+            for q in core.codegen_data()["parameters"]
+            if not q.get("is_const", True)
+        }
+    except Exception:  # pragma: no cover - defensive: the names found stay refused
+        written = {}
+    pending = list(folded)
+    while pending:
+        name = pending.pop()
+        for read in _names_in(written.get(name, "")):
+            if read in names and read not in folded:
+                folded[read] = f"{name!r}, which is read for {folded[name]}"
+                pending.append(read)
+    return folded
 
 
 def _ar_report_map_from_net(core: Any) -> dict[str, tuple[str, str, float]]:

@@ -674,6 +674,15 @@ leaves these columns out and says so. To move one, change it in the document
 and load the model again, and difference over that for a gradient. The size
 itself (`c` above) is an ordinary writable, differentiable parameter.
 
+**A compartmental BNGL model has such parameters too** (issue #711). BNG2.pl
+writes each reaction's volume factor into its rate constant as a number,
+`0.1*kb` for `1/Ve` at `Ve = 10`, and keeps the expression only in a comment on
+the reaction line, `unit_conversion=1/Ve`. `Ve` is then a parameter that no rate
+reads. Every parameter such a comment names is in `frozen_params`, with what a
+derived one among them reads (`r` for `vol = 4*r^3`), for `Model.from_bngl` and
+for a `.net` file BNG2.pl wrote. To move a volume, change it in the BNGL source
+and generate the network again.
+
 ## Differentiable ODE solving with JAX
 
 BNGsim provides a JAX-traceable ODE solver via `bngsim.jax.differentiable_solve`.

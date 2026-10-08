@@ -95,6 +95,9 @@ Compartmental (cBNGL) models load: BNG2.pl bakes each compartment's volume into
 the generated rate constants, exactly as for a hand-generated `.net`. For that
 reason `Model.load` refuses `compartment_sizes=` on `.bngl` as it does on
 `.net` — the volume has to change in the BNGL source, before generation.
+`set_param` refuses to change a volume for the same reason, and a sensitivity
+column for one is refused (issue #711): the parameter is still in the model, and
+no rate reads it. `Model.frozen_params` lists them.
 
 A model whose network is unbounded hits `timeout=` (600 s by default) and gets a
 `ModelError` saying so; a model BNG2.pl rejects gets one carrying the tail of
