@@ -183,6 +183,10 @@ class NetworkModel:
         """
         (law, drift, size): the first conservation law whose total the right-hand side does not keep, asked at two states off the model's own, with the rate at which the total moves there and the size of the terms that should cancel. law is -1 where every law is kept. Issue #758.
         """
+    def conservation_law_members(self) -> list[list[int]]:
+        """
+        For each conservation law, the 0-based indices of the species it holds: those whose coefficient, over the species' volume, is not rounding beside the law's largest. Issue #758.
+        """
     def event_carry(self) -> typing.Any:
         """
         The event state the last run left for a run that continues it (issue #693): None, or (t, trigger truth per event, [(event index, apply time, frozen values)] for the delayed executions not yet applied). A run starting at t continues it; any other run is a fresh start.

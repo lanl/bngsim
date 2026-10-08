@@ -1615,15 +1615,13 @@ class Simulator:
                 "steady states solved again at a moved size, or take the column from a time "
                 "course run to the steady state."
             )
-        # The species a law holds: a coefficient that is not rounding beside
-        # the law's largest. Row reduction leaves 1e-17 to 1e-34 on species in
-        # other compartments (MODEL1505110000), which are in no law.
-        held_by = []
-        for row in laws["coefficients"]:
-            largest = max((abs(c) for c in row), default=0.0)
-            held_by.append([i for i, c in enumerate(row) if abs(c) > 1e-9 * largest])
         if not core.ic_state_dirty:
             return
+        # The species a law holds: a coefficient that is not rounding beside
+        # the law's largest, each over its species' volume (issue #758). Row
+        # reduction leaves 1e-17 to 1e-34 on species in other compartments
+        # (MODEL1505110000), which are in no law.
+        held_by = core.conservation_law_members()
         from bngsim._codegen import compute_ic_param_sens_seed
 
         in_a_law = {i for members in held_by for i in members}
@@ -6990,11 +6988,8 @@ class Simulator:
         k, drift, size = model._core.conservation_law_drift()
         if k < 0:
             return
-        row = np.abs(
-            np.asarray(model._core.conservation_laws["coefficients"][k], dtype=np.float64)
-        )
         names = model.species_names
-        held = [names[i] for i in np.nonzero(row > 1e-9 * float(np.max(row)))[0][:4]]
+        held = [names[i] for i in model._core.conservation_law_members()[k][:4]]
         raise SimulationError(
             f"{where} is not supported for this model: a conservation law the model reports "
             f"(over {', '.join(held)}{', ...' if len(held) == 4 else ''}) is not kept "

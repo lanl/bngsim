@@ -360,6 +360,14 @@ class NetworkModel {
     // of different size are a model's own, for the sizes it has).
     const ConservationLaws &conservation_laws() const;
 
+    // Issue #758 — the species each conservation law holds, by index: those
+    // whose coefficient is not rounding. Row reduction leaves 1e-14 to 1e-40
+    // of a row's largest coefficient on species that are in no law
+    // (MODEL1009150002, 1,604 species). A law across compartments carries
+    // each species' volume, which may differ by any factor, so what is
+    // compared is the coefficient over the volume, the stoichiometric one.
+    std::vector<std::vector<int>> conservation_law_members() const;
+
     // Issue #758 — whether the right-hand side keeps the totals that
     // conservation_laws() reports. The steady-state solvers hold each total,
     // so a law the dynamics do not keep gives a root, eigenvalues and
@@ -368,6 +376,9 @@ class NetworkModel {
     // state; at a steady state the rates are rounding and say nothing) and
     // returns the first law whose total moves by more than 1e-8 of the terms
     // that should cancel: its index, that rate, and the size of the terms.
+    // The terms are those of the species the law holds
+    // (conservation_law_members): rounding on a species in no law, times a
+    // rate 1e9 of the others', is not the law's.
     // `law` is -1 where every law is kept. Nothing is asked at a state where a
     // rate is not finite. Writes the cached observable and function values, as
     // a compute_derivs call does.

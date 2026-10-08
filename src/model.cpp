@@ -1993,12 +1993,34 @@ const ConservationLaws &NetworkModel::conservation_laws() const {
     return *impl_->volume_laws;
 }
 
+std::vector<std::vector<int>> NetworkModel::conservation_law_members() const {
+    const ConservationLaws &cl = conservation_laws();
+    const int ns = n_species();
+    std::vector<std::vector<int>> members(cl.n_laws);
+    std::vector<double> weight(ns);
+    for (int k = 0; k < cl.n_laws; ++k) {
+        const std::vector<double> &row = cl.coefficients[k];
+        double largest = 0.0;
+        for (int i = 0; i < ns; ++i) {
+            const double v = impl_->species[i].volume_factor;
+            weight[i] = std::fabs(row[i]) / ((std::isfinite(v) && v > 0.0) ? v : 1.0);
+            largest = std::max(largest, weight[i]);
+        }
+        for (int i = 0; i < ns; ++i) {
+            if (weight[i] > 1e-9 * largest)
+                members[k].push_back(i);
+        }
+    }
+    return members;
+}
+
 NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
     ConservationLawDrift found;
     const ConservationLaws &cl = conservation_laws();
     const int ns = n_species();
     if (cl.n_laws == 0 || ns == 0)
         return found;
+    const std::vector<std::vector<int>> members = conservation_law_members();
     std::vector<double> here(ns), state(ns), rate(ns);
     get_state_into(here.data());
     for (int pass = 0; pass < 2; ++pass) {
@@ -2014,7 +2036,7 @@ NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
         for (int k = 0; k < cl.n_laws; ++k) {
             const std::vector<double> &row = cl.coefficients[k];
             double total = 0.0, size = 0.0;
-            for (int i = 0; i < ns; ++i) {
+            for (int i : members[k]) {
                 total += row[i] * rate[i];
                 size += std::fabs(row[i] * rate[i]);
             }

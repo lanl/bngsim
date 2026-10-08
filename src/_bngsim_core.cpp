@@ -2209,6 +2209,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 return d;
             },
             "Conservation laws detected from stoichiometry matrix")
+        .def("conservation_law_members", &bngsim::NetworkModel::conservation_law_members,
+             "For each conservation law, the 0-based indices of the species it holds: those "
+             "whose coefficient, over the species' volume, is not rounding beside the law's "
+             "largest. Issue #758.")
         .def(
             "conservation_law_drift",
             [](bngsim::NetworkModel &m) {

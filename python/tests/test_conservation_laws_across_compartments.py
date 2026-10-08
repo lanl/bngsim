@@ -506,6 +506,73 @@ def test_the_question_is_put_relative_to_the_terms(scale):
     assert law == 0 and 0.01 * size < drift <= size
 
 
+CRUMBS = (
+    "begin parameters\n    1 k0 {k}\n    2 k1 {k}\n    3 k2 1.943\n    4 k3 {k}\nend parameters\n"
+    "begin species\n    1 S0() 0.959\n    2 S1() 0.884\n    3 S2() 0.601\n    4 S3() 1.134\n"
+    "    5 S4() 1.658\nend species\n"
+    "begin reactions\n    1 1,1,1 2,4,2,3 k0\n    2 4,4,5 2,4,1,2,2 k1\n    3 3,1 3,2 k2\n"
+    "    4 5,2 5 k3\nend reactions\n"
+)
+
+
+def test_rounding_left_on_a_species_in_no_law_is_not_the_law(tmp_path):
+    """Row reduction leaves rounding on species a law does not hold: here
+    ``S2 - S3 + S4`` with -1.1e-16 on S0 (where the arithmetic leaves any;
+    1e-14 to 1e-40 over the corpus). With three rate constants at zero only S0
+    and S1 move, so the rounding times S0's rate was the whole of the law's
+    total, and a share of 1 of its terms. The law is asked over the species
+    it holds, which do not move."""
+    path = tmp_path / "crumbs.net"
+    path.write_text(CRUMBS.format(k=0.0))
+    model = bngsim.Model.from_net(str(path))
+    assert model._core.conservation_law_members() == [[2, 3, 4]]
+    rate = np.asarray(model.rhs(np.array([1.3, 0.7, 0.9, 1.1, 0.4])))
+    assert rate[0] < -1.0 and np.all(rate[2:] == 0.0)
+    assert model._core.conservation_law_drift() == (-1, 0.0, 0.0)
+    out = bngsim.Simulator(model, method="ode").steady_state()
+    np.testing.assert_allclose(
+        np.asarray(out.concentrations), [0.0, 0.959 + 0.884, 0.601, 1.134, 1.658], atol=1e-6
+    )
+    path.write_text(CRUMBS.format(k=0.7))
+    assert bngsim.Model.from_net(str(path))._core.conservation_law_drift()[0] == -1
+
+
+@pytest.mark.parametrize("v2", [1e-12, 1e12])
+def test_sizes_twelve_orders_apart(v2):
+    """A cell of 1e-12 beside a medium of 1: the law is ``A + V2*B``, and
+    both species are held by it, though one coefficient is 1e-12 of the
+    other. Which species a law holds is asked of the coefficients over the
+    sizes."""
+    model = _two(v2)
+    np.testing.assert_allclose(_law(model), [1.0, v2], rtol=1e-12)
+    assert model._core.conservation_law_members() == [[0, 1]]
+    assert model._core.conservation_law_drift()[0] == -1
+    assert _kept(model) < 1e-12
+
+
+def test_the_columns_with_sizes_twelve_orders_apart():
+    """A* = 1/2 and B* = 1/(2*V2) at V2 = 1e12, with dA*/dk1 = -1/4 and
+    dB*/dk1 = 1/(4*V2)."""
+    sim = bngsim.Simulator(_two(1e12), method="ode")
+    out = sim.steady_state(sensitivity_params=["k1"], tol=1e-12)
+    assert out.converged
+    np.testing.assert_allclose(np.asarray(out.concentrations), [0.5, 0.5e-12], rtol=1e-9)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-0.25, 0.25e-12], rtol=1e-9)
+
+
+@pytest.mark.parametrize("v2", [1e-12, 1e12])
+def test_a_moved_state_refuses_the_initial_amount_of_either_species(v2):
+    """On a state a run has advanced, a parameter that sets the initial amount
+    of a species in a law is refused (issue #704), for A and for B alike: both
+    are in the law, whatever their sizes."""
+    text = TWO.format(v2=v2).replace("A = 1; B = 0;", "A0 = 1; B0 = 0; A = A0; B = B0;")
+    for name in ("A0", "B0"):
+        sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+        sim.run(t_span=(0.0, 0.1), n_points=2)
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match="carried-over"):
+            sim.steady_state(sensitivity_params=[name])
+
+
 def test_the_question_is_asked_at_a_second_state():
     """A rate law that has no value at the first state asked, ``sqrt(A - 2)``
     with A at 1.88 there, has one at the second, A at 2.33: the law is asked
