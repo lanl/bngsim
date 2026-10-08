@@ -1272,6 +1272,7 @@ class Simulator:
         if self._sensitivity_ic and dispatch != "ode":
             raise ValueError("sensitivity_ic is only supported for method='ode'.")
         self._raise_if_compartment_size_params(self._sensitivity_params)
+        self._raise_if_folded_at_load_params(self._sensitivity_params)
         self._raise_if_function_backed_params(self._sensitivity_params)
 
         # Forward sensitivity REQUIRES an analytical codegen sensitivity RHS
@@ -1540,6 +1541,34 @@ class Simulator:
                 f"Every other compartment size in this model is differentiable "
                 f"(issue #170 stage 3). For these, rebuild at V +/- h: "
                 f"Model.from_sbml(path, compartment_sizes={{...}})."
+            )
+
+    def _raise_if_folded_at_load_params(self, param_names: list[str]) -> None:
+        """Refuse a forward-sensitivity column for a parameter the model was
+        built with as a number (issues #313, #695, #696).
+
+        The loader read it once, for a compartment's size, a stoichiometry, a
+        conversion factor or an initial value, and the model holds what that
+        gave. The column lacked everything that goes through the number: an
+        exact 0 at every species and time where nothing else reads the
+        parameter (dS/dp = 0 for 0.303 with a compartment sized ``c = 2*p``,
+        dP/df = 0 for 12.64 with a stoichiometry of ``2*f``), and a part of the
+        derivative where a rate law reads it too.
+        """
+        frozen = getattr(self._model, "_frozen_params", None)
+        if not frozen:
+            return
+        folded = [name for name in dict.fromkeys(param_names) if name in frozen]
+        if folded:
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported for "
+                + "; ".join(f"{name!r}, read once at load for {frozen[name]}" for name in folded)
+                + ". The model holds the number each gave, which a write does not move, "
+                "so set_param refuses to change the parameter and its column would lack "
+                "everything that reaches the model through that number: an exact 0 where "
+                "nothing else reads it (issues #313, #695, #696; Model.frozen_params lists "
+                "every such parameter). Difference models loaded from the document at "
+                "p +/- h."
             )
 
     def _raise_if_conserved_total_sensitivity_unknown(self, params: Sequence[str]) -> None:
@@ -5912,6 +5941,7 @@ class Simulator:
             # narrowed *which* sizes that answer is "no" for: only the ones
             # set_param itself refuses.
             self._raise_if_compartment_size_params(target_params)
+            self._raise_if_folded_at_load_params(target_params)
             # Issue #329 — and the same for a function's backing slot, which the
             # `params=None` branch below drops with a warning saying its column
             # "would be identically zero". Naming it was the one route that got
@@ -5942,7 +5972,9 @@ class Simulator:
             internal = (known & self._model._internal_param_names()) - refused_sizes
             primaries = self._model.primary_param_names
             primary_set = set(primaries)
-            target_params = [p for p in primaries if p not in refused_sizes]
+            frozen = self._model._frozen_params
+            folded = [p for p in primaries if p in frozen]
+            target_params = [p for p in primaries if p not in refused_sizes and p not in frozen]
             # `primaries` is `param_names` minus (derived ∪ internal), so what is
             # left over here is exactly the attached derived parameters. Computed
             # as a residue rather than from the flag directly so that every name
@@ -5956,6 +5988,19 @@ class Simulator:
                 if p not in primary_set and p not in internal and p not in refused_sizes
             ]
 
+            if folded:
+                warnings.warn(
+                    f"compute_all_sensitivities: skipping {len(folded)} parameter(s) "
+                    f"{_abbreviate(folded)} that the model was built with as numbers: "
+                    "each was read once at load (for a compartment's size, a "
+                    "stoichiometry, a conversion factor or an initial value), the model "
+                    "holds the number that gave, and its column would lack everything "
+                    "that reaches the model through it (issues #313, #695, #696; "
+                    "Model.frozen_params). The returned tensor has "
+                    f"{len(target_params)} parameter columns; result.sensitivity_params "
+                    "lists them.",
+                    stacklevel=2,
+                )
             skipped = sorted(refused_sizes)
             if skipped:
                 warnings.warn(
@@ -6738,6 +6783,7 @@ class Simulator:
             # only its conserved totals, whose seed is handed over below, issue
             # #704; the ∂f/∂V half is the one in play here, and it is complete.)
             self._raise_if_compartment_size_params(list(sensitivity_params))
+            self._raise_if_folded_at_load_params(list(sensitivity_params))
             # Issue #329 — a function's backing slot is refused here for the
             # same reason the constructor refuses it: ∂f/∂p is read out of that
             # same emitted sensitivity RHS, where the slot is a value the engine

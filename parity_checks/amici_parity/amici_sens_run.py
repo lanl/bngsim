@@ -393,6 +393,11 @@ def _worker(spec: dict, q) -> None:
         # spelled the same way so the harness cannot ask for a column the library
         # would reject nor drop one it would answer.
         _fn_backed = _m._internal_param_names() & set(_m.function_names)
+        # Issues #695, #696 — and a parameter the model was built with as a
+        # number (a compartment size, a stoichiometry, a conversion factor or an
+        # initial value read it once at load). bngsim refuses its column, which
+        # used to come back short of everything that goes through the number.
+        _fn_backed |= set(getattr(_m, "frozen_params", ()) or ())
         shared_ids, bn_by_id, n_cand = asens.shared_sensitivity_params(
             list(_m.param_names),
             _m.compartment_size_params,
