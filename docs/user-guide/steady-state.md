@@ -598,7 +598,14 @@ Two columns are refused, with `SensitivityUnsupportedError`:
 
 A law across compartments of different size is a total of amounts, and carries
 the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in
-one of size 2 (issue #758). Its columns are computed like any other law's.
+one of size 2 (issue #758). Its columns are computed like any other law's,
+with one exception: where the Jacobian at the steady state is badly
+conditioned on the reduced subspace (`min|U|/max|U|` below 1e-8, the ratio
+`ss.sens_jacobian_rcond` reports), the request is refused with
+`SensitivityUnsupportedError`. A model with one size gets a warning there. With
+sizes in the laws, a steady state that is one of a continuum has a pivot that
+is rounding where one size leaves an exact zero, and the columns that came
+back were not a gradient (-329,603 for 0.0774).
 
 With `mask=`, a conservation law that holds a masked-out species keeps its
 total fixed, as before, unless that species is the one the law is solved for.

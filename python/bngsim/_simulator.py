@@ -1582,7 +1582,8 @@ class Simulator:
         give. (A law across compartments of different size was a third, while
         it was found as a total of concentrations, ``A + B`` for ``V1·A +
         V2·B``; it is found with the sizes in it since issue #758, and its
-        columns are right.)
+        columns are computed where the reduced Jacobian is well conditioned:
+        :meth:`_raise_if_badly_conditioned_across_sizes`.)
 
         - **a compartment size**, in a model with a conservation law. What is
           conserved is an amount, which a size does not move, and what the solve
@@ -6960,8 +6961,52 @@ class Simulator:
         )
         self._note_ss_jacobian_retry(result)
         self._warn_about_pure_sinks(result)
+        self._raise_if_badly_conditioned_across_sizes(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    def _raise_if_badly_conditioned_across_sizes(self, result: SteadyStateResult) -> None:
+        """Refuse ``dY_ss/dp`` where a conservation law spans compartments of
+        different size and the reduced Jacobian is badly conditioned (issue
+        #758).
+
+        Every column of such a model was refused while its law was found as a
+        total of concentrations (issue #704). The law is right now, and where
+        the reduced Jacobian is well conditioned so are the columns. Where it
+        is not, the model stays refused: a steady state that is one of a
+        continuum has a reduced Jacobian that is singular, and with sizes in
+        the laws the singular pivot comes out as rounding where one size
+        leaves an exact zero, which the solve reports as non-finite and
+        :meth:`_warn_about_ss_sensitivity` refuses. ``B -> P`` and ``B -> Q``
+        with each product exchanged across the compartments returned
+        dP*/dkp = -329,603 for 0.0774 at min|U|/max|U| = 1e-17, and over the
+        corpus two of the five such models had columns that were not the
+        derivative (BIOMD0000000328: 3.88 for -6.32, at 7e-18). A model with
+        one size gets the warning there, as it did.
+        """
+        rcond = result.sens_jacobian_rcond
+        if result.sensitivity is None or not 0.0 <= rcond < self._SS_SENS_RCOND_FLOOR:
+            return
+        model = self._model
+        if len(model.compartment_size_params) < 2:
+            return
+        volumes = [float(sp["volume_factor"]) for sp in model._core.codegen_data()["species"]]
+        names = model.species_names
+        for members in model._core.conservation_law_members():
+            if len({volumes[i] for i in members}) > 1:
+                raise SensitivityUnsupportedError(
+                    "steady_state(sensitivity_params=...) is not supported for this model "
+                    "at this steady state: a conservation law of it spans compartments of "
+                    f"different size ({', '.join(names[i] for i in members[:4])}"
+                    f"{', ...' if len(members) > 4 else ''}) and the Jacobian at the steady "
+                    f"state is badly conditioned on the reduced subspace (min|U|/max|U| = "
+                    f"{rcond:.2e} from its LU). If the steady state is one of a continuum "
+                    "the solve returns numbers that are not a gradient, and with "
+                    "compartment sizes in the laws nothing marks them: such a model "
+                    "returned -329,603 for 0.0774 (issue #758). Take the columns from a "
+                    "time course run to the steady state, or difference steady states "
+                    "solved again at p +/- h."
+                )
 
     def _raise_if_a_conservation_law_is_not_conserved(
         self, where: str, model: Model | None = None

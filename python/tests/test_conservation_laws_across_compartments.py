@@ -599,3 +599,49 @@ def test_the_question_is_asked_off_a_steady_state():
     assert model._core.conservation_law_drift()[0] == -1
     out = sim.steady_state(method="newton")
     np.testing.assert_allclose(np.asarray(out.concentrations), _settled(text, "k1"), rtol=1e-8)
+
+
+# B goes to P and to Q, neither of which comes back, and each is exchanged with
+# a partner in the other compartment. Where the run ends depends on the split
+# between them, so the steady state is one of a continuum.
+CONTINUUM = (
+    "compartment c1, c2; c1 = 0.7; c2 = {v2};\n"
+    "species A in c1, B in c2, P in c2, P2 in c1, Q in c2, Q2 in c1;\n"
+    "A = 1.3; B = 0.2; P = 0; P2 = 0; Q = 0; Q2 = 0;\n"
+    "k1 = 0.37; k2 = 1.91; kp = 0.83; kq = 0.29; a = 0.61; b = 1.17; d = 0.43; e = 0.77;\n"
+    "R1: A -> B; k1*A*c1\nR2: B -> A; k2*B*c2\n"
+    "R3: B -> P; c2*kp*B/(0.7 + B)\nR4: B -> Q; c2*kq*B\n"
+    "R5: P -> P2; c2*a*P\nR6: P2 -> P; c1*b*P2\nR7: Q -> Q2; c2*d*Q\nR8: Q2 -> Q; c1*e*Q2\n"
+)
+
+
+def test_a_badly_conditioned_solve_across_sizes_is_still_refused():
+    """A steady state that is one of a continuum has a singular reduced
+    Jacobian. With one size the pivot is an exact zero and the solve is
+    refused for it; with sizes 0.7 and 2.3 it is rounding, 1e-17 of the
+    largest, and the columns came back with a warning beside them:
+    dP*/dkp = -329,603 where runs to the steady state give 0.0774. Such a
+    model was refused for its law (issue #704) and stays refused, for its
+    conditioning."""
+    model = bngsim.Model.from_antimony_string(CONTINUUM.format(v2=2.3))
+    np.testing.assert_allclose(_law(model), [1, 2.3 / 0.7, 2.3 / 0.7, 1, 2.3 / 0.7, 1], rtol=1e-12)
+    sim = bngsim.Simulator(model, method="ode")
+    for name in ("kp", "k1"):
+        with pytest.raises(
+            bngsim.SensitivityUnsupportedError,
+            match=r"badly conditioned.*min\|U\|/max\|U\| = .*#758",
+        ):
+            sim.steady_state(sensitivity_params=[name], tol=1e-10)
+        model.reset()
+    out = sim.steady_state(tol=1e-10)  # the state itself is where a run ends
+    assert out.converged and abs(np.asarray(out.concentrations)[1]) < 1e-8
+
+
+def test_the_same_continuum_in_one_size_is_refused_as_it_was():
+    """Control. With both sizes 0.7 the pivot is an exact zero, the solve
+    returns non-finite columns, and that is the refusal there has been."""
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(CONTINUUM.format(v2=0.7)), method="ode"
+    )
+    with pytest.raises(bngsim.SimulationError, match="dY_ss/dp does not exist"):
+        sim.steady_state(sensitivity_params=["kp"], tol=1e-10)
