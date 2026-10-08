@@ -265,7 +265,7 @@ Properties:
 
 Methods:
 - **`resolve_outputs(selectors)`** → `list[dict]` — same selector grammar as `Result.resolve_outputs`
-- **`output_sensitivities(selectors, *, axis="parameter")`** → `ndarray (n_selectors, n_params)` — steady-state `∂(named output)/∂p` for `species:`/`observable:`/`expression:` selectors, mirroring `Result.output_sensitivities` (no time axis). `axis="ic"` raises: a stable steady state is independent of its initial conditions (`∂x*/∂x(0) = 0`)
+- **`output_sensitivities(selectors, *, axis="parameter")`** → `ndarray (n_selectors, n_params)` — steady-state `∂(named output)/∂p` for `species:`/`observable:`/`expression:` selectors, mirroring `Result.output_sensitivities` (no time axis). `axis="ic"` raises: the initial-condition axis is not computed (a parameter that sets an initial amount carries its share of a conserved total in its own column, issue #704)
 - **`__getitem__(name)`** → `float` — steady-state concentration by species name
 - **`to_dict()`** → `dict[str, float]`
 

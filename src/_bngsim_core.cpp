@@ -3209,6 +3209,20 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("codegen_so_path", &bngsim::SteadyStateOptions::codegen_so_path)
         .def_readwrite("codegen_c_source", &bngsim::SteadyStateOptions::codegen_c_source)
         .def_readwrite("sensitivity_params", &bngsim::SteadyStateOptions::sensitivity_params)
+        .def(
+            "set_ic_param_sens",
+            [](bngsim::SteadyStateOptions &self,
+               const std::vector<std::tuple<int, int, double>> &triples) {
+                self.ic_param_sens.clear();
+                self.ic_param_sens.reserve(triples.size());
+                for (const auto &t : triples) {
+                    self.ic_param_sens.push_back({std::get<0>(t), std::get<1>(t), std::get<2>(t)});
+                }
+            },
+            py::arg("triples"),
+            "Set the initial-condition seeds dx_i(0)/dp as (species_idx0, param_idx0, "
+            "coefficient) triples, as SolverOptions.set_ic_param_sens does for a time "
+            "course. A conserved total moves with them (issue #704).")
         .def_readwrite("steady_state_mask", &bngsim::SteadyStateOptions::steady_state_mask);
 
     // --- SteadyStateResult ---

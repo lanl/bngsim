@@ -145,7 +145,7 @@ class NetworkModel:
         """
     def _eval_rhs(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> list[float]:
         """
-        Evaluate dy/dt at (t, conc). Test/diagnostic hook.
+        Evaluate dy/dt at (t, conc), leaving the model as it was. Test/diagnostic hook.
         """
     def add_table_function_arrays(self, name: str, xs: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], ys: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], index_name: str = 'time', method: str = 'linear') -> None:
         """
@@ -1131,6 +1131,10 @@ class SteadyStateOptions:
     method: str
     def __init__(self) -> None:
         ...
+    def set_ic_param_sens(self, triples: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
+        """
+        Set the initial-condition seeds dx_i(0)/dp as (species_idx0, param_idx0, coefficient) triples, as SolverOptions.set_ic_param_sens does for a time course. A conserved total moves with them (issue #704).
+        """
     @property
     def atol(self) -> float:
         ...
