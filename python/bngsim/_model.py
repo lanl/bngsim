@@ -659,7 +659,7 @@ class Model:
         m = cls(_core=core)
         m._net_path = str(path)
         m._ar_report_map = _ar_report_map_from_net(core)
-        m._frozen_params = _unit_conversion_folds(path, core)
+        m._frozen_params = _unit_conversion_folds(_unit_conversions_in(path), core)
         # GH #145: the analytical Functional Jacobian (GH #76) is consumed only by
         # ODE solves, so it is no longer derived here at load — it is deferred to
         # the first ODE-solve setup (Simulator.__init__ →
@@ -1247,16 +1247,9 @@ class Model:
             f"once, when the model was built, for {what}, and the model holds the number "
             "that gave. A write would take the new value and move nothing it was folded "
             "into, which used to happen without a word (issues #313, #695, #696, #711). "
-            f"Change it in {self._where_a_folded_parameter_is_changed()}. "
+            f"Change it in {_where_a_folded_parameter_is_changed(what)}. "
             "Model.frozen_params lists every such parameter."
         )
-
-    def _where_a_folded_parameter_is_changed(self) -> str:
-        """What to edit to move a parameter folded at load, for a refusal's
-        last line: the network BNG2.pl wrote, or the SBML document."""
-        if self._net_path:
-            return "the BNGL source and generate the network again"
-        return "the SBML document and load the model again"
 
     @property
     def compartment_size_params(self) -> list[str]:
@@ -2510,7 +2503,9 @@ class Model:
         )
 
 
-_UNIT_CONVERSION = re.compile(r"\bunit_conversion=(\S+)")
+# To the end of the line: BNG2.pl writes ``unit_conversion=1/Ve`` last and with
+# no blank in it, and an edited file may have ``unit_conversion= 1 / Ve``.
+_UNIT_CONVERSION = re.compile(r"\bunit_conversion\s*=\s*(\S.*?)\s*$")
 # A number first, so that the ``e`` of ``6.0221e+23`` is not read as a name.
 _NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w*)")
 
@@ -2520,7 +2515,49 @@ def _names_in(expression: str) -> list[str]:
     return [m.group(1) for m in _NUMBER_OR_NAME.finditer(expression) if m.group(1)]
 
 
-def _unit_conversion_folds(path: Path, core: Any) -> dict[str, str]:
+def _where_a_folded_parameter_is_changed(what: str) -> str:
+    """What to edit to move a parameter folded at load, for a refusal's last
+    line: the BNGL source of a network BNG2.pl wrote, or the SBML document. By
+    what it was folded into, which a clone and a subset model carry."""
+    if "unit_conversion=" in what:
+        return "the BNGL source and generate the network again"
+    return "the SBML document and load the model again"
+
+
+def _unit_conversions_in(path: Path) -> list[tuple[str, str]]:
+    """``(reaction, expression)`` for each ``unit_conversion=`` comment on a
+    reaction line of a ``.net`` file (issue #711).
+
+    The block is found as the loader finds it, by the first two words of a
+    line with its comment taken off, so a ``reactions_text`` block, a
+    commented-out line and a comment that says ``end reactions`` are none of
+    them read for one.
+    """
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:  # pragma: no cover - the core has just read it
+        return []
+    if "unit_conversion" not in text:
+        return []
+    found: list[tuple[str, str]] = []
+    inside = False
+    for line in text.splitlines():
+        code, _, comment = line.partition("#")
+        words = code.split()
+        if not words:
+            continue
+        if words[0] in ("begin", "end"):
+            inside = words[:2] == ["begin", "reactions"]
+            continue
+        if not inside:
+            continue
+        said = _UNIT_CONVERSION.search(comment)
+        if said:
+            found.append((words[0], said.group(1)))
+    return found
+
+
+def _unit_conversion_folds(conversions, core: Any) -> dict[str, str]:
     """The parameters BNG2.pl folded into rate constants as numbers (issue #711).
 
     For a reaction of a compartmental model BNG2.pl evaluates the volume factor
@@ -2530,53 +2567,45 @@ def _unit_conversion_folds(path: Path, core: Any) -> dict[str, str]:
     ``set_param("Ve", 20)`` took the value and moved nothing (Lf(5) = 14.90
     where a network generated at 20 gives 16.76), and dLf/dVe was an exact 0.
 
+    *conversions* is what :func:`_unit_conversions_in` reads off the file.
     Returns ``{name: what it was folded into}`` for every parameter such a
-    comment names, and for every parameter a derived one among them reads: with
-    ``vol = 4*r^3`` in the comment, ``r`` set the number too. The same registry
-    as the SBML loader's (:attr:`Model.frozen_params`), so the write and the
-    sensitivity column are refused the same way.
+    comment names, and for every parameter that a derived parameter or a
+    function among them reads: with ``vol = 4*r^3`` in the comment, or a
+    compartment sized by ``Vcell() = 4*rcell^3``, ``r`` and ``rcell`` set the
+    number too. A function is followed and not listed: it is no parameter to
+    write. The same registry as the SBML loader's
+    (:attr:`Model.frozen_params`), so the write and the sensitivity column are
+    refused the same way.
     """
-    try:
-        text = Path(path).read_text(errors="replace")
-    except OSError:  # pragma: no cover - the core has just read it
+    conversions = list(conversions or ())
+    if not conversions:
         return {}
-    if "unit_conversion=" not in text:
-        return {}
-    start = text.find("begin reactions")
-    stop = text.find("end reactions", start)
-    if start < 0 or stop < 0:
-        return {}
-    names = set(core.param_names)
-    folded: dict[str, str] = {}
-    for line in text[start:stop].splitlines():
-        found = _UNIT_CONVERSION.search(line.partition("#")[2])
-        if not found:
-            continue
-        index = line.split(None, 1)[0]
-        for name in _names_in(found.group(1)):
-            if name in names and name not in folded:
-                folded[name] = (
+    functions = dict(zip(core.function_names, core.function_expressions, strict=True))
+    # A parameter that is not derived has a number here, which names nothing.
+    written = {
+        str(name): str(expression or "")
+        for name, expression in zip(core.param_names, core.param_expressions, strict=True)
+    }
+    written.update(functions)
+    names = set(core.param_names) | set(functions)
+    reason: dict[str, str] = {}
+    for index, expression in conversions:
+        for name in _names_in(str(expression)):
+            if name in names and name not in reason:
+                reason[name] = (
                     "the volume factor BNG2.pl wrote into a rate constant as a number "
-                    f"(reaction {index}: unit_conversion={found.group(1)})"
+                    f"(reaction {index}: unit_conversion={expression})"
                 )
-    if not folded:
-        return {}
-    # What a derived parameter among them reads set the number as well.
-    try:
-        written = {
-            str(q["name"]): str(q.get("expression", "") or "")
-            for q in core.codegen_data()["parameters"]
-        }
-    except Exception:  # pragma: no cover - defensive: the names found stay refused
-        written = {}
-    pending = list(folded)
-    while pending:
-        name = pending.pop()
+    # What a derived parameter or a function among them reads set the number
+    # as well. In the order found, so that one read on two paths is given the
+    # reason of the reaction that comes first.
+    pending = list(reason)
+    for name in pending:
         for read in _names_in(written.get(name, "")):
-            if read in names and read not in folded:
-                folded[read] = f"{name!r}, which is read for {folded[name]}"
+            if read in names and read not in reason:
+                reason[read] = f"{name!r}, which is read for {reason[name]}"
                 pending.append(read)
-    return folded
+    return {name: what for name, what in reason.items() if name not in functions}
 
 
 def _ar_report_map_from_net(core: Any) -> dict[str, tuple[str, str, float]]:

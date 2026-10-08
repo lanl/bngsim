@@ -134,6 +134,131 @@ def test_what_a_derived_volume_reads_is_listed_too(tmp_path):
         model.set_param("vol", 20.0)
 
 
+# What BNG2.pl 2.9.3 writes where the compartment sizes are functions:
+# ``CP 3 Vcell()`` with ``Vcell() = 4*rcell^3`` and ``PM 2 Smem()``.
+BY_FUNCTIONS = """begin parameters
+    1 rcell  {rcell}  # Constant
+    2 hmem   0.5  # Constant
+    3 Vec    10  # Constant
+    4 kb     0.3  # Constant
+    5 ku     0.05  # Constant
+    6 kd     0.4  # Constant
+end parameters
+begin functions
+    1 Vcell() 4*(rcell^3)
+    2 Smem() (4*(rcell^2))*hmem
+end functions
+begin species
+    1 @EC::L(r) 20
+    2 @PM::R(l) 10
+    3 @CP::X() 50
+    4 @PM::L(r!1)@EC.R(l!1) 0
+end species
+begin reactions
+    1 1,2 4 0.1*kb #_R1 unit_conversion=1/Vec
+    2 3,3 3 {per_vcell}*kd #_R2 unit_conversion=1/Vcell()
+    3 2,2 2 {per_smem}*kd #_R3 unit_conversion=1/Smem()
+    4 4 1,2 ku #_reverse__R1
+end reactions
+begin groups
+    1 Lf                   1
+    2 Xc                   3
+    3 Rf                   2
+end groups
+"""
+
+
+def _by_functions(tmp_path: Path, rcell: float) -> bngsim.Model:
+    text = BY_FUNCTIONS.format(
+        rcell=rcell, per_vcell=1.0 / (4 * rcell**3), per_smem=1.0 / (4 * rcell**2 * 0.5)
+    )
+    return _net(tmp_path, text, f"fn{rcell:g}.net")
+
+
+def test_what_a_function_sized_compartment_reads_is_listed(tmp_path):
+    """The comment names the function, ``1/Vcell()``, and the function reads
+    ``rcell``. The function was listed, which is nothing a caller can write,
+    and ``rcell`` was not: ``set_param("rcell", 3)`` left Xc(5) at 12.12 where
+    the network BNG2.pl writes at 3 gives 25.96."""
+    model = _by_functions(tmp_path, 2.0)
+    assert model.frozen_params == ["rcell", "hmem", "Vec"]
+    assert _lf(model, "Xc") == pytest.approx(12.121212, abs=1e-5)
+    assert _lf(_by_functions(tmp_path, 3.0), "Xc") == pytest.approx(25.961538, abs=1e-5)
+    with pytest.raises(bngsim.ParameterError, match=r"'Vcell', which is read for the volume"):
+        model.set_param("rcell", 3.0)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711"):
+        bngsim.Simulator(model, method="ode", sensitivity_params=["rcell", "kd"])
+
+
+def test_the_dictionary_reading_of_the_file_keeps_the_record(tmp_path):
+    """``build_model_from_parsed(parse_net_file(path))`` is the other reader
+    of the same file. Its model had no record: Lf(5) stayed 14.903 after
+    ``set_param("Ve", 20)`` and dLf/dVe was 0."""
+    path = tmp_path / "cb.net"
+    path.write_text(NET.format(Ve=10, factor=0.1))
+    parsed = bngsim.parse_net_file(path)
+    assert parsed["unit_conversions"] == [("1", "1/Ve"), ("2", "1/Vc")]
+    model = bngsim.build_model_from_parsed(parsed)
+    assert model.frozen_params == ["Vc", "Ve"]
+    with pytest.raises(bngsim.ParameterError, match="#711"):
+        model.set_param("Ve", 20.0)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711"):
+        bngsim.Simulator(model, method="ode", sensitivity_params=["Ve", "kb"])
+    # A dictionary with no such entry, as one written by hand has none.
+    parsed.pop("unit_conversions")
+    assert bngsim.build_model_from_parsed(parsed).frozen_params == []
+
+
+EDITED = {
+    "a-blank-after-the-equals-sign": lambda net: net.replace(
+        "unit_conversion=1/Ve", "unit_conversion= 1/Ve"
+    ),
+    "blanks-in-the-expression": lambda net: net.replace(
+        "unit_conversion=1/Ve", "unit_conversion=1 / Ve"
+    ),
+    "a-comment-that-says-end-reactions": lambda net: net.replace(
+        "begin reactions\n", "begin reactions\n# end reactions\n"
+    ),
+    "a-header-that-names-the-block": lambda net: "# begin reactions ... end reactions\n" + net,
+    "a-reactions-text-block-first": lambda net: net.replace(
+        "begin reactions\n",
+        "begin reactions_text\n    1 L + R -> LR #_R1 unit_conversion=1/Sm\n"
+        "end reactions_text\nbegin reactions\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("edit", sorted(EDITED))
+def test_the_block_is_found_as_the_loader_finds_it(tmp_path, edit):
+    """None of these is what BNG2.pl writes, and the loader reads the three
+    reactions of each. The block was looked for by a search of the raw text,
+    and the volume was not listed."""
+    model = _net(tmp_path, EDITED[edit](NET.format(Ve=10, factor=0.1)))
+    assert model.n_reactions == 3
+    assert model.frozen_params == ["Vc", "Ve"]
+    with pytest.raises(bngsim.ParameterError, match=r"reaction 1: unit_conversion=1 ?/ ?Ve"):
+        model.set_param("Ve", 20.0)
+
+
+def test_a_reaction_line_that_is_commented_out_names_nothing(tmp_path):
+    """The loader does not read the line, and no rate holds its factor."""
+    text = NET.format(Ve=10, factor=0.1).replace(
+        "begin reactions\n", "begin reactions\n#    9 1,2 4 0.5*kb #_R9 unit_conversion=1/Sm\n"
+    )
+    assert _net(tmp_path, text).frozen_params == ["Vc", "Ve"]
+
+
+def test_a_subset_model_is_told_to_change_the_bngl_source(tmp_path):
+    """A subset model has no network path of its own, and was told to change
+    an SBML document."""
+    from bngsim.coupling import make_subset_model
+
+    subset = make_subset_model(_at(tmp_path, 10), keep_reactions=[0, 2])
+    assert "Ve" in subset.frozen_params
+    with pytest.raises(bngsim.ParameterError, match="Change it in the BNGL source"):
+        subset.set_param("Ve", 20.0)
+
+
 def test_the_exponent_of_a_number_is_not_a_name(tmp_path):
     """``1/(6.0221e+23*reacvol)`` names ``reacvol``. A parameter called ``e``
     is not named by the ``e`` of the number."""

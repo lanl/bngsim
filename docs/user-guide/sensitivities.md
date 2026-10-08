@@ -695,9 +695,23 @@ writes each reaction's volume factor into its rate constant as a number,
 `0.1*kb` for `1/Ve` at `Ve = 10`, and keeps the expression only in a comment on
 the reaction line, `unit_conversion=1/Ve`. `Ve` is then a parameter that no rate
 reads. Every parameter such a comment names is in `frozen_params`, with what a
-derived one among them reads (`r` for `vol = 4*r^3`), for `Model.from_bngl` and
-for a `.net` file BNG2.pl wrote. To move a volume, change it in the BNGL source
-and generate the network again.
+derived parameter or a function among them reads (`r` for `vol = 4*r^3`,
+`rcell` for a compartment sized by `Vcell() = 4*rcell^3`), for
+`Model.from_bngl`, for a `.net` file BNG2.pl wrote with its expressions kept
+(`generate_network`, the default), and for the model
+`build_model_from_parsed(parse_net_file(path))` builds from one. To move a
+volume, change it in the BNGL source and generate the network again.
+
+Two things are not covered. A network written with its expressions evaluated
+(`writeNetwork({evaluate_expressions=>1})`) has numbers where the derived
+parameters were, so what a derived volume read is not known from the file. And
+a model written out by bngsim's converters (`write_net`, `net_to_sbml`) and
+loaded again has no such comment: the volume is then an ordinary parameter that
+nothing reads, as it was before.
+
+`bngsim.jax.differentiable_solve` differentiates with respect to every primary
+parameter at once, so `jax.grad` through it is refused for a model with such a
+parameter; the solve at the values held still runs.
 
 ## Differentiable ODE solving with JAX
 
