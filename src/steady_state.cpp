@@ -2399,20 +2399,28 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         // coefficient. It forces the unknowns through ∂f/∂y_dep, and is added
         // back to the dependent below.
         //
-        // A law with a species the mask left out is not differentiated. That
-        // species is held where the integration left it, and what it took of
-        // the total is what moved: for S + E <-> ES -> E + P with P masked
-        // out, P ends at S0 and S and ES at 0 whatever S0 is. The total stays
-        // fixed for such a law, as it was.
+        // A law that has a species the mask left out, and that does not
+        // reconstruct it, is not differentiated. That species is held where
+        // the integration left it, and for a sink that drains the law it is
+        // what took the total: for S + E <-> ES -> E + P with P masked out, P
+        // ends at S0 and S and ES at 0 whatever S0 is. The total stays fixed
+        // for such a law, as it was. (Where the masked species is the law's
+        // dependent it is reconstructed from the total, which moves.) A
+        // coefficient is one that is not rounding beside the law's largest:
+        // row reduction leaves 1e-17 on species the law does not hold.
         std::vector<double> dT(static_cast<size_t>(cl.n_laws) * np, 0.0);
         std::vector<double> moved(static_cast<size_t>(cl.n_laws) * np, 0.0);
         bool totals_move = false;
         for (int k = 0; k < cl.n_laws; ++k) {
             const int dep = cl.dependent[k];
             const double cd = cl.coefficients[k][dep];
+            double largest = 0.0;
+            for (int i = 0; i < ns; ++i) {
+                largest = std::max(largest, std::abs(cl.coefficients[k][i]));
+            }
             bool held = false;
             for (const int i : sub.excluded) {
-                held = held || cl.coefficients[k][i] != 0.0;
+                held = held || (i != dep && std::abs(cl.coefficients[k][i]) > 1e-9 * largest);
             }
             if (held) {
                 continue;

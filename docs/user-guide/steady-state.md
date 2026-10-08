@@ -577,13 +577,19 @@ Three columns are refused, with `SensitivityUnsupportedError`:
   `run()` has advanced. The total is still what the parameter made it, and the
   state no longer says so (a time course refuses sensitivities there too).
   `reset()` first;
+- any parameter, on a state a `run()` advanced and `set_concentration` or
+  `set_state` then assigned to: its totals are part carried and part literal;
 - a compartment size, in a model with a conservation law;
 - any parameter, where a conservation law spans compartments of different size:
   the law is found as a total of concentrations where what is conserved is a
   total of amounts (issue #758), and every column of the reduced solve is off.
 
 With `mask=`, a conservation law that holds a masked-out species keeps its
-total fixed, as before: what a pure sink takes of the total is what moved.
+total fixed, as before, unless that species is the one the law is solved for.
+That is right where the masked sink drains the law (`A <-> B -> P`: A and B
+end at 0 whatever the total). It is not where a share of the total stays out
+of the sink, which no steady-state solve can know: `A <-> B -> P` beside
+`A -> C <-> D` returns 0 for every column of C and D, with the mask.
 
 The initial-condition axis itself is not computed, and
 `output_sensitivities(..., axis="ic")` raises.

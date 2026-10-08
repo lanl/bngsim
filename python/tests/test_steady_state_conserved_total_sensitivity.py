@@ -619,3 +619,103 @@ def test_on_an_advanced_state_a_parameter_that_sets_no_conserved_amount_runs(tmp
     np.testing.assert_allclose(np.asarray(out.sensitivity)[2], [0.0, 2.0], rtol=1e-7, atol=1e-12)
     with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
         sim.steady_state(sensitivity_params=["A0"], tol=1e-12)
+
+
+# ─── What the second review found ───────────────────────────────────────────
+
+
+@METHODS
+def test_a_law_solved_for_the_species_the_mask_leaves_out_moves(tmp_path, method):
+    """A <-> B with A masked out, where A is the species the law is solved
+    for: A is put back from the total, not held, and B* = kf·T/(kf + kr) moves
+    with it. Held, the column came back [nan, 0] for [nan, 2/3]."""
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    assert list(model._core.conservation_laws["dependent"]) == [0]
+    out = bngsim.Simulator(model, method="ode").steady_state(
+        sensitivity_params=["A0", "kf"], method=method, tol=1e-12, mask=[False, True]
+    )
+    got = np.asarray(out.sensitivity)
+    assert np.isnan(got[0]).all()
+    np.testing.assert_allclose(got[1], [2 / 3, 2 / 3], rtol=1e-7)
+
+
+def test_a_state_assigned_by_hand_after_a_run_is_refused(tmp_path):
+    """``run`` to t = 5, then A set to 5: the total is 5 + B(5; kf), which
+    moves with kf through the run. Held fixed, dB*/dkf came back 1.555 for
+    2.003, and it is the same for every parameter. ``reset()`` or
+    ``save_concentrations()`` makes the state one no run stands behind."""
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    sim = bngsim.Simulator(model, method="ode")
+    sim.run(t_span=(0.0, 5.0), n_points=3)
+    model.set_concentration("A()", 5.0)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"assigned by hand.*#704"):
+        sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    clone = model.clone()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"assigned by hand.*#704"):
+        bngsim.Simulator(clone, method="ode").steady_state(sensitivity_params=["kf"], tol=1e-12)
+    model.save_concentrations()
+    total = float(np.sum(model.get_state()))
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity)[:, 0], [-total / 4.5, total / 4.5], rtol=1e-7
+    )
+
+
+def test_a_whole_state_assigned_after_a_run_is_refused_until_a_reset(tmp_path):
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    sim = bngsim.Simulator(model, method="ode")
+    sim.run(t_span=(0.0, 5.0), n_points=3)
+    model.set_state(np.array([2.0, 2.0]))
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"assigned by hand.*#704"):
+        sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    model.reset()
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-2 / 3, 2 / 3], rtol=1e-7)
+
+
+def test_a_state_assigned_by_hand_before_any_run_is_not_refused(tmp_path):
+    """Control. A literal on a fresh state: the total is a number, and the
+    rate constant's column is taken at it."""
+    model = bngsim.Model.from_net(_isomerization(tmp_path))
+    model.set_concentration("A()", 6.0)
+    out = bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["kf"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-4 / 3, 4 / 3], rtol=1e-7)
+
+
+NOISE = 1e-17
+
+
+def test_a_coefficient_that_is_rounding_is_not_a_member_of_a_law(tmp_path, monkeypatch):
+    """Row reduction leaves 1e-17 to 1e-34 on species a law does not hold.
+    Read as members, they made a law of one compartment span two, and
+    MODEL1505110000 was refused for it; and a rounding coefficient on a
+    masked-out species would hold a law's total. Here the laws of two
+    compartments of different size are each given such a coefficient on the
+    other's species."""
+    text = (
+        "compartment C1, C2; C1 = 1; C2 = 3; species A in C1, B in C1, X in C2, Y in C2;"
+        " A0 = 3; A = A0; B = 0; X = 1; Y = 0; kf = 1; kr = 0.5\n"
+        "J1: A -> B; kf*A\nJ2: B -> A; kr*B\nJ3: X -> Y; kf*X\nJ4: Y -> X; kr*Y\n"
+    )
+    model = bngsim.Model.from_antimony_string(text)
+    sim = bngsim.Simulator(model, method="ode")
+    names = list(model.species_names)
+    want = np.asarray(sim.steady_state(sensitivity_params=["A0", "kf"], tol=1e-12).sensitivity)
+    np.testing.assert_allclose(want[[names.index("A"), names.index("B")], 0], [1 / 3, 2 / 3])
+
+    core_type = type(model._core)
+    real = core_type.conservation_laws
+
+    def noisy(self):
+        laws = dict(real.__get__(self))
+        rows = [list(row) for row in laws["coefficients"]]
+        for row in rows:
+            for i, c in enumerate(row):
+                if c == 0.0:
+                    row[i] = NOISE
+        laws["coefficients"] = rows
+        return laws
+
+    monkeypatch.setattr(core_type, "conservation_laws", property(noisy), raising=False)
+    got = np.asarray(sim.steady_state(sensitivity_params=["A0", "kf"], tol=1e-12).sensitivity)
+    np.testing.assert_array_equal(got, want)

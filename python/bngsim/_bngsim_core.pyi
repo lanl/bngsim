@@ -313,6 +313,11 @@ class NetworkModel:
         True iff the analytical Jacobian covers every reaction (Elementary + attached Functional terms). GH #76.
         """
     @property
+    def assigned_while_dirty(self) -> bool:
+        """
+        True iff a species was assigned by hand (set_concentration, set_state) while the state was one a run had advanced, with no reset() or save_concentrations() since (issue #704).
+        """
+    @property
     def compartment_ic_sens_seeds(self) -> list:
         """
         List of (species_idx0, volume_param_idx0, d_ic_d_volume) triples for the species whose stored initial condition is an amount over a writable compartment size, so that x(0) = A/V and ∂x(0)/∂V = −x(0)/V (issue #170 stage 3). Empty for .net, for a model with no writable size, and after save_concentrations().

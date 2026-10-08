@@ -1468,7 +1468,10 @@ class Simulator:
           on a state a run has advanced. The total is still what the parameter
           made it, and the state no longer says so: its seed is retired with
           the initial condition it described, and the column came back 0 for
-          1/3. A time course refuses sensitivities on such a state (GH #210).
+          1/3. A time course refuses sensitivities on such a state (GH #210);
+        - **any parameter**, on a state a run advanced and a caller then
+          assigned to. The total is part what the run left and part what was
+          assigned, and moves with every parameter through the run.
         """
         model = self._model
         core = model._core
@@ -1487,12 +1490,17 @@ class Simulator:
                 "steady states solved again at a moved size, or take the column from a time "
                 "course run to the steady state."
             )
-        coefficients = [list(row) for row in laws["coefficients"]]
+        # The species a law holds: a coefficient that is not rounding beside
+        # the law's largest. Row reduction leaves 1e-17 to 1e-34 on species in
+        # other compartments (MODEL1505110000), which are in no law.
+        held_by = []
+        for row in laws["coefficients"]:
+            largest = max((abs(c) for c in row), default=0.0)
+            held_by.append([i for i, c in enumerate(row) if abs(c) > 1e-9 * largest])
         if len(model.compartment_size_params) > 1:
             volumes = [float(sp["volume_factor"]) for sp in core.codegen_data()["species"]]
             names = model.species_names
-            for row in coefficients:
-                members = [i for i, c in enumerate(row) if c != 0.0]
+            for members in held_by:
                 if len({volumes[i] for i in members}) > 1:
                     raise SensitivityUnsupportedError(
                         "steady_state(sensitivity_params=...) is not supported for this "
@@ -1506,9 +1514,21 @@ class Simulator:
                     )
         if not core.ic_state_dirty:
             return
+        if core.assigned_while_dirty:
+            raise SensitivityUnsupportedError(
+                "steady_state(sensitivity_params=...) is not supported on a state that a "
+                "run() advanced and that was then assigned by hand (set_concentration or "
+                "set_state, with no reset() or save_concentrations() since), in a model with "
+                "a conservation law. Part of that state is what the run left, which moved "
+                "with every parameter, and part is what was assigned, so the conserved "
+                "totals depend on the parameters through the run: dB*/dkf came back 1.555 "
+                "for 2.003 (issue #704; a time course refuses sensitivities on a carried "
+                "state too, GH #210). reset() the model, or save_concentrations() to make "
+                "the state a baseline that no parameter sets."
+            )
         from bngsim._codegen import compute_ic_param_sens_seed
 
-        in_a_law = {i for row in coefficients for i, c in enumerate(row) if c != 0.0}
+        in_a_law = {i for members in held_by for i in members}
         pnames, species = model.param_names, model.species_names
         seeded = {pnames[p] for sp, p, coeff in compute_ic_param_sens_seed(core) if sp in in_a_law}
         for name, declared in model._declared_ic_sens.items():
@@ -1519,7 +1539,7 @@ class Simulator:
             raise SensitivityUnsupportedError(
                 "steady_state(sensitivity_params=...) is not supported for "
                 f"{moved} on a carried-over species state (the model was advanced by a "
-                "previous run() or set manually, with no reset since). "
+                "previous run(), with no reset since). "
                 f"{'Each sets' if len(moved) != 1 else 'It sets'} the initial amount of a "
                 "species in a conservation law, so the steady state moves with it through "
                 "the conserved total, and the state no longer says by how much: the column "
