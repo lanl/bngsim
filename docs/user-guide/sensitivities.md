@@ -107,12 +107,18 @@ species that an assignment rule sets *and* that sits in such a compartment is
 refused as before.
 
 The row is right where the amount at the start is the model's own number.
-Where it was made at load from a concentration and the size the rule had then
-(a concentration held as an amount, an amount held as a concentration, or
-`X = 2*V`), the parameters the rule reads are
+Where it was made at load by converting the declared value with the size the
+rule had then (a concentration held as an amount, or an amount held as a
+concentration), the parameters the rule reads are
 [folded at load](#parameters-an-sbml-model-was-built-with-as-numbers): their columns and a write to
 them are refused, `g` in `V := v0 + g*time` with `v0`. (`steady_state()`
 reports the stored amount, and its rows are that amount's.)
+
+The initial-condition axis and `set_concentration` hold such a converted
+amount where it was. `sensitivity_ic=["V"]` on a rate-rule compartment is the
+derivative of a run after `set_concentration("V", ...)`: the live size moves
+and the amount does not. A model loaded with another initial size converts
+the declared concentration again and is a different run.
 
 ### A derived parameter overridden after the Simulator is built
 

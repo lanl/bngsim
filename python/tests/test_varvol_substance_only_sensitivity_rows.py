@@ -252,6 +252,7 @@ BY_RULE = f"""<?xml version="1.0" encoding="UTF-8"?>
     <listOfCompartments><compartment id="V" constant="false"/></listOfCompartments>
     <listOfSpecies>
       <species id="X" compartment="V" {{declared}} boundaryCondition="false" constant="false"/>
+      {{more_species}}
     </listOfSpecies>
     <listOfParameters>
       <parameter id="v0" value="{{v0}}" constant="true"/>
@@ -261,7 +262,7 @@ BY_RULE = f"""<?xml version="1.0" encoding="UTF-8"?>
     {{assignments}}
     <listOfRules><assignmentRule variable="V"><math {_M}>
       <apply><plus/><ci>v0</ci><apply><times/><ci>g</ci>{_TIME}</apply></apply>
-    </math></assignmentRule></listOfRules>
+    </math></assignmentRule>{{more_rules}}</listOfRules>
     <listOfReactions>
       <reaction id="R1" reversible="false" fast="false">
         <listOfReactants>
@@ -285,9 +286,31 @@ SET_FROM_THE_SIZE = (
 )
 
 
-def _by_rule(declared: str, v0: float = 1.5, assignments: str = "") -> bngsim.Model:
+A_RULE_TARGET = (
+    '<species id="Z" compartment="V" initialConcentration="5" hasOnlySubstanceUnits="true"'
+    ' boundaryCondition="false" constant="false"/>'
+)
+ITS_RULE = (
+    f'<assignmentRule variable="Z"><math {_M}><apply><times/><cn>3</cn><ci>X</ci></apply></math>'
+    "</assignmentRule>"
+)
+
+
+def _by_rule(
+    declared: str,
+    v0: float = 1.5,
+    assignments: str = "",
+    more_species: str = "",
+    more_rules: str = "",
+) -> bngsim.Model:
     return bngsim.Model.from_sbml_string(
-        BY_RULE.format(declared=declared, v0=v0, assignments=assignments)
+        BY_RULE.format(
+            declared=declared,
+            v0=v0,
+            assignments=assignments,
+            more_species=more_species,
+            more_rules=more_rules,
+        )
     )
 
 
@@ -296,16 +319,12 @@ def _by_rule(declared: str, v0: float = 1.5, assignments: str = "") -> bngsim.Mo
     [
         lambda: _by_rule(HELD_AS_AN_AMOUNT),
         lambda: _by_rule(A_CONCENTRATION_GIVEN_AS_AN_AMOUNT),
-        lambda: bngsim.Model.from_antimony_string(
-            "compartment V; V := v0 + g*time; v0 = 1.5; g = 0.5; "
-            "substanceOnly species X in V; X = 2*V; k = 0.1; R1: X -> ; k*X\n"
-        ),
     ],
-    ids=["a-concentration-held-as-an-amount", "an-amount-held-as-a-concentration", "set-to-2*V"],
+    ids=["a-concentration-held-as-an-amount", "an-amount-held-as-a-concentration"],
 )
 def test_what_sized_the_compartment_when_a_value_was_converted_is_refused(load):
-    """``V := v0 + g*time`` with the species' initial value converted by V(0),
-    or assigned from it. For a concentration of 2 held as an amount, dX/dv0 is
+    """``V := v0 + g*time`` with the species' initial value converted by V(0).
+    For a concentration of 2 held as an amount, dX/dv0 is
     [0, 0.2262, 0.2620, 0.2469, 0.2189]; main returned 0, and the quotient
     rule alone [-1.3333, -0.6786, ...]. A write to ``v0`` left the amount where
     it was. Refused, with what the rule reads (#696's record)."""
@@ -413,3 +432,30 @@ def test_an_initial_value_over_a_constant_rule_is_kept_as_an_expression():
     model.reset()
     start = bngsim.Simulator(model, method="ode").run(t_span=(0.0, 1.0), n_points=2)
     assert _column(start, "S")[0] == pytest.approx(18.0)
+
+
+def test_a_rule_s_own_target_in_the_compartment_converts_nothing():
+    """``Z := 3*X`` declares a concentration too, which its rule overrides: no
+    value was converted, and ``v0`` and ``g`` keep their columns of ``X``."""
+    model = _by_rule(GIVEN_AS_AN_AMOUNT, more_species=A_RULE_TARGET, more_rules=ITS_RULE)
+    assert model.frozen_params == []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = bngsim.Simulator(model, method="ode", sensitivity_params=["v0", "g"]).run(**RUN)
+    np.testing.assert_allclose(_row(result)[:, 0], -_x(v0=1.5) / (1.5 + G * T), rtol=1e-6)
+    np.testing.assert_allclose(_row(result)[:, 1], _dg(1.5), rtol=1e-6, atol=1e-9)
+
+
+def test_a_size_that_stands_still_under_a_rule_with_no_derivative_is_nan_too():
+    """``V := piecewise(1, time < 5, 2)`` sampled before 5: the column is not
+    rescaled and the rule's derivative is not to be had. NaN and named, where
+    the stored amount's row happens to be right."""
+    text = DECLINED.replace("piecewise(1 + g*time, time < 100, 1)", "piecewise(1, time < 5, 2)")
+    assert text != DECLINED
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["k"]
+    )
+    with pytest.warns(UserWarning, match="#742"):
+        result = sim.run(**RUN)
+    assert np.isnan(_row(result)).all()
+    assert "X" in result.ar_sensitivity_refused

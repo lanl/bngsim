@@ -8596,13 +8596,18 @@ def _build_model_from_sbml_doc(doc):
         _sp_f = sbml_model.getSpecies(_j)
         _cid = _sp_f.getCompartment()
         if _cid in (rate_rule_comps | event_resize_comps) and _cid in _ia_math:
-            _sized_by = _ia_math[_cid]
+            _sized_by, _listed = _ia_math[_cid], ""
         elif _cid in _ar_math:
             _sized_by = _ar_math[_cid]
+            _listed = (
+                ", the value of its assignment rule there (every name the rule reads is listed)"
+            )
         else:
             continue
-        if _sp_f.getId() in _ia_math:
-            continue  # its value is the assignment's, in the unit it is read in
+        if _sp_f.getId() in _ia_math or _sp_f.getId() in _ar_targets:
+            # Its value is the assignment's, in the unit it is read in; or its
+            # rule's, whatever value it declares.
+            continue
         if (
             _sp_f.getInitialConcentration() != 0.0
             if _sp_f.getHasOnlySubstanceUnits() and _sp_f.isSetInitialConcentration()
@@ -8616,7 +8621,7 @@ def _build_model_from_sbml_doc(doc):
             _fold(
                 _names_read(_sized_by),
                 f"the initial value of species {_sp_f.getId()!r}, which was converted by the "
-                f"size of compartment {_cid!r} at load",
+                f"size of compartment {_cid!r} at load{_listed}",
             )
     # (#695) a stoichiometry, and a conversionFactor.
     for _rxn_i in range(sbml_model.getNumReactions()):
