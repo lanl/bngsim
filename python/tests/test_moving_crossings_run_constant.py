@@ -12,6 +12,7 @@ A step call is the other way `f` jumps, and one over live state is now listed
 too: `floor(Atot)` steps each time Atot crosses an integer, at a time k1 moves,
 and the analytic RHS declines it. Main's warning called that fallback correct
 on `k1*floor(Atot)`, which it is not (59 % off a central difference by t = 0.5).
+A run beside one is refused since issue #938, and the error names it.
 Here the analytic RHS is declined with `abs(Atot)` instead, which bends f without
 breaking it, so the fallback really is correct.
 """
@@ -100,8 +101,13 @@ def test_a_step_call_over_state_is_listed(tmp_path, rate, listed):
     assert sw.model_moving_crossings(m._core) == listed
 
 
-def test_the_decline_warning_does_not_call_a_state_step_correct(tmp_path, caplog):
+def test_a_state_step_on_the_fallback_is_refused_by_name(tmp_path):
+    """The warning named ``floor(Atot)`` and returned the columns. The run is
+    refused now, and the error names it (issue #938)."""
     rate = "if({cond}, k1, k2)*floor(Atot)"
-    text = _decline_warning(_model(tmp_path, "a<b", rate=rate), caplog)
-    assert "'floor(Atot)', whose crossing time(s) move" in text
-    assert "correct, but slower" not in text
+    sim = bngsim.Simulator(
+        _model(tmp_path, "a<b", rate=rate), method="ode", sensitivity_params=["k1"]
+    )
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
+        sim.run(t_span=(0.0, 1.0), n_points=2)
+    assert "'floor(Atot)'" in str(caught.value)

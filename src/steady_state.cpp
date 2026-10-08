@@ -61,6 +61,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace bngsim {
@@ -2162,10 +2163,69 @@ static RootCertificate certify_root_stability(NetworkModel &model, SteadyStateRh
 // 3 of NetworkModel::pure_sink_species(), so the recommended mask satisfies it by
 // construction. Excluded species get a NaN row: a species with no steady value
 // has no steady-state gradient, and 0.0 would be a confident wrong answer.
+// ∂x_i(start)/∂p for each requested column, row-major [species*np + param]: how
+// the state the solve starts from moves with a parameter that sets an initial
+// amount (issue #704). The seeds Python derives from the parameter graph where
+// it supplied any, as the time-course seeding takes them (issue #43); else the
+// loader's identity references, for a species still at its initial condition
+// (issue #113), none once save_concentrations() has made the state its own
+// baseline (issue #79), and each over the volume the loader divides an
+// amount-valued species by. Read while the model still holds the starting
+// state.
+static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
+                                                      const SteadyStateOptions &opts, int ns) {
+    const int np = static_cast<int>(opts.sensitivity_params.size());
+    std::vector<double> dx0(static_cast<size_t>(ns) * np, 0.0);
+    const auto &params = model.parameters();
+    std::unordered_map<int, std::vector<int>> columns;
+    for (int p = 0; p < np; ++p) {
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (params[i].name == opts.sensitivity_params[static_cast<size_t>(p)]) {
+                columns[static_cast<int>(i)].push_back(p);
+                break;
+            }
+        }
+    }
+    if (!opts.ic_param_sens.empty()) {
+        for (const auto &seed : opts.ic_param_sens) {
+            const auto it = columns.find(seed.primary_param_idx0);
+            if (it == columns.end() || seed.species_idx0 < 0 || seed.species_idx0 >= ns) {
+                continue;
+            }
+            for (const int p : it->second) {
+                dx0[static_cast<size_t>(seed.species_idx0) * np + p] += seed.d_ic_d_primary;
+            }
+        }
+        return dx0;
+    }
+    if (model.ic_baseline_saved()) {
+        return dx0;
+    }
+    const auto &species = model.species();
+    const auto &refs = model.species_ic_param_refs();
+    const std::vector<double> divisors = model.species_ic_param_ref_divisors();
+    for (size_t r = 0; r < refs.size(); ++r) {
+        const auto &ref = refs[r];
+        const auto it = columns.find(ref.second);
+        if (it == columns.end() || ref.first < 0 || ref.first >= ns) {
+            continue;
+        }
+        const auto &sp = species[static_cast<size_t>(ref.first)];
+        if (sp.concentration != sp.initial_conc) {
+            continue;
+        }
+        for (const int p : it->second) {
+            dx0[static_cast<size_t>(ref.first) * np + p] = 1.0 / divisors[r];
+        }
+    }
+    return dx0;
+}
+
 static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                                    SteadyStateResult &result,
                                    const std::vector<std::string> &param_names,
-                                   const std::string &opts_jacobian, const ResidualSubspace &sub) {
+                                   const std::string &opts_jacobian, const ResidualSubspace &sub,
+                                   const std::vector<double> &dx0) {
 
     const int ns = model.n_species();
     const int np = static_cast<int>(param_names.size());
@@ -2325,6 +2385,100 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             for (int i = 0; i < n_ind; ++i)
                 dfdp_red[p * n_ind + i] = dfdp[p * ns + solve_idx[i]];
 
+        // Issue #704: a conserved total is set by the state the solve starts
+        // from, T_k = Σ_i L[k,i]·x_i(0), so it moves with a parameter that sets
+        // an initial amount: dT_k/dp = Σ_i L[k,i]·∂x_i(0)/∂p. The reduction
+        // held it fixed, which left the column of such a parameter at 0, or at
+        // the fixed-total partial where the parameter is in a rate law too
+        // (0.1875 for 0.9375, and the wrong sign on the other species).
+        //
+        // `moved[k][p]` is ∂y_dep_k/∂p with the unknowns held: what the
+        // reconstruction gives its dependent when the total alone moves. A
+        // law's dependent is in no other law (L[:, dependent] is the identity,
+        // see detect_conservation_laws), so that is dT_k/dp over its own
+        // coefficient. It forces the unknowns through ∂f/∂y_dep, and is added
+        // back to the dependent below.
+        //
+        // A law that has a species the mask left out, and that does not
+        // reconstruct it, is not differentiated. That species is held where
+        // the integration left it, and for a sink that drains the law it is
+        // what took the total: for S + E <-> ES -> E + P with P masked out, P
+        // ends at S0 and S and ES at 0 whatever S0 is. The total stays fixed
+        // for such a law, as it was. (Where the masked species is the law's
+        // dependent it is reconstructed from the total, which moves.) A
+        // coefficient is one that is not rounding beside the law's largest:
+        // row reduction leaves 1e-17 on species the law does not hold.
+        std::vector<double> dT(static_cast<size_t>(cl.n_laws) * np, 0.0);
+        std::vector<double> moved(static_cast<size_t>(cl.n_laws) * np, 0.0);
+        bool totals_move = false;
+        for (int k = 0; k < cl.n_laws; ++k) {
+            const int dep = cl.dependent[k];
+            const double cd = cl.coefficients[k][dep];
+            double largest = 0.0;
+            for (int i = 0; i < ns; ++i) {
+                largest = std::max(largest, std::abs(cl.coefficients[k][i]));
+            }
+            bool held = false;
+            for (const int i : sub.excluded) {
+                held = held || (i != dep && std::abs(cl.coefficients[k][i]) > 1e-9 * largest);
+            }
+            if (held) {
+                continue;
+            }
+            for (int p = 0; p < np; ++p) {
+                double total = 0.0;
+                for (int i = 0; i < ns; ++i) {
+                    total += cl.coefficients[k][i] * dx0[static_cast<size_t>(i) * np + p];
+                }
+                dT[static_cast<size_t>(k) * np + p] = total;
+                if (std::abs(cd) < 1e-15) {
+                    continue; // degenerate: reconstruct_full skips it too
+                }
+                moved[static_cast<size_t>(k) * np + p] = total / cd;
+                totals_move = totals_move || total != 0.0;
+            }
+        }
+        if (totals_move) {
+            for (int p = 0; p < np; ++p) {
+                for (int k = 0; k < cl.n_laws; ++k) {
+                    const double m = moved[static_cast<size_t>(k) * np + p];
+                    if (m == 0.0) {
+                        continue;
+                    }
+                    const double *Jcol_dep = J.data() + static_cast<size_t>(cl.dependent[k]) * ns;
+                    for (int i = 0; i < n_ind; ++i) {
+                        dfdp_red[p * n_ind + i] += Jcol_dep[solve_idx[i]] * m;
+                    }
+                }
+            }
+        }
+
+        // A fixed species is no unknown and is in no law, and stays where it
+        // started: where a parameter sets that, `$A() A0`, its row is the
+        // seed, and it forces the unknowns through ∂f/∂x_fixed. Both were
+        // left at 0: dX*/dA0 = 0 for kp/kd = 2 in `$A -> $A + X`, `X ->`.
+        std::vector<int> set_by_a_parameter;
+        for (int i = 0; i < ns; ++i) {
+            if (!model.species()[static_cast<size_t>(i)].fixed) {
+                continue;
+            }
+            bool seeded = false;
+            for (int p = 0; p < np; ++p) {
+                const double seed = dx0[static_cast<size_t>(i) * np + p];
+                if (seed == 0.0) {
+                    continue;
+                }
+                seeded = true;
+                const double *Jcol = J.data() + static_cast<size_t>(i) * ns;
+                for (int r = 0; r < n_ind; ++r) {
+                    dfdp_red[p * n_ind + r] += Jcol[solve_idx[r]] * seed;
+                }
+            }
+            if (seeded) {
+                set_by_a_parameter.push_back(i);
+            }
+        }
+
         // Solve J_red * sens_ind = -dfdp_red using SUNDIALS with RAII guards.
         //
         // ONE factorization for all np right-hand sides. The loop used to re-copy
@@ -2353,9 +2507,15 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             // Fill the solved species' sensitivity
             for (int i = 0; i < n_ind; ++i)
                 result.sensitivity[solve_idx[i] * np + p] = x_data[i];
+            for (const int i : set_by_a_parameter) {
+                result.sensitivity[static_cast<size_t>(i) * np + p] =
+                    dx0[static_cast<size_t>(i) * np + p];
+            }
 
             // Reconstruct dependent species sensitivity from conservation:
-            // Σ L[k,i] * dy_i/dp = 0 → dy_dep/dp = -(1/L[k,dep]) * Σ_{i≠dep} L[k,i] * dy_i/dp
+            // Σ L[k,i] * dy_i/dp = dT_k/dp →
+            // dy_dep/dp = (dT_k/dp - Σ_{i≠dep} L[k,i] * dy_i/dp) / L[k,dep]
+            // (issue #704: the total's own derivative used to be taken as 0).
             for (int k = 0; k < cl.n_laws; ++k) {
                 int dep = cl.dependent[k];
                 double cd = cl.coefficients[k][dep];
@@ -2365,7 +2525,11 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                 for (int i = 0; i < ns; ++i)
                     if (i != dep)
                         s += cl.coefficients[k][i] * result.sensitivity[i * np + p];
-                result.sensitivity[dep * np + p] = -s / cd;
+                // Written as it was where the total does not move, so that such
+                // a column is the same to the last bit, the sign of a 0 included.
+                const double moved_total = dT[static_cast<size_t>(k) * np + p];
+                result.sensitivity[dep * np + p] =
+                    moved_total != 0.0 ? (moved_total - s) / cd : -s / cd;
             }
         }
 
@@ -2584,7 +2748,7 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
             // so transpose it into np columns. plist carries the differentiated
             // parameter index for each — every column here is a parameter column
             // (the >= n_params sentinel marks an IC column, which the steady-state
-            // path has none of: ∂x*/∂x(0) = 0 at a stable root).
+            // path does not compute).
             std::vector<double> sens_cols(static_cast<size_t>(np) * ns);
             std::vector<const double *> col_ptrs(np);
             for (int p = 0; p < np; ++p) {
@@ -2954,6 +3118,9 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         // started from the first one's answer and drifted. The plain solve
         // already left the model untouched; now both do, which is also what
         // steady_state_batch() does by running on clones.
+        // Issue #704: how the starting state moves with each column, read
+        // before the model is moved off it.
+        const std::vector<double> dx0 = ss_start_state_sensitivity(model, opts, ns);
         auto &species = const_cast<std::vector<Species> &>(model.species());
         struct RestoreSpecies {
             std::vector<Species> &species;
@@ -2968,7 +3135,8 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             restore.saved[static_cast<std::size_t>(i)] = species[i].concentration;
             species[i].concentration = result.concentrations[i];
         }
-        compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub);
+        compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub,
+                               dx0);
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
         compute_ss_output_sensitivity(model, rhs, result, opts.sensitivity_params);

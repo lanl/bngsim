@@ -34,6 +34,9 @@ struct TableFunctionSpec {
     std::string index_kind;
     int index_param_idx = -1;
     int index_obs_idx = -1;
+    /// The table is read as a step (method=>"step"), not interpolated: its
+    /// value jumps at each breakpoint of its index.
+    bool step = false;
 };
 
 class NetworkModel {

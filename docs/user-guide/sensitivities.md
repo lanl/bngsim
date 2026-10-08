@@ -360,7 +360,76 @@ sim.has_analytic_sens_rhs      # False when the run falls back
 sim.sens_rhs_decline_reason    # why, in words, or None
 ```
 
-The fallback is CVODES' own difference quotient, which is correct and slower.
+The fallback is CVODES' own difference quotient. It is slower, and it is right
+where every rate law is continuous in the state along the run. It is not right
+across a jump: the quotient reads the rate law at the state moved along each
+sensitivity, which just short of a surface the state crosses is on the other
+branch, so a column takes part of the jump before the crossing, by more the
+looser the tolerance.
+
+A time course on the fallback is therefore refused, before it starts, for a
+model with (issues #938, #932):
+
+- a rate-law condition that reads the state, `if(X < thr, kb, 0)`, unless the
+  law is proved to bend there and not jump (below);
+- a sign or a step written by dividing by an `abs`, `max` or `min` where it is 0,
+  or by what it flips on: `(thr - X)/abs(thr - X)`, `max(X - thr, 0)/(X - thr)`;
+- a condition on a counter species that a requested column moves;
+- a step call on the state, `floor(X)`, or a table function read as a step and
+  indexed by an observable or by a function;
+- a step call on time, or on a counter nothing moves, whose argument reads a
+  requested parameter, `floor(time()/P)` with `P` requested;
+- a comparison over parameters alone that a requested one is close to flipping:
+  `if(n > 1, kb, 0)` with `n` requested and within a quarter of itself of 1.
+  The quotient moves a parameter as it moves the state, by up to its size times
+  the root of the relative tolerance. Likewise an equality on a requested
+  parameter that holds, and a step call or a step table on one. A derived
+  parameter is read too, as the rate constant it may be: `kd = if(n > 1, 3, 0)`;
+- a power under 1, a root or a logarithm of what holds an `abs`, `max` or `min`
+  and may be 0, `max(thr - X, 0)^0.1`, `sqrt(thr - min(X, thr))`: continuous,
+  with a slope that has no bound. At a power of 0.2 the column was 2% off at a
+  relative tolerance of 1e-6; at a half, the threshold's column was 2.6e-4 off
+  at 1e-6 and 5.8e-5 at 1e-8. An inverse sine or cosine of one likewise;
+- a comparison that is not the condition of an `if()`, `kb*(X > 1)`, or ExprTk's
+  single `=`, on what a column moves, in a rate law or in a derived parameter:
+  `kd = 3*(n > 1)` with `n` requested and close to 1;
+- a call the scan does not know, `atan2`, where a column moves what it reads;
+- a rate law that could not be read.
+
+The refusal goes by what the rate laws' text says and by what each parameter is
+when the run starts: its sign, whether a power is a whole number, and which side
+of a comparison a requested parameter is on with the parameter moved a quarter
+of itself either way. Nothing is integrated, and nothing is assumed of the
+state. It is asked again when a parameter is set, and of each row of a batch,
+as the scan for a branch crossing no machinery locates (issue #414) is. The
+quotient is right across a bend, and a condition is let through where the law is proved to bend at it:
+
+- one branch is 0 and the other is a product with the condition's own
+  difference among its factors: `if(v > 0, v, 0)`, `if(X < thr, kb*(thr - X), 0)`,
+  `if(v < 0, -v/max(X, 0.01), 0)`;
+- or the two branches are the two sides of the comparison: `if(a < b, a, b)`;
+- and every division in the law is by what is known to be nonzero, by the signs
+  of numbers and parameters: `max(X, 0.01)`, `Km + abs(X)` at a `Km` above 0.
+  Nothing is assumed of the state, so `Km + X` is not known to be.
+
+A bend written any other way is refused, though main ran it: a root,
+`if(X < thr, kb*sqrt(thr - X), 0)`, a power that is a parameter, a guard
+`if(S > 0, Vm*Q/S, 0)`. `max` and `min` are continuous by what they are and
+run: `kb*max(thr - X, 0)`, `max(0, min(X, n))`, `v/max(X, 0.01)`.
+
+A condition on literal time runs. A steady-state solve is not a time course
+and is not asked: it differences `f` in the parameter at one state, which is
+wrong for a parameter within the difference step, about 1.5e-8 of itself, of a
+threshold or a kink of its own: `if(n > 1, kb, 0)` at `n = 1`, where no
+derivative exists, and at `n = 1 - 1e-9`. What the scan does not see is a jump
+written with no condition and not as one of the quotients above:
+`sqrt(X*X)/X`, a regularised sign `(thr - X)/(abs(thr - X) + 1e-9)` or
+`tanh(1e9*(X - thr))`, and a pole cut off on both sides,
+`min(max(k/(X - thr), -5), 5)`. Nor a sharp bend written with no `abs`, `max`
+or `min`, `((thr - X)^2)^0.05`, which was 0.75% off at a relative tolerance of
+1e-4; nor two crossings of one condition on one instant of a counter species,
+`if((C - tau)*(C - g) > 0, kb, 0)` at `g = tau`, which is refused on `time()`
+and returns 0 on a counter.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 

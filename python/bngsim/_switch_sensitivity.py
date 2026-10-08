@@ -33,13 +33,14 @@ bit-for-bit identical to the pre-#48 path.
 
 from __future__ import annotations
 
+import ast
 import bisect
 import functools
 import logging
 import math
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import NamedTuple
 
@@ -1667,6 +1668,15 @@ class SwitchConditionScope(NamedTuple):
     function_names: frozenset[str]
 
 
+@functools.lru_cache(maxsize=16384)
+def _whole_word(name: str) -> re.Pattern:
+    """*name* as a whole word. Kept: the scope is built before every run that
+    asks about a crossing, and a model with more parameters than :mod:`re`
+    keeps patterns for compiled every one of them again each time, 20 ms a
+    run at 800."""
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
+
+
 def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
     """Assemble the model-level context both switch-condition callers read.
 
@@ -1685,9 +1695,7 @@ def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
         clocks=clocks,
         clock_symbols=clock_symbols,
         param_names=tuple(param_names),
-        param_pats={
-            n: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])") for n in param_names
-        },
+        param_pats={n: _whole_word(n) for n in param_names},
         primary_names=frozenset(n for i, n in enumerate(param_names) if not is_expr[i]),
         param_idx={n: i for i, n in enumerate(param_names)},
         values=tuple(core.get_param(n) for n in param_names),
@@ -1979,7 +1987,9 @@ def _inline_function_slots(expr: str, bodies: dict[str, str]) -> str:
         before = expr
         for name in present:
             expr = re.sub(
-                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])", f"({bodies[name]})", expr
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])",
+                f"({bodies[name]})",
+                expr,
             )
         if expr == before:
             break
@@ -2062,7 +2072,10 @@ def _crossing_time_of_condition(
 
     def at(t: float) -> float | None:
         return _evaluate_threshold(
-            _TIME_REF.sub(f"({t!r})", residual), scope.param_idx, scope.values, scope.derived_exprs
+            _TIME_REF.sub(f"({t!r})", residual),
+            scope.param_idx,
+            scope.values,
+            scope.derived_exprs,
         )
 
     def resolve() -> float | None:
@@ -2644,7 +2657,11 @@ def _resolve_step_edge_stop_times(
         a = read(residual_slope, held, to_integer=False)
         if a == 0.0:
             return 0.0, read(residual_intercept, held, to_integer=False), 0.0
-        return a, float(residual_intercept[0](*held)), float(residual_intercept[1](*held))
+        return (
+            a,
+            float(residual_intercept[0](*held)),
+            float(residual_intercept[1](*held)),
+        )
 
     def at(a: float, b: float, size: float, x: float) -> float:
         """The residual at the bound *x*, 0 where it is rounding away from 0."""
@@ -3785,8 +3802,15 @@ def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
     return tuple(found)
 
 
-def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossingReason | None:
+def model_uncompensated_crossing_reason(
+    core, ctx=None, kept: dict | None = None
+) -> UncompensatedCrossingReason | None:
     """The first rate-law branch crossing this model leaves uncompensated, or ``None``.
+
+    ``kept`` keeps each law's answer between one scan of a model and the next,
+    beside what it went by (:func:`_reason_goes_by`): a batch asks this of
+    every row, and a row that changes nothing a condition reads is not
+    scanned again.
 
     The model-level twin of the per-rate-law gate codegen runs
     (:func:`uncompensated_condition_reason`, at its call site in
@@ -3801,8 +3825,10 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
     at run time — by
     :meth:`Simulator._apply_switch_time_sens` /
     :meth:`Simulator._apply_state_switch_sens` — even when the analytic
-    sensitivity RHS is declined and the run is on CVODES' difference quotient, and
-    nothing is dropped.
+    sensitivity RHS is declined and the run is on CVODES' difference quotient.
+    That the jump is applied does not make such a run right: the quotient has
+    read across a state crossing before the run gets there, and a run on it is
+    refused by :func:`fallback_crossing` where the rate law jumps (issue #938).
 
     This is the exact fact issue #414's refusal keys on, through the same
     recognizer codegen declines with, so the run-time gate and the build cannot
@@ -3836,19 +3862,1585 @@ def model_uncompensated_crossing_reason(core, ctx=None) -> UncompensatedCrossing
     conditional = [f for f in flats if has_condition_construct(f)]
     if not conditional:
         return None
-    try:
-        scope = switch_condition_scope(core, ctx)
-    except Exception as exc:  # pragma: no cover - defensive
-        # Same fallback as the gate's and model_moving_crossings': with no scope
-        # nothing can be classified, so report no uncompensated crossing rather
-        # than refuse a run over a crossing we cannot actually name.
-        logger.debug("uncompensated-crossing scan: scope unavailable (%s)", exc)
-        return None
+    # Not caught: the gate that calls this refuses a model whose conditions
+    # cannot be classified (issue #938), where it used to be run.
+    scope = switch_condition_scope(core, ctx)
     for flat in conditional:
-        reason = uncompensated_condition_reason(flat, scope)
+        if kept is None:
+            reason = uncompensated_condition_reason(flat, scope)
+        else:
+            key = _reason_goes_by(flat, scope)
+            last = kept.get(flat)
+            if last is None or last[0] != key:
+                last = (key, uncompensated_condition_reason(flat, scope))
+                kept[flat] = last
+            reason = last[1]
         if reason is not None:
             return reason
     return None
+
+
+def _reason_goes_by(flat: str, scope: SwitchConditionScope) -> tuple:
+    """What :func:`uncompensated_condition_reason` goes by for the rate law
+    *flat*, beside its text: the law with its derived parameters written
+    out, what each parameter in that is, and which species are clocks."""
+    written = _inline_derived_param_refs(flat, scope.derived_exprs)
+    names = set(_IDENTIFIER.findall(written)) & scope.param_idx.keys()
+    return (
+        written,
+        tuple((name, float(scope.values[scope.param_idx[name]])) for name in sorted(names)),
+        tuple(sorted(scope.clocks.items())),
+    )
+
+
+# ``abs``, ``max`` and ``min``: the law takes one of two expressions, with no
+# condition written.
+_CHOICE_NAMES = frozenset({"abs", "max", "min"})
+_CHOICE_CALL = re.compile(r"(?<![A-Za-z0-9_.])(?:abs|max|min)\s*\(")
+
+
+def _syntax_tree(expr: str) -> ast.Expression | None:
+    """The Python syntax tree of an ExprTk expression, or ``None`` where it
+    is not Python once :func:`bngsim._jacobian._preprocess_exprtk` has it."""
+    from bngsim._codegen import _PY_KEYWORD_PARAM_NAMES, _alias_keyword_param
+    from bngsim._jacobian import _LITERAL_KEYWORDS, _preprocess_exprtk
+
+    try:
+        text = _preprocess_exprtk(expr)
+        # A parameter named with a Python keyword, ``lambda``, under the alias
+        # the symbolic path gives it.
+        for name in set(_IDENTIFIER.findall(text)) & (
+            _PY_KEYWORD_PARAM_NAMES - _LITERAL_KEYWORDS - {"and", "or", "not"}
+        ):
+            text = re.sub(rf"\b{re.escape(name)}\b", _alias_keyword_param(name), text)
+        return ast.parse(text.strip(), mode="eval")
+    except Exception:  # noqa: BLE001 - not an expression this reads
+        return None
+
+
+class _Facts(NamedTuple):
+    """What one node of a rate law's syntax tree reads, and what is known of
+    its value whatever the state is."""
+
+    state: bool = False  # reads the state, or a counter a requested column moves
+    clock: bool = False  # reads literal time or a counter nothing moves
+    asked: bool = False  # reads a requested parameter
+    choice: bool = False  # holds an abs, max or min that is live
+    exotic: bool = False  # holds a live call this does not know to be smooth: clamp
+    unknown: bool = False  # holds a live call this does not know at all: atan2
+    # Holds one of those with no sum over it, so that it may be 0 where the
+    # choice is: ``sqrt(abs(e))``, ``exp(log(abs(e)))``, and not ``1 + abs(e)``.
+    bare: bool = False
+    positive: bool = False
+    nonnegative: bool = False
+    negative: bool = False
+    # Has a value wherever its operands have: no logarithm of what may be 0,
+    # no division by it. ``exp`` of what has none can be 0.
+    finite: bool = True
+    # What it is, where it reads numbers and parameters alone.
+    value: float | None = None
+    size: int = 1
+
+    @property
+    def live(self) -> bool:
+        """Whether a column moves what this reads: the state, or a requested
+        parameter, which the quotient moves as it does the state."""
+        return self.state or self.asked
+
+    @property
+    def zero(self) -> bool:
+        return self.value == 0.0
+
+
+_NO_FACTS = _Facts()
+# The two factors of a product are compared, for a square, where each is this small.
+_SQUARE_MAX_NODES = 50
+
+# Calls that make no choice between two expressions and take no step:
+# analytic wherever they have a value.
+_SMOOTH_CALLS = frozenset(
+    {"exp", "expm1", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh"}
+    | {"asinh", "acosh", "atanh", "erf", "erfc", "log", "ln", "log2", "log10", "log1p", "pow"}
+    | {"avg", "sum", "mul", "hypot"}
+    # The engine's own: Kummer's ratio and the gamma function, analytic where
+    # they have a value.
+    | {"mratio", "tgamma"}
+)
+# Of those, the ones with poles: no value is claimed for them.
+_POLE_CALLS = frozenset({"mratio", "tgamma"})
+_LOG_CALLS = frozenset({"log", "ln", "log2", "log10"})
+_STEP_NAMES = frozenset(
+    {"floor", "ceil", "round", "roundn", "rint", "nint", "trunc", "frac", "sign", "sgn"}
+    | {"mod", "fmod", "rem", "iclamp", "inrange"}
+)
+_STRUCTURE_CALLS = frozenset({"Piecewise", "And", "Or", "Not", "Eq", "Ne"})
+# What a call on numbers alone comes to.
+_VALUE_CALLS: dict[str, Callable[..., float]] = {
+    "abs": abs,
+    "max": max,
+    "min": min,
+    "exp": math.exp,
+    "sqrt": math.sqrt,
+    "log": math.log,
+    "ln": math.log,
+    "log2": math.log2,
+    "log10": math.log10,
+    "pow": math.pow,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tanh": math.tanh,
+}
+
+
+def _operands(node: ast.AST) -> list[ast.AST]:
+    """The expressions under *node*: a call's arguments and not its name."""
+    if isinstance(node, ast.Call):
+        return list(node.args)
+    return [child for child in ast.iter_child_nodes(node) if isinstance(child, ast.expr)]
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        return node.func.id
+    return ""
+
+
+def _number(node: ast.AST) -> float | None:
+    """The value of a numeric literal, signed or not."""
+    sign = 1.0
+    while isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        sign = -sign if isinstance(node.op, ast.USub) else sign
+        node = node.operand
+    if isinstance(node, ast.Constant) and isinstance(node.value, (bool, int, float)):
+        return sign * float(node.value)
+    return None
+
+
+def _value_of(node: ast.AST, operands: Sequence[float | None]) -> float | None:
+    """What *node* comes to on operands that are numbers, or ``None`` where
+    one is not, or where it has no value."""
+    if any(v is None for v in operands):
+        return None
+    try:
+        if isinstance(node, ast.UnaryOp) and len(operands) == 1:
+            if isinstance(node.op, ast.USub):
+                return -operands[0]  # type: ignore[operator]
+            if isinstance(node.op, ast.UAdd):
+                return operands[0]
+            return None
+        if isinstance(node, ast.BinOp) and len(operands) == 2:
+            a, b = operands
+            if isinstance(node.op, ast.Add):
+                out = a + b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Sub):
+                out = a - b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Mult):
+                out = a * b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Div):
+                out = a / b  # type: ignore[operator]
+            elif isinstance(node.op, ast.Pow):
+                out = math.pow(a, b)  # type: ignore[arg-type]
+            else:
+                return None
+            return float(out)
+        call = _VALUE_CALLS.get(_call_name(node))
+        if call is not None and operands:
+            return float(call(*operands))
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+    return None
+
+
+def _facts_of(
+    node: ast.AST,
+    under: list[_Facts],
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> _Facts:
+    """The facts of *node*, from those of its operands, *under*."""
+
+    def valued(value: float, **reads) -> _Facts:
+        return _Facts(
+            positive=value > 0.0,
+            nonnegative=value >= 0.0,
+            negative=value < 0.0,
+            finite=math.isfinite(value),
+            value=value,
+            **reads,
+        )
+
+    size = 1 + sum(f.size for f in under)
+    if isinstance(node, ast.Name):
+        if node.id in values:
+            return valued(values[node.id], asked=node.id in asked)
+        if node.id in clocks:
+            return _Facts(clock=True)
+        return _Facts(state=True)
+    if isinstance(node, ast.Constant):
+        number = _number(node)
+        return _NO_FACTS if number is None else valued(number)
+    state = any(f.state for f in under)
+    clock = any(f.clock for f in under)
+    reads_asked = any(f.asked for f in under)
+    name = _call_name(node)
+    if not state and not clock:
+        value = _value_of(node, [f.value for f in under])
+        if value is not None:
+            facts = valued(value, asked=reads_asked, size=size)
+            return facts._replace(
+                choice=any(f.choice for f in under) or (name in _CHOICE_NAMES and reads_asked),
+                exotic=any(f.exotic for f in under),
+                unknown=any(f.unknown for f in under),
+            )
+    positive = nonnegative = negative = False
+    finite = all(f.finite for f in under)
+    if isinstance(node, ast.UnaryOp) and len(under) == 1:
+        (one,) = under
+        if isinstance(node.op, ast.USub):
+            positive, negative = one.negative, one.positive
+        elif isinstance(node.op, ast.UAdd):
+            positive, nonnegative, negative = one.positive, one.nonnegative, one.negative
+    elif isinstance(node, ast.BinOp) and len(under) == 2:
+        left, right = under
+        if isinstance(node.op, ast.Add):
+            positive = (left.positive and right.nonnegative) or (
+                left.nonnegative and right.positive
+            )
+            nonnegative = left.nonnegative and right.nonnegative
+            negative = left.negative and right.negative
+        elif isinstance(node.op, ast.Sub):
+            positive = (left.positive or left.nonnegative) and right.negative
+            negative = left.negative and (right.positive or right.nonnegative)
+        elif isinstance(node.op, ast.Mult):
+            positive = (left.positive and right.positive) or (left.negative and right.negative)
+            negative = (left.positive and right.negative) or (left.negative and right.positive)
+            nonnegative = (left.nonnegative and right.nonnegative) or (
+                # A square, written as a product.
+                left.size == right.size
+                and left.size <= _SQUARE_MAX_NODES
+                and ast.dump(node.left) == ast.dump(node.right)
+            )
+        elif isinstance(node.op, ast.Div):
+            positive = (left.positive and right.positive) or (left.negative and right.negative)
+            negative = (left.positive and right.negative) or (left.negative and right.positive)
+            nonnegative = left.nonnegative and right.positive
+            finite = finite and (right.positive or right.negative)
+        elif isinstance(node.op, ast.Pow):
+            power = _number(node.right)
+            even = power is not None and power > 0.0 and power % 2.0 == 0.0
+            # ``2^(log(0))`` is 0: a positive base is above 0 to a power that
+            # has a value.
+            positive = left.positive and right.finite
+            nonnegative = left.nonnegative or even
+            finite = finite and (right.nonnegative or left.positive or left.negative)
+        else:
+            finite = False
+    elif name in ("abs", "sqrt") and len(under) == 1:
+        (one,) = under
+        nonnegative = True
+        positive = one.positive or (name == "abs" and one.negative)
+    elif name == "exp" and len(under) == 1:
+        # ``exp(log(abs(e)))`` is 0 where e is: above 0 only of what has a value.
+        nonnegative = True
+        positive = under[0].finite
+    elif name == "max" and under:
+        positive = any(f.positive for f in under)
+        nonnegative = any(f.nonnegative for f in under)
+        negative = all(f.negative for f in under)
+    elif name == "min" and under:
+        positive = all(f.positive for f in under)
+        nonnegative = all(f.nonnegative for f in under)
+        negative = any(f.negative for f in under)
+    elif name == "pow" and len(under) == 2:
+        positive = under[0].positive and under[1].finite
+        nonnegative = under[0].nonnegative
+        finite = finite and (under[1].nonnegative or under[0].positive or under[0].negative)
+    elif name in _LOG_CALLS and len(under) == 1:
+        finite = finite and under[0].positive
+    elif name == "Piecewise" and under:
+        # Each argument is a (value, condition) pair, with the value's facts.
+        positive = all(f.positive for f in under)
+        nonnegative = all(f.nonnegative for f in under)
+        negative = all(f.negative for f in under)
+    elif isinstance(node, ast.Tuple) and len(under) == 2:
+        # A Piecewise pair: what the pair is, is what its value is.
+        positive, nonnegative, negative, finite = (
+            under[0].positive,
+            under[0].nonnegative,
+            under[0].negative,
+            under[0].finite,
+        )
+    elif name and (name in _POLE_CALLS or not (name in _SMOOTH_CALLS or name in _STRUCTURE_CALLS)):
+        finite = False
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+        bare = False
+    elif isinstance(node, ast.Tuple):
+        bare = bool(under) and under[0].bare  # a Piecewise pair: its value
+    elif isinstance(node, (ast.Compare, ast.BoolOp)) or name in ("And", "Or", "Not", "Eq", "Ne"):
+        bare = False
+    else:
+        bare = any(f.bare for f in under)
+    facts = _Facts(
+        state=state,
+        clock=clock,
+        asked=reads_asked,
+        choice=any(f.choice for f in under),
+        exotic=any(f.exotic for f in under),
+        unknown=any(f.unknown for f in under),
+        bare=bare,
+        positive=positive,
+        nonnegative=nonnegative or positive,
+        negative=negative,
+        finite=finite,
+        size=size,
+    )
+    if name in _CHOICE_NAMES and facts.live:
+        facts = facts._replace(choice=True, bare=True)
+    elif facts.live and _unknown_call(name):
+        facts = facts._replace(
+            exotic=True, bare=True, unknown=facts.unknown or name not in _BEND_CALLS
+        )
+    return facts
+
+
+# A call that is known to be continuous and to bend: asked about as a choice
+# is, by what the law divides by. Any other call this does not know could be
+# anything, a branch cut (``atan2``) or a pole, and is refused where it is live.
+_BEND_CALLS = frozenset({"clamp"})
+
+
+def _unknown_call(name: str) -> bool:
+    """Whether *name* is a call this does not know to be smooth, a choice or
+    a step: ``clamp``, ``atan2``."""
+    return bool(name) and not (
+        name in _SMOOTH_CALLS
+        or name in _CHOICE_NAMES
+        or name in _STEP_NAMES
+        or name in _STRUCTURE_CALLS
+    )
+
+
+def _facts_of_tree(
+    tree: ast.Expression,
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> tuple[list[ast.AST], dict[int, _Facts]]:
+    """Every node of *tree*, parents before what is under them, and the facts
+    of each by its ``id``."""
+    order: list[ast.AST] = []
+    stack: list[ast.AST] = [tree.body]
+    while stack:
+        node = stack.pop()
+        order.append(node)
+        stack.extend(_operands(node))
+    facts: dict[int, _Facts] = {}
+    for node in reversed(order):
+        facts[id(node)] = _facts_of(
+            node, [facts[id(child)] for child in _operands(node)], values, clocks, asked
+        )
+    return order, facts
+
+
+def _either_way(node: ast.AST) -> list[str]:
+    """*node* as text, and a difference with its sides swapped as well:
+    ``X − thr`` is 0 where ``thr − X`` is."""
+    out = [ast.dump(node)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub):
+        out.append(ast.dump(ast.BinOp(left=node.right, op=ast.Sub(), right=node.left)))
+    return out
+
+
+def _power(node: ast.AST) -> tuple[ast.AST, ast.AST] | None:
+    """``(base, power)`` of a power, written ``a^b`` or ``pow(a, b)``."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+        return node.left, node.right
+    if _call_name(node) == "pow" and len(node.args) == 2:  # type: ignore[attr-defined]
+        return node.args[0], node.args[1]  # type: ignore[attr-defined]
+    return None
+
+
+def _factors(node: ast.AST, facts: Mapping[int, _Facts], vanishing: bool = False) -> list[ast.AST]:
+    """What *node* is a product of, so that it is 0 where one of them is:
+    through a sign, a product, the numerator of a quotient, a square root,
+    a power that is known not to be below 0, and each branch of a
+    conditional.
+
+    With *vanishing*, what *node* goes to 0 with, no faster than in
+    proportion: not through a root or a conditional, and through a power
+    only where it is known to be 1 or more. ``e^0`` is 1 where ``e`` is 0,
+    and ``sqrt(e)`` leaves 0 with a slope that has no bound."""
+    out: list[ast.AST] = []
+    stack = [node]
+    while stack:
+        one = stack.pop()
+        power = _power(one)
+        if isinstance(one, ast.UnaryOp) and isinstance(one.op, (ast.USub, ast.UAdd)):
+            stack.append(one.operand)
+        elif isinstance(one, ast.BinOp) and isinstance(one.op, ast.Mult):
+            stack.extend((one.left, one.right))
+        elif isinstance(one, ast.BinOp) and isinstance(one.op, ast.Div):
+            stack.append(one.left)
+        elif not vanishing and _call_name(one) == "sqrt" and len(one.args) == 1:  # type: ignore[attr-defined]
+            stack.append(one.args[0])  # type: ignore[attr-defined]
+        elif not vanishing and _call_name(one) == "Piecewise":
+            # 0 where the branch it takes is.
+            stack.extend(
+                pair.elts[0]
+                for pair in one.args  # type: ignore[attr-defined]
+                if isinstance(pair, ast.Tuple) and len(pair.elts) == 2
+            )
+        elif power is not None and (
+            (facts[id(power[1])].value or 0.0) >= 1.0
+            if vanishing
+            else _divides_by_nothing(facts[id(power[1])])
+        ):
+            stack.append(power[0])
+        else:
+            out.append(one)
+    return out
+
+
+def _divides_by_nothing(power: _Facts) -> bool:
+    """Whether a power with these facts is known not to be below 0: ``x^2``
+    and ``x^n`` at an ``n`` of 2, and not ``x^-1`` or ``x^Y``."""
+    return power.nonnegative
+
+
+# A factor is compared with what a choice flips on only where it is this
+# small: a sign or a step is written over a difference, not over a page of
+# rate law.
+_FLIP_MAX_NODES = 200
+# How far the quotient moves a parameter: its own size times the root of the
+# relative tolerance, a quarter of it at a tolerance of 0.06. And how fine the
+# moves tried are, from that down: a comparison that flips and flips back
+# inside the quarter is found where one of them lands between the two.
+_QUOTIENT_REACH = 0.25
+_QUOTIENT_HALVINGS = 12
+
+
+def _moves_tried(value: float) -> list[float]:
+    """The values a requested parameter at *value* is tried at: a quarter of
+    itself away and by halves of that down, either way; a quarter where it
+    is 0."""
+    reach = _QUOTIENT_REACH * (abs(value) if value != 0.0 else 1.0)
+    return [
+        value + sign * reach / 2.0**halving
+        for halving in range(_QUOTIENT_HALVINGS)
+        for sign in (1.0, -1.0)
+    ]
+
+
+# What a compiled expression may call: the calls :func:`_value_of` has a value
+# for, and the power as it takes it.
+_VALUE_GLOBALS: dict = {"__builtins__": {}, "_pow": math.pow, **_VALUE_CALLS}
+_VALUE_BINOPS = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Pow: "**"}
+
+
+def _value_code(node: ast.AST, taken: AbstractSet[str] = frozenset()):
+    """*node* compiled to what :func:`_facts_of` gives as its value, where it
+    is made of numbers, names, signs, sums, products, quotients, powers and
+    the calls that have a value, and ``None`` where it holds anything else.
+
+    The sign of an expression over parameters is asked at 24 values of each
+    requested parameter in it, and through :func:`_facts_of_tree` that is a
+    tuple built for every node each time: 49 passes over 500 nodes for one
+    ``max`` in ``synthesis_v3``, 0.9 s after each ``set_param``. Compiled, it is
+    the same arithmetic on the same doubles. A name that is not a parameter,
+    and anything that has no value, raises where the tree gives ``None``.
+
+    *taken* are the names that have a value where the code will be run. An
+    expression that calls one of them, or that has a power while one of them
+    is the name the power is called by here, is left to the tree: a parameter
+    named ``abs`` or ``_pow`` is a parameter.
+    """
+
+    def written(one: ast.AST) -> str:
+        if isinstance(one, ast.Name):
+            return one.id
+        if isinstance(one, ast.Constant) and isinstance(one.value, (bool, int, float)):
+            number = float(one.value)
+            if math.isnan(number):
+                raise ValueError("nan")
+            # A literal past a double is written as one: ``inf`` is a name.
+            return (
+                repr(number) if math.isfinite(number) else ("1e999" if number > 0 else "(-1e999)")
+            )
+        if isinstance(one, ast.UnaryOp) and isinstance(one.op, (ast.USub, ast.UAdd)):
+            return f"({'-' if isinstance(one.op, ast.USub) else '+'}{written(one.operand)})"
+        if isinstance(one, ast.BinOp) and type(one.op) in _VALUE_BINOPS:
+            left, right = written(one.left), written(one.right)
+            op = _VALUE_BINOPS[type(one.op)]
+            if op == "**" and "_pow" in taken:
+                raise ValueError("_pow")
+            return f"_pow({left}, {right})" if op == "**" else f"({left} {op} {right})"
+        if _call_name(one) in taken:
+            raise ValueError(_call_name(one))
+        if _call_name(one) in _VALUE_CALLS and not one.keywords:  # type: ignore[attr-defined]
+            return f"{_call_name(one)}({', '.join(written(arg) for arg in one.args)})"  # type: ignore[attr-defined]
+        raise ValueError(type(one).__name__)
+
+    try:
+        return compile(written(node), "<an expression over parameters>", "eval")
+    except (RecursionError, SyntaxError, ValueError, MemoryError):
+        return None
+
+
+def _flips_with_a_parameter(
+    node: ast.AST, values: Mapping[str, float], asked: AbstractSet[str]
+) -> bool:
+    """Whether *node*, an expression over numbers and parameters, is 0 or
+    changes sign with a requested parameter in it moved as the quotient may
+    move it (:func:`_moves_tried`); or cannot be read."""
+
+    compiled = _value_code(node, values.keys())
+
+    def sign_at(at: Mapping[str, float]) -> int | None:
+        if compiled is not None:
+            try:
+                value = float(eval(compiled, _VALUE_GLOBALS, at))  # noqa: S307 - see _value_code
+            except (ArithmeticError, ValueError, TypeError, NameError):
+                value = None
+        else:
+            _order, facts = _facts_of_tree(
+                ast.Expression(body=node),  # type: ignore[arg-type]
+                at,
+                frozenset(),
+                frozenset(),
+            )
+            value = facts[id(node)].value
+        if value is None or not math.isfinite(value):
+            return None
+        return (value > 0.0) - (value < 0.0)
+
+    now = sign_at(values)
+    if now is None or now == 0:
+        return True
+    for name in sorted({n.id for n in ast.walk(node) if isinstance(n, ast.Name)} & set(asked)):
+        if name not in values:
+            return True
+        for moved in _moves_tried(values[name]):
+            if sign_at({**values, name: moved}) != now:
+                return True
+    return False
+
+
+# The least power of a bend the quotient is let read across (see below).
+_LEAST_POWER_OF_A_BEND = 1.0
+# Calls whose slope has no bound where their argument is 0, and at an
+# argument of 1 or −1.
+_SHARP_AT_ZERO = frozenset({"sqrt"}) | _LOG_CALLS
+_SHARP_AT_ONE = frozenset({"asin", "acos", "acosh", "atanh"})
+
+
+def _quotient_across_a_choice(
+    tree: ast.Expression,
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> str | None:
+    """A division in the rate law *tree* that jumps where an ``abs``, ``max``
+    or ``min`` flips, as text, or ``None``.
+
+    Each of the three is continuous: ``max(X, c)`` bends where ``X`` passes
+    ``c``, and the difference quotient is right across a bend. A law jumps
+    across one by dividing by what is 0 there: ``(X − thr)/abs(X − thr)`` is
+    a sign and ``max(X − thr, 0)/(X − thr)`` a step, with nothing in the text
+    that says so. What is named is a division, in a law where one of the
+    three reads what a column moves, by a product with a factor that is
+
+    - one of the three, or holds one with no sum over it, and is not known
+      to be nonzero: ``e/abs(e)``, ``1/max(X − thr, 0)``,
+      ``e/exp(log(abs(e)))``. ``v/max(X, 0.01)`` is known nonzero; or
+    - a factor of what one of them flips on: ``abs(e)/e``, ``max(e, 0)/e``,
+      ``max(e, −e)/e`` and ``abs(u·v)/u``.
+
+    A negative or unknown power is a division by its base, and a
+    conditional is 0 where a branch of it is. What is known nonzero is known
+    by what a number or a parameter is, and by what ``abs``, ``exp`` of what
+    has a value, an even power, a sum and a product keep: nothing is assumed
+    of the state, which a concentration below 0 would break.
+
+    Three more are named:
+
+    - a power under 1, a root, a logarithm or a ``hypot`` of what holds one
+      of the three and is not known to be nonzero, and an inverse sine or
+      cosine of what holds one: continuous, and leaving the bend with a
+      slope that has no bound;
+    - any division by what is not known to be nonzero, in a law that holds a
+      call this does not know to be smooth, ``clamp(0, e, 1)/e``;
+    - an ``abs``, ``max`` or ``min`` over parameters alone that a requested
+      one is within a quarter of itself of flipping, ``min(k1, k2)`` at
+      k2 = 1.001·k1: a bend in the parameter, which the quotient straddles
+      for the whole run and not for an instant of it.
+
+    A sign written any other way is not found: with the choice inside a sum
+    the law divides by, ``e/(abs(e) + 0·X)``, or with the two sides of the
+    quotient written differently, ``abs(X − thr)/(X/thr − 1)``. Nor is a
+    pole cut off on both sides, ``min(max(k/(X − thr), −5), 5)``.
+    """
+    order, facts = _facts_of_tree(tree, values, clocks, asked)
+    root = facts[id(tree.body)]
+    if not root.choice and not root.exotic:
+        return None
+    if root.unknown:
+        for node in order:
+            name = _call_name(node)
+            if _unknown_call(name) and name not in _BEND_CALLS and facts[id(node)].live:
+                return _clipped(node)
+
+    def small(node: ast.AST) -> bool:
+        return facts[id(node)].live and facts[id(node)].size <= _FLIP_MAX_NODES
+
+    # What each live choice flips on: the factors of an ``abs``'s argument,
+    # and of one side where the other is 0 or is the first with its sign
+    # turned; else the difference of the two sides, either way round.
+    flips: set[str] = set()
+    # A derived parameter written out is in the law as often as it is read:
+    # one law of ``synthesis_v3`` comes to 16,283 nodes with the same ``max``
+    # over parameters in it 1,145 times. Each is asked about once.
+    asked_already: dict[str, bool] = {}
+    for node in order:
+        name = _call_name(node)
+        known = facts[id(node)]
+        if name not in _CHOICE_NAMES or not known.live:
+            continue
+        args = node.args  # type: ignore[attr-defined]
+        pairs: list[tuple[ast.expr, ast.expr | None]]
+        if name == "abs":
+            pairs = [(args[0], None)] if len(args) == 1 else []
+        else:
+            pairs = [(a, b) for i, a in enumerate(args) for b in args[i + 1 :]]
+        if not known.state and not known.clock:
+            # Over parameters alone: a bend the quotient straddles for good.
+            written = ast.dump(node)
+            found = asked_already.get(written)
+            if found is None:
+                found = asked_already[written] = any(
+                    _flips_with_a_parameter(
+                        a if b is None else ast.BinOp(left=a, op=ast.Sub(), right=b),
+                        values,
+                        asked,
+                    )
+                    for a, b in pairs
+                )
+            if found:
+                return _clipped(node)
+            continue
+        for a, b in pairs:
+            if b is not None and facts[id(b)].zero:
+                b = None
+            elif b is not None and facts[id(a)].zero:
+                a, b = b, None
+            elif b is not None and (
+                (isinstance(b, ast.UnaryOp) and isinstance(b.op, ast.USub) and _same(b.operand, a))
+                or (
+                    isinstance(a, ast.UnaryOp)
+                    and isinstance(a.op, ast.USub)
+                    and _same(a.operand, b)
+                )
+            ):
+                # ``max(e, −e)`` is ``abs(e)``.
+                a, b = (a if isinstance(b, ast.UnaryOp) else b), None
+            if b is None:
+                for factor in _factors(a, facts):
+                    if small(factor):
+                        flips.update(_either_way(factor))
+            elif facts[id(a)].size + facts[id(b)].size < _FLIP_MAX_NODES:
+                flips.update(_either_way(ast.BinOp(left=a, op=ast.Sub(), right=b)))
+    for node in order:
+        divisor: ast.AST | None = None
+        power = _power(node)
+        # A power under 1, a root or a logarithm of what holds a choice and
+        # may be 0: ``max(thr − X, 0)^0.1`` is continuous and leaves 0 with a
+        # slope that has no bound, and the quotient reads it much as it reads
+        # a jump. At a relative tolerance of 1e-6 the column of the rate
+        # constant was 2.5e-5 off at a power of 0.5, 1.3e-4 at 0.4, 3.8e-3 at
+        # 0.3, 1.9e-2 at 0.2 and 10% at 0.1, where the run does not finish at
+        # 1e-8; and the column of the threshold was 2.6e-4 off at a power of
+        # 0.5, and 5.8e-5 at a tolerance of 1e-8. None of them is let through.
+        # The choice may be anywhere in what the power is of:
+        # ``(thr − min(X, thr))^0.1`` is the same function.
+        name = _call_name(node)
+        sharp: list[ast.AST] = []
+        if power is not None:
+            by = facts[id(power[1])]
+            if (
+                by.value is None
+                or (by.value < _LEAST_POWER_OF_A_BEND and by.value != 0.0)
+                or (
+                    by.asked
+                    and _flips_with_a_parameter(
+                        ast.BinOp(
+                            left=power[1],  # type: ignore[arg-type]
+                            op=ast.Sub(),
+                            right=ast.Constant(value=_LEAST_POWER_OF_A_BEND),
+                        ),
+                        values,
+                        asked,
+                    )
+                )
+            ):
+                sharp = [power[0]]
+        elif name in _SHARP_AT_ZERO or name == "hypot":
+            sharp = list(node.args)  # type: ignore[attr-defined]
+        if any(
+            facts[id(arg)].live and _holds_a_choice(facts[id(arg)]) for arg in sharp
+        ) and not any(facts[id(arg)].positive or facts[id(arg)].negative for arg in sharp):
+            return _clipped(node)
+        if name in _SHARP_AT_ONE and any(
+            facts[id(arg)].live and _holds_a_choice(facts[id(arg)])
+            for arg in node.args  # type: ignore[attr-defined]
+        ):
+            return _clipped(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            divisor = node.right
+        elif power is not None and not _divides_by_nothing(facts[id(power[1])]):
+            divisor = power[0]
+        if divisor is None or not facts[id(divisor)].live:
+            continue
+        if root.exotic and not (facts[id(divisor)].positive or facts[id(divisor)].negative):
+            return _clipped(node)
+        for factor in _factors(divisor, facts):
+            known = facts[id(factor)]
+            if not known.live or known.positive or known.negative:
+                continue
+            if known.bare:
+                return _clipped(node)
+            if small(factor) and ast.dump(factor) in flips:
+                return _clipped(node)
+    return None
+
+
+def _holds_a_choice(known: _Facts) -> bool:
+    """Whether what has these facts holds a live ``abs``, ``max`` or ``min``,
+    or a call that bends as they do, anywhere in it."""
+    return known.choice or known.exotic
+
+
+def _same(a: ast.AST, b: ast.AST) -> bool:
+    """Whether two expressions are written the same."""
+    return ast.dump(a) == ast.dump(b)
+
+
+# Calls that are continuous wherever they have a value. A logarithm, a root
+# and a power that is not a whole number are, where what they are of is known
+# to be where they have one; a step call is asked about on its own, as a step.
+_CONTINUOUS_CALLS = frozenset(
+    {"exp", "sin", "cos", "sinh", "cosh", "tanh", "atan", "sqrt", "erf", "erfc"}
+    | {"abs", "max", "min", "pow", "Piecewise", "And", "Or", "Not"}
+)
+
+
+def _only_bends(
+    tree: ast.Expression,
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> bool:
+    """Whether the rate law *tree* is continuous across every condition in it
+    that reads the state, by what it is made of.
+
+    The difference quotient is right across a bend, and whether a law bends
+    or jumps where a condition flips is not told by evaluating it (issue
+    #938). It is proved here, for the ways a bend is written, or not at all:
+
+    - ``if(e > 0, e·g, 0)``: one branch is 0 and the other is a product with
+      everything ``e`` is 0 with among its factors, where ``e`` is the
+      difference the condition compares. The signed rate
+      ``if(v < 0, −v/max(X, 0.01), 0)`` and a ramp ``if(X < thr,
+      kb·(thr − X), 0)`` are this. So is ``if(e > 0, e·g, e·h)``, with both
+      branches such products;
+    - ``if(a < b, a, b)``: the two branches are the two sides of the one
+      comparison, the lesser or the greater of two written out.
+
+    And the law is made of nothing else that could jump there: every division
+    is by what is known to be nonzero; every power is a whole number that is
+    not below 0, or of what is known not to be below 0; a root is of what is
+    known not to be below 0 and a logarithm of what is known to be above it,
+    since each is no number past the edge of where it has a value, and a
+    comparison with no number is false; and every call is one that is
+    continuous (:data:`_CONTINUOUS_CALLS`). An equality, a condition that is
+    not a comparison, a condition of more than two branches, a comparison
+    outside a condition, and anything this does not read, is not proved.
+    """
+    order, facts = _facts_of_tree(tree, values, clocks, asked)
+
+    def whole(power: _Facts) -> bool:
+        return power.value is not None and power.value >= 0.0 and power.value == int(power.value)
+
+    def in_its_domain(base: _Facts, power: _Facts) -> bool:
+        """A power that has a value on both sides of anything its base can
+        do, and is continuous there."""
+        if whole(power):
+            return True
+        return (base.nonnegative and power.nonnegative) or base.positive
+
+    proved: set[int] = set()
+    for node in order:
+        name = _call_name(node)
+        known = facts[id(node)]
+        if isinstance(node, (ast.Name, ast.Constant, ast.Tuple, ast.Compare)):
+            # A comparison is asked about below, where it is proved or not.
+            pass
+        elif isinstance(node, ast.UnaryOp):
+            if not isinstance(node.op, (ast.USub, ast.UAdd)):
+                return False
+        elif isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.Div):
+                divisor = facts[id(node.right)]
+                if not (divisor.positive or divisor.negative):
+                    return False
+            elif isinstance(node.op, ast.Pow):
+                if not in_its_domain(facts[id(node.left)], facts[id(node.right)]):
+                    return False
+            elif not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+                return False
+        elif name in _LOG_CALLS:
+            if len(node.args) != 1 or not facts[id(node.args[0])].positive:  # type: ignore[attr-defined]
+                return False
+        elif name == "sqrt":
+            if len(node.args) != 1 or not facts[id(node.args[0])].nonnegative:  # type: ignore[attr-defined]
+                return False
+        elif name in _STEP_NAMES:
+            if known.state:
+                return False
+        elif name == "pow":
+            base, power = _operands(node)
+            if not in_its_domain(facts[id(base)], facts[id(power)]):
+                return False
+        elif name not in _CONTINUOUS_CALLS:
+            return False
+        if name != "Piecewise":
+            continue
+        pairs = node.args  # type: ignore[attr-defined]
+        if not (
+            len(pairs) == 2
+            and all(isinstance(pair, ast.Tuple) and len(pair.elts) == 2 for pair in pairs)
+            and isinstance(pairs[1].elts[1], ast.Constant)
+            and pairs[1].elts[1].value is True
+        ):
+            continue
+        (taken, condition), (other, _always) = pairs[0].elts, pairs[1].elts
+        # The comparisons the condition is made of, through And, Or and Not.
+        # Anything else in it that reads the state is a condition that is a
+        # number, true where it is not 0, and is not proved.
+        atoms: list[ast.Compare] = []
+        stack = [condition]
+        while stack:
+            one = stack.pop()
+            if isinstance(one, ast.Compare):
+                atoms.append(one)
+            elif _call_name(one) in ("And", "Or", "Not"):
+                stack.extend(one.args)  # type: ignore[attr-defined]
+            elif facts[id(one)].state:
+                return False
+        for atom in atoms:
+            if not facts[id(atom)].state or len(atom.ops) != 1:
+                continue
+            if not isinstance(atom.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+                continue
+            left, right = atom.left, atom.comparators[0]
+            # What the comparison's difference is 0 with: each factor of one
+            # side where the other is 0, else the difference itself.
+            if facts[id(right)].zero:
+                needed = [f for f in _factors(left, facts) if facts[id(f)].live]
+            elif facts[id(left)].zero:
+                needed = [f for f in _factors(right, facts) if facts[id(f)].live]
+            else:
+                needed = [ast.BinOp(left=left, op=ast.Sub(), right=right)]
+                facts[id(needed[0])] = _Facts(
+                    state=True, size=facts[id(left)].size + facts[id(right)].size + 1
+                )
+            if not needed or any(facts[id(f)].size > _FLIP_MAX_NODES for f in needed):
+                continue
+
+            def vanishes(product: ast.AST, needed=needed) -> bool:
+                """Whether *product* is 0, or has every one of them among
+                its factors."""
+                if facts[id(product)].zero:
+                    return True
+                has = {
+                    text
+                    for factor in _factors(product, facts, vanishing=True)
+                    if facts[id(factor)].size <= _FLIP_MAX_NODES
+                    for text in _either_way(factor)
+                }
+                return all(ast.dump(f) in has for f in needed)
+
+            if vanishes(taken) and vanishes(other):
+                proved.add(id(atom))
+            elif (
+                atom is condition
+                and facts[id(taken)].size + facts[id(other)].size <= _FLIP_MAX_NODES
+                and {ast.dump(taken), ast.dump(other)} == {ast.dump(left), ast.dump(right)}
+            ):
+                # The lesser or the greater of the two sides, written out.
+                proved.add(id(atom))
+    return all(
+        id(node) in proved
+        for node in order
+        if isinstance(node, ast.Compare) and facts[id(node)].state
+    )
+
+
+def _clipped(node: ast.AST, width: int = 120) -> str:
+    """*node* as text, cut to *width*."""
+    try:
+        text = ast.unparse(node)
+    except RecursionError:
+        text = type(node).__name__
+    return text if len(text) <= width else text[: width - 3] + "..."
+
+
+def _parameter_crossing(flat: str, scope: SwitchConditionScope, asked: AbstractSet[str]) -> bool:
+    """Whether the quotient reads across *flat*, a comparison or a step call's
+    argument over run constants alone, by moving a requested parameter.
+
+    Such a condition holds one way for the whole run, and is still a surface
+    in the parameters. The quotient reads the rate law at ``p + σ`` and
+    ``p − σ``, and with ``p`` within ``σ`` of where the comparison flips one
+    of the two is on the other branch: ``if(n > 1, kb, 0)`` at n = 1 + 1e-6
+    returned dY/dn = 901 for 0, and 1.8e10 at n = 1.
+
+    A comparison is one where it comes out differently with a requested
+    parameter in it moved by up to a quarter of itself, either way; an
+    equality, where it holds; and anything else that reads a requested
+    parameter, a step call's argument, whatever its value.
+    """
+    names = sorted(set(_IDENTIFIER.findall(flat)) & set(asked) & set(scope.param_idx))
+    if not names:
+        return False
+    split = _relational_split_op(flat)
+    if split is None:
+        return True
+    lhs, _op, rhs = split
+
+    def side(values: Sequence[float]) -> int | None:
+        both = [
+            _evaluate_threshold(text, scope.param_idx, values, scope.derived_exprs)
+            for text in (lhs, rhs)
+        ]
+        if any(v is None or not math.isfinite(v) for v in both):
+            return None
+        return (both[0] > both[1]) - (both[0] < both[1])  # type: ignore[operator]
+
+    now = side(scope.values)
+    if now is None or now == 0:
+        return True
+    if is_equality_atom(flat):
+        return False
+    for name in names:
+        index = scope.param_idx[name]
+        moved = list(scope.values)
+        for value in _moves_tried(float(scope.values[index])):
+            moved[index] = value
+            if side(moved) != now:
+                return True
+    return False
+
+
+def fallback_crossing(
+    core,
+    sens_param_names: Sequence[str] = (),
+    ic_species: Sequence[int] = (),
+    ctx=None,
+    parsed: dict | None = None,
+    declared: Mapping[str, Mapping[str, float]] | None = None,
+) -> str | None:
+    """What a time course on CVODES' difference quotient cannot differentiate
+    through in this model, as the text of the first one found, or ``None``.
+
+    The quotient forms each column's right-hand side as ``f`` at ``y + σ·s`` and
+    ``p + σ`` less ``f`` at ``y`` and ``p`` (issue #938). Beside a surface where
+    a rate law jumps, the moved point is on the other branch for any column
+    that moves the state across it: the difference is the jump over ``σ``, and
+    the column takes part of the jump before the crossing is reached. The jump
+    applied at the crossing itself (issue #48 for a counter, issue #150 for a
+    state threshold) is then added to it. ``if(Aobs>thr,kb,0)`` with A made at
+    rate ``k``, beside a rate law the analytic path declines, returned
+    dY/dk = 14.52 for 10.2. Where the step size collapses on the same
+    differences instead, the run ends in CVODE's no-progress error or in the
+    wall clock, 2e-5 to 2e-8 short of the crossing (issue #932).
+
+    Nothing at the crossing can put that right: the column is wrong before the
+    run gets there, by more the looser the tolerance, and a run that ends short
+    of the crossing has returned it. So a model that has one of these is
+    refused before a time course starts:
+
+    - a rate-law condition that reads the state, ``Aobs < thr`` or
+      ``rateOf(X) > 0``, unless the law is proved to bend there and not jump
+      (:func:`_only_bends`): ``if(v > 0, v, 0)`` and ``if(a < b, a, b)``,
+      with nothing in the law dividing by what could be 0. The quotient is
+      right across a bend. Telling one from a jump by evaluating the law was
+      tried and is not sound (issue #938), so what is not proved is refused;
+    - a condition on a counter species that a requested column moves (its rate
+      constant, its initial amount). A counter nothing moves is read at ``y``
+      in both terms of the quotient, and its threshold's parameters are held
+      while the quotient is taken (issue #436);
+    - an equality on the state. It holds at one state and over no interval
+      of them, unless the state sits there: ``B == 0`` with B made from where
+      another species passes a threshold holds until it does;
+    - a division the law may jump across through an ``abs``, ``max`` or
+      ``min``: ``(thr − X)/abs(thr − X)``
+      (:func:`_quotient_across_a_choice`). One that stands alone is a bend,
+      and runs;
+    - a step call on the state, ``floor(Atot)``, or on a moved counter;
+    - a step call on a clock, literal time or a counter nothing moves, whose
+      argument reads a requested parameter, ``floor(time()/P)`` with ``P``
+      requested: the steps move with ``P``, and nothing jumps a column at a
+      step. In a condition as well as outside one;
+    - a table function that steps, indexed by an observable, by a function,
+      or by a requested parameter or one made of it;
+    - a comparison over parameters alone that a requested one is within a
+      quarter of itself of flipping, ``if(n > 1, kb, 0)`` at n = 1.001 with n
+      requested, an ``abs``, ``max`` or ``min`` over parameters likewise,
+      and a step call on a requested parameter
+      (:func:`_parameter_crossing`): the quotient moves a parameter as it
+      moves the state;
+    - a power under 1, a root or a logarithm of what holds an ``abs``,
+      ``max`` or ``min`` and may be 0, ``max(thr − X, 0)^0.1`` and
+      ``sqrt(thr − min(X, thr))``: continuous, with a slope that has no
+      bound. An inverse sine or cosine of one likewise;
+    - a comparison that is not the condition of an ``if()``, ``kb*(X > 1)``
+      or ExprTk's single ``=``, on what a column moves; in a derived
+      parameter as in a rate law, ``kd = 3*(n > 1)``
+      (:func:`_comparison_a_column_moves`);
+    - a call this does not know, ``atan2``, where a column moves what it
+      reads;
+    - a rate law that is not read: its functions nest too deep to write out,
+      or it holds one of the above in a form the scan does not parse.
+
+    A derived parameter that holds any of these is read as a rate law is:
+    written into the laws that read it, and as a law of its own where it is
+    the rate constant of a reaction no function writes, or is written in one.
+    One that is in no rate, an initial amount, is not asked about. A requested derived
+    parameter is asked about both as its own column moves it, held where it
+    is set, and as the column of a primary it is written in does.
+
+    A crossing on literal time is not one of these.
+
+    What is asked is what the text says and what each parameter is when the
+    scan is made: no rate law is evaluated at a state, nothing is integrated,
+    and nothing is assumed of the state.
+
+    Scans the reaction rate expressions with their functions inlined, as
+    :func:`model_uncompensated_crossing_reason` does. An atom that names no
+    symbol is no crossing.
+    """
+    from bngsim._jacobian import _TIME_SYM, _inline_functions, has_condition_construct
+
+    # Not caught here: the caller refuses a model whose scan fails, and a
+    # model whose tables cannot be listed is one whose step tables are not known.
+    data = core.codegen_data()
+    stepping = [table for table in data.get("table_functions", ()) if table.get("step")]
+    requested = frozenset(sens_param_names)
+    param_names = list(core.param_names)
+    is_expr = list(core.param_is_expression)
+    exprs = list(core.param_expressions)
+    derived = {
+        param_names[i]: exprs[i] for i in range(len(param_names)) if is_expr[i] and exprs[i]
+    }
+    # ``parsed`` keeps what is made of each rate law's text between one scan
+    # of a model and the next, and beside it the last answer for the law with
+    # what it went by. What is made of a law has its derived parameters
+    # written in, so it is kept for as long as they are written as they were:
+    # one that ``set_param`` overrides is a number from then on, and a law
+    # that read it is another law.
+    #
+    # One store for each way they are written, and none emptied under a scan:
+    # the rows of a threaded batch share ``parsed``, and a row that overrides
+    # a derived parameter is scanned beside one that does not. Emptied and
+    # filled again, the store handed one row the laws another had written
+    # out, and 4 batches in 3,000 returned a column of 6.94 for 2.46.
+    stores: dict = {} if parsed is None else parsed
+    written_as = tuple(sorted(derived.items()))
+    found_store = stores.get(written_as)
+    if found_store is None:
+        if len(stores) >= _STORES_KEPT:
+            stores.clear()  # a scan under way keeps the store it holds
+        found_store = stores.setdefault(written_as, {})
+    kept_all: dict = found_store
+    for table in stepping:
+        index = table.get("index_param_idx", -1)
+        moved_index = False
+        if table.get("index_kind") == "parameter" and 0 <= index < len(param_names):
+            # Indexed by a requested parameter, or by one that is made of
+            # one, through however many derived parameters: the quotient
+            # moves the index. ``idx = tD + 1`` with ``tD = 2*n`` is moved by
+            # tD, which is neither the index nor a primary it is written in.
+            moved_index = bool(_written_in(param_names[index], derived) & requested)
+        if table.get("index_kind") not in ("time", "parameter") or moved_index:
+            return f'tfun {table.get("name")} (method=>"step")'
+    # The derived parameters that hold a condition, a step call, a choice or
+    # a call this does not know, themselves or through one they are written
+    # in: ``kd = if(n > 1, 3, 0)`` is a rate constant that jumps in n.
+    found_marked: frozenset[str] | None = kept_all.get(_MARKED)
+    if found_marked is None:
+        found_marked = kept_all[_MARKED] = _marked_derived(derived, has_condition_construct)
+    marked: frozenset[str] = found_marked
+    # Of those, the ones a reaction's rate constant is, or is written in. One
+    # that only sets an initial amount, ``R0 = rint(7.47e4*f)``, is in no rate:
+    # its seed is differentiated and not differenced.
+    found_rates: frozenset[str] | None = kept_all.get(_IN_A_RATE)
+    if found_rates is None:
+        reach: set[str] = set()
+        stack = [
+            param_names[i]
+            for reaction in data.get("reactions", ())
+            if reaction.get("type") != "functional"
+            for i in reaction.get("rate_param_indices", ())
+            if 0 <= i < len(param_names) and param_names[i] in derived
+        ]
+        # And the ones a table function is indexed by: the table is read by
+        # a rate law as a call, with its index nowhere in the law's text.
+        stack += [
+            param_names[table.get("index_param_idx", -1)]
+            for table in data.get("table_functions", ())
+            if table.get("index_kind") == "parameter"
+            and 0 <= table.get("index_param_idx", -1) < len(param_names)
+            and param_names[table.get("index_param_idx", -1)] in derived
+        ]
+        while stack:
+            name = stack.pop()
+            if name not in reach:
+                reach.add(name)
+                stack.extend(set(_IDENTIFIER.findall(derived[name])) & derived.keys())
+        found_rates = kept_all[_IN_A_RATE] = frozenset(reach)
+    rate_constants: frozenset[str] = marked & found_rates
+    if core.n_functions == 0 and not rate_constants:
+        return None
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    # A table indexed by a parameter is indexed by the state where the
+    # parameter is a slot a function owns: ``fIdx() = Aobs``.
+    for table in stepping:
+        index = table.get("index_param_idx", -1)
+        if (
+            table.get("index_kind") == "parameter"
+            and 0 <= index < len(param_names)
+            and param_names[index] in func_map
+        ):
+            return f'tfun {table.get("name")} (method=>"step")'
+    texts = [str(reaction.get("rate_expr", "")) for reaction in ctx["functional_reactions"]]
+    moved_clocks: list[frozenset[int]] = []
+
+    def scan(held: frozenset[str]) -> str | None:
+        """The scan with the derived parameters in *held* left as names, at
+        the values they have, and every other one written out."""
+        kept = kept_all.setdefault((_VIEW, held), {})
+        live = {n: e for n, e in derived.items() if n not in held} if held else derived
+        laws: list[_Law] = []
+        for text in texts:
+            law = kept.get(text)
+            if law is None:
+                flat = _inline_functions(text, func_map)
+                if flat is None:
+                    # Functions nested past what is written out, or a cycle. Read
+                    # as its bare name, it would hold no condition at all.
+                    return f"{text} (its functions nest too deep to read)"
+                law = kept[text] = _read_law(
+                    text, flat, live, has_condition_construct, marked - held
+                )
+            if law.atoms or law.steps or law.choice or law.unread or law.compared:
+                laws.append(law)
+        # A marked derived parameter may be the rate constant of a reaction no
+        # function writes, which is in none of the texts above. Each such is
+        # read as a rate law of its own, over parameters alone.
+        for name in sorted(rate_constants - held):
+            law = kept.get((_DERIVED_LAW, name))
+            if law is None:
+                law = kept[(_DERIVED_LAW, name)] = _read_law(
+                    f"{name} := {derived[name]}",
+                    derived[name],
+                    live,
+                    has_condition_construct,
+                    marked - held,
+                )
+            if law.atoms or law.steps or law.choice or law.unread or law.compared:
+                laws.append(law)
+        if not laws:
+            return None
+        scope = switch_condition_scope(core, ctx)
+        if held:
+            scope = scope._replace(
+                derived_exprs=live,
+                primary_names=scope.primary_names | held,
+                run_constants=scope.run_constants
+                | (held - scope.function_names - scope.clock_symbols),
+            )
+        if not moved_clocks:
+            # The same in every view: which species is a clock, and which
+            # parameter seeds or drives it, is not a matter of what is held.
+            moved_clocks.append(
+                _clocks_moved(
+                    core, scope.clocks, list(sens_param_names), ic_species, True, declared
+                )
+            )
+        moved = moved_clocks[0]
+        # What each parameter is; and the clocks no column moves, literal time
+        # and a counter with nothing requested that moves it.
+        values = {name: float(scope.values[scope.param_idx[name]]) for name in scope.run_constants}
+        for name, value in _BUILTIN_CONSTANT_VALUES.items():
+            values.setdefault(name, float(value))
+        clocks = frozenset({_TIME_SYM}) | {
+            n for n, idx in scope.clocks.items() if idx not in moved
+        }
+
+        def crosses(flat: str) -> str:
+            """Whether the quotient reads across the surface *flat* names, and
+            in what: ``"parameter"``, ``"state"``, or ``""`` for neither."""
+            if not _IDENTIFIER.search(flat):
+                return ""
+            if condition_cannot_cross(flat, scope):
+                # Asked again only where a parameter the comparison reads has
+                # changed, or the columns have.
+                key = (
+                    tuple(
+                        float(scope.values[scope.param_idx[n]])
+                        for n in sorted(set(_IDENTIFIER.findall(flat)) & set(scope.param_idx))
+                    ),
+                    requested,
+                )
+                last = kept.get(("parameter", flat))
+                if last is None or last[0] != key:
+                    last = (key, _parameter_crossing(flat, scope, requested))
+                    kept[("parameter", flat)] = last
+                return "parameter" if last[1] else ""
+            if _reads_clock_and_run_constants(flat, scope):
+                read = {scope.clocks[n] for n in _IDENTIFIER.findall(flat) if n in scope.clocks}
+                return "state" if {i for i in read if i >= 0} & moved else ""
+            return "state"
+
+        def moved_by_a_column(flat: str) -> bool:
+            """Whether a column moves anything *flat* reads: the state, a
+            counter one moves, or a requested parameter."""
+            names = set(_IDENTIFIER.findall(flat))
+            if names & requested:
+                return True
+            if condition_cannot_cross(flat, scope):
+                return False
+            if _reads_clock_and_run_constants(flat, scope):
+                read = {scope.clocks[n] for n in names if n in scope.clocks}
+                return bool({i for i in read if i >= 0} & moved)
+            return True
+
+        def went_by(law: _Law) -> tuple:
+            """What an answer about *law*'s tree goes by: what each parameter it
+            reads is, which of its names are clocks, and which are requested."""
+            return (
+                tuple((n, values[n]) for n in sorted(law.names) if n in values),
+                law.names & clocks,
+                law.names & requested,
+            )
+
+        def bends(law: _Law) -> bool:
+            """Whether *law* is proved continuous across its conditions on the
+            state (:func:`_only_bends`)."""
+            if law.tree is None:
+                return False
+            key = went_by(law)
+            last = kept.get(("bends", law.text))
+            if last is None or last[0] != key:
+                last = (key, _only_bends(law.tree, values, clocks, requested))
+                kept[("bends", law.text)] = last
+            return last[1]
+
+        def step_moves(flat: str, raw: str) -> bool:
+            """A step on a clock that a requested parameter moves: on literal
+            time, or on a counter no column moves, which is the same clock."""
+            if not _reads_clock_and_run_constants(flat, scope):
+                return False
+            return bool(
+                (set(_IDENTIFIER.findall(flat)) | set(_IDENTIFIER.findall(raw))) & requested
+            )
+
+        for law in laws:
+            if law.unread and moved_by_a_column(law.full):
+                return f"{_clip_text(law.full)} ({law.unread})"
+            if law.compared and law.tree is not None:
+                key = went_by(law)
+                last = kept.get(("compared", law.text))
+                if last is None or last[0] != key:
+                    last = (key, _comparison_a_column_moves(law.tree, values, clocks, requested))
+                    kept[("compared", law.text)] = last
+                if last[1] is not None:
+                    return last[1]
+            for atom, atom_flat in law.atoms:
+                across = crosses(atom_flat)
+                if across == "parameter" or (across == "state" and not bends(law)):
+                    return atom
+                # A step in a condition on a clock: its edges move with a
+                # requested parameter as they do outside one.
+                if _STEP_CALL.search(atom_flat) and step_moves(atom_flat, atom):
+                    return atom
+            for call, arg, arg_flat in law.steps:
+                if crosses(arg_flat) or step_moves(arg_flat, arg):
+                    return call
+            if law.choice:
+                if law.tree is None:
+                    return f"{_clip_text(law.full)} (not read)"
+                key = went_by(law)
+                last = kept.get(("quotient", law.text))
+                if last is None or last[0] != key:
+                    last = (
+                        key,
+                        _quotient_across_a_choice(law.tree, values, clocks, requested),
+                    )
+                    kept[("quotient", law.text)] = last
+                if last[1] is not None:
+                    return last[1]
+        return None
+
+    # A requested derived parameter is asked about twice. Its column moves it
+    # where it is set, with what it is written in held (issue #750): it is a
+    # name there, at the value it has. And the column of a primary it is
+    # written in moves it through that: there it is written out.
+    #
+    # Several are held together where none is written in another. Where one
+    # is, ``tD = 2*n`` and ``kd = if(tD > 1, 3, 0)`` with both requested, each
+    # is held alone: held together, ``kd`` was a name in tD's view, and what
+    # it does as tD's column moves it was not read (18 returned for 0).
+    held = frozenset(requested & derived.keys())
+    views: list[frozenset[str]] = [frozenset()]
+    if held:
+        nested = kept_all.get((_NESTED, held))
+        if nested is None:
+            nested = kept_all[(_NESTED, held)] = _one_written_in_another(held, derived)
+        views += [frozenset({name}) for name in sorted(held)] if nested else [held]
+    for view in views:
+        found = scan(view)
+        if found is not None:
+            return found
+    return None
+
+
+def _written_in(name: str, derived: Mapping[str, str]) -> set[str]:
+    """*name*, and every name it is written in: the derived parameters on the
+    way down, and what they are written in at the end."""
+    seen = {name}
+    stack = [name]
+    while stack:
+        text = derived.get(stack.pop())
+        if text is None:
+            continue
+        for read in set(_IDENTIFIER.findall(text)) - seen:
+            seen.add(read)
+            stack.append(read)
+    return seen
+
+
+def _one_written_in_another(held: AbstractSet[str], derived: Mapping[str, str]) -> bool:
+    """Whether one of the derived parameters *held* is written in another of
+    them, itself or through derived parameters that are not."""
+    for name in held:
+        seen: set[str] = set()
+        stack = [name]
+        while stack:
+            for read in set(_IDENTIFIER.findall(derived[stack.pop()])) & derived.keys():
+                if read in held:
+                    return True
+                if read not in seen:
+                    seen.add(read)
+                    stack.append(read)
+    return False
+
+
+# How many ways of writing the derived parameters a scan keeps laws for.
+_STORES_KEPT = 8
+# Keys of what a scan keeps that are not a rate law's text.
+_MARKED = ("derived parameters that hold what is asked about",)
+_IN_A_RATE = ("derived parameters a rate constant is, or is written in",)
+_VIEW = "held"
+_NESTED = "held, one written in another"
+_DERIVED_LAW = "derived"
+
+
+class _Law(NamedTuple):
+    """What a rate law's text comes to, which no parameter's value changes."""
+
+    text: str
+    flat: str  # with its functions inlined
+    # And with every derived parameter that holds a condition, a step call, a
+    # choice or an unknown call written out, so that those are in the text.
+    full: str
+    # Each condition atom, as written and with derived parameters inlined.
+    atoms: tuple[tuple[str, str], ...]
+    # Each step call outside a condition: the call, its argument, and the
+    # argument with derived parameters inlined.
+    steps: tuple[tuple[str, str, str], ...]
+    choice: bool  # holds an abs, max or min, or a call this does not know
+    # Compares outside an ``if()``, ``beta*(I > 1)``: its conditions are read
+    # off the tree, and are not in ``atoms``.
+    compared: bool
+    unread: str  # what it holds that is not read at all, or ""
+    tree: ast.Expression | None  # its syntax tree, where it holds one
+    names: frozenset[str]  # what the tree reads
+
+
+# A name written as a call.
+_ANY_CALL = re.compile(r"(?<![A-Za-z0-9_.])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# Words ExprTk and the loaders write before a parenthesis that are no call:
+# ``a and (b)``, which is what an SBML ``<and/>`` arrives as.
+_NOT_CALLS = frozenset(
+    {"if", "time", "and", "or", "not", "nand", "nor", "xor", "xnor", "true", "false"}
+)
+# ExprTk's equality written with one ``=``: ``kb*(max(A - thr, 0) = 0)`` is a
+# step, outside any ``if()``, that the condition scan does not read.
+_SINGLE_EQUALS = re.compile(r"(?<![<>=!:~])=(?![=>])")
+# ExprTk's conditional written ``c ? a : b``.
+_TERNARY = re.compile(r"\?")
+
+
+def _compares_outside_an_if(text: str) -> bool:
+    """Whether *text* holds a comparison, a logical operator, a ``c ? a : b``
+    or a single ``=`` that is not in the condition of an ``if()``: the
+    boolean read as a number, ``beta*(I > 1)``, which is 1 or 0. The scan of
+    conditions reads those of an ``if()`` and does not find it."""
+    if _SINGLE_EQUALS.search(text) or _TERNARY.search(text):
+        return True
+    spans = _condition_spans(text)
+    return any(
+        not any(lo <= m.start() and m.end() <= hi for lo, hi in spans)
+        for pat in (_RELATIONAL, _LOGICAL, _NOT_OP, _NOT_CALL)
+        for m in pat.finditer(text)
+    )
+
+
+def _comparison_a_column_moves(
+    tree: ast.Expression,
+    values: Mapping[str, float],
+    clocks: AbstractSet[str],
+    asked: AbstractSet[str],
+) -> str | None:
+    """A condition of the rate law *tree* that a column moves, or may, as
+    text, or ``None``. For a law that compares outside an ``if()``, whose
+    conditions are read here off the tree, where each is the condition of a
+    ``Piecewise``.
+
+    One that reads the state, or a counter a column moves, is named: nothing
+    proves the law bends there. So is one on a clock that reads a requested
+    parameter. One over numbers and parameters alone is named where a
+    requested parameter in it is within a quarter of itself of flipping it,
+    as :func:`_parameter_crossing` has it for the condition of an ``if()``;
+    an equality, where it holds or would.
+    """
+    order, facts = _facts_of_tree(tree, values, clocks, asked)
+
+    def moved(cond: ast.AST) -> bool:
+        if isinstance(cond, ast.Constant):
+            return False  # the ``True`` of the branch that is taken otherwise
+        known = facts[id(cond)]
+        if known.state:
+            return True
+        if not known.asked:
+            return False
+        if known.clock:
+            return True
+        name = _call_name(cond)
+        if name in ("And", "Or", "Not"):
+            return any(moved(arg) for arg in cond.args)  # type: ignore[attr-defined]
+        if name in ("Eq", "Ne") and len(cond.args) == 2:  # type: ignore[attr-defined]
+            left, right = cond.args  # type: ignore[attr-defined]
+        elif isinstance(cond, ast.Compare) and len(cond.comparators) == 1:
+            left, right = cond.left, cond.comparators[0]
+        else:
+            return True
+        return _flips_with_a_parameter(
+            ast.BinOp(left=left, op=ast.Sub(), right=right),  # type: ignore[arg-type]
+            values,
+            asked,
+        )
+
+    for node in order:
+        if _call_name(node) != "Piecewise":
+            continue
+        for pair in node.args:  # type: ignore[attr-defined]
+            if not (isinstance(pair, ast.Tuple) and len(pair.elts) == 2):
+                return _clipped(node)
+            if moved(pair.elts[1]):
+                return _clipped(pair.elts[1])
+    return None
+
+
+def _calls_what_is_not_known(text: str) -> bool:
+    return any(
+        _unknown_call(m.group(1)) and m.group(1) not in _NOT_CALLS
+        for m in _ANY_CALL.finditer(text)
+    )
+
+
+def _marked_derived(derived: Mapping[str, str], has_condition_construct) -> frozenset[str]:
+    """The derived parameters whose value can jump or bend with what they are
+    written in: one that holds a condition, a step call, an ``abs``, ``max``
+    or ``min``, a call this does not know or a single ``=``, and every one
+    written in such a one."""
+    marked = {
+        name
+        for name, text in derived.items()
+        if has_condition_construct(text)
+        or _STEP_CALL.search(text)
+        or _CHOICE_CALL.search(text)
+        or _SINGLE_EQUALS.search(text)
+        or _TERNARY.search(text)
+        or _calls_what_is_not_known(text)
+    }
+    if not marked:
+        return frozenset()
+    reads = {
+        name: set(_IDENTIFIER.findall(text)) & derived.keys() for name, text in derived.items()
+    }
+    grew = True
+    while grew:
+        grew = False
+        for name, read in reads.items():
+            if name not in marked and read & marked:
+                marked.add(name)
+                grew = True
+    return frozenset(marked)
+
+
+def _read_law(
+    text: str,
+    flat: str,
+    derived_exprs,
+    has_condition_construct,
+    marked: AbstractSet[str] = frozenset(),
+) -> _Law:
+    # Written out only where it shows something: flattening every derived
+    # parameter of a law is exponential in how deep they are defined.
+    full = flat
+    if marked and not marked.isdisjoint(_IDENTIFIER.findall(flat)):
+        full = _inline_derived_param_refs(flat, derived_exprs) or flat
+    atoms: tuple[tuple[str, str], ...] = ()
+    if has_condition_construct(full):
+        atoms = tuple(
+            (atom, _inline_derived_param_refs(atom, derived_exprs) or atom)
+            for atom in _iter_condition_atoms(full)
+        )
+    steps = tuple(
+        (call, arg, _inline_derived_param_refs(arg, derived_exprs) or arg)
+        for call, arg in _iter_step_calls(full)
+    )
+    choice = _CHOICE_CALL.search(full) is not None or _calls_what_is_not_known(full)
+    compared = _compares_outside_an_if(full)
+    tree = None
+    names: frozenset[str] = frozenset()
+    if choice or atoms or compared:
+        # With derived parameters written out, so that what is left to name
+        # is a primary, a clock or the state.
+        tree = _syntax_tree(_inline_derived_param_refs(full, derived_exprs) or full)
+        if tree is not None:
+            names = frozenset(n.id for n in ast.walk(tree) if isinstance(n, ast.Name))
+    # ``c ? a : b``, ``!c`` and ``xor`` are not in the tree's grammar.
+    unread = "a comparison outside an if(), not read" if compared and tree is None else ""
+    return _Law(text, flat, full, atoms, steps, choice, compared, unread, tree, names)
+
+
+def _clip_text(text: str, width: int = 120) -> str:
+    return text if len(text) <= width else text[: width - 3] + "..."
 
 
 def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
@@ -4768,9 +6360,12 @@ def uncompensated_condition_reason(
             # resolve, which is what rejects an equality between run-constants
             # (issue #382's ground, not this one) and one whose sides are
             # themselves comparisons (a boolean difference, whose true-set IS an
-            # interval).
+            # interval). An equality that holds a step call holds over an
+            # interval too, `floor(X/thr) == 0` for X under thr, and is not
+            # admitted: read as holding nowhere, it returned a column of 0 for
+            # 2.46 with nothing logged.
             if is_equality_atom(atom):
-                if state_switch_residual(scope.core, atom):
+                if not _STEP_CALL.search(atom) and state_switch_residual(scope.core, atom):
                     continue
             # Ground 3 — issue #150 roots on this crossing and jumps it.
             elif state_switch_residual(scope.core, atom):
@@ -5334,13 +6929,32 @@ def _steps_on_instants(
     return out
 
 
-def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int]) -> frozenset[int]:
+def _clocks_moved(
+    core,
+    clocks,
+    names: Sequence[str],
+    ic_species: Sequence[int],
+    by_text: bool = False,
+    declared: Mapping[str, Mapping[str, float]] | None = None,
+) -> frozenset[int]:
     """The clock species a requested column moves (issue #725).
 
     A clock moves with its own initial-condition axis, with a parameter its IC
     is seeded from, and with a parameter its rate law reads (inlined through
     functions and derived parameters): BNG2.pl's ``_rateLaw1`` for
     ``0 -> counter() 1``, which compute_all_sensitivities requests by default.
+
+    ``by_text`` reads which parameter a clock's IC is seeded from off the
+    text, every name its IC parameter is written in, and not off the seed's
+    value: no fewer clocks than the seeds give, and nothing differentiated.
+    The refusal of :func:`fallback_crossing` asks it that way, each time a
+    parameter is set.
+
+    ``declared`` are the rows a caller gave with
+    ``Model.declare_ic_sensitivity``: a clock started by hand at a value that
+    moves with a parameter. The run is seeded with them, and a clock they
+    move was not taken as moved: its crossing's jump was not applied, and
+    dY/dn came back 0 for 3.
     """
     from bngsim._codegen import compute_ic_param_sens_seed
     from bngsim._jacobian import _IDENT_RE, _inline_functions
@@ -5350,15 +6964,44 @@ def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int])
         return frozenset()
     wanted = set(names)
     moved = {i for i in idx if i in set(ic_species)}
+    if declared and wanted:
+        species = list(core.species_names)
+        for name, row in declared.items():
+            if name in species and any(row.get(p, 0.0) != 0.0 for p in wanted):
+                moved |= {species.index(name)} & idx
     if wanted and idx - moved:
         pnames = list(core.param_names)
-        for sp, pidx, _coeff in compute_ic_param_sens_seed(core):
-            if sp in idx and 0 <= pidx < len(pnames) and pnames[pidx] in wanted:
-                moved.add(sp)
         data = core.codegen_data()
         params = list(data.get("parameters", ()))
         func_map = {f["name"]: f["expression"] for f in data.get("functions", ())}
         derived = {p["name"]: p["expression"] for p in params if p.get("expression")}
+        if by_text:
+            # As each derived parameter is written now: one that ``set_param``
+            # has overridden is a number, and what it was written in no
+            # longer reaches the clock.
+            written = {
+                name: text
+                for name, is_expr, text in zip(
+                    pnames, core.param_is_expression, core.param_expressions, strict=True
+                )
+                if is_expr and text
+            }
+            seeded = [
+                (sp, name)
+                for sp, pidx in core.species_ic_param_refs
+                if sp in idx and 0 <= pidx < len(pnames)
+                for name in _written_in(pnames[pidx], written)
+            ]
+            seeded += [
+                (sp, pnames[pidx])
+                for sp, pidx, _coeff in getattr(core, "compartment_ic_sens_seeds", ())
+                if sp in idx and 0 <= pidx < len(pnames)
+            ]
+            moved |= {sp for sp, name in seeded if name in wanted}
+        else:
+            for sp, pidx, _coeff in compute_ic_param_sens_seed(core):
+                if sp in idx and 0 <= pidx < len(pnames) and pnames[pidx] in wanted:
+                    moved.add(sp)
 
         def reads(text: str, depth: int = 0) -> bool:
             if depth > 64:
@@ -5704,6 +7347,7 @@ def compute_switch_time_sens(
     t_end: float,
     has_analytic_sens_rhs: bool = False,
     ic_species: Sequence[int] = (),
+    declared: Mapping[str, Mapping[str, float]] | None = None,
 ) -> tuple[list[SwitchCrossing], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
 
@@ -5963,7 +7607,7 @@ def compute_switch_time_sens(
     # into its own column (dW/dtau = −4.2 for 0). A step that sits on a moved
     # crossing's instant is absorbed here as a crossing no parameter moves,
     # which is what puts the record onto the isolation path.
-    moved_clocks = _clocks_moved(core, clocks, names, ic_species)
+    moved_clocks = _clocks_moved(core, clocks, names, ic_species, declared=declared)
     moved = [c for c in found if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks]
     if moved:
         for step in _steps_on_instants(core, ctx, scope, float(t_start), float(t_end), moved):
