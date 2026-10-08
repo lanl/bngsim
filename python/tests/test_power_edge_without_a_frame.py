@@ -881,6 +881,74 @@ def test_a_pole_on_a_gate_that_is_not_solved_for_is_refused(tmp_path):
     _refused(_on_a_counter(tmp_path, "closing", 0.99, text=text), ["T0"], 948)
 
 
+def test_a_pole_on_a_gate_that_reads_a_state_is_refused(tmp_path):
+    """The law closes at ``t <= z``, with ``z`` a species that stays at 8,
+    which is ``on + D``: the pole is on the gate by the value of a state, and
+    the base there is nothing that can be asked of the parameters. Taken to be
+    on its zero, and refused where the run starts. The run ended in CVODE's
+    no-progress error at the edge."""
+    text = (
+        COUNTER.replace("    2 Tc() T0\n", "    2 Tc() T0\n    3 Z() 8\n")
+        .replace("    1 t 2\n", "    1 t 2\n    2 z 3\n")
+        .replace("if(t<=(on+D),", "if(t<=z,")
+    )
+    _refused(_on_a_counter(tmp_path, "closing", 0.99, text=text), ["T0"], 948)
+
+
+BY_YEAR = COUNTER.replace(
+    "    1 s() (t-on)/D\n", "    1 s() (t-onx())/D\n    3 onx() if(t<100,on,on+1)\n"
+).replace("if(t>=on,if(t<=(on+D),", "if(t>=onx(),if(t<=(onx()+D),")
+
+
+def test_a_gate_written_through_a_selection_is_not_solved_for(tmp_path, monkeypatch):
+    """The onset is chosen by year, ``onx() = if(t < 100, on, on + 1)``, as a
+    seasonal model writes it. Solving such a gate for its threshold cost
+    SIR_v4 its whole derivation budget, 50 s, and with it the frame of every
+    column: the run then stalled at the first edge. It is taken to be on the
+    power's zero without being worked out: nothing is simplified for it, an
+    exponent under 0 is refused, and one over 1 runs."""
+    import sys
+
+    import sympy
+    from bngsim import _codegen
+
+    worked_out = [0]
+    real = sympy.simplify
+
+    def counted(*args, **kwargs):
+        if sys._getframe(1).f_code.co_name == "gated_at_its_zero":
+            worked_out[0] += 1
+        return real(*args, **kwargs)
+
+    def generate(model):
+        return _codegen.generate_sens_from_model(
+            model._core, functional=True, emit_term_scale=True
+        )
+
+    monkeypatch.setattr(sympy, "simplify", counted)
+    (tmp_path / "base").mkdir()
+    by_year = _on_a_counter(tmp_path, "closing", 0.99, text=BY_YEAR)
+    assert "if (((p[2] - 1.0) < 1.0 && (p[2] - 1.0) != 0.0)) {" in generate(by_year)
+    assert worked_out[0] == 0
+    # The same where the selection is in the power's base alone, under a
+    # gate that is linear in the counter.
+    in_the_base = BY_YEAR.replace("if(t>=onx(),if(t<=(onx()+D),", "if(t>=on,if(t<=(on+D),")
+    in_the_base = _on_a_counter(tmp_path / "base", "closing", 0.99, text=in_the_base)
+    assert "if (((p[2] - 1.0) < 1.0 && (p[2] - 1.0) != 0.0)) {" in generate(in_the_base)
+    assert worked_out[0] == 0
+    # A gate that is linear in the counter is worked out.
+    generate(_on_a_counter(tmp_path, "closing", 0.99))
+    assert worked_out[0] > 0
+    monkeypatch.undo()
+    _refused(by_year, ["T0"], 948)
+    np.testing.assert_allclose(
+        _run(_on_a_counter(tmp_path, "closing", 3.0, text=BY_YEAR), ["T0"])[:, 0],
+        _expected("closing", 3.0, "T0"),
+        rtol=2e-5,
+        atol=2e-7,
+    )
+
+
 LONG_CHAIN = COUNTER.replace(
     "    3 a {a}\n",
     "    3 a1 {a}\n"
@@ -896,15 +964,21 @@ BY_A_PARAMETER = COUNTER.replace(
 ).replace("    1 s() (t-on)/D\n", "    1 s() (t-on)/D\n    3 a() if(q>0,a1,a2)\n")
 
 
-@pytest.mark.parametrize(
-    "text", [LONG_CHAIN, BY_A_PARAMETER], ids=["six-values", "by-a-parameter"]
-)
-def test_an_exponent_chosen_among_many_or_by_a_parameter(tmp_path, text):
-    """Control. A selection of six values is asked value by value however deep
-    it is written, and one that a parameter makes, ``if(q > 0, a1, a2)``, is
-    evaluated where the run is: the branch it does not take, 1.1 here, is no
-    reason to refuse."""
-    model = _on_a_counter(tmp_path, "closing", 3.0, text=text)
+def test_an_exponent_chosen_by_a_parameter_is_evaluated(tmp_path):
+    """Control. ``if(q > 0, a1, a2)`` is evaluated where the run is: the value
+    it does not take, 1.1 here, is no reason to refuse."""
+    model = _on_a_counter(tmp_path, "closing", 3.0, text=BY_A_PARAMETER)
+    np.testing.assert_allclose(
+        _run(model, ["T0"])[:, 0], _expected("closing", 3.0, "T0"), rtol=2e-5, atol=2e-7
+    )
+
+
+def test_an_exponent_chosen_among_six_values_runs(tmp_path):
+    """A selection of six values, each 3, is asked value by value however deep
+    it is written, and the counter's own column runs. Such a model did not
+    build: its exponent, which reads the counter, was written into a function
+    that has only the parameters."""
+    model = _on_a_counter(tmp_path, "closing", 3.0, text=LONG_CHAIN)
     np.testing.assert_allclose(
         _run(model, ["T0"])[:, 0], _expected("closing", 3.0, "T0"), rtol=2e-5, atol=2e-7
     )

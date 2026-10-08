@@ -8751,10 +8751,13 @@ def _counter_powers(
     whichever the run is on. An exponent that still cannot be asked (it reads a
     species) is taken to be singular.
 
-    Not under the derivation budget, and it does not give up: a rate law that
-    cannot be read is taken to hold such a power of every counter. What the
-    solver refuses by this is a wrong number, and an export that was there or
-    not by how busy the machine was would be worse than none."""
+    It does not give up: a rate law that cannot be read is taken to hold such
+    a power of every counter. What the solver refuses by this is a wrong
+    number, and an export that was there or not by how busy the machine was
+    would be worse than none. It runs ahead of the plan and its time comes out
+    of the plan's budget, so it works out nothing that is not cheap: a gate is
+    solved for only where it is linear in the counter (see
+    ``gated_at_its_zero``)."""
     import sympy as sp
 
     from bngsim._jacobian import (
@@ -8800,9 +8803,15 @@ def _counter_powers(
         edge of its own window, and not that of a decay ``(1 + t/tau)^(-a)``,
         whose base is 0 nowhere in the run. ``None`` where it is at none of
         them whatever the values, and ``"1"`` where it is at one whatever the
-        values or that cannot be worked out. A base that is 0 there at some
+        values or that is not worked out. A base that is 0 there at some
         values only, ``1 - (t - on)/D`` under ``t < off``, is asked at the
-        run's: 0 to rounding against the sum of its terms."""
+        run's: 0 to rounding against the sum of its terms.
+
+        Worked out only for a condition that is linear in the counter, with
+        no selection in it or in the base. Solving a threshold written through
+        a year chain cost a model's whole derivation budget (SIR_v4: 50 s, and
+        no frame for any column after it), so such a law is taken to gate on
+        the base's zero."""
         reads = _value_symbol_names(base, sp) & names
         at: list[str] = []
         for rel in law.atoms(sp.core.relational.Relational):
@@ -8816,23 +8825,27 @@ def _counter_powers(
                 if any(counter_species[clock.name] & counter_species[n] for n in reads):
                     return "1"
                 continue
+            if base.has(sp.Piecewise):
+                return "1"
             try:
-                thresholds = sp.solve(sp.Eq(rel.lhs, rel.rhs), clock)
-                values = [sp.simplify(base.subs(clock, threshold)) for threshold in thresholds]
+                # Raises for a gap that is not linear in the counter: no
+                # polynomial (a selection on it included), or one of another
+                # degree.
+                slope, level = sp.Poly(rel.lhs - rel.rhs, clock).all_coeffs()
+                value = sp.simplify(base.subs(clock, -level / slope))
             except Exception:  # noqa: BLE001 - not worked out
                 return "1"
-            for value in values:
-                if value == 0:
-                    return "1"
-                if not _base_can_vanish(value, sp):
-                    continue
-                terms = sp.Add.make_args(sp.expand(value))
-                written = [_over_parameters(term, resolve_symbol, sympy_to_c) for term in terms]
-                whole = _over_parameters(value, resolve_symbol, sympy_to_c)
-                if whole is None or None in written:
-                    return "1"
-                scale = " + ".join(f"fabs({term})" for term in written)
-                at.append(f"(fabs({whole}) <= 1e-9 * ({scale}))")
+            if value == 0:
+                return "1"
+            if not _base_can_vanish(value, sp):
+                continue
+            terms = sp.Add.make_args(sp.expand(value))
+            written = [_over_parameters(term, resolve_symbol, sympy_to_c) for term in terms]
+            whole = _over_parameters(value, resolve_symbol, sympy_to_c)
+            if whole is None or None in written:
+                return "1"
+            scale = " + ".join(f"fabs({term})" for term in written)
+            at.append(f"(fabs({whole}) <= 1e-9 * ({scale}))")
         return " || ".join(dict.fromkeys(at)) or None
 
     def asked(expr) -> list[tuple[frozenset[int], str]]:
