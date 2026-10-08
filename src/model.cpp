@@ -1991,6 +1991,45 @@ const ConservationLaws &NetworkModel::conservation_laws() const {
     return impl_->volume_laws;
 }
 
+NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
+    ConservationLawDrift found;
+    const ConservationLaws &cl = conservation_laws();
+    const int ns = n_species();
+    if (cl.n_laws == 0 || ns == 0)
+        return found;
+    std::vector<double> here(ns), state(ns), rate(ns);
+    get_state_into(here.data());
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int i = 0; i < ns; ++i) {
+            const double spread = 1.0 + 0.5 * std::sin(1.0 + i);
+            const double shift = 1.0 + 0.25 * std::cos(static_cast<double>(i));
+            state[i] = pass == 0 ? std::fabs(here[i]) * spread + 0.37 * shift
+                                 : std::fabs(here[i]) / spread + 1.3 * shift;
+        }
+        compute_derivs(0.0, state.data(), rate.data());
+        bool finite = true;
+        for (int i = 0; i < ns && finite; ++i)
+            finite = std::isfinite(rate[i]);
+        if (!finite)
+            continue; // no rate to ask at this state
+        for (int k = 0; k < cl.n_laws; ++k) {
+            const std::vector<double> &row = cl.coefficients[k];
+            double total = 0.0, size = 0.0;
+            for (int i = 0; i < ns; ++i) {
+                total += row[i] * rate[i];
+                size += std::fabs(row[i] * rate[i]);
+            }
+            if (std::fabs(total) > 1e-8 * size) {
+                found.law = k;
+                found.drift = std::fabs(total);
+                found.size = size;
+                return found;
+            }
+        }
+    }
+    return found;
+}
+
 // ─── Functional analytical Jacobian (GH #76) ─────────────────────────────────
 
 FunctionalJacobianContext NetworkModel::functional_jacobian_context() const {

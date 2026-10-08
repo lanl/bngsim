@@ -357,6 +357,24 @@ class NetworkModel {
     const AnalyticalJacobianData &analytical_jacobian() const;
     const ConservationLaws &conservation_laws() const;
 
+    // Issue #758 — whether the right-hand side keeps the totals that
+    // conservation_laws() reports. The steady-state solvers hold each total,
+    // so a law the dynamics do not keep gives a root, eigenvalues and
+    // sensitivities of another system, with nothing said. This evaluates the
+    // right-hand side at two states off the model's own (a law holds at any
+    // state; at a steady state the rates are rounding and say nothing) and
+    // returns the first law whose total moves by more than 1e-8 of the terms
+    // that should cancel: its index, that rate, and the size of the terms.
+    // `law` is -1 where every law is kept. A state whose rates are not finite
+    // is passed over. Writes the cached observable and function values, as a
+    // compute_derivs call does.
+    struct ConservationLawDrift {
+        int law = -1;
+        double drift = 0.0;
+        double size = 0.0;
+    };
+    ConservationLawDrift conservation_law_drift();
+
     // ─── Functional analytical Jacobian (GH #76) ─────────────────────────────
     // Per-instance symbolically-derived ∂(rate)/∂x for Functional rate laws.
     const FunctionalJacobianData &functional_jacobian() const;

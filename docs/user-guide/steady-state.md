@@ -588,16 +588,17 @@ contributes nothing, and neither does any species once `save_concentrations()`
 has made the state its own baseline. A fixed species that a parameter sets,
 `$A() A0`, moves what reads it by the same seed.
 
-Three columns are refused, with `SensitivityUnsupportedError`:
+Two columns are refused, with `SensitivityUnsupportedError`:
 
 - a parameter that sets the initial amount of a conserved species, on a state a
   `run()` has advanced. The total is still what the parameter made it, and the
   state no longer says so (a time course refuses sensitivities there too).
   `reset()` first;
-- a compartment size, in a model with a conservation law;
-- any parameter, where a conservation law spans compartments of different size:
-  the law is found as a total of concentrations where what is conserved is a
-  total of amounts (issue #758), and every column of the reduced solve is off.
+- a compartment size, in a model with a conservation law.
+
+A law across compartments of different size is a total of amounts, and carries
+the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in
+one of size 2 (issue #758). Its columns are computed like any other law's.
 
 With `mask=`, a conservation law that holds a masked-out species keeps its
 total fixed, as before, unless that species is the one the law is solved for.

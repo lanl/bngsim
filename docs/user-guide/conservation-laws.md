@@ -33,6 +33,20 @@ as the pivot columns of the row-reduced coefficient matrix, so
 invariant is what makes "solve law *k* for its dependent species" a well-posed
 elimination; picking each law's dependent independently does not guarantee it.
 
+**Compartments.** A law is over the values a run reports, so
+`coefficients @ model.rhs(y)` is zero at any state `y`. In an SBML or Antimony
+model a reaction between compartments of different size conserves an amount,
+and each species' coefficient carries its compartment's size: `A` in a
+compartment of size 1 exchanged with `B` in one of size 2 gives `A + 2*B`, not
+`A + B` (issue #758). Where a compartment size is a parameter the laws follow
+it, per model: after `model.set_param("c2", 4)` the law is `A + 4*B` for that
+model and its clones, and each row of `steady_state_batch` that writes a size
+is solved with its own. A species such a reaction moves is in no law when a
+rate rule or an event resizes its compartment. Before a steady-state solve the
+right-hand side is evaluated at two states to confirm it keeps every reported
+total; a law it does not keep is a `SimulationError`, not a solve on a wrong
+total.
+
 **Impact on the steady-state solver**: Models with conservation laws have
 a rank-deficient Jacobian, which causes standard Newton solvers to fail.
 BNGsim's reduced-space Newton solver automatically handles this:

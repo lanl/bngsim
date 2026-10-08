@@ -1578,20 +1578,20 @@ class Simulator:
 
         ``steady_state(sensitivity_params=...)`` solves the reduced system with
         each conserved total ``T_k = Σ L[k,i]·x_i`` held, and differentiates the
-        total through ``∂x(0)/∂p``. Three models have a column that does not
-        give:
+        total through ``∂x(0)/∂p``. Two models have a column that does not
+        give. (A law across compartments of different size was a third, while
+        it was found as a total of concentrations, ``A + B`` for ``V1·A +
+        V2·B``; it is found with the sizes in it since issue #758, and its
+        columns are right.)
 
         - **a compartment size**, in a model with a conservation law. What is
           conserved is an amount, which a size does not move, and what the solve
-          holds is a total of concentrations, with the laws found for the sizes
-          the model loaded at (issue #758). Over the corpus the size's column
+          holds is a total of concentrations whose coefficients are the sizes
+          themselves, which the solve does not differentiate. Over the corpus
+          the size's column
           was 0 where the truth was not in 21 of 23 models with a conservation
           law, and with the total differentiated it was right in 13 of them and
           as much as 1e7 for −6e4 in another;
-        - **any parameter**, where a law spans compartments of different size.
-          The law is found as a total of concentrations, ``A + B``, where the
-          conserved quantity is ``V1·A + V2·B`` (issue #758): every column of
-          the reduced solve is off, dA*/dkf = −0.286 for −0.367;
         - **a parameter that sets the initial amount of a conserved species**,
           on a state a run has advanced. The total is still what the parameter
           made it, and the state no longer says so: its seed is retired with
@@ -1611,7 +1611,7 @@ class Simulator:
                 "law. A conserved total is an amount, which a compartment's size does not "
                 "move, and the steady-state solve holds totals of concentrations: the size's "
                 "column came back 0 where the steady state moves with it, and is not right "
-                "with the totals differentiated either (issues #704, #758). Difference "
+                "with the totals differentiated either (issue #704). Difference "
                 "steady states solved again at a moved size, or take the column from a time "
                 "course run to the steady state."
             )
@@ -1622,21 +1622,6 @@ class Simulator:
         for row in laws["coefficients"]:
             largest = max((abs(c) for c in row), default=0.0)
             held_by.append([i for i, c in enumerate(row) if abs(c) > 1e-9 * largest])
-        if len(model.compartment_size_params) > 1:
-            volumes = [float(sp["volume_factor"]) for sp in core.codegen_data()["species"]]
-            names = model.species_names
-            for members in held_by:
-                if len({volumes[i] for i in members}) > 1:
-                    raise SensitivityUnsupportedError(
-                        "steady_state(sensitivity_params=...) is not supported for this "
-                        "model: a conservation law of it spans compartments of different "
-                        f"size ({', '.join(names[i] for i in members[:4])}"
-                        f"{', ...' if len(members) > 4 else ''}). The law is found as a total "
-                        "of concentrations where what is conserved is a total of amounts, so "
-                        "the reduced solve the steady-state sensitivity is taken from holds "
-                        "the wrong quantity and every column of it is off (issues #704, "
-                        "#758). Take the columns from a time course run to the steady state."
-                    )
         if not core.ic_state_dirty:
             return
         from bngsim._codegen import compute_ic_param_sens_seed
@@ -6855,6 +6840,7 @@ class Simulator:
                 f"steady_state() is only supported for method='ode', not method='{self._method}'."
             )
         self._raise_if_no_steady_state_to_solve_for("steady_state()")
+        self._raise_if_a_conservation_law_is_not_conserved("steady_state()")
 
         # Issue #74 — resolve the convergence-test subspace before anything
         # expensive runs, so a bad mask is an immediate error rather than a solve
@@ -6978,6 +6964,47 @@ class Simulator:
         self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    def _raise_if_a_conservation_law_is_not_conserved(
+        self, where: str, model: Model | None = None
+    ) -> None:
+        """Refuse a steady-state solve where a conservation law the model
+        reports is not conserved by its own right-hand side (issue #758).
+
+        The solvers eliminate one species a law and hold ``Σ L[k,i]·y_i``; the
+        Newton root, its eigenvalues and ``dY_ss/dp`` are those of the reduced
+        system. A law that the dynamics do not keep makes all three wrong with
+        nothing said: ``A <-> B`` across compartments of size 1 and 2 was held
+        at ``A + B``, which a run takes from 1 to 0.75, and the sensitivities
+        came back 33% off and the eigenvalue -1.5 for -2. The laws are found
+        with the compartment sizes in them now. This asks the right-hand side
+        itself, at two states off the model's own, so that a law it does not
+        keep for a reason the detector does not know of is an error and not a
+        number. A law holds at every state, so any state will do.
+
+        ``model`` is the one the solve runs on: the simulator's, or the clone
+        an entry of ``steady_state_batch`` has written its parameters to.
+        """
+        if model is None:
+            model = self._model
+        k, drift, size = model._core.conservation_law_drift()
+        if k < 0:
+            return
+        row = np.abs(
+            np.asarray(model._core.conservation_laws["coefficients"][k], dtype=np.float64)
+        )
+        names = model.species_names
+        held = [names[i] for i in np.nonzero(row > 1e-9 * float(np.max(row)))[0][:4]]
+        raise SimulationError(
+            f"{where} is not supported for this model: a conservation law the model reports "
+            f"(over {', '.join(held)}{', ...' if len(held) == 4 else ''}) is not kept "
+            f"by its own right-hand side. At a test state the law's total changes at "
+            f"{drift:.3g}, against terms that sum to {size:.3g} in magnitude. "
+            "The steady-state solvers hold each such total, so the root, its "
+            "eigenvalues and the sensitivities would be those of another system "
+            "(issue #758). Integrate the model with run() over a span long enough for "
+            "the trajectory to settle, and read the state where it ends."
+        )
 
     def _raise_if_no_steady_state_to_solve_for(self, where: str) -> None:
         """Refuse a steady-state solve of a model with an event, or with a
@@ -7441,6 +7468,10 @@ class Simulator:
             clone = self._model.clone()
             clone.set_params(params[i])
             clone.reset()
+            # Of the entry's own model: a size it writes is in its laws.
+            self._raise_if_a_conservation_law_is_not_conserved(
+                f"steady_state_batch() entry {i}", clone
+            )
             opts = SteadyStateOptions()
             opts.tol = tol
             opts.max_time = max_time
