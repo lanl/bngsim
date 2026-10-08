@@ -258,6 +258,7 @@ BY_RULE = f"""<?xml version="1.0" encoding="UTF-8"?>
       <parameter id="g" value="0.5" constant="true"/>
       <parameter id="k" value="0.1" constant="true"/>
     </listOfParameters>
+    {{assignments}}
     <listOfRules><assignmentRule variable="V"><math {_M}>
       <apply><plus/><ci>v0</ci><apply><times/><ci>g</ci>{_TIME}</apply></apply>
     </math></assignmentRule></listOfRules>
@@ -277,8 +278,17 @@ GIVEN_AS_AN_AMOUNT = 'initialAmount="2" hasOnlySubstanceUnits="true"'
 A_CONCENTRATION_GIVEN_AS_AN_AMOUNT = 'initialAmount="2" hasOnlySubstanceUnits="false"'
 
 
-def _by_rule(declared: str, v0: float = 1.5) -> bngsim.Model:
-    return bngsim.Model.from_sbml_string(BY_RULE.format(declared=declared, v0=v0))
+SET_FROM_THE_SIZE = (
+    '<listOfInitialAssignments><initialAssignment symbol="X">'
+    f"<math {_M}><apply><times/><cn>2</cn><ci>V</ci></apply></math>"
+    "</initialAssignment></listOfInitialAssignments>"
+)
+
+
+def _by_rule(declared: str, v0: float = 1.5, assignments: str = "") -> bngsim.Model:
+    return bngsim.Model.from_sbml_string(
+        BY_RULE.format(declared=declared, v0=v0, assignments=assignments)
+    )
 
 
 @pytest.mark.parametrize(
@@ -309,6 +319,15 @@ def test_what_sized_the_compartment_when_a_value_was_converted_is_refused(load):
     result = bngsim.Simulator(load(), method="ode", sensitivity_params=["k"]).run(**RUN)
     assert np.isfinite(_row(result)).all()
     assert np.abs(_row(result)[-1, 0]) > 0.1
+
+
+def test_an_initial_assignment_from_such_a_size_was_refused_already():
+    """Control. ``X = 2*V`` written as an initialAssignment is not kept as an
+    expression, and #696 lists what it reads."""
+    model = _by_rule(GIVEN_AS_AN_AMOUNT, assignments=SET_FROM_THE_SIZE)
+    assert {"v0", "g"} <= set(model.frozen_params)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="'v0'"):
+        bngsim.Simulator(model, method="ode", sensitivity_params=["v0"])
 
 
 def test_the_size_s_own_parameter_where_nothing_was_converted():
@@ -369,3 +388,28 @@ def test_a_squeezed_batch_has_the_rows_of_its_columns(kind):
     column = list(stacked.species_names).index("X")
     np.testing.assert_allclose(block[1, :, column, 0], _dk(k=0.3), rtol=1e-6, atol=1e-9)
     np.testing.assert_allclose(block[0, :, column, 1], _dg(), rtol=1e-6, atol=1e-9)
+
+
+def test_a_size_that_stands_still_at_these_values_still_has_its_column():
+    """``V := 1 + g*time`` at ``g = 0``: the size is 1 at every sample and the
+    column is not rescaled, and dX/dg is ``-X*t`` all the same."""
+    text = MODELS["an-assignment-rule"][0].format(v0=1.0).replace("g = 0.5", "g = 0")
+    result = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(text), method="ode", sensitivity_params=["g"]
+    ).run(**RUN)
+    np.testing.assert_allclose(_row(result)[:, 0], -_x(g=0.0) * T, rtol=1e-6, atol=1e-9)
+
+
+def test_an_initial_value_over_a_constant_rule_is_kept_as_an_expression():
+    """Control. ``S = 2*q`` under ``q := 3*p``: the rule is a constant over
+    parameters, the initial value is kept as an expression of ``p``, and a
+    write to ``p`` moves it. Only a rule that reads the time or a state is a
+    slot an initial value cannot rest on."""
+    model = bngsim.Model.from_antimony_string(
+        "species S; p = 2; k = 1; q := 3*p; S = 2*q;\nJ: S -> ; k*S\n"
+    )
+    assert model.frozen_params == []
+    model.set_param("p", 3.0)
+    model.reset()
+    start = bngsim.Simulator(model, method="ode").run(t_span=(0.0, 1.0), n_points=2)
+    assert _column(start, "S")[0] == pytest.approx(18.0)

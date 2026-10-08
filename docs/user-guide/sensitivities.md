@@ -90,7 +90,7 @@ the gradient is `NaN`, which is the honest answer.
 ### An amount in a compartment whose size changes
 
 A species with `hasOnlySubstanceUnits` in a compartment that a rate rule or an
-assignment rule resizes is held as an amount and **reported as
+assignment rule resizes is held as an amount and **reported by `run()` as
 `amount/V_live(t)`**. Its sensitivity row is the derivative of that reported
 column: the quotient rule, with the compartment's own derivative in it, so a
 parameter that only moves the volume has its column (issue #742). The row used
@@ -105,6 +105,14 @@ refuses), the species' row is `NaN`, the run warns naming it, and it is in
 `result.ar_sensitivity_refused` beside the assignment-rule species above. A
 species that an assignment rule sets *and* that sits in such a compartment is
 refused as before.
+
+The row is right where the amount at the start is the model's own number.
+Where it was made at load from a concentration and the size the rule had then
+(a concentration held as an amount, an amount held as a concentration, or
+`X = 2*V`), the parameters the rule reads are
+[folded at load](#parameters-an-sbml-model-was-built-with-as-numbers): their columns and a write to
+them are refused, `g` in `V := v0 + g*time` with `v0`. (`steady_state()`
+reports the stored amount, and its rows are that amount's.)
 
 ### A derived parameter overridden after the Simulator is built
 
@@ -773,7 +781,9 @@ when the model is loaded, and the model holds the number from then on:
 - the initial value of a species declared in the unit it is not held in (an
   amount, or a concentration with `hasOnlySubstanceUnits`) in a compartment
   that a rate rule or an event resizes and an `initialAssignment` sizes at the
-  start, `c = 2*p; c' = 0.1`: the value was converted by the size at load;
+  start, `c = 2*p; c' = 0.1`, or that an assignment rule sizes from the time
+  or a state, `c := v0 + g*time` (issue #742): the value was converted by the
+  size at load;
 - a stoichiometry: an L2 `<stoichiometryMath>`, an `initialAssignment` onto a
   `speciesReference` id, and the id itself;
 - a `conversionFactor`;

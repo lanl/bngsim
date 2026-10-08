@@ -8540,15 +8540,8 @@ def _build_model_from_sbml_doc(doc):
     # a state of: an initialAssignment that is not lowered to an expression of
     # parameters (it reads a reaction's rate, the time, a species under a rule)
     # leaves the state's initial value a number.
-    # A rule that is not a constant over parameters (it reads the time or a
-    # state) is a slot the engine rewrites as the run goes. An initial value
-    # written over one, `X = 2*V` under `V := v0*exp(mu*time)`, was evaluated
-    # once at load whatever expression it is kept as (issue #742).
-    _moving_rules = {_t for _t in _ar_targets if _t in _ar_math and _t not in _ic_const_ar}
     for _sym in sorted(_ia_state_targets):
-        if _sym in ia_param_expr and not (
-            _sym in _ia_math and _ast_name_set(_ia_math[_sym]) & _moving_rules
-        ):
+        if _sym in ia_param_expr:
             continue
         if (
             _sym in ia_single_param_ref
@@ -8595,13 +8588,16 @@ def _build_model_from_sbml_doc(doc):
     # reads set it (`V := v0 + g*time` with a concentration held as an amount:
     # dX/dv0 was 0 for 0.2262, and a write to `v0` left the amount where it
     # was, issue #742). Every name the rule reads is listed, the ones that do
-    # not move its value at the start among them (`g` here).
+    # not move its value at the start among them (`g` here). (An initial value
+    # assigned from such a size, `X = 2*V`, is not kept as an expression and
+    # is listed by the loop above. A rule that is a constant over parameters
+    # is listed whole just above; it comes through here too, to no effect.)
     for _j in range(sbml_model.getNumSpecies()):
         _sp_f = sbml_model.getSpecies(_j)
         _cid = _sp_f.getCompartment()
         if _cid in (rate_rule_comps | event_resize_comps) and _cid in _ia_math:
             _sized_by = _ia_math[_cid]
-        elif _cid in _moving_rules:
+        elif _cid in _ar_math:
             _sized_by = _ar_math[_cid]
         else:
             continue

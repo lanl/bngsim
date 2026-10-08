@@ -3487,6 +3487,8 @@ class Simulator:
                     out[:, j, :] = np.nan
                     refused.add(name)
                     continue
+                if not dv.any() and (factor == 1.0).all():
+                    continue  # a size that does not move, in these columns or at all
                 with np.errstate(divide="ignore", invalid="ignore"):
                     share = np.where(v_live != 0.0, result._species[:, j] / v_live, 0.0)
                 out[:, j, :] = factor[:, None] * block[:, j, :] - share[:, None] * dv
@@ -3498,11 +3500,12 @@ class Simulator:
             warnings.warn(
                 f"Species {sorted(refused)} have NaN or infinite entries in their "
                 "Result.sensitivities row. Each is an amount reported as a concentration in "
-                "a compartment an assignment rule resizes, so its row needs the derivative "
-                "of the compartment's size, and that is not available: the run computed no "
-                "output sensitivity for the rule's expression, or codegen declined it (GH "
-                "#198). NaN rather than the derivative of the stored amount, which is what "
-                "the row held before (issue #742). Result.ar_sensitivity_refused lists them.",
+                "a compartment whose size changes, so its row needs the derivative of that "
+                "size, and that is not available or not finite: for a size an assignment "
+                "rule sets, the run computed no output sensitivity for the rule's "
+                "expression, or codegen declined it (GH #198). NaN rather than the "
+                "derivative of the stored amount, which is what the row held before (issue "
+                "#742). Result.ar_sensitivity_refused lists them.",
                 stacklevel=2,
             )
 
