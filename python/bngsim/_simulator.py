@@ -2500,10 +2500,11 @@ class Simulator:
         the load-time value baked into the map, so the rescale follows a
         ``set_param`` on the volume; an empty/absent name means the static value.
 
-        Called once per run, by :meth:`_ar_sensitivity_metadata`, whose resolved
-        map both the value pass (:meth:`_apply_ar_report_map`) and the derivative
-        pass (:meth:`_apply_ar_sensitivity_map`) then read — so there is no second
-        site the divisor can drift at.
+        Called once per time course, by :meth:`_ar_sensitivity_metadata`, whose
+        resolved map both the value pass (:meth:`_apply_ar_report_map`) and the
+        derivative pass (:meth:`_apply_ar_sensitivity_map`) then read, so that
+        the two cannot drift; the two steady-state passes each call it on the
+        same model state.
         """
         vdiv = entry[2] if len(entry) > 2 else 1.0
         if len(entry) > 3 and entry[3]:
@@ -2560,7 +2561,11 @@ class Simulator:
         value over the size (issue #724). The copy alone left it out: for
         ``T := 3·A`` in a compartment of size 2 the column of the size came back
         0 at every time, for ``−300·e^(−kt)/4``. It is subtracted here, on the
-        parameter axis; the size does not move with an initial condition.
+        parameter axis; the size does not move with an initial condition. The
+        species column read for it is the one the value pass wrote: a
+        compartment whose size is a parameter is not one of the variable-volume
+        ones the later passes rescale. (A size that a parameter sets, issue
+        #696, is folded at load; lifted, it would bring a factor dV/dθ here.)
 
         Applies to both sensitivity axes (parameter and IC) and is a no-op for
         .net / non-AR models, for runs without sensitivities, and for a 3-D
@@ -2630,12 +2635,13 @@ class Simulator:
         if refused:
             result._ar_sens_refused = frozenset(refused)
             warnings.warn(
-                f"Assignment-rule species {sorted(refused)} have NaN entries in their "
-                "Result.sensitivities row: the chain rule through the assignment is not "
-                "available for them, either because codegen declined the rule's own "
+                f"Assignment-rule species {sorted(refused)} have NaN or infinite entries "
+                "in their Result.sensitivities row: the chain rule through the assignment "
+                "is not available for them, because codegen declined the rule's own "
                 "output sensitivity (GH #198 refuses an `if()` conditional or a table "
-                "function rather than guess) or because the reported value carries a "
-                "time-varying volume rescale the redirect does not model (GH #85/#87). "
+                "function rather than guess), because the reported value carries a "
+                "time-varying volume rescale the redirect does not model (GH #85/#87), or "
+                "because the rule's own value is not finite there. "
                 "NaN rather than 0.0 because a structural zero is indistinguishable "
                 "from a measured one, and Result.gradient would read it as a flat "
                 "objective (GH #221). Only these rows are NaN; every other row is a "
@@ -6246,7 +6252,10 @@ class Simulator:
         rule GH #221 fills the time-course tensor with, one level over. The
         observable / expression steady-state blocks already carry it (GH #12), and
         they are an exact linear projection of the species solve that just
-        succeeded, so this is a copy rather than a second computation.
+        succeeded, so this is a copy rather than a second computation. One term
+        is added to the copy: where the reported value is ``rule/V`` and ``V``'s
+        own column is requested, the reported value over ``V`` is subtracted
+        (issue #724).
 
         No-op when no sensitivity was requested (there is no row to fill), for
         .net and non-AR models, and for any rule whose source block this run did

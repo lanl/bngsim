@@ -152,3 +152,54 @@ def test_the_initial_condition_axis_is_as_it_was():
     np.testing.assert_allclose(got, want, rtol=1e-7)
     selected = np.asarray(result.output_sensitivities(["species:T"], axis="ic"))[:, 0, 0]
     np.testing.assert_allclose(selected, want, rtol=1e-7)
+
+
+def test_the_term_goes_to_the_size_s_column_wherever_that_is():
+    """With the size last, and between two others: in the tensor, in the
+    selector, and at the steady state."""
+    decay = np.exp(-0.3 * TIMES)
+    for params in (["k", "C"], ["k", "C", "k"]):
+        result = _run(_decay(2.0), params)
+        column = params.index("C")
+        got = _row(result)
+        np.testing.assert_allclose(got[:, column], -75.0 * decay, rtol=1e-7)
+        np.testing.assert_allclose(got[:, 0], -150.0 * TIMES * decay, rtol=1e-7, atol=1e-9)
+        selected = np.asarray(result.output_sensitivities(["species:T"]))[:, 0, :]
+        np.testing.assert_array_equal(selected, got)
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(STEADY), method="ode")
+    out = sim.steady_state(sensitivity_params=["k", "kp", "C"], tol=1e-12)
+    got = np.asarray(out.sensitivity)[list(out.species_names).index("T")]
+    np.testing.assert_allclose(got, [-100.0, 5.0, -15.0], rtol=1e-7)
+
+
+def test_the_selector_on_rows_stacked_at_one_size():
+    """A batch squeezed into one result keeps the redirect where every row
+    has the same size, and the selector applies the term to the stack."""
+    sim = bngsim.Simulator(_decay(2.0), method="ode", sensitivity_params=["k", "C"])
+    stacked = sim.run_batch(
+        params=[{"k": 0.3}, {"k": 0.6}],
+        t_span=(0.0, 4.0),
+        n_points=5,
+        rtol=1e-10,
+        atol=1e-12,
+        squeeze=True,
+    )
+    column = list(stacked.species_names).index("T")
+    tensor = np.asarray(stacked.sensitivities)[..., column, :]
+    selected = np.asarray(stacked.output_sensitivities(["species:T"]))
+    np.testing.assert_array_equal(np.squeeze(selected), np.squeeze(tensor))
+    for row, k in zip(np.squeeze(tensor), (0.3, 0.6), strict=True):
+        np.testing.assert_allclose(row[:, 1], -75.0 * np.exp(-k * TIMES), rtol=1e-7)
+
+
+def test_columns_computed_one_at_a_time_and_stitched_have_it_once():
+    sim = bngsim.Simulator(_decay(2.0), method="ode")
+    result = sim.compute_all_sensitivities(
+        t_span=(0.0, 4.0), n_points=5, rtol=1e-10, atol=1e-12, params=["k", "C"], chunk_size=1
+    )
+    got = _row(result)
+    np.testing.assert_allclose(got[:, 1], -75.0 * np.exp(-0.3 * TIMES), rtol=1e-7)
+    # Each column is its own run, and the selector reads one run's values:
+    # the same to the runs' tolerance, and not to the last bit.
+    selected = np.asarray(result.output_sensitivities(["species:T"]))[:, 0, :]
+    np.testing.assert_allclose(selected, got, rtol=1e-7, atol=1e-9)
