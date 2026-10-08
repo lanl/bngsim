@@ -1113,6 +1113,12 @@ def make_subset_model(
     # which errs loudly), and the report maps, which are keyed by species and
     # every species is kept.
     sub._ssa_issues = list(getattr(m, "_ssa_issues", []) or [])
+    # And which parameters the model was built with as numbers (issues #695,
+    # #696): the subset holds the same numbers, and a write moves them no more.
+    _kept = set(new_core.param_names)
+    sub._frozen_params = {
+        n: w for n, w in (getattr(m, "_frozen_params", {}) or {}).items() if n in _kept
+    }
     for attr in (
         "_ar_report_map",
         "_varvol_conc_map",

@@ -87,6 +87,47 @@ gradient: `gradient`, `sse_gradient`, `chi2_gradient` and
 zero, so a fit that never scores that species still gets a number. Weight one and
 the gradient is `NaN`, which is the honest answer.
 
+### A derived parameter overridden after the Simulator is built
+
+A derived parameter, `k2 = 2*k1`, follows its expression until
+`set_param("k2", 5.0)` pins it, and follows it again after a write of the
+expression's own value. The compiled sensitivity code is not the same for the
+two: while `k2` is attached the column of `k1` carries the chain rule through
+it, and while it is pinned `k1` does not reach it. A Simulator checks which it
+is where a sensitivity run starts and builds the code again when it has changed,
+so a Simulator, the model and its clones can all be kept across such a write
+(issue #708). The compiled library for an attachment seen before comes from the
+cache; what is derived for the model's reported expressions is derived again.
+
+One other thing in the compiled code goes by the parameter values: whether each
+rate-law condition is one the analytic sensitivity right-hand side can be
+written across, which needs a threshold on a clock to resolve to a time. Where
+a write moves a parameter to a value at which one no longer does
+(`time >= sqrt(E)` at `E = 0`, or the duty of a repeating schedule,
+`time - P*floor(time/P) >= sqrt(E)`), the next sensitivity run's own pass over
+the conditions finds it, the code is built again for those values, and the run
+gets the refusal a model loaded there would get. After a write back, that
+Simulator builds the analytic code again at its next run.
+`has_analytic_sens_rhs` says what the code in hand holds, so between such a
+write and the next run it still says what it said before. A Simulator first
+built at values where a condition does not resolve has no analytic code and
+stays on the difference quotient after a write that would allow it, as it
+always has, and so does a later Simulator on that model or on a clone of it,
+which takes the model's code: the columns are right, and a Simulator on a
+newly loaded model gets the analytic code.
+Only conditions in rate laws count. One in an expression that is reported and
+that no reaction reads has no bearing on the code.
+
+A `run_batch` row is the exception. Every row runs on the code built for the
+model as the batch found it. A row whose own writes pin or re-attach a derived
+parameter is refused with `SensitivityUnsupportedError` where a requested
+column is of a parameter that one is derived from; its own column, and columns
+that do not reach the model through it, are the same code either way and run. A
+row at whose values a condition's switch time no longer resolves is refused
+likewise. Make the write on the model with `set_param` before the batch, so
+that every row agrees with it, or run that row with `set_params` and `run()`.
+A batch after such a write on the model is asked what a `run()` after it is.
+
 ## Parameters that set *when*, not *how fast*
 
 Some fitted parameters never appear in a rate. They set the **time at which the
@@ -700,6 +741,85 @@ def dloss_dV(v, h):
     dn = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v - h})
     return (loss(up) - loss(dn)) / (2 * h)
 ```
+
+### Parameters an SBML model was built with as numbers
+
+A few things an SBML document writes over its parameters are evaluated once,
+when the model is loaded, and the model holds the number from then on:
+
+- the size of a compartment that an `initialAssignment` sets, `c = 2*p`, or
+  that an assignment rule sets from parameters alone, `c := 2*p`, where the
+  compartment holds a species (a rate law that names such a compartment reads
+  the rule itself);
+- the initial value of a species declared in the unit it is not held in (an
+  amount, or a concentration with `hasOnlySubstanceUnits`) in a compartment
+  that a rate rule or an event resizes and an `initialAssignment` sizes at the
+  start, `c = 2*p; c' = 0.1`: the value was converted by the size at load;
+- a stoichiometry: an L2 `<stoichiometryMath>`, an `initialAssignment` onto a
+  `speciesReference` id, and the id itself;
+- a `conversionFactor`;
+- an initial value, of a parameter or of a species, where its
+  `initialAssignment` reads something that is not a parameter (a reaction rate,
+  the time, a species under a rule, a rule that reads any of those) and cannot
+  be kept as an expression.
+
+The number came from every symbol the expression names and from whatever gave
+each of those its value at load, so what it reads is followed all the way down:
+through another `initialAssignment`, an assignment rule, a reaction id to its
+kinetic law (and the law's own parameters, `_lp_<reaction>_<id>`), a species to
+its initial value, and to the size of the species' compartment where the
+species is declared in the unit it is not read in. `rateOf(B)` reads the
+kinetic law of every reaction that changes `B`, its rate rule, and for a
+concentration the size of its compartment. `c = J0`, `c = q` under
+`q := 3*p`, and `c = S0` under `S0 = 2*p` each make `p` such a parameter.
+
+A write to one does not move what it was folded into. `set_param` used to take
+the value all the same: where nothing else reads the parameter the model did
+not move at all and its sensitivity column was an exact 0, and where a rate law
+reads it too the write was half applied and the column was a part of the
+derivative (issues #695, #696). Both are refused now, by name, with what the
+parameter was folded into:
+
+```python
+m = bngsim.Model.from_sbml("model.xml")
+m.frozen_params                     # ['p']
+m.set_param("p", 2.0)               # ParameterError: ... the size of compartment 'c' ...
+bngsim.Simulator(m, sensitivity_params=["p"])   # SensitivityUnsupportedError
+```
+
+A write of exactly the value the parameter holds is not a change, so a whole
+parameter vector read off the model goes back in; a value that has been through
+a text round trip or an arithmetic identity and differs in the last digit is a
+change, and is refused. `compute_all_sensitivities()` with no list leaves these
+columns out and says so. `bngsim.jax.differentiable_solve` takes its vector in
+the order of `primary_param_names`, these included: it solves at the values the
+model holds and refuses another value for one, and a gradient through it is
+refused for a model that has one. To move such a parameter, change it in the
+document and load the model again, and difference over that for a gradient.
+The size itself (`c` above) is an ordinary writable, differentiable parameter.
+
+**A compartmental BNGL model has such parameters too** (issue #711). BNG2.pl
+writes each reaction's volume factor into its rate constant as a number,
+`0.1*kb` for `1/Ve` at `Ve = 10`, and keeps the expression only in a comment on
+the reaction line, `unit_conversion=1/Ve`. `Ve` is then a parameter that no rate
+reads. Every parameter such a comment names is in `frozen_params`, with what a
+derived parameter or a function among them reads (`r` for `vol = 4*r^3`,
+`rcell` for a compartment sized by `Vcell() = 4*rcell^3`), for
+`Model.from_bngl`, for a `.net` file BNG2.pl wrote with its expressions kept
+(`generate_network`, the default), and for the model
+`build_model_from_parsed(parse_net_file(path))` builds from one. To move a
+volume, change it in the BNGL source and generate the network again.
+
+Two things are not covered. A network written with its expressions evaluated
+(`writeNetwork({evaluate_expressions=>1})`) has numbers where the derived
+parameters were, so what a derived volume read is not known from the file. And
+a model written out by bngsim's converters (`write_net`, `net_to_sbml`) and
+loaded again has no such comment: the volume is then an ordinary parameter that
+nothing reads, as it was before.
+
+`bngsim.jax.differentiable_solve` differentiates with respect to every primary
+parameter at once, so `jax.grad` through it is refused for a model with such a
+parameter; the solve at the values held still runs.
 
 ## Differentiable ODE solving with JAX
 

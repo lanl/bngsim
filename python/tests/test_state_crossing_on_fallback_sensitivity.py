@@ -1489,7 +1489,11 @@ def test_a_derived_parameter_that_is_overridden_is_read_again(tmp_path):
 
 @pytest.mark.parametrize("num_processors", [None, 2])
 def test_a_batch_row_that_overrides_a_derived_parameter_is_read_again(tmp_path, num_processors):
+    """The rows write another value of a derived parameter the model has
+    pinned. A row that pinned it itself is refused before this is asked (issue
+    #708)."""
     model = _with_derived(tmp_path, RAMP_TO_A_POWER, ["half 0.5", "pw 2*half"])
+    model.set_param("pw", 1.0, force_override=True)
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k", "thr"])
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
         sim.run_batch(
