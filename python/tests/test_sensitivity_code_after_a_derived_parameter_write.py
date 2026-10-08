@@ -433,6 +433,8 @@ def test_whether_the_code_holds_the_analytic_columns_is_asked_of_the_new_code():
     sim = _sim(model)
     assert not sim.has_analytic_sens_rhs
     _pin(model)
+    # Asked before the next run as well as after it.
+    assert sim.has_analytic_sens_rhs
     result = sim.run(**RUN)
     assert sim.has_analytic_sens_rhs
     _close(_columns(result), PINNED_AT_5)
@@ -510,3 +512,310 @@ def test_an_artifact_built_without_being_asked_for(monkeypatch):
         monkeypatch.setattr(_codegen, name, lambda model: None)
     with pytest.raises(bngsim.SensitivityUnsupportedError):
         sim.compute_all_sensitivities(params=P, **RUN)
+
+
+# ── What the review found ────────────────────────────────────────────────────
+
+
+def test_a_pin_at_the_value_the_expression_gives_moves_no_value():
+    """``force_override`` pins ``k2`` at 2, the value ``2*k1`` gives. No
+    parameter has moved, and ``k1`` no longer reaches the rate."""
+    model = _model()
+    sim = _sim(model)
+    _close(_columns(sim.run(**RUN)), ATTACHED)
+    model.reset()
+    model.set_param("k2", 2.0, force_override=True)
+    model.reset()
+    _close(_columns(sim.run(**RUN)), [0.0, _dk2(2.0)])
+
+
+ON_THE_QUOTIENT = (
+    "species A, B; A = 10; B = 0; k1 = 1; k2 = 2*k1; z = 1.5; kz = floor(z) + 1; kb = 1;\n"
+    "R1: A -> B; kz*piecewise(kb, k2 > 4.999, 0)*A\n"
+)
+
+
+def test_what_is_kept_about_a_run_on_the_quotient_goes_with_the_attachment():
+    """``set_params({"k2": 5.0, "k1": 2.5})`` names ``k2`` first, so the first
+    such write pins it and the second, an identity by then, attaches it again:
+    two attachments with every value the same. ``kz = floor(z) + 1`` keeps the
+    model on the difference quotient, where what was decided for the pinned
+    model was kept by the values alone. Attached, ``k1`` moves ``k2`` across
+    ``k2 > 4.999`` and the run is refused (issue #938); it ran, and returned
+    dA/dk1 = -0.378 for 0."""
+    theta = {"k2": 5.0, "k1": 2.5}
+    loose = {"t_span": (0.0, 1.0), "n_points": 11, "rtol": 1e-4, "atol": 1e-7}
+    model = _model(ON_THE_QUOTIENT)
+    model.set_params(theta)
+    model.reset()
+    index = list(model.param_names).index("k2")
+    assert not model._core.param_is_expression[index]
+    sim = _sim(model, ["k1", "kb"])
+    pinned = _columns(sim.run(**loose))
+    np.testing.assert_allclose(pinned, [0.0, -20.0 * np.exp(-2.0)], rtol=1e-3, atol=1e-6)
+    model.reset()
+    model.set_params(theta)
+    model.reset()
+    assert model._core.param_is_expression[index]
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(**loose)
+
+
+@pytest.mark.parametrize("between", ["ode", "ssa"])
+def test_what_an_expression_can_be_differentiated_for_whichever_way_the_code_was_replaced(between):
+    """A Simulator built on the model in between sends the next
+    ``compute_all_sensitivities`` down its other rebuild. What ``F`` can be
+    differentiated for was kept across that one: built pinned and then
+    attached it returned [nan, nan] for ``F``, where a new Simulator refuses
+    it by name, and built attached and then pinned it refused where
+    dF/d(k1, k2) is [0, 10/51**2]."""
+    model = _model(ANT_ABS)
+    model.set_param("k2", 5.0)
+    sim = bngsim.Simulator(model, method="ode")
+    sim.compute_all_sensitivities(params=P, **RUN)
+    bngsim.Simulator(model, method=between)
+    _pin(model, 2.0)
+    with pytest.raises(ValueError, match="derived parameter 'k2'"):
+        sim.compute_all_sensitivities(params=P, **RUN).output_sensitivities("F")
+
+    model = _model(ANT_ABS)
+    sim = bngsim.Simulator(model, method="ode")
+    sim.compute_all_sensitivities(params=P, **RUN)
+    bngsim.Simulator(model, method=between)
+    _pin(model)
+    result = sim.compute_all_sensitivities(params=P, **RUN)
+    _close(np.asarray(result.output_sensitivities("F"))[-1, 0], [0.0, 10.0 / 51.0**2])
+
+
+# ── A plain Simulator and a sensitivity Simulator on one model ───────────────
+
+
+def test_a_plain_compiled_simulator_asked_for_columns_after_a_sensitivity_one_was_built():
+    """A plain compiled Simulator's artifact has no sensitivity code. Whether to
+    build one that has was read off a flag on the model, which a sensitivity
+    Simulator built there in between had set: the plain artifact was kept, the
+    columns ran on the difference quotient with nothing said, and ``F`` had no
+    output sensitivity."""
+    model = _model(ANT_F)
+    plain = bngsim.Simulator(model, method="ode", codegen=True)
+    _sim(model)
+    model.reset()
+    result = plain.compute_all_sensitivities(params=P, **RUN)
+    assert plain._codegen_provides_sens_rhs()
+    _close(_columns(result), ATTACHED)
+    _close(np.asarray(result.output_sensitivities("F"))[-1, 0], [20.0 / 21.0**2, 10.0 / 21.0**2])
+
+
+def test_a_rebuild_on_one_simulator_does_not_cost_another_its_columns():
+    """The rebuild after a pin sets that flag for its own build. The plain
+    compiled Simulator on the same model still builds the code it needs when
+    it is asked for columns."""
+    model = _model(ANT_F)
+    sim = _sim(model)
+    plain = bngsim.Simulator(model, method="ode", codegen=True)
+    _pin(model)
+    _close(_columns(sim.run(**RUN)), PINNED_AT_5)
+    _pin(model, 2.0)
+    result = plain.compute_all_sensitivities(params=P, **RUN)
+    assert plain._codegen_provides_sens_rhs()
+    _close(np.asarray(result.output_sensitivities("F"))[-1, 0], [20.0 / 21.0**2, 10.0 / 21.0**2])
+
+
+def test_a_sensitivity_simulator_does_not_take_a_plain_artifact_after_a_failed_rebuild(
+    monkeypatch,
+):
+    """A rebuild that fails leaves the flag set and the model with the plain
+    artifact another Simulator put there. A sensitivity Simulator built then
+    builds its own."""
+    model = _model()
+    sim = _sim(model)
+    bngsim.Simulator(model, method="ode", codegen=True)
+    _pin(model)
+    with monkeypatch.context() as broken:
+        for name in ("prepare_model_codegen", "prepare_model_codegen_source"):
+            broken.setattr(_codegen, name, lambda model: None)
+        with pytest.raises(bngsim.SensitivityUnsupportedError):
+            sim.run(**RUN)
+    model.reset()
+    later = _sim(model)
+    assert later.has_analytic_sens_rhs
+    _close(_columns(later.run(**RUN)), PINNED_AT_5)
+
+
+def test_a_plain_artifact_is_not_taken_for_a_sensitivity_one_by_the_flag(monkeypatch):
+    """A plain compiled Simulator asked for columns sets the flag for the
+    build it then makes. Where that build fails it keeps its plain artifact
+    and goes on with the difference quotient, and the model is left with the
+    flag set and the plain artifact. A sensitivity Simulator built then took
+    it, and ran on the difference quotient with nothing said."""
+    model = _model()
+    plain = bngsim.Simulator(model, method="ode", codegen=True)
+    with monkeypatch.context() as broken:
+        for name in ("prepare_model_codegen", "prepare_model_codegen_source"):
+            broken.setattr(_codegen, name, lambda model: None)
+        plain.compute_all_sensitivities(params=P, **RUN)
+    model.reset()
+    sim = _sim(model)
+    assert sim._codegen_provides_sens_rhs()
+    _close(_columns(sim.run(**RUN)), ATTACHED)
+
+
+# ── A condition that is read otherwise at the new values ─────────────────────
+
+GATED = (
+    "species A, B; A = 10; B = 0; k = 1; E = 0.25;\n"
+    "R1: A -> B; piecewise(k, time >= sqrt(E), 0)*A\n"
+)
+TIGHT = {"t_span": (0.0, 1.0), "n_points": 11, "rtol": 1e-9, "atol": 1e-12}
+
+
+def _gated(e: float) -> list[float]:
+    """dA/d(k, E) at t = 1 for A = 10*exp(-k*(1 - sqrt(E))) at k = 1."""
+    a = 10.0 * np.exp(-(1.0 - np.sqrt(e)))
+    return [-(1.0 - np.sqrt(e)) * a, a / (2.0 * np.sqrt(e))]
+
+
+def test_a_write_that_changes_how_a_condition_is_read_is_followed_by_a_rebuild():
+    """The switch is at ``sqrt(E)``. At ``E = 0`` it does not resolve to a time
+    a column can be carried across, a model loaded there has no analytic
+    right-hand side and the run is refused. On the artifact built at 0.25 the
+    run went ahead and returned dA/dE = 0, where the derivative is unbounded.
+    Back at 0.25 the Simulator runs again."""
+    model = _model(GATED)
+    sim = _sim(model, ["k", "E"])
+    _close(_columns(sim.run(**TIGHT)), _gated(0.25))
+    model.reset()
+    model.set_param("E", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        sim.run(**TIGHT)
+    assert not sim.has_analytic_sens_rhs
+    clone = model.clone()
+    clone.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        _sim(clone, ["k", "E"]).run(**TIGHT)
+    model.reset()
+    model.set_param("E", 0.25)
+    model.reset()
+    _close(_columns(sim.run(**TIGHT)), _gated(0.25))
+    assert sim.has_analytic_sens_rhs
+
+
+def test_a_batch_row_that_changes_how_a_condition_is_read_is_refused():
+    """A row at ``E = 0.36`` reads the condition as the batch's build did and
+    runs. One at ``E = 0`` does not, and returned dA/dE = 0."""
+    sim = _sim(_model(GATED), ["k", "E"])
+    rows = sim.run_batch(params=[{"E": 0.36}], **TIGHT)
+    _close(_columns(rows[0]), _gated(0.36))
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#708") as refusal:
+        sim.run_batch(params=[{"E": 0.36}, {"E": 0.0}], **TIGHT)
+    assert "row 1" in str(refusal.value)
+    assert "rate-law condition" in str(refusal.value)
+
+
+def test_a_batch_on_the_quotient_asks_each_row_what_a_run_is_asked():
+    """Control. ``-> C`` at ``one``: at 2, ``C`` is a species like another, and
+    at 1 it is a clock, so the row reads ``C > 3.4`` otherwise than the batch's
+    build did. That build has no analytic right-hand side (a ``max`` in another
+    law), each row is asked what a run on the difference quotient is asked
+    (issue #938), and this one passes: nothing requested moves the clock.
+    dY/dkb = 6 - 3.4."""
+    text = (
+        "species C, Y, Z; C = 0; Y = 0; Z = 0; one = 2; kb = 1; kc = 0.1;\n"
+        "J0: -> C; one\nJ1: -> Y; piecewise(kb, C > 3.4, 0)\nJ2: -> Z; kc*max(Y, 0.5)\n"
+    )
+    sim = _sim(_model(text), ["kb"])
+    assert not sim.has_analytic_sens_rhs
+    rows = sim.run_batch(
+        params=[{"one": 1.0}], t_span=(0.0, 6.0), n_points=3, rtol=1e-8, atol=1e-10
+    )
+    np.testing.assert_allclose(_columns(rows[0], "Y"), [2.6], rtol=1e-6)
+
+
+def test_a_write_to_a_parameter_no_condition_reads_builds_nothing(monkeypatch):
+    """Control. The gate is asked at each run of a model with a condition in a
+    rate law, and a rate constant does not move its answer."""
+    model = _model(GATED)
+    sim = _sim(model, ["k", "E"])
+    calls = _count_builds(monkeypatch)
+    for k in (0.5, 2.0):
+        model.reset()
+        model.set_param("k", k)
+        a = 10.0 * np.exp(-0.5 * k)
+        _close(_columns(sim.run(**TIGHT)), [-0.5 * a, k * a])
+    assert calls[0] == 0
+
+
+# ── A batch row, by the columns that are asked for ───────────────────────────
+
+
+def test_a_batch_row_that_pins_a_parameter_is_refused_by_the_columns_it_reaches():
+    """The message names the columns that reach the model through the pinned
+    parameter."""
+    sim = _sim(_model(CHAIN), ["Q", "R0", "Rt"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#708") as refusal:
+        sim.run_batch(params=[{"Rt": 5.0}], t_span=(0.0, 2.0), n_points=3)
+    assert "['Q', 'R0']" in str(refusal.value)
+
+
+def test_a_batch_row_that_pins_a_parameter_no_requested_column_reads_runs():
+    """Control. The pinned parameter's own column, and the column of a
+    parameter that does not reach the model through it, are the same code
+    either way. ``-> A`` at ``k2``, ``A ->`` at ``kd*A``:
+    A = (k2/kd)*(1 - exp(-kd*t))."""
+    model = _model(STEADY)
+    rows = _sim(model, ["kd", "k2"]).run_batch(params=[{"k2": 5.0}], **RUN)
+    kd, k2 = 0.5, 5.0
+    decay = np.exp(-kd)
+    _close(_columns(rows[0]), [k2 * (decay / kd - (1.0 - decay) / kd**2), (1.0 - decay) / kd])
+    rows = _sim(_model(CHAIN), ["Rt"]).run_batch(
+        params=[{"Rt": 5.0}], t_span=(0.0, 2.0), n_points=3
+    )
+    _close(np.asarray(rows[0].sensitivities)[-1, 0], [2.0])
+
+
+# ── What is recorded beside an artifact, and what that saves ─────────────────
+
+
+def test_every_column_at_once_on_a_sensitivity_simulator_builds_nothing(monkeypatch):
+    """Control. Its artifact was built for a sensitivity run and the model is
+    as it was."""
+    model = _model()
+    sim = _sim(model)
+    calls = _count_builds(monkeypatch)
+    for _ in range(2):
+        model.reset()
+        _close(_columns(sim.compute_all_sensitivities(params=P, **RUN)), ATTACHED)
+    assert calls[0] == 0
+
+
+def test_a_simulator_on_a_clone_takes_the_artifact_the_model_carries(monkeypatch):
+    """Control. A clone carries the artifact with what it was built for, and a
+    sensitivity Simulator on it builds nothing, at construction or when every
+    column is asked for at once."""
+    model = _model()
+    first = _sim(model)
+    calls = _count_builds(monkeypatch)
+    clone = model.clone()
+    sim = _sim(clone)
+    assert (sim._codegen_so_path, sim._codegen_c_source) == (
+        first._codegen_so_path,
+        first._codegen_c_source,
+    )
+    _close(_columns(sim.compute_all_sensitivities(params=P, **RUN)), ATTACHED)
+    assert calls[0] == 0
+
+
+def test_a_sensitivity_simulator_does_not_take_an_artifact_built_without_being_asked_for(
+    monkeypatch,
+):
+    """Control. A model at the size threshold is compiled for a plain run, and
+    that artifact has no sensitivity code. A sensitivity Simulator on the model
+    builds its own."""
+    monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
+    model = _model()
+    plain = bngsim.Simulator(model, method="ode")
+    assert plain._codegen_so_path or plain._codegen_c_source
+    sim = _sim(model)
+    assert sim.has_analytic_sens_rhs
+    _close(_columns(sim.run(**RUN)), ATTACHED)

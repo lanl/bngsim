@@ -96,15 +96,24 @@ two: while `k2` is attached the column of `k1` carries the chain rule through
 it, and while it is pinned `k1` does not reach it. A Simulator checks which it
 is where a sensitivity run starts and builds the code again when it has changed,
 so a Simulator, the model and its clones can all be kept across such a write
-(issue #708). Going back to an attachment seen before is a cache lookup.
+(issue #708). The compiled library for an attachment seen before comes from the
+cache; what is derived for the model's reported expressions is derived again.
+
+The same check covers the one other thing in the compiled code that goes by the
+parameter values: whether each rate-law condition is one the analytic
+sensitivity right-hand side can be written across (a counter species is a clock
+at a rate of exactly 1; a threshold on a clock has to resolve to a time). A
+write that changes that is followed by a rebuild too, and by the refusal a
+model loaded at those values would get.
 
 A `run_batch` row is the exception. Every row runs on the code built for the
-model as the batch found it, so a row whose own writes pin or re-attach a
-derived parameter is refused with `SensitivityUnsupportedError` when parameter
-columns are requested. Make the write on the model with `set_param` before the
-batch, so that every row agrees with it, or run that row with `set_params` and
-`run()`. A batch that asks for initial-condition columns only, or for none,
-runs such a row.
+model as the batch found it. A row whose own writes pin or re-attach a derived
+parameter is refused with `SensitivityUnsupportedError` where a requested
+column is of a parameter that one is derived from; its own column, and columns
+that do not reach the model through it, are the same code either way and run. A
+row that changes how a rate-law condition is read is refused likewise. Make the
+write on the model with `set_param` before the batch, so that every row agrees
+with it, or run that row with `set_params` and `run()`.
 
 ## Parameters that set *when*, not *how fast*
 
