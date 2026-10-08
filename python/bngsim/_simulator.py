@@ -3427,13 +3427,12 @@ class Simulator:
                 result._varvol_live_vol = live_vol
             if conc_factor:
                 result._varvol_conc_factor = conc_factor
-        self._rescale_varvol_sensitivity_rows(result, rescaled, model)
+        self._rescale_varvol_sensitivity_rows(result, rescaled)
 
     def _rescale_varvol_sensitivity_rows(
         self,
         result: Result,
         rescaled: list[tuple[str, int, np.ndarray, np.ndarray, str, int]],
-        model: Model | None = None,
     ) -> None:
         """Differentiate the value the variable-volume passes reported (issue #742).
 
@@ -3459,13 +3458,12 @@ class Simulator:
         *rescaled* is ``(species, column, V_static/V_live, V_live, kind,
         index)`` for each column a pass rescaled, with *kind* ``"species"`` or
         ``"expression"`` for where the live volume is read. A species an
-        assignment rule sets is left to :meth:`_apply_ar_sensitivity_map`,
-        which refuses it. Both sensitivity axes, parameter and initial
-        condition.
+        assignment rule sets as well is refused afterwards by
+        :meth:`_apply_ar_sensitivity_map`, which overwrites its row. Both
+        sensitivity axes, parameter and initial condition.
         """
         if not rescaled:
             return
-        ar_species = getattr(model or self._model, "_ar_report_map", None) or {}
         refused: set[str] = set()
         for sp_attr, expr_attr in (
             ("_sensitivities", "_expression_sensitivities"),
@@ -3477,8 +3475,6 @@ class Simulator:
             expr_block = getattr(result, expr_attr)
             out = np.array(block, dtype=np.float64, copy=True)
             for name, j, factor, v_live, kind, k in rescaled:
-                if name in ar_species:
-                    continue
                 if kind == "species":
                     dv = block[:, k, :]
                 elif (
@@ -3566,7 +3562,7 @@ class Simulator:
             rescaled.append((s_name, j, factor, np.array(v_live, copy=True), "expression", k))
         if changed:
             result._species = sp
-        self._rescale_varvol_sensitivity_rows(result, rescaled, model)
+        self._rescale_varvol_sensitivity_rows(result, rescaled)
 
         # (#234) Record V_live(t) per diluted hOSU=false species so as_roadrunner's
         # bare-id amount selector reports conc·V_live(t), not the stale conc·V_static

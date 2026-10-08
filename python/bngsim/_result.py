@@ -1943,6 +1943,12 @@ class Result:
         the reported value carries a time-varying volume rescale the redirect
         does not model (GH #85/#87).
 
+        Also listed: an amount-valued species (``hasOnlySubstanceUnits``) that is
+        no rule's target, in a compartment an assignment rule resizes, where the
+        rule's own output sensitivity is not available. Its row is the quotient
+        rule through the compartment's size (issue #742), and without that
+        derivative it is ``NaN``. :meth:`output_sensitivities` returns that row.
+
         Membership means *some* entry of the row is ``NaN``, not necessarily all
         of them. :meth:`gradient` and the built-in objective gradients drop these
         rows wherever ``dL/dY`` is exactly zero, so a fit that never scores these
