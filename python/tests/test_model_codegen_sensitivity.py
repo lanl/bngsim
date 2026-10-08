@@ -338,11 +338,13 @@ class TestSensAutoTrigger:
     def test_an_existing_sensitivity_codegen_so_is_not_clobbered(self):
         # If the model already carries a _codegen_so_path built for a sensitivity
         # run, the Simulator reuses it rather than re-preparing a fresh one.
-        # ``_want_output_sens`` is the record of what that artifact was built with
-        # (issue #209), and Model.copy() carries the two together.
+        # ``_codegen_for_sens`` is the record of what that artifact was built with
+        # (issue #209; kept beside the artifact since issue #708, where it was
+        # read off ``_want_output_sens``), and Model.clone() carries the two
+        # together.
         m = _build_decay_model()
         m._codegen_so_path = "/nonexistent/path.so"
-        m._want_output_sens = True
+        m._codegen_for_sens = True
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k1"])
         assert sim._codegen_so_path == "/nonexistent/path.so"
 
@@ -359,7 +361,7 @@ class TestSensAutoTrigger:
         """
         m = _build_decay_model()
         m._codegen_so_path = "/nonexistent/path.so"
-        assert m._want_output_sens is False, "the plain-build record"
+        assert m._codegen_for_sens is False, "the plain-build record"
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k1"])
         assert sim._codegen_so_path != "/nonexistent/path.so"
         # Either backend proves the rebuild happened AND carries ∂f/∂p: the cc

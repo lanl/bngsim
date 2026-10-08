@@ -603,21 +603,19 @@ TERMS: list = [
         analytic=_reused_after_override,
         note="d/dk2 was 0: k2 reaches the rate through the derived _rateLaw (issue #912)",
     ),
-    pytest.param(
-        Term(
-            "stale-artifact-after-override",
-            "antimony",
-            _STALE_PINNED,
-            "k1",
-            "1.0",
-            1.0,
-            tuple(np.linspace(0.0, 1.0, 11)),
-            ("A",),
-            param="k1",
-            analytic=_chain_after_override,
-            note="d/dk1 is 2·d/dk2 on the reused Simulator, whose RHS still chains k2 to k1",
-        ),
-        marks=_xfail(708, "the compiled sensitivity RHS is reused after set_param"),
+    Term(
+        "stale-artifact-after-override",
+        "antimony",
+        _STALE_PINNED,
+        "k1",
+        "1.0",
+        1.0,
+        tuple(np.linspace(0.0, 1.0, 11)),
+        ("A",),
+        param="k1",
+        analytic=_chain_after_override,
+        note="d/dk1 was 2·d/dk2 on the reused Simulator, whose RHS still chained k2 to k1 "
+        "(issue #708)",
     ),
     # ── Events ───────────────────────────────────────────────────────────────
     Term(
