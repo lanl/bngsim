@@ -593,6 +593,11 @@ from `x_ss(θ)`, its forward-sensitivity seed is `∂x(0)/∂θ = dx_ss/dθ` —
 steady-state sensitivity of phase 1 — **not** the fresh-start zero. Pass
 **`carry_sensitivities=True`** on the measurement run to seed it correctly:
 
+(An equilibration run with `steady_state=True` stops early only for a model
+that reads no time and has no event, issue #710. For one that does, phase 1
+runs to the end of its span, through any event in it: give it the span the
+pre-condition is meant to last.)
+
 ```python
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k_prod", "k_deg"])
 

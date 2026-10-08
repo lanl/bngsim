@@ -176,6 +176,34 @@ def test_a_compartment_sized_by_a_rule_on_the_time_is_refused():
     _refused(sim.steady_state, "it reads the time, through")
 
 
+def test_a_function_given_a_body_that_reads_the_time_is_refused(tmp_path):
+    """The engine's hook for replacing how a function is evaluated: a model
+    built with ``kt() = k`` and given ``k*(1 - exp(-time()))`` afterwards
+    reads the time as one built with it does."""
+    model = _ramped(tmp_path, law="k").clone()
+    model._core.set_function_eval_expression("seen", "2*k")
+    model._core.set_function_eval_expression("kt", "k*(1-exp(-time()))")
+    assert model._core.functions_use_time
+    _refused(bngsim.Simulator(model, method="ode").steady_state, "it reads the time, through")
+
+
+def test_a_function_given_a_body_that_reads_no_time_is_not_marked(tmp_path):
+    """Control. A name that only holds the letters, ``lifetime``, is not the
+    time."""
+    path = tmp_path / "ab.net"
+    path.write_text(
+        "begin parameters\n 1 k 1\n 2 lifetime 2\n 3 timeout 3\nend parameters\n"
+        "begin functions\n 1 kt() k\nend functions\n"
+        "begin species\n 1 A() 1\n 2 B() 0\nend species\n"
+        "begin reactions\n 1 1 2 kt\nend reactions\n"
+    )
+    model = bngsim.Model.from_net(str(path))
+    model._core.set_function_eval_expression("kt", "k*lifetime/timeout")
+    assert not model._core.functions_use_time
+    out = bngsim.Simulator(model, method="ode").steady_state()
+    assert out.converged
+
+
 def test_the_core_solver_refuses_too(tmp_path):
     """The solver itself, under the Python layer."""
     from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
