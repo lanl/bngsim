@@ -655,10 +655,13 @@ def test_a_state_assigned_by_hand_after_a_run_is_refused(tmp_path):
         bngsim.Simulator(clone, method="ode").steady_state(sensitivity_params=["kf"], tol=1e-12)
     model.save_concentrations()
     total = float(np.sum(model.get_state()))
+    want = [-total / 4.5, total / 4.5]
     out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
-    np.testing.assert_allclose(
-        np.asarray(out.sensitivity)[:, 0], [-total / 4.5, total / 4.5], rtol=1e-7
-    )
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], want, rtol=1e-7)
+    # And a run from the saved state is one nothing was assigned to since.
+    sim.run(t_span=(0.0, 1.0), n_points=3)
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], want, rtol=1e-7)
 
 
 def test_a_whole_state_assigned_after_a_run_is_refused_until_a_reset(tmp_path):
@@ -669,6 +672,10 @@ def test_a_whole_state_assigned_after_a_run_is_refused_until_a_reset(tmp_path):
     with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"assigned by hand.*#704"):
         sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
     model.reset()
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-2 / 3, 2 / 3], rtol=1e-7)
+    # And a run after the reset is one nothing was assigned to.
+    sim.run(t_span=(0.0, 1.0), n_points=3)
     out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
     np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-2 / 3, 2 / 3], rtol=1e-7)
 
