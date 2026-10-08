@@ -188,7 +188,7 @@ def test_a_table_that_steps_on_the_state_is_refused(tmp_path, method):
     """A table function read as a step, indexed by an observable: no condition,
     no step call and no root. dY/dk came back 4.42 for 2.46.
 
-    Control (the linear case). Read with linear interpolation the same table is
+    The linear case: Control. Read with linear interpolation the same table is
     continuous, and runs as it did."""
     path = tmp_path / "m.net"
     path.write_text(STEP_TABLE.format(method=method, fz="kc*Aobs", A0=10.0, a_rxn="1 0"))
@@ -1968,6 +1968,9 @@ def test_a_step_table_whose_index_no_column_moves_runs(tmp_path):
         "max(asked > 1, 0.5)",
         "atan2(asked, 1)",
         "asked % 2",
+        "asked - 1e999",
+        "1e999*asked - 1e999",
+        "-1e999 + pos",
     ],
 )
 def test_an_expression_over_parameters_is_valued_as_the_tree_values_it(text):
@@ -2078,3 +2081,114 @@ def test_a_counter_started_by_a_derived_parameter_is_moved_by_what_that_is_writt
     )
     assert not sim.has_analytic_sens_rhs
     np.testing.assert_allclose(_y_columns(sim), [T_END - 1.4], rtol=1e-6)
+
+
+# ─── What the seventh review found ──────────────────────────────────────────
+
+DECLARED = """begin parameters
+    1 kb 3.0
+    2 kc 5.0
+    3 tau 3.4
+    4 one 1.0
+    5 n 0.5
+end parameters
+begin functions
+    1 fY() if(Cobs>tau,kb,0)
+    2 fZ() {fz}
+end functions
+begin species
+    1 Y() 0
+    2 Z() 0
+    3 C() 0
+end species
+begin reactions
+    1 0 1 fY
+    2 0 2 fZ
+    3 0 3 one
+end reactions
+begin groups
+    1 Yobs 1
+    2 Cobs 3
+end groups
+"""
+
+
+def _declared(tmp_path, fz, row):
+    """C counts from 0.5, set by hand, with ``∂C(0)/∂n`` declared: the switch
+    is at tau − C(0), and Y(6) = kb·(6 − tau + C(0))."""
+    path = tmp_path / "declared.net"
+    path.write_text(DECLARED.format(fz=fz))
+    model = bngsim.Model.from_net(str(path))
+    model.set_concentration("C()", 0.5)
+    if row is not None:
+        model.declare_ic_sensitivity({"C()": row})
+    return model
+
+
+def test_a_counter_a_declared_seed_moves_is_moved_on_the_fallback(tmp_path):
+    """The run is seeded with the declared row, and the clocks a column moves
+    were read off the model's own initial conditions alone: dY/dn came back
+    5.39 for 3 at a tolerance of 1e-4, and the run did not finish at 1e-8. A
+    Simulator that ran the model before the declaration is asked again."""
+    _refused_run(_declared(tmp_path, "kc*max(Yobs,0.5)", {"n": 1.0}), ["n"])
+    model = _declared(tmp_path, "kc*max(Yobs,0.5)", None)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
+    np.testing.assert_allclose(_y_columns(sim), [0.0], atol=1e-9)
+    model.reset()
+    model.set_concentration("C()", 0.5)
+    model.declare_ic_sensitivity({"C()": {"n": 1.0}})
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-4, atol=1e-6, timeout=20)
+
+
+def test_a_counter_a_declared_seed_moves_has_its_jump_on_the_analytic_path(tmp_path):
+    """With the analytic right-hand side the crossing's jump is applied to the
+    columns that move the clock, and a declared row was not one of them:
+    dY/dn came back 0 for kb."""
+    sim = bngsim.Simulator(
+        _declared(tmp_path, "kc*Yobs", {"n": 1.0}), method="ode", sensitivity_params=["n", "kb"]
+    )
+    assert sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [3.0, T_END - 3.4 + 0.5], rtol=1e-6)
+
+
+@pytest.mark.parametrize("row", [None, {"n": 0.0}, {"kc": 1.0}], ids=["none", "zero", "another"])
+def test_a_counter_no_declared_seed_moves_runs(tmp_path, row):
+    """Control. No declaration, a declared 0, and a declaration for a
+    parameter that is not requested: nothing requested moves the counter."""
+    sim = bngsim.Simulator(
+        _declared(tmp_path, "kc*max(Yobs,0.5)", row), method="ode", sensitivity_params=["n", "kb"]
+    )
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0, T_END - 3.4 + 0.5], rtol=1e-6, atol=1e-9)
+
+
+def test_a_counter_started_by_an_overridden_derived_parameter_is_not_moved(tmp_path):
+    """Control. ``C() c0`` with ``c0 = 2*n``, and ``set_param("c0", 0.7)``: c0
+    is a number from then on, and n does not reach the counter. Read off the
+    expression c0 once had, the run was refused by an earlier cut of this
+    branch. Y(6) = kb·(6 − 3.4 + 0.7)."""
+    path = tmp_path / "seeded.net"
+    path.write_text(SEEDED_COUNTER)
+    model = bngsim.Model.from_net(str(path))
+    model.set_param("c0", 0.7)
+    model.reset()
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n", "kb"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0, 3.3], rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.parametrize("name", ["_pow", "abs", "max", "exp"])
+def test_a_parameter_named_as_a_call_is_a_parameter(name):
+    """Control. A model may name a parameter ``_pow`` or ``abs``. An
+    expression that would call that name where it is compiled is left to the
+    syntax tree, and comes to the same answer."""
+    import bngsim._switch_sensitivity as ss
+
+    law = "X*max(asked^2, pos) + X*abs(asked - 30) + X*exp(-max(asked, pos))"
+    tree = ss._syntax_tree(law)
+    for asked in (30.0, 3.0, 1.4):
+        values = {"kb": 3.0, "pos": 2.0, "asked": asked}
+        want = ss._quotient_across_a_choice(tree, values, frozenset(), {"asked"})
+        got = ss._quotient_across_a_choice(tree, {**values, name: 7.0}, frozenset(), {"asked"})
+        assert (got is None) == (want is None)

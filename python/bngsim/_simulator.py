@@ -1707,7 +1707,13 @@ class Simulator:
         # at a rate of exactly 1, and a denominator is known nonzero by the
         # sign of what is in it. Asked again where any of those has changed,
         # with each law's syntax tree kept: one entry a rate law.
-        key = (columns, ic, tuple(float(core.get_param(name)) for name in core.param_names))
+        declared = self._model._declared_ic_sens
+        key = (
+            columns,
+            ic,
+            tuple(float(core.get_param(name)) for name in core.param_names),
+            tuple(sorted((name, tuple(sorted(row.items()))) for name, row in declared.items())),
+        )
         cached = self._fallback_crossing_memo
         if cached is not None and cached[0] == key:
             crossing = cached[1]
@@ -1722,6 +1728,7 @@ class Simulator:
                     columns,
                     [species.index(n) for n in ic if n in species],
                     parsed=kept,
+                    declared=declared,
                 )
             except Exception as e:
                 # Not let through: a rate law that cannot be read is one whose
@@ -2061,6 +2068,7 @@ class Simulator:
                 float(t_end),
                 has_analytic_sens_rhs=self._codegen_provides_sens_rhs(),
                 ic_species=ic_species,
+                declared=self._model._declared_ic_sens,
             )
         except ValueError:
             # An unsupported switch parameter (one that also acts in-branch) is a

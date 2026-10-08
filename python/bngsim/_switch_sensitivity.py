@@ -4338,7 +4338,7 @@ _VALUE_GLOBALS: dict = {"__builtins__": {}, "_pow": math.pow, **_VALUE_CALLS}
 _VALUE_BINOPS = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Pow: "**"}
 
 
-def _value_code(node: ast.AST):
+def _value_code(node: ast.AST, taken: AbstractSet[str] = frozenset()):
     """*node* compiled to what :func:`_facts_of` gives as its value, where it
     is made of numbers, names, signs, sums, products, quotients, powers and
     the calls that have a value, and ``None`` where it holds anything else.
@@ -4349,19 +4349,34 @@ def _value_code(node: ast.AST):
     ``max`` in ``synthesis_v3``, 0.9 s after each ``set_param``. Compiled, it is
     the same arithmetic on the same doubles. A name that is not a parameter,
     and anything that has no value, raises where the tree gives ``None``.
+
+    *taken* are the names that have a value where the code will be run. An
+    expression that calls one of them, or that has a power while one of them
+    is the name the power is called by here, is left to the tree: a parameter
+    named ``abs`` or ``_pow`` is a parameter.
     """
 
     def written(one: ast.AST) -> str:
         if isinstance(one, ast.Name):
             return one.id
         if isinstance(one, ast.Constant) and isinstance(one.value, (bool, int, float)):
-            return repr(float(one.value))
+            number = float(one.value)
+            if math.isnan(number):
+                raise ValueError("nan")
+            # A literal past a double is written as one: ``inf`` is a name.
+            return (
+                repr(number) if math.isfinite(number) else ("1e999" if number > 0 else "(-1e999)")
+            )
         if isinstance(one, ast.UnaryOp) and isinstance(one.op, (ast.USub, ast.UAdd)):
             return f"({'-' if isinstance(one.op, ast.USub) else '+'}{written(one.operand)})"
         if isinstance(one, ast.BinOp) and type(one.op) in _VALUE_BINOPS:
             left, right = written(one.left), written(one.right)
             op = _VALUE_BINOPS[type(one.op)]
+            if op == "**" and "_pow" in taken:
+                raise ValueError("_pow")
             return f"_pow({left}, {right})" if op == "**" else f"({left} {op} {right})"
+        if _call_name(one) in taken:
+            raise ValueError(_call_name(one))
         if _call_name(one) in _VALUE_CALLS and not one.keywords:  # type: ignore[attr-defined]
             return f"{_call_name(one)}({', '.join(written(arg) for arg in one.args)})"  # type: ignore[attr-defined]
         raise ValueError(type(one).__name__)
@@ -4379,7 +4394,7 @@ def _flips_with_a_parameter(
     changes sign with a requested parameter in it moved as the quotient may
     move it (:func:`_moves_tried`); or cannot be read."""
 
-    compiled = _value_code(node)
+    compiled = _value_code(node, values.keys())
 
     def sign_at(at: Mapping[str, float]) -> int | None:
         if compiled is not None:
@@ -4832,6 +4847,7 @@ def fallback_crossing(
     ic_species: Sequence[int] = (),
     ctx=None,
     parsed: dict | None = None,
+    declared: Mapping[str, Mapping[str, float]] | None = None,
 ) -> str | None:
     """What a time course on CVODES' difference quotient cannot differentiate
     through in this model, as the text of the first one found, or ``None``.
@@ -5059,7 +5075,9 @@ def fallback_crossing(
             # The same in every view: which species is a clock, and which
             # parameter seeds or drives it, is not a matter of what is held.
             moved_clocks.append(
-                _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species, True)
+                _clocks_moved(
+                    core, scope.clocks, list(sens_param_names), ic_species, True, declared
+                )
             )
         moved = moved_clocks[0]
         # What each parameter is; and the clocks no column moves, literal time
@@ -6909,7 +6927,12 @@ def _steps_on_instants(
 
 
 def _clocks_moved(
-    core, clocks, names: Sequence[str], ic_species: Sequence[int], by_text: bool = False
+    core,
+    clocks,
+    names: Sequence[str],
+    ic_species: Sequence[int],
+    by_text: bool = False,
+    declared: Mapping[str, Mapping[str, float]] | None = None,
 ) -> frozenset[int]:
     """The clock species a requested column moves (issue #725).
 
@@ -6923,6 +6946,12 @@ def _clocks_moved(
     value: no fewer clocks than the seeds give, and nothing differentiated.
     The refusal of :func:`fallback_crossing` asks it that way, each time a
     parameter is set.
+
+    ``declared`` are the rows a caller gave with
+    ``Model.declare_ic_sensitivity``: a clock started by hand at a value that
+    moves with a parameter. The run is seeded with them, and a clock they
+    move was not taken as moved: its crossing's jump was not applied, and
+    dY/dn came back 0 for 3.
     """
     from bngsim._codegen import compute_ic_param_sens_seed
     from bngsim._jacobian import _IDENT_RE, _inline_functions
@@ -6932,6 +6961,11 @@ def _clocks_moved(
         return frozenset()
     wanted = set(names)
     moved = {i for i in idx if i in set(ic_species)}
+    if declared and wanted:
+        species = list(core.species_names)
+        for name, row in declared.items():
+            if name in species and any(row.get(p, 0.0) != 0.0 for p in wanted):
+                moved |= {species.index(name)} & idx
     if wanted and idx - moved:
         pnames = list(core.param_names)
         data = core.codegen_data()
@@ -6939,11 +6973,21 @@ def _clocks_moved(
         func_map = {f["name"]: f["expression"] for f in data.get("functions", ())}
         derived = {p["name"]: p["expression"] for p in params if p.get("expression")}
         if by_text:
+            # As each derived parameter is written now: one that ``set_param``
+            # has overridden is a number, and what it was written in no
+            # longer reaches the clock.
+            written = {
+                name: text
+                for name, is_expr, text in zip(
+                    pnames, core.param_is_expression, core.param_expressions, strict=True
+                )
+                if is_expr and text
+            }
             seeded = [
                 (sp, name)
                 for sp, pidx in core.species_ic_param_refs
                 if sp in idx and 0 <= pidx < len(pnames)
-                for name in _written_in(pnames[pidx], derived)
+                for name in _written_in(pnames[pidx], written)
             ]
             seeded += [
                 (sp, pnames[pidx])
@@ -7300,6 +7344,7 @@ def compute_switch_time_sens(
     t_end: float,
     has_analytic_sens_rhs: bool = False,
     ic_species: Sequence[int] = (),
+    declared: Mapping[str, Mapping[str, float]] | None = None,
 ) -> tuple[list[SwitchCrossing], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
 
@@ -7559,7 +7604,7 @@ def compute_switch_time_sens(
     # into its own column (dW/dtau = −4.2 for 0). A step that sits on a moved
     # crossing's instant is absorbed here as a crossing no parameter moves,
     # which is what puts the record onto the isolation path.
-    moved_clocks = _clocks_moved(core, clocks, names, ic_species)
+    moved_clocks = _clocks_moved(core, clocks, names, ic_species, declared=declared)
     moved = [c for c in found if any(v != 0.0 for v in c.dtstar) or c.clock_idx0 in moved_clocks]
     if moved:
         for step in _steps_on_instants(core, ctx, scope, float(t_start), float(t_end), moved):
