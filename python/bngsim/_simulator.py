@@ -1465,7 +1465,9 @@ class Simulator:
         dP/df = 0 for 12.64 with a stoichiometry of ``2*f``), and a part of the
         derivative where a rate law reads it too.
         """
-        frozen = self._model._frozen_params
+        frozen = getattr(self._model, "_frozen_params", None)
+        if not frozen:
+            return
         folded = [name for name in dict.fromkeys(param_names) if name in frozen]
         if folded:
             raise SensitivityUnsupportedError(
