@@ -8430,10 +8430,10 @@ def _build_model_from_sbml_doc(doc):
     # is named here with what it was folded into, and `Model.set_param` and the
     # sensitivity request refuse it by that.
     #
-    # What a fold reads is followed down: through a parameter whose own
-    # initialAssignment was folded, and through a lifted (derived) one, whose
-    # value a write to what it is written in still moves, with nothing here
-    # following.
+    # What a fold reads is followed down through a lifted (derived) parameter,
+    # whose value a write to what it is written in still moves, with nothing
+    # here following. (A parameter whose own initialAssignment was folded has
+    # what that reads named by the first loop below.)
     _folded_into: dict[str, str] = {}
 
     def _fold(names, what: str) -> None:
@@ -8446,8 +8446,6 @@ def _build_model_from_sbml_doc(doc):
             seen.add(_n)
             if _n in _lift_expr:
                 stack.extend(_lift_deps.get(_n, ()))
-            elif _n in _ia_math and _n in _param_decl_index:
-                stack.extend(_ast_name_set(_ia_math[_n]))
             if _n in compartment_write_refused:
                 continue  # a size §10.7 refuses by name already, with its own reason
             if (_n in _param_decl_index and _n not in _ar_targets) or _n in comp_param_idx:
