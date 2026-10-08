@@ -87,6 +87,25 @@ gradient: `gradient`, `sse_gradient`, `chi2_gradient` and
 zero, so a fit that never scores that species still gets a number. Weight one and
 the gradient is `NaN`, which is the honest answer.
 
+### A derived parameter overridden after the Simulator is built
+
+A derived parameter, `k2 = 2*k1`, follows its expression until
+`set_param("k2", 5.0)` pins it, and follows it again after a write of the
+expression's own value. The compiled sensitivity code is not the same for the
+two: while `k2` is attached the column of `k1` carries the chain rule through
+it, and while it is pinned `k1` does not reach it. A Simulator checks which it
+is where a sensitivity run starts and builds the code again when it has changed,
+so a Simulator, the model and its clones can all be kept across such a write
+(issue #708). Going back to an attachment seen before is a cache lookup.
+
+A `run_batch` row is the exception. Every row runs on the code built for the
+model as the batch found it, so a row whose own writes pin or re-attach a
+derived parameter is refused with `SensitivityUnsupportedError` when parameter
+columns are requested. Make the write on the model with `set_param` before the
+batch, so that every row agrees with it, or run that row with `set_params` and
+`run()`. A batch that asks for initial-condition columns only, or for none,
+runs such a row.
+
 ## Parameters that set *when*, not *how fast*
 
 Some fitted parameters never appear in a rate. They set the **time at which the

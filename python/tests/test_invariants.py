@@ -323,8 +323,10 @@ def _net(params: str, functions: str, species: str, reactions: str, groups: str)
 
 def net_derived(p: Mapping[str, float]) -> bngsim.Model:
     """``k2 = 2*k1`` is a derived parameter. #694 (an override kept its chain rule
-    on every Simulator) retired with the ``.net`` codegen path (#803); a Simulator
-    built *before* the override still keeps it, which is #708."""
+    on every Simulator) retired with the ``.net`` codegen path (#803), and #708 (a
+    Simulator built *before* the override kept it) with the rebuild at the next
+    run. A ``run_batch`` row that overrides it is refused: every row runs on the
+    one artifact, built for the model as the batch found it (#961)."""
     k2 = f"{p['k2']!r}  # Constant" if "k2" in p else "2*k1  # ConstantExpression"
     return _net(
         f"    1 k1  {p.get('k1', 0.3)!r}  # Constant\n    2 k2  {k2}\n",
@@ -446,9 +448,8 @@ FIXTURES: tuple[Fixture, ...] = (
         write=("k2", 5.0),
         sens=("k1",),
         known=(
-            ("reuse_after_set_param", 708, AssertionError),
-            ("run_batch", 708, AssertionError),
-            ("run_batch_squeeze", 708, AssertionError),
+            ("run_batch", 961, bngsim.SensitivityUnsupportedError),
+            ("run_batch_squeeze", 961, bngsim.SensitivityUnsupportedError),
         ),
     ),
     Fixture(

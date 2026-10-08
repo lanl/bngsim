@@ -67,6 +67,27 @@ from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
 
+
+def _attachment(model: Model) -> tuple[bool, ...]:
+    """Which of *model*'s parameters are attached to an expression, as it is now.
+
+    A derived parameter is attached until a ``set_param`` pins it, and attached
+    again by an identity write (issue #188). The generated sensitivity code
+    differs with it, so this is what an artifact is recorded as built for
+    (issue #708).
+    """
+    return tuple(bool(x) for x in getattr(model._core, "param_is_expression", ()))
+
+
+def _built_for_another_attachment(model: Model) -> bool:
+    """Whether the artifact *model* carries was built while its derived
+    parameters were attached otherwise than they are now (issue #708)."""
+    built = getattr(model, "_codegen_attachment", None)
+    if built is None:
+        return False
+    return built != _attachment(model)
+
+
 # How many leg ends a model keeps for a rollback to return its events to
 # (NetworkModel::kEventCarryHistory, issue #693).
 _EVENT_CARRY_HISTORY = 64
@@ -674,6 +695,9 @@ class Simulator:
         "_codegen",
         "_codegen_so_path",
         "_codegen_c_source",
+        # Issue #708 — which parameters were attached to an expression when the
+        # artifact was built; None with no artifact.
+        "_codegen_attachment",
         # Memoized: does the codegen artifact export bngsim_codegen_sens_rhs?
         # (issue #358 — decides the in-branch switch-time refusal narrowing)
         "_codegen_sens_rhs_available",
@@ -991,6 +1015,7 @@ class Simulator:
         # in C++ instead of being built into a .so by `cc` and dlopen'd. Carries
         # the generated source string; mutually exclusive with _codegen_so_path.
         self._codegen_c_source = ""
+        self._codegen_attachment: tuple[bool, ...] | None = None
         jit_backend = _codegen_jit_backend()
         net_path_str = str(net_path) if net_path else ""
         self._net_path = net_path_str
@@ -1058,6 +1083,7 @@ class Simulator:
                             _cg_src = prepare_model_codegen_source(model)
                             if _cg_src is not None:
                                 model._codegen_c_source = _cg_src
+                                model._codegen_attachment = _attachment(model)
                                 model_codegen_has_sens = want_sens_run
                         else:
                             from bngsim._codegen import prepare_model_codegen
@@ -1065,6 +1091,7 @@ class Simulator:
                             _cg_so = prepare_model_codegen(model)
                             if _cg_so is not None:
                                 model._codegen_so_path = str(_cg_so)
+                                model._codegen_attachment = _attachment(model)
                                 model_codegen_has_sens = want_sens_run
                         # Aliased: a plain import would make the name local to
                         # all of __init__ and shadow the module-level one below.
@@ -1096,6 +1123,7 @@ class Simulator:
                 self._codegen_c_source = src
                 if hasattr(model, "_codegen_c_source"):
                     model._codegen_c_source = self._codegen_c_source
+                self._codegen_built_for(model)
                 logger.info(
                     "Codegen JIT (%s) source ready: %d chars",
                     jit_backend,
@@ -1112,6 +1140,7 @@ class Simulator:
                 self._codegen_so_path = str(so_path)
                 if hasattr(model, "_codegen_so_path"):
                     model._codegen_so_path = self._codegen_so_path
+                self._codegen_built_for(model)
                 logger.info("Codegen .so ready: %s", self._codegen_so_path)
         elif codegen and dispatch != "ode":
             raise ValueError("codegen=True is only supported for method='ode'.")
@@ -1141,6 +1170,16 @@ class Simulator:
         # code, so inheriting it ran `cc` or MIR under a codegen=False that never
         # compiled anything itself, and let a codegen=False sensitivity run skip
         # the refusal in _auto_codegen_for_sensitivity.
+        #
+        # Issue #708 — nor a sensitivity artifact built while the model's
+        # derived parameters were attached otherwise. The sensitivity code holds
+        # the chain rule through each attached one: built before
+        # ``set_param("k2", 5.0)`` pinned ``k2 = 2*k1`` it returned dA/dk1 =
+        # -0.0769 for 0, and built while pinned, then re-attached, 0 for -0.4535.
+        # A plain run may still inherit it: the state right-hand side reads a
+        # derived parameter's value where the model keeps it.
+        if model_codegen_has_sens and _built_for_another_attachment(model):
+            model_codegen_has_sens = False
         codegen_reusable = codegen is not False and (model_codegen_has_sens or not want_sens_run)
         if (
             jit_backend
@@ -1151,6 +1190,7 @@ class Simulator:
             and model._codegen_c_source
         ):
             self._codegen_c_source = model._codegen_c_source
+            self._codegen_attachment = getattr(model, "_codegen_attachment", None)
             logger.debug(
                 "Auto-codegen JIT source from model: %d chars", len(self._codegen_c_source)
             )
@@ -1163,6 +1203,7 @@ class Simulator:
             and model._codegen_so_path
         ):
             self._codegen_so_path = model._codegen_so_path
+            self._codegen_attachment = getattr(model, "_codegen_attachment", None)
             logger.debug(
                 "Auto-codegen from model: %s",
                 self._codegen_so_path,
@@ -2465,6 +2506,7 @@ class Simulator:
             self._codegen_artifact_changed()
             if hasattr(model, "_codegen_c_source"):
                 model._codegen_c_source = self._codegen_c_source
+            self._codegen_built_for(model)
             logger.info(
                 "Auto-enabled codegen JIT (%s) for sensitivity workflow: %d chars",
                 jit_backend,
@@ -2477,6 +2519,7 @@ class Simulator:
             self._codegen_artifact_changed()
             if hasattr(model, "_codegen_so_path"):
                 model._codegen_so_path = self._codegen_so_path
+            self._codegen_built_for(model)
             logger.info(
                 "Auto-enabled codegen for sensitivity workflow: %s",
                 self._codegen_so_path,
@@ -2528,8 +2571,10 @@ class Simulator:
         if not model._want_output_sens:
             model._want_output_sens = True
             prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
+            prev_attachment = self._codegen_attachment
             self._codegen_so_path = ""
             self._codegen_c_source = ""
+            self._codegen_attachment = None
             self._codegen_artifact_changed()
             try:
                 self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
@@ -2543,7 +2588,14 @@ class Simulator:
                 if not prev_so and not prev_src:
                     raise
                 self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+                self._codegen_attachment = prev_attachment
                 self._codegen_artifact_changed()
+                # Issue #708 — and so it does where the old one was built for
+                # another attachment of the derived parameters. It is back for
+                # the plain runs it still serves, with what it was built for, so
+                # the next sensitivity request asks again and is refused again.
+                if prev_attachment is not None and prev_attachment != _attachment(model):
+                    raise
                 logger.info(
                     "Output-sensitivity codegen regeneration failed; keeping the "
                     "previously attached artifact (d(output)/dp falls back to "
@@ -2551,9 +2603,116 @@ class Simulator:
                 )
             if not self._codegen_so_path and not self._codegen_c_source:
                 self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+                self._codegen_attachment = prev_attachment
                 self._codegen_artifact_changed()
         else:
+            self._rebuild_codegen_if_reattached()
             self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+
+    def _codegen_built_for(self, model: Model) -> None:
+        """Record what the artifact just built was built for (issue #708).
+
+        The generated sensitivity code depends on which parameters are attached
+        to an expression: it carries the chain rule through each one, and none
+        through one a ``set_param`` has pinned. That vector is in the artifact's
+        cache key (issue #188), and the key is computed only when an artifact is
+        built. Kept beside the artifact, on the Simulator and on the model, it
+        is what a later run compares with the model as it is then.
+        """
+        stamp = _attachment(model)
+        self._codegen_attachment = stamp
+        model._codegen_attachment = stamp
+
+    def _raise_if_row_is_attached_otherwise(self, index: int, clone: Model) -> None:
+        """Refuse a batch row whose writes pin or re-attach a derived parameter
+        (issue #708).
+
+        Every row of a batch runs on the one artifact the Simulator holds (GH
+        #203). A row that writes a derived parameter needs other sensitivity
+        code: the chain rule through that parameter is gone, or is back. Run on
+        the batch's artifact, ``{"k2": 5.0}`` over ``k2 = 2*k1`` returned
+        dA/dk1 = -0.0769 for 0. What the artifact holds is also what a row's
+        refusals are decided by, so a row is not given one of its own; it is
+        refused, and the message says how to run it.
+
+        Asked only where a parameter's column is requested. The chain rule is
+        in the parameter columns alone, so a batch that asks for initial
+        conditions only runs such a row as it did.
+        """
+        built = self._codegen_attachment
+        if built is None or not (self._codegen_so_path or self._codegen_c_source):
+            return
+        live = _attachment(clone)
+        if live == built:
+            return
+        names = list(clone._core.param_names)
+        pinned = [n for n, was, now in zip(names, built, live, strict=False) if was and not now]
+        attached = [n for n, was, now in zip(names, built, live, strict=False) if now and not was]
+        what = []
+        if pinned:
+            what.append(f"overrides the derived parameter(s) {pinned}")
+        if attached:
+            what.append(
+                f"writes {attached} back to the value of its expression, which attaches it"
+            )
+        raise SensitivityUnsupportedError(
+            f"run_batch row {index} {' and '.join(what)}. The sensitivity code "
+            "differentiates through a derived parameter while it follows its "
+            "expression and not while it is pinned, and every row of a batch runs on "
+            "the code built for the model as it stood when the batch began; the row's "
+            "columns would be those of the other case (issue #708). Make the write on "
+            "the model with set_param before the batch, so that every row agrees with "
+            "it, or run this row with set_params and run()."
+        )
+
+    def _rebuild_codegen_if_reattached(self) -> None:
+        """Build the sensitivity code again where a derived parameter has been
+        overridden or re-attached since it was built (issue #708).
+
+        ``set_param`` on a derived parameter pins it, and an identity write
+        attaches it again (issue #188). Either changes the code a sensitivity
+        run needs and neither touches the artifact this Simulator holds. For
+        ``k2 = 2*k1`` and a rate ``k2*A*A``, pinning ``k2`` at 5 after the
+        Simulator was built returned dA/dk1 = -0.0769 for 0, with a right
+        trajectory and nothing logged.
+
+        Called where a sensitivity run starts. A no-op while the attachment is
+        what the artifact was built for, which costs one vector read. Where it
+        is not, the artifact is dropped and built for the model as it is, and
+        the structural cache (issue #174) makes going back to an attachment
+        seen before a lookup. A model that cannot be differentiated as it is
+        now attached is refused by :meth:`_auto_codegen_for_sensitivity`.
+        """
+        built = self._codegen_attachment
+        if built is None or not (self._codegen_so_path or self._codegen_c_source):
+            return
+        model = self._model
+        if built == _attachment(model):
+            return
+        logger.info(
+            "A derived parameter was overridden or re-attached after the sensitivity "
+            "code was built; building it again for the model as it is (issue #708)."
+        )
+        prev = (self._codegen_so_path, self._codegen_c_source)
+        self._codegen_so_path = ""
+        self._codegen_c_source = ""
+        self._codegen_attachment = None
+        # What a function's output sensitivity can be given for is read off the
+        # same analysis, which is keyed by the attachment too.
+        self._expr_sens_support_memo = None
+        # A plain Simulator built on this model since has cleared the flag the
+        # build reads to decide what to emit.
+        model._want_output_sens = True
+        try:
+            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+        except Exception:
+            # Left with nothing, the next run would find nothing to compare and
+            # go on without compiled code. The old artifact goes back with what
+            # it was built for, so the next run asks again and is refused again.
+            self._codegen_so_path, self._codegen_c_source = prev
+            self._codegen_attachment = built
+            self._codegen_artifact_changed()
+            raise
 
     def _expression_sens_support(self) -> dict[str, str | None]:
         """Memoized ``{function_name: unsupported_reason_or_None}`` for GH #198
@@ -3676,6 +3835,8 @@ class Simulator:
         # point (single-shot and the carry-over path below). This upgrades GH
         # #210's narrow carry-over warning to a unified hard raise.
         if self._sensitivity_params or self._sensitivity_ic:
+            # Issue #708 — first, since what follows asks what the artifact holds.
+            self._rebuild_codegen_if_reattached()
             self._raise_if_event_sensitivities()
             # Issue #414 — the rate-law twin: a branch condition whose crossing
             # time moves but which no machinery locates leaves the whole run on
@@ -4066,6 +4227,9 @@ class Simulator:
         # check, hoisted out of the per-row loop) rather than return stale
         # derivatives — same policy as single-shot run().
         if self._sensitivity_params or self._sensitivity_ic:
+            # Issue #708 — the rows run on the artifact this Simulator holds, so
+            # it has to be the one for the model as it is before any row is cut.
+            self._rebuild_codegen_if_reattached()
             self._raise_if_event_sensitivities()
             # Issue #414 — same rate-law moving-crossing refusal run() applies,
             # hoisted out of the per-row loop (the crossing is a model-structural
@@ -5170,6 +5334,8 @@ class Simulator:
         clone = self._model.clone()
         clone.set_params(pset)
         clone.reset()
+        if self._sensitivity_params:
+            self._raise_if_row_is_attached_otherwise(index, clone)
 
         times = TimeSpec()
         times.t_start = t_span[0]

@@ -92,6 +92,7 @@ class Model:
         "_core",
         "_codegen_so_path",
         "_codegen_c_source",
+        "_codegen_attachment",
         "_codegen_sec",
         "_codegen_cache_hit",
         "_codegen_sens_decline",
@@ -142,6 +143,13 @@ class Model:
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
+        # Issue #708: which parameters were attached to an expression when the
+        # artifact above was built (``tuple(param_is_expression)``). The
+        # generated sensitivity code carries the chain rule through each
+        # attached one, so an artifact built for one attachment is the wrong
+        # code after a ``set_param`` overrides or re-attaches one. ``None`` with
+        # no artifact.
+        self._codegen_attachment: tuple[bool, ...] | None = None
         # Wall seconds the model's codegen prepare spent (T0.3). Set by the
         # _codegen.prepare_* entry points (~0 for ExprTk models that never
         # codegen or a cache hit; the cc compile time on a cold large model).
@@ -1000,6 +1008,7 @@ class Model:
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path
         m._codegen_c_source = self._codegen_c_source
+        m._codegen_attachment = self._codegen_attachment
         m._codegen_sec = self._codegen_sec
         m._codegen_cache_hit = self._codegen_cache_hit
         m._codegen_sens_decline = self._codegen_sens_decline
