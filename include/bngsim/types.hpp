@@ -879,6 +879,14 @@ struct ConservationLaws {
     // constants[k] = Σ coefficients[k][i] * y0[i]
     std::vector<double> constants; // size n_laws
 
+    // Issue #758 — what each species' coefficient was weighted by when the
+    // laws were found: its volume factor where a reaction with the per-species
+    // divide is in the model, and 1 otherwise. coefficients[k][i] over
+    // species_weight[i] is the stoichiometric coefficient, the one to compare
+    // when asking whether a coefficient is rounding. Size n_species, or empty
+    // (read as all 1) where no law was looked for.
+    std::vector<double> species_weight;
+
     bool empty() const { return n_laws == 0; }
 };
 

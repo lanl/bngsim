@@ -518,22 +518,24 @@ TWO_COMPARTMENTS = (
 )
 
 
-@pytest.mark.parametrize("params", [["A0"], ["kf"], ["A0", "kf"]])
-def test_a_law_across_compartments_of_different_size_is_refused(params):
+def test_a_law_across_compartments_of_different_size_has_its_columns():
     """A in a compartment of size 1 and B in one of size 3: what is conserved
-    is A + 3·B, and the law is found as A + B (issue #758). Every column of the
-    reduced solve is off: dA*/dkf = -0.286 for -0.367, and dA*/dA0 = 1/3 for
-    1/7 with the total differentiated."""
+    is A + 3·B, and A* = A0/(1 + 3·kf/kr). The law was found as A + B (issue
+    #758), so every column of the reduced solve was off, dA*/dkf = -0.286 for
+    -18/49 and dA*/dA0 = 1/3 for 1/7, and the request was refused for it
+    (issue #704). The law is found with the sizes in it now."""
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(TWO_COMPARTMENTS.format(c2=3)), method="ode"
     )
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"different size.*#758"):
-        sim.steady_state(sensitivity_params=params, tol=1e-12)
+    out = sim.steady_state(sensitivity_params=["A0", "kf"], tol=1e-12)
+    names = list(out.species_names)
+    got = np.asarray(out.sensitivity)[[names.index("A"), names.index("B")]]
+    np.testing.assert_allclose(got[:, 0], [1 / 7, 2 / 7], rtol=1e-7)
+    np.testing.assert_allclose(got[:, 1], [-18 / 49, 6 / 49], rtol=1e-7)
 
 
 def test_a_law_across_compartments_of_one_size_runs():
-    """Control for the refusal. With both at size 1 the law found is the one
-    that holds."""
+    """Control. With both at size 1 the law is A + B either way."""
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(TWO_COMPARTMENTS.format(c2=1)), method="ode"
     )

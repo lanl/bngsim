@@ -355,7 +355,42 @@ class NetworkModel {
     double estimated_lu_fill() const;
 
     const AnalyticalJacobianData &analytical_jacobian() const;
+    // The reference holds until a compartment size of this model is written
+    // and the laws are asked for again (issue #758: laws across compartments
+    // of different size are a model's own, for the sizes it has).
     const ConservationLaws &conservation_laws() const;
+
+    // Issue #758 — the species each conservation law holds, by index: those
+    // whose coefficient is not rounding. Row reduction leaves 1e-14 to 1e-40
+    // of a row's largest coefficient on species that are in no law
+    // (MODEL1009150002, 1,604 species). A law across compartments carries
+    // each species' volume, which may differ by any factor, so what is
+    // compared is the coefficient over the weight the laws were found with
+    // (ConservationLaws::species_weight), the stoichiometric one.
+    std::vector<std::vector<int>> conservation_law_members() const;
+
+    // Issue #758 — whether the right-hand side keeps the totals that
+    // conservation_laws() reports. The steady-state solvers hold each total,
+    // so a law the dynamics do not keep gives a root, eigenvalues and
+    // sensitivities of another system, with nothing said. This evaluates the
+    // rates at two states off the model's own (a law holds at any state; at a
+    // steady state the rates are rounding and say nothing) and returns the
+    // first law whose total moves by more than 1e-10 of the fluxes through
+    // the species it holds (conservation_law_members): its index, the rate
+    // at which the total moves, and the size of those fluxes. The fluxes are
+    // each species' terms with their absolute values summed, which is what
+    // a rate is rounded from; a total that moves by less than 1e-10 of them
+    // is not seen. `law` is -1 where every law is kept. A law with a member
+    // whose rate is not finite at a state is not asked there. The observable
+    // totals and function values an evaluation writes are put back as they
+    // were, and the time, the rateOf buffer and the right-hand-side counters
+    // are not touched.
+    struct ConservationLawDrift {
+        int law = -1;
+        double drift = 0.0;
+        double size = 0.0;
+    };
+    ConservationLawDrift conservation_law_drift();
 
     // ─── Functional analytical Jacobian (GH #76) ─────────────────────────────
     // Per-instance symbolically-derived ∂(rate)/∂x for Functional rate laws.

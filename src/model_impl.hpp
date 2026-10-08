@@ -129,13 +129,23 @@ struct SharedModelData {
     // ODE/SSA-only runs never pay for it. This is the one sanctioned exception
     // to the "immutable after build()" contract above: the write happens exactly
     // once under conservation_laws_once and the materialized value never changes
-    // afterward, so every const ref returned by conservation_laws() stays valid.
+    // afterward, so a const ref to it stays valid. (A model whose laws follow
+    // its compartment sizes returns its own instead, issue #758 below, and that
+    // ref holds until a size is written and the laws are asked for again.)
     // When conservation_laws_enabled is false (set_compute_conservation_laws(
     // false)) it is never computed and stays empty (n_species only), for callers
     // that need the full unreduced system.
     mutable ConservationLaws conservation_laws;
     mutable std::once_flag conservation_laws_once;
     bool conservation_laws_enabled = true;
+
+    // Issue #758 — a law across compartments of different size has the sizes
+    // in its coefficients (A + 2·B for V = 1 and 2), and a size is a parameter
+    // a write can move (#170). Where a reaction joins species under different
+    // size parameters the laws are therefore kept by each model for the sizes
+    // it has (NetworkModel::Impl::volume_laws), and not here.
+    mutable bool conservation_follow_volumes = false;
+    mutable std::once_flag conservation_follow_volumes_once;
 };
 
 // Lazily compute (once) and return the model's conservation laws. On the first
@@ -147,6 +157,18 @@ struct SharedModelData {
 // Defined in model_builder.cpp next to detect_conservation_laws().
 const ConservationLaws &ensure_conservation_laws(const SharedModelData &sd,
                                                  const std::vector<Species> &species);
+
+// Issue #758 — whether the model's laws move with a compartment size a write
+// can change (decided once, from structure), and the laws at the volumes
+// `species` has now. Defined in model_builder.cpp beside the detector.
+bool conservation_laws_follow_volumes(const SharedModelData &sd,
+                                      const std::vector<Species> &species);
+// Issue #758 — the species each law of `cl` holds: NetworkModel::
+// conservation_law_members() for laws already in hand.
+std::vector<std::vector<int>> conservation_law_members_of(const ConservationLaws &cl);
+
+ConservationLaws conservation_laws_at(const SharedModelData &sd,
+                                      const std::vector<Species> &species);
 
 // Lazily compute (once) the Curtis-Powell-Reid coloring of the Jacobian
 // sparsity pattern and return the pattern with it materialized. The coloring is
@@ -243,6 +265,14 @@ struct NetworkModel::Impl {
 
     // ── Mutable per-instance data ────────────────────────────────────────
     std::vector<Species> species;
+
+    // Issue #758 — this model's conservation laws where they follow its
+    // compartment sizes, with the volume factors they were found at. Found
+    // again when a size has been written. A clone takes the pointer, so a
+    // batch whose entries write no size finds the laws once, on the model it
+    // clones, and not once an entry.
+    mutable std::shared_ptr<const ConservationLaws> volume_laws;
+    mutable std::vector<double> volume_laws_at;
     std::vector<Observable> observables;
     std::vector<Parameter> parameters;
     std::vector<Function> functions;

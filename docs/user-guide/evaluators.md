@@ -64,7 +64,9 @@ as usual.
 `S[i, r]` is the net change in species `i` when reaction `r` fires — products
 positive, reactants negative, so `A + A -> B` puts `-2` in A's row. This is the
 matrix [conservation-law detection](conservation-laws.md) was row-reduced
-from, so every law satisfies `L @ S == 0`, and for a mass-action `.net` model
+from, so every law satisfies `L @ S == 0` (an SBML model with a reaction
+between compartments of different size is the exception: its laws are found
+for the amounts, and satisfy `L @ rhs(y) == 0`), and for a mass-action `.net` model
 `rhs(y) == S @ v(y)` for the vector of ODE reaction rates. A `$`-fixed species
 has an all-zero row: the RHS zeroes its derivative and an SSA firing never
 updates it, whatever the reaction line says. `sparse=True` returns a CSC array;

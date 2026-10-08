@@ -123,6 +123,8 @@ NetworkModel NetworkModel::clone() const {
 
     // Deep-copy mutable per-instance data
     copy.impl_->species = impl_->species;
+    copy.impl_->volume_laws = impl_->volume_laws; // issue #758: found once, for every clone
+    copy.impl_->volume_laws_at = impl_->volume_laws_at;
     copy.impl_->observables = impl_->observables;
     copy.impl_->parameters = impl_->parameters;
     copy.impl_->functions = impl_->functions;
@@ -1974,7 +1976,121 @@ const ConservationLaws &NetworkModel::conservation_laws() const {
     // dense O(ns^3) detector is skipped entirely for ODE/SSA-only runs that
     // never call this accessor, and computed once (shared across clones) for
     // steady-state / introspection callers that do.
-    return ensure_conservation_laws(*impl_->shared, impl_->species);
+    const SharedModelData &sd = *impl_->shared;
+    if (!sd.conservation_laws_enabled || !conservation_laws_follow_volumes(sd, impl_->species))
+        return ensure_conservation_laws(sd, impl_->species);
+    // Issue #758 — laws with compartment sizes in them, for the sizes this
+    // model has now.
+    std::vector<double> volumes;
+    volumes.reserve(impl_->species.size());
+    for (const auto &sp : impl_->species)
+        volumes.push_back(sp.volume_factor);
+    // NaN is a size like another here: a model at one is not found again at
+    // every call.
+    auto same = [](const std::vector<double> &a, const std::vector<double> &b) {
+        if (a.size() != b.size())
+            return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (!(a[i] == b[i] || (std::isnan(a[i]) && std::isnan(b[i]))))
+                return false;
+        }
+        return true;
+    };
+    if (!impl_->volume_laws || !same(volumes, impl_->volume_laws_at)) {
+        impl_->volume_laws =
+            std::make_shared<const ConservationLaws>(conservation_laws_at(sd, impl_->species));
+        impl_->volume_laws_at = std::move(volumes);
+    }
+    return *impl_->volume_laws;
+}
+
+std::vector<std::vector<int>> NetworkModel::conservation_law_members() const {
+    return conservation_law_members_of(conservation_laws());
+}
+
+std::vector<std::vector<int>> conservation_law_members_of(const ConservationLaws &cl) {
+    const int ns = cl.n_species;
+    std::vector<std::vector<int>> members(cl.n_laws);
+    std::vector<double> weight(ns);
+    for (int k = 0; k < cl.n_laws; ++k) {
+        const std::vector<double> &row = cl.coefficients[k];
+        double largest = 0.0;
+        for (int i = 0; i < ns; ++i) {
+            const double w =
+                static_cast<size_t>(i) < cl.species_weight.size() ? cl.species_weight[i] : 1.0;
+            weight[i] = std::fabs(row[i]) / w;
+            largest = std::max(largest, weight[i]);
+        }
+        for (int i = 0; i < ns; ++i) {
+            if (weight[i] > 1e-9 * largest)
+                members[k].push_back(i);
+        }
+    }
+    return members;
+}
+
+NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
+    ConservationLawDrift found;
+    const ConservationLaws &cl = conservation_laws();
+    const int ns = n_species();
+    if (cl.n_laws == 0 || ns == 0)
+        return found;
+    // From `cl` itself and not through the accessor again: `cl` is held here.
+    const std::vector<std::vector<int>> members = conservation_law_members_of(cl);
+    std::vector<double> here(ns), state(ns), net(ns), gross(ns);
+    get_state_into(here.data());
+    const double t_now = impl_->current_time;
+    // What an evaluation writes, kept to be put back: the observable totals,
+    // the value of every parameter (a function writes the one it is bound
+    // to) and the functions' own cache. A model with no function writes none.
+    std::vector<double> kept_totals, kept_values, kept_cache;
+    if (impl_->has_functions) {
+        kept_totals.reserve(impl_->observables.size());
+        for (const auto &obs : impl_->observables)
+            kept_totals.push_back(obs.total);
+        kept_values.reserve(impl_->parameters.size());
+        for (const auto &par : impl_->parameters)
+            kept_values.push_back(par.value);
+        kept_cache = impl_->function_value_cache;
+    }
+    for (int pass = 0; pass < 2 && found.law < 0; ++pass) {
+        for (int i = 0; i < ns; ++i) {
+            const double spread = 1.0 + 0.5 * std::sin(1.0 + i);
+            const double shift = 1.0 + 0.25 * std::cos(static_cast<double>(i));
+            state[i] = pass == 0 ? std::fabs(here[i]) * spread + 0.37 * shift
+                                 : std::fabs(here[i]) / spread + 1.3 * shift;
+        }
+        // Each species' rate as compute_derivs sums it, and the same terms
+        // with their absolute values summed. The rate is rounded from the
+        // second: a catalyst of a reaction at 1e6, written on both sides of
+        // it, has a rate that is 1e-10 of rounding whatever else moves it, so
+        // the total is measured against the fluxes and not the net rates.
+        compute_flux_split(t_now, state.data(), nullptr, net.data(), gross.data());
+        for (int k = 0; k < cl.n_laws; ++k) {
+            const std::vector<double> &row = cl.coefficients[k];
+            double total = 0.0, size = 0.0;
+            for (int i : members[k]) {
+                total += row[i] * net[i];
+                size += std::fabs(row[i]) * gross[i];
+            }
+            // A member whose rate is not finite makes the total NaN, which
+            // compares false: that law is not asked at this state.
+            if (std::fabs(total) > 1e-10 * size) {
+                found.law = k;
+                found.drift = std::fabs(total);
+                found.size = size;
+                break;
+            }
+        }
+    }
+    if (impl_->has_functions) {
+        for (size_t i = 0; i < kept_totals.size(); ++i)
+            impl_->observables[i].total = kept_totals[i];
+        for (size_t i = 0; i < kept_values.size(); ++i)
+            impl_->parameters[i].value = kept_values[i];
+        impl_->function_value_cache = std::move(kept_cache);
+    }
+    return found;
 }
 
 // ─── Functional analytical Jacobian (GH #76) ─────────────────────────────────

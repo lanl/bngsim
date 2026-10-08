@@ -2209,6 +2209,24 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 return d;
             },
             "Conservation laws detected from stoichiometry matrix")
+        .def("conservation_law_members", &bngsim::NetworkModel::conservation_law_members,
+             "For each conservation law, the 0-based indices of the species it holds: those "
+             "whose coefficient, over the species' volume, is not rounding beside the law's "
+             "largest. Issue #758.")
+        .def(
+            "conservation_law_drift",
+            [](bngsim::NetworkModel &m) {
+                bngsim::NetworkModel::ConservationLawDrift found;
+                {
+                    py::gil_scoped_release release;
+                    found = m.conservation_law_drift();
+                }
+                return py::make_tuple(found.law, found.drift, found.size);
+            },
+            "(law, drift, size): the first conservation law whose total the right-hand side "
+            "does not keep, asked at two states off the model's own, with the rate at which "
+            "the total moves there and the size of the fluxes through the species it holds. "
+            "law is -1 where every law is kept. Issue #758.")
 
         // Model introspection for code generation
         .def(

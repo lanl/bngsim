@@ -2007,14 +2007,24 @@ class Model:
         """
         Conservation laws detected from the stoichiometry matrix.
 
-        Detected at model load time for every input format (``.net``, Antimony,
-        SBML, programmatic ``ModelBuilder``). The returned dict has keys:
+        Found for every input format (``.net``, Antimony, SBML, programmatic
+        ``ModelBuilder``). The returned dict has keys:
 
         - ``n_laws``: number of independent conservation laws
         - ``n_species``: number of species the laws are expressed over
         - ``dependent`` / ``independent``: 0-based species index lists
         - ``constants``: conservation constants evaluated from the initial conditions
         - ``coefficients``: ``n_laws`` x ``n_species`` coefficient matrix
+
+        Each law is over the stored state, ``coefficients[k] @ y`` constant
+        along a run, so ``coefficients @ rhs(y)`` is zero at any ``y``. What a
+        reaction between compartments of different size conserves is an
+        amount, so a species' coefficient there carries its compartment's
+        size: ``A`` in a compartment of size 1 exchanged with ``B`` in one of
+        size 2 gives ``A + 2*B`` (issue #758). Such a model's laws follow a
+        size written with :meth:`set_param`. A species whose share of such a
+        reaction is divided by a size that moves, a concentration in a
+        compartment that a rate rule or an event resizes, is in no law.
 
         Consumed internally by the reduced-space Newton steady-state solver,
         which needs the independent subspace to sidestep the rank-deficient
@@ -2038,7 +2048,9 @@ class Model:
         For a mass-action ``.net`` model ``rhs(y) == S @ v(y)`` for the vector
         of ODE reaction rates, and every conservation law satisfies
         ``L @ S == 0`` — this is the matrix :attr:`conservation_laws` was
-        row-reduced from.
+        row-reduced from. (An SBML model with a reaction between compartments
+        of different size is the exception: its laws are found for the
+        amounts, and satisfy ``L @ rhs(y) == 0`` and not ``L @ S == 0``.)
 
         A ``$``-prefixed boundary species has an all-zero row: the RHS zeroes
         its derivative and an SSA firing never updates it, so the matrix that

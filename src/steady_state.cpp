@@ -2405,22 +2405,22 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         // what took the total: for S + E <-> ES -> E + P with P masked out, P
         // ends at S0 and S and ES at 0 whatever S0 is. The total stays fixed
         // for such a law, as it was. (Where the masked species is the law's
-        // dependent it is reconstructed from the total, which moves.) A
-        // coefficient is one that is not rounding beside the law's largest:
-        // row reduction leaves 1e-17 on species the law does not hold.
+        // dependent it is reconstructed from the total, which moves.) Row
+        // reduction leaves 1e-17 on species the law does not hold.
         std::vector<double> dT(static_cast<size_t>(cl.n_laws) * np, 0.0);
         std::vector<double> moved(static_cast<size_t>(cl.n_laws) * np, 0.0);
         bool totals_move = false;
+        // Which species a law holds is asked of the coefficients over the
+        // volumes they carry (issue #758): a size 1e10 of another's is not
+        // rounding.
+        const std::vector<std::vector<int>> members = model.conservation_law_members();
         for (int k = 0; k < cl.n_laws; ++k) {
             const int dep = cl.dependent[k];
             const double cd = cl.coefficients[k][dep];
-            double largest = 0.0;
-            for (int i = 0; i < ns; ++i) {
-                largest = std::max(largest, std::abs(cl.coefficients[k][i]));
-            }
             bool held = false;
             for (const int i : sub.excluded) {
-                held = held || (i != dep && std::abs(cl.coefficients[k][i]) > 1e-9 * largest);
+                held = held || (i != dep && std::find(members[k].begin(), members[k].end(), i) !=
+                                                members[k].end());
             }
             if (held) {
                 continue;
@@ -2494,15 +2494,25 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
 
         sunrealtype *A_data = SUNDenseMatrix_Data(A_guard);
         std::memcpy(A_data, J_red.data(), static_cast<size_t>(n_ind) * n_ind * sizeof(double));
-        SUNLinSolSetup(LS_guard, A_guard);
-        result.sens_jacobian_rcond = lu_diag_rcond(A_data, n_ind);
+        // A zero pivot stops the factorization where it is and leaves the rest
+        // of the pivot array unset, and a solve through it reads and writes
+        // wherever those entries point: MODEL1601050000 (2,047 species)
+        // faulted there. There is no solution to report, so the columns are
+        // NaN, which the caller refuses as it did the non-finite values such a
+        // solve returned when it returned.
+        const bool factored = SUNLinSolSetup(LS_guard, A_guard) == 0;
+        result.sens_jacobian_rcond = factored ? lu_diag_rcond(A_data, n_ind) : 0.0;
 
         for (int p = 0; p < np; ++p) {
             double *b_data = N_VGetArrayPointer(bv);
             for (int i = 0; i < n_ind; ++i)
                 b_data[i] = -dfdp_red[p * n_ind + i];
-            SUNLinSolSolve(LS_guard, A_guard, xv, bv, 0.0);
-            const double *x_data = N_VGetArrayPointer(xv);
+            double *x_data = N_VGetArrayPointer(xv);
+            if (factored) {
+                SUNLinSolSolve(LS_guard, A_guard, xv, bv, 0.0);
+            } else {
+                std::fill(x_data, x_data + n_ind, std::numeric_limits<double>::quiet_NaN());
+            }
 
             // Fill the solved species' sensitivity
             for (int i = 0; i < n_ind; ++i)
@@ -2555,16 +2565,21 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         NVectorGuard b(N_VNew_Serial(ns, ctx));
         NVectorGuard x(N_VNew_Serial(ns, ctx));
         SUNLinSolGuard LS_guard(ss_make_dense_linsol(x, A_guard, ctx, model, ns));
-        // One factorization, np solves — see the note on the reduced branch.
-        SUNLinSolSetup(LS_guard, A_guard);
-        result.sens_jacobian_rcond = lu_diag_rcond(A_data, ns);
+        // One factorization, np solves — see the note on the reduced branch,
+        // and on a factorization that stops at a zero pivot.
+        const bool factored = SUNLinSolSetup(LS_guard, A_guard) == 0;
+        result.sens_jacobian_rcond = factored ? lu_diag_rcond(A_data, ns) : 0.0;
 
         for (int p = 0; p < np; ++p) {
             double *b_data = N_VGetArrayPointer(b);
             for (int i = 0; i < ns; ++i)
                 b_data[i] = -dfdp[p * ns + i];
-            SUNLinSolSolve(LS_guard, A_guard, x, b, 0.0);
-            const double *x_data = N_VGetArrayPointer(x);
+            double *x_data = N_VGetArrayPointer(x);
+            if (factored) {
+                SUNLinSolSolve(LS_guard, A_guard, x, b, 0.0);
+            } else {
+                std::fill(x_data, x_data + ns, std::numeric_limits<double>::quiet_NaN());
+            }
             for (int i = 0; i < ns; ++i)
                 result.sensitivity[i * np + p] = x_data[i];
         }
