@@ -1494,7 +1494,8 @@ end groups
         tests here held what the switch's jump did beside such a reaction. The
         sensitivity right-hand side read kcat's slot and not the function
         there, so P stayed 0 in those runs, and the model is refused where it
-        is built now (issue #931). No model that loads has such a reader."""
+        is built now (issue #931). The test after this one holds the same
+        ground with a reader that still loads."""
         text = """begin parameters
     1 A0 10
     2 a 0.5
@@ -1522,6 +1523,49 @@ end groups
 """
         with pytest.raises(bngsim.ModelError, match=r"MichaelisMenten.*'kcat'.*issue #931"):
             _model(tmp_path, text, name="mm_kcat.net")
+
+    def test_a_reader_the_map_does_not_list_is_judged_as_before(self, tmp_path):
+        """A rate that is a table indexed by a function that holds the
+        condition, ``g() = tfun([0,1],[0,3], h)`` with ``h() = if(Aobs<thr,1,0)``,
+        reads the condition and its own text does not, so the reaction map has
+        no entry for it. With no reader the crossing was taken as continuous and
+        dY/dthr, dY/da came back 0 (eighth review, on a Michaelis-Menten
+        reader). Where the mapped reactions do not account for what the pre-#763
+        test reads as a jump, that test stands.
+
+        Y's own value is not asserted. In a sensitivity run it stays 0: the
+        compiled table reads its index as it was built (issue #965)."""
+        text = """begin parameters
+    1 A0 10
+    2 a 0.5
+    3 thr 2
+end parameters
+begin functions
+    1 h() if(Aobs<thr,1,0)
+    2 g() tfun([0,1],[0,3],h)
+end functions
+begin species
+    1 A() A0
+    2 Y() 0
+end species
+begin reactions
+    1 1 0 a
+    2 0 2 g
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+        model = _model(tmp_path, text, name="table_reader.net")
+        conditions = sw.state_switch_conditions(model._core)
+        assert conditions == ["Aobs<thr"]
+        assert sw.state_switch_reactions(model._core, conditions) == [[]]
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=["thr", "a"]).run(
+            t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12
+        )
+        got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("Y()")]
+        # The rate past the switch is 3, and t* = ln(A0/thr)/a.
+        np.testing.assert_allclose(got, [3.0 / (0.5 * 2.0), 3.0 * np.log(5.0) / 0.25], rtol=1e-5)
 
     def test_a_threshold_only_an_output_reads_does_not_take_the_wider_probe(self, tmp_path):
         """A jump at thr0, a continuous clamp on a 2e8 pool at thr1 inside the

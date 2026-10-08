@@ -498,7 +498,7 @@ def test_mm_rate_constant_that_a_function_overwrites(tmp_path):
     right-hand side read ``params[kc]``, a snapshot of it: two readings of one
     model (BioNetGen's run_network takes the parameter row too). The JAX path
     refused the shape; the model is refused where it is built now, for every
-    engine (issue #931).
+    engine that runs a built model (issue #931).
     """
     net = _write(tmp_path, "mmfs.net", MM_ON_A_FUNCTION_SLOT)
     with pytest.raises(bngsim.ModelError, match=r"MichaelisMenten.*issue #931"):

@@ -1719,10 +1719,12 @@ NetworkModel ModelBuilder::build() {
                             ", a parameter that a function of the same name writes. A "
                             "Michaelis-Menten rate law reads kcat and Km as parameters, and "
                             "only the interpreted ODE right-hand side follows the function: "
-                            "the compiled one, the stochastic engines and the Jacobian read a "
-                            "value that is not the function's (issue #931). Give the constant "
-                            "as a parameter, which may be an expression of others, or write "
-                            "the reaction with a functional rate law.");
+                            "the compiled one reads the parameter as it stands, the "
+                            "stochastic engines hold a function of the state or the time at "
+                            "a stale value, and the Jacobian takes it for a constant (issue "
+                            "#931). Give the constant as a parameter, which may be an "
+                            "expression of others, or write the reaction with a functional "
+                            "rate law.");
                     }
                 }
             }

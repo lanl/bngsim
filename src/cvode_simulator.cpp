@@ -9739,8 +9739,11 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // residuals ever have to agree on a dt*/dθ.
     // ── A jump the reaction map does not list (issue #763) ──────────────────
     // The readers are the reactions the map found, and the map lists functional
-    // rate laws only. A Michaelis-Menten law whose kcat is a function-bound
-    // parameter reads the condition and is not one (eighth review). What tells
+    // rate laws whose own text reads the condition. A law that reads it through
+    // a table function indexed by a function that holds the condition is not
+    // one (the eighth review's case was a Michaelis-Menten law whose kcat a
+    // function writes, which is refused where the model is built since issue
+    // #931). What tells
     // such a reaction's jump from everything else the listed reactions do not
     // account for is that it is a JUMP: across the pair, the rest of the
     // right-hand side moves smoothly, by 2·δt·df/dt, and that can be large on
