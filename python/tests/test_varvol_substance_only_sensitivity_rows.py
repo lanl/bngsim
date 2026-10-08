@@ -118,6 +118,17 @@ def test_a_batch_row(kind):
     np.testing.assert_allclose(_row(rows[0])[:, 0], _dk(k=0.3), rtol=1e-6, atol=1e-9)
 
 
+@pytest.mark.parametrize("kind", sorted(MODELS))
+def test_a_gradient_contracts_the_same_rows(kind):
+    """``Result.gradient`` of the sum of X squared over the samples:
+    [-9.2974, -4.6568], and was [-19.79, 0]."""
+    result = bngsim.Simulator(_model(kind), method="ode", sensitivity_params=["k", "g"]).run(**RUN)
+    got = np.asarray(result.gradient(lambda species, time: 2.0 * species))
+    want = [np.sum(2.0 * _x() * _dk()), np.sum(2.0 * _x() * _dg())]
+    np.testing.assert_allclose(got, want, rtol=1e-6)
+    np.testing.assert_allclose(want, [-9.2974, -4.6568], rtol=1e-4)
+
+
 GROWN = (
     "compartment cell = 1; cell' = kv*(2 - cell); kv = 0.5; ksyn = 3; kdeg = 0.2;\n"
     "substanceOnly species P in cell; P = 0; species Y in cell; Y = 1;\n"
