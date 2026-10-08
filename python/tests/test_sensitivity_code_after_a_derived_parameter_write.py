@@ -405,6 +405,26 @@ def test_a_failed_regeneration_does_not_serve_code_for_another_attachment(monkey
     assert _a(sim.run(**RUN)) == pytest.approx(10.0 / 51.0, rel=1e-8)
 
 
+def test_a_build_that_failed_is_not_asked_for_again_while_nothing_has_changed(monkeypatch):
+    """Control. A plain compiled Simulator whose sensitivity build fails goes
+    on with the artifact it has, each time it is asked for columns, and pays
+    for the failed build once."""
+    model = _model()
+    sim = bngsim.Simulator(model, method="ode", codegen=True)
+    sim.run(**RUN)
+    calls = [0]
+
+    def fails(model):
+        calls[0] += 1
+
+    for name in ("prepare_model_codegen", "prepare_model_codegen_source"):
+        monkeypatch.setattr(_codegen, name, fails)
+    for _ in range(3):
+        model.reset()
+        _close(_columns(sim.compute_all_sensitivities(params=P, **RUN)), ATTACHED)
+    assert calls[0] == 1
+
+
 def test_a_failed_regeneration_puts_back_the_code_for_this_attachment(monkeypatch):
     """Control. With nothing pinned since, the old artifact is put back, as it
     was, and the call goes on to its own answer."""
@@ -690,6 +710,9 @@ def test_a_write_that_changes_how_a_condition_is_read_is_followed_by_a_rebuild()
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
         sim.run(**TIGHT)
     assert not sim.has_analytic_sens_rhs
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        sim.compute_all_sensitivities(params=["k", "E"], **TIGHT)
     clone = model.clone()
     clone.reset()
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
@@ -699,6 +722,68 @@ def test_a_write_that_changes_how_a_condition_is_read_is_followed_by_a_rebuild()
     model.reset()
     _close(_columns(sim.run(**TIGHT)), _gated(0.25))
     assert sim.has_analytic_sens_rhs
+
+
+def test_every_column_at_once_is_asked_of_the_conditions_as_they_are():
+    """``compute_all_sensitivities`` runs its columns on clones. Asked first
+    at ``E = 0``, of a Simulator built at 0.25, it is refused as a run is."""
+    model = _model(GATED)
+    sim = _sim(model, ["k", "E"])
+    _close(_columns(sim.compute_all_sensitivities(params=["k", "E"], **TIGHT)), _gated(0.25))
+    model.reset()
+    model.set_param("E", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        sim.compute_all_sensitivities(params=["k", "E"], **TIGHT)
+
+
+def test_a_counter_that_becomes_a_clock_runs_on_the_code_it_has(monkeypatch):
+    """Control. ``-> C`` at ``one``, and a law that switches on ``C > 3.4``.
+    At ``one = 2`` the species is a state the solver roots on, and at 1 it is
+    a clock with a switch time. Either is compensated, by the code built for
+    the other too, and nothing is built again: dY/dkb = 6 - 3.4/one."""
+    text = (
+        "species C, Y; C = 0; Y = 0; one = 2; kb = 1;\n"
+        "J0: -> C; one\nJ1: -> Y; piecewise(kb, C > 3.4, 0)\n"
+    )
+    model = _model(text)
+    sim = _sim(model, ["kb"])
+    run = {"t_span": (0.0, 6.0), "n_points": 3, "rtol": 1e-9, "atol": 1e-12}
+    np.testing.assert_allclose(_columns(sim.run(**run), "Y"), [6.0 - 1.7], rtol=1e-6)
+    calls = _count_builds(monkeypatch)
+    model.reset()
+    model.set_param("one", 1.0)
+    model.reset()
+    np.testing.assert_allclose(_columns(sim.run(**run), "Y"), [2.6], rtol=1e-6)
+    rows = sim.run_batch(params=[{"one": 2.0}, {"one": 1.0}], **run)
+    np.testing.assert_allclose(_columns(rows[0], "Y"), [6.0 - 1.7], rtol=1e-6)
+    np.testing.assert_allclose(_columns(rows[1], "Y"), [2.6], rtol=1e-6)
+    assert calls[0] == 0
+
+
+def test_a_condition_the_solver_roots_builds_nothing(monkeypatch):
+    """Control. ``C >= sqrt(E)`` with ``C`` a counter species: at ``E = 0`` the
+    switch-time pass cannot compensate it, and the solver locates it as a root
+    of the state all the same, as it does in a model loaded there. The code is
+    what a build at those values gives, and is kept."""
+    text = (
+        "species C, Y; C = 0; Y = 0; one = 1; kb = 1; E = 0.25;\n"
+        "J0: -> C; one\nJ1: -> Y; piecewise(kb, C >= sqrt(E), 0)\n"
+    )
+    model = _model(text)
+    sim = _sim(model, ["kb", "E"])
+    run = {"t_span": (0.0, 2.0), "n_points": 3, "rtol": 1e-9, "atol": 1e-12}
+    np.testing.assert_allclose(_columns(sim.run(**run), "Y"), [1.5, -1.0], rtol=1e-6)
+    calls = _count_builds(monkeypatch)
+    for value in (0.0, 0.25):
+        model.reset()
+        model.set_param("E", value)
+        model.reset()
+        sim.run(**run)
+    assert calls[0] == 0
+    assert sim.has_analytic_sens_rhs
+    model.reset()
+    np.testing.assert_allclose(_columns(sim.run(**run), "Y"), [1.5, -1.0], rtol=1e-6)
 
 
 def test_a_batch_row_that_changes_how_a_condition_is_read_is_refused():

@@ -99,19 +99,21 @@ so a Simulator, the model and its clones can all be kept across such a write
 (issue #708). The compiled library for an attachment seen before comes from the
 cache; what is derived for the model's reported expressions is derived again.
 
-The same check covers the one other thing in the compiled code that goes by the
-parameter values: whether each rate-law condition is one the analytic
-sensitivity right-hand side can be written across (a counter species is a clock
-at a rate of exactly 1; a threshold on a clock has to resolve to a time). A
-write that changes that is followed by a rebuild too, and by the refusal a
-model loaded at those values would get.
+One other thing in the compiled code goes by the parameter values: whether each
+rate-law condition is one the analytic sensitivity right-hand side can be
+written across, which needs a threshold on a clock to resolve to a time. Where
+a write moves a parameter to a value at which one no longer does
+(`time >= sqrt(E)` at `E = 0`), the run's own pass over the conditions finds
+it, the code is built again for those values, and the run gets the refusal a
+model loaded there would get. Moving back restores the analytic code.
 
 A `run_batch` row is the exception. Every row runs on the code built for the
 model as the batch found it. A row whose own writes pin or re-attach a derived
 parameter is refused with `SensitivityUnsupportedError` where a requested
 column is of a parameter that one is derived from; its own column, and columns
 that do not reach the model through it, are the same code either way and run. A
-row that changes how a rate-law condition is read is refused likewise. Make the
+row at whose values a condition's switch time no longer resolves is refused
+likewise. Make the
 write on the model with `set_param` before the batch, so that every row agrees
 with it, or run that row with `set_params` and `run()`.
 

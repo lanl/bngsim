@@ -7345,8 +7345,15 @@ def compute_switch_time_sens(
     has_analytic_sens_rhs: bool = False,
     ic_species: Sequence[int] = (),
     declared: Mapping[str, Mapping[str, float]] | None = None,
+    uncompensated_out: list[str] | None = None,
 ) -> tuple[list[SwitchCrossing], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
+
+    ``uncompensated_out``, where given, is handed each clock-threshold
+    condition this pass could not compensate at the model's values now (issue
+    #708): the rule is the one the codegen gate admits a condition by, so one
+    listed here in a run on the analytic right-hand side was admitted at other
+    values, when the code was built.
 
     ``ic_species`` are the 0-based species of the run's initial-condition
     columns. A counter clock's crossing moves with the clock's own sensitivity
@@ -7544,6 +7551,8 @@ def compute_switch_time_sens(
                 # #375) — they just carry no ∂t*/∂p.
                 terms = [_threshold_crossing_terms(e, scope, own_names) for e in threshold_exprs]
                 compensated = all(t is not None for t in terms)
+                if not compensated and uncompensated_out is not None:
+                    uncompensated_out.append(atom)
 
                 for k, (threshold_expr, term) in enumerate(
                     zip(threshold_exprs, terms, strict=True)

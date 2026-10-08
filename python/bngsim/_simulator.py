@@ -99,13 +99,26 @@ def _gate_verdict(model: Model) -> tuple:
         return ()
 
 
-def _built_for(model: Model, gate: bool = True) -> tuple:
+def _built_for(model: Model, gate: bool = False) -> tuple:
     """What an artifact built for *model* now is recorded as built for (issue
-    #708): the two things its cache key carries beyond the model's structure,
-    each of which a ``set_param`` can change after the build. *gate* false
-    leaves the verdict out, for a model known to have no condition to ask of.
+    #708): which parameters are attached to an expression, and, where *gate*
+    asks for it, what the switch gate makes of the conditions. They are the two
+    things in the cache key beyond the model's structure that a ``set_param``
+    can change after the build.
+
+    The gate's verdict costs a pass over the conditions (0.1 ms to seconds),
+    so it is recorded only for an artifact that was built because a condition
+    was found to be read otherwise than when the one before it was built. That
+    is found by the run's own switch-time pass, at no cost
+    (:meth:`Simulator._apply_switch_time_sens`).
     """
-    return (_attachment(model), _gate_verdict(model) if gate else ())
+    return (_attachment(model), _gate_verdict(model) if gate else None)
+
+
+class _ConditionReadOtherwise(SensitivityUnsupportedError):
+    """A clock-threshold condition is not compensated at a model's values now,
+    in a run on an artifact with the analytic right-hand side (issue #708).
+    Carries the conditions."""
 
 
 # How many leg ends a model keeps for a rollback to return its events to
@@ -720,9 +733,12 @@ class Simulator:
         "_codegen_attachment",
         # ...and whether it was built for a sensitivity run.
         "_codegen_for_sens",
-        # Memoized: does any rate law hold a condition for the switch gate to
-        # ask about? Text alone, so it holds for the Simulator's life.
-        "_laws_hold_a_condition",
+        # Whether the artifact is one whose record holds the switch gate's
+        # verdict, to be asked again where a sensitivity run starts.
+        "_codegen_watch_gate",
+        # What a sensitivity build that failed was asked for, so that a call
+        # that goes on without it does not ask again until that changes.
+        "_codegen_sens_failed_for",
         # Memoized: does the codegen artifact export bngsim_codegen_sens_rhs?
         # (issue #358 — decides the in-branch switch-time refusal narrowing)
         "_codegen_sens_rhs_available",
@@ -1046,7 +1062,8 @@ class Simulator:
         self._codegen_c_source = ""
         self._codegen_attachment: tuple | None = None
         self._codegen_for_sens = False
-        self._laws_hold_a_condition: bool | None = None
+        self._codegen_watch_gate = False
+        self._codegen_sens_failed_for: tuple | None = None
         jit_backend = _codegen_jit_backend()
         net_path_str = str(net_path) if net_path else ""
         self._net_path = net_path_str
@@ -1218,8 +1235,7 @@ class Simulator:
             and model._codegen_c_source
         ):
             self._codegen_c_source = model._codegen_c_source
-            self._codegen_attachment = getattr(model, "_codegen_attachment", None)
-            self._codegen_for_sens = model_codegen_has_sens
+            self._codegen_took_from(model, model_codegen_has_sens)
             logger.debug(
                 "Auto-codegen JIT source from model: %d chars", len(self._codegen_c_source)
             )
@@ -1232,8 +1248,7 @@ class Simulator:
             and model._codegen_so_path
         ):
             self._codegen_so_path = model._codegen_so_path
-            self._codegen_attachment = getattr(model, "_codegen_attachment", None)
-            self._codegen_for_sens = model_codegen_has_sens
+            self._codegen_took_from(model, model_codegen_has_sens)
             logger.debug(
                 "Auto-codegen from model: %s",
                 self._codegen_so_path,
@@ -2189,7 +2204,9 @@ class Simulator:
             logger.debug("Piecewise-constant classification unavailable (%s)", e)
             return []
 
-    def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
+    def _apply_switch_time_sens(
+        self, opts, core, t_start, t_end, param_names=None, _rebuilt: bool = False
+    ) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
 
         A *switch time* is a fitted parameter that sets **when** a step in the
@@ -2222,17 +2239,20 @@ class Simulator:
         ic_species = [species.index(n) for n in self._sensitivity_ic if n in species]
         if not names and not ic_species:
             return
-        from bngsim._switch_sensitivity import compute_switch_time_sens
+        from bngsim._switch_sensitivity import compute_switch_time_sens, state_switch_residual
 
+        analytic = self._codegen_provides_sens_rhs()
+        uncompensated: list[str] = []
         try:
             records, pinned = compute_switch_time_sens(
                 core,
                 names,
                 float(t_start),
                 float(t_end),
-                has_analytic_sens_rhs=self._codegen_provides_sens_rhs(),
+                has_analytic_sens_rhs=analytic,
                 ic_species=ic_species,
                 declared=self._model._declared_ic_sens,
+                uncompensated_out=uncompensated,
             )
         except ValueError:
             # An unsupported switch parameter (one that also acts in-branch) is a
@@ -2250,6 +2270,27 @@ class Simulator:
                 e,
             )
             return
+        # Issue #708 — the artifact has the analytic right-hand side because the
+        # gate could write it across every condition at the values it was built
+        # at. A condition this pass cannot compensate now, and that the solver
+        # does not root as a state switch either, is one the gate would not
+        # admit here: the code is the wrong code for these values.
+        if analytic and not _rebuilt:
+            unrooted = [a for a in uncompensated if not state_switch_residual(core, a)]
+            if unrooted:
+                if core is not self._model._core:
+                    # A batch row's clone runs on the batch's build.
+                    raise _ConditionReadOtherwise(", ".join(repr(a) for a in unrooted))
+                self._rebuild_codegen_for_the_conditions()
+                opts.codegen_so_path = self._codegen_so_path
+                opts.codegen_c_source = self._codegen_c_source
+                # What a Simulator built at these values is asked, which the
+                # artifact from before was taken to have settled.
+                self._raise_if_uncompensated_crossing_sensitivities(params=param_names)
+                self._apply_switch_time_sens(
+                    opts, core, t_start, t_end, param_names, _rebuilt=True
+                )
+                return
         if records:
             logger.info(
                 "Switch-time forward sensitivity: %d crossing(s) at t=%s (issue #48)",
@@ -2608,6 +2649,10 @@ class Simulator:
         # artifact was kept, with no sensitivity code in it, whenever a
         # sensitivity Simulator had been built on the model in between.
         if not self._codegen_for_sens:
+            if self._codegen_sens_failed_for == self._built_for_now():
+                # The build failed for the model as it is, and the call went on
+                # with the plain artifact. Nothing has changed to ask it again.
+                return
             model._want_output_sens = True
             prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
             prev_attachment = self._codegen_attachment
@@ -2636,6 +2681,7 @@ class Simulator:
                 # sensitivity request asks again and is refused again.
                 if prev_attachment is not None and prev_attachment != self._built_for_now():
                     raise
+                self._codegen_sens_failed_for = self._built_for_now()
                 logger.info(
                     "Output-sensitivity codegen regeneration failed; keeping the "
                     "previously attached artifact (d(output)/dp falls back to "
@@ -2647,27 +2693,17 @@ class Simulator:
 
     def _built_for_now(self, model: Model | None = None) -> tuple:
         """What an artifact for *model* (default: this Simulator's) would be
-        built for as it is now: :func:`_built_for`, with the switch gate left
-        unasked for a model whose rate laws hold no condition. That is a matter
-        of their text, read once, so a model with none pays one vector read."""
-        if self._laws_hold_a_condition is None:
-            from bngsim._jacobian import has_condition_construct
+        built for as it is now: :func:`_built_for`, with the switch gate asked
+        only while this Simulator holds an artifact that was built on its
+        verdict."""
+        return _built_for(model or self._model, gate=self._codegen_watch_gate)
 
-            try:
-                core = self._model._core
-                ctx = core.functional_jacobian_context() if core.n_functions else None
-                texts = (
-                    [
-                        *dict(ctx["function_map"]).values(),
-                        *(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]),
-                    ]
-                    if ctx
-                    else []
-                )
-                self._laws_hold_a_condition = any(has_condition_construct(x) for x in texts)
-            except Exception:  # noqa: BLE001 - a double of a model: nothing to ask
-                self._laws_hold_a_condition = False
-        return _built_for(model or self._model, gate=self._laws_hold_a_condition)
+    def _codegen_took_from(self, model: Model, for_sens: bool) -> None:
+        """Take the record that goes with an artifact taken from *model*."""
+        stamp = getattr(model, "_codegen_attachment", None)
+        self._codegen_attachment = stamp
+        self._codegen_for_sens = for_sens
+        self._codegen_watch_gate = stamp is not None and stamp[1] is not None
 
     def _codegen_built_for(self, model: Model) -> None:
         """Record what the artifact just built was built for (issue #708).
@@ -2756,36 +2792,6 @@ class Simulator:
             f"(issue #708). {self._ROW_REMEDY}"
         )
 
-    def _raise_if_row_reads_a_condition_otherwise(self, index: int, clone: Model) -> None:
-        """Refuse a batch row that moves a parameter to where the switch gate
-        makes something else of a rate-law condition (issue #708).
-
-        Whether the sensitivity code has an analytic right-hand side goes by
-        that verdict, and the row runs on the batch's build. With
-        ``piecewise(k, time >= sqrt(E), 0)`` built at ``E = 0.25``, a row at
-        ``E = 0`` returned dA/dE = 0 where it is unbounded and a model loaded
-        there is refused. Asked after the row's other refusals, which name the
-        condition where they apply.
-
-        Only of a batch whose build has the analytic right-hand side. One
-        without it has each row asked what a run on the difference quotient is
-        asked, of the row's own values (issues #414, #938), and a row that
-        passes that is right on the build it runs on.
-        """
-        built = self._codegen_attachment
-        if built is None or not self._codegen_provides_sens_rhs():
-            return
-        if self._built_for_now(clone)[1] == built[1]:
-            return
-        raise SensitivityUnsupportedError(
-            f"run_batch row {index} moves a parameter to where a rate-law condition is "
-            "read otherwise than for the model as it stood when the batch began: a "
-            "species that counts as a clock at a rate of exactly 1, or a threshold on a "
-            "clock that resolves at one value and not at another. Whether the "
-            "sensitivity code has an analytic right-hand side goes by that, and every "
-            f"row of a batch runs on the one build (issue #708). {self._ROW_REMEDY}"
-        )
-
     def _rebuild_codegen_if_reattached(self) -> None:
         """Build the sensitivity code again where the model is no longer what
         it was built for (issue #708).
@@ -2797,25 +2803,21 @@ class Simulator:
         Simulator was built returned dA/dk1 = -0.0769 for 0, with a right
         trajectory and nothing logged.
 
-        A write can also move a parameter to where the switch gate makes
-        something else of a rate-law condition. Built at ``E = 0.25`` for
-        ``piecewise(k, time >= sqrt(E), 0)``, the artifact has an analytic
-        right-hand side; at ``E = 0`` the threshold does not resolve, a build
-        has none and the run is refused, and on the artifact kept from before
-        it returned dA/dE = 0 where the derivative is unbounded.
-
         Called where a sensitivity run starts. A no-op while the model is what
-        the artifact was built for, which costs one vector read, and for a
-        model with a condition in a rate law one reading of the gate. Where it
-        is not, the artifact is dropped and built for the model as it is; the
+        the artifact was built for, which costs one vector read. Where it is
+        not, the artifact is dropped and built for the model as it is; the
         compiled library for a case seen before comes from the cache (issue
         #174). A model that cannot be differentiated as it is now is refused
         by :meth:`_auto_codegen_for_sensitivity`.
+
+        An artifact that was built on the switch gate's verdict
+        (:meth:`_rebuild_codegen_for_the_conditions`) has that verdict in its
+        record too, and it is asked here until a build comes back with the
+        analytic right-hand side.
         """
         built = self._codegen_attachment
         if built is None or not (self._codegen_so_path or self._codegen_c_source):
             return
-        model = self._model
         if built == self._built_for_now():
             return
         logger.info(
@@ -2823,6 +2825,67 @@ class Simulator:
             "parameter pinned or attached again, or a rate-law condition read otherwise "
             "at the new values); building it again (issue #708)."
         )
+        self._build_codegen_again()
+
+    def _rebuild_codegen_for_the_conditions(self) -> None:
+        """Build the sensitivity code again where a rate-law condition is read
+        otherwise than when it was built (issue #708).
+
+        Whether the code has an analytic sensitivity right-hand side goes by
+        what the switch gate makes of each condition at the parameter values of
+        the build. For ``piecewise(k, time >= sqrt(E), 0)`` built at
+        ``E = 0.25`` it has one; at ``E = 0`` the threshold does not resolve, a
+        build has none and the run is refused, and on the artifact kept from
+        before the run returned dA/dE = 0 where the derivative is unbounded.
+
+        The gate is not asked at every run: that is a pass over the conditions
+        a run's own switch-time pass already makes. This is called where that
+        pass finds a condition it cannot compensate in a run on the analytic
+        right-hand side. The artifact built here has the gate's verdict in its
+        record, and is watched from then on.
+        """
+        logger.info(
+            "A rate-law condition is read otherwise than when the sensitivity code was "
+            "built; building it again for the model as it is (issue #708)."
+        )
+        self._codegen_watch_gate = True
+        self._build_codegen_again()
+
+    def _sync_codegen_with_the_conditions(self, t_span, param_names) -> None:
+        """Make the switch-time pass once on this Simulator's own model, and
+        build the code again where it finds a condition read otherwise (issue
+        #708). For an entry point whose runs are all on clones."""
+        if not self._codegen_provides_sens_rhs():
+            return
+        from bngsim._switch_sensitivity import compute_switch_time_sens, state_switch_residual
+
+        core = self._model._core
+        species = list(core.species_names)
+        ic_species = [species.index(n) for n in self._sensitivity_ic if n in species]
+        names = list(param_names or ())
+        if not names and not ic_species:
+            return
+        found: list[str] = []
+        try:
+            compute_switch_time_sens(
+                core,
+                names,
+                float(t_span[0]),
+                float(t_span[1]),
+                has_analytic_sens_rhs=True,
+                ic_species=ic_species,
+                declared=self._model._declared_ic_sens,
+                uncompensated_out=found,
+            )
+        except Exception:  # noqa: BLE001 - the run's own pass says what it has to
+            return
+        if any(not state_switch_residual(core, atom) for atom in found):
+            self._rebuild_codegen_for_the_conditions()
+
+    def _build_codegen_again(self) -> None:
+        """Drop the artifact and build one for the model as it is."""
+        model = self._model
+        built = self._codegen_attachment
         prev = (self._codegen_so_path, self._codegen_c_source, self._codegen_for_sens)
         self._codegen_so_path = ""
         self._codegen_c_source = ""
@@ -2840,6 +2903,10 @@ class Simulator:
             self._codegen_attachment = built
             self._codegen_artifact_changed()
             raise
+        if self._codegen_watch_gate and self._codegen_provides_sens_rhs():
+            # Back on the analytic right-hand side: nothing to watch for.
+            self._codegen_watch_gate = False
+            self._codegen_built_for(model)
 
     def _expression_sens_support(self) -> dict[str, str | None]:
         """Memoized ``{function_name: unsupported_reason_or_None}`` for GH #198
@@ -5542,9 +5609,6 @@ class Simulator:
                     # See the note at the single-shot site: keyed on "any
                     # sensitivity at all", not on a parameter request.
                     self._apply_state_switch_sens(opts, clone._core)
-                    if self._sensitivity_params:
-                        # After the row's own refusals, which say more of why.
-                        self._raise_if_row_reads_a_condition_otherwise(index, clone)
                 else:
                     self._apply_state_switch_roots(opts, clone)
                 core_result = sim.run(times, opts)
@@ -5563,6 +5627,14 @@ class Simulator:
                     core_result = sim.run(times, base_seed + index, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
+        except _ConditionReadOtherwise as e:
+            raise SensitivityUnsupportedError(
+                f"run_batch row {index} moves a parameter to where a rate-law condition "
+                f"({e}) is read otherwise than for the model as it stood when the batch "
+                "began: its switch time does not resolve at the row's values. Whether the "
+                "sensitivity code has an analytic right-hand side goes by that, and every "
+                f"row of a batch runs on the one build (issue #708). {self._ROW_REMEDY}"
+            ) from None
         except (SimulationTimeout, SensitivityUnsupportedError):
             # A refusal is a refusal of the row's model, as it is from run().
             raise
@@ -5951,6 +6023,9 @@ class Simulator:
         # steady_state(), which has the same constructor-vs-method-argument gap
         # (issue #75) — see _prepare_output_sens_codegen for the wrinkles.
         self._prepare_output_sens_codegen()
+        # Issue #708 — and for the conditions as they are read now: the chunks run
+        # on clones, which cannot replace the artifact they are handed.
+        self._sync_codegen_with_the_conditions(t_span, target_params)
 
         # Issue #414 — refuse an uncompensated moving rate-law crossing left on the
         # difference quotient, the same as run(). Model-structural (it re-derives
@@ -8013,7 +8088,9 @@ class Simulator:
         """
         # Issue #708 — of the model as it is. Asked between a write that pins
         # a derived parameter and the next run, this answered for the artifact
-        # built before the write.
+        # built before the write. It may therefore build, and where no code
+        # can be built for the model as it is the answer is False: a run
+        # would be refused.
         if self._sensitivity_params or self._sensitivity_ic:
             try:
                 self._rebuild_codegen_if_reattached()
