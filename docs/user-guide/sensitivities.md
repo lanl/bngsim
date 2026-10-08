@@ -112,7 +112,9 @@ Simulator builds the analytic code again at its next run.
 write and the next run it still says what it said before. A Simulator first
 built at values where a condition does not resolve has no analytic code and
 stays on the difference quotient after a write that would allow it, as it
-always has: its columns are right, and a new Simulator gets the analytic code.
+always has, and so does a later Simulator on that model or on a clone of it,
+which takes the model's code: the columns are right, and a Simulator on a
+newly loaded model gets the analytic code.
 Only conditions in rate laws count. One in an expression that is reported and
 that no reaction reads has no bearing on the code.
 

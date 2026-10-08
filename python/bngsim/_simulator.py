@@ -754,6 +754,7 @@ class Simulator:
         # Issue #938 — what a time course on the difference quotient cannot
         # differentiate through in this model, for the columns it was asked of.
         "_fallback_crossing_memo",
+        "_conditions_synced_for",
         "_fallback_scan_cache",
         "_branch_scan_cache",
     )
@@ -1261,6 +1262,9 @@ class Simulator:
         # support map; None until first needed by a sensitivity run.
         self._expr_sens_support_memo: tuple[tuple, dict[str, str | None]] | None = None
         self._fallback_crossing_memo: tuple[tuple, str | None] | None = None
+        # What the pass over the conditions of this Simulator's own model was
+        # last made for and found nothing by (issue #708).
+        self._conditions_synced_for: tuple | None = None
         self._fallback_scan_cache: dict | None = None
         self._branch_scan_cache: dict | None = None
         if self._sensitivity_params and dispatch != "ode":
@@ -2865,6 +2869,21 @@ class Simulator:
         names = list(param_names or ())
         if not names and not ic_species:
             return
+        # What the pass lists goes by the parameter values, by which derived
+        # parameters follow their expressions, and by the columns and the
+        # window, and not by the code in hand. A batch of one row in a loop
+        # made the pass each time, at half the cost of the row on a model
+        # with many conditions.
+        key = (
+            tuple(names),
+            tuple(ic_species),
+            float(t_span[0]),
+            float(t_span[1]),
+            tuple(float(core.get_param(name)) for name in core.param_names),
+            tuple(bool(x) for x in core.param_is_expression),
+        )
+        if key == self._conditions_synced_for:
+            return
         found: list[str] = []
         try:
             compute_switch_time_sens(
@@ -2881,6 +2900,8 @@ class Simulator:
             return
         if self._conditions_read_otherwise(core, found):
             self._rebuild_codegen_for_the_conditions()
+        else:
+            self._conditions_synced_for = key
 
     def _conditions_read_otherwise(self, core, found: list[str]) -> list[str]:
         """Those of *found*, the conditions a switch-time pass could not

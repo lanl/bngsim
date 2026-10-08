@@ -802,6 +802,43 @@ def test_a_batch_after_a_write_made_on_the_model_is_asked_what_a_run_is():
     _close(_columns(sim.run_batch(params=[{}], **TIGHT)[0]), _gated(0.25))
 
 
+def test_a_batch_asks_its_own_model_again_only_after_something_has_changed(monkeypatch):
+    """The pass on the batch's own model is made once for the values, the
+    attachment, the columns and the window it was made for. A batch of one row
+    in a loop paid it each time. A write in between is seen: at ``E = 0`` the
+    next batch is refused, and back at 0.25 it runs."""
+    from bngsim import _switch_sensitivity
+
+    model = _model(GATED)
+    sim = _sim(model, ["k", "E"])
+    own = []
+    real = _switch_sensitivity.compute_switch_time_sens
+
+    def counted(core, *args, **kwargs):
+        if core is model._core:
+            own.append(1)
+        return real(core, *args, **kwargs)
+
+    monkeypatch.setattr(_switch_sensitivity, "compute_switch_time_sens", counted)
+    for _ in range(3):
+        _close(_columns(sim.run_batch(params=[{}], **TIGHT)[0]), _gated(0.25))
+    assert len(own) == 1
+    sim.run_batch(params=[{}], t_span=(0.0, 2.0), n_points=11, rtol=1e-9, atol=1e-12)
+    assert len(own) == 2
+    model.set_param("k", 2.0)
+    model.reset()
+    sim.run_batch(params=[{}], **TIGHT)
+    assert len(own) == 3
+    model.set_param("E", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        sim.run_batch(params=[{}], **TIGHT)
+    model.set_param("E", 0.25)
+    model.set_param("k", 1.0)
+    model.reset()
+    _close(_columns(sim.run_batch(params=[{}], **TIGHT)[0]), _gated(0.25))
+
+
 REPORTED_ONLY = (
     "species A, B; A = 10; B = 0; k = 1; P = 2.5;\n"
     "F := piecewise(1, time >= floor(P) + 0.5, 0);\nR1: A -> B; k*A\n"
