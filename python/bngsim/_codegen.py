@@ -6119,6 +6119,12 @@ def generate_rhs_from_model(model) -> str:
         elif rtype == "mm":
             # tQSSA Michaelis-Menten — the free substrate through the stable
             # quadratic root (GH #89).
+            if any(params[i]["name"] in _func_idx_by_name for i in rate_params[:2]):
+                # Issue #931: the slot is one a function writes, and is read
+                # here as it was loaded. See _decline_what_is_not_emitted.
+                raise CodegenDeclined(
+                    "a Michaelis-Menten rate constant that a function writes (issue #931)"
+                )
             if len(rate_params) >= 2 and len(reactants) >= 2:
                 for ln in _mm_rate_lines(
                     f"p[{rate_params[0]}]",
@@ -6488,6 +6494,39 @@ class CodegenDeclined(RuntimeError):
     Distinct from a codegen *bug*: the prepare_* entry points turn this into a
     ``None`` return (decline), while any other exception stays an error.
     """
+
+
+def _decline_what_is_not_emitted(data: dict) -> None:
+    """Raise :class:`CodegenDeclined` for a model the emitters do not read as
+    the engine does, so the caller falls back to the interpreted engine.
+
+    Two shapes. A cyclic function graph has no order to assign ``func[]`` in
+    (issue #621, :func:`_topological_function_order`). And a Michaelis-Menten
+    reaction whose ``kcat`` or ``Km`` is a parameter that a function of the
+    same name writes (issue #931): the engine evaluates the function into the
+    parameter's slot before each right-hand side, and the emitted C read the
+    slot as the model was loaded. With ``kcat() = kb`` over a slot at 0 the
+    reaction never ran: P(6) = 0 for 18 under ``codegen=True`` and in every
+    forward-sensitivity run, which always uses the compiled right-hand side,
+    with dP/dkb = 0 for 6. The JAX right-hand side refuses the same shape
+    (:func:`bngsim._jax_rhs._refuse_unsupported`).
+    """
+    _topological_function_order(list(data["functions"]))
+    function_names = {f["name"] for f in data["functions"]}
+    parameters = data["parameters"]
+    for reaction in data["reactions"]:
+        if reaction.get("type") != "mm":
+            continue
+        for i in reaction.get("rate_param_indices", ()):
+            name = parameters[int(i)]["name"] if 0 <= int(i) < len(parameters) else ""
+            if name in function_names:
+                raise CodegenDeclined(
+                    "codegen declines a model with a Michaelis-Menten reaction whose rate "
+                    f"constant is a parameter that a function writes ({name}): the engine "
+                    "evaluates the function into the parameter before each right-hand side, "
+                    "and the compiled right-hand side would read the value the parameter was "
+                    "loaded with. The interpreted engine reads the function (issue #931)."
+                )
 
 
 def _topological_function_order(functions: list) -> list[int]:
@@ -11033,10 +11072,10 @@ def prepare_model_codegen(model) -> Path | None:
     # last_codegen_error() reports as the reason for this one.
     _record_codegen_error(None)
     _record_codegen_decline(None)
-    # Issue #621 — a cyclic function graph has no emit order; decline so the
-    # caller falls back to the interpreted engine, which solves the group.
+    # Issues #621, #931 — a model the emitters do not read as the engine does;
+    # decline so the caller falls back to the interpreted engine.
     try:
-        _topological_function_order(list(model._core.codegen_data()["functions"]))
+        _decline_what_is_not_emitted(model._core.codegen_data())
     except CodegenDeclined as exc:
         logger.debug("codegen declined: %s", exc)
         _record_codegen_decline(str(exc))
@@ -11157,10 +11196,10 @@ def prepare_model_codegen_source(model) -> str | None:
     # Cleared before the decline, as in prepare_model_codegen.
     _record_codegen_error(None)
     _record_codegen_decline(None)
-    # Issue #621 — a cyclic function graph has no emit order; decline so the
-    # caller falls back to the interpreted engine, which solves the group.
+    # Issues #621, #931 — a model the emitters do not read as the engine does;
+    # decline so the caller falls back to the interpreted engine.
     try:
-        _topological_function_order(list(model._core.codegen_data()["functions"]))
+        _decline_what_is_not_emitted(model._core.codegen_data())
     except CodegenDeclined as exc:
         logger.debug("codegen declined: %s", exc)
         _record_codegen_decline(str(exc))
