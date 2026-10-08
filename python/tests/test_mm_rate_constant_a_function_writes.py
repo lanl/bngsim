@@ -1,16 +1,23 @@
 """A Michaelis-Menten reaction whose ``kcat`` or ``Km`` is a parameter that a
 function of the same name writes (issue #931).
 
-The engine evaluates the function into the parameter's slot before each
-right-hand side. The compiled right-hand side read the slot as the model was
-loaded: with ``kcat() = kb`` over a slot at 0 the reaction never ran, and
-P(6) came back 0 for 18 under ``codegen=True`` and in every forward-sensitivity
-run, which always uses the compiled right-hand side, with dP/dkb = 0 for 6.
-Nothing was logged.
+A Michaelis-Menten rate law reads its two constants as parameters. The
+interpreted ODE right-hand side evaluates every function into the parameter
+slot of its name first, so there the constant followed the function. Nothing
+else did:
 
-Codegen declines such a model now. A plain run falls back to the interpreted
-engine, which is right; ``codegen=True`` and a sensitivity request say why they
-cannot be honoured.
+- the compiled right-hand side read the slot as it stood: with ``kcat() = kb``
+  over a slot at 0 the reaction never ran, P(6) = 0 for 18 under
+  ``codegen=True`` and in every forward-sensitivity run, which always uses the
+  compiled right-hand side, with dP/dkb = 0 for 6;
+- the compiled SSA propensities held the slot at its first value, 502 for 99
+  with ``kcat() = kb*Aobs``, and the interpreted SSA did not know the reaction
+  reads what the function reads (272 or 104, by how often the run was
+  sampled);
+- the Jacobian took the constant for one.
+
+Nothing was logged in any of them. BNG2.pl writes no such model, and the
+model is refused where it is built.
 
 E = 1 and S = 1e6 with Km = 1, so the rate is kcat·S/(Km + S) to six digits and
 P(6) = 6·kcat.
@@ -34,104 +41,94 @@ begin species
     1 E() 1
     2 S() 1e6
     3 P() 0
+    4 Q() 0
 end species
 begin reactions
-    1 1,2 1,3 {law}
+    1 3 4 kb
+    2 1,2 1,3 {law}
 end reactions
+begin groups
+    1 Sobs 2
+end groups
 """
 
 
-def _model(tmp_path, function="kcat() kb", law="MM kcat Km", kcat="0", km="1"):
+def _write(tmp_path, function="kcat() kb", law="MM kcat Km", kcat="0", km="1"):
     path = tmp_path / "mm.net"
     path.write_text(NET.format(function=function, law=law, kcat=kcat, km=km))
-    return bngsim.Model.from_net(str(path))
+    return str(path)
 
 
-def _p_end(sim):
+def _made(sim):
+    """P + Q at t = 6: what the Michaelis-Menten reaction made."""
     run = sim.run(t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12)
-    return float(np.asarray(run.species)[-1, list(run.species_names).index("P()")])
+    names = list(run.species_names)
+    end = np.asarray(run.species)[-1]
+    return float(end[names.index("P()")] + end[names.index("Q()")])
 
 
-CASES = {
+SHAPES = {
     "kcat-at-0": dict(),
     "kcat-at-7": dict(kcat="7"),
-    "kcat-twice-kb": dict(function="kcat() kb*2"),
+    "kcat-equal-to-what-the-function-gives": dict(kcat="3"),
+    "kcat-of-the-state": dict(function="kcat() kb*Sobs/1e6"),
+    "kcat-of-the-time": dict(function="kcat() if(time()>3,2*kb,0)"),
     "km": dict(function="Km() kb/3", law="MM kb Km", km="5e6"),
 }
-P_END = {"kcat-at-0": 18.0, "kcat-at-7": 18.0, "kcat-twice-kb": 36.0, "km": 18.0}
 
 
-@pytest.mark.parametrize("case", sorted(CASES))
-def test_the_compiled_right_hand_side_is_declined(tmp_path, case):
-    """``codegen=True`` returned P(6) = 0 with the slot at 0 and 42 with it at
-    7, for 18; and 3 for 18 with ``Km() = kb/3`` over a slot at 5e6."""
-    with pytest.raises(RuntimeError, match=r"codegen declined.*issue #931"):
-        bngsim.Simulator(_model(tmp_path, **CASES[case]), method="ode", codegen=True)
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_the_model_is_refused_where_it_is_built(tmp_path, shape):
+    """Whatever the slot holds and whatever the function reads: the second
+    reaction of the model, with the one before it left alone."""
+    name = "Km" if shape == "km" else "kcat"
+    with pytest.raises(
+        bngsim.ModelError, match=rf"MichaelisMenten.*'{name}'.*issue #931"
+    ) as caught:
+        bngsim.Model.from_net(_write(tmp_path, **SHAPES[shape]))
+    assert "reaction 1 " in str(caught.value)
 
 
-@pytest.mark.parametrize("case", sorted(CASES))
-def test_a_plain_run_reads_the_function(tmp_path, case):
-    """Control. The interpreted engine, which a plain run of a model this
-    size uses and which a declined model falls back to."""
-    model = _model(tmp_path, **CASES[case])
-    assert _p_end(bngsim.Simulator(model, method="ode")) == pytest.approx(P_END[case], rel=1e-5)
-    model.reset()
-    assert _p_end(bngsim.Simulator(model, method="ode", codegen=False)) == pytest.approx(
-        P_END[case], rel=1e-5
+def test_the_constant_as_a_parameter_that_is_an_expression(tmp_path):
+    """Control. What the refusal points at: ``kcat`` as a parameter written in
+    others. Interpreted and compiled agree, and the sensitivity is right."""
+    text = NET.format(function="unused() kb*2", law="MM kcat Km", kcat="kb*2", km="1")
+    path = tmp_path / "expr.net"
+    path.write_text(text)
+    for codegen in (False, True):
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode", codegen=codegen)
+        assert _made(sim) == pytest.approx(36.0, rel=1e-5)
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["kb"]
     )
+    run = sim.run(t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12)
+    names = list(run.species_names)
+    sens = np.asarray(run.sensitivities)[-1, :, 0]
+    assert sens[names.index("P()")] + sens[names.index("Q()")] == pytest.approx(12.0, rel=1e-5)
 
 
-def test_a_forward_sensitivity_run_is_refused(tmp_path):
-    """It integrated the compiled right-hand side: P(6) = 0 and dP/dkb = 0,
-    for 18 and 6."""
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"issue #931"):
-        bngsim.Simulator(_model(tmp_path), method="ode", sensitivity_params=["kb"])
-
-
-def test_a_steady_state_sensitivity_is_refused(tmp_path):
-    sim = bngsim.Simulator(_model(tmp_path), method="ode")
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"issue #931"):
-        sim.steady_state(sensitivity_params=["kb"])
-
-
-def test_the_source_for_the_jit_is_declined_too(tmp_path):
-    from bngsim import _codegen
-
-    model = _model(tmp_path)
-    assert _codegen.prepare_model_codegen_source(model) is None
-    assert "issue #931" in (_codegen.last_codegen_decline() or "")
-    assert _codegen.prepare_model_codegen(model) is None
-    assert "issue #931" in (_codegen.last_codegen_decline() or "")
-
-
-@pytest.mark.parametrize("case", ["kcat-at-0", "km"])
-def test_the_emitter_declines_for_a_caller_that_goes_round_the_entry_points(tmp_path, case):
-    from bngsim import _codegen
-
-    with pytest.raises(_codegen.CodegenDeclined, match=r"issue #931"):
-        _codegen.generate_rhs_from_model(_model(tmp_path, **CASES[case]))
-
-
-def test_a_constant_that_no_function_writes_is_compiled(tmp_path):
-    """Control. ``MM kb Km`` over plain parameters, beside a function that is
-    in no rate."""
-    model = _model(tmp_path, function="unused() kb*2", law="MM kb Km")
-    assert _p_end(bngsim.Simulator(model, method="ode", codegen=True)) == pytest.approx(
-        18.0, rel=1e-5
-    )
-    model = _model(tmp_path, function="unused() kb*2", law="MM kb Km")
-    sens = bngsim.Simulator(model, method="ode", sensitivity_params=["kb"])
-    run = sens.run(t_span=(0.0, 6.0), n_points=3, rtol=1e-10, atol=1e-12)
-    got = np.asarray(run.sensitivities)[-1, list(run.species_names).index("P()"), 0]
-    assert got == pytest.approx(6.0, rel=1e-5)
+def test_a_function_of_another_name_that_reads_the_constant(tmp_path):
+    """Control. ``twice() = 2*kcat`` reads the parameter and does not write
+    it."""
+    path = _write(tmp_path, function="twice() 2*kcat", kcat="3")
+    for codegen in (False, True):
+        sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode", codegen=codegen)
+        assert _made(sim) == pytest.approx(18.0, rel=1e-5)
 
 
 @pytest.mark.parametrize("law", ["Sat kcat Km", "kcat"], ids=["sat", "elementary"])
-def test_the_other_rate_laws_read_the_function_when_compiled(tmp_path, law):
-    """Control. The loader makes these two functional rate laws, which the
-    compiled right-hand side reads through the function: the same compiled
-    and interpreted."""
-    compiled = _p_end(bngsim.Simulator(_model(tmp_path, law=law), method="ode", codegen=True))
-    plain = _p_end(bngsim.Simulator(_model(tmp_path, law=law), method="ode", codegen=False))
+def test_the_other_rate_laws_follow_a_function_of_their_constant_s_name(tmp_path, law):
+    """Control. The loader makes these two functional rate laws, which every
+    engine reads through the function: the same compiled and interpreted."""
+    compiled = _made(
+        bngsim.Simulator(
+            bngsim.Model.from_net(_write(tmp_path, law=law)), method="ode", codegen=True
+        )
+    )
+    plain = _made(
+        bngsim.Simulator(
+            bngsim.Model.from_net(_write(tmp_path, law=law)), method="ode", codegen=False
+        )
+    )
     assert compiled == pytest.approx(plain, rel=1e-8)
     assert compiled > 0.0
