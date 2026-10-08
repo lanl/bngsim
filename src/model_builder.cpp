@@ -1693,6 +1693,40 @@ NetworkModel ModelBuilder::build() {
                                              " (MichaelisMenten) has unresolved kcat/Km "
                                              "parameters (expected 'kcat_name,km_name')");
                 }
+                // Issue #931 — kcat and Km are read as parameters, by every
+                // engine. A parameter that a function of the same name writes
+                // is a slot the interpreted right-hand side refreshes before
+                // each evaluation and nothing else follows: the compiled
+                // right-hand side read the slot as it stood (P = 0 for 18, with
+                // dP/dkb = 0 in every forward-sensitivity run), the compiled
+                // SSA propensities held it at its first value (502 for 99), the
+                // SSA's dependency graph did not know the reaction reads what
+                // the function reads, and the Jacobian took it for a constant.
+                // BNG2.pl writes no such model: for a function-valued constant
+                // it writes the function's name with no parameter row, which
+                // is refused above.
+                for (int which = 0; which < 2; ++which) {
+                    const int pi = rxn.rate_law_param_indices[static_cast<size_t>(which)] - 1;
+                    if (pi < 0 || pi >= static_cast<int>(b.parameters.size())) {
+                        continue; // refused below, by its index
+                    }
+                    const std::string &pname = b.parameters[static_cast<size_t>(pi)].name;
+                    if (b.function_name_to_idx.find(pname) != b.function_name_to_idx.end()) {
+                        throw std::runtime_error(
+                            "ModelBuilder::validate: reaction " + std::to_string(ri) +
+                            " (MichaelisMenten) has '" + pname + "' for its " +
+                            (which == 0 ? "kcat" : "Km") +
+                            ", a parameter that a function of the same name writes. A "
+                            "Michaelis-Menten rate law reads kcat and Km as parameters, and "
+                            "only the interpreted ODE right-hand side follows the function: "
+                            "the compiled one reads the parameter as it stands, the "
+                            "stochastic engines hold a function of the state or the time at "
+                            "a stale value, and the Jacobian takes it for a constant (issue "
+                            "#931). Give the constant as a parameter, which may be an "
+                            "expression of others, or write the reaction with a functional "
+                            "rate law.");
+                    }
+                }
             }
 
             // A rate that names a parameter and no function resolves as
