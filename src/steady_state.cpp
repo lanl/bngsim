@@ -2752,6 +2752,17 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         throw std::runtime_error("Cannot find steady state: model has no species");
     }
 
+    // Issue #710 — both solvers look for a root of f(y) with the right-hand
+    // side read at t = 0, and fire no event. A model that reads the time has no
+    // f(y) = 0 without a time being chosen, and an event needs a trajectory:
+    // `k*(1 - exp(-time()))` came back at its initial state as converged.
+    if (model.n_events() > 0 || model.functions_use_time()) {
+        throw std::runtime_error(
+            "Cannot find steady state: the model has an event or reads the time, and the "
+            "steady-state solvers read the right-hand side at t = 0 and fire no event "
+            "(issue #710). Integrate it with run().");
+    }
+
     // Same refusal run() makes (issue #128): the pair is a contradiction, not a
     // precedence question, and both flags exist to measure the auto rule — a
     // solve that quietly honors one of them hands a benchmark auto-selected

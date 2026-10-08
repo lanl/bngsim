@@ -3345,6 +3345,10 @@ class Simulator:
             parity, i.e. ``run_network -c``). Default ``False``.
             ``Result.solver_stats["steady_state_reached"]`` reports
             whether the criterion fired before ``t_end``.
+            A model that reads the time, or that has an event, is integrated
+            to the end of its span whatever this says, and is never marked
+            steady (issue #710): the criterion is of the right-hand side at
+            one instant, which for such a model says nothing of the next.
         steady_state_tol : float, optional
             Tolerance for the ``steady_state`` check above. ``None`` or
             ``<= 0`` falls back to ``atol`` (matching BNG2.pl, which
@@ -3766,6 +3770,10 @@ class Simulator:
             point truncates independently, the per-Result row counts may
             differ; use ``squeeze=False`` (the default) when mixing
             steady-state early-stop with heterogeneous equilibration times.
+            A model that reads the time, or that has an event, is integrated
+            to the end of its span whatever this says, and is never marked
+            steady (issue #710): the criterion is of the right-hand side at
+            one instant, which for such a model says nothing of the next.
         steady_state_tol : float, optional
             Tolerance for the ``steady_state`` check above. ``None`` or
             ``<= 0`` falls back to ``atol`` (matching BNG2.pl).
@@ -5865,6 +5873,12 @@ class Simulator:
     ):
         """Find the steady state of the ODE system f(y) = 0.
 
+        A model with an event, or one that reads the time (``time()`` or a
+        table function indexed by time, in a rate law, a rule or a reported
+        function), is refused with :class:`SimulationError` (issue #710): the
+        solvers read the right-hand side at ``t = 0`` and fire no event.
+        Integrate such a model with :meth:`run`.
+
         Solver methods:
 
         - ``"integration"`` (default): CVODE BDF integrated until the BNG2.pl
@@ -6004,17 +6018,14 @@ class Simulator:
             raise ValueError(
                 f"steady_state() is only supported for method='ode', not method='{self._method}'."
             )
+        self._raise_if_no_steady_state_to_solve_for("steady_state()")
 
         # Issue #74 — resolve the convergence-test subspace before anything
         # expensive runs, so a bad mask is an immediate error rather than a solve
         # that quietly tested the wrong species.
         mask_selector = _resolve_ss_mask(mask, self._model)
 
-        # GH #205 — dY_ss/dp on event models: allowed only for the subclasses
-        # whose ∂t*/∂p is known (see _raise_if_event_sensitivities),
-        # classified against this call's requested sensitivity_params.
         if sensitivity_params:
-            self._raise_if_event_sensitivities(sensitivity_params)
             # Issue #164/#170 — the same refusal the constructor applies, and
             # only for the same narrow set. A steady-state column reads ∂f/∂p out
             # of the same emitted sensitivity RHS and solves J·(dY/dp) = −∂f/∂p,
@@ -6118,6 +6129,56 @@ class Simulator:
         self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    def _raise_if_no_steady_state_to_solve_for(self, where: str) -> None:
+        """Refuse a steady-state solve of a model with an event, or with a
+        function that reads the time (issue #710).
+
+        Both solvers look for a root of ``f(y)``, and evaluate the right-hand
+        side at ``t = 0`` for the residual, the Newton step, the Jacobian and
+        ``∂f/∂p``; the march integrates at the true time and tests convergence at
+        ``t = 0``. Neither registers a root or fires an event. So a rate that is 0
+        at ``t = 0``, ``k*(1 - exp(-time()))``, returned the initial state as
+        converged in one step, and a model whose event sets a production rate at
+        ``t = 2`` returned the state from before it, ``A = 0`` for ``1/kd``, with
+        ``dA/dkd = 0`` for ``-1/kd²``. A rate that reads the time has no
+        ``f(y) = 0`` to solve without a time being chosen, and an event needs a
+        trajectory.
+
+        What is asked is whether any function of the model reads the time
+        (``NetworkModel.functions_use_time``, decided from the functions' text
+        when the model is built), and not only whether a rate does. A reported
+        quantity that reads it has no steady value either, and came back at
+        ``t = 0`` beside a state marked converged: an assignment-rule species
+        ``S := B*(1 - exp(-time))`` as 0 for 2/3, a species in a compartment
+        sized by a rule on the time at 0.5 for 0.25. A function that reads the
+        time and that nothing reads is refused with the rest.
+
+        A ``rateOf`` accessor is not a read of the time: it reads the state's own
+        derivatives, which are 0 at a steady state.
+        """
+        core = self._model._core
+        n_events = int(self._model.n_events)
+        if n_events:
+            raise SimulationError(
+                f"{where} is not supported for this model: it has {n_events} "
+                f"event{'s' if n_events != 1 else ''}. The steady-state solvers look for a "
+                "root of the right-hand side and fire no event, so an event's assignment is "
+                "never made, and the state they return is one the model's dynamics may never "
+                "reach (issue #710). Integrate the model with run() over a span long enough "
+                "for the trajectory to settle, and read the state where it ends."
+            )
+        if core.functions_use_time:
+            raise SimulationError(
+                f"{where} is not supported for this model: it reads the time, through time() "
+                "or a table function indexed by time, in a rate law, a rule or a reported "
+                "function. The steady-state solvers look for a root of f(y) with everything "
+                "read at t = 0, which is the model's steady state only where nothing changes "
+                "with the time after that: a rate that is 0 at t = 0 returned the initial "
+                "state as converged, and a reported function its value at t = 0 (issue #710). "
+                "Integrate the model with run() over a span long enough for the trajectory to "
+                "settle, and read the state where it ends."
+            )
 
     def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
         """Drop AssignmentRule-target species from the steady-state subspace (#247).
@@ -6461,6 +6522,9 @@ class Simulator:
     ):
         """Compute steady states for multiple parameter sets.
 
+        A model with an event, or one that reads the time, is refused, as
+        :meth:`steady_state` refuses it (issue #710).
+
         Parameters
         ----------
         params : sequence of dict[str, float]
@@ -6499,6 +6563,8 @@ class Simulator:
             )
         if not params:
             raise ValueError("params must be non-empty")
+        # Issue #710 — a row sets parameter values, not what the rates read.
+        self._raise_if_no_steady_state_to_solve_for("steady_state_batch()")
 
         mask_selector = _resolve_ss_mask(mask, self._model)
 
