@@ -425,7 +425,11 @@ derivative exists, and at `n = 1 - 1e-9`. What the scan does not see is a jump
 written with no condition and not as one of the quotients above:
 `sqrt(X*X)/X`, a regularised sign `(thr - X)/(abs(thr - X) + 1e-9)` or
 `tanh(1e9*(X - thr))`, and a pole cut off on both sides,
-`min(max(k/(X - thr), -5), 5)`.
+`min(max(k/(X - thr), -5), 5)`. Nor a sharp bend written with no `abs`, `max`
+or `min`, `((thr - X)^2)^0.05`, which was 0.75% off at a relative tolerance of
+1e-4; nor two crossings of one condition on one instant of a counter species,
+`if((C - tau)*(C - g) > 0, kb, 0)` at `g = tau`, which is refused on `time()`
+and returns 0 on a counter.
 See the [PyBNF guide](pybnf.md#ask-each-model-whether-its-gradient-is-analytic)
 for using this to triage a fit.
 

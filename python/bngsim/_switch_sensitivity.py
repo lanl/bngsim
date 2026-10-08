@@ -4332,6 +4332,46 @@ def _moves_tried(value: float) -> list[float]:
     ]
 
 
+# What a compiled expression may call: the calls :func:`_value_of` has a value
+# for, and the power as it takes it.
+_VALUE_GLOBALS: dict = {"__builtins__": {}, "_pow": math.pow, **_VALUE_CALLS}
+_VALUE_BINOPS = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Pow: "**"}
+
+
+def _value_code(node: ast.AST):
+    """*node* compiled to what :func:`_facts_of` gives as its value, where it
+    is made of numbers, names, signs, sums, products, quotients, powers and
+    the calls that have a value, and ``None`` where it holds anything else.
+
+    The sign of an expression over parameters is asked at 24 values of each
+    requested parameter in it, and through :func:`_facts_of_tree` that is a
+    tuple built for every node each time: 49 passes over 500 nodes for one
+    ``max`` in ``synthesis_v3``, 0.9 s after each ``set_param``. Compiled, it is
+    the same arithmetic on the same doubles. A name that is not a parameter,
+    and anything that has no value, raises where the tree gives ``None``.
+    """
+
+    def written(one: ast.AST) -> str:
+        if isinstance(one, ast.Name):
+            return one.id
+        if isinstance(one, ast.Constant) and isinstance(one.value, (bool, int, float)):
+            return repr(float(one.value))
+        if isinstance(one, ast.UnaryOp) and isinstance(one.op, (ast.USub, ast.UAdd)):
+            return f"({'-' if isinstance(one.op, ast.USub) else '+'}{written(one.operand)})"
+        if isinstance(one, ast.BinOp) and type(one.op) in _VALUE_BINOPS:
+            left, right = written(one.left), written(one.right)
+            op = _VALUE_BINOPS[type(one.op)]
+            return f"_pow({left}, {right})" if op == "**" else f"({left} {op} {right})"
+        if _call_name(one) in _VALUE_CALLS and not one.keywords:  # type: ignore[attr-defined]
+            return f"{_call_name(one)}({', '.join(written(arg) for arg in one.args)})"  # type: ignore[attr-defined]
+        raise ValueError(type(one).__name__)
+
+    try:
+        return compile(written(node), "<an expression over parameters>", "eval")
+    except (RecursionError, SyntaxError, ValueError, MemoryError):
+        return None
+
+
 def _flips_with_a_parameter(
     node: ast.AST, values: Mapping[str, float], asked: AbstractSet[str]
 ) -> bool:
@@ -4339,14 +4379,22 @@ def _flips_with_a_parameter(
     changes sign with a requested parameter in it moved as the quotient may
     move it (:func:`_moves_tried`); or cannot be read."""
 
+    compiled = _value_code(node)
+
     def sign_at(at: Mapping[str, float]) -> int | None:
-        _order, facts = _facts_of_tree(
-            ast.Expression(body=node),  # type: ignore[arg-type]
-            at,
-            frozenset(),
-            frozenset(),
-        )
-        value = facts[id(node)].value
+        if compiled is not None:
+            try:
+                value = float(eval(compiled, _VALUE_GLOBALS, at))  # noqa: S307 - see _value_code
+            except (ArithmeticError, ValueError, TypeError, NameError):
+                value = None
+        else:
+            _order, facts = _facts_of_tree(
+                ast.Expression(body=node),  # type: ignore[arg-type]
+                at,
+                frozenset(),
+                frozenset(),
+            )
+            value = facts[id(node)].value
         if value is None or not math.isfinite(value):
             return None
         return (value > 0.0) - (value < 0.0)
@@ -4434,6 +4482,10 @@ def _quotient_across_a_choice(
     # and of one side where the other is 0 or is the first with its sign
     # turned; else the difference of the two sides, either way round.
     flips: set[str] = set()
+    # A derived parameter written out is in the law as often as it is read:
+    # one law of ``synthesis_v3`` comes to 16,283 nodes with the same ``max``
+    # over parameters in it 1,145 times. Each is asked about once.
+    asked_already: dict[str, bool] = {}
     for node in order:
         name = _call_name(node)
         known = facts[id(node)]
@@ -4447,10 +4499,19 @@ def _quotient_across_a_choice(
             pairs = [(a, b) for i, a in enumerate(args) for b in args[i + 1 :]]
         if not known.state and not known.clock:
             # Over parameters alone: a bend the quotient straddles for good.
-            for a, b in pairs:
-                flip: ast.AST = a if b is None else ast.BinOp(left=a, op=ast.Sub(), right=b)
-                if _flips_with_a_parameter(flip, values, asked):
-                    return _clipped(node)
+            written = ast.dump(node)
+            found = asked_already.get(written)
+            if found is None:
+                found = asked_already[written] = any(
+                    _flips_with_a_parameter(
+                        a if b is None else ast.BinOp(left=a, op=ast.Sub(), right=b),
+                        values,
+                        asked,
+                    )
+                    for a, b in pairs
+                )
+            if found:
+                return _clipped(node)
             continue
         for a, b in pairs:
             if b is not None and facts[id(b)].zero:
@@ -4890,10 +4951,10 @@ def fallback_crossing(
         moved_index = False
         if table.get("index_kind") == "parameter" and 0 <= index < len(param_names):
             # Indexed by a requested parameter, or by one that is made of
-            # one: the quotient moves the index.
-            name = param_names[index]
-            written = _inline_derived_param_refs(name, derived)
-            moved_index = bool(({name} | set(_IDENTIFIER.findall(written))) & requested)
+            # one, through however many derived parameters: the quotient
+            # moves the index. ``idx = tD + 1`` with ``tD = 2*n`` is moved by
+            # tD, which is neither the index nor a primary it is written in.
+            moved_index = bool(_written_in(param_names[index], derived) & requested)
         if table.get("index_kind") not in ("time", "parameter") or moved_index:
             return f'tfun {table.get("name")} (method=>"step")'
     # The derived parameters that hold a condition, a step call, a choice or
@@ -4915,6 +4976,15 @@ def fallback_crossing(
             if reaction.get("type") != "functional"
             for i in reaction.get("rate_param_indices", ())
             if 0 <= i < len(param_names) and param_names[i] in derived
+        ]
+        # And the ones a table function is indexed by: the table is read by
+        # a rate law as a call, with its index nowhere in the law's text.
+        stack += [
+            param_names[table.get("index_param_idx", -1)]
+            for table in data.get("table_functions", ())
+            if table.get("index_kind") == "parameter"
+            and 0 <= table.get("index_param_idx", -1) < len(param_names)
+            and param_names[table.get("index_param_idx", -1)] in derived
         ]
         while stack:
             name = stack.pop()
@@ -4939,6 +5009,7 @@ def fallback_crossing(
         ):
             return f'tfun {table.get("name")} (method=>"step")'
     texts = [str(reaction.get("rate_expr", "")) for reaction in ctx["functional_reactions"]]
+    moved_clocks: list[frozenset[int]] = []
 
     def scan(held: frozenset[str]) -> str | None:
         """The scan with the derived parameters in *held* left as names, at
@@ -4984,7 +5055,13 @@ def fallback_crossing(
                 run_constants=scope.run_constants
                 | (held - scope.function_names - scope.clock_symbols),
             )
-        moved = _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species)
+        if not moved_clocks:
+            # The same in every view: which species is a clock, and which
+            # parameter seeds or drives it, is not a matter of what is held.
+            moved_clocks.append(
+                _clocks_moved(core, scope.clocks, list(sens_param_names), ic_species, True)
+            )
+        moved = moved_clocks[0]
         # What each parameter is; and the clocks no column moves, literal time
         # and a counter with nothing requested that moves it.
         values = {name: float(scope.values[scope.param_idx[name]]) for name in scope.run_constants}
@@ -5120,6 +5197,21 @@ def fallback_crossing(
         if found is not None:
             return found
     return None
+
+
+def _written_in(name: str, derived: Mapping[str, str]) -> set[str]:
+    """*name*, and every name it is written in: the derived parameters on the
+    way down, and what they are written in at the end."""
+    seen = {name}
+    stack = [name]
+    while stack:
+        text = derived.get(stack.pop())
+        if text is None:
+            continue
+        for read in set(_IDENTIFIER.findall(text)) - seen:
+            seen.add(read)
+            stack.append(read)
+    return seen
 
 
 def _one_written_in_another(held: AbstractSet[str], derived: Mapping[str, str]) -> bool:
@@ -6816,13 +6908,21 @@ def _steps_on_instants(
     return out
 
 
-def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int]) -> frozenset[int]:
+def _clocks_moved(
+    core, clocks, names: Sequence[str], ic_species: Sequence[int], by_text: bool = False
+) -> frozenset[int]:
     """The clock species a requested column moves (issue #725).
 
     A clock moves with its own initial-condition axis, with a parameter its IC
     is seeded from, and with a parameter its rate law reads (inlined through
     functions and derived parameters): BNG2.pl's ``_rateLaw1`` for
     ``0 -> counter() 1``, which compute_all_sensitivities requests by default.
+
+    ``by_text`` reads which parameter a clock's IC is seeded from off the
+    text, every name its IC parameter is written in, and not off the seed's
+    value: no fewer clocks than the seeds give, and nothing differentiated.
+    The refusal of :func:`fallback_crossing` asks it that way, each time a
+    parameter is set.
     """
     from bngsim._codegen import compute_ic_param_sens_seed
     from bngsim._jacobian import _IDENT_RE, _inline_functions
@@ -6834,13 +6934,27 @@ def _clocks_moved(core, clocks, names: Sequence[str], ic_species: Sequence[int])
     moved = {i for i in idx if i in set(ic_species)}
     if wanted and idx - moved:
         pnames = list(core.param_names)
-        for sp, pidx, _coeff in compute_ic_param_sens_seed(core):
-            if sp in idx and 0 <= pidx < len(pnames) and pnames[pidx] in wanted:
-                moved.add(sp)
         data = core.codegen_data()
         params = list(data.get("parameters", ()))
         func_map = {f["name"]: f["expression"] for f in data.get("functions", ())}
         derived = {p["name"]: p["expression"] for p in params if p.get("expression")}
+        if by_text:
+            seeded = [
+                (sp, name)
+                for sp, pidx in core.species_ic_param_refs
+                if sp in idx and 0 <= pidx < len(pnames)
+                for name in _written_in(pnames[pidx], derived)
+            ]
+            seeded += [
+                (sp, pnames[pidx])
+                for sp, pidx, _coeff in getattr(core, "compartment_ic_sens_seeds", ())
+                if sp in idx and 0 <= pidx < len(pnames)
+            ]
+            moved |= {sp for sp, name in seeded if name in wanted}
+        else:
+            for sp, pidx, _coeff in compute_ic_param_sens_seed(core):
+                if sp in idx and 0 <= pidx < len(pnames) and pnames[pidx] in wanted:
+                    moved.add(sp)
 
         def reads(text: str, depth: int = 0) -> bool:
             if depth > 64:

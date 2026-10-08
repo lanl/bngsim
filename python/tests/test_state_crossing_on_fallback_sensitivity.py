@@ -1903,3 +1903,178 @@ def test_a_batch_row_is_scanned_for_a_branch_only_where_it_changes_what_a_law_re
     assert len(scanned) == first
     sim.run_batch(params=[{"P": 1.5}], **kwargs)
     assert len(scanned) == first + 1
+
+
+# ─── What the sixth review found ────────────────────────────────────────────
+
+LINEAR_TABLE = 'tfun([0,2,4.4,8],[0,1,3,5],idx,method=>"linear")'
+
+
+@pytest.mark.parametrize(
+    "index", ["idx if(n>1,3,6)", "idx 3*min(n,one)", "idx 3*(n>1)+3"], ids=["if", "min", "bare"]
+)
+def test_a_jump_in_the_index_of_a_table_is_refused(tmp_path, index):
+    """A table function is read by a rate law as a call, with its index
+    nowhere in the law's text and in no reaction's rate constant: a derived
+    index that jumps in n was not read at all, and dY/dn came back -1.906 for
+    0 at n = 1.001."""
+    _refused_run(_with_derived(tmp_path, LINEAR_TABLE, [index], n=1.001), ["n"])
+
+
+def test_an_index_of_a_table_that_does_not_jump_here_runs(tmp_path):
+    """Control. The same index with n at 2: the table is read at 3, on the
+    slope between 2 and 4.4, whatever n is."""
+    model = _with_derived(tmp_path, LINEAR_TABLE, ["idx if(n>1,3,6)"], n=2.0)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n", "kb"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0, 0.0], atol=1e-9)
+
+
+@pytest.mark.parametrize("requested", [["tD"], ["n"], ["idx"], ["mid"]])
+def test_a_step_table_is_asked_of_every_name_its_index_is_written_in(tmp_path, requested):
+    """``idx = mid + 1``, ``mid = 1*tD``, ``tD = 2*n``, on a step edge at
+    4.4004. The index's own name and the primaries it comes to were asked
+    about, and tD and mid, in between, were not: dY/dtD came back 7.799 for
+    0."""
+    table = 'tfun([0,2,4.4,8],[0,1,3,5],idx,method=>"step")'
+    params = ["tD 2*n", "mid 1*tD", "idx mid+1"]
+    _refused_run(_with_derived(tmp_path, table, params, n=1.7002), requested)
+
+
+def test_a_step_table_whose_index_no_column_moves_runs(tmp_path):
+    """Control. The same table with k requested: nothing moves the index."""
+    table = 'tfun([0,2,4.4,8],[0,1,3,5],idx,method=>"step")'
+    model = _with_derived(tmp_path, table, ["tD 2*n", "idx tD+1"], n=1.7002)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [0.0], atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "pos - asked",
+        "(pos - asked)*kb/3 + 2^asked",
+        "max(pos, asked) - 2.5*min(kb, asked, 7)",
+        "-abs(asked - 3) + exp(-asked) - sqrt(asked)",
+        "pow(asked - 3, 0.5)",
+        "(asked - 3)^0.5",
+        "1/(asked - 3)",
+        "log(asked - 3)",
+        "kb*X - asked",
+        "tanh(asked) - cos(asked)*sin(pos) + log10(asked) - log2(pos) + ln(kb)",
+        "1e308*asked*10",
+        "asked - True",
+        "max(asked > 1, 0.5)",
+        "atan2(asked, 1)",
+        "asked % 2",
+    ],
+)
+def test_an_expression_over_parameters_is_valued_as_the_tree_values_it(text):
+    """The sign of an expression over parameters is taken from it compiled,
+    where it is made of what has a value, and from its syntax tree where it
+    is not. The two are the same number, and have none in the same places."""
+    import ast
+    import math
+
+    from bngsim._switch_sensitivity import (
+        _VALUE_GLOBALS,
+        _facts_of_tree,
+        _syntax_tree,
+        _value_code,
+    )
+
+    tree = _syntax_tree(text)
+    code = _value_code(tree.body)
+    for asked in (3.0, 3.5, 2.0, 0.0, -1.0, 1e300):
+        values = {"kb": 3.0, "pos": 2.0, "asked": asked}
+        _order, facts = _facts_of_tree(
+            ast.Expression(body=tree.body), values, frozenset(), frozenset()
+        )
+        want = facts[id(tree.body)].value
+        if code is None:
+            continue
+        try:
+            got = float(eval(code, _VALUE_GLOBALS, values))
+        except (ArithmeticError, ValueError, TypeError, NameError):
+            got = None
+        if want is None or got is None:
+            assert want is None and got is None
+        else:
+            assert got == want or (math.isnan(got) and math.isnan(want))
+    # What holds a comparison, a call with no value or a remainder is left to
+    # the tree.
+    assert (code is None) == (text in ("max(asked > 1, 0.5)", "atan2(asked, 1)", "asked % 2"))
+
+
+def test_a_choice_written_into_a_law_many_times_is_asked_about_once(monkeypatch):
+    """A derived parameter written out is in the law as often as it is read:
+    one law of ``synthesis_v3`` held the same ``max`` over parameters 1,145
+    times, each asked about at 49 values, 0.9 s after every ``set_param``."""
+    import bngsim._switch_sensitivity as ss
+
+    real = ss._flips_with_a_parameter
+    calls: list[int] = []
+
+    def counted(node, values, asked):
+        calls.append(1)
+        return real(node, values, asked)
+
+    monkeypatch.setattr(ss, "_flips_with_a_parameter", counted)
+    law = "X*(" + " + ".join(["max(pos, asked)"] * 50 + ["min(kb, asked)"] * 50) + ")"
+    values = {"kb": 3.0, "pos": 2.0, "asked": 30.0}
+    found = ss._quotient_across_a_choice(ss._syntax_tree(law), values, frozenset(), {"asked"})
+    assert found is None and len(calls) == 2
+    values["asked"] = 2.001
+    assert ss._quotient_across_a_choice(ss._syntax_tree(law), values, frozenset(), {"asked"})
+
+
+SEEDED_COUNTER = """begin parameters
+    1 n 1.0
+    2 kb 3.0
+    3 kc 5.0
+    4 one 1.0
+    5 c0 2*n
+end parameters
+begin functions
+    1 fY() if(Cobs>3.4,kb,0)
+    2 fZ() kc*max(Yobs,0.5)
+end functions
+begin species
+    1 C() c0
+    2 Y() 0
+    3 Z() 0
+end species
+begin reactions
+    1 0 1 one
+    2 0 2 fY
+    3 0 3 fZ
+end reactions
+begin groups
+    1 Cobs 1
+    2 Yobs 2
+end groups
+"""
+
+
+def test_a_counter_started_by_a_derived_parameter_is_moved_by_what_that_is_written_in(tmp_path):
+    """C counts from ``c0 = 2*n``: the column of n moves the counter, and the
+    condition on it is one the quotient reads across. Which parameter starts
+    a clock is read off the text, and gives no fewer clocks than the seeds
+    do. With kb requested nothing moves it: Y(6) = kb·(6 − 1.4)."""
+    path = tmp_path / "seeded.net"
+    path.write_text(SEEDED_COUNTER)
+    import bngsim._switch_sensitivity as ss
+
+    core = bngsim.Model.from_net(str(path))._core
+    scope = ss.switch_condition_scope(core)
+    for names in (["n"], ["c0"], ["kb"], ["n", "kb"]):
+        by_seed = ss._clocks_moved(core, scope.clocks, names, [])
+        by_text = ss._clocks_moved(core, scope.clocks, names, [], True)
+        assert by_seed <= by_text and bool(by_text) == (names != ["kb"])
+    _refused_run(bngsim.Model.from_net(str(path)), ["n"])
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(str(path)), method="ode", sensitivity_params=["kb"]
+    )
+    assert not sim.has_analytic_sens_rhs
+    np.testing.assert_allclose(_y_columns(sim), [T_END - 1.4], rtol=1e-6)
