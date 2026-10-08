@@ -8448,6 +8448,8 @@ def _build_model_from_sbml_doc(doc):
                 stack.extend(_lift_deps.get(_n, ()))
             elif _n in _ia_math and _n in _param_decl_index:
                 stack.extend(_ast_name_set(_ia_math[_n]))
+            if _n in compartment_write_refused:
+                continue  # a size §10.7 refuses by name already, with its own reason
             if (_n in _param_decl_index and _n not in _ar_targets) or _n in comp_param_idx:
                 _folded_into.setdefault(_safe_name(_n), what)
 

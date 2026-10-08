@@ -116,7 +116,7 @@ SHAPES = {
             "compartment cell, lumen; cell = 2; vr = 4; lumen = cell/vr; species S in lumen;"
             " S = 1; k = 1;\nJ: S -> ; k*S\n"
         ),
-        ["cell", "vr"],
+        ["vr"],
         "'lumen'",
     ),
     "a-stoichiometry-that-is-an-id": (

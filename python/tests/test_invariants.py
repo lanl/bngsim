@@ -214,10 +214,10 @@ def sbml_events(p: Mapping[str, float]) -> bngsim.Model:
 # ── SBML: assignment-rule species + compartment from an initialAssignment ────
 #
 # X := 2*A is an assignment-rule species (#698 reports it frozen from a squeezed
-# batch). The compartment size c is set by c = 2*p (#696 folds it at load). S is
-# a concentration species in c and R1's rate k*S is an amount per time, so
-# d[S]/dt = -k [S] / c: [S](t) = exp(-k t / (2 p)), and a write to p has to move
-# the trajectory.
+# batch). The compartment size c is set by c = 2*p, which is folded at load: a
+# write to p is refused (#696), and the invariants here write k. S is a
+# concentration species in c and R1's rate k*S is an amount per time, so
+# d[S]/dt = -k [S] / c: [S](t) = exp(-k t / (2 p)).
 
 
 def sbml_ar_ia(p: Mapping[str, float]) -> bngsim.Model:
@@ -278,7 +278,8 @@ def sbml_dimer(p: Mapping[str, float]) -> bngsim.Model:
 #
 # P is produced at kp with species conversionFactor cf: P(t) = cf*kp*t. Q is
 # produced with stoichiometry sr_P set by the initialAssignment sr_P = z + 1:
-# Q(t) = (z + 1)*kq*t. Both folded to numbers at load today.
+# Q(t) = (z + 1)*kq*t. Both are folded to numbers at load, and a write to cf
+# or z is refused (#695); the invariants here write kp.
 
 
 def sbml_cf_stoich(p: Mapping[str, float]) -> bngsim.Model:
@@ -413,9 +414,10 @@ FIXTURES: tuple[Fixture, ...] = (
         "sbml_ar_ia",
         sbml_ar_ia,
         t_end=2.0,
-        write=("p", 2.0),
-        sens=("p", "k"),
-        known=(("set_param_vs_reload", 696, AssertionError),),
+        # p is folded into the size at load, and a write to it or a column for
+        # it is refused (#696; test_parameters_folded_at_load.py).
+        write=("k", 2.0),
+        sens=("k",),
     ),
     Fixture(
         "sbml_dimer",
@@ -428,16 +430,10 @@ FIXTURES: tuple[Fixture, ...] = (
         "sbml_cf_stoich",
         sbml_cf_stoich,
         t_end=2.0,
-        write=("cf", 3.0),
-        sens=("cf", "z", "kp"),
-        known=(("set_param_vs_reload", 695, AssertionError),),
-    ),
-    Fixture(
-        "sbml_stoich_ia",
-        sbml_cf_stoich,
-        t_end=2.0,
-        write=("z", 3.0),
-        known=(("set_param_vs_reload", 695, AssertionError),),
+        # cf and z are folded at load, into a conversion factor and a
+        # stoichiometry, and are refused likewise (#695).
+        write=("kp", 3.0),
+        sens=("kp", "kq"),
     ),
     Fixture(
         "net_derived",
