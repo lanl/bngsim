@@ -2022,8 +2022,9 @@ class Model:
         amount, so a species' coefficient there carries its compartment's
         size: ``A`` in a compartment of size 1 exchanged with ``B`` in one of
         size 2 gives ``A + 2*B`` (issue #758). Such a model's laws follow a
-        size written with :meth:`set_param`. A species such a reaction moves
-        is in no law when a rate rule or an event resizes its compartment.
+        size written with :meth:`set_param`. A species whose share of such a
+        reaction is divided by a size that moves, a concentration in a
+        compartment that a rate rule or an event resizes, is in no law.
 
         Consumed internally by the reduced-space Newton steady-state solver,
         which needs the independent subspace to sidestep the rank-deficient

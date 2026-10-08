@@ -1264,10 +1264,18 @@ ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions
     if (ns == 0 || n_rxn == 0)
         return cl;
 
+    // A model with no reaction of that kind has the plain matrix and the laws
+    // it always had, whatever its species' volume factors are: none is read.
+    bool any_scaled = false;
+    for (const auto &rxn : reactions)
+        any_scaled = any_scaled || rxn.per_species_volume_scaling;
     auto volume_of = [&](int i) -> double {
         const double v = species[i].volume_factor;
-        return (std::isfinite(v) && v > 0.0) ? v : 1.0;
+        return (any_scaled && std::isfinite(v) && v > 0.0) ? v : 1.0;
     };
+    cl.species_weight.resize(ns);
+    for (int i = 0; i < ns; ++i)
+        cl.species_weight[i] = volume_of(i);
 
     // Species with no constant weight, each given a column of its own below.
     std::vector<int> unweighted;

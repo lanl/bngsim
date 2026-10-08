@@ -33,19 +33,26 @@ as the pivot columns of the row-reduced coefficient matrix, so
 invariant is what makes "solve law *k* for its dependent species" a well-posed
 elimination; picking each law's dependent independently does not guarantee it.
 
-**Compartments.** A law is over the values a run reports, so
+**Compartments.** A law is over the state the model stores, what
+`model.get_state()` returns and `model.rhs(y)` takes, so
 `coefficients @ model.rhs(y)` is zero at any state `y`. In an SBML or Antimony
 model a reaction between compartments of different size conserves an amount,
 and each species' coefficient carries its compartment's size: `A` in a
 compartment of size 1 exchanged with `B` in one of size 2 gives `A + 2*B`, not
 `A + B` (issue #758). Where a compartment size is a parameter the laws follow
 it, per model: after `model.set_param("c2", 4)` the law is `A + 4*B` for that
-model and its clones, and each row of `steady_state_batch` that writes a size
-is solved with its own. A species such a reaction moves is in no law when a
-rate rule or an event resizes its compartment. Before a steady-state solve the
-right-hand side is evaluated at two states to confirm it keeps every reported
-total; a law it does not keep is a `SimulationError`, not a solve on a wrong
-total.
+model and its clones, and each entry of `steady_state_batch` that writes a size
+is solved with its own. A species whose share of such a reaction is divided by
+a size that moves, a concentration in a compartment that a rate rule or an
+event resizes, is in no law. (A `substanceOnly` species there is stored as its
+amount over the size at load, which is what its law is over; a run reports it
+over the size as it is.)
+
+Before a steady-state solve the rates are evaluated at two states to confirm
+that every reported total is kept; a law that is not kept is a
+`SimulationError`, not a solve on a wrong total. The question is put against
+the fluxes through the species a law holds, so a total that moves by less than
+1e-10 of them is not seen.
 
 **Impact on the steady-state solver**: Models with conservation laws have
 a rank-deficient Jacobian, which causes standard Newton solvers to fail.

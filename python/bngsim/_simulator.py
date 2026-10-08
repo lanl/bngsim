@@ -1616,6 +1616,29 @@ class Simulator:
                 "steady states solved again at a moved size, or take the column from a time "
                 "course run to the steady state."
             )
+        # A compartment an assignment rule sizes. The right-hand side divides a
+        # species' share of a reaction across compartments by the size the
+        # model loaded at, not the one the rule gives (issue #745), so a law
+        # across sizes there is a law of that right-hand side: `c2 := 1 + A`
+        # ends at A = 0.354 where the amounts give 0.467. Such a model was
+        # refused while its law was found without the sizes, and stays so.
+        ruled = sorted(set(model.compartment_size_params) & set(model.function_names))
+        if ruled:
+            volumes = [float(sp["volume_factor"]) for sp in core.codegen_data()["species"]]
+            names = model.species_names
+            for members in core.conservation_law_members():
+                if len({volumes[i] for i in members}) > 1:
+                    raise SensitivityUnsupportedError(
+                        "steady_state(sensitivity_params=...) is not supported for this "
+                        "model: a conservation law of it spans compartments of different "
+                        f"size ({', '.join(names[i] for i in members[:4])}"
+                        f"{', ...' if len(members) > 4 else ''}) and an assignment rule "
+                        f"sets the size of {', '.join(ruled)}. The right-hand side divides "
+                        "by the size the model loaded at where the rule gives another "
+                        "(issue #745), so the steady state and its columns would be those "
+                        "of another system (issue #758). Take the columns from a time "
+                        "course of a model whose sizes are constants."
+                    )
         if not core.ic_state_dirty:
             return
         # The species a law holds: a coefficient that is not rounding beside
@@ -6990,6 +7013,12 @@ class Simulator:
         model = self._model
         if len(model.compartment_size_params) < 2:
             return
+        # Columns that are not finite are refused by _warn_about_ss_sensitivity,
+        # which says what it knows of the cause.
+        finite = np.all(np.isfinite(np.asarray(result.sensitivity)), axis=1)
+        finite[list(result.excluded_species)] = True
+        if not np.all(finite):
+            return
         volumes = [float(sp["volume_factor"]) for sp in model._core.codegen_data()["species"]]
         names = model.species_names
         for members in model._core.conservation_law_members():
@@ -7034,12 +7063,13 @@ class Simulator:
         if k < 0:
             return
         names = model.species_names
-        held = [names[i] for i in model._core.conservation_law_members()[k][:4]]
+        members = model._core.conservation_law_members()[k]
         raise SimulationError(
             f"{where} is not supported for this model: a conservation law the model reports "
-            f"(over {', '.join(held)}{', ...' if len(held) == 4 else ''}) is not kept "
+            f"(over {', '.join(names[i] for i in members[:4])}"
+            f"{', ...' if len(members) > 4 else ''}) is not kept "
             f"by its own right-hand side. At a test state the law's total changes at "
-            f"{drift:.3g}, against terms that sum to {size:.3g} in magnitude. "
+            f"{drift:.3g}, against fluxes through those species of {size:.3g}. "
             "The steady-state solvers hold each such total, so the root, its "
             "eigenvalues and the sensitivities would be those of another system "
             "(issue #758). Integrate the model with run() over a span long enough for "
@@ -7505,8 +7535,9 @@ class Simulator:
         eff_max_steps = max_steps if max_steps is not None else self._max_steps
 
         # The laws are found here, once, and each entry's clone starts from
-        # them; an entry that writes a compartment size finds its own.
-        self._model._core.conservation_law_drift()
+        # them; an entry that writes a compartment size finds its own. Nothing
+        # is evaluated on this model, which a batch leaves as it found it.
+        self._model._core.conservation_law_members()
 
         def _run_one(i):
             clone = self._model.clone()

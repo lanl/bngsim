@@ -365,23 +365,25 @@ class NetworkModel {
     // of a row's largest coefficient on species that are in no law
     // (MODEL1009150002, 1,604 species). A law across compartments carries
     // each species' volume, which may differ by any factor, so what is
-    // compared is the coefficient over the volume, the stoichiometric one.
+    // compared is the coefficient over the weight the laws were found with
+    // (ConservationLaws::species_weight), the stoichiometric one.
     std::vector<std::vector<int>> conservation_law_members() const;
 
     // Issue #758 — whether the right-hand side keeps the totals that
     // conservation_laws() reports. The steady-state solvers hold each total,
     // so a law the dynamics do not keep gives a root, eigenvalues and
     // sensitivities of another system, with nothing said. This evaluates the
-    // right-hand side at two states off the model's own (a law holds at any
-    // state; at a steady state the rates are rounding and say nothing) and
-    // returns the first law whose total moves by more than 1e-8 of the terms
-    // that should cancel: its index, that rate, and the size of the terms.
-    // The terms are those of the species the law holds
-    // (conservation_law_members): rounding on a species in no law, times a
-    // rate 1e9 of the others', is not the law's.
-    // `law` is -1 where every law is kept. Nothing is asked at a state where a
-    // rate is not finite. Writes the cached observable and function values, as
-    // a compute_derivs call does.
+    // rates at two states off the model's own (a law holds at any state; at a
+    // steady state the rates are rounding and say nothing) and returns the
+    // first law whose total moves by more than 1e-10 of the fluxes through
+    // the species it holds (conservation_law_members): its index, the rate
+    // at which the total moves, and the size of those fluxes. The fluxes are
+    // each species' terms with their absolute values summed, which is what
+    // a rate is rounded from; a total that moves by less than 1e-10 of them
+    // is not seen. `law` is -1 where every law is kept. A law with a member
+    // whose rate is not finite at a state is not asked there. The cached
+    // observable and function values are left as they are at the model's own
+    // state.
     struct ConservationLawDrift {
         int law = -1;
         double drift = 0.0;

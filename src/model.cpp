@@ -1985,7 +1985,18 @@ const ConservationLaws &NetworkModel::conservation_laws() const {
     volumes.reserve(impl_->species.size());
     for (const auto &sp : impl_->species)
         volumes.push_back(sp.volume_factor);
-    if (!impl_->volume_laws || volumes != impl_->volume_laws_at) {
+    // NaN is a size like another here: a model at one is not found again at
+    // every call.
+    auto same = [](const std::vector<double> &a, const std::vector<double> &b) {
+        if (a.size() != b.size())
+            return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (!(a[i] == b[i] || (std::isnan(a[i]) && std::isnan(b[i]))))
+                return false;
+        }
+        return true;
+    };
+    if (!impl_->volume_laws || !same(volumes, impl_->volume_laws_at)) {
         impl_->volume_laws =
             std::make_shared<const ConservationLaws>(conservation_laws_at(sd, impl_->species));
         impl_->volume_laws_at = std::move(volumes);
@@ -1994,16 +2005,20 @@ const ConservationLaws &NetworkModel::conservation_laws() const {
 }
 
 std::vector<std::vector<int>> NetworkModel::conservation_law_members() const {
-    const ConservationLaws &cl = conservation_laws();
-    const int ns = n_species();
+    return conservation_law_members_of(conservation_laws());
+}
+
+std::vector<std::vector<int>> conservation_law_members_of(const ConservationLaws &cl) {
+    const int ns = cl.n_species;
     std::vector<std::vector<int>> members(cl.n_laws);
     std::vector<double> weight(ns);
     for (int k = 0; k < cl.n_laws; ++k) {
         const std::vector<double> &row = cl.coefficients[k];
         double largest = 0.0;
         for (int i = 0; i < ns; ++i) {
-            const double v = impl_->species[i].volume_factor;
-            weight[i] = std::fabs(row[i]) / ((std::isfinite(v) && v > 0.0) ? v : 1.0);
+            const double w =
+                static_cast<size_t>(i) < cl.species_weight.size() ? cl.species_weight[i] : 1.0;
+            weight[i] = std::fabs(row[i]) / w;
             largest = std::max(largest, weight[i]);
         }
         for (int i = 0; i < ns; ++i) {
@@ -2020,33 +2035,46 @@ NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
     const int ns = n_species();
     if (cl.n_laws == 0 || ns == 0)
         return found;
-    const std::vector<std::vector<int>> members = conservation_law_members();
-    std::vector<double> here(ns), state(ns), rate(ns);
+    // From `cl` itself and not through the accessor again: `cl` is held here.
+    const std::vector<std::vector<int>> members = conservation_law_members_of(cl);
+    std::vector<double> here(ns), state(ns), net(ns), gross(ns);
     get_state_into(here.data());
-    for (int pass = 0; pass < 2; ++pass) {
+    const double t_now = impl_->current_time;
+    for (int pass = 0; pass < 2 && found.law < 0; ++pass) {
         for (int i = 0; i < ns; ++i) {
             const double spread = 1.0 + 0.5 * std::sin(1.0 + i);
             const double shift = 1.0 + 0.25 * std::cos(static_cast<double>(i));
             state[i] = pass == 0 ? std::fabs(here[i]) * spread + 0.37 * shift
                                  : std::fabs(here[i]) / spread + 1.3 * shift;
         }
-        compute_derivs(0.0, state.data(), rate.data());
-        // A rate that is not finite makes every total NaN, which compares
-        // false: nothing is asked at such a state.
+        // Each species' rate as compute_derivs sums it, and the same terms
+        // with their absolute values summed. The rate is rounded from the
+        // second: a catalyst of a reaction at 1e6, written on both sides of
+        // it, has a rate that is 1e-10 of rounding whatever else moves it, so
+        // the total is measured against the fluxes and not the net rates.
+        compute_flux_split(t_now, state.data(), nullptr, net.data(), gross.data());
         for (int k = 0; k < cl.n_laws; ++k) {
             const std::vector<double> &row = cl.coefficients[k];
             double total = 0.0, size = 0.0;
             for (int i : members[k]) {
-                total += row[i] * rate[i];
-                size += std::fabs(row[i] * rate[i]);
+                total += row[i] * net[i];
+                size += std::fabs(row[i]) * gross[i];
             }
-            if (std::fabs(total) > 1e-8 * size) {
+            // A member whose rate is not finite makes the total NaN, which
+            // compares false: that law is not asked at this state.
+            if (std::fabs(total) > 1e-10 * size) {
                 found.law = k;
                 found.drift = std::fabs(total);
                 found.size = size;
-                return found;
+                break;
             }
         }
+    }
+    // The observables and functions are left as they are at the model's own
+    // state, not at the last state asked.
+    if (impl_->has_functions) {
+        update_observables(here.data());
+        evaluate_functions(t_now);
     }
     return found;
 }

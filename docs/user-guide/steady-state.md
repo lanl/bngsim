@@ -588,13 +588,17 @@ contributes nothing, and neither does any species once `save_concentrations()`
 has made the state its own baseline. A fixed species that a parameter sets,
 `$A() A0`, moves what reads it by the same seed.
 
-Two columns are refused, with `SensitivityUnsupportedError`:
+Three requests are refused, with `SensitivityUnsupportedError`:
 
 - a parameter that sets the initial amount of a conserved species, on a state a
   `run()` has advanced. The total is still what the parameter made it, and the
   state no longer says so (a time course refuses sensitivities there too).
   `reset()` first;
-- a compartment size, in a model with a conservation law.
+- a compartment size, in a model with a conservation law;
+- any parameter, where a law spans compartments of different size and an
+  assignment rule sets the size of one. The right-hand side divides by the
+  size the model loaded at where the rule gives another (issue #745), so the
+  steady state is that of another system.
 
 A law across compartments of different size is a total of amounts, and carries
 the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in

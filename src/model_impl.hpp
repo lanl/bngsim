@@ -129,7 +129,9 @@ struct SharedModelData {
     // ODE/SSA-only runs never pay for it. This is the one sanctioned exception
     // to the "immutable after build()" contract above: the write happens exactly
     // once under conservation_laws_once and the materialized value never changes
-    // afterward, so every const ref returned by conservation_laws() stays valid.
+    // afterward, so a const ref to it stays valid. (A model whose laws follow
+    // its compartment sizes returns its own instead, issue #758 below, and that
+    // ref holds until a size is written and the laws are asked for again.)
     // When conservation_laws_enabled is false (set_compute_conservation_laws(
     // false)) it is never computed and stays empty (n_species only), for callers
     // that need the full unreduced system.
@@ -161,6 +163,10 @@ const ConservationLaws &ensure_conservation_laws(const SharedModelData &sd,
 // `species` has now. Defined in model_builder.cpp beside the detector.
 bool conservation_laws_follow_volumes(const SharedModelData &sd,
                                       const std::vector<Species> &species);
+// Issue #758 — the species each law of `cl` holds: NetworkModel::
+// conservation_law_members() for laws already in hand.
+std::vector<std::vector<int>> conservation_law_members_of(const ConservationLaws &cl);
+
 ConservationLaws conservation_laws_at(const SharedModelData &sd,
                                       const std::vector<Species> &species);
 

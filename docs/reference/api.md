@@ -44,7 +44,7 @@ Evaluators (issue #523; see [Model evaluators](../user-guide/evaluators.md)). Ea
 - **`rhs(y, t=0.0)`** → `ndarray (n_species,)` — `dy/dt` at `(t, y)`: the interpreted RHS the CVODE callback evaluates, with its observable/function refresh run at `y`
 - **`jacobian(y, t=0.0, *, sparse=False)`** → `JacobianMatrix` or `scipy.sparse.csc_array` — `∂f/∂y`, `J[i, j] = ∂f_i/∂x_j`; closed form when it covers every reaction, else the steady-state solver's difference quotient, and `.source` says which (`"analytical"` / `"finite-difference"`). `sparse=True` uses the model's structural pattern
 - **`propensities(y, t=0.0)`** → `ndarray (n_reactions,)` — every reaction's SSA propensity in the SSA volume convention (falling factorial for a repeated reactant, times the compartment volume), after the SSA loop's own observable refresh at `y`
-- **`stoichiometry_matrix(*, sparse=False)`** → `ndarray (n_species, n_reactions)` or `csc_array` — net coefficients, 0-based; a `$`-fixed species has a zero row. The matrix `conservation_laws` was row-reduced from, so `L @ S == 0`
+- **`stoichiometry_matrix(*, sparse=False)`** → `ndarray (n_species, n_reactions)` or `csc_array` — net coefficients, 0-based; a `$`-fixed species has a zero row. The matrix `conservation_laws` was row-reduced from, so `L @ S == 0` (except in an SBML model with a reaction between compartments of different size, whose laws carry the sizes: `L @ rhs(y) == 0`)
 
 ## `bngsim.JacobianMatrix`
 

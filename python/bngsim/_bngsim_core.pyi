@@ -181,7 +181,7 @@ class NetworkModel:
         """
     def conservation_law_drift(self) -> tuple:
         """
-        (law, drift, size): the first conservation law whose total the right-hand side does not keep, asked at two states off the model's own, with the rate at which the total moves there and the size of the terms that should cancel. law is -1 where every law is kept. Issue #758.
+        (law, drift, size): the first conservation law whose total the right-hand side does not keep, asked at two states off the model's own, with the rate at which the total moves there and the size of the fluxes through the species it holds. law is -1 where every law is kept. Issue #758.
         """
     def conservation_law_members(self) -> list[list[int]]:
         """
