@@ -123,7 +123,14 @@ def test_a_gradient_contracts_the_same_rows(kind):
     """``Result.gradient`` of the sum of X squared over the samples:
     [-9.2974, -4.6568], and was [-19.79, 0]."""
     result = bngsim.Simulator(_model(kind), method="ode", sensitivity_params=["k", "g"]).run(**RUN)
-    got = np.asarray(result.gradient(lambda species, time: 2.0 * species))
+    column = list(result.species_names).index("X")
+
+    def of_x_alone(species, time):
+        weight = np.zeros_like(species)
+        weight[:, column] = 2.0 * species[:, column]
+        return weight
+
+    got = np.asarray(result.gradient(of_x_alone))
     want = [np.sum(2.0 * _x() * _dk()), np.sum(2.0 * _x() * _dg())]
     np.testing.assert_allclose(got, want, rtol=1e-6)
     np.testing.assert_allclose(want, [-9.2974, -4.6568], rtol=1e-4)
