@@ -300,11 +300,20 @@ Four cases are refused:
 Whether a power is singular is asked at the run's own parameter values, for
 the last two: with `a = 3` nothing is unbounded there, every column is right in
 `S`, and neither is refused. For a counter's own columns an exponent counts
-between 0 and 1, written as a number or in parameters. One that a condition
-chooses, `if(t < t1, a_1, a_2)`, is asked branch by branch, and the power is
-singular if it is with either. One that reads a species, or what an event
-assigns, cannot be asked and is taken to be singular. The last case is asked of
-every such power of a counter in a model that has a condition on a clock,
+between 0 and 1, written as a number or in parameters. One under 0 counts where
+the power's base is 0 at a condition the same rate law has on that counter:
+`(1 - s)^(a - 1)` with `a < 1`, in a law that closes at `s < 1`, is a pole on
+the window's own edge, integrable, and as wrong in the counter's plain column
+as a root is (dX/dT0 came back -0.8334 for -0.8251 at `a = 0.99`). A pole the
+law does not close on, a kernel `t^(-0.3)` whose step is somewhere else, is on
+no edge and does not count. An exponent that a condition chooses,
+`if(t < t1, a_1, a_2)`, is asked value by value however deep the selection is
+written, up to 64 values, and the power is singular if it is with any of them.
+A condition on parameters alone, `if(q > 0, a_1, a_2)`, is evaluated at the
+run's values, so the value it does not take is no reason to refuse. An exponent
+that reads a species, or what an event assigns, cannot be asked and is taken to
+be singular. The last case is asked of every such power of a counter in a model
+with a condition in any rate law, on a clock, a species or a parameter,
 whether or not the run reaches the power's zero: `sqrt(t/tau)` on a counter
 that starts at 0.5, beside a step on it, is refused in the counter's own
 columns, the rate constant `compute_all_sensitivities()` asks for by default

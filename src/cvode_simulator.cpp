@@ -5224,9 +5224,10 @@ void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_frame(const Sensitivi
 // dX/dT0 came back 0.2% to 0.4% off under a closing power, and the run stalled
 // under an opening one (issue #948). Which species are counters under such a
 // power is read off the powers (bngsim_codegen_counter_power), and a column
-// with a nonzero row of one is refused: where the run starts, at a counter's
-// crossing, and where the run ends, by which a rate constant's column has
-// moved its counter whatever the run crossed.
+// is refused where the run starts, ahead of any step: one with a nonzero row
+// of such a counter there (its initial value's), and one whose row leaves 0 at
+// a nonzero rate (a rate constant's, which has moved nothing yet at the start
+// and moves its counter from the first step on).
 void CvodeSimulator::Impl::comoving_refuse_a_moved_counter(const SensitivityState &sens,
                                                            double *const *cols,
                                                            double *const *rates, double t) {
@@ -5263,9 +5264,11 @@ void CvodeSimulator::Impl::comoving_refuse_a_moved_counter(const SensitivityStat
                 << species[static_cast<size_t>(counter)].name
                 << "' itself (at t=" << std::setprecision(17) << t
                 << "), and a rate law of the model has a power of that counter that is singular "
-                   "at this run's values, one with an exponent between 0 and 1, or one whose "
-                   "exponent cannot be asked there. The columns of the parameters such a power "
-                   "is written in are integrated in a frame that moves with its edge. A column "
+                   "at this run's values: one with an exponent between 0 and 1, one with an "
+                   "exponent under 0 whose base is 0 where the law's own condition on the counter "
+                   "flips, or one whose exponent cannot be asked there. The columns of the "
+                   "parameters such a power is written in are integrated in a frame that moves "
+                   "with its edge. A column "
                    "that moves the counter has none: it comes back 0.2% to 0.4% off under a "
                    "closing power, or stalls under an opening one (issue #948). Drop that "
                    "column, or difference plain runs.";

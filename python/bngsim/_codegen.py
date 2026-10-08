@@ -8720,6 +8720,14 @@ def _exponent_over_parameters(exponent, resolve_symbol, sympy_to_c) -> str | Non
     return sympy_to_c(exponent, resolve_symbol)
 
 
+def _over_parameters(expr, resolve_symbol, sympy_to_c) -> str | None:
+    """*expr* as C over ``p[]``, a number included, or ``None`` where it reads
+    anything that has no value there."""
+    if expr.is_number:
+        return sympy_to_c(expr, resolve_symbol)
+    return _exponent_over_parameters(expr, resolve_symbol, sympy_to_c)
+
+
 def _counter_powers(
     reactions,
     frxn_by_idx: dict,
@@ -8768,48 +8776,121 @@ def _counter_powers(
         mapped = scope.c_ref.get(name)
         return mapped if mapped is not None else _MATH_CONSTANT_C.get(name)
 
-    def branches(exponent, depth: int = 0) -> list | None:
+    def branches(exponent) -> list | None:
         """*exponent* with each condition in it taken each way, or ``None``
-        where that is more than 64 expressions or four conditions deep."""
+        where that is more than 64 expressions. A chain
+        ``if(c1, a1, if(c2, a2, ...))`` is one expression a value."""
         chosen = sorted(exponent.atoms(sp.Piecewise), key=sp.srepr)
         if not chosen:
             return [exponent]
-        if depth >= 4:
-            return None
+        # The outermost: one that is in no other's values.
+        inner = {q for pw in chosen for value, _c in pw.args for q in value.atoms(sp.Piecewise)}
+        top = next((pw for pw in chosen if pw not in inner), chosen[0])
         out: list = []
-        for value, _cond in chosen[0].args:
-            below = branches(exponent.xreplace({chosen[0]: value}), depth + 1)
+        for value, _cond in top.args:
+            below = branches(exponent.xreplace({top: value}))
             if below is None or len(out) + len(below) > 64:
                 return None
             out.extend(below)
         return out
 
+    def gated_at_its_zero(base, law) -> str | None:
+        """Where *base* is 0 at a condition *law* has on a counter it reads, as
+        a C test over ``p[]``: the pole of ``(1 - s)^(a - 1)`` at the closing
+        edge of its own window, and not that of a decay ``(1 + t/tau)^(-a)``,
+        whose base is 0 nowhere in the run. ``None`` where it is at none of
+        them whatever the values, and ``"1"`` where it is at one whatever the
+        values or that cannot be worked out. A base that is 0 there at some
+        values only, ``1 - (t - on)/D`` under ``t < off``, is asked at the
+        run's: 0 to rounding against the sum of its terms."""
+        reads = _value_symbol_names(base, sp) & names
+        at: list[str] = []
+        for rel in law.atoms(sp.core.relational.Relational):
+            on = [s for s in rel.free_symbols if s.name in names]
+            if len(on) != 1:
+                continue
+            clock = on[0]
+            if clock.name not in reads:
+                # The same counter under another name (an observable that
+                # sums it) has no one threshold to put into the base.
+                if any(counter_species[clock.name] & counter_species[n] for n in reads):
+                    return "1"
+                continue
+            try:
+                thresholds = sp.solve(sp.Eq(rel.lhs, rel.rhs), clock)
+                values = [sp.simplify(base.subs(clock, threshold)) for threshold in thresholds]
+            except Exception:  # noqa: BLE001 - not worked out
+                return "1"
+            for value in values:
+                if value == 0:
+                    return "1"
+                if not _base_can_vanish(value, sp):
+                    continue
+                terms = sp.Add.make_args(sp.expand(value))
+                written = [_over_parameters(term, resolve_symbol, sympy_to_c) for term in terms]
+                whole = _over_parameters(value, resolve_symbol, sympy_to_c)
+                if whole is None or None in written:
+                    return "1"
+                scale = " + ".join(f"fabs({term})" for term in written)
+                at.append(f"(fabs({whole}) <= 1e-9 * ({scale}))")
+        return " || ".join(dict.fromkeys(at)) or None
+
     def asked(expr) -> list[tuple[frozenset[int], str]]:
         """Each singular power of *expr*: the counters its base reads, and the
-        test of its exponent, ``"1"`` where that cannot be asked."""
+        test of its exponent, ``"1"`` where that cannot be asked.
+
+        An exponent between 0 and 1 leaves the power finite where its base
+        vanishes and its derivative not. One under 0 is a pole there, and
+        counts where the base's zero is an edge the law itself gates on: the
+        plain column of a parameter that moves the counter is as wrong across
+        an integrable pole on a window's edge (dX/dT0 = -0.8334 for -0.8251 at
+        an exponent of -0.01) as across a root. Exactly 0 is the constant 1.
+        A number is held to the same rule as an exponent written in
+        parameters."""
+        from bngsim._jacobian import _value_symbol_names as _reads
+
+        gates: dict = {}
+
+        def under_zero(base) -> str | None:
+            # Asked only for an exponent that can be under 0, and once a base.
+            if base not in gates:
+                gates[base] = gated_at_its_zero(base, expr)
+            return gates[base]
+
         found = []
         for node in _pow_nodes_in_values(expr, sp):
-            if not _singular_power(node, names, sp):
+            if not _reads(node.base, sp) & names or not _base_can_vanish(node.base, sp):
                 continue
-            read = frozenset().union(
-                *(counter_species[n] for n in _value_symbol_names(node.base, sp) & names)
-            )
-            # Under 1 and over 0, as a number is held to: at exactly 0 the power
-            # is the constant 1, and under 0 the law itself is unbounded where
-            # its base vanishes, which no frame is for.
-            each = branches(node.exp)
+            read = frozenset().union(*(counter_species[n] for n in _reads(node.base, sp) & names))
+            # The whole exponent first: one written in parameters alone is
+            # evaluated where the run is, conditions and all.
+            whole = _exponent_over_parameters(node.exp, resolve_symbol, sympy_to_c)
+            each = [node.exp] if whole is not None or node.exp.is_number else branches(node.exp)
             tests = []
             for exponent in each or ():
                 if exponent.is_number:
-                    if exponent.is_real and bool(exponent > 0) and bool(exponent < 1):
+                    if exponent.is_real is not True:
+                        continue
+                    if bool(exponent > 0) and bool(exponent < 1):
                         tests.append("1")
+                    elif bool(exponent < 0) and under_zero(node.base) is not None:
+                        tests.append(f"({under_zero(node.base)})")
                     continue
                 e_c = _exponent_over_parameters(exponent, resolve_symbol, sympy_to_c)
-                tests.append("1" if e_c is None else f"(({e_c}) > 0.0 && ({e_c}) < 1.0)")
+                if e_c is None:
+                    tests.append("1")
+                elif under_zero(node.base) is None:
+                    tests.append(f"(({e_c}) > 0.0 && ({e_c}) < 1.0)")
+                elif under_zero(node.base) == "1":
+                    tests.append(f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
+                else:
+                    root = f"(({e_c}) > 0.0 && ({e_c}) < 1.0)"
+                    tests.append(f"({root} || (({e_c}) < 0.0 && ({under_zero(node.base)})))")
             if each is None:
                 tests = ["1"]
             if tests:
-                found.append((read, "1" if "1" in tests else " || ".join(dict.fromkeys(tests))))
+                always = "1" in tests or "(1)" in tests
+                found.append((read, "1" if always else " || ".join(dict.fromkeys(tests))))
         return found
 
     tests: dict[int, list[str]] = {}

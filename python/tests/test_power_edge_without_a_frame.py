@@ -683,7 +683,7 @@ def test_a_rate_law_that_is_not_read_is_taken_to_hold_a_power(tmp_path, monkeypa
         return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
 
     core = _on_a_counter(tmp_path, "closing", 3.0)._core
-    assert "if (((p[2] - 1.0) > 0.0 && (p[2] - 1.0) < 1.0)) {" in body(source())
+    assert "if (((p[2] - 1.0) < 1.0 && (p[2] - 1.0) != 0.0)) {" in body(source())
     real = _jacobian._exprtk_to_sympy
 
     def unread(text, *args, **kwargs):
@@ -765,6 +765,159 @@ def test_a_power_of_a_counter_under_0_is_held_to_what_a_number_is(tmp_path, a):
     np.testing.assert_allclose(
         _run(by_parameter, ["r"])[:, 0], _run(by_number, ["r"])[:, 0], rtol=1e-6, atol=1e-9
     )
+
+
+# ─── An exponent under 0: a pole, where the law gates on the base's zero ─────
+
+
+@pytest.mark.parametrize("shape", ["closing", "opening"])
+@pytest.mark.parametrize("params", [["T0"], ["r"]])
+def test_a_pole_on_the_window_s_own_edge_is_refused_in_the_counters_column(
+    tmp_path, shape, params
+):
+    """At ``a = 0.99`` the power is ``(1 - s)^(-0.01)``: a pole at the edge the
+    law's own condition closes on, integrable, and as wrong in the plain column
+    of what moves the counter as a root is. dX/dT0 came back -0.8334 for
+    -0.8251, and dX/dr -7.682 for -7.634; at ``a = 0.5`` the run stalled."""
+    _refused(_on_a_counter(tmp_path, shape, 0.99), params, 948)
+
+
+def test_a_pole_written_with_a_number_is_held_to_the_same(tmp_path):
+    """``(1 - s)^(-0.01)`` with the exponent a number was never asked about,
+    and came back 4e-4 off."""
+    text = COUNTER.replace("k1*{shape}", "k1*s()*(1-s())^(-0.01)")
+    _refused(_on_a_counter(tmp_path, "closing", 3.0, text=text), ["T0"], 948)
+
+
+def test_a_pole_does_not_cost_the_window_its_own_columns(tmp_path):
+    """Control. ``on`` and ``D`` are integrated in their frames at an exponent
+    under 0 as at one over it."""
+    model = _on_a_counter(tmp_path, "closing", 0.99)
+    np.testing.assert_allclose(
+        _run(model, ["on"])[:, 0], _expected("closing", 0.99, "on"), rtol=2e-4, atol=2e-6
+    )
+
+
+GATED_BY_ANOTHER = COUNTER.replace("    8 T0 1.0\n", "    8 T0 1.0\n    9 off 8.0\n").replace(
+    "if(t<=(on+D),", "if(t<=off,"
+)
+
+
+def _by_plain_runs(model, param, value, h=1e-4):
+    """dX/d``param`` by central differences of runs with no sensitivities."""
+
+    def x(at):
+        model.set_param(param, at)
+        model.reset()
+        out = bngsim.Simulator(model, method="ode").run(
+            sample_times=T, rtol=1e-11, atol=1e-13, timeout=120
+        )
+        return np.asarray(out.species)[:, list(out.species_names).index("X()")]
+
+    slope = (x(value + h) - x(value - h)) / (2 * h)
+    model.set_param(param, value)
+    model.reset()
+    return slope
+
+
+def test_a_pole_that_meets_the_gate_at_the_run_s_values_is_refused_there(tmp_path):
+    """``(1 - s)^(-0.01)`` under ``t <= off``, with ``off`` a parameter of its
+    own. At ``off = on + D = 8`` the pole is on the gate and dX/dT0 came back
+    -0.8334 for -0.8251, as with the gate written ``on + D``. Asked at the
+    run's values, in both directions: the model built at 8 and moved to 7.7
+    runs, and moved back is refused."""
+    model = _on_a_counter(tmp_path, "closing", 0.99, text=GATED_BY_ANOTHER)
+    _refused(model, ["T0"], 948)
+    model.set_param("off", 7.7)
+    model.reset()
+    np.testing.assert_allclose(
+        _run(model, ["T0"])[:, 0], _by_plain_runs(model, "T0", 1.0), rtol=2e-5, atol=2e-7
+    )
+    model.set_param("off", 8.0)
+    model.reset()
+    _refused(model, ["T0"], 948)
+    # 0 to rounding: D - off + on is 2.8e-17 at these values, and not 0.
+    model.set_params({"on": 0.1, "D": 0.2, "off": 0.3, "T0": 0.0})
+    model.reset()
+    _refused(model, ["T0"], 948)
+
+
+@pytest.mark.parametrize("a", [0.99, 0.5])
+def test_a_pole_the_gate_closes_short_of_is_not_on_an_edge(tmp_path, a):
+    """Control. The same law closed at 7.7, short of the pole at 8: the rate is
+    finite wherever the run is, and the counter's own column is right."""
+    model = _on_a_counter(tmp_path, "closing", a, text=GATED_BY_ANOTHER)
+    model.set_param("off", 7.7)
+    model.reset()
+    np.testing.assert_allclose(
+        _run(model, ["T0"])[:, 0], _by_plain_runs(model, "T0", 1.0), rtol=2e-5, atol=2e-7
+    )
+
+
+def test_a_pole_gated_under_the_counter_s_other_name_is_refused(tmp_path):
+    """The law closes on ``u``, a second observable of the counter species, and
+    its power reads ``t``: the same edge, with no one threshold to put into the
+    base. Taken to be on it. dX/dT0 came back -0.8334 for -0.8251."""
+    text = COUNTER.replace("    1 t 2\n", "    1 t 2\n    2 u 2\n").replace(
+        "if(t<=(on+D),", "if(u<=(on+D),"
+    )
+    _refused(_on_a_counter(tmp_path, "closing", 0.99, text=text), ["T0"], 948)
+    np.testing.assert_allclose(
+        _run(_on_a_counter(tmp_path, "closing", 3.0, text=text), ["T0"])[:, 0],
+        _expected("closing", 3.0, "T0"),
+        rtol=2e-5,
+        atol=2e-7,
+    )
+
+
+def test_a_pole_on_a_gate_that_is_not_solved_for_is_refused(tmp_path):
+    """``(8.5 - t - cos(t))^(-0.01)`` under ``t + cos(t) <= 8.5``: the edge has
+    no closed form to put into the base, and is taken to be on its zero. The
+    run ended in CVODE's no-progress error at the edge, after 20,000 steps."""
+    text = COUNTER.replace(
+        "k0+if(t>=on,if(t<=(on+D),k1*{shape},0),0)",
+        "k0+if(t+cos(t)<=8.5,k1*(8.5-t-cos(t))^(a-1),0)",
+    )
+    _refused(_on_a_counter(tmp_path, "closing", 0.99, text=text), ["T0"], 948)
+
+
+LONG_CHAIN = COUNTER.replace(
+    "    3 a {a}\n",
+    "    3 a1 {a}\n"
+    + "".join(f"   {8 + i} tc{i} {100 * i}\n" for i in range(1, 6))
+    + "".join(f"   {12 + i} a{i} {{a}}\n" for i in range(2, 7)),
+).replace(
+    "    1 s() (t-on)/D\n",
+    "    1 s() (t-on)/D\n"
+    "    3 a() if(t<tc1,a1,if(t<tc2,a2,if(t<tc3,a3,if(t<tc4,a4,if(t<tc5,a5,a6)))))\n",
+)
+BY_A_PARAMETER = COUNTER.replace(
+    "    3 a {a}\n", "    3 a1 {a}\n    9 a2 1.1\n   10 q 1\n"
+).replace("    1 s() (t-on)/D\n", "    1 s() (t-on)/D\n    3 a() if(q>0,a1,a2)\n")
+
+
+@pytest.mark.parametrize(
+    "text", [LONG_CHAIN, BY_A_PARAMETER], ids=["six-values", "by-a-parameter"]
+)
+def test_an_exponent_chosen_among_many_or_by_a_parameter(tmp_path, text):
+    """Control. A selection of six values is asked value by value however deep
+    it is written, and one that a parameter makes, ``if(q > 0, a1, a2)``, is
+    evaluated where the run is: the branch it does not take, 1.1 here, is no
+    reason to refuse."""
+    model = _on_a_counter(tmp_path, "closing", 3.0, text=text)
+    np.testing.assert_allclose(
+        _run(model, ["T0"])[:, 0], _expected("closing", 3.0, "T0"), rtol=2e-5, atol=2e-7
+    )
+
+
+def test_the_last_of_six_values_counts_as_each_does(tmp_path):
+    """The sixth value of the selection, which the run never takes, at 1.1:
+    refused, as with 1.1 in any other. dX/dT0 came back -0.6591 for -0.6620
+    under a chain of five."""
+    model = _on_a_counter(tmp_path, "closing", 3.0, text=LONG_CHAIN)
+    model.set_param("a6", 1.1)
+    model.reset()
+    _refused(model, ["T0"], 948)
 
 
 # ─── What the generator says of a case ──────────────────────────────────────
