@@ -2214,9 +2214,9 @@ def test_a_counter_started_by_an_overridden_derived_parameter_is_not_moved(tmp_p
 
 @pytest.mark.parametrize("name", ["_pow", "abs", "max", "exp"])
 def test_a_parameter_named_as_a_call_is_a_parameter(name):
-    """Control. A model may name a parameter ``_pow`` or ``abs``. An
-    expression that would call that name where it is compiled is left to the
-    syntax tree, and comes to the same answer."""
+    """A model may name a parameter ``_pow`` or ``abs``. An expression that
+    would call that name where it is compiled is left to the syntax tree, and
+    comes to the same answer."""
     import bngsim._switch_sensitivity as ss
 
     law = "X*max(asked^2, pos) + X*abs(asked - 30) + X*exp(-max(asked, pos))"
