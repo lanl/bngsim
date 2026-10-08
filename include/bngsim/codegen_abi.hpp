@@ -132,8 +132,24 @@ using CodegenComovingClockFn = int (*)(int k);
 //   2: every power the case has closes at its crossing, with an exponent of 1
 //      or more at these values. The frame is of no use, and the column stays
 //      plain.
+//   4: a power of the case, opening or closing, has an exponent under 1 at
+//      these values, 0 included. The forcing of the plain column is unbounded at
+//      that crossing, or is 0·∞ there (issue #958). Read only to refuse a run
+//      whose column needs a frame it cannot have.
 // Resolved with try_symbol; a .so without it enters only at the crossing.
 using CodegenComovingApproachFn = int (*)(int case_idx, const double *p);
+// Issue #948: bngsim_codegen_counter_power(k, p) returns the k-th of the
+// counter clock species that a rate law has a singular power of at the
+// parameter values p, and -1 past the last. A power of a counter is singular
+// with an exponent between 0 and 1, and with one under 0 where its base is 0 at
+// a condition the same law has on that counter: a pole on the window's own
+// edge. Where that is not worked out (a condition that is not linear in the
+// counter, or reads a state, a selection or the counter under another name; a
+// base that holds a selection) it is taken to be. A species none of whose
+// powers is singular at p is not counted. Read
+// off the powers themselves, so it is emitted for a model with no comoving case
+// too. Resolved with try_symbol.
+using CodegenCounterPowerFn = int (*)(int k, const double *p);
 
 // Dense analytical Jacobian into an n×n COLUMN-MAJOR buffer
 // (jac[j*n + i] = ∂f_i/∂x_j). The emitted C memsets the buffer itself.

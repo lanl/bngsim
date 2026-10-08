@@ -320,8 +320,12 @@ def test_the_generator_marks_the_case_a_closing_edge_approaches(tmp_path):
         src = _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
         head = "int bngsim_codegen_comoving_approach(int case_idx, const double *p)"
         body = src.split(head)[1].split("\n}")[0]
+        # The cases with a closing power: each has an entry now (issue #958),
+        # and one with none says so with a constant 0 for its first bit.
         return sorted(
-            "(0) ? 2 : 0;" not in line for line in body.splitlines() if "if (case_idx ==" in line
+            "(0) ? 2 : 0)" not in line
+            for line in body.splitlines()
+            if "if (case_idx ==" in line and "return ((0) ? 1 :" not in line
         )
 
     # on and D: the one singular power closes at the crossing each of them
