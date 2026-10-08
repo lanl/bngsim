@@ -1220,7 +1220,12 @@ class Model:
         the number. Every parameter that number was read from is listed: the
         ones the expression names, and the ones that gave each symbol it names
         its value at load (through another assignment, a rule, a reaction's
-        kinetic law, a species' initial value or its compartment's size).
+        kinetic law, a species' initial value or its compartment's size). So
+        is what sized a compartment when a species' declared value was
+        converted with it: a species declared in the unit it is not held in,
+        in a compartment that a rate rule or an event resizes and an
+        initialAssignment starts, or that an assignment rule sizes (issue
+        #742; every name such a rule reads).
 
         A write to one does not move what it was folded into, so
         :meth:`set_param` refuses to change one, and a forward-sensitivity

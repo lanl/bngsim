@@ -3295,7 +3295,7 @@ class Simulator:
             if changed:
                 setattr(result, sp_attr, out)
         if refused:
-            result._ar_sens_refused = frozenset(refused)
+            result._ar_sens_refused = frozenset(refused) | result._ar_sens_refused
             warnings.warn(
                 f"Assignment-rule species {sorted(refused)} have NaN or infinite entries "
                 "in their Result.sensitivities row: the chain rule through the assignment "
@@ -3356,6 +3356,7 @@ class Simulator:
         live_vol: dict[int, int] = {}
         conc_factor: dict[int, np.ndarray] = {}
         changed = False
+        rescaled: list[tuple[str, int, np.ndarray, np.ndarray, str, int]] = []
 
         # hOSU=true species in a rate-rule compartment (vmap). Stored as
         # amount/V_static under BOTH methods, but the V_static→V_live correction
@@ -3390,6 +3391,7 @@ class Simulator:
             else:
                 sp[:, j] = sp[:, j] * factor
                 live_vol[j] = k
+                rescaled.append((s_name, j, factor, np.array(v_live, copy=True), "species", k))
             changed = True
 
         # GH #86: hOSU=false species in a rate-rule compartment.
@@ -3425,6 +3427,87 @@ class Simulator:
                 result._varvol_live_vol = live_vol
             if conc_factor:
                 result._varvol_conc_factor = conc_factor
+        self._rescale_varvol_sensitivity_rows(result, rescaled)
+
+    def _rescale_varvol_sensitivity_rows(
+        self,
+        result: Result,
+        rescaled: list[tuple[str, int, np.ndarray, np.ndarray, str, int]],
+    ) -> None:
+        """Differentiate the value the variable-volume passes reported (issue #742).
+
+        Those passes multiply the column of an amount-valued species in a
+        compartment that a rate rule or an assignment rule resizes by
+        ``V_static/V_live(t)``, so that it reads ``amount/V_live``. The
+        sensitivity row was left as the integrator wrote it, the derivative of
+        the stored ``amount/V_static``: too large by ``V_live/V_static``, and
+        with no share of the volume's own derivative, so an exact 0 in the
+        column of a parameter that only moves the volume. With ``V' = g`` and
+        ``X ->`` at ``k*X`` from an amount of 2, dX/dk at t = 4 came back
+        -5.3626 for -1.7875 and dX/dg 0 for -0.5958, with nothing said.
+
+        The row of the reported ``C = y*V_static/V_live`` is the quotient rule,
+        ``(V_static/V_live)*dy - (C/V_live)*dV_live``. ``dV_live`` is the row
+        of the compartment's own species where a rate rule moves it, and of
+        its rule's expression where an assignment rule sets it. Where that
+        expression's row is not available (the run computed none, or codegen
+        declined it, GH #198) the species' row is NaN, as an assignment-rule
+        species' is (GH #221), and it is named in
+        ``Result.ar_sensitivity_refused`` and in a warning.
+
+        *rescaled* is ``(species, column, V_static/V_live, V_live, kind,
+        index)`` for each column a pass rescaled, with *kind* ``"species"`` or
+        ``"expression"`` for where the live volume is read. A species an
+        assignment rule sets as well is refused afterwards by
+        :meth:`_apply_ar_sensitivity_map`, which overwrites its row. Both
+        sensitivity axes, parameter and initial condition.
+        """
+        if not rescaled:
+            return
+        refused: set[str] = set()
+        for sp_attr, expr_attr in (
+            ("_sensitivities", "_expression_sensitivities"),
+            ("_sensitivities_ic", "_expression_sensitivities_ic"),
+        ):
+            block = getattr(result, sp_attr)
+            if block.size == 0 or block.ndim != 3:
+                continue
+            expr_block = getattr(result, expr_attr)
+            out = np.array(block, dtype=np.float64, copy=True)
+            for name, j, factor, v_live, kind, k in rescaled:
+                if kind == "species":
+                    dv = block[:, k, :]
+                elif (
+                    expr_block.ndim == 3
+                    and expr_block.shape[1] > k
+                    and expr_block.shape[2:] == block.shape[2:]
+                ):
+                    dv = expr_block[:, k, :]
+                else:
+                    out[:, j, :] = np.nan
+                    refused.add(name)
+                    continue
+                if not dv.any() and (factor == 1.0).all():
+                    continue  # a size that does not move, in these columns or at all
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    share = np.where(v_live != 0.0, result._species[:, j] / v_live, 0.0)
+                out[:, j, :] = factor[:, None] * block[:, j, :] - share[:, None] * dv
+                if not np.isfinite(out[:, j, :]).all():
+                    refused.add(name)
+            setattr(result, sp_attr, out)
+        if refused:
+            result._ar_sens_refused = frozenset(refused) | result._ar_sens_refused
+            warnings.warn(
+                f"Species {sorted(refused)} have NaN or infinite entries in their "
+                "Result.sensitivities row. Each is an amount reported as a concentration in "
+                "a compartment whose size changes, so its row needs the derivative of that "
+                "size, and that is not available or not finite: for a size an assignment "
+                "rule sets, the run computed no output sensitivity for the rule's "
+                "expression, or codegen declined it (GH #198). NaN rather than the "
+                "derivative of the stored amount, which is what the row held before (issue "
+                "#742). Result.ar_sensitivity_refused lists them.",
+                stacklevel=2,
+            )
 
     def _apply_varvol_ar_conc_map(self, result: Result, model: Model | None = None) -> None:
         """Report species in ASSIGNMENT-RULE compartments at amount/V_live(t).
@@ -3464,6 +3547,7 @@ class Simulator:
         # Copy once so we never mutate a buffer aliasing C++-owned memory.
         sp = np.array(result._species, dtype=np.float64, copy=True)
         changed = False
+        rescaled: list[tuple[str, int, np.ndarray, np.ndarray, str, int]] = []
         for s_name, (comp_name, v_static) in (amap or {}).items():
             j = sp_idx.get(s_name)
             k = expr_idx.get(comp_name)
@@ -3478,8 +3562,10 @@ class Simulator:
                 factor = np.where(v_live != 0.0, v_static / v_live, 1.0)
             sp[:, j] = sp[:, j] * factor
             changed = True
+            rescaled.append((s_name, j, factor, np.array(v_live, copy=True), "expression", k))
         if changed:
             result._species = sp
+        self._rescale_varvol_sensitivity_rows(result, rescaled)
 
         # (#234) Record V_live(t) per diluted hOSU=false species so as_roadrunner's
         # bare-id amount selector reports conc·V_live(t), not the stale conc·V_static

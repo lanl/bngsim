@@ -8582,13 +8582,32 @@ def _build_model_from_sbml_doc(doc):
     # A species in it that is declared in the unit it is not held in does not:
     # its value was converted by the size at load (`c = 2*p; c' = 0.1` with S
     # an amount in c: [S] 0.5 off).
+    #
+    # The same in a compartment that an assignment rule sizes from the time or
+    # a state: the size at load is the rule's value there, and what the rule
+    # reads set it (`V := v0 + g*time` with a concentration held as an amount:
+    # dX/dv0 was 0 for 0.2262, and a write to `v0` left the amount where it
+    # was, issue #742). Every name the rule reads is listed, the ones that do
+    # not move its value at the start among them (`g` here). (An initial value
+    # assigned from such a size, `X = 2*V`, is not kept as an expression and
+    # is listed by the loop above. A rule that is a constant over parameters
+    # is listed whole just above; it comes through here too, to no effect.)
     for _j in range(sbml_model.getNumSpecies()):
         _sp_f = sbml_model.getSpecies(_j)
         _cid = _sp_f.getCompartment()
-        if _cid not in (rate_rule_comps | event_resize_comps) or _cid not in _ia_math:
+        if _cid in (rate_rule_comps | event_resize_comps) and _cid in _ia_math:
+            _sized_by, _listed = _ia_math[_cid], ""
+        elif _cid in _ar_math:
+            _sized_by = _ar_math[_cid]
+            _listed = (
+                ", the value of its assignment rule there (every name the rule reads is listed)"
+            )
+        else:
             continue
-        if _sp_f.getId() in _ia_math:
-            continue  # its value is the assignment's, in the unit it is read in
+        if _sp_f.getId() in _ia_math or _sp_f.getId() in _ar_targets:
+            # Its value is the assignment's, in the unit it is read in; or its
+            # rule's, whatever value it declares.
+            continue
         if (
             _sp_f.getInitialConcentration() != 0.0
             if _sp_f.getHasOnlySubstanceUnits() and _sp_f.isSetInitialConcentration()
@@ -8600,9 +8619,9 @@ def _build_model_from_sbml_doc(doc):
             )
         ):
             _fold(
-                _names_read(_ia_math[_cid]),
+                _names_read(_sized_by),
                 f"the initial value of species {_sp_f.getId()!r}, which was converted by the "
-                f"size of compartment {_cid!r} at load",
+                f"size of compartment {_cid!r} at load{_listed}",
             )
     # (#695) a stoichiometry, and a conversionFactor.
     for _rxn_i in range(sbml_model.getNumReactions()):
