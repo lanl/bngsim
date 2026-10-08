@@ -645,6 +645,36 @@ def test_the_counters_are_listed_whatever_becomes_of_the_plan(tmp_path, monkeypa
     assert "bngsim_codegen_comoving_approach" not in src
 
 
+def test_a_rate_law_that_is_not_read_is_taken_to_hold_a_power(tmp_path, monkeypatch):
+    """Where a rate law cannot be read, nothing says it has no power of a
+    counter under 1. The counters are listed with a test that holds at every
+    value, where a law that is read is asked its exponent."""
+    import sys
+
+    from bngsim import _codegen, _jacobian
+
+    def body(src):
+        head = "int bngsim_codegen_counter_power(int k, const double* p)"
+        return src.split(head)[1].split("\n}")[0]
+
+    def source():
+        return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
+
+    core = _on_a_counter(tmp_path, "closing", 3.0)._core
+    assert "if (!(((p[2] - 1.0) < 1.0 && (p[2] - 1.0) != 0.0))) return -1;" in body(source())
+    real = _jacobian._exprtk_to_sympy
+
+    def unread(text, *args, **kwargs):
+        if sys._getframe(1).f_code.co_name == "_counter_powers":
+            raise ValueError("not read")
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", unread)
+    listed = body(source())
+    assert "if (!(1)) return -1;" in listed
+    assert "if (k == 0) return 1;" in listed
+
+
 # ─── What the generator says of a case ──────────────────────────────────────
 
 
