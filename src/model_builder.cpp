@@ -1236,20 +1236,64 @@ AnalyticalJacobianData build_anal_jac(const std::vector<Reaction> &reactions, in
 // per law, so which species each law is solved FOR has to make that elimination
 // well posed. L is therefore also row-reduced over the species columns, and the
 // dependents are its pivots — see the long note at that step below.
+//
+// Issue #758 — the matrix is built for the amounts, z_i = V_i·y_i, and not for
+// the stored values. A reaction that spans compartments of different size is
+// emitted with per_species_volume_scaling: its rate is an amount per time and
+// compute_derivs divides each species' share by that species' own volume, so
+// dy/dt = diag(1/V)·S·v there, and L·S = 0 does not make L·y constant. For
+// A (V = 1) <-> B (V = 2) the detector reported A + B, which drifted from 1 to
+// 0.75 over a run, where what is conserved is A + 2·B. In z the column of such
+// a reaction is the plain one; the column of any other reaction, whose species
+// all move at the one rate, is V_i·S[i][r], written here over the volume of
+// one of its species so that it is the plain column too wherever its species
+// share a volume. The laws found are then weighted back to the stored values,
+// L[k][i] = a[k][i]·V_i/V_dep. A model with one volume, or none (`.net`), gets
+// the matrix and the laws it always did, to the bit.
+//
+// A species whose share is divided by a LIVE volume (ode_live_volume_idx0, an
+// hOSU=false species in a compartment a rule or an event resizes) has no
+// constant weight. It is kept out of every law by a column of its own.
 ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions,
                                           const std::vector<Species> &species) {
 
     const int ns = static_cast<int>(species.size());
-    const int nr = static_cast<int>(reactions.size());
+    const int n_rxn = static_cast<int>(reactions.size());
     ConservationLaws cl;
     cl.n_species = ns;
-    if (ns == 0 || nr == 0)
+    if (ns == 0 || n_rxn == 0)
         return cl;
+
+    auto volume_of = [&](int i) -> double {
+        const double v = species[i].volume_factor;
+        return (std::isfinite(v) && v > 0.0) ? v : 1.0;
+    };
+
+    // Species with no constant weight, each given a column of its own below.
+    std::vector<int> unweighted;
+    {
+        std::vector<bool> seen(ns, false);
+        for (const auto &rxn : reactions) {
+            if (!rxn.per_species_volume_scaling)
+                continue;
+            for (const auto *side : {&rxn.reactant_indices, &rxn.product_indices}) {
+                for (int idx : *side) {
+                    const int si = idx - 1;
+                    if (si >= 0 && si < ns && !seen[si] && species[si].ode_live_volume_idx0 >= 0) {
+                        seen[si] = true;
+                        unweighted.push_back(si);
+                    }
+                }
+            }
+        }
+    }
+    const int nr = n_rxn + static_cast<int>(unweighted.size());
 
     // Build dense stoichiometry matrix S (ns × nr) stored row-major.
     // S[i][r] = net stoichiometric coefficient of species i in reaction r.
     std::vector<std::vector<double>> S(ns, std::vector<double>(nr, 0.0));
-    for (int r = 0; r < nr; ++r) {
+    std::vector<int> changed;
+    for (int r = 0; r < n_rxn; ++r) {
         const auto &rxn = reactions[r];
         for (int ri : rxn.reactant_indices) {
             int si = ri - 1;
@@ -1261,7 +1305,32 @@ ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions
             if (si >= 0 && si < ns)
                 S[si][r] += 1.0;
         }
+        if (rxn.per_species_volume_scaling)
+            continue; // an amount per time already
+        // One rate for every species of it: V_i·S[i][r] in amounts, over the
+        // volume of the first species it changes. Each species once, however
+        // often the reaction names it.
+        double v_ref = 0.0;
+        changed.clear();
+        for (const auto *side : {&rxn.reactant_indices, &rxn.product_indices}) {
+            for (int idx : *side) {
+                const int si = idx - 1;
+                if (si < 0 || si >= ns || S[si][r] == 0.0)
+                    continue;
+                if (std::find(changed.begin(), changed.end(), si) == changed.end())
+                    changed.push_back(si);
+            }
+        }
+        for (int si : changed) {
+            const double v = volume_of(si);
+            if (v_ref == 0.0)
+                v_ref = v;
+            if (v != v_ref)
+                S[si][r] *= v / v_ref;
+        }
     }
+    for (size_t e = 0; e < unweighted.size(); ++e)
+        S[unweighted[e]][n_rxn + static_cast<int>(e)] = 1.0;
 
     // Skip fixed species rows — they don't participate in conservation.
     // Zero out their rows in S so they don't contribute.
@@ -1452,6 +1521,20 @@ ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions
     if (cl.n_laws == 0)
         return cl;
 
+    // Issue #758 — from the amounts back to the stored values, each law over
+    // its dependent's volume so that L[:, dependent] stays the identity. A
+    // ratio of 1 leaves the coefficient as it is, to the bit.
+    for (int k = 0; k < cl.n_laws; ++k) {
+        const double v_dep = volume_of(cl.dependent[k]);
+        for (int i = 0; i < ns; ++i) {
+            if (cl.coefficients[k][i] == 0.0)
+                continue;
+            const double ratio = volume_of(i) / v_dep;
+            if (ratio != 1.0)
+                cl.coefficients[k][i] *= ratio;
+        }
+    }
+
     // Build independent species list (all non-dependent, non-fixed)
     std::vector<bool> is_dep(ns, false);
     for (int d : cl.dependent)
@@ -1530,6 +1613,41 @@ const ConservationLaws &ensure_conservation_laws(const SharedModelData &sd,
         });
     }
     return sd.conservation_laws;
+}
+
+// Issue #758 — whether the laws carry volumes a write can move: a reaction
+// whose species sit in compartments with different size parameters, one of
+// them writable. Structure alone, so one answer for every clone.
+bool conservation_laws_follow_volumes(const SharedModelData &sd,
+                                      const std::vector<Species> &species) {
+    std::call_once(sd.conservation_follow_volumes_once, [&] {
+        const int ns = static_cast<int>(species.size());
+        for (const auto &rxn : sd.reactions) {
+            bool first = true;
+            int param = -1;
+            for (const auto *side : {&rxn.reactant_indices, &rxn.product_indices}) {
+                for (int idx : *side) {
+                    const int si = idx - 1;
+                    if (si < 0 || si >= ns || species[si].fixed)
+                        continue;
+                    const int p = species[si].volume_param_idx0;
+                    if (first) {
+                        param = p;
+                        first = false;
+                    } else if (p != param) {
+                        sd.conservation_follow_volumes = true;
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    return sd.conservation_follow_volumes;
+}
+
+ConservationLaws conservation_laws_at(const SharedModelData &sd,
+                                      const std::vector<Species> &species) {
+    return detect_conservation_laws(sd.reactions, species);
 }
 
 // Lazily materialize the Jacobian coloring (declared in model_impl.hpp). Same

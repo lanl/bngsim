@@ -136,6 +136,14 @@ struct SharedModelData {
     mutable ConservationLaws conservation_laws;
     mutable std::once_flag conservation_laws_once;
     bool conservation_laws_enabled = true;
+
+    // Issue #758 — a law across compartments of different size has the sizes
+    // in its coefficients (A + 2·B for V = 1 and 2), and a size is a parameter
+    // a write can move (#170). Where a reaction joins species under different
+    // size parameters the laws are therefore kept by each model for the sizes
+    // it has (NetworkModel::Impl::volume_laws), and not here.
+    mutable bool conservation_follow_volumes = false;
+    mutable std::once_flag conservation_follow_volumes_once;
 };
 
 // Lazily compute (once) and return the model's conservation laws. On the first
@@ -147,6 +155,14 @@ struct SharedModelData {
 // Defined in model_builder.cpp next to detect_conservation_laws().
 const ConservationLaws &ensure_conservation_laws(const SharedModelData &sd,
                                                  const std::vector<Species> &species);
+
+// Issue #758 — whether the model's laws move with a compartment size a write
+// can change (decided once, from structure), and the laws at the volumes
+// `species` has now. Defined in model_builder.cpp beside the detector.
+bool conservation_laws_follow_volumes(const SharedModelData &sd,
+                                      const std::vector<Species> &species);
+ConservationLaws conservation_laws_at(const SharedModelData &sd,
+                                      const std::vector<Species> &species);
 
 // Lazily compute (once) the Curtis-Powell-Reid coloring of the Jacobian
 // sparsity pattern and return the pattern with it materialized. The coloring is
@@ -243,6 +259,13 @@ struct NetworkModel::Impl {
 
     // ── Mutable per-instance data ────────────────────────────────────────
     std::vector<Species> species;
+
+    // Issue #758 — this model's conservation laws where they follow its
+    // compartment sizes, with the volume factors they were found at. Found
+    // again when a size has been written; a clone takes them with it.
+    mutable ConservationLaws volume_laws;
+    mutable std::vector<double> volume_laws_at;
+    mutable bool volume_laws_found = false;
     std::vector<Observable> observables;
     std::vector<Parameter> parameters;
     std::vector<Function> functions;

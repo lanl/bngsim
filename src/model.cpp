@@ -1974,7 +1974,21 @@ const ConservationLaws &NetworkModel::conservation_laws() const {
     // dense O(ns^3) detector is skipped entirely for ODE/SSA-only runs that
     // never call this accessor, and computed once (shared across clones) for
     // steady-state / introspection callers that do.
-    return ensure_conservation_laws(*impl_->shared, impl_->species);
+    const SharedModelData &sd = *impl_->shared;
+    if (!sd.conservation_laws_enabled || !conservation_laws_follow_volumes(sd, impl_->species))
+        return ensure_conservation_laws(sd, impl_->species);
+    // Issue #758 — laws with compartment sizes in them, for the sizes this
+    // model has now.
+    std::vector<double> volumes;
+    volumes.reserve(impl_->species.size());
+    for (const auto &sp : impl_->species)
+        volumes.push_back(sp.volume_factor);
+    if (!impl_->volume_laws_found || volumes != impl_->volume_laws_at) {
+        impl_->volume_laws = conservation_laws_at(sd, impl_->species);
+        impl_->volume_laws_at = std::move(volumes);
+        impl_->volume_laws_found = true;
+    }
+    return impl_->volume_laws;
 }
 
 // ─── Functional analytical Jacobian (GH #76) ─────────────────────────────────
