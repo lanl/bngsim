@@ -8401,7 +8401,8 @@ def _build_model_from_sbml_doc(doc):
     rateof_funcdef_names = {
         name for name, (_p, body) in func_defs.items() if body is _RATEOF_FUNCDEF
     }
-    if _model_uses_rateof(sbml_model, func_defs, rateof_funcdef_names):
+    _uses_rateof = _model_uses_rateof(sbml_model, func_defs, rateof_funcdef_names)
+    if _uses_rateof:
         builder.enable_rateof()
 
     # ── 10.7. Unresolvable compartment sizes (#170) ───────────────────
@@ -8441,9 +8442,44 @@ def _build_model_from_sbml_doc(doc):
     # read through the initialAssignment it was lifted from.) `c = J0`, `c = q`
     # under `q := 3*p`, and `c = S0` under `S0 = 2*p` each leave `p` as stale as
     # `c = 2*p` does.
+    # `rateOf(B)` reads more than `B`: the rate of `B` at load is every kinetic
+    # law of a reaction that makes or takes it, or its rate rule. `c =
+    # rateOf(B)` under `J0: A -> B; k1*A` left `k1` writable and the size where
+    # it was (0.172 off).
+    def _names_read(_m) -> set[str]:
+        _out = _ast_name_set(_m)
+        if not _uses_rateof:
+            return _out
+        for _node in _iter_ast_subtree(_m):
+            _t = _node.getType()
+            if _t == libsbml.AST_FUNCTION_RATE_OF or (
+                _t == libsbml.AST_FUNCTION and _node.getName() in rateof_funcdef_names
+            ):
+                for _k in range(_node.getNumChildren()):
+                    _out |= {f"rateOf({_n})" for _n in _ast_name_set(_node.getChild(_k))}
+        return _out
+
     _reads: dict[str, set[str]] = {}
     for _sym, _m in _taint_edges:
-        _reads.setdefault(_sym, set()).update(_ast_name_set(_m))
+        _reads.setdefault(_sym, set()).update(_names_read(_m))
+    for _rxn_i in range(sbml_model.getNumReactions() if _uses_rateof else 0):
+        _rxn_f = sbml_model.getReaction(_rxn_i)
+        for _getter, _n_refs in (
+            (_rxn_f.getReactant, _rxn_f.getNumReactants()),
+            (_rxn_f.getProduct, _rxn_f.getNumProducts()),
+        ):
+            for _j in range(_n_refs):
+                _sr = _getter(_j)
+                _rate = _reads.setdefault(f"rateOf({_sr.getSpecies()})", set())
+                _rate.add(_rxn_f.getId())
+                if hasattr(_sr, "getId") and _sr.getId():
+                    _rate.add(_sr.getId())
+    for _j in range(sbml_model.getNumRules() if _uses_rateof else 0):
+        _r = sbml_model.getRule(_j)
+        if _r.isRate() and _r.getMath() is not None:
+            _reads.setdefault(f"rateOf({_r.getVariable()})", set()).update(
+                _names_read(_r.getMath())
+            )
     for _rxn_i in range(sbml_model.getNumReactions()):
         _rxn_f = sbml_model.getReaction(_rxn_i)
         _kl_f = _rxn_f.getKineticLaw()
@@ -8492,7 +8528,7 @@ def _build_model_from_sbml_doc(doc):
             continue
         if _pid in _ar_targets:
             continue
-        _fold(_ast_name_set(_m), f"the initial value of {_pid!r}, which an initialAssignment sets")
+        _fold(_names_read(_m), f"the initial value of {_pid!r}, which an initialAssignment sets")
     # The same for a species, and for a parameter a rate rule or an event makes
     # a state of: an initialAssignment that is not lowered to an expression of
     # parameters (it reads a reaction's rate, the time, a species under a rule)
@@ -8500,28 +8536,61 @@ def _build_model_from_sbml_doc(doc):
     for _sym in sorted(_ia_state_targets):
         if _sym in ia_param_expr:
             continue
-        if _sym in ia_single_param_ref and ia_single_param_ref[_sym] in _declared_param_ids:
+        if (
+            _sym in ia_single_param_ref
+            and ia_single_param_ref[_sym] in _declared_param_ids
+            and ia_single_param_ref[_sym] not in _ar_targets
+        ):
+            # (A rule's target is declared too, and its slot is the rule's:
+            # `S = q` under `q := p*(1 + A)` is a number at load.)
             continue
         if _sym in _ia_math:
             _fold(
-                _ast_name_set(_ia_math[_sym]),
+                _names_read(_ia_math[_sym]),
                 f"the initial value of {_sym!r}, which an initialAssignment sets",
             )
     # (#696) a compartment's size.
     for _cid in comp_param_idx:
         if _cid in _ia_math:
             _fold(
-                _ast_name_set(_ia_math[_cid]),
+                _names_read(_ia_math[_cid]),
                 f"the size of compartment {_cid!r}, which an initialAssignment sets",
             )
-    # The same where an assignment rule sizes it from parameters alone: the
-    # rule's value at load is the size the model holds (`c := 2*p`).
+    # The same where an assignment rule sizes it from parameters alone and it
+    # holds a species: the rule's value at load is the size the species were
+    # converted by (`c := 2*p`). A rate law that names such a compartment reads
+    # the rule itself, so one that holds no species has nothing folded.
+    _holds_species = {
+        sbml_model.getSpecies(_j).getCompartment() for _j in range(sbml_model.getNumSpecies())
+    }
     for _j in range(sbml_model.getNumCompartments()):
         _cid = sbml_model.getCompartment(_j).getId()
-        if _cid in _ic_const_ar and _cid in _ar_math:
+        if _cid in _ic_const_ar and _cid in _ar_math and _cid in _holds_species:
             _fold(
-                _ast_name_set(_ar_math[_cid]),
+                _names_read(_ar_math[_cid]),
                 f"the size of compartment {_cid!r}, which an assignment rule sets",
+            )
+    # A compartment that a rate rule or an event makes a state of keeps its
+    # initialAssignment as the state's initial value, and that follows a write.
+    # A species in it that is declared in the unit it is not held in does not:
+    # its value was converted by the size at load (`c = 2*p; c' = 0.1` with S
+    # an amount in c: [S] 0.5 off).
+    for _j in range(sbml_model.getNumSpecies()):
+        _sp_f = sbml_model.getSpecies(_j)
+        _cid = _sp_f.getCompartment()
+        if _cid not in (rate_rule_comps | event_resize_comps) or _cid not in _ia_math:
+            continue
+        if _sp_f.getId() in _ia_math:
+            continue  # its value is the assignment's, in the unit it is read in
+        if (
+            _sp_f.isSetInitialConcentration()
+            if _sp_f.getHasOnlySubstanceUnits()
+            else (_sp_f.isSetInitialAmount() and not _sp_f.isSetInitialConcentration())
+        ):
+            _fold(
+                _names_read(_ia_math[_cid]),
+                f"the initial value of species {_sp_f.getId()!r}, which was converted by the "
+                f"size of compartment {_cid!r} at load",
             )
     # (#695) a stoichiometry, and a conversionFactor.
     for _rxn_i in range(sbml_model.getNumReactions()):
@@ -8553,9 +8622,9 @@ def _build_model_from_sbml_doc(doc):
                 if _kept:
                     continue  # a write to what it reads moves it
                 if _has_math:
-                    _fold(_ast_name_set(_sm.getMath()), _what)
+                    _fold(_names_read(_sm.getMath()), _what)
                 if _named and _srid in _ia_math:
-                    _fold(_ast_name_set(_ia_math[_srid]), _what)
+                    _fold(_names_read(_ia_math[_srid]), _what)
     if sbml_model.isSetConversionFactor():
         _fold([sbml_model.getConversionFactor()], "the model's conversionFactor")
     for _sid in species_ids:
