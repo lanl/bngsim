@@ -13,8 +13,25 @@ the same quantity `run(steady_state=True)` checks (see below).
 **`method="integration"` (default)**: CVODE BDF integration that marches
 forward one step at a time and stops when the parity residual
 `||f(y)||_2 / n_species` drops below `tol` (capped at `max_time`). This is the
-strict BNG2.pl-parity path, and it always returns the steady state the
-dynamics actually reach.
+strict BNG2.pl-parity path, and for a model whose right-hand side does not read
+the time it returns the steady state the dynamics reach.
+
+**A model with an event, or one that reads the time, is refused** by
+`steady_state()` and `steady_state_batch()` (issue #710). Both solvers look for
+a root of `f(y)` with everything read at `t = 0`, and fire no event: `A -> B` at
+`k*(1 - exp(-time()))`, whose rate is 0 at `t = 0`, came back at its initial
+state as converged, and a model whose event switches a production rate on came
+back at the state from before it. A reported quantity that reads the time has
+no steady value either: an assignment-rule species `S := B*(1 - exp(-time))`
+came back 0 for 2/3. A `time()` call or a table function indexed by time, in a
+rate law, a rule or a function that is only reported, is a read of the time;
+`rateOf` is not.
+
+Integrate such a model with `run()` over a span long enough for the trajectory
+to settle. `run(..., steady_state=True)` does not stop early for it: the
+criterion is `‖f(t, y)‖` at an output point, and a rate that is switched on at
+`t = 5` is 0 at `t = 1`. The run goes to the end of its span, and
+`steady_state_reached` stays 0.
 
 **`method="newton"`**: the two-tier integrate-first solver. Tier 1 is the
 *same* CVODE burst as `"integration"`, carrying the state into the physical
@@ -575,6 +592,11 @@ added — the equilibration is not a no-op). Because the measurement phase start
 from `x_ss(θ)`, its forward-sensitivity seed is `∂x(0)/∂θ = dx_ss/dθ` — the
 steady-state sensitivity of phase 1 — **not** the fresh-start zero. Pass
 **`carry_sensitivities=True`** on the measurement run to seed it correctly:
+
+(An equilibration run with `steady_state=True` stops early only for a model
+that reads no time and has no event, issue #710. For one that does, phase 1
+runs to the end of its span, through any event in it: give it the span the
+pre-condition is meant to last.)
 
 ```python
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k_prod", "k_deg"])
