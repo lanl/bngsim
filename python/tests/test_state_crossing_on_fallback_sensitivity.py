@@ -1768,8 +1768,17 @@ def test_two_requested_derived_parameters_far_from_flipping_run(tmp_path):
         ("kb*kd", ["kd 3*(n>1)", "kd2 2*kd"], []),
         ("kb", ["kd 3*(n>1)"], ["0 2 kd"]),
         ("kb", ["kd 3*(n=1.001)"], ["0 2 kd"]),
+        ("kb*kd", ["kd n?3:0"], []),
     ],
-    ids=["times-a-comparison", "a-ternary", "two-comparisons", "unread", "a-rate-constant", "="],
+    ids=[
+        "times-a-comparison",
+        "a-ternary",
+        "two-comparisons",
+        "unread",
+        "a-rate-constant",
+        "=",
+        "a-ternary-on-a-parameter-s-own-value",
+    ],
 )
 def test_a_comparison_outside_an_if_in_a_derived_parameter_is_refused(
     tmp_path, fy, params, reactions
@@ -2217,3 +2226,27 @@ def test_a_parameter_named_as_a_call_is_a_parameter(name):
         want = ss._quotient_across_a_choice(tree, values, frozenset(), {"asked"})
         got = ss._quotient_across_a_choice(tree, {**values, name: 7.0}, frozenset(), {"asked"})
         assert (got is None) == (want is None)
+
+
+def test_a_clock_started_through_a_compartment_s_size_is_moved_by_the_size():
+    """An amount-valued clock species starts at its amount over its
+    compartment's size, so the size's column moves it. The seed for that is
+    the engine's (``compartment_ic_sens_seeds``), and reading a clock's
+    seeding off the text counts it."""
+    import bngsim._switch_sensitivity as ss
+
+    class Core:
+        param_names = ["V", "k"]
+        param_is_expression = [False, False]
+        param_expressions = ["", ""]
+        species_names = ["C"]
+        species_ic_param_refs: list = []
+        compartment_ic_sens_seeds = [(0, 0, -0.25)]
+
+        def codegen_data(self):
+            parameters = [{"name": "V", "expression": ""}, {"name": "k", "expression": ""}]
+            return {"parameters": parameters, "functions": [], "reactions": []}
+
+    clocks = {"C": 0}
+    assert ss._clocks_moved(Core(), clocks, ["V"], [], True) == frozenset({0})
+    assert ss._clocks_moved(Core(), clocks, ["k"], [], True) == frozenset()
