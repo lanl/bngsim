@@ -8470,10 +8470,17 @@ def _build_model_from_sbml_doc(doc):
         ):
             for _j in range(_n_refs):
                 _sr = _getter(_j)
+                _sp_r = sbml_model.getSpecies(_sr.getSpecies())
+                if _sp_r is None or _sp_r.getBoundaryCondition() or _sp_r.getConstant():
+                    continue  # no reaction changes it
                 _rate = _reads.setdefault(f"rateOf({_sr.getSpecies()})", set())
                 _rate.add(_rxn_f.getId())
                 if hasattr(_sr, "getId") and _sr.getId():
                     _rate.add(_sr.getId())
+                if not _sp_r.getHasOnlySubstanceUnits():
+                    # The rate of a concentration is the amount's over the
+                    # size (`c = 1 + rateOf(B)`: a write to B's `d` 0.33 off).
+                    _rate.add(_sp_r.getCompartment())
     for _j in range(sbml_model.getNumRules() if _uses_rateof else 0):
         _r = sbml_model.getRule(_j)
         if _r.isRate() and _r.getMath() is not None:
@@ -8583,9 +8590,14 @@ def _build_model_from_sbml_doc(doc):
         if _sp_f.getId() in _ia_math:
             continue  # its value is the assignment's, in the unit it is read in
         if (
-            _sp_f.isSetInitialConcentration()
-            if _sp_f.getHasOnlySubstanceUnits()
-            else (_sp_f.isSetInitialAmount() and not _sp_f.isSetInitialConcentration())
+            _sp_f.getInitialConcentration() != 0.0
+            if _sp_f.getHasOnlySubstanceUnits() and _sp_f.isSetInitialConcentration()
+            else (
+                not _sp_f.getHasOnlySubstanceUnits()
+                and _sp_f.isSetInitialAmount()
+                and not _sp_f.isSetInitialConcentration()
+                and _sp_f.getInitialAmount() != 0.0  # 0 is 0 at any size
+            )
         ):
             _fold(
                 _names_read(_ia_math[_cid]),

@@ -462,7 +462,7 @@ CHAINS = {
             "compartment c, d; d = 1; species A in d, B in d, S in c; A = 2; B = 0; S = 1;\n"
             "k1 = 1; k = 1; z = 1; n := 2*z; c = rateOf(B);\nJ0: A -> n B; k1*A\nJ: S -> ; k*S\n"
         ),
-        {"k1", "z"},
+        {"k1", "z", "d"},
         "size of compartment 'c'",
     ),
     "a-size-from-a-rate-of-change": (
@@ -470,7 +470,7 @@ CHAINS = {
             "compartment c, d; d = 1; species A in d, B in d, S in c; A = 2; B = 0; S = 1;\n"
             "k1 = 1; k = 1; c = rateOf(B);\nJ0: A -> B; k1*A\nJ: S -> ; k*S\n"
         ),
-        {"k1"},
+        {"k1", "d"},
         "size of compartment 'c'",
     ),
     "a-size-from-a-rate": (
@@ -606,6 +606,29 @@ def test_an_initial_value_kept_as_an_expression_freezes_nothing(text):
     model = bngsim.Model.from_antimony_string(text)
     assert model.frozen_params == []
     model.set_param("p", 3.0)
+
+
+AT_ZERO = 'initialAmount="0" hasOnlySubstanceUnits="false"'
+
+
+def test_an_amount_of_zero_in_a_compartment_that_is_a_state_freezes_nothing():
+    """Nothing to refuse. An amount of 0 is a concentration of 0 at any size,
+    so nothing was converted by the size at load."""
+    model = _state_sized(AT_ZERO, BY_A_RATE_RULE)
+    assert model.frozen_params == []
+    model.set_param("p", 3.0)
+
+
+def test_the_rate_of_a_species_no_reaction_changes_reads_no_law():
+    """Nothing to refuse. ``B`` is a boundary species: ``J0`` names it as its
+    product and does not change it, so ``rateOf(B)`` is 0 whatever ``k1``
+    is."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c, d; d = 1; species A in d, $B in d, S in c; A = 2; B = 0; S = 1;\n"
+        "k1 = 1; k = 1; c = 1 + rateOf(B);\nJ0: A -> B; k1*A\nJ: S -> ; k*S\n"
+    )
+    assert model.frozen_params == []
+    model.set_param("k1", 2.0)
 
 
 def test_a_species_with_its_own_assignment_in_a_compartment_that_is_a_state():
