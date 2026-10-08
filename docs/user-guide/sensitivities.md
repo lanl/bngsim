@@ -574,6 +574,37 @@ def dloss_dV(v, h):
     return (loss(up) - loss(dn)) / (2 * h)
 ```
 
+### Parameters an SBML model was built with as numbers
+
+A few things an SBML document writes over its parameters are evaluated once,
+when the model is loaded, and the model holds the number from then on:
+
+- the size of a compartment that an `initialAssignment` sets, `c = 2*p`;
+- a stoichiometry: an L2 `<stoichiometryMath>`, an `initialAssignment` onto a
+  `speciesReference` id, and the id itself;
+- a `conversionFactor`;
+- a parameter's initial value, where its `initialAssignment` reads something
+  that is not a parameter (a reaction rate, a species under a rule) and cannot
+  be kept as an expression.
+
+A parameter that reaches the model only that way does not move it afterwards.
+`set_param` on one used to take the value and change nothing, and its
+sensitivity column was an exact 0 where the model moves with it (issues #695,
+#696). Both are refused now, by name, with what the parameter was folded into:
+
+```python
+m = bngsim.Model.from_sbml("model.xml")
+m.frozen_params                     # ['p']
+m.set_param("p", 2.0)               # ParameterError: ... the size of compartment 'c' ...
+bngsim.Simulator(m, sensitivity_params=["p"])   # SensitivityUnsupportedError
+```
+
+A write of the value the parameter already holds is not a change, so a whole
+parameter vector still goes back in. `compute_all_sensitivities()` with no list
+leaves these columns out and says so. To move one, change it in the document
+and load the model again, and difference over that for a gradient. The size
+itself (`c` above) is an ordinary writable, differentiable parameter.
+
 ## Differentiable ODE solving with JAX
 
 BNGsim provides a JAX-traceable ODE solver via `bngsim.jax.differentiable_solve`.
