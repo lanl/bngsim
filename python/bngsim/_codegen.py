@@ -7861,7 +7861,8 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     if isinstance(reason, UncompensatedCrossingReason):
         remedy = (
             "The analytic sensitivity RHS does apply that jump, so removing the decline "
-            "named above restores a correct gradient (issue #232)."
+            "named above restores a correct gradient (issue #232). A time course in a "
+            "model with a crossing on the state is refused before it starts (issue #938)."
             if isinstance(reason, DeclinedAtMovingCrossingReason)
             # No machinery compensates this one, and naming an issue here would
             # be a dangling pointer: issue #150 (state comparisons) and issue
@@ -7888,7 +7889,10 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     logger.warning(
         "Forward sensitivity: %s, so the analytic sensitivity RHS is declined for "
         "this model and CVODES' internal difference quotient is used instead "
-        "(correct, but slower).",
+        "(correct, but slower, where every rate law is continuous in the state along "
+        "the run. A time course is refused for the jumps that are found in the rate "
+        "laws' text, issue #938; one written some other way is read across and is not "
+        "seen).",
         reason,
     )
 

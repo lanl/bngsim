@@ -2361,7 +2361,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 d["reactions"] = rxn_list;
 
                 // Table functions: [{name, index_kind, index_param_idx,
-                // index_obs_idx}, ...] in dispatch-id order. Lets the
+                // index_obs_idx, step}, ...] in dispatch-id order. Lets the
                 // model-based codegen path emit
                 //   data->tfun_eval(tf_id, idx_c, data->tfun_ctx)
                 // for any BNGL function whose name appears here. Empty
@@ -2373,6 +2373,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     td["index_kind"] = spec.index_kind;
                     td["index_param_idx"] = spec.index_param_idx;
                     td["index_obs_idx"] = spec.index_obs_idx;
+                    td["step"] = spec.step;
                     tf_list.append(td);
                 }
                 d["table_functions"] = tf_list;
@@ -3209,6 +3210,20 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("codegen_so_path", &bngsim::SteadyStateOptions::codegen_so_path)
         .def_readwrite("codegen_c_source", &bngsim::SteadyStateOptions::codegen_c_source)
         .def_readwrite("sensitivity_params", &bngsim::SteadyStateOptions::sensitivity_params)
+        .def(
+            "set_ic_param_sens",
+            [](bngsim::SteadyStateOptions &self,
+               const std::vector<std::tuple<int, int, double>> &triples) {
+                self.ic_param_sens.clear();
+                self.ic_param_sens.reserve(triples.size());
+                for (const auto &t : triples) {
+                    self.ic_param_sens.push_back({std::get<0>(t), std::get<1>(t), std::get<2>(t)});
+                }
+            },
+            py::arg("triples"),
+            "Set the initial-condition seeds dx_i(0)/dp as (species_idx0, param_idx0, "
+            "coefficient) triples, as SolverOptions.set_ic_param_sens does for a time "
+            "course. A conserved total moves with them (issue #704).")
         .def_readwrite("steady_state_mask", &bngsim::SteadyStateOptions::steady_state_mask);
 
     // --- SteadyStateResult ---
