@@ -104,11 +104,12 @@ def test_the_source_for_the_jit_is_declined_too(tmp_path):
     assert "issue #931" in (_codegen.last_codegen_decline() or "")
 
 
-def test_the_emitter_declines_for_a_caller_that_goes_round_the_entry_points(tmp_path):
+@pytest.mark.parametrize("case", ["kcat-at-0", "km"])
+def test_the_emitter_declines_for_a_caller_that_goes_round_the_entry_points(tmp_path, case):
     from bngsim import _codegen
 
     with pytest.raises(_codegen.CodegenDeclined, match=r"issue #931"):
-        _codegen.generate_rhs_from_model(_model(tmp_path))
+        _codegen.generate_rhs_from_model(_model(tmp_path, **CASES[case]))
 
 
 def test_a_constant_that_no_function_writes_is_compiled(tmp_path):
