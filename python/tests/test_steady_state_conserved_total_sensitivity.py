@@ -691,11 +691,12 @@ def test_a_coefficient_that_is_rounding_is_not_a_member_of_a_law(tmp_path, monke
     MODEL1505110000 was refused for it; and a rounding coefficient on a
     masked-out species would hold a law's total. Here the laws of two
     compartments of different size are each given such a coefficient on the
-    other's species."""
+    other's species, and on Z, which is made and lost and is in no law."""
     text = (
-        "compartment C1, C2; C1 = 1; C2 = 3; species A in C1, B in C1, X in C2, Y in C2;"
-        " A0 = 3; A = A0; B = 0; X = 1; Y = 0; kf = 1; kr = 0.5\n"
+        "compartment C1, C2; C1 = 1; C2 = 3; species A in C1, B in C1, X in C2, Y in C2, Z in C1;"
+        " A0 = 3; A = A0; B = 0; X = 1; Y = 0; Z0 = 2; Z = Z0; kf = 1; kr = 0.5\n"
         "J1: A -> B; kf*A\nJ2: B -> A; kr*B\nJ3: X -> Y; kf*X\nJ4: Y -> X; kr*Y\n"
+        "J5: -> Z; kf\nJ6: Z -> ; kr*Z\n"
     )
     model = bngsim.Model.from_antimony_string(text)
     sim = bngsim.Simulator(model, method="ode")
@@ -719,3 +720,10 @@ def test_a_coefficient_that_is_rounding_is_not_a_member_of_a_law(tmp_path, monke
     monkeypatch.setattr(core_type, "conservation_laws", property(noisy), raising=False)
     got = np.asarray(sim.steady_state(sensitivity_params=["A0", "kf"], tol=1e-12).sensitivity)
     np.testing.assert_array_equal(got, want)
+    # Z0 sets a species that is in no law: on an advanced state it is not one
+    # of the parameters a conserved total moves with.
+    sim.run(t_span=(0.0, 0.7), n_points=3)
+    out = sim.steady_state(sensitivity_params=["Z0"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], 0.0, atol=1e-12)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"carried-over.*#704"):
+        sim.steady_state(sensitivity_params=["A0"], tol=1e-12)
