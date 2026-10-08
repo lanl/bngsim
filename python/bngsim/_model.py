@@ -1194,7 +1194,7 @@ class Model:
     @property
     def frozen_params(self) -> list[str]:
         """Parameters that were folded to a number when the model was built
-        (issues #313, #695, #696).
+        (issues #313, #695, #696, #711).
 
         An SBML document may write a compartment's size, a stoichiometry or a
         conversion factor over its parameters, or set an initial value, of a
@@ -1216,8 +1216,9 @@ class Model:
         each reaction's volume factor into its rate constant as a number,
         ``0.1*kb`` for ``1/Ve`` at ``Ve = 10``, and leaves the expression in a
         comment, ``unit_conversion=1/Ve``. Every parameter such a comment names
-        is listed, with what a derived one among them reads: the network holds
-        the number, and it is the BNGL source that has to change.
+        is listed, with what a derived parameter or a function among them
+        reads: the network holds the number, and it is the BNGL source that
+        has to change.
 
         Empty for most models.
 
@@ -2278,6 +2279,8 @@ class Model:
         the model to an external optimizer or sampler that should treat
         each parameter as an independent variable; varying a primary via
         :meth:`set_param` automatically propagates to derived parameters.
+        Leave out :attr:`frozen_params` where a model has any: those are
+        listed here, and a write that changes one is refused.
 
         Two kinds are left out, one per flag. A derived ``ConstantExpression``
         (:attr:`param_is_expression`, e.g. ``_rateLaw{N}``) is recomputed from
@@ -2503,9 +2506,10 @@ class Model:
         )
 
 
-# To the end of the line: BNG2.pl writes ``unit_conversion=1/Ve`` last and with
-# no blank in it, and an edited file may have ``unit_conversion= 1 / Ve``.
-_UNIT_CONVERSION = re.compile(r"\bunit_conversion\s*=\s*(\S.*?)\s*$")
+# To the end of the line or a second ``#``: BNG2.pl writes
+# ``unit_conversion=1/Ve`` last and with no blank in it, and an edited file may
+# have ``unit_conversion= 1 / Ve``.
+_UNIT_CONVERSION = re.compile(r"\bunit_conversion\s*=\s*([^\s#][^#]*?)\s*(?:#|$)")
 # A number first, so that the ``e`` of ``6.0221e+23`` is not read as a name.
 _NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w*)")
 
@@ -2528,10 +2532,12 @@ def _unit_conversions_in(path: Path) -> list[tuple[str, str]]:
     """``(reaction, expression)`` for each ``unit_conversion=`` comment on a
     reaction line of a ``.net`` file (issue #711).
 
-    The block is found as the loader finds it, by the first two words of a
-    line with its comment taken off, so a ``reactions_text`` block, a
-    commented-out line and a comment that says ``end reactions`` are none of
-    them read for one.
+    The block is found line by line, by the first two words of a line with
+    its comment taken off, so a ``reactions_text`` block, a commented-out line
+    and a comment that says ``end reactions`` are none of them read for one.
+    Lines end where the loader's end, at a newline and nowhere else. (The
+    loader is stricter about the marker itself: ``begin reactions`` with one
+    blank. A file it reads no reaction from may still have names listed here.)
     """
     try:
         text = Path(path).read_text(errors="replace")
@@ -2541,7 +2547,7 @@ def _unit_conversions_in(path: Path) -> list[tuple[str, str]]:
         return []
     found: list[tuple[str, str]] = []
     inside = False
-    for line in text.splitlines():
+    for line in text.split("\n"):
         code, _, comment = line.partition("#")
         words = code.split()
         if not words:
@@ -2589,7 +2595,13 @@ def _unit_conversion_folds(conversions, core: Any) -> dict[str, str]:
     written.update(functions)
     names = set(core.param_names) | set(functions)
     reason: dict[str, str] = {}
-    for index, expression in conversions:
+    for entry in conversions:
+        try:
+            index, expression = entry
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"unit_conversions: {entry!r} is not a (reaction, expression) pair"
+            ) from None
         for name in _names_in(str(expression)):
             if name in names and name not in reason:
                 reason[name] = (
@@ -2597,8 +2609,8 @@ def _unit_conversion_folds(conversions, core: Any) -> dict[str, str]:
                     f"(reaction {index}: unit_conversion={expression})"
                 )
     # What a derived parameter or a function among them reads set the number
-    # as well. In the order found, so that one read on two paths is given the
-    # reason of the reaction that comes first.
+    # as well. Breadth first, so that one read on two paths is given the
+    # reason of the shorter, and of the earlier reaction between two as short.
     pending = list(reason)
     for name in pending:
         for read in _names_in(written.get(name, "")):

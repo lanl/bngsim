@@ -220,6 +220,12 @@ EDITED = {
         "begin reactions\n", "begin reactions\n# end reactions\n"
     ),
     "a-header-that-names-the-block": lambda net: "# begin reactions ... end reactions\n" + net,
+    "a-form-feed-in-the-comment": lambda net: net.replace(
+        "#_R1 unit_conversion=1/Ve", "#_R1 \x0c unit_conversion=1/Ve"
+    ),
+    "a-second-comment-after-it": lambda net: net.replace(
+        "unit_conversion=1/Ve", "unit_conversion=1/Ve # checked against Sm"
+    ),
     "a-reactions-text-block-first": lambda net: net.replace(
         "begin reactions\n",
         "begin reactions_text\n    1 L + R -> LR #_R1 unit_conversion=1/Sm\n"
@@ -246,6 +252,25 @@ def test_a_reaction_line_that_is_commented_out_names_nothing(tmp_path):
         "begin reactions\n", "begin reactions\n#    9 1,2 4 0.5*kb #_R9 unit_conversion=1/Sm\n"
     )
     assert _net(tmp_path, text).frozen_params == ["Vc", "Ve"]
+
+
+def test_an_entry_that_is_no_pair_is_refused_by_name(tmp_path):
+    """A ``unit_conversions`` entry is a (reaction, expression) pair."""
+    path = tmp_path / "cb.net"
+    path.write_text(NET.format(Ve=10, factor=0.1))
+    parsed = bngsim.parse_net_file(path)
+    parsed["unit_conversions"] = ["1/Ve"]
+    with pytest.raises(ValueError, match=r"unit_conversions: '1/Ve' is not a \(reaction"):
+        bngsim.build_model_from_parsed(parsed)
+
+
+def test_an_sbml_model_is_still_told_to_change_the_document():
+    """Control. The remedy goes by what the parameter was folded into."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c; p = 1; c = 2*p; species S in c; S = 1; k = 1;\nJ: S -> ; k*S\n"
+    )
+    with pytest.raises(bngsim.ParameterError, match="Change it in the SBML document"):
+        model.set_param("p", 2.0)
 
 
 def test_a_subset_model_is_told_to_change_the_bngl_source(tmp_path):

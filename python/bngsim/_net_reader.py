@@ -138,7 +138,7 @@ def build_model_from_parsed(parsed: dict[str, Any]):
 
     It makes the calls ``NetFileLoader::load`` makes, in the same order, so the
     dictionary ``parse_net_file`` returns builds the model ``Model.from_net``
-    loads, and a modified dictionary builds the modified model. Three things to
+    loads, and a modified dictionary builds the modified model. Four things to
     know when modifying one:
 
     * a species listed in ``species_ic_params`` takes its initial concentration
@@ -152,6 +152,10 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     * the parameters a ``unit_conversions`` entry reads are refused for writing
       in the model built (issue #711): the rates hold that factor as a number.
       Drop an entry only with the number it stands for taken out of the rate.
+      An entry names parameters by the names in ``parameters``: rename one in
+      both, or the entry names nothing and the renamed parameter is written
+      with no rate following it. A dictionary with no ``unit_conversions`` key
+      builds a model with nothing refused.
 
     Parameters
     ----------
