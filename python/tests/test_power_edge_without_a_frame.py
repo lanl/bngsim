@@ -572,8 +572,10 @@ def test_an_exponent_that_is_a_species_builds(shape):
     """The exponent of a power read from a species: asked for at the run's
     parameter values it has none, and written out it named ``obs[]`` in a
     function that has no such thing, so no sensitivity could be run on the
-    model at all, on main for a closing power. It is taken to be under 1, and
-    a column that moves nothing runs."""
+    model at all, for a closing power. It is taken to be under 1, and a column
+    that moves nothing runs.
+
+    The opening case: Control. It built as it does now."""
     law = SHAPES[shape][0].format(s="((time-on)/D)").replace("(a-1)", "E")
     text = (
         "species X, E; X = 0; E = 0.5; k0 = 0.1; k1 = 2; on = 3; D = 4; kdeg = 0.3\n"
@@ -604,6 +606,25 @@ def test_a_power_that_reads_the_counter_through_a_weighted_observable(tmp_path, 
     it with a weight of 2: no clock symbol is in the power's base. dX/dT0 came
     back -0.681383 for -0.684294."""
     _refused(_on_a_counter(tmp_path, "closing", 1.1, text=WEIGHTED), params, 948)
+
+
+NO_ANALYTIC = COUNTER.replace(
+    "k1*{shape},0),0)\n", "k1*{shape},0),0)+0.001*max(xo,0.5)\n"
+).replace("    1 t 2\n", "    1 t 2\n    2 xo 1\n")
+
+
+@pytest.mark.parametrize("params", [["T0"], ["r"]])
+def test_a_counter_under_a_power_with_no_analytic_right_hand_side(tmp_path, params):
+    """Control. A ``max()`` in another term leaves the model with no analytic
+    sensitivity right-hand side, and the list of counters under a power is in
+    that code, so nothing here asks. On the difference quotient the counter's
+    own columns came back 11% off. Such a run is refused since issue #938: a
+    condition on a counter that a requested column moves."""
+    model = _on_a_counter(tmp_path, "closing", 1.1, text=NO_ANALYTIC)
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938"):
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
+        assert not sim.has_analytic_sens_rhs
+        sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
 def test_the_counters_are_listed_whatever_becomes_of_the_plan(tmp_path, monkeypatch):
