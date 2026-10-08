@@ -241,8 +241,9 @@ def test_a_rate_constant_is_written_as_before(tmp_path):
 
 
 def test_a_sensitivity_column_for_a_volume_is_refused(tmp_path):
-    """dLf/dVe came back 0 at every time, beside dLf/dkb = -28.87. Differences
-    of the two networks put it near 0.19."""
+    """dLf/dVe came back 0 at every time, beside dLf/dkb = -28.87. The rate is
+    ``kb/Ve``, so it is -(kb/Ve)*dLf/dkb = 0.2887, as differences of networks
+    written at ``Ve`` +/- h give."""
     model = _at(tmp_path, 10)
     with pytest.raises(bngsim.SensitivityUnsupportedError, match="#711") as refusal:
         bngsim.Simulator(model, method="ode", sensitivity_params=["Ve", "kb"])

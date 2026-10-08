@@ -1456,7 +1456,7 @@ class Simulator:
         # nothing else follows it, so its column was an exact 0 at every
         # species and time: dS/dp = 0 for 0.303 with a compartment sized
         # `c = 2*p`, dP/df = 0 for 2 with a stoichiometry of `2*f`, dLf/dVe = 0
-        # for 0.19 with a cBNGL volume BNG2.pl wrote into the rates.
+        # for 0.289 with a cBNGL volume BNG2.pl wrote into the rates.
         frozen = self._model._frozen_params
         folded = [name for name in dict.fromkeys(param_names) if name in frozen]
         if folded:
