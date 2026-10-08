@@ -1194,6 +1194,11 @@ struct SteadyStateOptions {
 
     // Sensitivity: parameter names for steady-state sensitivity dY_ss/dp
     std::vector<std::string> sensitivity_params;
+    // ∂x_i(0)/∂p for the state the solve starts from, as SolverOptions carries
+    // it for a time course (issue #704). A conserved total is Σ L[k,i]·x_i(0),
+    // so a parameter that sets an initial amount moves the steady state through
+    // it. Empty: the model's species_ic_param_refs() identity seeding applies.
+    std::vector<ICParamSensSeed> ic_param_sens;
 
     // ─── Which species the convergence test is taken over (issue #74) ─────────
     // Per-species selector, length n_species (or EMPTY, the default, meaning

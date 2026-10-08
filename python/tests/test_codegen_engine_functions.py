@@ -175,10 +175,22 @@ def test_the_crossed_bounds_clamp_follows_the_engine(tmp_path, a0, expect):
 # ── The sensitivity run, which is where the issue was reported ───────────────
 
 
-@pytest.mark.parametrize(
-    "body",
-    ["k*sign(A+1)", "k*sgn(A+1)", "k*clamp(1,A,4)", "k*avg(A,2)", "k*sum(A,2)"],
-)
+@pytest.mark.parametrize("body", ["k*sign(A+1)", "k*sgn(A+1)"])
+def test_a_sensitivity_run_beside_a_step_on_the_state_is_refused(tmp_path, body):
+    """``sign`` steps where its argument crosses zero, and outside a condition
+    nothing locates that. The rate law compiles, the analytic right-hand side
+    is declined, and the run on the difference quotient is refused by name
+    (issue #938), where it used to be let through: A + 1 does not reach zero in
+    this model, and that is not known before the run."""
+    m = _model(tmp_path, body)
+    sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#938") as caught:
+        sim.run(t_span=(0.0, 4.0), n_points=9)
+    assert "(A+1)" in str(caught.value)
+    assert m._codegen_sens_decline is not None
+
+
+@pytest.mark.parametrize("body", ["k*clamp(1,A,4)", "k*avg(A,2)", "k*sum(A,2)"])
 def test_a_sensitivity_run_builds_and_falls_back(tmp_path, body):
     """The issue's own case, plus the fallback it is supposed to reach.
 

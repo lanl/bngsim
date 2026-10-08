@@ -1,7 +1,7 @@
 """A derived parameter's column on the difference-quotient path (issue #707).
 
 ``kd = 2*k0`` and a rate law the analytic sensitivity right-hand side declines,
-``kd*abs(Atot)``, so CVODES takes each column by its internal difference
+``kd*max(1, 0*Atot)*Atot``, so CVODES takes each column by its internal difference
 quotient: it moves one parameter, reads the right-hand side, and puts it back.
 
 bngsim mirrors the moved value into the model and re-derives the derived
@@ -44,7 +44,10 @@ begin groups
 end groups
 """
 T = np.linspace(0.0, 2.0, 5)
-DECLINED = "kd*abs(Atot)/Atot"  # the reaction's rate is rf·A = kd·|A|
+# A rate constant of kd, written so that the analytic path declines it. Not
+# as ``kd*abs(Atot)/Atot``, a sign written as a quotient, which a run on the
+# quotient is refused for (issue #938).
+DECLINED = "kd*max(1,0*Atot)"
 ANALYTIC = "kd"
 
 

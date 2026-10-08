@@ -499,7 +499,8 @@ class Result:
         # the static volume factor in as_roadrunner. None ⇒ no such species.
         self._varvol_amount_factor: dict[int, np.ndarray] | None = None
 
-        # GH #205: SBML AssignmentRule-target species → (kind, src, vdiv), the
+        # GH #205: SBML AssignmentRule-target species → (kind, src, vdiv,
+        # vdiv_param: the size vdiv is read from, or ""; issue #724), the
         # same map Simulator._apply_ar_report_map uses to overwrite the frozen
         # species value column with its rule's live value. An AR species' OUTPUT
         # sensitivity must follow that assignment expression (the observable for
@@ -510,7 +511,7 @@ class Result:
         # is kept here because it also carries the by-name refusals below.
         # Empty for non-AR models (no redirect); a .net model carries the map
         # from_net rebuilt (#515). Set by Simulator._stamp.
-        self._ar_sens_map: dict[str, tuple[str, str, float]] = {}
+        self._ar_sens_map: dict[str, tuple[str, str, float, str]] = {}
 
         # GH #205: AR-species names whose reported value also carries a
         # time-varying volume rescale (variable-volume compartment, #85/#87). The
@@ -1100,13 +1101,28 @@ class Result:
                         "reason (GH #221); Result.ar_sensitivity_refused lists "
                         "every such species."
                     )
-                src_kind, src_name = redirect[0], redirect[1]
-                vdiv = redirect[2] if len(redirect) > 2 else 1.0
+                src_kind, src_name, vdiv, vdiv_param = redirect
                 src_names = self._names_for_kind(src_kind)
                 if src_name in src_names:
                     src_meta = _output_meta(src_kind, src_name, src_names.index(src_name))
                     sl = self._output_sensitivity_slice(src_meta, axis)
-                    return sl / vdiv if vdiv != 1.0 else sl
+                    sl = sl / vdiv if vdiv != 1.0 else sl
+                    if (
+                        vdiv_param
+                        and axis == "parameter"
+                        and vdiv_param in self._sensitivity_params
+                    ):
+                        # Issue #724: the reported value is rule/V, and in the
+                        # column of the size V it has the term −(rule/V)/V. The
+                        # recursion above is of the rule's own selector, which
+                        # does not have it. (A size that a parameter sets, issue
+                        # #696, would bring a factor dV/dθ here.)
+                        sl = np.array(sl, dtype=np.float64, copy=True)
+                        value = self._species[..., meta["index"]]
+                        for c, column in enumerate(self._sensitivity_params):
+                            if column == vdiv_param:
+                                sl[..., c] -= value / vdiv
+                    return sl
                 # Rule source not reported (shouldn't happen for a loaded AR
                 # model) — fall through to the raw species block below.
         # An unsupported expression has a NaN row (or none) — report WHY (the

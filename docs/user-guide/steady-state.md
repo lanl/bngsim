@@ -13,8 +13,25 @@ the same quantity `run(steady_state=True)` checks (see below).
 **`method="integration"` (default)**: CVODE BDF integration that marches
 forward one step at a time and stops when the parity residual
 `||f(y)||_2 / n_species` drops below `tol` (capped at `max_time`). This is the
-strict BNG2.pl-parity path, and it always returns the steady state the
-dynamics actually reach.
+strict BNG2.pl-parity path, and for a model whose right-hand side does not read
+the time it returns the steady state the dynamics reach.
+
+**A model with an event, or one that reads the time, is refused** by
+`steady_state()` and `steady_state_batch()` (issue #710). Both solvers look for
+a root of `f(y)` with everything read at `t = 0`, and fire no event: `A -> B` at
+`k*(1 - exp(-time()))`, whose rate is 0 at `t = 0`, came back at its initial
+state as converged, and a model whose event switches a production rate on came
+back at the state from before it. A reported quantity that reads the time has
+no steady value either: an assignment-rule species `S := B*(1 - exp(-time))`
+came back 0 for 2/3. A `time()` call or a table function indexed by time, in a
+rate law, a rule or a function that is only reported, is a read of the time;
+`rateOf` is not.
+
+Integrate such a model with `run()` over a span long enough for the trajectory
+to settle. `run(..., steady_state=True)` does not stop early for it: the
+criterion is `‖f(t, y)‖` at an output point, and a rate that is switched on at
+`t = 5` is 0 at `t = 1`. The run goes to the end of its span, and
+`steady_state_reached` stays 0.
 
 **`method="newton"`**: the two-tier integrate-first solver. Tier 1 is the
 *same* CVODE burst as `"integration"`, carrying the state into the physical
@@ -560,9 +577,37 @@ observable denotes an *amount*, not the stored concentration — matching what
 `update_observables` uses for the value and what the CVODE `run()` path uses for
 its derivative (issue #119).
 
-A stable steady state forgets its initial conditions (`∂x*/∂x(0) = 0`), so the
-initial-condition axis is structurally zero and is not computed;
-`output_sensitivities(..., axis="ic")` raises rather than return zeros.
+A stable steady state keeps nothing of its initial conditions but the conserved
+totals. In a model with a conservation law, `A <-> B` with `A + B` fixed by
+where the run starts, a parameter that sets an initial amount moves the steady
+state through the total, and its `dY_ss/dp` column carries that: `[1/3, 2/3]`
+for `A0` at `kf = 1`, `kr = 0.5` (issue #704). The seeding is the one a time
+course starts from (`Model.effective_ic_sensitivity`), read from the state the
+solve starts at: a species that has been moved off its initial condition
+contributes nothing, and neither does any species once `save_concentrations()`
+has made the state its own baseline. A fixed species that a parameter sets,
+`$A() A0`, moves what reads it by the same seed.
+
+Three columns are refused, with `SensitivityUnsupportedError`:
+
+- a parameter that sets the initial amount of a conserved species, on a state a
+  `run()` has advanced. The total is still what the parameter made it, and the
+  state no longer says so (a time course refuses sensitivities there too).
+  `reset()` first;
+- a compartment size, in a model with a conservation law;
+- any parameter, where a conservation law spans compartments of different size:
+  the law is found as a total of concentrations where what is conserved is a
+  total of amounts (issue #758), and every column of the reduced solve is off.
+
+With `mask=`, a conservation law that holds a masked-out species keeps its
+total fixed, as before, unless that species is the one the law is solved for.
+That is right where the masked sink drains the law (`A <-> B -> P`: A and B
+end at 0 whatever the total). It is not where a share of the total stays out
+of the sink, which no steady-state solve can know: `A <-> B -> P` beside
+`A -> C <-> D` returns 0 for every column of C and D, with the mask.
+
+The initial-condition axis itself is not computed, and
+`output_sensitivities(..., axis="ic")` raises.
 
 ### Pre-equilibration / carry-over output sensitivities (`carry_sensitivities=True`)
 
@@ -575,6 +620,11 @@ added — the equilibration is not a no-op). Because the measurement phase start
 from `x_ss(θ)`, its forward-sensitivity seed is `∂x(0)/∂θ = dx_ss/dθ` — the
 steady-state sensitivity of phase 1 — **not** the fresh-start zero. Pass
 **`carry_sensitivities=True`** on the measurement run to seed it correctly:
+
+(An equilibration run with `steady_state=True` stops early only for a model
+that reads no time and has no event, issue #710. For one that does, phase 1
+runs to the end of its span, through any event in it: give it the span the
+pre-condition is meant to last.)
 
 ```python
 sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k_prod", "k_deg"])
@@ -622,8 +672,9 @@ derivative with the state:
 * `save_concentrations()` (unlabeled) redefines the IC baseline to the current
   state, so the new baseline **inherits** its `dx/dθ` — the state did not change,
   so neither did its derivative — and `reset()` restores both. A baseline saved
-  with no carried derivative is θ-independent literal ICs, i.e. fresh-start
-  seeding as before.
+  with no carried derivative is θ-independent literal ICs: no parameter seeds
+  it, where a fresh start is seeded from the model's own initial-condition
+  expressions (issue #704).
 * `save_concentrations(label=...)` / `restore_concentrations(label)` capture and
   restore a named snapshot's `dx/dθ` the same way.
 * `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
