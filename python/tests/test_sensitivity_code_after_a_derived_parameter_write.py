@@ -891,7 +891,10 @@ def test_a_condition_the_solver_roots_builds_nothing(monkeypatch):
     """Control. ``C >= sqrt(E)`` with ``C`` a counter species: at ``E = 0`` the
     switch-time pass cannot compensate it, and the solver locates it as a root
     of the state all the same, as it does in a model loaded there. The code is
-    what a build at those values gives, and is kept."""
+    what a build at those values gives, and is kept. The rate laws are not
+    scanned over it either: a rooted condition is not one to confirm."""
+    from bngsim import _switch_sensitivity
+
     text = (
         "species C, Y; C = 0; Y = 0; one = 1; kb = 1; E = 0.25;\n"
         "J0: -> C; one\nJ1: -> Y; piecewise(kb, C >= sqrt(E), 0)\n"
@@ -901,12 +904,21 @@ def test_a_condition_the_solver_roots_builds_nothing(monkeypatch):
     run = {"t_span": (0.0, 2.0), "n_points": 3, "rtol": 1e-9, "atol": 1e-12}
     np.testing.assert_allclose(_columns(sim.run(**run), "Y"), [1.5, -1.0], rtol=1e-6)
     calls = _count_builds(monkeypatch)
+    scans = [0]
+    real = _switch_sensitivity.model_uncompensated_crossing_reason
+
+    def scanned(*args, **kwargs):
+        scans[0] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_switch_sensitivity, "model_uncompensated_crossing_reason", scanned)
     for value in (0.0, 0.25):
         model.reset()
         model.set_param("E", value)
         model.reset()
         sim.run(**run)
     assert calls[0] == 0
+    assert scans[0] == 0
     assert sim.has_analytic_sens_rhs
     model.reset()
     np.testing.assert_allclose(_columns(sim.run(**run), "Y"), [1.5, -1.0], rtol=1e-6)
