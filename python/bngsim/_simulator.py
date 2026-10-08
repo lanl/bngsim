@@ -686,6 +686,11 @@ class Simulator:
         "_sensitivity_method",
         # GH #198 — memoized expression output-sensitivity support map; lazily filled.
         "_expr_sens_support_memo",
+        # Issue #938 — what a time course on the difference quotient cannot
+        # differentiate through in this model, for the columns it was asked of.
+        "_fallback_crossing_memo",
+        "_fallback_scan_cache",
+        "_branch_scan_cache",
     )
 
     def __init__(
@@ -1169,6 +1174,9 @@ class Simulator:
         # GH #198 — lazily computed (memoized) expression output-sensitivity
         # support map; None until first needed by a sensitivity run.
         self._expr_sens_support_memo: dict[str, str | None] | None = None
+        self._fallback_crossing_memo: tuple[tuple, str | None] | None = None
+        self._fallback_scan_cache: dict | None = None
+        self._branch_scan_cache: dict | None = None
         if self._sensitivity_params and dispatch != "ode":
             raise ValueError("sensitivity_params is only supported for method='ode'.")
         if self._sensitivity_ic and dispatch != "ode":
@@ -1444,6 +1452,95 @@ class Simulator:
                 f"Model.from_sbml(path, compartment_sizes={{...}})."
             )
 
+    def _raise_if_conserved_total_sensitivity_unknown(self, params: Sequence[str]) -> None:
+        """Refuse a steady-state column whose conserved totals' own derivative
+        is not known (issue #704).
+
+        ``steady_state(sensitivity_params=...)`` solves the reduced system with
+        each conserved total ``T_k = Σ L[k,i]·x_i`` held, and differentiates the
+        total through ``∂x(0)/∂p``. Three models have a column that does not
+        give:
+
+        - **a compartment size**, in a model with a conservation law. What is
+          conserved is an amount, which a size does not move, and what the solve
+          holds is a total of concentrations, with the laws found for the sizes
+          the model loaded at (issue #758). Over the corpus the size's column
+          was 0 where the truth was not in 21 of 23 models with a conservation
+          law, and with the total differentiated it was right in 13 of them and
+          as much as 1e7 for −6e4 in another;
+        - **any parameter**, where a law spans compartments of different size.
+          The law is found as a total of concentrations, ``A + B``, where the
+          conserved quantity is ``V1·A + V2·B`` (issue #758): every column of
+          the reduced solve is off, dA*/dkf = −0.286 for −0.367;
+        - **a parameter that sets the initial amount of a conserved species**,
+          on a state a run has advanced. The total is still what the parameter
+          made it, and the state no longer says so: its seed is retired with
+          the initial condition it described, and the column came back 0 for
+          1/3. A time course refuses sensitivities on such a state (GH #210).
+        """
+        model = self._model
+        core = model._core
+        laws = core.conservation_laws
+        if int(laws["n_laws"]) == 0:
+            return
+        sizes = sorted(set(params) & set(model.compartment_size_params))
+        if sizes:
+            raise SensitivityUnsupportedError(
+                "steady_state(sensitivity_params=...) is not supported for the compartment "
+                f"size{'s' if len(sizes) != 1 else ''} {sizes} of a model with a conservation "
+                "law. A conserved total is an amount, which a compartment's size does not "
+                "move, and the steady-state solve holds totals of concentrations: the size's "
+                "column came back 0 where the steady state moves with it, and is not right "
+                "with the totals differentiated either (issues #704, #758). Difference "
+                "steady states solved again at a moved size, or take the column from a time "
+                "course run to the steady state."
+            )
+        # The species a law holds: a coefficient that is not rounding beside
+        # the law's largest. Row reduction leaves 1e-17 to 1e-34 on species in
+        # other compartments (MODEL1505110000), which are in no law.
+        held_by = []
+        for row in laws["coefficients"]:
+            largest = max((abs(c) for c in row), default=0.0)
+            held_by.append([i for i, c in enumerate(row) if abs(c) > 1e-9 * largest])
+        if len(model.compartment_size_params) > 1:
+            volumes = [float(sp["volume_factor"]) for sp in core.codegen_data()["species"]]
+            names = model.species_names
+            for members in held_by:
+                if len({volumes[i] for i in members}) > 1:
+                    raise SensitivityUnsupportedError(
+                        "steady_state(sensitivity_params=...) is not supported for this "
+                        "model: a conservation law of it spans compartments of different "
+                        f"size ({', '.join(names[i] for i in members[:4])}"
+                        f"{', ...' if len(members) > 4 else ''}). The law is found as a total "
+                        "of concentrations where what is conserved is a total of amounts, so "
+                        "the reduced solve the steady-state sensitivity is taken from holds "
+                        "the wrong quantity and every column of it is off (issues #704, "
+                        "#758). Take the columns from a time course run to the steady state."
+                    )
+        if not core.ic_state_dirty:
+            return
+        from bngsim._codegen import compute_ic_param_sens_seed
+
+        in_a_law = {i for members in held_by for i in members}
+        pnames, species = model.param_names, model.species_names
+        seeded = {pnames[p] for sp, p, coeff in compute_ic_param_sens_seed(core) if sp in in_a_law}
+        for name, declared in model._declared_ic_sens.items():
+            if name in species and species.index(name) in in_a_law:
+                seeded |= set(declared)
+        moved = sorted(seeded & set(params))
+        if moved:
+            raise SensitivityUnsupportedError(
+                "steady_state(sensitivity_params=...) is not supported for "
+                f"{moved} on a carried-over species state (the model was advanced by a "
+                "previous run(), with no reset since). "
+                f"{'Each sets' if len(moved) != 1 else 'It sets'} the initial amount of a "
+                "species in a conservation law, so the steady state moves with it through "
+                "the conserved total, and the state no longer says by how much: the column "
+                "came back 0 where the total moves (issue #704; a time course refuses "
+                "sensitivities on such a state too, GH #210). reset() the model to solve "
+                "from its initial condition."
+            )
+
     def _raise_if_event_sensitivities(self, param_names: list[str] | None = None) -> None:
         """Refuse output sensitivities only for unsupported event subclasses.
 
@@ -1549,9 +1646,30 @@ class Simulator:
             detail = " Detail: " + "; ".join(sorted(res.reasons.values())) + "."
         return list(res.compensated), detail, dict(res.blocked)
 
-    def _raise_if_uncompensated_crossing_sensitivities(self) -> None:
+    def _raise_if_uncompensated_crossing_sensitivities(
+        self,
+        *,
+        time_course: bool = True,
+        params: Sequence[str] | None = None,
+        state_crossings: bool = True,
+        core=None,
+    ) -> None:
         """Refuse a forward-sensitivity run left on the difference quotient over a
         rate-law branch crossing whose time moves (issue #414).
+
+        ``core`` is a batch row's model, where the row is what is asked about:
+        its parameters put a condition's crossings where they are, and two of
+        them on one instant are refused in the row as they are in a run.
+
+        ``time_course`` is false for a steady-state solve, which reads ``∂f/∂p``
+        at one state and crosses nothing: the state-crossing refusal at the end
+        of this method (issue #938) is for a run that integrates through one.
+
+        ``state_crossings`` is false for a batch's check ahead of its rows. The
+        state-crossing refusal goes with what the parameters are (which species
+        is a counter, which denominator is known nonzero), so each row is asked
+        of its own, and the model's own values, which no row may run at, are
+        not.
 
         The rate-law twin of :meth:`_raise_if_event_sensitivities`. When a rate
         law branches on a condition whose crossing time moves with the trajectory
@@ -1586,15 +1704,19 @@ class Simulator:
            compensated.
 
         Both are needed. Absence alone is not a dropped jump: a *compensated*
-        crossing on the difference quotient (a ``t>=sigma`` clock forced to the
-        fallback by ``BNGSIM_NO_FUNCTIONAL_SENS_RHS``, or an ``I>=thresh`` state
-        threshold) still gets its jump from :meth:`_apply_switch_time_sens` /
-        :meth:`_apply_state_switch_sens` at run time, and an underivable-but-smooth
+        crossing on literal time (a ``t>=sigma`` clock forced to the fallback by
+        ``BNGSIM_NO_FUNCTIONAL_SENS_RHS``) still gets its jump from
+        :meth:`_apply_switch_time_sens` at run time, and an underivable-but-smooth
         rate law with no crossing (``erf(I)*beta*I``) declines the analytic RHS but
         drops no jump — both keep their correct difference quotient. A crossing
         alone is not enough either: if the artifact still carries the analytic RHS,
         the crossing was compensated. Only their conjunction — no analytic RHS AND
         a crossing nothing brackets — is a gradient wrong at the crossing.
+
+        A compensated crossing on the *state* (``I>=thresh``) is another matter,
+        and is refused by :meth:`_raise_if_state_crossing_on_fallback` (issue
+        #938): its jump is applied at the crossing, but the quotient has read
+        across the surface before the run gets there.
 
         Issue #414's other half — compensating the saltation jump for a moving
         *state* crossing the way issue #150 did for the single-rootable-comparison
@@ -1610,16 +1732,26 @@ class Simulator:
             return
         from bngsim._switch_sensitivity import model_uncompensated_crossing_reason
 
+        kept = self._branch_scan_cache
+        if kept is None:
+            kept = self._branch_scan_cache = {}
         try:
-            reason = model_uncompensated_crossing_reason(self._model._core)
-        except Exception as e:  # pragma: no cover - defensive
-            # Detection is best-effort: without it we cannot confirm an
-            # uncompensated crossing, so leave the pre-#414 behaviour (the codegen
-            # warning already fired) rather than refuse a run we cannot justify
-            # refusing.
-            logger.debug("Uncompensated-crossing sensitivity refusal: scan unavailable (%s)", e)
-            return
+            reason = model_uncompensated_crossing_reason(
+                self._model._core if core is None else core, kept=kept
+            )
+        except Exception as e:
+            # Not let through: a model whose rate laws cannot be read is one
+            # whose crossings are not known.
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported for this model: it has no analytic "
+                "sensitivity right-hand side, and its rate laws could not be read for a "
+                f"branch crossing ({type(e).__name__}: {e}). On CVODES' internal difference "
+                "quotient a column is wrong across one (issues #414, #938), and bngsim "
+                "refuses rather than run without knowing."
+            ) from e
         if reason is None:
+            if state_crossings:
+                self._raise_if_state_crossing_on_fallback(time_course, params, core)
             return
         raise SensitivityUnsupportedError(
             "Forward sensitivity is not supported for this model: it branches on a "
@@ -1634,6 +1766,94 @@ class Simulator:
             "nor the issue #150 saltation jump (which needs a single comparison over state "
             "to root on) applies here; validate against a trajectory finite difference if "
             "you need an approximate gradient."
+        )
+
+    def _raise_if_state_crossing_on_fallback(
+        self, time_course: bool, params: Sequence[str] | None = None, core=None
+    ) -> None:
+        """Refuse a time-course sensitivity run left on the difference quotient
+        in a model with a crossing the quotient reads across (issues #938, #932).
+
+        Called only where the analytic sensitivity RHS is absent. CVODES'
+        difference quotient reads ``f`` at ``y + σ·s``, which beside a surface
+        the state crosses is on the other branch, so a column takes part of the
+        crossing's jump before the crossing. The run is refused before it
+        starts, for the crossings
+        :func:`~bngsim._switch_sensitivity.fallback_crossing` lists: nothing at
+        the crossing can put the column right, and a run that ends short of the
+        crossing has already returned it.
+        """
+        if not time_course:
+            return
+        from bngsim._switch_sensitivity import fallback_crossing
+
+        own = core is None
+        core = self._model._core if own else core
+        columns = tuple(self._sensitivity_params or ()) if params is None else tuple(params)
+        ic = tuple(self._sensitivity_ic or ())
+        # The answer goes with the rate laws' text, with which columns are
+        # requested and with what the parameters are: a species is a counter
+        # at a rate of exactly 1, and a denominator is known nonzero by the
+        # sign of what is in it. Asked again where any of those has changed,
+        # with each law's syntax tree kept: one entry a rate law.
+        declared = self._model._declared_ic_sens
+        key = (
+            columns,
+            ic,
+            tuple(float(core.get_param(name)) for name in core.param_names),
+            tuple(sorted((name, tuple(sorted(row.items()))) for name, row in declared.items())),
+        )
+        cached = self._fallback_crossing_memo
+        if cached is not None and cached[0] == key:
+            crossing = cached[1]
+        else:
+            kept = self._fallback_scan_cache
+            if kept is None:
+                kept = self._fallback_scan_cache = {}
+            species = list(core.species_names)
+            try:
+                crossing = fallback_crossing(
+                    core,
+                    columns,
+                    [species.index(n) for n in ic if n in species],
+                    parsed=kept,
+                    declared=declared,
+                )
+            except Exception as e:
+                # Not let through: a rate law that cannot be read is one whose
+                # crossings are not known.
+                raise SensitivityUnsupportedError(
+                    "Forward sensitivity is not supported for this model: it has no analytic "
+                    "sensitivity right-hand side, and its rate laws could not be read for a "
+                    f"crossing on the state ({type(e).__name__}: {e}). On CVODES' internal "
+                    "difference quotient a column is wrong across one (issues #938, #932), "
+                    "and bngsim refuses rather than run without knowing."
+                ) from e
+            if own:
+                self._fallback_crossing_memo = (key, crossing)
+        if crossing is None:
+            return
+        why = self.sens_rhs_decline_reason
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity is not supported for this model: it has no analytic "
+            "sensitivity right-hand side"
+            + (f" ({why})" if why else "")
+            + f", and a rate law of it holds {crossing!r}: a condition, a step, a jump "
+            "written as a quotient or a call that is not read, which the state or a "
+            "requested parameter moves the run across, or may. Without the analytic right-hand "
+            "side, CVODES' internal difference quotient is used for every column. It reads "
+            "the rate law at the state and the parameter moved along each column, which "
+            "beside a jump is on its other side: a column takes part of the jump before the "
+            "crossing, by more the looser the tolerance, or the step size collapses and the "
+            "run does not finish (issues #938, #932). bngsim refuses rather than return it, "
+            "whether or not this run reaches the crossing: that is not known before it. A "
+            "law that only bends at a condition runs where that is proved from its text: one "
+            "branch 0 and the other a multiple of what the condition compares, "
+            "if(v > 0, v, 0), or the two sides of the comparison, if(a < b, a, b), with "
+            "every division in the law by what is known to be nonzero. Remove what the "
+            "analytic path declines, so that the crossing is taken on the analytic "
+            "right-hand side; or write the bend that way, or with max or min; or difference "
+            "plain runs."
         )
 
     def _apply_event_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
@@ -1937,6 +2157,7 @@ class Simulator:
                 float(t_end),
                 has_analytic_sens_rhs=self._codegen_provides_sens_rhs(),
                 ic_species=ic_species,
+                declared=self._model._declared_ic_sens,
             )
         except ValueError:
             # An unsupported switch parameter (one that also acts in-branch) is a
@@ -3345,6 +3566,10 @@ class Simulator:
             parity, i.e. ``run_network -c``). Default ``False``.
             ``Result.solver_stats["steady_state_reached"]`` reports
             whether the criterion fired before ``t_end``.
+            A model that reads the time, or that has an event, is integrated
+            to the end of its span whatever this says, and is never marked
+            steady (issue #710): the criterion is of the right-hand side at
+            one instant, which for such a model says nothing of the next.
         steady_state_tol : float, optional
             Tolerance for the ``steady_state`` check above. ``None`` or
             ``<= 0`` falls back to ``atol`` (matching BNG2.pl, which
@@ -3766,6 +3991,10 @@ class Simulator:
             point truncates independently, the per-Result row counts may
             differ; use ``squeeze=False`` (the default) when mixing
             steady-state early-stop with heterogeneous equilibration times.
+            A model that reads the time, or that has an event, is integrated
+            to the end of its span whatever this says, and is never marked
+            steady (issue #710): the criterion is of the right-hand side at
+            one instant, which for such a model says nothing of the next.
         steady_state_tol : float, optional
             Tolerance for the ``steady_state`` check above. ``None`` or
             ``<= 0`` falls back to ``atol`` (matching BNG2.pl).
@@ -3840,8 +4069,9 @@ class Simulator:
             self._raise_if_event_sensitivities()
             # Issue #414 — same rate-law moving-crossing refusal run() applies,
             # hoisted out of the per-row loop (the crossing is a model-structural
-            # property, not a per-row one).
-            self._raise_if_uncompensated_crossing_sensitivities()
+            # property, not a per-row one). The state-crossing refusal behind
+            # it (issue #938) is a per-row one, and is asked of each row.
+            self._raise_if_uncompensated_crossing_sensitivities(state_crossings=False)
 
         n_sims = len(params)
         logger.info(
@@ -3910,6 +4140,8 @@ class Simulator:
                 for i, future in enumerate(futures):
                     try:
                         results.append(future.result())
+                    except SensitivityUnsupportedError:
+                        raise
                     except Exception as e:
                         raise SimulationError(f"Batch simulation {i} failed: {e}") from e
         else:
@@ -4995,6 +5227,13 @@ class Simulator:
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
+                    # Issues #414, #938 — asked of this row's parameters: a row
+                    # that puts two crossings of a condition on one instant,
+                    # makes a species a counter, or changes the sign of what a
+                    # rate law divides by, is another model. Each law's answer
+                    # is kept by what it reads, so a row that changes none of
+                    # that costs a lookup.
+                    self._raise_if_uncompensated_crossing_sensitivities(core=clone._core)
                     opts.set_sensitivity_method(self._sensitivity_method)
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone. Outside
@@ -5022,7 +5261,8 @@ class Simulator:
                     core_result = sim.run(times, base_seed + index, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
-        except SimulationTimeout:
+        except (SimulationTimeout, SensitivityUnsupportedError):
+            # A refusal is a refusal of the row's model, as it is from run().
             raise
         except RuntimeError as e:
             raise SimulationError(f"Batch simulation {index} failed: {e}") from e
@@ -5412,10 +5652,12 @@ class Simulator:
 
         # Issue #414 — refuse an uncompensated moving rate-law crossing left on the
         # difference quotient, the same as run(). Model-structural (it re-derives
-        # from the core, not from this call's target params), so a Simulator built
-        # without sensitivity_params — the way this entry point is often reached —
-        # is gated exactly as a sensitivity-configured one.
-        self._raise_if_uncompensated_crossing_sensitivities()
+        # from the core), so a Simulator built without sensitivity_params — the
+        # way this entry point is often reached — is gated exactly as a
+        # sensitivity-configured one. The state-crossing refusal behind it
+        # (issue #938) is not: which counters a column moves, and which steps a
+        # requested parameter moves, go with this call's columns.
+        self._raise_if_uncompensated_crossing_sensitivities(params=target_params)
 
         # Effective solver options
         effective_rtol = rtol if rtol is not None else self._rtol
@@ -5865,6 +6107,12 @@ class Simulator:
     ):
         """Find the steady state of the ODE system f(y) = 0.
 
+        A model with an event, or one that reads the time (``time()`` or a
+        table function indexed by time, in a rate law, a rule or a reported
+        function), is refused with :class:`SimulationError` (issue #710): the
+        solvers read the right-hand side at ``t = 0`` and fire no event.
+        Integrate such a model with :meth:`run`.
+
         Solver methods:
 
         - ``"integration"`` (default): CVODE BDF integrated until the BNG2.pl
@@ -6004,25 +6252,22 @@ class Simulator:
             raise ValueError(
                 f"steady_state() is only supported for method='ode', not method='{self._method}'."
             )
+        self._raise_if_no_steady_state_to_solve_for("steady_state()")
 
         # Issue #74 — resolve the convergence-test subspace before anything
         # expensive runs, so a bad mask is an immediate error rather than a solve
         # that quietly tested the wrong species.
         mask_selector = _resolve_ss_mask(mask, self._model)
 
-        # GH #205 — dY_ss/dp on event models: allowed only for the subclasses
-        # whose ∂t*/∂p is known (see _raise_if_event_sensitivities),
-        # classified against this call's requested sensitivity_params.
         if sensitivity_params:
-            self._raise_if_event_sensitivities(sensitivity_params)
             # Issue #164/#170 — the same refusal the constructor applies, and
             # only for the same narrow set. A steady-state column reads ∂f/∂p out
             # of the same emitted sensitivity RHS and solves J·(dY/dp) = −∂f/∂p,
             # so it inherits whatever that column is: right for a writable size
             # now that stage 3 emits the storage half, and refusable for exactly
-            # the sizes whose write is refused. (dY_ss/dp carries no IC seed — a
-            # steady state has forgotten x(0) — so only the ∂f/∂V half is in play
-            # here, and it is the half that is complete.)
+            # the sizes whose write is refused. (Of x(0), a steady state keeps
+            # only its conserved totals, whose seed is handed over below, issue
+            # #704; the ∂f/∂V half is the one in play here, and it is complete.)
             self._raise_if_compartment_size_params(list(sensitivity_params))
             # Issue #329 — a function's backing slot is refused here for the
             # same reason the constructor refuses it: ∂f/∂p is read out of that
@@ -6030,6 +6275,9 @@ class Simulator:
             # rewrites rather than a coordinate, so the column is structurally
             # zero at steady state too.
             self._raise_if_function_backed_params(list(sensitivity_params))
+            # Issue #704 — what a conserved total does to a column, before
+            # anything is compiled for it.
+            self._raise_if_conserved_total_sensitivity_unknown(list(sensitivity_params))
             # Issue #63 — the same hard codegen requirement run() and
             # compute_all_sensitivities() apply (GH #214): dY_ss/dp wants the
             # analytical ∂f/∂p the codegen sensitivity RHS emits, so a request
@@ -6049,7 +6297,7 @@ class Simulator:
             # so a model that declines it over a moving rate-law crossing lands on
             # the difference quotient here too. Refuse rather than solve
             # J·(dY/dp) = −∂f/∂p from a gradient flagged wrong at the crossing.
-            self._raise_if_uncompensated_crossing_sensitivities()
+            self._raise_if_uncompensated_crossing_sensitivities(time_course=False)
 
         from bngsim._bngsim_core import (
             SteadyStateOptions,
@@ -6080,6 +6328,15 @@ class Simulator:
             opts.codegen_c_source = self._codegen_c_source
         if sensitivity_params:
             opts.sensitivity_params = list(sensitivity_params)
+            # Issue #704 — ∂x(0)/∂p, the seeding a time course starts from. A
+            # conserved total is Σ L·x(0), so a parameter that sets an initial
+            # amount moves the steady state through it: dY_ss/dA0 = [1/3, 2/3]
+            # for A <-> B started at A0, where the totals held fixed gave
+            # [0, 0]. From the same triples run() seeds with, so the two cannot
+            # drift; with none injected the core's identity seeding applies.
+            triples, injected = self._model._ic_sensitivity_triples()
+            if injected:
+                opts.set_ic_param_sens([t for t in triples if t[2] != 0.0] or [(-1, 0, 0.0)])
         # GH #247 — an AssignmentRule-target species is emitted ``fixed``, so its
         # RHS row is identically zero and it is not an unknown of f(y) = 0 at all:
         # its value is dictated by the rule. Leaving it in makes J structurally
@@ -6118,6 +6375,56 @@ class Simulator:
         self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    def _raise_if_no_steady_state_to_solve_for(self, where: str) -> None:
+        """Refuse a steady-state solve of a model with an event, or with a
+        function that reads the time (issue #710).
+
+        Both solvers look for a root of ``f(y)``, and evaluate the right-hand
+        side at ``t = 0`` for the residual, the Newton step, the Jacobian and
+        ``∂f/∂p``; the march integrates at the true time and tests convergence at
+        ``t = 0``. Neither registers a root or fires an event. So a rate that is 0
+        at ``t = 0``, ``k*(1 - exp(-time()))``, returned the initial state as
+        converged in one step, and a model whose event sets a production rate at
+        ``t = 2`` returned the state from before it, ``A = 0`` for ``1/kd``, with
+        ``dA/dkd = 0`` for ``-1/kd²``. A rate that reads the time has no
+        ``f(y) = 0`` to solve without a time being chosen, and an event needs a
+        trajectory.
+
+        What is asked is whether any function of the model reads the time
+        (``NetworkModel.functions_use_time``, decided from the functions' text
+        when the model is built), and not only whether a rate does. A reported
+        quantity that reads it has no steady value either, and came back at
+        ``t = 0`` beside a state marked converged: an assignment-rule species
+        ``S := B*(1 - exp(-time))`` as 0 for 2/3, a species in a compartment
+        sized by a rule on the time at 0.5 for 0.25. A function that reads the
+        time and that nothing reads is refused with the rest.
+
+        A ``rateOf`` accessor is not a read of the time: it reads the state's own
+        derivatives, which are 0 at a steady state.
+        """
+        core = self._model._core
+        n_events = int(self._model.n_events)
+        if n_events:
+            raise SimulationError(
+                f"{where} is not supported for this model: it has {n_events} "
+                f"event{'s' if n_events != 1 else ''}. The steady-state solvers look for a "
+                "root of the right-hand side and fire no event, so an event's assignment is "
+                "never made, and the state they return is one the model's dynamics may never "
+                "reach (issue #710). Integrate the model with run() over a span long enough "
+                "for the trajectory to settle, and read the state where it ends."
+            )
+        if core.functions_use_time:
+            raise SimulationError(
+                f"{where} is not supported for this model: it reads the time, through time() "
+                "or a table function indexed by time, in a rate law, a rule or a reported "
+                "function. The steady-state solvers look for a root of f(y) with everything "
+                "read at t = 0, which is the model's steady state only where nothing changes "
+                "with the time after that: a rate that is 0 at t = 0 returned the initial "
+                "state as converged, and a reported function its value at t = 0 (issue #710). "
+                "Integrate the model with run() over a span long enough for the trajectory to "
+                "settle, and read the state where it ends."
+            )
 
     def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
         """Drop AssignmentRule-target species from the steady-state subspace (#247).
@@ -6461,6 +6768,9 @@ class Simulator:
     ):
         """Compute steady states for multiple parameter sets.
 
+        A model with an event, or one that reads the time, is refused, as
+        :meth:`steady_state` refuses it (issue #710).
+
         Parameters
         ----------
         params : sequence of dict[str, float]
@@ -6499,6 +6809,8 @@ class Simulator:
             )
         if not params:
             raise ValueError("params must be non-empty")
+        # Issue #710 — a row sets parameter values, not what the rates read.
+        self._raise_if_no_steady_state_to_solve_for("steady_state_batch()")
 
         mask_selector = _resolve_ss_mask(mask, self._model)
 
@@ -8010,10 +8322,13 @@ class SteadyStateResult:
         selectors : str or iterable of str
             Selectors accepted by :meth:`resolve_outputs`.
         axis : {"parameter"}, optional
-            Only ``"parameter"`` (the default) is meaningful here. A stable
-            steady state is independent of its initial conditions
-            (``∂x*/∂x(0) = 0``), so the ``"ic"`` axis is structurally zero and is
-            not computed; requesting it raises :class:`ValueError`.
+            Only ``"parameter"`` (the default) is computed here. A stable
+            steady state keeps nothing of its initial conditions but the
+            conserved totals, so the ``"ic"`` axis is zero in a model with no
+            conservation law and the projection onto the totals in one with
+            any; it is not computed, and requesting it raises
+            :class:`ValueError`. A parameter that sets an initial amount has its
+            share of the totals in its own ``"parameter"`` column (issue #704).
 
         Returns
         -------
@@ -8040,9 +8355,11 @@ class SteadyStateResult:
         if axis == "ic":
             raise ValueError(
                 "output_sensitivities: the 'ic' (initial-condition) axis is not "
-                "available on a steady-state result. A stable steady state forgets "
-                "its initial conditions (∂x*/∂x(0) = 0), so IC-axis output "
-                "sensitivities are structurally zero and are not computed."
+                "available on a steady-state result. A stable steady state keeps "
+                "nothing of its initial conditions but the conserved totals, and the "
+                "IC-axis output sensitivities are not computed. A parameter that sets "
+                "an initial amount carries its share of the totals in its own "
+                "parameter column (issue #704)."
             )
         if axis != "parameter":
             raise ValueError(f"output_sensitivities: axis must be 'parameter', got {axis!r}.")

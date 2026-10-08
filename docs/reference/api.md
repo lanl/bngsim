@@ -102,9 +102,10 @@ Stop conditions:
 - **`add_stop_condition(condition, *, label)`** — `str` expression or `callable`
 - **`clear_stop_conditions()`**
 
-Steady-state (`method` ∈ `"newton"` (default), `"integration"`, `"kinsol"` alias):
+Steady-state (`method` ∈ `"integration"` (default), `"newton"`, `"kinsol"` alias):
 - **`steady_state(*, tol, max_time, method, rtol, atol, max_steps, sensitivity_params, mask)`** → `SteadyStateResult`
 - **`steady_state_batch(params, *, tol, max_time, method, rtol, atol, max_steps, n_workers, mask)`** → `list[SteadyStateResult]`
+- Both raise `SimulationError` for a model with an event, or one that reads the time (issue #710): the solvers read the right-hand side at `t = 0` and fire no event. `run(steady_state=True)` integrates such a model to the end of its span and does not stop early.
 
   `mask` (issue #74): which species enter the convergence norm — a boolean array of length `n_species`, or the species names to keep. Default `None` tests every species (BNG2.pl parity). It also restricts the KINSOL unknown set and the `dY_ss/dp` system to the same subspace; excluded species get a NaN `dY_ss/dp` row. See `Model.is_pure_sink()`.
 
@@ -264,7 +265,7 @@ Properties:
 
 Methods:
 - **`resolve_outputs(selectors)`** → `list[dict]` — same selector grammar as `Result.resolve_outputs`
-- **`output_sensitivities(selectors, *, axis="parameter")`** → `ndarray (n_selectors, n_params)` — steady-state `∂(named output)/∂p` for `species:`/`observable:`/`expression:` selectors, mirroring `Result.output_sensitivities` (no time axis). `axis="ic"` raises: a stable steady state is independent of its initial conditions (`∂x*/∂x(0) = 0`)
+- **`output_sensitivities(selectors, *, axis="parameter")`** → `ndarray (n_selectors, n_params)` — steady-state `∂(named output)/∂p` for `species:`/`observable:`/`expression:` selectors, mirroring `Result.output_sensitivities` (no time axis). `axis="ic"` raises: the initial-condition axis is not computed (a parameter that sets an initial amount carries its share of a conserved total in its own column, issue #704)
 - **`__getitem__(name)`** → `float` — steady-state concentration by species name
 - **`to_dict()`** → `dict[str, float]`
 

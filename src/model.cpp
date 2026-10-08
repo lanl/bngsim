@@ -3208,6 +3208,22 @@ bool NetworkModel::set_function_eval_expression(const std::string &name,
         }
         f.evaluator_id = compiled;
         f.eval_expression = expression;
+        // A body that names the time makes the function block one that reads
+        // it, as the build decides it from the functions' text (issue #654).
+        // Left as it was built, a steady-state solve of the model was not
+        // refused and a time course's early stop was not held (issue #710).
+        const auto in_a_word = [&](std::size_t k) {
+            return k < expression.size() &&
+                   (std::isalnum(static_cast<unsigned char>(expression[k])) != 0 ||
+                    expression[k] == '_');
+        };
+        for (std::size_t at = expression.find("time"); at != std::string::npos;
+             at = expression.find("time", at + 1)) {
+            if ((at == 0 || !in_a_word(at - 1)) && !in_a_word(at + 4)) {
+                impl_->functions_use_time = true;
+                break;
+            }
+        }
         // The support walk follows a function-written parameter into its
         // function's body, so a new body can change the support of anything
         // that reads it (issue #773).
@@ -4242,6 +4258,7 @@ std::vector<TableFunctionSpec> NetworkModel::table_function_specs() const {
     for (const auto &tf : impl_->table_functions) {
         TableFunctionSpec spec;
         spec.name = tf->name();
+        spec.step = tf->method() == InterpolationMethod::Step;
         const auto &idx_name = tf->index_name();
         const std::string lookup = strip_paren_suffix(idx_name);
         if (is_time_index(idx_name)) {
