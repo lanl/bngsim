@@ -360,7 +360,119 @@ VARYING = L2.replace(
     "</apply></apply></math>\n        </stoichiometryMath>",
 )
 _SIZE = "compartment c; species S in c; S = 1; k = 1;\nJ: S -> ; k*S\n"
+_M = 'xmlns="http://www.w3.org/1998/Math/MathML"'
+# A compartment `c = 2*p` that a rate rule or an event makes a state of, with
+# one species in it, declared by {declared}.
+STATE_SIZED = f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="m">
+    <listOfCompartments><compartment id="c" size="1" constant="false"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="c" {{declared}} boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="p" value="{{p}}" constant="true"/>
+      <parameter id="k" value="1" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments><initialAssignment symbol="c">
+      <math {_M}><apply><times/><cn>2</cn><ci>p</ci></apply></math>
+    </initialAssignment>{{more}}</listOfInitialAssignments>
+    {{moved}}
+    <listOfReactions>
+      <reaction id="J" reversible="false" fast="false">
+        <listOfReactants>
+          <speciesReference species="S" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw><math {_M}><apply><times/><ci>k</ci><ci>S</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>
+"""
+BY_A_RATE_RULE = (
+    f'<listOfRules><rateRule variable="c"><math {_M}><cn>0.1</cn></math></rateRule></listOfRules>'
+)
+BY_AN_EVENT = (
+    '<listOfEvents><event id="e" useValuesFromTriggerTime="true">'
+    f'<trigger initialValue="true" persistent="true"><math {_M}><apply><gt/>'
+    '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
+    "<cn>0.5</cn></apply></math></trigger><listOfEventAssignments>"
+    f'<eventAssignment variable="c"><math {_M}><cn>1</cn></math></eventAssignment>'
+    "</listOfEventAssignments></event></listOfEvents>"
+)
+AN_AMOUNT = 'initialAmount="1" hasOnlySubstanceUnits="false"'
+A_CONCENTRATION_HELD_AS_AN_AMOUNT = 'initialConcentration="1" hasOnlySubstanceUnits="true"'
+A_CONCENTRATION = 'initialConcentration="1" hasOnlySubstanceUnits="false"'
+
+
+# The species' own initial value, set in the unit it is read in.
+ITS_OWN_ASSIGNMENT = (
+    f'<initialAssignment symbol="S"><math {_M}><apply><times/><cn>3</cn><ci>k</ci></apply></math>'
+    "</initialAssignment>"
+)
+
+
+def _state_sized(declared: str, moved: str, p: float = 1.0, more: str = "") -> bngsim.Model:
+    return bngsim.Model.from_sbml_string(
+        STATE_SIZED.format(declared=declared, moved=moved, p=p, more=more)
+    )
+
+
 CHAINS = {
+    "a-species-set-to-a-rule-that-reads-a-state": (
+        lambda: bngsim.Model.from_antimony_string(
+            "species S, A; A = 3; p = 1; k = 1; q := p*(1 + A); S = q;\n"
+            "J: S -> ; k*S\nJ0: A -> ; k*A\n"
+        ),
+        {"p"},
+        "initial value of 'S'",
+    ),
+    "a-species-set-to-a-rule-that-reads-the-time": (
+        lambda: bngsim.Model.from_antimony_string(
+            "species S; p = 1; k = 1; q := p*(1 + time); S = q;\nJ: S -> ; k*S\n"
+        ),
+        {"p"},
+        "initial value of 'S'",
+    ),
+    "an-amount-in-a-rate-rule-compartment": (
+        lambda: _state_sized(AN_AMOUNT, BY_A_RATE_RULE),
+        {"p"},
+        "converted by the size of compartment 'c' at load",
+    ),
+    "a-concentration-held-as-an-amount-in-a-rate-rule-compartment": (
+        lambda: _state_sized(A_CONCENTRATION_HELD_AS_AN_AMOUNT, BY_A_RATE_RULE),
+        {"p"},
+        "converted by the size of compartment 'c' at load",
+    ),
+    "an-amount-in-a-compartment-an-event-resizes": (
+        lambda: _state_sized(AN_AMOUNT, BY_AN_EVENT),
+        {"p"},
+        "converted by the size of compartment 'c' at load",
+    ),
+    "a-size-from-the-rate-of-a-rate-rule-variable": (
+        lambda: bngsim.Model.from_antimony_string(
+            "compartment c; species S in c; S = 1; k = 1; kx = 0.5; x = 2; x' = kx*x;\n"
+            "c = rateOf(x);\nJ: S -> ; k*S\n"
+        ),
+        {"kx"},
+        "size of compartment 'c'",
+    ),
+    "a-size-from-a-rate-of-change-under-a-stoichiometry-a-rule-sets": (
+        lambda: bngsim.Model.from_antimony_string(
+            "compartment c, d; d = 1; species A in d, B in d, S in c; A = 2; B = 0; S = 1;\n"
+            "k1 = 1; k = 1; z = 1; n := 2*z; c = rateOf(B);\nJ0: A -> n B; k1*A\nJ: S -> ; k*S\n"
+        ),
+        {"k1", "z"},
+        "size of compartment 'c'",
+    ),
+    "a-size-from-a-rate-of-change": (
+        lambda: bngsim.Model.from_antimony_string(
+            "compartment c, d; d = 1; species A in d, B in d, S in c; A = 2; B = 0; S = 1;\n"
+            "k1 = 1; k = 1; c = rateOf(B);\nJ0: A -> B; k1*A\nJ: S -> ; k*S\n"
+        ),
+        {"k1"},
+        "size of compartment 'c'",
+    ),
     "a-size-from-a-rate": (
         lambda: bngsim.Model.from_antimony_string(
             "compartment c; species A in c, S in c; A = 4; S = 1; k1 = 0.5; k = 1; c = J0;\n"
@@ -494,6 +606,64 @@ def test_an_initial_value_kept_as_an_expression_freezes_nothing(text):
     model = bngsim.Model.from_antimony_string(text)
     assert model.frozen_params == []
     model.set_param("p", 3.0)
+
+
+def test_a_species_with_its_own_assignment_in_a_compartment_that_is_a_state():
+    """Nothing to refuse. The species is declared by amount, and its initial
+    value is its own assignment's, in the unit it is read in: nothing was
+    converted by the size at load. The run after a write to ``p`` is the run
+    of the document written there."""
+    model = _state_sized(AN_AMOUNT, BY_A_RATE_RULE, more=ITS_OWN_ASSIGNMENT)
+    assert model.frozen_params == []
+    model.set_param("p", 3.0)
+    model.reset()
+    run = {"t_span": (0.0, 1.0), "n_points": 5, "rtol": 1e-10, "atol": 1e-12}
+    written = np.asarray(bngsim.Simulator(model, method="ode").run(**run).species)
+    rebuilt = _state_sized(AN_AMOUNT, BY_A_RATE_RULE, p=3.0, more=ITS_OWN_ASSIGNMENT)
+    np.testing.assert_allclose(
+        written, np.asarray(bngsim.Simulator(rebuilt, method="ode").run(**run).species), rtol=1e-9
+    )
+    assert written[0, 0] == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize("moved", [BY_A_RATE_RULE, BY_AN_EVENT], ids=["rate-rule", "event"])
+def test_a_concentration_in_a_compartment_that_is_a_state_freezes_nothing(moved):
+    """Nothing to refuse. The species is declared in the unit it is held in,
+    so nothing was converted by the size at load, and the size's own initial
+    value follows the write: the run is the run of the document written at
+    p = 3, as it was before the record."""
+    model = _state_sized(A_CONCENTRATION, moved)
+    assert model.frozen_params == []
+    model.set_param("p", 3.0)
+    model.reset()
+    run = {"t_span": (0.0, 1.0), "n_points": 5, "rtol": 1e-10, "atol": 1e-12}
+    written = np.asarray(bngsim.Simulator(model, method="ode").run(**run).species)
+    rebuilt = _state_sized(A_CONCENTRATION, moved, p=3.0)
+    np.testing.assert_allclose(
+        written, np.asarray(bngsim.Simulator(rebuilt, method="ode").run(**run).species), rtol=1e-9
+    )
+    assert written[0, 0] == pytest.approx(1.0)
+    assert abs(written[-1, 0] - 1.0) > 0.1  # and it is a run in which [S] moves
+
+
+def test_a_compartment_a_rule_sizes_that_holds_no_species_freezes_nothing():
+    """Nothing to refuse. ``c := 2*p`` holds no species and a rate law reads
+    it: the law reads the rule itself, nothing was converted by the size at
+    load, and a write to ``p`` moves the rate, as it did before the record.
+    S(1) = exp(-k*c) = exp(-4) at p = 2."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c, d; d = 1; p = 1; c := 2*p; species S in d; S = 1; k = 1;\n"
+        "J: S -> ; k*c*S\n"
+    )
+    assert model.frozen_params == []
+    model.set_param("p", 2.0)
+    model.reset()
+    out = bngsim.Simulator(model, method="ode").run(
+        t_span=(0.0, 1.0), n_points=2, rtol=1e-10, atol=1e-12
+    )
+    assert np.asarray(out.species)[-1, list(out.species_names).index("S")] == pytest.approx(
+        math.exp(-4.0), rel=1e-7
+    )
 
 
 def test_a_stoichiometry_that_moves_in_time_still_reads_its_parameter():
