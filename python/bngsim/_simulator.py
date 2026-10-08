@@ -1545,15 +1545,16 @@ class Simulator:
 
     def _raise_if_folded_at_load_params(self, param_names: list[str]) -> None:
         """Refuse a forward-sensitivity column for a parameter the model was
-        built with as a number (issues #313, #695, #696).
+        built with as a number (issues #313, #695, #696, #711).
 
         The loader read it once, for a compartment's size, a stoichiometry, a
-        conversion factor or an initial value, and the model holds what that
-        gave. The column lacked everything that goes through the number: an
-        exact 0 at every species and time where nothing else reads the
-        parameter (dS/dp = 0 for 0.303 with a compartment sized ``c = 2*p``,
-        dP/df = 0 for 12.64 with a stoichiometry of ``2*f``), and a part of the
-        derivative where a rate law reads it too.
+        conversion factor or an initial value, or BNG2.pl wrote a cBNGL volume
+        into the rate constants, and the model holds what that gave. The column
+        lacked everything that goes through the number: an exact 0 at every
+        species and time where nothing else reads the parameter (dS/dp = 0 for
+        0.303 with a compartment sized ``c = 2*p``, dP/df = 0 for 12.64 with a
+        stoichiometry of ``2*f``, dLf/dVe = 0 for 0.289 with a volume in the
+        rates), and a part of the derivative where a rate law reads it too.
         """
         frozen = getattr(self._model, "_frozen_params", None)
         if not frozen:
@@ -1566,8 +1567,8 @@ class Simulator:
                 + ". The model holds the number each gave, which a write does not move, "
                 "so set_param refuses to change the parameter and its column would lack "
                 "everything that reaches the model through that number: an exact 0 where "
-                "nothing else reads it (issues #313, #695, #696; Model.frozen_params lists "
-                "every such parameter). Difference models loaded from the document at "
+                "nothing else reads it (issues #313, #695, #696, #711; Model.frozen_params "
+                "lists every such parameter). Difference models loaded from the source at "
                 "p +/- h."
             )
 
@@ -5993,9 +5994,10 @@ class Simulator:
                     f"compute_all_sensitivities: skipping {len(folded)} parameter(s) "
                     f"{_abbreviate(folded)} that the model was built with as numbers: "
                     "each was read once at load (for a compartment's size, a "
-                    "stoichiometry, a conversion factor or an initial value), the model "
-                    "holds the number that gave, and its column would lack everything "
-                    "that reaches the model through it (issues #313, #695, #696; "
+                    "stoichiometry, a conversion factor, an initial value, or a volume "
+                    "BNG2.pl wrote into a rate constant), the model holds the number that "
+                    "gave, and its column would lack everything that reaches the model "
+                    "through it (issues #313, #695, #696, #711; "
                     "Model.frozen_params). The returned tensor has "
                     f"{len(target_params)} parameter columns; result.sensitivity_params "
                     "lists them.",

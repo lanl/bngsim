@@ -59,6 +59,13 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
                            stat_factor
             net_file_dir : the file's own directory, absolute, which is what a
                            relative ``tfun('...')`` path resolves against
+            unit_conversions : list of (reaction, expression), one for each
+                           ``unit_conversion=`` comment BNG2.pl left on a
+                           reaction line of a compartmental model. The
+                           reaction's rate holds that factor as a number, so
+                           the parameters the expression reads are refused for
+                           writing in the model built from this dictionary
+                           (``Model.frozen_params``, issue #711)
 
         Values are evaluated: a parameter's is the number ``Model.from_net``
         puts in its slot, and a species whose initial concentration names a
@@ -120,6 +127,9 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
     # left to reshape here. Absolute, so a build after a change of working
     # directory still finds a relative tfun file.
     parsed["net_file_dir"] = os.path.abspath(parsed["net_file_dir"])
+    from bngsim._model import _unit_conversions_in
+
+    parsed["unit_conversions"] = _unit_conversions_in(path)
     return parsed
 
 
@@ -128,7 +138,7 @@ def build_model_from_parsed(parsed: dict[str, Any]):
 
     It makes the calls ``NetFileLoader::load`` makes, in the same order, so the
     dictionary ``parse_net_file`` returns builds the model ``Model.from_net``
-    loads, and a modified dictionary builds the modified model. Three things to
+    loads, and a modified dictionary builds the modified model. Four things to
     know when modifying one:
 
     * a species listed in ``species_ic_params`` takes its initial concentration
@@ -138,7 +148,14 @@ def build_model_from_parsed(parsed: dict[str, Any]):
       so change the expression, or set ``is_expression`` false with a value;
     * a reaction's rate law is read by what it names: a function in
       ``functions`` makes it functional, anything else elementary (``"mm"``
-      aside), whatever its ``type`` says.
+      aside), whatever its ``type`` says;
+    * the parameters a ``unit_conversions`` entry reads are refused for writing
+      in the model built (issue #711): the rates hold that factor as a number.
+      Drop an entry only with the number it stands for taken out of the rate.
+      An entry names parameters by the names in ``parameters``: rename one in
+      both, or the entry names nothing and the renamed parameter is written
+      with no rate following it. A dictionary with no ``unit_conversions`` key
+      builds a model with nothing refused.
 
     Parameters
     ----------
@@ -168,7 +185,7 @@ def build_model_from_parsed(parsed: dict[str, Any]):
         net_function_tables,
         net_refuse_parameters_that_read_state,
     )
-    from bngsim._model import Model, _ar_report_map_from_net
+    from bngsim._model import Model, _ar_report_map_from_net, _unit_conversion_folds
 
     # The loader's own refusal, which phase 2 makes before its first call: a
     # parameter that reads an observable or a function would build as 0 (#844).
@@ -263,4 +280,5 @@ def build_model_from_parsed(parsed: dict[str, Any]):
     # The output columns of species an assignment rule defines (sbml_to_net's
     # networks), rebuilt as Model.from_net rebuilds them.
     model._ar_report_map = _ar_report_map_from_net(core)
+    model._frozen_params = _unit_conversion_folds(parsed.get("unit_conversions"), core)
     return model
