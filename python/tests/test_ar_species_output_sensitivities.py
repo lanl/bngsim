@@ -150,7 +150,7 @@ class TestLinearARSpecies:
     def test_ar_sens_map_records_observable(self):
         r = _sim(LINEAR).run(t_span=T_SPAN, n_points=N, **_RUN)
         # Linear rule S = A is emitted as an observable named S.
-        assert r._ar_sens_map == {"S": ("observable", "S", 1.0)}
+        assert r._ar_sens_map == {"S": ("observable", "S", 1.0, "")}
 
     def test_species_selector_follows_rule_analytic(self):
         r = _sim(LINEAR).run(t_span=T_SPAN, n_points=N, **_RUN)
@@ -195,7 +195,7 @@ class TestNonlinearARSpecies:
     def test_ar_sens_map_records_expression(self):
         r = _sim(NONLINEAR).run(t_span=T_SPAN, n_points=N, **_RUN)
         # Nonlinear rule S2 = A² is emitted as a function/expression named S2.
-        assert r._ar_sens_map == {"S2": ("expression", "S2", 1.0)}
+        assert r._ar_sens_map == {"S2": ("expression", "S2", 1.0, "")}
         assert r.has_sensitivities_expressions
 
     def test_species_selector_follows_rule_analytic(self):
@@ -250,7 +250,7 @@ class TestComputeAllSensitivitiesRedirect:
         r = sim.compute_all_sensitivities(
             t_span=T_SPAN, n_points=N, params=["k", "kd"], chunk_size=1, **_RUN
         )
-        assert r._ar_sens_map == {"S": ("observable", "S", 1.0)}
+        assert r._ar_sens_map == {"S": ("observable", "S", 1.0, "")}
         ikd = r.sensitivity_params.index("kd")
         t = np.asarray(r.time)
         _assert_close(r.output_sensitivities("species:S")[:, 0, ikd], -A0 * t * np.exp(-KD * t))
@@ -270,7 +270,7 @@ class TestComputeAllSensitivitiesRedirect:
             t_span=T_SPAN, n_points=N, params=["k", "kd"], chunk_size=1, **_RUN
         )
         assert r.has_sensitivities_expressions
-        assert r._ar_sens_map == {"S2": ("expression", "S2", 1.0)}
+        assert r._ar_sens_map == {"S2": ("expression", "S2", 1.0, "")}
         ikd = r.sensitivity_params.index("kd")
         t = np.asarray(r.time)
         A = A0 * np.exp(-KD * t)
@@ -295,7 +295,7 @@ class TestComputeAllSensitivitiesRedirect:
             t_span=T_SPAN, n_points=N, params=["k", "kd"], chunk_size=1, **_RUN
         )
         assert r.has_sensitivities_expressions
-        assert r._ar_sens_map == {"S2": ("expression", "S2", 1.0)}
+        assert r._ar_sens_map == {"S2": ("expression", "S2", 1.0, "")}
         ikd = r.sensitivity_params.index("kd")
         t = np.asarray(r.time)
         A = A0 * np.exp(-KD * t)
