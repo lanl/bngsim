@@ -789,6 +789,10 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         ("kb*hypot(max(thr-X,0),pos)", False),
         ("kb*acos(min(X,1))", True),
         ("kb*asin(max(X,-1))", True),
+        # A call that bends as a choice does is one.
+        ("kb*clamp(0,thr-X,1)^0.5", True),
+        ("kb*sqrt(clamp(0,thr-X,1))", True),
+        ("kb*sqrt(pos+abs(clamp(0,thr-X,1)))", False),
         # Known above 0, and a root of what holds no choice.
         ("kb*sqrt(pos+max(thr-X,0))", False),
         ("kb*max(X,0.01)^0.5", False),
@@ -1864,6 +1868,7 @@ def test_which_comparison_a_column_moves(law, moved):
         ("kb*(X=1)", True),
         ("if(X=1,kb,0)", True),
         ("X>1?kb:0", True),
+        ("X?kb:0", True),
         ("kb*not(X)", True),
         ("kb*(!X)", True),
         ("kb*X/(1+X)", False),
