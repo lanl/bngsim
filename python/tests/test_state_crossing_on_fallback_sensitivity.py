@@ -795,6 +795,11 @@ def test_a_choice_that_only_bends_runs(tmp_path, case):
         ("kb*log(max(X,pos))", False),
         ("kb*sqrt(X)*abs(Y)", False),
         ("kb*acos(X)*abs(Y)", False),
+        # A number to the logarithm of what may be 0 is 0 there, written as
+        # a power or as pow(), with no choice inside the logarithm.
+        ("kb*X/max(2^log(Y*Y), X)", True),
+        ("kb*X/max(pow(2, log(Y*Y)), X)", True),
+        ("kb*X/max(2^log(Y*Y+pos), X)", False),
         # An exponent that is requested and within a quarter of itself of 1.
         ("kb*max(thr-X,0)^near1", True),
         ("kb*max(thr-X,0)^asked", False),
