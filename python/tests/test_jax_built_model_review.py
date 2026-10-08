@@ -493,26 +493,16 @@ end functions
 
 
 def test_mm_rate_constant_that_a_function_overwrites(tmp_path):
-    """FAILS on afc0551: a JAX-vs-engine mismatch that the check does not refuse.
-
-    ``kc`` is both a parameter row and a function (the #266 shape an SBML-derived
-    .net has). The engine's MM reads the slot the function rewrites every step,
-    so kcat = t/2 and P grows (6.65 by t = 4). The JAX RHS reads ``params[kc]``,
-    a snapshot of the slot (0 here), and P stays 0. The check compares at t = 0,
-    where t/2 and the snapshot are both 0, and passes; the contract it states --
-    a JAX RHS that disagrees with the engine is refused -- is broken from t > 0.
-    (BioNetGen's run_network reads the parameter row too, so the JAX answer is
-    run_network's; the engine is the odd one out, a pre-existing #266-family
-    split. Either way the two bngsim paths disagree and nothing says so.)
+    """``kc`` is both a parameter row and a function. The engine's Michaelis-
+    Menten law read the slot the function rewrites every step, and the JAX
+    right-hand side read ``params[kc]``, a snapshot of it: two readings of one
+    model (BioNetGen's run_network takes the parameter row too). The JAX path
+    refused the shape; the model is refused where it is built now, for every
+    engine that runs a built model (issue #931).
     """
-    run_diffrax = _diffrax()
     net = _write(tmp_path, "mmfs.net", MM_ON_A_FUNCTION_SLOT)
-    _refuses_or_matches(
-        lambda: run_diffrax(_load(net), t_end=4.0, n_points=5, **RUN)["species"],
-        _engine_run(net, 4.0, 5),
-        rtol=1e-5,
-        atol=1e-8,
-    )
+    with pytest.raises(bngsim.ModelError, match=r"MichaelisMenten.*issue #931"):
+        _load(net)
 
 
 def test_matching_infinities_at_the_test_state_are_not_a_mismatch(tmp_path):
