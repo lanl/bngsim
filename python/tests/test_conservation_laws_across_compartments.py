@@ -95,7 +95,9 @@ def test_the_steady_state_sensitivities():
         sensitivity_params=["k1", "k2"], tol=1e-12
     )
     np.testing.assert_allclose(
-        np.asarray(out.sensitivity).reshape(2, 2), [[-0.25, 0.25], [0.125, -0.125]], rtol=1e-7
+        np.asarray(out.sensitivity).reshape(2, 2),
+        [[-0.25, 0.25], [0.125, -0.125]],
+        rtol=1e-7,
     )
 
 
@@ -355,6 +357,113 @@ def test_a_built_model_with_both_kinds_of_reaction_between_volumes():
     assert core.conservation_law_drift()[0] == -1
 
 
+def _built(laws: bool = True, live: bool = False):
+    """A (size parameter V1 = 1) <-> B (V2 = 5) with the per-species divide,
+    from the builder. ``live`` puts a one-compartment reaction beside it, B
+    <-> C, with B's and C's shares of the first divided by a live volume."""
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("kf", 0.3)
+    b.add_parameter("kr", 0.2)
+    v1 = b.add_parameter("V1", 1.0, "", False, True)
+    v2 = b.add_parameter("V2", 5.0, "", False, True)
+    a = b.add_species("A", 3.0, False, 1.0)
+    bb = b.add_species("B", 1.0, False, 5.0)
+    b.set_species_volume_param(a, v1)
+    b.set_species_volume_param(bb, v2)
+    b.add_observable("A", [(a, 1.0)])
+    b.add_observable("B", [(bb, 1.0)])
+    b.add_function("fwd", "kf*A")
+    b.add_function("bwd", "kr*B*V2")
+    kw = {"apply_species_factor": False, "per_species_volume_scaling": True}
+    b.add_reaction([a], [bb], "functional", "fwd", **kw)
+    b.add_reaction([bb], [a], "functional", "bwd", **kw)
+    if live:
+        c = b.add_species("C", 0.5, False, 5.0)
+        size = b.add_species("V", 5.0, True, 1.0)
+        b.add_reaction([bb], [c], "elementary", "kf")
+        b.add_reaction([c], [bb], "elementary", "kr")
+        b.set_species_ode_live_volume(bb, size)
+    b.set_compute_conservation_laws(laws)
+    return b.build()
+
+
+def test_a_built_model():
+    """The detector is the builder's, whatever loads the model: ``A + 5*B``,
+    following ``V2`` when it is written."""
+    core = _built()
+    np.testing.assert_allclose(core.conservation_laws["coefficients"], [[1.0, 5.0]], rtol=1e-15)
+    assert core.conservation_law_drift()[0] == -1
+    core.set_param("V2", 8.0)
+    np.testing.assert_allclose(core.conservation_laws["coefficients"], [[1.0, 8.0]], rtol=1e-15)
+    assert core.conservation_law_drift()[0] == -1
+
+
+def test_laws_switched_off_stay_off():
+    """Control. ``set_compute_conservation_laws(False)`` gives a model no
+    laws, and a model whose laws would follow its sizes has none either,
+    before a size is written and after."""
+    core = _built(laws=False)
+    assert core.conservation_laws["n_laws"] == 0
+    core.set_param("V2", 8.0)
+    assert core.conservation_laws["n_laws"] == 0
+
+
+def test_no_law_is_asked_where_laws_are_switched_off():
+    core = _built(laws=False)
+    assert core.conservation_law_members() == []
+    assert core.conservation_law_drift() == (-1, 0.0, 0.0)
+
+
+def test_a_live_volume_takes_only_the_species_it_divides_out_of_the_laws():
+    """B's share of the reaction across the compartments is divided by a live
+    volume, so B is in no law, and with it neither A nor C, which only B
+    ties to anything. The one-compartment reaction beside it does not make a
+    law of B and C on its own: B is changed by the other reaction too."""
+    core = _built(live=True)
+    laws = core.conservation_laws
+    rows = np.asarray(laws["coefficients"], dtype=float).reshape(laws["n_laws"], 4)
+    assert np.all(rows[:, :3] == 0.0)
+    assert core.conservation_law_drift()[0] == -1
+
+
+def test_a_live_volume_no_reaction_divides_by_takes_nothing_out():
+    """Control. Only a reaction with the per-species divide reads a species'
+    live volume. B has one and is in no such reaction, so ``A + B`` is the
+    law, as it was."""
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("kf", 0.3)
+    b.add_parameter("kr", 0.2)
+    a = b.add_species("A", 3.0, False, 1.0)
+    bb = b.add_species("B", 1.0, False, 5.0)
+    size = b.add_species("V", 5.0, True, 1.0)
+    b.add_reaction([a], [bb], "elementary", "kf")
+    b.add_reaction([bb], [a], "elementary", "kr")
+    b.set_species_ode_live_volume(bb, size)
+    core = b.build()
+    laws = core.conservation_laws
+    assert [1.0, 1.0, 0.0] in np.asarray(laws["coefficients"], dtype=float).tolist()
+    rate = np.asarray(core.compute_derivs(0.0, np.array([2.0, 0.7, 5.0])))
+    assert rate[0] != 0.0 and rate[0] + rate[1] == 0.0
+
+
+def test_a_one_compartment_reaction_in_a_resized_compartment_keeps_its_law():
+    """Control. A and B in the one compartment an event resizes move at the
+    one rate, and ``A + B`` is their law between events, as it was."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c; c = 2; species A in c, B in c; A = 1; B = 0.5; k1 = 1; k2 = 0.5;\n"
+        "R1: A -> B; k1*A*c\nR2: B -> A; k2*B*c\nE1: at (time > 5): c = 4;\n"
+    )
+    names = list(model.species_names)
+    rows = np.asarray(model.conservation_laws["coefficients"], dtype=float)
+    held = rows[:, [names.index("A"), names.index("B")]]
+    assert [1.0, 1.0] in held.tolist()
+    assert _kept(model) < 1e-12
+
+
 def test_compartments_of_one_size_are_as_they_were():
     """Control. With both at size 1 the law is ``A + B``, as the plain
     stoichiometry gives it."""
@@ -373,7 +482,10 @@ def test_a_net_model_is_as_it_was(tmp_path):
     )
     laws = bngsim.Model.from_net(str(path)).conservation_laws
     assert laws["n_laws"] == 2
-    assert sorted(map(tuple, laws["coefficients"])) == [(0.0, 0.0, 1.0), (1.0, 1.0, 0.0)]
+    assert sorted(map(tuple, laws["coefficients"])) == [
+        (0.0, 0.0, 1.0),
+        (1.0, 1.0, 0.0),
+    ]
 
 
 def test_a_law_the_right_hand_side_does_not_keep_is_refused():
@@ -450,21 +562,24 @@ def test_the_question_is_put_relative_to_the_terms(scale):
 
 
 CRUMBS = (
-    "begin parameters\n    1 k0 {k}\n    2 k1 {k}\n    3 k2 1.943\n    4 k3 {k}\nend parameters\n"
+    "begin parameters\n    1 k0 {k}\n    2 k1 {k}\n    3 k2 {k}\n    4 k3 {k}\n    5 kx 1.943\n"
+    "end parameters\n"
     "begin species\n    1 S0() 0.959\n    2 S1() 0.884\n    3 S2() 0.601\n    4 S3() 1.134\n"
     "    5 S4() 1.658\nend species\n"
     "begin reactions\n    1 1,1,1 2,4,2,3 k0\n    2 4,4,5 2,4,1,2,2 k1\n    3 3,1 3,2 k2\n"
-    "    4 5,2 5 k3\nend reactions\n"
+    "    4 5,2 5 k3\n    5 1 2 kx\nend reactions\n"
 )
 
 
 def test_rounding_left_on_a_species_in_no_law_is_not_the_law(tmp_path):
     """Row reduction leaves rounding on species a law does not hold: here
     ``S2 - S3 + S4`` with -1.1e-16 on S0 (where the arithmetic leaves any;
-    1e-14 to 1e-40 over the corpus). With three rate constants at zero only S0
-    and S1 move, so the rounding times S0's rate was the whole of the law's
-    total, and a share of 1 of its terms. The law is asked over the species
-    it holds, which do not move."""
+    1e-14 to 1e-40 over the corpus). With four rate constants at zero only
+    ``S0 -> S1`` runs, so nothing flows through the three species of the law,
+    and the rounding times S0's rate was the whole of its total and of what
+    it was measured against. The law is asked over the species it holds,
+    which do not move. (MODEL1009150002, 1,604 species, was refused for
+    this.)"""
     path = tmp_path / "crumbs.net"
     path.write_text(CRUMBS.format(k=0.0))
     model = bngsim.Model.from_net(str(path))
@@ -474,7 +589,9 @@ def test_rounding_left_on_a_species_in_no_law_is_not_the_law(tmp_path):
     assert model._core.conservation_law_drift() == (-1, 0.0, 0.0)
     out = bngsim.Simulator(model, method="ode").steady_state()
     np.testing.assert_allclose(
-        np.asarray(out.concentrations), [0.0, 0.959 + 0.884, 0.601, 1.134, 1.658], atol=1e-6
+        np.asarray(out.concentrations),
+        [0.0, 0.959 + 0.884, 0.601, 1.134, 1.658],
+        atol=1e-6,
     )
     path.write_text(CRUMBS.format(k=0.7))
     assert bngsim.Model.from_net(str(path))._core.conservation_law_drift()[0] == -1
@@ -580,6 +697,42 @@ def test_a_badly_conditioned_solve_across_sizes_is_still_refused():
     assert out.converged and abs(np.asarray(out.concentrations)[1]) < 1e-8
 
 
+def test_a_zero_pivot_beside_a_law_across_sizes_is_refused_as_having_no_gradient():
+    """X goes to P and to nothing, so P is in no law and no rate reads it: its
+    column of the reduced Jacobian is zero, whatever the sizes of the law
+    beside it. The factorization stops at that pivot and the columns are not
+    finite. The refusal is the one that says no gradient exists, not the one
+    for a badly conditioned solve across sizes."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c1, c2; c1 = 1; c2 = 2; species A in c1, B in c2, X in c1, P in c1;\n"
+        "A = 1; B = 0.2; X = 1; P = 0; k1 = 1; k2 = 0.5; kp = 0.3; kd = 0.2;\n"
+        "R1: A -> B; k1*A*c1\nR2: B -> A; k2*B*c2\nR3: X -> P; c1*kp*X\nR4: X -> ; c1*kd*X\n"
+    )
+    assert model._core.conservation_law_members() == [[0, 1]]
+    with pytest.raises(bngsim.SimulationError, match="dY_ss/dp does not exist") as caught:
+        bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["kp"], tol=1e-10)
+    assert not isinstance(caught.value, bngsim.SensitivityUnsupportedError)
+
+
+def test_the_continuum_in_amounts_under_a_rate_rule_is_refused():
+    """The same network with its species held as amounts and ``c2`` under a
+    rate rule that settles at 2.3. ``c2`` is then a species and not a size
+    parameter, and the law still spans two sizes: dP*/dkp came back 396,941
+    on a pivot of 2e-17, for 0.089. Whether a law spans sizes is asked of the
+    species it holds, not of how many size parameters the model has."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c1, c2; c1 = 0.7; c2 = 1.1; c2' = 0.9*(2.3 - c2);\n"
+        "substanceOnly species A in c1, B in c2, P in c2, P2 in c1, Q in c2, Q2 in c1;\n"
+        "A = 1.3; B = 0.2; P = 0; P2 = 0; Q = 0; Q2 = 0;\n"
+        "k1 = 0.37; k2 = 1.91; kp = 0.83; kq = 0.29; a = 0.61; b = 1.17; d = 0.43; e = 0.77;\n"
+        "R1: A -> B; k1*A\nR2: B -> A; k2*B\nR3: B -> P; kp*B/(0.7 + B)\nR4: B -> Q; kq*B\n"
+        "R5: P -> P2; a*P\nR6: P2 -> P; b*P2\nR7: Q -> Q2; d*Q\nR8: Q2 -> Q; e*Q2\n"
+    )
+    assert model.compartment_size_params == ["c1"]
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"badly conditioned.*#758"):
+        bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["kp"], tol=1e-10)
+
+
 def test_the_same_continuum_in_one_size_is_refused_as_it_was():
     """Control. With both sizes 0.7 the pivot is an exact zero, the solve
     returns non-finite columns, and that is the refusal there has been."""
@@ -587,7 +740,8 @@ def test_the_same_continuum_in_one_size_is_refused_as_it_was():
         bngsim.Model.from_antimony_string(CONTINUUM.format(v2=0.7)), method="ode"
     )
     with pytest.raises(
-        bngsim.SimulationError, match=r"dY_ss/dp does not exist.*sens_jacobian_rcond is 0.00e\+00"
+        bngsim.SimulationError,
+        match=r"dY_ss/dp does not exist.*sens_jacobian_rcond is 0.00e\+00",
     ):
         sim.steady_state(sensitivity_params=["kp"], tol=1e-10)
 
@@ -614,7 +768,8 @@ def test_a_catalyst_of_a_fast_reaction_does_not_break_its_law(kcat):
 
 
 def test_the_steady_state_beside_a_fast_catalytic_step():
-    """E* = 1 - EI* with EI* = (5 - sqrt(17))/2, whatever kcat is."""
+    """Control. E* = 1 - EI* with EI* = (5 - sqrt(17))/2, whatever kcat is:
+    the solve that the question about the law first refused."""
     sim = bngsim.Simulator(
         bngsim.Model.from_antimony_string(CATALYST.format(kcat=1e6)), method="ode"
     )
@@ -676,20 +831,55 @@ def test_a_batch_leaves_its_model_as_it_found_it():
     assert list(model.get_state()) == state and model.get_param("tot") == total
 
 
-def test_asking_a_law_leaves_the_function_values_at_the_models_state():
-    """The question is put at two states off the model's own. The values of
-    the observables and functions are left as they are at its own."""
+def test_asking_a_law_puts_the_function_values_back():
+    """The question is put at two states off the model's own, which writes
+    the observable totals and the function values. They are put back as
+    they were: ``tot`` after a run, and where the law is broken too."""
     model = bngsim.Model.from_antimony_string(WITH_A_TOTAL)
     bngsim.Simulator(model, method="ode").run(t_span=(0.0, 0.3), n_points=2)
-    model.rhs(model.get_state())
     total = model.get_param("tot")
     assert model._core.conservation_law_drift()[0] == -1
     assert model.get_param("tot") == total
     model.set_param("c2", -2.0)
-    model.rhs(model.get_state())
     total = model.get_param("tot")
     assert model._core.conservation_law_drift()[0] == 0
     assert model.get_param("tot") == total
+
+
+def test_a_rate_of_function_keeps_its_value_through_the_question():
+    """``ra := rateOf(A)`` holds -2 on a model that has only been loaded.
+    Asking the law leaves it there, and a refused ``steady_state`` leaves what
+    the simulator's own set-up wrote: an evaluation at the model's state
+    would have written 0, the buffer ``rateOf`` reads being empty until a
+    run fills it."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c1, c2; c1 = 1; c2 = 2; species A in c1, B in c2; A = 1; B = 0;\n"
+        "k1 = 1; k2 = 0.5; ra := rateOf(A); tot := A*c1 + B*c2;\n"
+        "R1: A -> B; 2*k1*A*c1\nR2: B -> A; k2*B*c2\n"
+    )
+    assert (model.get_param("ra"), model.get_param("tot")) == (-2.0, 1.0)
+    assert model._core.conservation_law_drift()[0] == -1
+    assert (model.get_param("ra"), model.get_param("tot")) == (-2.0, 1.0)
+    sim = bngsim.Simulator(model, method="ode")
+    before = (model.get_param("ra"), model.get_param("tot"))
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"compartment\s+size"):
+        sim.steady_state(sensitivity_params=["c2"])
+    assert (model.get_param("ra"), model.get_param("tot")) == before
+
+
+def test_a_size_that_is_not_a_number():
+    """A size written NaN is taken for 1 by the detector, and the rates are
+    not finite, so the law is not asked. The laws are the same at every
+    call."""
+    model = _two()
+    model.set_param("c2", float("nan"))
+    first = model.conservation_laws
+    assert first["coefficients"] == [[1.0, 1.0]]
+    assert model.conservation_laws == first
+    assert model._core.conservation_law_members() == [[0, 1]]
+    assert model._core.conservation_law_drift() == (-1, 0.0, 0.0)
+    model.set_param("c2", 4.0)
+    np.testing.assert_allclose(_law(model), [1.0, 4.0])
 
 
 @pytest.mark.parametrize("n, tail", [(4, ""), (5, ", ...")])
@@ -730,7 +920,8 @@ def test_a_law_across_a_rule_sized_compartment_is_still_refused(size):
     a constant and the columns would be right."""
     sim = bngsim.Simulator(bngsim.Model.from_antimony_string(RULED.format(size=size)), "ode")
     with pytest.raises(
-        bngsim.SensitivityUnsupportedError, match=r"assignment rule\s+sets the size of c2.*#745"
+        bngsim.SensitivityUnsupportedError,
+        match=r"assignment rule\s+sets the size of c2.*#745",
     ):
         sim.steady_state(sensitivity_params=["k1"])
     assert sim.steady_state().converged  # the state is solved for, as it was

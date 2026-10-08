@@ -588,7 +588,7 @@ contributes nothing, and neither does any species once `save_concentrations()`
 has made the state its own baseline. A fixed species that a parameter sets,
 `$A() A0`, moves what reads it by the same seed.
 
-Three requests are refused, with `SensitivityUnsupportedError`:
+Four requests are refused, with `SensitivityUnsupportedError`:
 
 - a parameter that sets the initial amount of a conserved species, on a state a
   `run()` has advanced. The total is still what the parameter made it, and the
@@ -596,20 +596,23 @@ Three requests are refused, with `SensitivityUnsupportedError`:
   `reset()` first;
 - a compartment size, in a model with a conservation law;
 - any parameter, where a law spans compartments of different size and an
-  assignment rule sets the size of one. The right-hand side divides by the
-  size the model loaded at where the rule gives another (issue #745), so the
-  steady state is that of another system.
+  assignment rule sets the size of a compartment. The right-hand side divides
+  by the size the model loaded at where the rule gives another (issue #745),
+  so the steady state is that of another system;
+- any parameter, where a law spans compartments of different size and the
+  Jacobian at the steady state is badly conditioned on the reduced subspace
+  (`min|U|/max|U|` below 1e-8, the ratio `ss.sens_jacobian_rcond` reports). A
+  model whose laws each lie within one size gets a warning there. With sizes
+  in a law, a steady state that is one of a continuum has a pivot that is
+  rounding where one size leaves an exact zero, and the columns that came back
+  were not a gradient (-329,603 for 0.0774). The ratio falls with the square
+  of a size ratio too, so sizes 1e5 apart are refused though the root is
+  isolated.
 
 A law across compartments of different size is a total of amounts, and carries
 the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in
-one of size 2 (issue #758). Its columns are computed like any other law's,
-with one exception: where the Jacobian at the steady state is badly
-conditioned on the reduced subspace (`min|U|/max|U|` below 1e-8, the ratio
-`ss.sens_jacobian_rcond` reports), the request is refused with
-`SensitivityUnsupportedError`. A model with one size gets a warning there. With
-sizes in the laws, a steady state that is one of a continuum has a pivot that
-is rounding where one size leaves an exact zero, and the columns that came
-back were not a gradient (-329,603 for 0.0774).
+one of size 2 (issue #758). Outside the two cases above its columns are
+computed like any other law's.
 
 With `mask=`, a conservation law that holds a masked-out species keeps its
 total fixed, as before, unless that species is the one the law is solved for.

@@ -1578,11 +1578,11 @@ class Simulator:
 
         ``steady_state(sensitivity_params=...)`` solves the reduced system with
         each conserved total ``T_k = Σ L[k,i]·x_i`` held, and differentiates the
-        total through ``∂x(0)/∂p``. Two models have a column that does not
-        give. (A law across compartments of different size was a third, while
-        it was found as a total of concentrations, ``A + B`` for ``V1·A +
-        V2·B``; it is found with the sizes in it since issue #758, and its
-        columns are computed where the reduced Jacobian is well conditioned:
+        total through ``∂x(0)/∂p``. Three models have a column that does not
+        give. (A law across compartments of different size was one while it
+        was found as a total of concentrations, ``A + B`` for ``V1·A + V2·B``;
+        it is found with the sizes in it since issue #758, and its columns
+        are computed where the reduced Jacobian is well conditioned:
         :meth:`_raise_if_badly_conditioned_across_sizes`.)
 
         - **a compartment size**, in a model with a conservation law. What is
@@ -1593,6 +1593,10 @@ class Simulator:
           was 0 where the truth was not in 21 of 23 models with a conservation
           law, and with the total differentiated it was right in 13 of them and
           as much as 1e7 for −6e4 in another;
+        - **any parameter**, where a law spans compartments of different size
+          and an assignment rule sets a compartment's size. The right-hand
+          side divides by the size the model loaded at (issue #745), so the
+          steady state itself is that of another system;
         - **a parameter that sets the initial amount of a conserved species**,
           on a state a run has advanced. The total is still what the parameter
           made it, and the state no longer says so: its seed is retired with
@@ -7004,15 +7008,17 @@ class Simulator:
         with each product exchanged across the compartments returned
         dP*/dkp = -329,603 for 0.0774 at min|U|/max|U| = 1e-17, and over the
         corpus two of the five such models had columns that were not the
-        derivative (BIOMD0000000328: 3.88 for -6.32, at 7e-18). A model with
-        one size gets the warning there, as it did.
+        derivative (BIOMD0000000328: 3.88 for -6.32, at 7e-18). A model whose
+        laws each lie within one size gets the warning there, as it did.
+
+        The ratio is not invariant to scale: a size 1e5 of another's brings an
+        isolated root to 1e-10 by itself, so a model with sizes that far apart
+        stays refused though its columns are right.
         """
         rcond = result.sens_jacobian_rcond
         if result.sensitivity is None or not 0.0 <= rcond < self._SS_SENS_RCOND_FLOOR:
             return
         model = self._model
-        if len(model.compartment_size_params) < 2:
-            return
         # Columns that are not finite are refused by _warn_about_ss_sensitivity,
         # which says what it knows of the cause.
         finite = np.all(np.isfinite(np.asarray(result.sensitivity)), axis=1)

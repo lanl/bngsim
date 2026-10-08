@@ -381,9 +381,10 @@ class NetworkModel {
     // each species' terms with their absolute values summed, which is what
     // a rate is rounded from; a total that moves by less than 1e-10 of them
     // is not seen. `law` is -1 where every law is kept. A law with a member
-    // whose rate is not finite at a state is not asked there. The cached
-    // observable and function values are left as they are at the model's own
-    // state.
+    // whose rate is not finite at a state is not asked there. The observable
+    // totals and function values an evaluation writes are put back as they
+    // were, and the time, the rateOf buffer and the right-hand-side counters
+    // are not touched.
     struct ConservationLawDrift {
         int law = -1;
         double drift = 0.0;

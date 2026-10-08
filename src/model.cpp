@@ -2040,6 +2040,19 @@ NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
     std::vector<double> here(ns), state(ns), net(ns), gross(ns);
     get_state_into(here.data());
     const double t_now = impl_->current_time;
+    // What an evaluation writes, kept to be put back: the observable totals,
+    // the value of every parameter (a function writes the one it is bound
+    // to) and the functions' own cache. A model with no function writes none.
+    std::vector<double> kept_totals, kept_values, kept_cache;
+    if (impl_->has_functions) {
+        kept_totals.reserve(impl_->observables.size());
+        for (const auto &obs : impl_->observables)
+            kept_totals.push_back(obs.total);
+        kept_values.reserve(impl_->parameters.size());
+        for (const auto &par : impl_->parameters)
+            kept_values.push_back(par.value);
+        kept_cache = impl_->function_value_cache;
+    }
     for (int pass = 0; pass < 2 && found.law < 0; ++pass) {
         for (int i = 0; i < ns; ++i) {
             const double spread = 1.0 + 0.5 * std::sin(1.0 + i);
@@ -2070,11 +2083,12 @@ NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
             }
         }
     }
-    // The observables and functions are left as they are at the model's own
-    // state, not at the last state asked.
     if (impl_->has_functions) {
-        update_observables(here.data());
-        evaluate_functions(t_now);
+        for (size_t i = 0; i < kept_totals.size(); ++i)
+            impl_->observables[i].total = kept_totals[i];
+        for (size_t i = 0; i < kept_values.size(); ++i)
+            impl_->parameters[i].value = kept_values[i];
+        impl_->function_value_cache = std::move(kept_cache);
     }
     return found;
 }
