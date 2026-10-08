@@ -311,6 +311,107 @@ def test_an_unscaled_reaction_between_volumes_keeps_the_plain_law():
     assert rate[0] != 0.0 and rate[0] + rate[1] == 0.0
 
 
+def _built(laws: bool = True, live: bool = False):
+    """A (size parameter V1 = 1) <-> B (V2 = 5) with the per-species divide,
+    from the builder. ``live`` puts a one-compartment reaction beside it, B
+    <-> C, with B's and C's shares of the first divided by a live volume."""
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("kf", 0.3)
+    b.add_parameter("kr", 0.2)
+    v1 = b.add_parameter("V1", 1.0, "", False, True)
+    v2 = b.add_parameter("V2", 5.0, "", False, True)
+    a = b.add_species("A", 3.0, False, 1.0)
+    bb = b.add_species("B", 1.0, False, 5.0)
+    b.set_species_volume_param(a, v1)
+    b.set_species_volume_param(bb, v2)
+    b.add_observable("A", [(a, 1.0)])
+    b.add_observable("B", [(bb, 1.0)])
+    b.add_function("fwd", "kf*A")
+    b.add_function("bwd", "kr*B*V2")
+    kw = {"apply_species_factor": False, "per_species_volume_scaling": True}
+    b.add_reaction([a], [bb], "functional", "fwd", **kw)
+    b.add_reaction([bb], [a], "functional", "bwd", **kw)
+    if live:
+        c = b.add_species("C", 0.5, False, 5.0)
+        size = b.add_species("V", 5.0, True, 1.0)
+        b.add_reaction([bb], [c], "elementary", "kf")
+        b.add_reaction([c], [bb], "elementary", "kr")
+        b.set_species_ode_live_volume(bb, size)
+    b.set_compute_conservation_laws(laws)
+    return b.build()
+
+
+def test_a_built_model():
+    """The detector is the builder's, whatever loads the model: ``A + 5*B``,
+    following ``V2`` when it is written."""
+    core = _built()
+    np.testing.assert_allclose(core.conservation_laws["coefficients"], [[1.0, 5.0]], rtol=1e-15)
+    assert core.conservation_law_drift()[0] == -1
+    core.set_param("V2", 8.0)
+    np.testing.assert_allclose(core.conservation_laws["coefficients"], [[1.0, 8.0]], rtol=1e-15)
+    assert core.conservation_law_drift()[0] == -1
+
+
+def test_laws_switched_off_stay_off():
+    """``set_compute_conservation_laws(False)`` gives a model no laws, and a
+    model whose laws would follow its sizes has none either."""
+    core = _built(laws=False)
+    assert core.conservation_laws["n_laws"] == 0
+    core.set_param("V2", 8.0)
+    assert core.conservation_laws["n_laws"] == 0
+    assert core.conservation_law_drift() == (-1, 0.0, 0.0)
+
+
+def test_a_live_volume_takes_only_the_species_it_divides_out_of_the_laws():
+    """B's share of the reaction across the compartments is divided by a live
+    volume, so B is in no law, and with it neither A nor C, which only B
+    ties to anything. The one-compartment reaction beside it does not make a
+    law of B and C on its own: B is changed by the other reaction too."""
+    core = _built(live=True)
+    laws = core.conservation_laws
+    rows = np.asarray(laws["coefficients"], dtype=float).reshape(laws["n_laws"], 4)
+    assert np.all(rows[:, :3] == 0.0)
+    assert core.conservation_law_drift()[0] == -1
+
+
+def test_a_live_volume_no_reaction_divides_by_takes_nothing_out():
+    """Control. Only a reaction with the per-species divide reads a species'
+    live volume. B has one and is in no such reaction, so ``A + B`` is the
+    law, as it was."""
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("kf", 0.3)
+    b.add_parameter("kr", 0.2)
+    a = b.add_species("A", 3.0, False, 1.0)
+    bb = b.add_species("B", 1.0, False, 5.0)
+    size = b.add_species("V", 5.0, True, 1.0)
+    b.add_reaction([a], [bb], "elementary", "kf")
+    b.add_reaction([bb], [a], "elementary", "kr")
+    b.set_species_ode_live_volume(bb, size)
+    core = b.build()
+    laws = core.conservation_laws
+    assert [1.0, 1.0, 0.0] in np.asarray(laws["coefficients"], dtype=float).tolist()
+    rate = np.asarray(core.compute_derivs(0.0, np.array([2.0, 0.7, 5.0])))
+    assert rate[0] != 0.0 and rate[0] + rate[1] == 0.0
+
+
+def test_a_one_compartment_reaction_in_a_resized_compartment_keeps_its_law():
+    """Control. A and B in the one compartment an event resizes move at the
+    one rate, and ``A + B`` is their law between events, as it was."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c; c = 2; species A in c, B in c; A = 1; B = 0.5; k1 = 1; k2 = 0.5;\n"
+        "R1: A -> B; k1*A*c\nR2: B -> A; k2*B*c\nE1: at (time > 5): c = 4;\n"
+    )
+    names = list(model.species_names)
+    rows = np.asarray(model.conservation_laws["coefficients"], dtype=float)
+    held = rows[:, [names.index("A"), names.index("B")]]
+    assert [1.0, 1.0] in held.tolist()
+    assert _kept(model) < 1e-12
+
+
 def test_compartments_of_one_size_are_as_they_were():
     """Control. With both at size 1 the law is ``A + B``, as the plain
     stoichiometry gives it."""
@@ -369,6 +470,40 @@ def test_a_batch_entry_is_asked_of_its_own_model():
     model.set_param("c2", -2.0)
     rows = bngsim.Simulator(model, method="ode").steady_state_batch(params=[{"c2": 4.0}])
     np.testing.assert_allclose(np.asarray(rows[0].concentrations), [0.5, 0.125], rtol=1e-8)
+
+
+def test_every_law_is_asked():
+    """A law inside a compartment, kept, ahead of one across compartments
+    that a size below zero breaks: the second is the one named."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c1, c2; c1 = 1; c2 = 2; species X in c1, Y in c1, A in c1, B in c2;\n"
+        "X = 1; Y = 0.2; A = 1; B = 0.5; k1 = 1; k2 = 0.5; k3 = 2; k4 = 1;\n"
+        "R1: A -> B; k1*A*c1\nR2: B -> A; k2*B*c2\nR3: X -> Y; c1*k3*X\nR4: Y -> X; c1*k4*Y\n"
+    )
+    rows = np.asarray(model.conservation_laws["coefficients"], dtype=float)
+    np.testing.assert_allclose(rows, [[1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 2.0]])
+    assert model._core.conservation_law_drift()[0] == -1
+    model.set_param("c2", -2.0)
+    assert model._core.conservation_law_drift()[0] == 1
+    with pytest.raises(bngsim.SimulationError, match=r"\(over A, B\) is not kept"):
+        bngsim.Simulator(model, method="ode").steady_state()
+
+
+@pytest.mark.parametrize("scale", [1e-12, 1.0, 1e12])
+def test_the_question_is_put_relative_to_the_terms(scale):
+    """A law's total moves by rounding where the law is kept and by a share
+    of its terms where it is not, whatever the size of the rates: a kept law
+    passes with rate constants of 1e12, where the rounding is 1e-4, and a
+    broken one is found with rate constants of 1e-12."""
+    text = SHAPES["chain"][0]
+    for name, value in (("k1", 1), ("k2", 0.5), ("k3", 0.3), ("k4", 0.7)):
+        text = text.replace(f"{name} = {value};", f"{name} = {value * scale!r};")
+    model = bngsim.Model.from_antimony_string(text)
+    assert abs(model.get_param("k4") - 0.7 * scale) < 1e-9 * scale
+    assert model._core.conservation_law_drift() == (-1, 0.0, 0.0)
+    model.set_param("c3", -5.0)
+    law, drift, size = model._core.conservation_law_drift()
+    assert law == 0 and 0.01 * size < drift <= size
 
 
 def test_the_question_is_asked_at_a_second_state():
