@@ -2560,7 +2560,6 @@ def _unit_conversion_folds(path: Path, core: Any) -> dict[str, str]:
         written = {
             str(q["name"]): str(q.get("expression", "") or "")
             for q in core.codegen_data()["parameters"]
-            if not q.get("is_const", True)
         }
     except Exception:  # pragma: no cover - defensive: the names found stay refused
         written = {}

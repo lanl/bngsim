@@ -182,6 +182,15 @@ def test_a_write_of_a_volume_is_refused(tmp_path):
         model.set_param("Vc", 4.0)
 
 
+def test_the_first_reaction_that_carries_a_volume_is_the_one_named(tmp_path):
+    text = NET.format(Ve=10, factor=0.1).replace(
+        "    3 4 1,2 ku #_reverse__R1\n",
+        "    3 4 1,2 ku #_reverse__R1\n    4 1,2 4 0.1*kb #_R3 unit_conversion=1/Ve\n",
+    )
+    with pytest.raises(bngsim.ParameterError, match=r"reaction 1: unit_conversion=1/Ve"):
+        _net(tmp_path, text).set_param("Ve", 20.0)
+
+
 def test_a_write_of_the_value_it_holds_is_no_change(tmp_path):
     """Control. A whole parameter vector goes back in."""
     model = _at(tmp_path, 10)
