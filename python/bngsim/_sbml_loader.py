@@ -8416,9 +8416,89 @@ def _build_model_from_sbml_doc(doc):
     for _cid in sorted(compartment_write_refused):
         builder.set_param_volume_write_refused(_safe_name(_cid))
 
+    # ── 10.8. Parameters folded at load (issues #313, #695, #696) ─────────
+    # A handful of things an SBML document writes over its parameters are
+    # evaluated once, when the model is built, and the number is what the model
+    # holds from then on: the size of a compartment that an initialAssignment
+    # sets (`c = 2*p`), a stoichiometry (a <stoichiometryMath>, or an
+    # initialAssignment onto a speciesReference id, or the id itself), a
+    # conversionFactor, and a parameter initialAssignment the lift above could
+    # not keep symbolic. A parameter that reaches the model only through one of
+    # them is a dangling constant: `set_param` on it took the value and moved
+    # nothing (P(1) stayed 2 where a rebuild gives 6), and its forward
+    # sensitivity was an exact 0 at every species and time. Such a parameter
+    # is named here with what it was folded into, and `Model.set_param` and the
+    # sensitivity request refuse it by that.
+    #
+    # What a fold reads is followed down: through a parameter whose own
+    # initialAssignment was folded, and through a lifted (derived) one, whose
+    # value a write to what it is written in still moves, with nothing here
+    # following.
+    _folded_into: dict[str, str] = {}
+
+    def _fold(names, what: str) -> None:
+        stack = list(names)
+        seen: set[str] = set()
+        while stack:
+            _n = stack.pop()
+            if _n in seen:
+                continue
+            seen.add(_n)
+            if _n in _lift_expr:
+                stack.extend(_lift_deps.get(_n, ()))
+            elif _n in _ia_math and _n in _param_decl_index:
+                stack.extend(_ast_name_set(_ia_math[_n]))
+            if (_n in _param_decl_index and _n not in _ar_targets) or _n in comp_param_idx:
+                _folded_into.setdefault(_safe_name(_n), what)
+
+    # (#313) the residue of the lift, which was only warned about.
+    for _pid, _m in _ia_math.items():
+        if _pid in _lift_expr or _pid in comp_param_idx or _pid not in _param_decl_index:
+            continue
+        if _pid in _ar_targets:
+            continue
+        _fold(_ast_name_set(_m), f"the initial value of {_pid!r}, which an initialAssignment sets")
+    # (#696) a compartment's size.
+    for _cid in comp_param_idx:
+        if _cid in _ia_math:
+            _fold(
+                _ast_name_set(_ia_math[_cid]),
+                f"the size of compartment {_cid!r}, which an initialAssignment sets",
+            )
+    # (#695) a stoichiometry, and a conversionFactor.
+    for _rxn_i in range(sbml_model.getNumReactions()):
+        _rxn_f = sbml_model.getReaction(_rxn_i)
+        for _getter, _n_refs in (
+            (_rxn_f.getReactant, _rxn_f.getNumReactants()),
+            (_rxn_f.getProduct, _rxn_f.getNumProducts()),
+        ):
+            for _j in range(_n_refs):
+                _sr = _getter(_j)
+                if _variable_stoich_expr(_sr) is not None:
+                    continue  # kept symbolic (§6c): a write to what it reads moves it
+                _what = f"the stoichiometry of {_sr.getSpecies()!r} in reaction {_rxn_f.getId()!r}"
+                _sm = _sr.getStoichiometryMath() if hasattr(_sr, "getStoichiometryMath") else None
+                if _sm is not None and _sm.getMath() is not None:
+                    _fold(_ast_name_set(_sm.getMath()), _what)
+                _srid = _sr.getId() if hasattr(_sr, "getId") else ""
+                if _srid and _srid in _species_ref_initial_values and _srid not in _reserved_ids:
+                    # §6b registered the id as a parameter that holds the number.
+                    _folded_into.setdefault(_safe_name(_srid), _what)
+                    if _srid in _ia_math:
+                        _fold(_ast_name_set(_ia_math[_srid]), _what)
+    if sbml_model.isSetConversionFactor():
+        _fold([sbml_model.getConversionFactor()], "the model's conversionFactor")
+    for _sid in species_ids:
+        _sp = sbml_model.getSpecies(_sid)
+        if _sp is not None and _sp.isSetConversionFactor():
+            _fold([_sp.getConversionFactor()], f"the conversionFactor of species {_sid!r}")
+
     # ── 11. Build ─────────────────────────────────────────────────────
     core = builder.build()
     model = Model(_core=core)
+    # Only what the built model has as a parameter a caller could write.
+    _built_params = set(core.param_names)
+    model._frozen_params = {n: w for n, w in _folded_into.items() if n in _built_params}
     model._ssa_issues = ssa_issues
     model._periodic_disc_max_step = periodic_disc_max_step
     # The registered discontinuity conditions, verbatim (issue #305). A root at

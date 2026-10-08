@@ -1443,6 +1443,23 @@ class Simulator:
                 f"(issue #170 stage 3). For these, rebuild at V +/- h: "
                 f"Model.from_sbml(path, compartment_sizes={{...}})."
             )
+        # Issues #313, #695, #696 — and a parameter the loader folded to a
+        # number. It reaches the model through what it was folded into and
+        # nothing else follows it, so its column was an exact 0 at every
+        # species and time: dS/dp = 0 for 0.303 with a compartment sized
+        # `c = 2*p`, dP/df = 0 for 2 with a stoichiometry of `2*f`.
+        frozen = self._model._frozen_params
+        folded = [name for name in dict.fromkeys(param_names) if name in frozen]
+        if folded:
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported for "
+                + "; ".join(f"{name!r}, read once at load for {frozen[name]}" for name in folded)
+                + ". The model holds the number each gave and no rate law or initial "
+                "condition reads the parameter, so set_param refuses to change it and its "
+                "column would be an exact 0 where the model moves with it (issues #313, "
+                "#695, #696; Model.frozen_params lists every such parameter). Difference "
+                "models loaded from the document at p +/- h."
+            )
 
     def _raise_if_event_sensitivities(self, param_names: list[str] | None = None) -> None:
         """Refuse output sensitivities only for unsupported event subclasses.
@@ -5245,7 +5262,10 @@ class Simulator:
             internal = (known & self._model._internal_param_names()) - refused_sizes
             primaries = self._model.primary_param_names
             primary_set = set(primaries)
-            target_params = [p for p in primaries if p not in refused_sizes]
+            folded = [p for p in primaries if p in self._model._frozen_params]
+            target_params = [
+                p for p in primaries if p not in refused_sizes and p not in set(folded)
+            ]
             # `primaries` is `param_names` minus (derived ∪ internal), so what is
             # left over here is exactly the attached derived parameters. Computed
             # as a residue rather than from the flag directly so that every name
@@ -5259,6 +5279,19 @@ class Simulator:
                 if p not in primary_set and p not in internal and p not in refused_sizes
             ]
 
+            if folded:
+                warnings.warn(
+                    f"compute_all_sensitivities: skipping {len(folded)} parameter(s) "
+                    f"{_abbreviate(folded)} that the model was built with as numbers: "
+                    "each was read once at load (for a compartment's size, a "
+                    "stoichiometry, a conversion factor or an initial value), nothing in "
+                    "the model reads it afterwards, and its column would be an exact 0 "
+                    "where the model moves with it (issues #313, #695, #696; "
+                    "Model.frozen_params). The returned tensor has "
+                    f"{len(target_params)} parameter columns; result.sensitivity_params "
+                    "lists them.",
+                    stacklevel=2,
+                )
             skipped = sorted(refused_sizes)
             if skipped:
                 warnings.warn(

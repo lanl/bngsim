@@ -124,6 +124,7 @@ class Model:
         "_guarded_functions",
         "_stoich_coo",
         "_volume_factors_memo",
+        "_frozen_params",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -315,6 +316,9 @@ class Model:
         self._volume_factors_memo: (
             tuple[tuple[str, ...], tuple[float, ...], list[float]] | None
         ) = None
+        # Issues #313, #695, #696: parameters the loader folded to a number,
+        # each with what it was folded into. See :attr:`frozen_params`.
+        self._frozen_params: dict[str, str] = {}
 
     # ─── Factory methods ──────────────────────────────────────────────────
 
@@ -1042,6 +1046,7 @@ class Model:
         # Keyed on the sizes it was read at, so a clone that writes one reads it
         # again (issue #743).
         m._volume_factors_memo = self._volume_factors_memo
+        m._frozen_params = dict(self._frozen_params)
         # Issue #11: carry named concentration snapshots to the clone, each a
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)
@@ -1178,10 +1183,58 @@ class Model:
         why an accidental override used to be so hard to see, and why the
         round-trip above is the one to rely on.
         """
+        self._raise_if_folded_at_load(name, float(value))
         try:
             self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
             raise ParameterError(f"Parameter '{name}' not found in model") from e
+
+    @property
+    def frozen_params(self) -> list[str]:
+        """Parameters that were folded to a number when the model was built
+        (issues #313, #695, #696).
+
+        An SBML document may write a compartment's size, a stoichiometry or a
+        conversion factor over its parameters, or set a parameter's initial
+        value by an initialAssignment that bngsim cannot keep symbolic. Each is
+        evaluated once, at load, and the model holds the number. A parameter
+        that reaches the model that way does not move it afterwards, so
+        :meth:`set_param` refuses to change one, and a forward-sensitivity
+        column for one is refused, where both used to be silent: the write took
+        the value and changed nothing, and the column was 0. Edit the document
+        and load it again to move one.
+
+        Empty for ``.net`` models and for most SBML models.
+
+        Returns
+        -------
+        list[str]
+            Parameter names, in model parameter order.
+        """
+        frozen = self._frozen_params
+        return [n for n in self.param_names if n in frozen]
+
+    def _raise_if_folded_at_load(self, name: str, value: float) -> None:
+        """Refuse a write that changes a parameter folded at load. A write of
+        the value it holds is no change, which keeps a full-vector round trip
+        working."""
+        what = self._frozen_params.get(name)
+        if what is None:
+            return
+        try:
+            unchanged = value == self._core.get_param(name)
+        except (KeyError, RuntimeError):
+            return  # not a parameter: the write below says so
+        if unchanged:
+            return
+        raise ParameterError(
+            f"Parameter {name!r} cannot be changed after the model is loaded: it was read "
+            f"once, when the model was built, for {what}, and the model holds the number "
+            "that gave. A write would take the new value and move nothing it was folded "
+            "into, which used to happen without a word (issues #313, #695, #696). Change "
+            "it in the SBML document and load the model again. Model.frozen_params lists "
+            "every such parameter."
+        )
 
     @property
     def compartment_size_params(self) -> list[str]:
@@ -1351,6 +1404,7 @@ class Model:
         # now (issue #170) and falls straight through to Phase 3.
         refused = set(self.unwritable_compartment_size_params) | self._internal_param_names()
         for name, value in converted.items():
+            self._raise_if_folded_at_load(name, value)
             if name in refused and value != self._core.get_param(name):
                 self.set_param(name, value)  # raises with the full explanation
         # Phase 3: Apply atomically (all validation passed)
