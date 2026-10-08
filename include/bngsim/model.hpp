@@ -365,9 +365,9 @@ class NetworkModel {
     // state; at a steady state the rates are rounding and say nothing) and
     // returns the first law whose total moves by more than 1e-8 of the terms
     // that should cancel: its index, that rate, and the size of the terms.
-    // `law` is -1 where every law is kept. A state whose rates are not finite
-    // is passed over. Writes the cached observable and function values, as a
-    // compute_derivs call does.
+    // `law` is -1 where every law is kept. Nothing is asked at a state where a
+    // rate is not finite. Writes the cached observable and function values, as
+    // a compute_derivs call does.
     struct ConservationLawDrift {
         int law = -1;
         double drift = 0.0;

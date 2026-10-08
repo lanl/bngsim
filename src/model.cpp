@@ -2007,11 +2007,8 @@ NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
                                  : std::fabs(here[i]) / spread + 1.3 * shift;
         }
         compute_derivs(0.0, state.data(), rate.data());
-        bool finite = true;
-        for (int i = 0; i < ns && finite; ++i)
-            finite = std::isfinite(rate[i]);
-        if (!finite)
-            continue; // no rate to ask at this state
+        // A rate that is not finite makes every total NaN, which compares
+        // false: nothing is asked at such a state.
         for (int k = 0; k < cl.n_laws; ++k) {
             const std::vector<double> &row = cl.coefficients[k];
             double total = 0.0, size = 0.0;

@@ -165,6 +165,152 @@ def test_amounts_across_compartments():
     assert _kept(model) < 1e-12
 
 
+SHAPES = {
+    # a chain through three sizes: A + 2*B + 5*C
+    "chain": (
+        "compartment c1, c2, c3; c1 = 1; c2 = 2; c3 = 5; species A in c1, B in c2, C in c3;\n"
+        "A = 1; B = 0.5; C = 0.2; k1 = 1; k2 = 0.5; k3 = 0.3; k4 = 0.7;\n"
+        "R1: A -> B; k1*A*c1\nR2: B -> A; k2*B*c2\nR3: B -> C; k3*B*c2\nR4: C -> B; k4*C*c3\n",
+        [[1.0, 2.0, 5.0]],
+    ),
+    # a law across compartments beside one inside a compartment
+    "two laws": (
+        "compartment c1, c2; c1 = 1; c2 = 2; species A in c1, B in c2, E in c2, EB in c2;\n"
+        "A = 1; B = 0.5; E = 1; EB = 0.3; k1 = 1; k2 = 0.5; k3 = 2; k4 = 1;\n"
+        "R1: A -> B; k1*A*c1\nR2: B -> A; k2*B*c2\n"
+        "R3: B + E -> EB; c2*k3*B*E\nR4: EB -> B + E; c2*k4*EB\n",
+        [[1.0, 2.0, 0.0, 2.0], [0.0, 0.0, 1.0, 1.0]],
+    ),
+    # A + B -> C, each in a compartment of its own: A + 5*C and B + 2.5*C
+    "binding": (
+        "compartment c1, c2, c3; c1 = 1; c2 = 2; c3 = 5; species A in c1, B in c2, C in c3;\n"
+        "A = 1; B = 0.5; C = 0.2; k1 = 1; k2 = 0.5;\n"
+        "R1: A + B -> C; k1*A*B\nR2: C -> A + B; k2*C\n",
+        [[1.0, 0.0, 5.0], [0.0, 1.0, 2.5]],
+    ),
+    # 2 A -> B: half an A for a B in amounts, A + 6*B in what is stored
+    "dimer": (
+        "compartment c1, c2; c1 = 1; c2 = 3; species A in c1, B in c2; A = 1; B = 0.5;\n"
+        "k1 = 1; k2 = 0.5;\nR1: 2 A -> B; k1*A*A*c1\nR2: B -> 2 A; k2*B*c2\n",
+        [[1.0, 6.0]],
+    ),
+    # a boundary species is in no law
+    "boundary": (
+        "compartment c1, c2; c1 = 1; c2 = 2; species A in c1, B in c2, $E in c2;\n"
+        "A = 1; B = 0.5; E = 1; k1 = 1; k2 = 0.5;\n"
+        "R1: A + E -> B + E; k1*A*E*c1\nR2: B -> A; k2*B*c2\n",
+        [[1.0, 2.0, 0.0]],
+    ),
+    # held as amounts, and one of each kind
+    "amounts": (
+        "compartment c1, c2; c1 = 1; c2 = 2; substanceOnly species A in c1, B in c2;\n"
+        "A = 1; B = 0.5; k1 = 1; k2 = 0.5;\nR1: A -> B; k1*A\nR2: B -> A; k2*B\n",
+        [[1.0, 2.0]],
+    ),
+    "an amount and a concentration": (
+        "compartment c1, c2; c1 = 1; c2 = 2; substanceOnly species A in c1; species B in c2;\n"
+        "A = 1; B = 0.5; k1 = 1; k2 = 0.5;\nR1: A -> B; k1*A\nR2: B -> A; k2*B*c2\n",
+        [[1.0, 2.0]],
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_the_laws_of_other_shapes(shape):
+    """Each law over what is stored, with its dependent species at 1 and no
+    other law's dependent in it, its constant the total at the initial state,
+    and the right-hand side keeping it. Every one was the plain
+    stoichiometry's, which the right-hand side changes at 13% to 67% of its
+    terms."""
+    text, want = SHAPES[shape]
+    model = bngsim.Model.from_antimony_string(text)
+    laws = model.conservation_laws
+    rows = np.asarray(laws["coefficients"], dtype=float)
+    assert laws["n_laws"] == len(want)
+    for k, dependent in enumerate(laws["dependent"]):
+        np.testing.assert_array_equal(rows[:, dependent], np.eye(len(want))[k])
+    # the laws span what is expected, whichever species each is solved for
+    np.testing.assert_allclose(
+        rows @ np.linalg.pinv(np.asarray(want)) @ np.asarray(want), rows, atol=1e-12
+    )
+    np.testing.assert_allclose(laws["constants"], rows @ model.get_state(), rtol=1e-14)
+    assert _kept(model) < 1e-12
+    assert model._core.conservation_law_drift()[0] == -1
+
+
+def test_a_species_in_a_resized_compartment_is_in_no_law():
+    """An event resizes ``c2``, and B's share of a reaction across the
+    compartments is divided by the size as it is then. No constant weight
+    makes a law of A and B, so there is none: ``A + B`` was reported, which
+    the right-hand side changes at 43% of its terms."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c1, c2; c1 = 1; c2 = 2; species A in c1, B in c2; A = 1; B = 0.5;\n"
+        "k1 = 1; k2 = 0.5;\nR1: A -> B; k1*A*c1\nR2: B -> A; k2*B*c2\n"
+        "E1: at (time > 5): c2 = 4;\n"
+    )
+    names = list(model.species_names)
+    rows = np.asarray(model.conservation_laws["coefficients"], dtype=float)
+    assert np.all(rows[:, [names.index("A"), names.index("B")]] == 0.0)
+    assert _kept(model) < 1e-12
+
+
+def test_sizes_written_equal_before_the_laws_are_first_asked_for():
+    """``c2`` is written to ``c1``'s size before anything asks for the laws,
+    which are ``A + B`` there, and then to 4: whether a model's laws follow
+    its sizes is decided by whether a write can move them, not by whether the
+    sizes differ when the laws are first asked for."""
+    model = _two()
+    model.set_param("c2", 1.0)
+    np.testing.assert_allclose(_law(model), [1.0, 1.0])
+    model.set_param("c2", 4.0)
+    np.testing.assert_allclose(_law(model), [1.0, 4.0])
+    assert _kept(model) < 1e-12
+    model.set_param("c1", 8.0)
+    np.testing.assert_allclose(_law(model), [1.0, 0.5])
+    assert _kept(model) < 1e-12
+
+
+def test_sizes_equal_at_load_cannot_be_written():
+    """Control. With both sizes equal at load the reaction is divided by one
+    size for both species, and a write to either is refused, so ``A + B``
+    there cannot go stale."""
+    model = _two(1.0)
+    with pytest.raises(ValueError, match="cannot resolve to a live volume"):
+        model.set_param("c2", 4.0)
+    np.testing.assert_allclose(_law(model), [1.0, 1.0])
+
+
+def test_a_clone_made_before_the_write_keeps_its_law():
+    """The laws are a model's own where a size can move them: a clone taken
+    at ``c2 = 2`` reports ``A + 2*B`` after the original is written to 4."""
+    model = _two()
+    clone = model.clone()
+    model.set_param("c2", 4.0)
+    np.testing.assert_allclose(_law(model), [1.0, 4.0])
+    np.testing.assert_allclose(_law(clone), [1.0, 2.0])
+
+
+def test_an_unscaled_reaction_between_volumes_keeps_the_plain_law():
+    """Control. A reaction built without the per-species divide moves each
+    species by the same rate whatever its volume factor, so its law is the
+    plain one: ``A + B`` with A at volume 1 and B at 5."""
+    from bngsim._bngsim_core import ModelBuilder
+
+    b = ModelBuilder()
+    b.add_parameter("kf", 0.3)
+    b.add_parameter("kr", 0.2)
+    a = b.add_species("A", 3.0, False, 1.0)
+    bb = b.add_species("B", 1.0, False, 5.0)
+    b.add_reaction([a], [bb], "elementary", "kf")
+    b.add_reaction([bb], [a], "elementary", "kr")
+    core = b.build()
+    laws = core.conservation_laws
+    assert laws["n_laws"] == 1
+    np.testing.assert_allclose(laws["coefficients"], [[1.0, 1.0]], rtol=1e-15)
+    rate = np.asarray(core.compute_derivs(0.0, np.array([2.0, 0.7])))
+    assert rate[0] != 0.0 and rate[0] + rate[1] == 0.0
+
+
 def test_compartments_of_one_size_are_as_they_were():
     """Control. With both at size 1 the law is ``A + B``, as the plain
     stoichiometry gives it."""
@@ -223,6 +369,19 @@ def test_a_batch_entry_is_asked_of_its_own_model():
     model.set_param("c2", -2.0)
     rows = bngsim.Simulator(model, method="ode").steady_state_batch(params=[{"c2": 4.0}])
     np.testing.assert_allclose(np.asarray(rows[0].concentrations), [0.5, 0.125], rtol=1e-8)
+
+
+def test_the_question_is_asked_at_a_second_state():
+    """A rate law that has no value at the first state asked, ``sqrt(A - 2)``
+    with A at 1.88 there, has one at the second, A at 2.33: the law is asked
+    there."""
+    model = bngsim.Model.from_antimony_string(
+        "compartment c1, c2; c1 = 1; c2 = 2; species A in c1, B in c2; A = 1; B = 0.25;\n"
+        "k1 = 1; k2 = 1;\nR1: A -> B; k1*A*c1*sqrt(A - 2)\nR2: B -> A; k2*B*c2\n"
+    )
+    assert model._core.conservation_law_drift()[0] == -1
+    model.set_param("c2", -2.0)
+    assert model._core.conservation_law_drift()[0] == 0
 
 
 def test_the_question_is_asked_off_a_steady_state():
