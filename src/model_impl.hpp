@@ -295,10 +295,6 @@ struct NetworkModel::Impl {
     // snapshot of live state, like `species`/`current_time`); reset() and the
     // manual-state mutators clear them.
     bool ic_state_dirty = false;
-    // A species was assigned by hand while the state was one a run had advanced
-    // (issue #704): part of the state is then a literal and part is carried, and
-    // a conserved total of it depends on the parameters through the run.
-    bool assigned_while_dirty = false;
     std::vector<double> pending_sens_seed;
     std::vector<std::string> pending_sens_seed_param_names;
 

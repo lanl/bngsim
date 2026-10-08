@@ -1432,11 +1432,6 @@ PYBIND11_MODULE(_bngsim_core, m) {
                       "(Simulator.parameter_scan) can put the flag back as it found it; "
                       "setting it by hand otherwise just re-arms (or defeats) the raise.")
         .def_property_readonly(
-            "assigned_while_dirty", &bngsim::NetworkModel::assigned_while_dirty,
-            "True iff a species was assigned by hand (set_concentration, set_state) while "
-            "the state was one a run had advanced, with no reset() or save_concentrations() "
-            "since (issue #704).")
-        .def_property_readonly(
             "ic_baseline_saved", &bngsim::NetworkModel::ic_baseline_saved,
             "True once save_concentrations() has redefined the IC baseline "
             "(species[].initial_conc) to a captured state, so it is no longer the initial "

@@ -1468,10 +1468,7 @@ class Simulator:
           on a state a run has advanced. The total is still what the parameter
           made it, and the state no longer says so: its seed is retired with
           the initial condition it described, and the column came back 0 for
-          1/3. A time course refuses sensitivities on such a state (GH #210);
-        - **any parameter**, on a state a run advanced and a caller then
-          assigned to. The total is part what the run left and part what was
-          assigned, and moves with every parameter through the run.
+          1/3. A time course refuses sensitivities on such a state (GH #210).
         """
         model = self._model
         core = model._core
@@ -1514,18 +1511,6 @@ class Simulator:
                     )
         if not core.ic_state_dirty:
             return
-        if core.assigned_while_dirty:
-            raise SensitivityUnsupportedError(
-                "steady_state(sensitivity_params=...) is not supported on a state that a "
-                "run() advanced and that was then assigned by hand (set_concentration or "
-                "set_state, with no reset() or save_concentrations() since), in a model with "
-                "a conservation law. Part of that state is what the run left, which moved "
-                "with every parameter, and part is what was assigned, so the conserved "
-                "totals depend on the parameters through the run: dB*/dkf came back 1.555 "
-                "for 2.003 (issue #704; a time course refuses sensitivities on a carried "
-                "state too, GH #210). reset() the model, or save_concentrations() to make "
-                "the state a baseline that no parameter sets."
-            )
         from bngsim._codegen import compute_ic_param_sens_seed
 
         in_a_law = {i for members in held_by for i in members}

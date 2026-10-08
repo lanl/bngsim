@@ -134,7 +134,6 @@ NetworkModel NetworkModel::clone() const {
     // the same "is this state advanced past the ICs?" flag and pending dx/dθ
     // seed. (Batch/parallel workers clone() then reset(), which clears both.)
     copy.impl_->ic_state_dirty = impl_->ic_state_dirty;
-    copy.impl_->assigned_while_dirty = impl_->assigned_while_dirty;
     copy.impl_->pending_sens_seed = impl_->pending_sens_seed;
     copy.impl_->pending_sens_seed_param_names = impl_->pending_sens_seed_param_names;
     // Likewise the IC baseline's own dx/dθ (GH #81): the clone copies
@@ -676,7 +675,6 @@ void NetworkModel::reset() {
         s.concentration = s.initial_conc;
     }
     impl_->current_time = 0.0;
-    impl_->assigned_while_dirty = false;
     // A fresh start for the events too (issue #693).
     clear_event_carry();
     // Back at the IC baseline. When that baseline is θ-independent (the literal
@@ -699,7 +697,6 @@ void NetworkModel::save_concentrations() {
     for (auto &s : impl_->species) {
         s.initial_conc = s.concentration;
     }
-    impl_->assigned_while_dirty = false;
     // The current state is now the baseline ICs, so a subsequent reset() returns
     // here. GH #81: the state itself did not change, so neither did its
     // θ-derivative — the new baseline INHERITS the carried dx/dθ (a BNG
@@ -725,7 +722,6 @@ void NetworkModel::set_concentration(const std::string &name, double value) {
         throw std::runtime_error("Species not found: " + name);
     }
     impl_->species[it->second].concentration = value;
-    impl_->assigned_while_dirty = impl_->assigned_while_dirty || impl_->ic_state_dirty;
     // GH #210 — setting a species to a literal value is a fresh initial-condition
     // assignment (its θ-derivative is 0), NOT a carried-over dynamics state, so
     // it does NOT mark the state dirty: a reset()+set_concentration() IC setup
@@ -759,7 +755,6 @@ void NetworkModel::set_state_from(const double *in) {
     auto &sp = impl_->species;
     for (std::size_t i = 0; i < sp.size(); ++i)
         sp[i].concentration = in[i];
-    impl_->assigned_while_dirty = impl_->assigned_while_dirty || impl_->ic_state_dirty;
     // GH #210 — external state injection (GH #102 hybrid orchestrator) is treated
     // as a fresh initial condition for sensitivity seeding (we have no dx/dθ for
     // an externally-supplied state). It invalidates any pending carry-over seed
@@ -772,8 +767,6 @@ void NetworkModel::set_state_from(const double *in) {
 // ─── Pre-equilibration / carry-over sensitivity state (GH #210) ──────────────
 
 bool NetworkModel::ic_state_dirty() const { return impl_->ic_state_dirty; }
-
-bool NetworkModel::assigned_while_dirty() const { return impl_->assigned_while_dirty; }
 
 void NetworkModel::set_ic_state_dirty(bool dirty) { impl_->ic_state_dirty = dirty; }
 

@@ -643,13 +643,6 @@ class NetworkModel {
     bool ic_state_dirty() const;
     void set_ic_state_dirty(bool dirty);
 
-    // True iff a species was assigned (set_concentration / set_state_from)
-    // while the state was dirty, with no reset() or save_concentrations()
-    // since (issue #704). Such a state is part literal and part carried, so a
-    // conserved total of it depends on the parameters through the run that
-    // advanced it, and steady-state sensitivities refuse it.
-    bool assigned_while_dirty() const;
-
     // The prior phase's final species forward-sensitivity matrix dx/dθ, stored
     // row-major as [species_idx * n_params + param_idx] (n_species × n_params),
     // captured by the simulator at the end of a parameter-sensitivity run. The

@@ -577,8 +577,6 @@ Three columns are refused, with `SensitivityUnsupportedError`:
   `run()` has advanced. The total is still what the parameter made it, and the
   state no longer says so (a time course refuses sensitivities there too).
   `reset()` first;
-- any parameter, on a state a `run()` advanced and `set_concentration` or
-  `set_state` then assigned to: its totals are part carried and part literal;
 - a compartment size, in a model with a conservation law;
 - any parameter, where a conservation law spans compartments of different size:
   the law is found as a total of concentrations where what is conserved is a

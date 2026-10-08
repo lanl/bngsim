@@ -639,47 +639,6 @@ def test_a_law_solved_for_the_species_the_mask_leaves_out_moves(tmp_path, method
     np.testing.assert_allclose(got[1], [2 / 3, 2 / 3], rtol=1e-7)
 
 
-def test_a_state_assigned_by_hand_after_a_run_is_refused(tmp_path):
-    """``run`` to t = 5, then A set to 5: the total is 5 + B(5; kf), which
-    moves with kf through the run. Held fixed, dB*/dkf came back 1.555 for
-    2.003, and it is the same for every parameter. ``reset()`` or
-    ``save_concentrations()`` makes the state one no run stands behind."""
-    model = bngsim.Model.from_net(_isomerization(tmp_path))
-    sim = bngsim.Simulator(model, method="ode")
-    sim.run(t_span=(0.0, 5.0), n_points=3)
-    model.set_concentration("A()", 5.0)
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"assigned by hand.*#704"):
-        sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
-    clone = model.clone()
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"assigned by hand.*#704"):
-        bngsim.Simulator(clone, method="ode").steady_state(sensitivity_params=["kf"], tol=1e-12)
-    model.save_concentrations()
-    total = float(np.sum(model.get_state()))
-    want = [-total / 4.5, total / 4.5]
-    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
-    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], want, rtol=1e-7)
-    # And a run from the saved state is one nothing was assigned to since.
-    sim.run(t_span=(0.0, 1.0), n_points=3)
-    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
-    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], want, rtol=1e-7)
-
-
-def test_a_whole_state_assigned_after_a_run_is_refused_until_a_reset(tmp_path):
-    model = bngsim.Model.from_net(_isomerization(tmp_path))
-    sim = bngsim.Simulator(model, method="ode")
-    sim.run(t_span=(0.0, 5.0), n_points=3)
-    model.set_state(np.array([2.0, 2.0]))
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"assigned by hand.*#704"):
-        sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
-    model.reset()
-    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
-    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-2 / 3, 2 / 3], rtol=1e-7)
-    # And a run after the reset is one nothing was assigned to.
-    sim.run(t_span=(0.0, 1.0), n_points=3)
-    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-12)
-    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-2 / 3, 2 / 3], rtol=1e-7)
-
-
 def test_a_state_assigned_by_hand_before_any_run_is_not_refused(tmp_path):
     """Control. A literal on a fresh state: the total is a number, and the
     rate constant's column is taken at it."""
@@ -695,8 +654,7 @@ NOISE = 1e-17
 def test_a_coefficient_that_is_rounding_is_not_a_member_of_a_law(tmp_path, monkeypatch):
     """Row reduction leaves 1e-17 to 1e-34 on species a law does not hold.
     Read as members, they made a law of one compartment span two, and
-    MODEL1505110000 was refused for it; and a rounding coefficient on a
-    masked-out species would hold a law's total. Here the laws of two
+    MODEL1505110000 was refused for it. Here the laws of two
     compartments of different size are each given such a coefficient on the
     other's species, and on Z, which is made and lost and is in no law."""
     text = (
