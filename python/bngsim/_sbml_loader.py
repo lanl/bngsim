@@ -8540,8 +8540,15 @@ def _build_model_from_sbml_doc(doc):
     # a state of: an initialAssignment that is not lowered to an expression of
     # parameters (it reads a reaction's rate, the time, a species under a rule)
     # leaves the state's initial value a number.
+    # A rule that is not a constant over parameters (it reads the time or a
+    # state) is a slot the engine rewrites as the run goes. An initial value
+    # written over one, `X = 2*V` under `V := v0*exp(mu*time)`, was evaluated
+    # once at load whatever expression it is kept as (issue #742).
+    _moving_rules = {_t for _t in _ar_targets if _t in _ar_math and _t not in _ic_const_ar}
     for _sym in sorted(_ia_state_targets):
-        if _sym in ia_param_expr:
+        if _sym in ia_param_expr and not (
+            _sym in _ia_math and _ast_name_set(_ia_math[_sym]) & _moving_rules
+        ):
             continue
         if (
             _sym in ia_single_param_ref
@@ -8582,10 +8589,21 @@ def _build_model_from_sbml_doc(doc):
     # A species in it that is declared in the unit it is not held in does not:
     # its value was converted by the size at load (`c = 2*p; c' = 0.1` with S
     # an amount in c: [S] 0.5 off).
+    #
+    # The same in a compartment that an assignment rule sizes from the time or
+    # a state: the size at load is the rule's value there, and what the rule
+    # reads set it (`V := v0 + g*time` with a concentration held as an amount:
+    # dX/dv0 was 0 for 0.2262, and a write to `v0` left the amount where it
+    # was, issue #742). Every name the rule reads is listed, the ones that do
+    # not move its value at the start among them (`g` here).
     for _j in range(sbml_model.getNumSpecies()):
         _sp_f = sbml_model.getSpecies(_j)
         _cid = _sp_f.getCompartment()
-        if _cid not in (rate_rule_comps | event_resize_comps) or _cid not in _ia_math:
+        if _cid in (rate_rule_comps | event_resize_comps) and _cid in _ia_math:
+            _sized_by = _ia_math[_cid]
+        elif _cid in _moving_rules:
+            _sized_by = _ar_math[_cid]
+        else:
             continue
         if _sp_f.getId() in _ia_math:
             continue  # its value is the assignment's, in the unit it is read in
@@ -8600,7 +8618,7 @@ def _build_model_from_sbml_doc(doc):
             )
         ):
             _fold(
-                _names_read(_ia_math[_cid]),
+                _names_read(_sized_by),
                 f"the initial value of species {_sp_f.getId()!r}, which was converted by the "
                 f"size of compartment {_cid!r} at load",
             )
