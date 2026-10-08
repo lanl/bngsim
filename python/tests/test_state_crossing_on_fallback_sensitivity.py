@@ -1798,6 +1798,21 @@ def test_a_comparison_in_a_derived_parameter_that_no_column_moves_runs(
     np.testing.assert_allclose(_y_columns(sim), want, rtol=1e-6, atol=1e-9)
 
 
+def test_a_comparison_that_is_not_read_and_that_no_column_moves_runs(tmp_path):
+    """Control. ``kd = one > 0.5 ? 2 : 1`` is ExprTk's conditional, which the
+    syntax tree does not read, so the law it is in is not read either. With k
+    requested nothing moves what the law reads: Y' = kb·kd = 6."""
+    model = _with_derived(tmp_path, "kb*kd", ["kd one>0.5?2:1"])
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+    assert not sim.has_analytic_sens_rhs
+    run = sim.run(t_span=(0.0, T_END), n_points=3, rtol=1e-10, atol=1e-12, timeout=60)
+    names = list(run.species_names)
+    assert np.asarray(run.species)[-1, names.index("Y()")] == pytest.approx(6.0 * T_END)
+    np.testing.assert_allclose(
+        np.asarray(run.sensitivities)[-1, names.index("Y()")], [0.0], atol=1e-9
+    )
+
+
 def test_a_constant_equality_beside_the_state_runs(tmp_path):
     """Control. ``kb*(one = 1)*Aobs/10`` with k requested: the equality reads
     nothing a column moves. Y(6) = kb·(1 − e^(−6k))/k."""
