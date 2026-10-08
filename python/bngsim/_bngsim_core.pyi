@@ -179,7 +179,7 @@ class NetworkModel:
         """
         One reaction's SSA propensity at conc (0-based rxn_index), reading the observable totals and function-bound parameters the model currently holds — the per-reaction body of the SSA propensity pass, without its refresh. Use compute_propensities for the refreshed vector. Issue #523.
         """
-    def conservation_law_drift(self) -> tuple:
+    def conservation_law_drift(self) -> tuple[int, float, float]:
         """
         (law, drift, size): the first conservation law whose total the right-hand side does not keep, asked at two states off the model's own, with the rate at which the total moves there and the size of the fluxes through the species it holds. law is -1 where every law is kept. Issue #758.
         """
