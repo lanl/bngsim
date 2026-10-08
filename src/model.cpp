@@ -123,6 +123,8 @@ NetworkModel NetworkModel::clone() const {
 
     // Deep-copy mutable per-instance data
     copy.impl_->species = impl_->species;
+    copy.impl_->volume_laws = impl_->volume_laws; // issue #758: found once, for every clone
+    copy.impl_->volume_laws_at = impl_->volume_laws_at;
     copy.impl_->observables = impl_->observables;
     copy.impl_->parameters = impl_->parameters;
     copy.impl_->functions = impl_->functions;
@@ -1983,12 +1985,12 @@ const ConservationLaws &NetworkModel::conservation_laws() const {
     volumes.reserve(impl_->species.size());
     for (const auto &sp : impl_->species)
         volumes.push_back(sp.volume_factor);
-    if (!impl_->volume_laws_found || volumes != impl_->volume_laws_at) {
-        impl_->volume_laws = conservation_laws_at(sd, impl_->species);
+    if (!impl_->volume_laws || volumes != impl_->volume_laws_at) {
+        impl_->volume_laws =
+            std::make_shared<const ConservationLaws>(conservation_laws_at(sd, impl_->species));
         impl_->volume_laws_at = std::move(volumes);
-        impl_->volume_laws_found = true;
     }
-    return impl_->volume_laws;
+    return *impl_->volume_laws;
 }
 
 NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {

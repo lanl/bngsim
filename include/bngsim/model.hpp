@@ -355,6 +355,9 @@ class NetworkModel {
     double estimated_lu_fill() const;
 
     const AnalyticalJacobianData &analytical_jacobian() const;
+    // The reference holds until a compartment size of this model is written
+    // and the laws are asked for again (issue #758: laws across compartments
+    // of different size are a model's own, for the sizes it has).
     const ConservationLaws &conservation_laws() const;
 
     // Issue #758 — whether the right-hand side keeps the totals that

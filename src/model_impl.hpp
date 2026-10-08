@@ -262,10 +262,11 @@ struct NetworkModel::Impl {
 
     // Issue #758 — this model's conservation laws where they follow its
     // compartment sizes, with the volume factors they were found at. Found
-    // again when a size has been written; a clone takes them with it.
-    mutable ConservationLaws volume_laws;
+    // again when a size has been written. A clone takes the pointer, so a
+    // batch whose entries write no size finds the laws once, on the model it
+    // clones, and not once an entry.
+    mutable std::shared_ptr<const ConservationLaws> volume_laws;
     mutable std::vector<double> volume_laws_at;
-    mutable bool volume_laws_found = false;
     std::vector<Observable> observables;
     std::vector<Parameter> parameters;
     std::vector<Function> functions;

@@ -7464,6 +7464,10 @@ class Simulator:
         eff_atol_spec = self._resolve_atol(atol, eff_rtol, where="steady_state_batch(atol=...)")
         eff_max_steps = max_steps if max_steps is not None else self._max_steps
 
+        # The laws are found here, once, and each entry's clone starts from
+        # them; an entry that writes a compartment size finds its own.
+        self._model._core.conservation_law_drift()
+
         def _run_one(i):
             clone = self._model.clone()
             clone.set_params(params[i])
