@@ -7248,9 +7248,13 @@ def _absorb_schedule_crossings(
     t_end: float,
     n_cols: int,
     own_names: AbstractSet[str] = frozenset(),
+    uncompensated_out: list[str] | None = None,
 ) -> None:
     """Add every edge of *atom*'s repeating schedule that falls in the run window
     (issue #436), or do nothing when *atom* is not one.
+
+    ``uncompensated_out`` is handed *atom* where it is a schedule whose period,
+    offset or duty does not resolve at the model's values now (issue #708).
 
     Split out of :func:`compute_switch_time_sens`'s atom loop because this is the
     one crossing shape whose *count* depends on the run window. Everything else
@@ -7274,11 +7278,17 @@ def _absorb_schedule_crossings(
     if sched is None:
         return
     terms = _periodic_schedule_terms(atom, sched, scope, own_names)
-    if terms is None or not terms.crosses:
-        # Unreadable (the gate declines the model over it, so no analytic RHS is
-        # emitted and there is nothing to compensate here), or a schedule that
-        # never turns over — `time() - P*floor(time()/P) >= 0` is true at every
-        # instant of the run.
+    if terms is None:
+        # Unreadable. The gate declines a model over it, so a build at these
+        # values has no analytic RHS and there is nothing to compensate here.
+        # A build from before a write may have one (issue #708): the caller is
+        # told.
+        if uncompensated_out is not None:
+            uncompensated_out.append(atom)
+        return
+    if not terms.crosses:
+        # A schedule that never turns over — `time() - P*floor(time()/P) >= 0`
+        # is true at every instant of the run.
         return
 
     if sched.clock in _TIME_SYMBOLS:
@@ -7350,10 +7360,12 @@ def compute_switch_time_sens(
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
 
     ``uncompensated_out``, where given, is handed each clock-threshold
-    condition this pass could not compensate at the model's values now (issue
-    #708): the rule is the one the codegen gate admits a condition by, so one
-    listed here in a run on the analytic right-hand side was admitted at other
-    values, when the code was built.
+    condition and each repeating schedule this pass could not compensate at the
+    model's values now (issue #708): the rule is the one the codegen gate
+    admits a condition by, so one listed here in a run on the analytic
+    right-hand side was admitted at other values, when the code was built. The
+    pass reads every function, and the gate the rate laws alone: a caller
+    confirms with :func:`model_uncompensated_crossing_reason`.
 
     ``ic_species`` are the 0-based species of the run's initial-condition
     columns. A counter clock's crossing moves with the clock's own sensitivity
@@ -7533,6 +7545,7 @@ def compute_switch_time_sens(
                         t_end,
                         len(names),
                         own_names,
+                        uncompensated_out,
                     )
                     continue
                 clock_sym, threshold_exprs = split

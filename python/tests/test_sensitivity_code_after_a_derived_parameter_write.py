@@ -737,6 +737,132 @@ def test_every_column_at_once_is_asked_of_the_conditions_as_they_are():
         sim.compute_all_sensitivities(params=["k", "E"], **TIGHT)
 
 
+SCHEDULE = (
+    "species A, B; A = 10; B = 0; k = 1; P = 0.4; E = 0.0625;\n"
+    "R1: A -> B; piecewise(k, time - P*floor(time/P) >= sqrt(E), 0)*A\n"
+)
+
+
+def _scheduled(e: float) -> list[float]:
+    """dA/d(k, E) at t = 1. The law is on for the last ``0.4 - sqrt(E)`` of
+    each period of 0.4, twice by t = 1 (the third window opens after it), so
+    A = 10*exp(-2*k*(0.4 - sqrt(E)))."""
+    on = 2.0 * (0.4 - np.sqrt(e))
+    a = 10.0 * np.exp(-on)
+    return [-on * a, a / np.sqrt(e)]
+
+
+def test_a_repeating_schedule_whose_duty_stops_resolving_is_followed_by_a_rebuild():
+    """The same for a schedule, which the pass reads on another path: on for
+    ``(t mod P) >= sqrt(E)``. At ``E = 0`` it is always on and dA/dE is
+    unbounded; a model loaded there is refused. On the artifact built at 0.0625
+    every one of these returned dA/dE = 0."""
+    model = _model(SCHEDULE)
+    sim = _sim(model, ["k", "E"])
+    _close(_columns(sim.run(**TIGHT)), _scheduled(0.0625))
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="#708") as refusal:
+        sim.run_batch(params=[{"E": 0.0}], **TIGHT)
+    assert "row 0" in str(refusal.value)
+    model.reset()
+    model.set_param("E", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        sim.run(**TIGHT)
+    assert not sim.has_analytic_sens_rhs
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        sim.compute_all_sensitivities(params=["k", "E"], **TIGHT)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        _sim(model, ["k", "E"]).run(**TIGHT)
+    clone = model.clone()
+    clone.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time"):
+        _sim(clone, ["k", "E"]).run(**TIGHT)
+    model.reset()
+    model.set_param("E", 0.0625)
+    model.reset()
+    _close(_columns(sim.run(**TIGHT)), _scheduled(0.0625))
+    assert sim.has_analytic_sens_rhs
+
+
+def test_a_batch_after_a_write_made_on_the_model_is_asked_what_a_run_is():
+    """The write is made on the model, as the row refusal says to make it, and
+    the batch's rows change nothing. It is refused as a ``run()`` is, for the
+    model, and not as a row that moved the parameter. It returned dA/dE = 0."""
+    model = _model(GATED)
+    sim = _sim(model, ["k", "E"])
+    model.set_param("E", 0.0)
+    model.reset()
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time") as refusal:
+        sim.run_batch(params=[{}], **TIGHT)
+    assert "row 0" not in str(refusal.value)
+    model.set_param("E", 0.25)
+    model.reset()
+    _close(_columns(sim.run_batch(params=[{}], **TIGHT)[0]), _gated(0.25))
+
+
+REPORTED_ONLY = (
+    "species A, B; A = 10; B = 0; k = 1; P = 2.5;\n"
+    "F := piecewise(1, time >= floor(P) + 0.5, 0);\nR1: A -> B; k*A\n"
+)
+
+
+def test_a_condition_no_rate_law_reads_has_no_bearing_on_the_code(monkeypatch):
+    """Control. ``F`` is reported and no reaction reads it. Its threshold,
+    ``floor(P) + 0.5``, is one the pass cannot compensate, at every run and
+    with nothing written, and the code is built by the rate laws alone: no run
+    builds anything, and a batch row and every column at once run."""
+    model = _model(REPORTED_ONLY)
+    sim = _sim(model, ["k", "P"])
+    assert sim.has_analytic_sens_rhs
+    want = [-10.0 * np.exp(-1.0), 0.0]
+    builds = _count_builds(monkeypatch)
+    for _ in range(3):
+        _close(_columns(sim.run(**TIGHT)), want)
+        model.reset()
+    rows = sim.run_batch(params=[{}, {"k": 2.0}], **TIGHT)
+    _close(_columns(rows[0]), want)
+    _close(_columns(rows[1]), [-10.0 * np.exp(-2.0), 0.0])
+    _close(_columns(sim.compute_all_sensitivities(params=["k", "P"], **TIGHT)), want)
+    assert builds == [0]
+
+
+def test_rate_laws_that_cannot_be_read_do_not_let_the_old_code_through(monkeypatch):
+    """The pass's finding is confirmed against the rate laws. Where those
+    cannot be read for a crossing, the condition is taken to be read otherwise:
+    the run is refused, and not let through on the code from before."""
+    from bngsim import _switch_sensitivity
+
+    model = _model(GATED)
+    sim = _sim(model, ["k", "E"])
+    model.set_param("E", 0.0)
+    model.reset()
+
+    def unread(*args, **kwargs):
+        raise ValueError("not read")
+
+    monkeypatch.setattr(_switch_sensitivity, "model_uncompensated_crossing_reason", unread)
+    with pytest.raises(bngsim.SensitivityUnsupportedError):
+        sim.run(**TIGHT)
+
+
+def test_a_chunk_that_finds_the_condition_itself_is_a_refusal_by_name(monkeypatch):
+    """``compute_all_sensitivities`` asks the conditions of its own model before
+    it cuts a chunk. Were that pass to miss one, the chunk's finding is a
+    ``SensitivityUnsupportedError`` that names the condition and the issue, and
+    not a failed chunk to be retried column by column."""
+    model = _model(GATED)
+    sim = _sim(model, ["k", "E"])
+    model.set_param("E", 0.0)
+    model.reset()
+    monkeypatch.setattr(
+        bngsim.Simulator, "_sync_codegen_with_the_conditions", lambda *a, **k: None
+    )
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"time\(\)>=.*\(issue #708\)"):
+        sim.compute_all_sensitivities(params=["k", "E"], **TIGHT)
+
+
 def test_a_counter_that_becomes_a_clock_runs_on_the_code_it_has(monkeypatch):
     """Control. ``-> C`` at ``one``, and a law that switches on ``C > 3.4``.
     At ``one = 2`` the species is a state the solver roots on, and at 1 it is

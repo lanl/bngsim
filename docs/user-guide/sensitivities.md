@@ -103,9 +103,18 @@ One other thing in the compiled code goes by the parameter values: whether each
 rate-law condition is one the analytic sensitivity right-hand side can be
 written across, which needs a threshold on a clock to resolve to a time. Where
 a write moves a parameter to a value at which one no longer does
-(`time >= sqrt(E)` at `E = 0`), the run's own pass over the conditions finds
-it, the code is built again for those values, and the run gets the refusal a
-model loaded there would get. Moving back restores the analytic code.
+(`time >= sqrt(E)` at `E = 0`, or the duty of a repeating schedule,
+`time - P*floor(time/P) >= sqrt(E)`), the next sensitivity run's own pass over
+the conditions finds it, the code is built again for those values, and the run
+gets the refusal a model loaded there would get. After a write back, that
+Simulator builds the analytic code again at its next run.
+`has_analytic_sens_rhs` says what the code in hand holds, so between such a
+write and the next run it still says what it said before. A Simulator first
+built at values where a condition does not resolve has no analytic code and
+stays on the difference quotient after a write that would allow it, as it
+always has: its columns are right, and a new Simulator gets the analytic code.
+Only conditions in rate laws count. One in an expression that is reported and
+that no reaction reads has no bearing on the code.
 
 A `run_batch` row is the exception. Every row runs on the code built for the
 model as the batch found it. A row whose own writes pin or re-attach a derived
@@ -113,9 +122,9 @@ parameter is refused with `SensitivityUnsupportedError` where a requested
 column is of a parameter that one is derived from; its own column, and columns
 that do not reach the model through it, are the same code either way and run. A
 row at whose values a condition's switch time no longer resolves is refused
-likewise. Make the
-write on the model with `set_param` before the batch, so that every row agrees
-with it, or run that row with `set_params` and `run()`.
+likewise. Make the write on the model with `set_param` before the batch, so
+that every row agrees with it, or run that row with `set_params` and `run()`.
+A batch after such a write on the model is asked what a `run()` after it is.
 
 ## Parameters that set *when*, not *how fast*
 

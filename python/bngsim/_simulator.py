@@ -2239,7 +2239,7 @@ class Simulator:
         ic_species = [species.index(n) for n in self._sensitivity_ic if n in species]
         if not names and not ic_species:
             return
-        from bngsim._switch_sensitivity import compute_switch_time_sens, state_switch_residual
+        from bngsim._switch_sensitivity import compute_switch_time_sens
 
         analytic = self._codegen_provides_sens_rhs()
         uncompensated: list[str] = []
@@ -2276,7 +2276,7 @@ class Simulator:
         # does not root as a state switch either, is one the gate would not
         # admit here: the code is the wrong code for these values.
         if analytic and not _rebuilt:
-            unrooted = [a for a in uncompensated if not state_switch_residual(core, a)]
+            unrooted = self._conditions_read_otherwise(core, uncompensated)
             if unrooted:
                 if core is not self._model._core:
                     # A batch row's clone runs on the batch's build.
@@ -2857,7 +2857,7 @@ class Simulator:
         #708). For an entry point whose runs are all on clones."""
         if not self._codegen_provides_sens_rhs():
             return
-        from bngsim._switch_sensitivity import compute_switch_time_sens, state_switch_residual
+        from bngsim._switch_sensitivity import compute_switch_time_sens
 
         core = self._model._core
         species = list(core.species_names)
@@ -2879,8 +2879,38 @@ class Simulator:
             )
         except Exception:  # noqa: BLE001 - the run's own pass says what it has to
             return
-        if any(not state_switch_residual(core, atom) for atom in found):
+        if self._conditions_read_otherwise(core, found):
             self._rebuild_codegen_for_the_conditions()
+
+    def _conditions_read_otherwise(self, core, found: list[str]) -> list[str]:
+        """Those of *found*, the conditions a switch-time pass could not
+        compensate, by which the analytic right-hand side is the wrong code for
+        *core* as it is (issue #708).
+
+        Not one the solver roots as a state switch. And none at all unless a
+        rate law has a crossing nothing brackets: the pass reads every
+        function, and the gate that decides what is built goes by the rate
+        laws alone (issue #414). ``F := piecewise(1, time >= floor(P) + 0.5,
+        0)``, reported and read by no reaction, is listed by the pass at every
+        run and has no bearing on the build.
+        """
+        from bngsim._switch_sensitivity import (
+            model_uncompensated_crossing_reason,
+            state_switch_residual,
+        )
+
+        unrooted = [atom for atom in found if not state_switch_residual(core, atom)]
+        if not unrooted:
+            return []
+        kept = self._branch_scan_cache
+        if kept is None:
+            kept = self._branch_scan_cache = {}
+        try:
+            if model_uncompensated_crossing_reason(core, kept=kept) is None:
+                return []
+        except Exception:  # noqa: BLE001 - not read: taken to be read otherwise
+            pass
+        return unrooted
 
     def _build_codegen_again(self) -> None:
         """Drop the artifact and build one for the model as it is."""
@@ -4429,8 +4459,13 @@ class Simulator:
         # derivatives — same policy as single-shot run().
         if self._sensitivity_params or self._sensitivity_ic:
             # Issue #708 — the rows run on the artifact this Simulator holds, so
-            # it has to be the one for the model as it is before any row is cut.
+            # it has to be the one for the model as it is before any row is cut:
+            # for what is attached, and for how the conditions are read at the
+            # model's own values. A write made on the model before the batch
+            # is then refused, or run, as a run() after it is, and not as a
+            # row that moved the parameter.
             self._rebuild_codegen_if_reattached()
+            self._sync_codegen_with_the_conditions(t_span, self._sensitivity_params)
             self._raise_if_event_sensitivities()
             # Issue #414 — same rate-law moving-crossing refusal run() applies,
             # hoisted out of the per-row loop (the crossing is a model-structural
@@ -6060,6 +6095,15 @@ class Simulator:
 
         def _recover_chunk(chunk_idx: int, exc: BaseException) -> list[Result]:
             """Retry a failed chunk one column at a time (GH #243)."""
+            if isinstance(exc, _ConditionReadOtherwise):
+                # No column runs alone either: the code is not the code for the
+                # model as it is, and the pass ahead of the chunks did not say.
+                raise SensitivityUnsupportedError(
+                    f"Forward sensitivity is not supported on this run: a rate-law condition "
+                    f"({exc}) is read otherwise at the model's values now than when the "
+                    "sensitivity code was built, and its switch time does not resolve here "
+                    "(issue #708). Build a new Simulator on the model as it is."
+                ) from None
             return self._recover_failed_chunk(
                 chunk_idx,
                 chunks,
