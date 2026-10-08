@@ -649,20 +649,29 @@ A few things an SBML document writes over its parameters are evaluated once,
 when the model is loaded, and the model holds the number from then on:
 
 - the size of a compartment that an `initialAssignment` sets, `c = 2*p`, or
-  that an assignment rule sets from parameters alone, `c := 2*p`;
+  that an assignment rule sets from parameters alone, `c := 2*p`, where the
+  compartment holds a species (a rate law that names such a compartment reads
+  the rule itself);
+- the initial value of a species declared in the unit it is not held in (an
+  amount, or a concentration with `hasOnlySubstanceUnits`) in a compartment
+  that a rate rule or an event resizes and an `initialAssignment` sizes at the
+  start, `c = 2*p; c' = 0.1`: the value was converted by the size at load;
 - a stoichiometry: an L2 `<stoichiometryMath>`, an `initialAssignment` onto a
   `speciesReference` id, and the id itself;
 - a `conversionFactor`;
 - an initial value, of a parameter or of a species, where its
   `initialAssignment` reads something that is not a parameter (a reaction rate,
-  the time, a species under a rule) and cannot be kept as an expression.
+  the time, a species under a rule, a rule that reads any of those) and cannot
+  be kept as an expression.
 
 The number came from every symbol the expression names and from whatever gave
 each of those its value at load, so what it reads is followed all the way down:
 through another `initialAssignment`, an assignment rule, a reaction id to its
 kinetic law (and the law's own parameters, `_lp_<reaction>_<id>`), a species to
 its initial value, and to the size of the species' compartment where the
-species is declared in the unit it is not read in. `c = J0`, `c = q` under
+species is declared in the unit it is not read in. `rateOf(B)` reads the
+kinetic law of every reaction that changes `B`, its rate rule, and for a
+concentration the size of its compartment. `c = J0`, `c = q` under
 `q := 3*p`, and `c = S0` under `S0 = 2*p` each make `p` such a parameter.
 
 A write to one does not move what it was folded into. `set_param` used to take
