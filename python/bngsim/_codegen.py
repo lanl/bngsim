@@ -3334,7 +3334,7 @@ def _emit_sens_rhs_body(
     comoving_clock_species: tuple[int, ...] = (),
     comoving_clock_lines: tuple[list[str], list[str]] | None = None,
     comoving_approach: tuple[tuple[int, tuple[str, ...], str, tuple[str, ...]], ...] = (),
-    counter_powers: tuple[tuple[int, ...], tuple[str, ...]] | None = None,
+    counter_powers: tuple[tuple[int, tuple[str, ...]], ...] | None = None,
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -4183,17 +4183,19 @@ def _emit_sens_rhs_body(
         comoving case at all, says so too."""
         if not counter_powers:
             return
-        species, tests = counter_powers
         _emit("")
-        _emit("/* The k-th counter clock species, where a rate law has a power of a counter with")
-        _emit("   an exponent under 1 at these parameter values; -1 past the last, and for every")
-        _emit("   k where no such power is singular now. A column that moves a counter itself has")
-        _emit("   no comoving frame under such a power. (Issue #948) */")
+        _emit("/* The k-th counter clock species that a rate law has a power of with an exponent")
+        _emit(
+            "   between 0 and 1 at these parameter values; -1 past the last. A column that moves"
+        )
+        _emit("   such a counter itself has no comoving frame under the power. (Issue #948) */")
         _emit("BNGSIM_EXPORT int bngsim_codegen_counter_power(int k, const double* p) {")
         _emit("    (void)p;")
-        _emit(f"    if (!({' || '.join(tests)})) return -1;")
-        for k, species_idx in enumerate(species):
-            _emit(f"    if (k == {k}) return {int(species_idx)};")
+        for species_idx, tests in counter_powers:
+            _emit(f"    if ({' || '.join(tests)}) {{")
+            _emit(f"        if (k == 0) return {int(species_idx)};")
+            _emit("        --k;")
+            _emit("    }")
         _emit("    return -1;")
         _emit("}")
 
@@ -8722,37 +8724,95 @@ def _counter_powers(
     reactions,
     frxn_by_idx: dict,
     scope: _FunctionalDfdpScope,
-    counter_names: set[str],
-) -> tuple[tuple[int, ...], tuple[str, ...]] | None:
-    """``(counter species, C tests)`` where a rate law has a power of a counter
-    clock that can be singular, or ``None`` (issue #948).
+    counter_species: dict[str, frozenset[int]],
+) -> tuple[tuple[int, tuple[str, ...]], ...] | None:
+    """``((counter species, C tests), ...)`` for each counter clock that a rate
+    law has a power of which can be singular, or ``None`` (issue #948).
 
     Read off the powers themselves and not off the comoving cases: a window
     written in numbers, ``(t - 4)/4``, has no parameter in its base and so no
-    case, and its power is as singular. ``counter_names`` is every name that
-    moves with a counter species: the clocks' own, and each observable that
-    sums one, whatever its weight.
+    case, and its power is as singular. ``counter_species`` is every name that
+    moves with a counter species and the species it moves with: the clocks' own
+    names, and each observable that sums one, whatever its weight. A counter is
+    listed with the tests of the powers that read it, and one that no such
+    power reads is not listed at all.
+
+    An exponent is asked at the run's values where it is written in parameters.
+    One chosen by a condition, ``if(t < t1, a_1, a_2)``, is asked branch by
+    branch: the power is singular if it is with ``a_1`` or with ``a_2``,
+    whichever the run is on. An exponent that still cannot be asked (it reads a
+    species) is taken to be singular.
 
     Not under the derivation budget, and it does not give up: a rate law that
-    cannot be read is taken to hold such a power. What the solver refuses by
-    this is a wrong number, and an export that was there or not by how busy the
-    machine was would be worse than none."""
+    cannot be read is taken to hold such a power of every counter. What the
+    solver refuses by this is a wrong number, and an export that was there or
+    not by how busy the machine was would be worse than none."""
     import sympy as sp
 
-    from bngsim._jacobian import _exprtk_to_sympy, _inline_functions, sympy_to_c
+    from bngsim._jacobian import (
+        _exprtk_to_sympy,
+        _inline_functions,
+        _value_symbol_names,
+        sympy_to_c,
+    )
 
     sw = scope.switch_scope
     if sw is None:
         return None
-    species = tuple(sorted({i for i in sw.clocks.values() if i >= 0}))
-    if not species or not counter_names:
+    every = sorted({i for i in sw.clocks.values() if i >= 0})
+    names = set(counter_species)
+    if not every or not names:
         return None
 
     def resolve_symbol(name: str) -> str | None:
         mapped = scope.c_ref.get(name)
         return mapped if mapped is not None else _MATH_CONSTANT_C.get(name)
 
-    tests: list[str] = []
+    def branches(exponent, depth: int = 0) -> list | None:
+        """*exponent* with each condition in it taken each way, or ``None``
+        where that is more than 64 expressions or four conditions deep."""
+        chosen = sorted(exponent.atoms(sp.Piecewise), key=sp.srepr)
+        if not chosen:
+            return [exponent]
+        if depth >= 4:
+            return None
+        out: list = []
+        for value, _cond in chosen[0].args:
+            below = branches(exponent.xreplace({chosen[0]: value}), depth + 1)
+            if below is None or len(out) + len(below) > 64:
+                return None
+            out.extend(below)
+        return out
+
+    def asked(expr) -> list[tuple[frozenset[int], str]]:
+        """Each singular power of *expr*: the counters its base reads, and the
+        test of its exponent, ``"1"`` where that cannot be asked."""
+        found = []
+        for node in _pow_nodes_in_values(expr, sp):
+            if not _singular_power(node, names, sp):
+                continue
+            read = frozenset().union(
+                *(counter_species[n] for n in _value_symbol_names(node.base, sp) & names)
+            )
+            # Under 1 and over 0, as a number is held to: at exactly 0 the power
+            # is the constant 1, and under 0 the law itself is unbounded where
+            # its base vanishes, which no frame is for.
+            each = branches(node.exp)
+            tests = []
+            for exponent in each or ():
+                if exponent.is_number:
+                    if exponent.is_real and bool(exponent > 0) and bool(exponent < 1):
+                        tests.append("1")
+                    continue
+                e_c = _exponent_over_parameters(exponent, resolve_symbol, sympy_to_c)
+                tests.append("1" if e_c is None else f"(({e_c}) > 0.0 && ({e_c}) < 1.0)")
+            if each is None:
+                tests = ["1"]
+            if tests:
+                found.append((read, "1" if "1" in tests else " || ".join(dict.fromkeys(tests))))
+        return found
+
+    tests: dict[int, list[str]] = {}
     seen: set[str] = set()
     for rxn_idx, rxn in enumerate(reactions):
         frxn = frxn_by_idx.get(rxn_idx) if rxn["type"] == "functional" else None
@@ -8765,18 +8825,17 @@ def _counter_powers(
         except Exception:  # noqa: BLE001 - a law that is not read
             parsed = None
         if parsed is None:
-            tests.append("1")
+            for species in every:
+                tests.setdefault(species, []).append("1")
             continue
-        if not {symbol.name for symbol in parsed.free_symbols} & counter_names:
+        if not {symbol.name for symbol in parsed.free_symbols} & names:
             continue
-        for node in _pow_nodes_in_values(parsed, sp):
-            if not _singular_power(node, counter_names, sp):
-                continue
-            # An exponent of exactly 0 is the constant 1, with nothing
-            # unbounded in it for a column that moves the counter.
-            e_c = _exponent_over_parameters(node.exp, resolve_symbol, sympy_to_c)
-            tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
-    return (species, tuple(dict.fromkeys(tests))) if tests else None
+        found = asked(parsed)
+        for read, test in found:
+            for species in sorted(read):
+                tests.setdefault(species, []).append(test)
+    listed = tuple((species, tuple(dict.fromkeys(tests[species]))) for species in sorted(tests))
+    return listed or None
 
 
 def _functional_comoving_plan(
@@ -9373,25 +9432,34 @@ def _functional_dfdp_terms(
         av_factor, av_param = _amount_volume_factors(data["species"])
         weights: dict[str, float] = {}
         unshiftable: set[str] = set()
+        # Issue #948: every name that moves with a counter species, and which.
+        counter_species: dict[str, frozenset[int]] = {
+            _alias(name): frozenset({int(idx)})
+            for name, idx in switch_scope.clocks.items()
+            if int(idx) >= 0
+        }
         for o in observables:
             name = _alias(o["name"])
             if name in clock_names:
                 continue
             weight = 0.0
+            summed: set[int] = set()
             for si, factor in o.get("entries", ()):
                 if int(si) not in clock_species:
                     continue
+                summed.add(int(si))
                 if int(si) in av_param:
                     unshiftable.add(name)
                 weight += float(factor) * av_factor.get(int(si), 1.0)
             if weight != 0.0 and name not in unshiftable:
                 weights[name] = weight
-        counter_names = set(clock_names) | set(weights) | set(unshiftable)
+            if summed and (weight != 0.0 or name in unshiftable):
+                counter_species[name] = frozenset(i for i in summed if i >= 0)
 
         def comoving(counter_powers_out: list) -> _ComovingPlan | None:
             # Issue #948: the counters' powers first, and whatever becomes of
             # the plan after them.
-            found = _counter_powers(reactions, frxn_by_idx, scope, counter_names)
+            found = _counter_powers(reactions, frxn_by_idx, scope, counter_species)
             if found is not None:
                 counter_powers_out.append(found)
             return _functional_comoving_plan(

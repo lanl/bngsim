@@ -283,25 +283,33 @@ Four cases are refused:
   under the column, so such a model keeps every column in `S`, and a column
   that moves the edge of a power that is singular was 0.4% off there, at any
   tolerance. The run is refused for every crossing where the column would have
-  switched to `V`: before it starts for the switch times it has, and at the
-  crossing for one that is found as a root. That is every crossing the
-  parameter moves at the rate it moves the edge, which a run that ends short of
-  the edge has too;
+  switched to `V`: before it starts for the switch times it has. That is every
+  crossing the parameter moves at the rate it moves the edge, which a run that
+  ends short of the edge has too. An edge that is found as a root, of the
+  state, is asked at the crossing, and a run with a sharp one may not get
+  there: it ends short of the edge in a solver error, as it did;
 - a column that moves a counter clock itself, the counter's initial value, its
   rate constant or its initial-condition axis, in a model with a rate law that
-  has a singular power of a counter (issue #948). `β` is emitted for the
+  has a singular power of that counter (issue #948). `β` is emitted for the
   parameters the power is written in, `on` and `D`, and not for the counter's
   own. It is asked of the powers themselves, so a window written in numbers,
-  `(t - 4)/4`, is refused as one written in parameters is.
+  `(t - 4)/4`, is refused as one written in parameters is, and it is asked
+  where the run starts: a seed's column has a row of the counter there, and a
+  rate constant's is known by the rate at which its row leaves 0.
 
 Whether a power is singular is asked at the run's own parameter values, for
 the last two: with `a = 3` nothing is unbounded there, every column is right in
-`S`, and neither is refused. An exponent that is not a parameter, a species or
-what an event assigns, cannot be asked and is taken to be singular. The last is
-asked of every power of a counter with an exponent under 1, whether or not the
-run reaches its zero: `sqrt(t/tau)` on a counter that starts at 0.5 is refused
-in the counter's own columns, the rate constant `compute_all_sensitivities()`
-asks for by default among them, and runs in every other.
+`S`, and neither is refused. For a counter's own columns an exponent counts
+between 0 and 1, written as a number or in parameters. One that a condition
+chooses, `if(t < t1, a_1, a_2)`, is asked branch by branch, and the power is
+singular if it is with either. One that reads a species, or what an event
+assigns, cannot be asked and is taken to be singular. The last case is asked of
+every such power of a counter in a model that has a condition on a clock,
+whether or not the run reaches the power's zero: `sqrt(t/tau)` on a counter
+that starts at 0.5, beside a step on it, is refused in the counter's own
+columns, the rate constant `compute_all_sensitivities()` asks for by default
+among them, and runs in every other. A counter that no such power reads keeps
+its own columns.
 A parameter that moves no such crossing keeps its plain column. A model with no such power
 emits the code it always did, and that includes a logistic onset
 `1/(1+exp(-k*(t-on)))`, whose base is never 0.
@@ -325,9 +333,12 @@ The comoving column is used when:
   written through a year selection.
 
 Without the analytic RHS, or at a crossing that moves at another shift, the
-plain column meets the singular forcing as before, and the
-failure says so. It names the sensitivity column and `∂f/∂on` when the RHS goes
-non-finite at the onset, or the restart where the step gave out. An exponent of
+plain column meets the singular forcing as before. Where the RHS goes
+non-finite at the onset the failure names the sensitivity column and `∂f/∂on`,
+or the restart where the step gave out. A closing power whose base is not
+linear in the time, `(1 - s^2)^(a-1)`, has no shift for the window's length at
+all, and that column comes back a few parts in a thousand off with nothing
+said. An exponent of
 2 or more (`a >= 2`) keeps the derivative finite, and leaving the onset
 parameter out of `sensitivity_params` avoids it. `BNGSIM_SENS_COMOVING=0` keeps
 every column plain, for comparison.

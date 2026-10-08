@@ -482,23 +482,45 @@ def test_a_window_written_in_numbers_runs_in_a_column_that_moves_nothing(tmp_pat
 
 @pytest.mark.parametrize(
     "shape, a, params",
-    [("closing", 1.5, ["T0"]), ("closing", 1.5, ["r"]), ("opening", 1.1, ["T0"])],
-    ids=["its-seed", "its-rate", "an-opening-edge"],
+    [
+        ("closing", 1.5, ["T0"]),
+        ("closing", 1.5, ["r"]),
+        ("opening", 1.1, ["T0"]),
+        ("closing", 1.1, ["r"]),
+        ("opening", 1.1, ["r"]),
+        ("opening", 1.5, ["r"]),
+    ],
+    ids=[
+        "its-seed",
+        "its-rate",
+        "an-opening-edge",
+        "its-rate-under-a-sharper-close",
+        "its-rate-at-an-opening-edge",
+        "its-rate-at-a-milder-opening-edge",
+    ],
 )
 def test_a_counter_edge_found_as_a_root_is_refused(tmp_path, shape, a, params):
     """The window opens where ``t - z >= on`` and closes where
     ``t - z <= on + D``, with z a species nothing makes: roots of the state,
-    with no switch time for either of the counter's crossings. The seed's
-    column is refused where the run starts, before an opening edge can stall
-    it, and the rate constant's, which has moved nothing by then, where it
-    ends: dX/dT0 was 1.1e-4 off at a tolerance of 1e-6."""
+    with no switch time for either of the counter's crossings. dX/dT0 was
+    1.1e-4 off at a tolerance of 1e-6.
+
+    Each column is refused where the run starts. The seed's has a row of the
+    counter there. The rate constant's has moved nothing yet, and is known by
+    the rate at which its row leaves 0: asked later, at a crossing or at the
+    end, it was asked after the run had ended in ``CVODE made no progress``
+    just short of an opening edge, or in ``CV_REPTD_SRHSFUNC_ERR``."""
     text = (
         COUNTER.replace("if(t>=on,", "if((t-Zobs)>=on,")
         .replace("if(t<=(on+D),", "if((t-Zobs)<=(on+D),")
         .replace("    2 Tc() T0\n", "    2 Tc() T0\n    3 Z() 0\n")
         .replace("    1 t 2\n", "    1 t 2\n    2 Zobs 3\n")
     )
-    _refused(_on_a_counter(tmp_path, shape, a, text=text), params, 948)
+    model = _on_a_counter(tmp_path, shape, a, text=text)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #948\)") as refusal:
+        sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
+    assert "(at t=0)" in str(refusal.value)
 
 
 MIXED = (
@@ -661,7 +683,7 @@ def test_a_rate_law_that_is_not_read_is_taken_to_hold_a_power(tmp_path, monkeypa
         return _codegen.generate_sens_from_model(core, functional=True, emit_term_scale=True)
 
     core = _on_a_counter(tmp_path, "closing", 3.0)._core
-    assert "if (!(((p[2] - 1.0) < 1.0 && (p[2] - 1.0) != 0.0))) return -1;" in body(source())
+    assert "if (((p[2] - 1.0) > 0.0 && (p[2] - 1.0) < 1.0)) {" in body(source())
     real = _jacobian._exprtk_to_sympy
 
     def unread(text, *args, **kwargs):
@@ -671,8 +693,78 @@ def test_a_rate_law_that_is_not_read_is_taken_to_hold_a_power(tmp_path, monkeypa
 
     monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", unread)
     listed = body(source())
-    assert "if (!(1)) return -1;" in listed
+    assert "if (1) {" in listed
     assert "if (k == 0) return 1;" in listed
+
+
+# ─── Which counter, and which exponent ──────────────────────────────────────
+
+TWO_COUNTERS = (
+    COUNTER.replace("    8 T0 1.0\n", "    8 T0 1.0\n    9 r2 1\n   10 T02 0.5\n")
+    .replace("k1*{shape},0),0)\n", "k1*{shape},0),0)+if(t2>=3,0.5,0)\n")
+    .replace("    2 Tc() T0\n", "    2 Tc() T0\n    3 Tc2() T02\n")
+    .replace("    3 0 2 r\n", "    3 0 2 r\n    4 0 3 r2\n")
+    .replace("    1 t 2\n", "    1 t 2\n    2 t2 3\n")
+)
+
+
+@pytest.mark.parametrize("params", [["T02"], ["r2"]])
+def test_a_counter_no_power_reads_keeps_its_own_columns(tmp_path, params):
+    """Control. A second counter gates a step and is under no power. Its seed
+    and its rate move the step alone: the production gains 0.5 from where
+    ``T02 + r2*t`` reaches 3, at t = 2.5, so X(t) gains
+    0.5*(1 - exp(-kdeg*(t - 2.5)))/kdeg after it, and that time moves by -1
+    with the seed and by -2.5 with the rate."""
+    model = _on_a_counter(tmp_path, "closing", 1.1, text=TWO_COUNTERS)
+    got = _run(model, params)[:, 0]
+    moved = -1.0 if params == ["T02"] else -2.5
+    want = [0.0 if t <= 2.5 else -moved * 0.5 * np.exp(-KDEG * (t - 2.5)) for t in T]
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-8)
+
+
+def test_the_counter_under_the_power_is_still_refused_beside_another(tmp_path):
+    _refused(_on_a_counter(tmp_path, "closing", 1.1, text=TWO_COUNTERS), ["T0"], 948)
+
+
+CHOSEN = COUNTER.replace("    3 a {a}\n", "    3 a1 {a}\n    9 a2 3.0\n   10 tc 100\n").replace(
+    "    1 s() (t-on)/D\n", "    1 s() (t-on)/D\n    3 a() if(t<tc,a1,a2)\n"
+)
+
+
+def test_an_exponent_a_condition_chooses_is_asked_branch_by_branch(tmp_path):
+    """``a() = if(t < tc, a1, a2)`` has no one value to ask. Each branch has:
+    with 3 and 3 nothing is singular and the counter's own column runs, where
+    it was refused as an exponent that cannot be asked; with 1.1 in either
+    branch it is refused, whichever the run is on."""
+    model = _on_a_counter(tmp_path, "closing", 3.0, text=CHOSEN)
+    np.testing.assert_allclose(
+        _run(model, ["T0"])[:, 0], _expected("closing", 3.0, "T0"), rtol=2e-5, atol=2e-7
+    )
+    model.set_param("a2", 1.1)
+    model.reset()
+    _refused(model, ["T0"], 948)
+    _refused(_on_a_counter(tmp_path, "closing", 1.1, text=CHOSEN), ["T0"], 948)
+
+
+DECAY = COUNTER.replace("k1*{shape}", "k1*(1+t/D)^(-a)")
+
+
+@pytest.mark.parametrize("a", [2.0, 0.5])
+def test_a_power_of_a_counter_under_0_is_held_to_what_a_number_is(tmp_path, a):
+    """Control. ``(1 + t/D)^(-a)`` beside the gate: a power-law decay, whose
+    base is never 0 in the run. Written with a number, ``(1 + t/D)^(-2)``, it
+    was never taken for singular; written with a parameter it was, at every
+    value under 1. Both are asked the same now, between 0 and 1, and the rate
+    constant's column runs. It is checked against the same law with the
+    exponent a number."""
+    by_parameter = _on_a_counter(tmp_path, "closing", a, text=DECAY)
+    (tmp_path / "n").mkdir()
+    by_number = _on_a_counter(
+        tmp_path / "n", "closing", a, text=DECAY.replace("^(-a)", f"^(-{a})")
+    )
+    np.testing.assert_allclose(
+        _run(by_parameter, ["r"])[:, 0], _run(by_number, ["r"])[:, 0], rtol=1e-6, atol=1e-9
+    )
 
 
 # ─── What the generator says of a case ──────────────────────────────────────

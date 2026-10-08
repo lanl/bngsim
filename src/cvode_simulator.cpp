@@ -2546,7 +2546,7 @@ struct CvodeSimulator::Impl {
     // nonzero row of a counter species under a power that is singular at the
     // run's values. `cols` holds all n_total columns.
     void comoving_refuse_a_moved_counter(const SensitivityState &sens, double *const *cols,
-                                         double t);
+                                         double *const *rates, double t);
     // S = V − c·f for an output at t: comoving columns are copied into `scratch`
     // and their pointers redirected there, so sens.yS keeps the V CVODES integrates.
     void comoving_read_plain(SensitivityState &sens, int ns, double t, const double *y,
@@ -5089,11 +5089,6 @@ void CvodeSimulator::Impl::setup_comoving_frames(SensitivityState &sens, int ns,
     if (env != nullptr && std::string(env) == "0") {
         return;
     }
-    // An event restarts the integration after assignments that change the state
-    // under the column, so a run with any keeps the plain columns it always had.
-    // A state-switch root has f on the branch the column was integrated with in its
-    // own probe pair, and a discontinuity root reads time alone, so f a little
-    // before it; both convert where they restart.
     // Issue #948: asked of the powers themselves, whether or not the model has
     // a case: a window written in numbers has none.
     if (codegen_counter_power_fn != nullptr && user_data.codegen_param_values != nullptr) {
@@ -5117,6 +5112,11 @@ void CvodeSimulator::Impl::setup_comoving_frames(SensitivityState &sens, int ns,
     if (sens.n_p <= 0) {
         return;
     }
+    // An event restarts the integration after assignments that change the state
+    // under the column, so a run with any keeps the plain columns it always had.
+    // A state-switch root has f on the branch the column was integrated with in its
+    // own probe pair, and a discontinuity root reads time alone, so f a little
+    // before it; both convert where they restart.
     if (n_event_roots > 0) {
         // A column that needed its frame is refused where it would have
         // entered it (issue #958).
@@ -5188,8 +5188,9 @@ void CvodeSimulator::Impl::comoving_refuse_without_a_frame(const SensitivityStat
             std::ostringstream msg;
             msg << "Forward sensitivity: the model has an event, and the column of parameter '"
                 << name << "' moves the crossing at t=" << std::setprecision(17) << t
-                << " at the rate at which it moves the edge of a power of the time that is "
-                   "singular at this run's values, one with an exponent under 1. Such a column "
+                << " at the rate at which it moves the edge of a power of the time, or of a "
+                   "counter, that is singular at this run's values, one with an exponent under "
+                   "1. Such a column "
                    "is integrated in a frame that moves with the edge, and an event restarts "
                    "the integration under it, so a model with one has no frames. The plain "
                    "column has a forcing that is unbounded at the edge: it comes back a few "
@@ -5227,11 +5228,14 @@ void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_frame(const Sensitivi
 // crossing, and where the run ends, by which a rate constant's column has
 // moved its counter whatever the run crossed.
 void CvodeSimulator::Impl::comoving_refuse_a_moved_counter(const SensitivityState &sens,
-                                                           double *const *cols, double t) {
+                                                           double *const *cols,
+                                                           double *const *rates, double t) {
     const ComovingFrames &frames = sens.comoving;
     for (const int counter : frames.counters_under_a_power) {
         for (int c = 0; c < sens.n_total; ++c) {
-            if (cols[c][counter] == 0.0) {
+            // Its row of the counter, and the rate at which that row leaves 0:
+            // a rate constant's column has moved nothing yet where the run starts.
+            if (cols[c][counter] == 0.0 && (rates == nullptr || rates[c][counter] == 0.0)) {
                 continue;
             }
             std::string column = "a requested column";
@@ -5258,12 +5262,13 @@ void CvodeSimulator::Impl::comoving_refuse_a_moved_counter(const SensitivityStat
             msg << "Forward sensitivity: " << column << " moves the counter species '"
                 << species[static_cast<size_t>(counter)].name
                 << "' itself (at t=" << std::setprecision(17) << t
-                << "), and a rate law of the model has a power of a counter that is singular at "
-                   "this run's values, one with an exponent under 1. The columns of the "
-                   "parameters such a power is written in are integrated in a frame that moves "
-                   "with its edge. A column that moves the counter has none: it comes back 0.2% "
-                   "to 0.4% off under a closing power, or stalls under an opening one (issue "
-                   "#948). Drop that column, or difference plain runs.";
+                << "), and a rate law of the model has a power of that counter that is singular "
+                   "at this run's values, one with an exponent between 0 and 1, or one whose "
+                   "exponent cannot be asked there. The columns of the parameters such a power "
+                   "is written in are integrated in a frame that moves with its edge. A column "
+                   "that moves the counter has none: it comes back 0.2% to 0.4% off under a "
+                   "closing power, or stalls under an opening one (issue #948). Drop that "
+                   "column, or difference plain runs.";
             throw std::runtime_error(msg.str());
         }
     }
@@ -7941,15 +7946,6 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
             d -= N_VGetArrayPointer(yS_guard[c])[sw.clock_species_idx0];
         }
         dtstar_all[static_cast<size_t>(c)] = d;
-    }
-    // Issue #948: a column that moves a counter itself has no frame under a
-    // power of a counter that is singular at the run's values.
-    if (!sens.comoving.counters_under_a_power.empty()) {
-        std::vector<double *> all_cols(static_cast<size_t>(n_sens_all));
-        for (int c = 0; c < n_sens_all; ++c) {
-            all_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(yS_guard[c]);
-        }
-        comoving_refuse_a_moved_counter(sens, all_cols.data(), t_evt);
     }
     const std::vector<double> dtstar_p(dtstar_all.begin(), dtstar_all.begin() + n_sens_p);
 
@@ -12224,7 +12220,37 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         for (int c = 0; c < sens.n_total; ++c) {
             start_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(sens.yS[c]);
         }
-        impl_->comoving_refuse_a_moved_counter(sens, start_cols.data(), times.t_start);
+        // Issue #948: a rate constant's column has a counter row of 0 here and
+        // moves the counter from its first step. The column's own right-hand
+        // side at the start says so: for a counter, whose rate reads no state,
+        // its row there is the derivative of that rate in the parameter.
+        std::vector<std::vector<double>> start_rates;
+        std::vector<double *> start_rate_cols;
+        if (!sens.comoving.counters_under_a_power.empty() && user_data.codegen_sens_fn != nullptr &&
+            user_data.codegen_plist != nullptr && user_data.codegen_param_values != nullptr) {
+            CodegenSensUserDataForSO so_data;
+            so_data.param_values = user_data.codegen_param_values;
+            so_data.plist = user_data.codegen_plist;
+            so_data.n_sens = user_data.codegen_n_sens;
+            const auto n_state = static_cast<size_t>(ns);
+            std::vector<double> f_unused(n_state, 0.0);
+            std::vector<double> scratch_a(n_state, 0.0);
+            std::vector<double> scratch_b(n_state, 0.0);
+            start_rates.assign(static_cast<size_t>(sens.n_total),
+                               std::vector<double>(n_state, 0.0));
+            for (int c = 0; c < sens.n_total; ++c) {
+                auto &row = start_rates[static_cast<size_t>(c)];
+                if (user_data.codegen_sens_fn(sens.n_total, times.t_start, y_data, f_unused.data(),
+                                              c, start_cols[static_cast<size_t>(c)], row.data(),
+                                              &so_data, scratch_a.data(), scratch_b.data()) != 0) {
+                    std::fill(row.begin(), row.end(), 0.0);
+                }
+                start_rate_cols.push_back(row.data());
+            }
+        }
+        impl_->comoving_refuse_a_moved_counter(
+            sens, start_cols.data(), start_rate_cols.empty() ? nullptr : start_rate_cols.data(),
+            times.t_start);
         impl_->comoving_refuse_ahead_without_a_frame(sens);
     }
     // Issue #545: S of the comoving columns at an output, which is not what yS holds.
@@ -14093,15 +14119,6 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         const double final_t = (check_ss && ss_reached) ? t_out[last_recorded_index] : times.t_end;
         // Issue #545: the carry-over seed is S.
         impl_->comoving_finish(sens, ns, final_t, y_data);
-        // Issue #948: a rate constant's column has moved its counter by now,
-        // whatever the run crossed on the way.
-        if (sens.n_total > 0 && !sens.comoving.counters_under_a_power.empty()) {
-            std::vector<double *> end_cols(static_cast<size_t>(sens.n_total));
-            for (int c = 0; c < sens.n_total; ++c) {
-                end_cols[static_cast<size_t>(c)] = N_VGetArrayPointer(sens.yS[c]);
-            }
-            impl_->comoving_refuse_a_moved_counter(sens, end_cols.data(), final_t);
-        }
         impl_->write_final_state_back(opts, ns, y_data, final_t, sens);
         // ...and the event state that goes with it, for a run that continues
         // this one (issue #693).
