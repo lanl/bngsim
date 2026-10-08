@@ -140,9 +140,15 @@ def test_a_rule_species_that_is_a_concentration_has_no_such_term():
 
 
 def test_the_initial_condition_axis_is_as_it_was():
-    """Control. The size does not move with an initial condition."""
-    sim = bngsim.Simulator(_decay(2.0), method="ode", sensitivity_ic=["A"])
+    """Control. The size does not move with an initial condition, in a run
+    that has the size's own column as well."""
+    sim = bngsim.Simulator(
+        _decay(2.0), method="ode", sensitivity_params=["C", "k"], sensitivity_ic=["A"]
+    )
     result = sim.run(t_span=(0.0, 4.0), n_points=5, rtol=1e-10, atol=1e-12)
     names = list(result.species_names)
+    want = 1.5 * np.exp(-0.3 * TIMES)
     got = np.asarray(result.sensitivities_ic)[:, names.index("T"), 0]
-    np.testing.assert_allclose(got, 1.5 * np.exp(-0.3 * TIMES), rtol=1e-7)
+    np.testing.assert_allclose(got, want, rtol=1e-7)
+    selected = np.asarray(result.output_sensitivities(["species:T"], axis="ic"))[:, 0, 0]
+    np.testing.assert_allclose(selected, want, rtol=1e-7)
