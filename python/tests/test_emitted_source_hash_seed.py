@@ -164,18 +164,18 @@ def test_a_tie_that_is_not_between_neighbours(monkeypatch):
     at the 1 and the 1.0. ``sorted`` leaves the three in an order that depends
     on all of the order it was given, and breaking the tie between neighbours
     only, which a first version of this did, left MODEL0847999575 with two
-    sources (36 such sums). Sorted from each of the 720 orders of its six
+    sources (36 such sums). Sorted from each of the six orders of its three
     generators, the sum has one order of its terms here and more in sympy."""
-    a, b, c, u, v, w = sp.symbols("a b c u v w")
+    a, b, c = sp.symbols("a b c")
     g = sp.Function("g")
     low, tied, high = g(1, a), g(sp.Float(1.0), c), g(1, b)
-    expr = u * low + v * tied + w * high
+    expr = 2 * low + 3 * tied + 5 * high
     k_low, k_tied, k_high = (sp.default_sort_key(x) for x in (low, tied, high))
     assert k_low < k_high
     assert not k_low < k_tied and not k_tied < k_low
     assert not k_tied < k_high and not k_high < k_tied
     seen = _from_every_set_order(expr, monkeypatch)
-    assert len(seen) == 720
+    assert len(seen) == 6
     assert len({tuple(native) for _, native in seen}) > 1
     assert len({tuple(ours) for ours, _ in seen}) == 1
 
@@ -201,3 +201,55 @@ def test_a_sum_with_no_tie_is_ordered_as_sympy_orders_it(text):
     expr = sp.sympify(text)
     assert ordered_terms(expr) == expr.as_ordered_terms()
     assert ccode(expr) == sp.ccode(expr)
+
+
+# ── A symbol picked out of a set ─────────────────────────────────────────────
+#
+# ``_rewrite_saturating_ratio`` divides ``f^m`` out of ``f^m/(rest + f)^m``, and
+# finds m from the slopes of the two exponents against a symbol of theirs. It
+# took the first symbol ``free_symbols`` handed it, a set, and for an exponent
+# with a condition in it the answer is not the same against every symbol:
+# against the one the condition holds, the ratio of the slopes is a product of
+# two conditionals that ``cancel`` leaves as it is. MODEL1006230049 was
+# rewritten under one seed and not under another, with 10 lines of 1,571
+# different.
+
+_PIVOT = """
+import sympy as sp
+from bngsim._jacobian import _whole_power_offset
+pH, t, T1, R = sp.symbols("pH_calc t T1 R")
+held = sp.Piecewise((pH, t <= 1.0), (7.3, True))
+term = -held + 3.5 + 0.35 * (0.003 - 1 / T1) / R
+num = -2 * held + 7.0 + 0.7 * (0.003 - 1 / T1) / R
+print(_whole_power_offset(num, term, sp))
+"""
+
+
+def test_a_count_is_found_whichever_symbol_a_set_hands_over_first():
+    """``num = 2·term`` for two exponents in pH_calc (under a condition on the
+    time), T1 and R. Six processes, six seeds, one answer, (2, 0). On main,
+    under CPython 3.12, seeds 0, 2, 5 and 9 take pH_calc first and answer
+    None."""
+    answers = {}
+    for seed in (0, 1, 2, 3, 5, 9):
+        done = subprocess.run(
+            [sys.executable, "-c", _PIVOT],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        answers[seed] = done.stdout.strip().splitlines()[-1]
+    assert set(answers.values()) == {"(2, 0)"}, answers
+
+
+def test_exponents_that_are_not_parallel_are_refused_against_every_symbol():
+    """Control. ``num = 2·term + R``: the slopes against T1 give 2 and the
+    leftover keeps R, so there is no count, whichever symbol is asked first."""
+    from bngsim._jacobian import _whole_power_offset
+
+    t1, r = sp.symbols("T1 R")
+    term = 3.5 + 0.35 * (0.003 - 1 / t1) / r
+    assert _whole_power_offset(2 * term + r, term, sp) is None
+    assert _whole_power_offset(2 * term + 1, term, sp) == (2, 1)
