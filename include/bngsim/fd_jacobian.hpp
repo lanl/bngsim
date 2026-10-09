@@ -97,23 +97,27 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // species enters linearly, and those are bit for bit what they were. Where the
 // two differ by more than that, the first has a truncation error that can be
 // seen, and the entry is extrapolated to a step of zero from a ladder of
-// halved steps (Ridders' scheme): the big steps keep the noise down, and the
-// extrapolation removes what they cost. For a mass-action law, a polynomial in
-// the species, three steps are exact.
+// halved steps (Richardson's scheme, by Neville's tableau): the big steps keep
+// the noise down, and the extrapolation removes what they cost. For a
+// mass-action law, a polynomial in the species, three or four steps are exact.
+// A law with a scale of its own far below the first step, a Hill term whose
+// half-saturation is, is followed down the ladder until two estimates agree.
+// What cannot be seen is a term too small to move the first two quotients
+// apart: that entry is what it was.
 
 // How many times its own step (√eps of itself) a species has to be stepped by
 // before its column is looked at again. Below this the floored step's
 // truncation error is under 64·√eps/2, 5e-7 of the entry.
 constexpr double kFdRefineRatio = 64.0;
-// Two quotients a row's rounding cannot tell apart are one: each is good to
-// kFdNoise·eps of the sum of the row's terms over the step, or to this part of
-// itself, whichever is more.
-constexpr double kFdNoise = 8.0;
+// Two estimates a row's rounding cannot tell apart are one. A quotient is good
+// to 2·eps of the sum of the row's terms over its step, an extrapolated one to
+// about eight times that, and two of them differ by twice as much; or they
+// agree to kFdRefineRtol of themselves.
+constexpr double kFdNoise = 32.0;
 constexpr double kFdRefineRtol = 1e-6;
-// The ladder: at most this many halvings, a factor of 1e-6 in the step.
-constexpr int kFdMaxHalvings = 20;
-// A row is left where a new estimate's error is this many times its best one.
-constexpr double kFdRiddersSafe = 2.0;
+// The ladder: at most this many halvings, a factor of 1e-12 in the step, and
+// not below the species' own step.
+constexpr int kFdMaxHalvings = 40;
 
 // Column-major D (n_out×ns, D[j*n_out + i] = ∂g_i/∂y_j) of any `eval(y, g)`
 // that fills n_out values from a state of ns species. One `eval` per column
@@ -163,9 +167,9 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     const double eps = std::numeric_limits<double>::epsilon();
     const auto width = static_cast<std::size_t>(kFdMaxHalvings) + 1;
     std::vector<double> steps(width);
-    std::vector<std::size_t> open;      // rows whose entry is still being asked
-    std::vector<double> table, next;    // per open row: the last tableau row
-    std::vector<double> best, best_err; // per open row
+    std::vector<std::size_t> open; // rows whose entry is still being asked
+    std::vector<double> table;     // per open row: the last row of its tableau
+    std::vector<double> cur(width);
     for (int j = 0; j < ns; ++j) {
         const auto uj = static_cast<std::size_t>(j);
         const double yj = std::abs(y[j]);
@@ -180,7 +184,8 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
             const auto uk = static_cast<std::size_t>(k);
             const double want = steps[uk - 1] / 2.0;
             // Not below the species' own step: there the quotient is the
-            // plain relative one, and its rounding is what the floor was for.
+            // plain relative one, which is where an entry that has not
+            // settled is left.
             if (k > 1 && want < kFdEps * yj) {
                 break;
             }
@@ -195,20 +200,16 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                 for (std::size_t i = 0; i < um; ++i) {
                     const double q0 = col[i];
                     const double q1 = (g1[i] - g0[i]) / h;
-                    const double apart = std::abs(q1 - q0);
-                    if (!(apart >
-                          kFdNoise * eps * row_terms[i] / h + kFdRefineRtol * std::abs(q0))) {
-                        continue; // one quotient to rounding: the entry stays
+                    if (std::abs(q1 - q0) >
+                        kFdNoise * eps * row_terms[i] / h + kFdRefineRtol * std::abs(q0)) {
+                        open.push_back(i);
                     }
-                    open.push_back(i);
+                    // Otherwise one quotient to rounding, and the entry stays.
                 }
                 if (open.empty()) {
                     break;
                 }
                 table.assign(open.size() * width, 0.0);
-                next.assign(open.size() * width, 0.0);
-                best.assign(open.size(), 0.0);
-                best_err.assign(open.size(), std::numeric_limits<double>::infinity());
                 for (std::size_t r = 0; r < open.size(); ++r) {
                     table[r * width] = col[open[r]];
                 }
@@ -216,36 +217,33 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
             bool any_open = false;
             for (std::size_t r = 0; r < open.size(); ++r) {
                 if (open[r] == um) {
-                    continue; // closed
+                    continue; // settled
                 }
                 const std::size_t i = open[r];
                 double *prev = table.data() + r * width;
-                double *cur = next.data() + r * width;
                 cur[0] = (g1[i] - g0[i]) / h;
-                bool worse = false;
                 for (std::size_t m = 1; m <= uk; ++m) {
                     // The polynomial through the quotients at steps k-m..k, at 0.
                     const double far_step = steps[uk - m];
                     cur[m] = (cur[m - 1] * far_step - prev[m - 1] * h) / (far_step - h);
-                    const double err =
-                        std::max(std::abs(cur[m] - cur[m - 1]), std::abs(cur[m] - prev[m - 1]));
-                    if (err <= best_err[r]) {
-                        best_err[r] = err;
-                        best[r] = cur[m];
-                    }
                 }
-                worse = std::abs(cur[uk] - prev[uk - 1]) >= kFdRiddersSafe * best_err[r];
-                const bool settled = best_err[r] <= kFdNoise * eps * row_terms[i] / h +
-                                                        kFdRefineRtol * std::abs(best[r]);
-                if (std::isfinite(best[r])) {
-                    col[i] = best[r];
+                // Settled where one more step leaves the estimate where it
+                // was. Until then the entry is the plain quotient at the
+                // smallest step taken, which is what it is left as where the
+                // ladder ends first: a law that is not smooth at that scale.
+                const bool settled = k > 1 && std::abs(cur[uk] - prev[uk - 1]) <=
+                                                  kFdNoise * eps * row_terms[i] / h +
+                                                      kFdRefineRtol * std::abs(cur[uk]);
+                const double entry = settled ? cur[uk] : cur[0];
+                if (std::isfinite(entry)) {
+                    col[i] = entry;
                 }
-                if (settled || (worse && k > 1)) {
+                if (settled) {
                     open[r] = um;
                 } else {
                     any_open = true;
+                    std::memcpy(prev, cur.data(), (uk + 1) * sizeof(double));
                 }
-                std::memcpy(prev, cur, (uk + 1) * sizeof(double));
             }
             if (!any_open) {
                 break;
