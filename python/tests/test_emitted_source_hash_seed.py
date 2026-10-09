@@ -615,3 +615,26 @@ def test_a_product_with_a_sign_is_printed_as_it_was(text, c, exprtk):
     expr = sp.sympify(text)
     assert sympy_to_c(expr, lambda name: name) == c
     assert sympy_to_exprtk(expr) == exprtk
+
+
+def test_a_product_that_was_never_evaluated_is_printed_in_the_order_it_was_built():
+    """Control. sympy prints a product built with ``evaluate=False``, one with
+    a number that is not its first argument, as its ``args`` have it, and the
+    emitters build such products (a rate times ``1.0`` times a power). They
+    are printed as they were: sorting their factors as the others' are
+    changed the source of 71 corpus models of 203."""
+    from bngsim._jacobian import sympy_to_c, sympy_to_exprtk
+
+    p, q, x, y = sp.symbols("p q x y")
+    built = [
+        (
+            sp.Mul(p, q, sp.Integer(1), x**y, evaluate=False),
+            "p*q*1.0*pow(x, y)",
+            "p*q*1*((x)^(y))",
+        ),
+        (sp.Mul(sp.S.One, y, x, evaluate=False), "1.0*y*x", "1*y*x"),
+        (sp.Mul(y, 2, x, evaluate=False), "y*2.0*x", "y*2*x"),
+    ]
+    for expr, c, exprtk in built:
+        assert sympy_to_c(expr, lambda name: name) == c
+        assert sympy_to_exprtk(expr) == exprtk

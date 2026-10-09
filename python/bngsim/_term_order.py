@@ -294,6 +294,21 @@ def _ordered_terms(expr, order) -> list:
     return [term for term, _ in sorted(terms, key=key, reverse=reverse)]
 
 
+def _never_evaluated(expr) -> bool:
+    """sympy's test, in ``StrPrinter._print_Mul``, for a product that was
+    built unevaluated, ``p*q*1*x**n``: a number that is not its first
+    argument, or a first argument of 1. It prints such a product as its
+    ``args`` have it, which is the order it was built in."""
+    from sympy import S
+    from sympy.core.numbers import Number
+
+    args = expr.args
+    return args[0] is S.One or any(
+        isinstance(a, Number) or (a.is_Pow and all(ai.is_Integer for ai in a.args))
+        for a in args[1:]
+    )
+
+
 class SeedFreeTermOrder:
     """Mix into a sympy printer, ahead of it, to print each sum's terms, each
     product's factors and the arguments of ``Min``, ``Max``, ``And`` and
@@ -316,7 +331,13 @@ class SeedFreeTermOrder:
 
     def _print_Mul(self, expr):
         from sympy import Mul
+        from sympy.printing.str import StrPrinter
 
+        theirs = getattr(super()._print_Mul, "__func__", None)  # type: ignore[misc]
+        if theirs is StrPrinter._print_Mul and _never_evaluated(expr):
+            # sympy prints such a product as its args have it, in no order of
+            # its own, and so it is printed here.
+            return super()._print_Mul(expr)  # type: ignore[misc]
         factors = Mul._from_args(ordered_factors(expr, whole_coefficient=True))
         if not factors.is_Mul:
             return self._print(factors)  # type: ignore[attr-defined]
