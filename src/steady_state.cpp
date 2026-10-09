@@ -4493,20 +4493,31 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
             // its roundoff floor (issue #123). It is the function-side analogue
             // of the Jacobian row sum compute_ss_sensitivity uses, and it comes
             // free: the partials are already in hand.
-            const double y_scale = state_probe_scale(y_ss, ns, result.excluded_species);
+            //
+            // By the state Jacobian's own sweep (bngsim/fd_jacobian.hpp), so a
+            // function that is not linear in a species far below the state's
+            // scale is not read as a secant across many times that species
+            // (issue #1002).
+            std::vector<double> func_partials(static_cast<size_t>(n_func) *
+                                              static_cast<size_t>(ns));
+            fd_state_partials(
+                [&](const double *yy, double *out) {
+                    model.update_observables(yy);
+                    model.evaluate_functions(0.0);
+                    const std::vector<double> &cache = model.function_value_cache();
+                    std::copy(cache.begin(), cache.begin() + n_func, out);
+                },
+                y_ss, ns, n_func, result.excluded_species, func_partials.data());
             std::vector<double> func_term_scale(static_cast<size_t>(n_func), 0.0);
             for (int i = 0; i < ns; ++i) {
-                std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
-                const double h = fd_probe(y_ss[i], state_fd_step(y_ss[i], y_scale), &y_pert[i]);
-                model.update_observables(y_pert.data());
-                model.evaluate_functions(0.0);
-                f1 = model.function_value_cache();
                 const double *dxi = result.sensitivity.data() + static_cast<size_t>(i) * np;
+                const double *partials =
+                    func_partials.data() + static_cast<size_t>(i) * static_cast<size_t>(n_func);
                 for (int m = 0; m < n_func; ++m) {
                     if (!need_fd[m]) {
                         continue;
                     }
-                    const double dfm_dxi = (f1[m] - f0[m]) / h;
+                    const double dfm_dxi = partials[m];
                     func_term_scale[static_cast<size_t>(m)] += std::abs(dfm_dxi * y_ss[i]);
                     double *out = result.function_sensitivity.data() + static_cast<size_t>(m) * np;
                     for (int p = 0; p < np; ++p) {
