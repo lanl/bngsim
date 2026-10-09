@@ -328,9 +328,10 @@ def test_a_state_short_of_the_steady_state_is_stepped_to_it(tmp_path):
 
 
 def test_the_same_solved_to_its_steady_state_is_as_the_solver_left_it(tmp_path):
-    """Control. With ``tol=1e-14`` the solver's own state is on the root, no
-    column moves, and no step is taken: A* = B* = 5e-7 and dA*/dkf =
-    -A0·kr/(kf + kr)² = -5e-5, dA*/dkr = +5e-5."""
+    """With ``tol=1e-14`` the solver's own state is on the root, no column
+    moves, and no step is taken: the state is the one ``steady_state()``
+    returns, to the last bit. A* = B* = 5e-7 and dA*/dkf = -A0·kr/(kf + kr)²
+    = -5e-5, dA*/dkr = +5e-5."""
     sim = bngsim.Simulator(_net(tmp_path, SMALL), method="ode")
     out = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-14)
     np.testing.assert_allclose(np.asarray(out.concentrations), [5e-7, 5e-7], rtol=1e-4)
@@ -1232,8 +1233,9 @@ def test_a_run_that_does_not_get_to_max_time_is_not_known_to_stay(tmp_path):
 
 
 def test_a_focus_that_dies_away_slowly_is_returned(tmp_path):
-    """Control. With B = 1.9 the eigenvalues are -0.05 ± i: the run taken on
-    winds in for some 1,100 steps and then gets to ``max_time``."""
+    """With B = 1.9 the eigenvalues are -0.05 ± i: the run taken on winds in
+    for some 1,100 steps and then gets to ``max_time``, and the columns are
+    returned, as they were."""
     sim = bngsim.Simulator(_net(tmp_path, BRUSSELATOR.format(B="1.9")), method="ode")
     out = sim.steady_state(sensitivity_params=["A", "B"])
     np.testing.assert_allclose(
@@ -1295,8 +1297,9 @@ def test_a_root_that_was_stepped_to_is_where_a_run_ends(tmp_path):
 
 
 def test_the_same_started_on_the_side_it_stays_on_is_returned(tmp_path):
-    """Control. Started at 0.99 the column of s is 0.4% from its value at the
-    root, no step is taken, and the run ends at 1."""
+    """Started at 0.99 the column of s is 0.4% from its value at the root, no
+    step is taken, and the run ends at 1: the column is returned, as it
+    was."""
     text = BETWEEN_TWO_ROOTS.replace("0.26", "0.99")
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     out = sim.steady_state(sensitivity_params=["s"], max_time=1e9)
@@ -1320,9 +1323,9 @@ end reactions
 
 
 def test_a_species_that_is_not_there_is_not_moved(tmp_path):
-    """Control. X' = e·X with X = 0, beside Y' = -kd·Y. Any X grows, and there
-    is none: a run from the state the model starts in stays, whatever e is,
-    and the columns are zeros. The run that is taken on moves each
+    """X' = e·X with X = 0, beside Y' = -kd·Y. Any X grows, and there is
+    none: a run from the state the model starts in stays, whatever e is, and
+    the columns are zeros, as they were. The run that is taken on moves each
     concentration by a millionth of itself, which leaves a species that is
     absent absent: a state is not asked whether it would last an invasion
     nothing in the request brings."""
@@ -1660,8 +1663,8 @@ def test_biomd599_is_refused_on_its_condition_number():
 
 
 def test_biomd1001_is_taken_on_with_a_differenced_jacobian():
-    """Control. The run taken on from the returned state stops the integrator
-    on the closed-form Jacobian, started again or not, and reaches
+    """The run taken on from the returned state stops the integrator on the
+    closed-form Jacobian, started again or not, and reaches
     ``max_time`` on a differenced one, as the solve itself does where its
     integrator gives up (issue #127). Ten of its species have run out, at
     1e-8 to 1e-21 beside others at 1,000, and nothing that is left makes
