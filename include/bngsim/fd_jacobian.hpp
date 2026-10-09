@@ -116,8 +116,11 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // a quotient of it at a step of 1e-8 is all rounding (BIOMD0000000884, where a
 // bound from the entries called that rounding a curvature). So the row is
 // evaluated at the state with every species moved by a few parts in 1e14,
-// three times, and what the entries do not account for of the change is its
-// rounding.
+// three times and not all the same way, and what the entries do not account
+// for of the change is its rounding. A step that leaves a row's value where it
+// was, to the last bit, is under that row's rounding whatever was measured,
+// and ends its ladder: a run of quotients that are exactly 0 extrapolates to a
+// 0 that every later estimate agrees with.
 
 // How many times its own step (√eps of itself) a species has to be stepped by
 // before its column is looked at again. Below this the floored step's
@@ -127,8 +130,11 @@ constexpr double kFdRefineRatio = 64.0;
 // row's rounding over the step, and kFdRefineRtol of themselves.
 constexpr double kFdNoise = 32.0;
 constexpr double kFdRefineRtol = 1e-6;
-// The relative moves of the whole state a row's rounding is sampled at.
-constexpr double kFdNoiseProbes[] = {0x1p-44, -0x1p-44, 0x1.8p-43};
+// The relative move of the whole state a row's rounding is sampled at, three
+// times: species by species up and down in turn, the other way round, and all
+// up. (All one way alone scales a ratio of two sums by nothing at all.)
+constexpr double kFdNoiseMove = 0x1p-44;
+constexpr int kFdNoiseProbes = 3;
 // The ladder: at most this many halvings, a factor of 1e-12 in the step, and
 // not below the species' own step.
 constexpr int kFdMaxHalvings = 40;
@@ -166,7 +172,7 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     // species at the least, and what three small moves of the whole state
     // change in it beyond what the entries say they should.
     const double eps = std::numeric_limits<double>::epsilon();
-    std::vector<double> rounding(um), along(um, 0.0);
+    std::vector<double> rounding(um), along(um);
     for (std::size_t i = 0; i < um; ++i) {
         rounding[i] = std::abs(g0[i]);
     }
@@ -175,7 +181,6 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
         for (std::size_t i = 0; i < um; ++i) {
             const double term = col[i] * y[j];
             if (std::isfinite(term)) {
-                along[i] += term;
                 rounding[i] += std::abs(term);
             }
         }
@@ -183,13 +188,24 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     for (std::size_t i = 0; i < um; ++i) {
         rounding[i] *= eps;
     }
-    for (const double move : kFdNoiseProbes) {
-        for (std::size_t k = 0; k < un; ++k) {
-            y_pert[k] = y[k] * (1.0 + move);
+    for (int probe = 0; probe < kFdNoiseProbes; ++probe) {
+        std::fill(along.begin(), along.end(), 0.0);
+        for (int j = 0; j < ns; ++j) {
+            const auto uj = static_cast<std::size_t>(j);
+            const double move = probe == 2 || (j + probe) % 2 == 0 ? kFdNoiseMove : -kFdNoiseMove;
+            y_pert[uj] = y[j] * (1.0 + move);
+            const double moved = y_pert[uj] - y[j];
+            const double *col = D + uj * um;
+            for (std::size_t i = 0; i < um; ++i) {
+                const double term = col[i] * moved;
+                if (std::isfinite(term)) {
+                    along[i] += term;
+                }
+            }
         }
         eval(y_pert.data(), g1.data());
         for (std::size_t i = 0; i < um; ++i) {
-            const double beyond = std::abs(g1[i] - g0[i] - move * along[i]);
+            const double beyond = std::abs(g1[i] - g0[i] - along[i]);
             if (beyond > rounding[i]) {
                 rounding[i] = beyond;
             }
@@ -250,6 +266,10 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                     continue; // settled, or given up
                 }
                 const std::size_t i = open[r];
+                if (g1[i] == g0[i]) {
+                    open[r] = um; // the step does not move the row at all
+                    continue;
+                }
                 double *prev = table.data() + r * width;
                 cur[0] = (g1[i] - g0[i]) / h;
                 for (std::size_t m = 1; m <= uk; ++m) {

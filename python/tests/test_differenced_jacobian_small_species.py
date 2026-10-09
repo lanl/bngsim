@@ -239,41 +239,52 @@ def test_a_law_that_is_not_smooth_at_the_species_is_what_it_was(tmp_path, x):
     assert _fd(model, y)[1, 0] == _first_quotient(model, y, 0)[1]
 
 
-def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
-    """Control. ``L·(r - phi)`` with ``phi = (r·L + g·U)/(L + U)``, the
-    logistic share of BIOMD0000000884: with U next to nothing, terms of 1e4
-    cancel in the row's value and in its entry for L, so neither says how
-    large the row's rounding is. A quotient of it at a small step is all
-    rounding (0.0056 at a step of 1e-2, 0.016 at 1e-8, 0 below 1e-9). The
-    rounding is measured, and the entry of U stays the first quotient."""
-    text = """begin parameters
-    1 r   0.01
-    2 g   0.0156
+SHARE = """begin parameters
+    1 r      0.04
+    2 delta  0.01
+    3 g      0.05
+    4 alpha  2e-7
+    5 p      0.3
 end parameters
 begin functions
-    1 phi() (r*Lo+g*Uo)/(Lo+Uo)
-    2 grow() r-phi()
+    1 phi() ((r-delta)*Lo+g*Uo-alpha*Uo*Vo*(1-p))/(Lo+Uo)
+    2 made() r*Lo+p*alpha*Uo*Vo
+    3 lost() delta+phi()
 end functions
 begin species
     1 L() 1e6
-    2 U() 4e-9
+    2 U() 4.3e-9
+    3 V() 1.57e5
 end species
 begin reactions
-    1 1 1,1 grow
+    1 0 1 made
+    2 1 0 lost
 end reactions
 begin groups
     1 Lo 1
     2 Uo 2
+    3 Vo 3
 end groups
 """
+
+
+def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
+    """Control. The lysogens of BIOMD0000000884: L is made at
+    ``r·L + p·alpha·U·V`` and lost at ``(delta + phi)·L`` with
+    ``phi = ((r - delta)·L + g·U - alpha·U·V·(1 - p))/(L + U)``. With U next
+    to nothing, terms of 4e4 cancel in the row's value and in its entry for
+    L, so neither says how large the row's rounding is: 1e-11. The entry of U
+    is ``alpha·V - g + r - delta``, and a quotient of the row at a small step
+    is all rounding, then exactly 0. With the rounding taken from the row's
+    value and entries, the ladder met those zeros and settled on one. It is
+    measured, and the entry stays the first quotient."""
     path = tmp_path / "share.net"
-    path.write_text(text)
+    path.write_text(SHARE)
     model = bngsim.Model.from_net(path)
-    y = np.array([1e6, 4e-9])
+    y = np.array([1e6, 4.3e-9, 1.57e5])
     jac = _fd(model, y)
     assert jac[0, 1] == _first_quotient(model, y, 1)[0]
-    # ∂/∂U of L·(r - (r·L + g·U)/(L + U)) at U << L is r - g.
-    assert jac[0, 1] == pytest.approx(0.01 - 0.0156, rel=1e-4)
+    assert jac[0, 1] == pytest.approx(2e-7 * 1.57e5 - 0.05 + 0.04 - 0.01, rel=1e-4)
 
 
 def test_the_column_of_a_species_at_the_states_scale_is_what_it_was(tmp_path):
