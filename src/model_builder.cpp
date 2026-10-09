@@ -769,6 +769,63 @@ static std::vector<std::pair<int, double>> fold_multiplicity(const std::vector<i
     return out;
 }
 
+// The two folded sides of a reaction by net change: `loss` gets each reactant
+// species with what a firing takes of it beyond what it gives back, `gain` each
+// product species with what it gives beyond what it took, each in the order
+// its side names them. A species the two sides name equally often is in `loss`
+// with a multiplicity of zero: the right-hand side takes `0 * rate` off its
+// derivative, which is nothing for a finite rate (where taking the rate off
+// and putting it back left the rounding of the rate there) and NaN for a rate
+// that is not finite, which has to stay loud.
+static void fold_net(std::vector<std::pair<int, double>> reactants,
+                     std::vector<std::pair<int, double>> products,
+                     std::vector<std::pair<int, double>> &loss,
+                     std::vector<std::pair<int, double>> &gain) {
+    // A side almost always names one to three species (see fold_multiplicity),
+    // so a species of one is looked for on the other by a linear scan; a map
+    // takes over where a side is wide. (`static`: MSVC will not read a local
+    // constant in a lambda that captures nothing, C3493.)
+    static constexpr size_t kScanMax = 16;
+    const auto count_on = [](const std::vector<std::pair<int, double>> &side,
+                             const std::unordered_map<int, double> &wide, int si) {
+        if (side.size() > kScanMax) {
+            auto it = wide.find(si);
+            return it == wide.end() ? 0.0 : it->second;
+        }
+        for (const auto &[sj, m] : side)
+            if (sj == si)
+                return m;
+        return 0.0;
+    };
+    std::unordered_map<int, double> wide_reactants, wide_products;
+    if (reactants.size() > kScanMax)
+        wide_reactants.insert(reactants.begin(), reactants.end());
+    if (products.size() > kScanMax)
+        wide_products.insert(products.begin(), products.end());
+    bool shared = false;
+    for (const auto &[si, m] : reactants)
+        shared = shared || count_on(products, wide_products, si) != 0.0;
+    if (!shared) {
+        // No species on both sides, which is nearly every reaction: the two
+        // sides as they are.
+        loss = std::move(reactants);
+        gain = std::move(products);
+        return;
+    }
+    loss.clear();
+    gain.clear();
+    for (const auto &[si, m] : reactants) {
+        const double net = m - count_on(products, wide_products, si);
+        if (net >= 0.0)
+            loss.emplace_back(si, net);
+    }
+    for (const auto &[si, m] : products) {
+        const double net = m - count_on(reactants, wide_reactants, si);
+        if (net > 0.0)
+            gain.emplace_back(si, net);
+    }
+}
+
 // Build stoichiometry from reactions (same logic as net_file_loader.cpp)
 std::vector<StoichEntry> build_stoich(const std::vector<Reaction> &reactions) {
     std::vector<StoichEntry> entries;
@@ -2508,8 +2565,8 @@ NetworkModel ModelBuilder::build() {
     // ── 6. Build stoichiometry ───────────────────────────────────────────
     sd->stoichiometry = build_stoich(sd->reactions);
     for (auto &rxn : sd->reactions) {
-        rxn.reactant_multiplicity = fold_multiplicity(rxn.reactant_indices);
-        rxn.product_multiplicity = fold_multiplicity(rxn.product_indices);
+        fold_net(fold_multiplicity(rxn.reactant_indices), fold_multiplicity(rxn.product_indices),
+                 rxn.net_loss, rxn.net_gain);
     }
 
     // ── 7. Jacobian sparsity + analytical Jacobian ───────────────────────

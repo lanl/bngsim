@@ -37,7 +37,7 @@ from bngsim._codegen import (
     _RATEOF_PREFIX,
     CodegenDeclined,
     _find_close_paren_strict,
-    _multiplicity,
+    _net_multiplicity,
     _normalize_exprtk_operators,
     _split_top_level_commas,
     _topological_function_order,
@@ -888,13 +888,16 @@ def generate_jax_rhs(model: Any) -> Any:
                 live = kps > 0.0
                 rate = jnp.where(live, sf * kcat * s_free * e / jnp.where(live, kps, 1.0), 0.0)
 
-            # One update per species of multiplicity * rate, as the C++ right-hand
-            # side and the C emitter do (issue #801): a coefficient is one index
-            # entry per unit, and a million entries is a million traced ops.
-            for ri, m in _multiplicity(reactants):
-                dydt = dydt.at[ri].add(-rate if m == 1 else -(m * rate))
-            for pi, m in _multiplicity(products):
-                dydt = dydt.at[pi].add(rate if m == 1 else m * rate)
+            # One update per species of its net change times the rate, as the
+            # C++ right-hand side and the C emitter do: a coefficient is one
+            # index entry per unit, and a million entries is a million traced ops
+            # (issue #801); and a species on both sides of the reaction in equal
+            # numbers has zero times the rate in its derivative: nothing, unless
+            # the rate is not finite.
+            for si, c in _net_multiplicity(reactants, products):
+                m = abs(c)
+                term = rate if m == 1 else m * rate
+                dydt = dydt.at[si].add(term if c > 0 else -term)
 
         for si in fixed_sp:
             dydt = dydt.at[si].set(0.0)

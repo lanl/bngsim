@@ -278,7 +278,13 @@ _compile_counter = itertools.count()
 # refuses by them where a column that needs its frame cannot have it (a model
 # with an event, a column that moves the counter itself). A cached v36 .so says
 # neither, and such a run would keep its plain column. Invalidate v36.
-_CODEGEN_VERSION = "37"
+# v38: the right-hand side adds each species' net change times the rate, once
+# (zero times the rate for a net of zero), where it took the reactants off and
+# put the products on. A cached v37 .so for a model with a species on both
+# sides of a reaction (`E + S -> E + P`) keeps `(x - rate) + rate` in that
+# species' derivative, the rounding of the rate: 0 for a synthesis of 0.01
+# beside a rate of 1e15. Invalidate v37.
+_CODEGEN_VERSION = "38"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -5909,13 +5915,34 @@ def _multiplicity(indices) -> list[tuple[int, int]]:
 
     Issue #801: an SBML coefficient of 1e6 arrives as a million entries, and one
     ``ydot`` update per entry made 66.7 MB of C for BIOMD0000000608. The C++
-    right-hand side folds the same way (``Reaction::reactant_multiplicity``).
+    right-hand side folds the same way (``fold_multiplicity``).
     """
     counts: dict[int, int] = {}
     for i in indices:
         if i >= 0:
             counts[i] = counts.get(i, 0) + 1
     return list(counts.items())
+
+
+def _net_multiplicity(reactants, products) -> list[tuple[int, int]]:
+    """A reaction's two index lists as its net change of each species:
+    ``(species, products less reactants)``, as the C++ right-hand side folds
+    them (``Reaction::net_loss`` and then ``net_gain``): the reactants' species
+    a firing takes more of than it gives back, or as many (a net of zero), and
+    then the products' species it gives more of than it took.
+
+    One ``ydot`` update per species from this takes ``0.0 * (rate)`` off a
+    catalyst's derivative. One per side wrote ``ydot[e] -= rate; ydot[e] +=
+    rate;`` for ``E + S -> E + P``, which leaves the rounding of the rate in
+    dE/dt: 0 for a synthesis of 0.01 beside a rate of 1e15. Zero times a rate
+    is nothing where the rate is finite and NaN where it is not, so a rate law
+    outside its domain still fails the run.
+    """
+    taken = dict(_multiplicity(reactants))
+    given = dict(_multiplicity(products))
+    loss = [(i, given.get(i, 0) - m) for i, m in taken.items() if m >= given.get(i, 0)]
+    gain = [(i, m - taken.get(i, 0)) for i, m in given.items() if m > taken.get(i, 0)]
+    return loss + gain
 
 
 def _times_multiplicity(m: int, term: str) -> str:
@@ -6176,7 +6203,10 @@ def generate_rhs_from_model(model) -> str:
         else:
             g(f"    rate = 0.0;  /* unknown type: {rtype} */")
 
-        # Accumulate stoichiometry: subtract from reactants, add to products.
+        # Accumulate stoichiometry: each species' net change times the rate,
+        # one statement per species (a species on one side alone gets the
+        # statement it always had; one on both sides in equal numbers, zero
+        # times the rate).
         # For SBML Functional, reactants is empty (stoichiometry is encoded as
         # separate per-species reactions with stat_factor = net coefficient) and
         # rate already includes the stat_factor. per_species_volume_scaling=true
@@ -6205,15 +6235,13 @@ def generate_rhs_from_model(model) -> str:
                     return f"rate * (1.0 / p[{kvol}])"
                 return f"rate * inv_vf[{si}]"
 
-            for ri, m in _multiplicity(reactants):
-                g(f"    ydot[{ri}] -= {_times_multiplicity(m, _psvs_divide(ri))};")
-            for pi, m in _multiplicity(products):
-                g(f"    ydot[{pi}] += {_times_multiplicity(m, _psvs_divide(pi))};")
+            for si, c in _net_multiplicity(reactants, products):
+                term = _times_multiplicity(abs(c), _psvs_divide(si))
+                g(f"    ydot[{si}] {'-=' if c <= 0 else '+='} {term};")
         else:
-            for ri, m in _multiplicity(reactants):
-                g(f"    ydot[{ri}] -= {_times_multiplicity(m, 'rate')};")
-            for pi, m in _multiplicity(products):
-                g(f"    ydot[{pi}] += {_times_multiplicity(m, 'rate')};")
+            for si, c in _net_multiplicity(reactants, products):
+                term = _times_multiplicity(abs(c), "rate")
+                g(f"    ydot[{si}] {'-=' if c <= 0 else '+='} {term};")
         g("")
         rxn_groups.append(grp)
 
