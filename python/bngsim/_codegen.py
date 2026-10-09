@@ -9594,9 +9594,9 @@ def _functional_comoving_plan(
                         named |= above(name) | primaries_of(name)
                 for name in sorted(named):
                     became = asked.get(alias_of_name.get(name, ""), {}).get(node)
+                    # A dropped shift is None, which is no case.
                     if became is not None and all(
-                        shift is not None and shift in made.get(alias_of_name[name], ())
-                        for shift in became
+                        shift in made.get(alias_of_name[name], ()) for shift in became
                     ):
                         continue
                     edges.setdefault(scope.param_idx_by_name[name], []).append(test)
