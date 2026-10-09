@@ -7025,31 +7025,32 @@ class Simulator:
     #: of plain runs to 1e5 and to 1e6, which decide where the two disagree.
     #: A column is wrong where an entry, over its species' scale, is more than
     #: 1% of the column's largest such entry from that (a column whose every
-    #: entry is under 1e-3/|p| is judged against that). Main's own columns:
-    #: 655 models right and 98 wrong, of which main returned 40 with nothing
-    #: logged, 56 beside the warning and 2 it refused (#758); 38 without a
-    #: verdict.
+    #: entry is under 1e-3/|p| is judged against that). A model that is refused
+    #: is judged by the columns at the state the solver stopped at, which are
+    #: main's. Main's own columns: 651 models right and 102 wrong, of which
+    #: main returned 40 with nothing logged, 60 beside the warning and 2 it
+    #: refused (#758); 38 without a verdict.
     #:
     #:   ==================  =======  ==========================  ==============
-    #:   ratio               limit    right and returned (645)    beyond it
+    #:   ratio               limit    right and returned (646)    beyond it
     #:   ==================  =======  ==========================  ==============
     #:   determinant         0.6      0.96 to 1.2                 0.59 and under
     #:   pivot share         1e-13    4.1e-8 at least             5.9e-14, under
     #:   condition           1e13     1.3e9 at most               3.4e13 and up
-    #:   column shift        0.01     2.1e-3 at most              1.8e-2 and up
+    #:   column shift        0.01     2.1e-3 at most              1.4e-2 and up
     #:   hold shift          0.01     6.7e-3 at most              1.2e-2 and up
-    #:   relaxation          0.01     1.0e-3 at most              1.8e-2 and up
+    #:   relaxation          0.01     1.0e-3 at most              2.5e-2 and up
     #:   ==================  =======  ==========================  ==============
     #:
-    #: Of the 791, 658 are returned: 645 right, 12 without a verdict, and one
+    #: Of the 791, 659 are returned: 646 right, 12 without a verdict, and one
     #: wrong, for which ``steady_state()`` itself stops at a state that is not
-    #: where a run ends, at the default tolerances and whatever is asked. 133
-    #: are refused: 67 wrong, 27 without a verdict and 39 right. Of main's 98
-    #: wrong models, 72 are refused and 24 are returned right, at the root the
-    #: solve stepped to. 547 results are not stepped, and those are main's to
-    #: the last bit.
+    #: where a run ends, at the default tolerances and whatever is asked. 132
+    #: are refused: 72 wrong, 27 without a verdict and 33 right. Of main's 102
+    #: wrong models, 76 are refused and 24 are returned right, at the root the
+    #: solve stepped to. 448 of the results that are returned are not stepped,
+    #: and those are main's to the last bit.
     #:
-    #: The 39 right models that are refused: 14 on the determinant (four FceRI
+    #: The 33 right models that are refused: 10 on the determinant (four FceRI
     #: networks whose ligand does not dissociate, where the Jacobian is
     #: singular once the free receptor is gone and the columns asked agree with
     #: a time course all the same; states that are a root of higher order, or
@@ -7058,15 +7059,15 @@ class Simulator:
     #: columns do not settle under the steps (six models of one family have
     #: species whose turnover stops when a cascade has run out: the Jacobian
     #: is singular at that state and the columns are 0/0 there, and what main
-    #: returned is what they are a little short of it), 2 each on the
-    #: relaxation and on an eigenvalue right of zero, and 1 on a pivot.
+    #: returned is what they are a little short of it), 2 on the relaxation
+    #: and 1 on an eigenvalue right of zero.
     #:
     #: ``min|U|/max|U|``, which this replaces, has no cut that does better than
-    #: 14 right models refused and 50 wrong ones returned; at the 1e-8 it warned
-    #: at, 37 and 40. The same ratio after the matrix is equilibrated, and each
-    #: pivot against the norm of its column, do worse (96 and 97 either way),
-    #: and the rank at a state moved off the steady state shows none of the 98.
-    #: All three read the epidemic model of the issue as an ordinary system: at
+    #: 10 right models refused and 50 wrong ones returned; at the 1e-8 it warned
+    #: at, 33 and 40. The same ratio after the matrix is equilibrated, and each
+    #: pivot against the norm of its column, do worse (92 and 93 either way),
+    #: and so does the rank at a state moved off the steady state (100). All
+    #: three read the epidemic model of the issue as an ordinary system: at
     #: the state the solve returns its Jacobian has full rank, with a
     #: determinant of b·g·I, and is of order one in every entry after any
     #: scaling. What marks it is that the determinant goes with what is left of
@@ -7138,13 +7139,14 @@ class Simulator:
     #: for, an oscillation among them that the relaxation does not see. Systems
     #: of up to 512 unknowns are asked, and larger ones for the species they
     #: have at a zero. Of the corpus models that are returned,
-    #: none has an eigenvalue right of zero at all (652 with a spectrum; the
-    #: nearest is at -3.4e-6, an exponent of -3.4). 43 models have one: 37
-    #: are refused before this is asked, one by the run, and 5 by this. Two
-    #: of the 5 are right by the oracle, and the run that is taken on stays at
-    #: each (BIOMD0000000546, at 6.2e-8, and BIOMD0000000908, which has a
-    #: species the model does not start with: the eigenvalues ask what its
-    #: arrival would do, and the run does not).
+    #: none has an eigenvalue right of zero at all (643 with a spectrum; the
+    #: nearest is at -3.4e-6, an exponent of -3.4). 39 models have one: 34
+    #: are refused before this is asked, one by the run, and 4 by this. One
+    #: of the 4 is right by the oracle, and the run that is taken on stays
+    #: (BIOMD0000000546, at 6.2e-8). A species that is absent, and that
+    #: nothing present makes, is left out of the eigenvalues: what its arrival
+    #: would do is not asked, by them or by the run (BIOMD0000000908, which
+    #: was refused for it).
     _SS_ROOT_GROWTH_MAX = 0.01
 
     def _raise_if_not_an_isolated_root(
