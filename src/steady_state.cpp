@@ -2461,6 +2461,16 @@ static constexpr double kNextToNothing = 1e-6;
 static constexpr double kColumnsSettled = 0.01;
 static constexpr int kNewtonSteps = 10;
 
+// What the caller refuses on before it asks how the steps went, whatever they
+// found (Simulator._SS_ROOT_DETERMINANT_RATIO_MIN, _PIVOT_SHARE_MIN and
+// _CONDITION_MAX: the same numbers). No step after the first is taken for a
+// result that is refused already: each is a Jacobian and a factorization, and
+// the ten of them were 6 s of 9 for a network of 1,281 species whose
+// determinant had said no.
+static constexpr double kDeterminantKept = 0.6;
+static constexpr double kPivotShareLeast = 1e-10;
+static constexpr double kConditionMost = 1e12;
+
 // How far, of itself, each concentration is moved before the run is taken on
 // from the returned state (find_steady_state): a state the system rests at
 // takes that back, and one it does not rest at leaves. A species that is not
@@ -3529,6 +3539,8 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     //    step moves nothing, nothing is changed, and the result is the
     //    solver's own to the last bit.
     int steps = 0;
+    const bool singular_whatever_the_state = !(result.sens_root_pivot_share >= kPivotShareLeast) ||
+                                             !(result.sens_root_condition <= kConditionMost);
     for (int k = 1; k <= kNewtonSteps; ++k) {
         const std::vector<double> *to = &stepped.to;
         bool evaluated = measure_at(*to, k == 1);
@@ -3539,7 +3551,10 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         const bool state_settled = result.sens_root_state_shift <= kColumnsSettled;
         const bool settled = moved_of_itself <= kColumnsSettled && state_settled;
         const bool usable = evaluated && factored_at && all_finite(stepped_columns);
-        if (settled || !usable || k == kNewtonSteps) {
+        const double kept = result.sens_root_determinant_ratio;
+        const bool refused_already = singular_whatever_the_state || !(kept >= kDeterminantKept) ||
+                                     !(kept <= 1.0 / kDeterminantKept);
+        if (settled || !usable || refused_already || k == kNewtonSteps) {
             const bool theirs =
                 usable && state_settled && result.sens_root_column_shift <= kColumnsSettled;
             if (theirs && k > 1) {
