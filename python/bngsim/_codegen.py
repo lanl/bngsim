@@ -10412,9 +10412,19 @@ def _output_sens_analysis_key(core) -> tuple:
         core.n_parameters,
         core.n_observables,
         core.n_functions,
+        # A table function can be added after load (``Model.add_table_function``),
+        # and a function that reads one is deferred: by name, since two clones
+        # of one model can each be given a different one (issue #979).
+        tuple(getattr(core, "table_function_names", ())),
         tuple(bool(x) for x in core.param_is_expression),
         _sens_budget_cache_tag(),
     )
+
+
+#: How many analyses one family of clones keeps (:func:`_analyze_output_sens`):
+#: one for each attachment its members are run under, and a batch that pins a
+#: derived parameter on some rows has two.
+_OUTPUT_SENS_ANALYSES_KEPT = 4
 
 
 def _analyze_output_sens(model) -> dict:
@@ -10448,17 +10458,28 @@ def _analyze_output_sens(model) -> dict:
     model, so two independent evaluations can cut at different functions, and the
     emitted C would carry a NaN sentinel for a function the support map reports as
     supported. One evaluation, one cut, one answer.
+
+    The memo is one ``dict`` that a model and every clone of it hold together
+    (issue #979). It was a slot of each model, copied when one was cloned, so a
+    clone of a model that had not been analyzed yet started with nothing, and
+    so did the next: a fitting loop that clones one base model for every
+    evaluation paid the analysis every time, 2.2 s for 300 functions and 20 s
+    for 500, for a run of milliseconds. An analysis made on any of them now
+    serves all of them. They have the same functions, and what can differ
+    between them is in the key.
     """
     core = model._core if hasattr(model, "_core") else model
     key = _output_sens_analysis_key(core)
     memo = getattr(model, "_output_sens_analysis", None)
-    if memo is not None and memo[0] == key:
-        return memo[1]
+    if memo is not None and key in memo:
+        return memo[key]
     analysis = _compute_output_sens_analysis(model, core)
     # A bare ``NetworkModel`` core has no slot to hold it and simply re-analyzes;
     # both callers that matter pass the Model.
-    if hasattr(model, "_output_sens_analysis"):
-        model._output_sens_analysis = (key, analysis)
+    if memo is not None:
+        while len(memo) >= _OUTPUT_SENS_ANALYSES_KEPT:
+            memo.pop(next(iter(memo)))
+        memo[key] = analysis
     return analysis
 
 

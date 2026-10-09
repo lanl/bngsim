@@ -137,12 +137,14 @@ class Model:
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
         # run needs it, since its build-time differentiation is expensive).
         self._want_output_sens: bool = False
-        # GH #97: ``(key, analysis)`` memo for the #198 per-function output-sens
-        # analysis (``_codegen._analyze_output_sens``), which both the C emitter
-        # and the Result's support map run. Shared, so nothing may mutate it, and
-        # keyed (``_codegen._output_sens_analysis_key``) so a budget override does
-        # not read back an analysis made under a different one.
-        self._output_sens_analysis: tuple | None = None
+        # GH #97: the memo for the #198 per-function output-sens analysis
+        # (``_codegen._analyze_output_sens``), which both the C emitter and the
+        # Result's support map run: ``{key: analysis}``. An analysis is shared,
+        # so nothing may mutate one, and keyed
+        # (``_codegen._output_sens_analysis_key``) so a budget override does not
+        # read back an analysis made under a different one. The dict itself is
+        # shared with every clone (issue #979): see ``clone``.
+        self._output_sens_analysis: dict[tuple, dict] = {}
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
@@ -1044,9 +1046,12 @@ class Model:
         m._jac_decline_reason = self._jac_decline_reason
         # GH #97: same warm-clone reasoning for the #198 output-sens analysis — a
         # clone has the parent's structure, so re-running its sympy would be N×
-        # waste in parallel fitting. Shared by reference (the analysis is
-        # read-only) and re-keyed on the clone's own counters, so a clone that
-        # somehow did not match simply re-derives.
+        # waste in parallel fitting. The memo itself is shared, not its
+        # contents at the time (issue #979): an analysis made on a clone is
+        # there for the parent and for the clones made after, so that cloning
+        # a model that was never run does not start each clone from nothing.
+        # Looked up by the clone's own key, so one that does not match
+        # re-derives.
         m._output_sens_analysis = self._output_sens_analysis
         m._ssa_issues = list(self._ssa_issues)
         m._ar_report_map = dict(self._ar_report_map)

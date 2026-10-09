@@ -34,6 +34,7 @@ falls back to the finite-difference Jacobian — exactly the pre-#76 behavior.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -1924,8 +1925,13 @@ def _divided_through(f, m, offset, rest, sp):
 _LOG_CALL_RE = re.compile(r"\b(?:ln|log|log10|log2)\s*\(")
 
 
+@functools.lru_cache(maxsize=1 << 14)
 def guard_rate_law_text(text: str) -> str | None:
     """Guarded ExprTk spelling of one rate law, or ``None`` if it needs no guard.
+
+    Memoized by the text (issue #979): every ``Model`` is guarded when it is
+    made, a clone included, and a law with a logarithm that needs no guard was
+    parsed again for each one, 0.25 s a clone for 300 such functions.
 
     The single implementation of GH #333's rewrite, so the model path
     (:func:`guard_function_expressions`) and the ``.net`` codegen emitter, which
