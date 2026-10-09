@@ -2797,6 +2797,18 @@ def test_biomd908_rests_where_it_is_without_the_species_it_does_not_start_with()
     assert np.all(np.isfinite(np.asarray(out.sensitivity)))
 
 
+def test_biomd908_is_refused_for_the_parameter_that_would_make_that_species():
+    """S' = vs + 0.277·S, with vs = 0. Any vs above nothing makes S, and S
+    then grows without end: 4e15 by t = 200 for vs = 1e-9. No steady state
+    beside this one is there for vs to move, and dS*/dvs = -3.61 came back,
+    with dT*/dvs = 1.6e13."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000908")), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.277 "
+    ):
+        sim.steady_state(sensitivity_params=["vs"])
+
+
 def test_model1607210000_says_that_the_run_stayed_and_the_columns_did_not():
     """A species whose turnover has stopped: the run that is taken on ends
     3e-6 from the state, and the column of v15_h solved again there is 40
