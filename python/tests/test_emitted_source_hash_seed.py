@@ -421,10 +421,10 @@ def test_exponents_that_are_not_parallel_are_refused_against_every_symbol():
 
 
 def test_a_mismatch_costs_one_cancel(monkeypatch):
-    """Exponents that are not parallel, in three symbols and with no condition
-    in them: the ratio of the slopes against the first symbol is no count, and
-    it is every symbol's answer, so no other is asked. (Asking each in turn
-    cost MODEL1006230049 3 s of 90.)"""
+    """Control. Exponents that are not parallel, in three symbols and with no
+    condition in them: the ratio of the slopes against the first symbol is no
+    count, and it is every symbol's answer, so no other is asked. (Asking each
+    in turn cost MODEL1006230049 3 s of 90; main asks one, as this does.)"""
     from bngsim._jacobian import _whole_power_offset
 
     t1, r, u = sp.symbols("T1 R U")
