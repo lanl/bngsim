@@ -1507,6 +1507,57 @@ def test_the_same_removed_in_pairs_too_takes_a_step_more(tmp_path):
     assert out.sens_root_newton_steps >= 3
 
 
+# N' = r·N·S·(1 - (N/K)^0.2): N makes itself, on S, and is crowded out above K.
+ABOVE_ITS_CAPACITY = """begin parameters
+    1 r   1e-7
+    2 K   1e-6
+end parameters
+begin functions
+    1 crowding() r*Sobs*(Nobs/K)^0.2
+end functions
+begin species
+    1 N() 1e-4
+    2 S() 1.0
+end species
+begin reactions
+    1 1,2 1,1,2 r
+    2 1 0 crowding
+end reactions
+begin groups
+    1 Nobs 1
+    2 Sobs 2
+end groups
+"""
+
+
+def test_a_species_that_grows_from_nothing_is_not_running_out(tmp_path):
+    """N starts at a hundred times what S carries, K, and falls towards K. The
+    solve stops on the way, under ``tol``, and a Newton step from there takes
+    N a sixth of the way down: more than halved, with nothing at N = 0 to make
+    it, as a species that is running out is. But N makes itself, and from next
+    to nothing it grows: it does not rest at zero. Taken for a species at a
+    zero its entries were small against S's 1, and dN*/dK came back 2.78 for
+    1, at 7.4e-6 for K. Its entries are taken over itself, and the state is
+    stepped to K."""
+    sim = bngsim.Simulator(_net(tmp_path, ABOVE_ITS_CAPACITY), method="ode")
+    out = sim.steady_state(sensitivity_params=["K"], max_time=1e9)
+    assert np.asarray(out.concentrations)[0] == pytest.approx(1e-6, rel=1e-2)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(1.0, rel=1e-3)
+    assert out.sens_species_scale[0] == pytest.approx(1e-6, rel=0.1)
+    assert out.sens_root_newton_steps >= 2
+
+
+def test_the_same_in_the_time_it_does_not_get_there_in_is_refused(tmp_path):
+    """N falls at r·S = 1e-7, and the default ``max_time`` of 1e6 is a tenth
+    of the time that takes: the run taken on from where the solver stopped is
+    still on its way."""
+    sim = bngsim.Simulator(_net(tmp_path, ABOVE_ITS_CAPACITY), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*not one a run stays at.*the run moves N\(\) by"
+    ):
+        sim.steady_state(sensitivity_params=["K"])
+
+
 # X is held at 1 by 0 -> X -> 0, and Y is made at c·sqrt(1.0000001 - X): a
 # rate that has no value a tenth of a millionth above where X rests.
 NO_VALUE_BESIDE = """begin parameters

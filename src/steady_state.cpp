@@ -2435,6 +2435,10 @@ static constexpr double kRoundingShare = 1e-13;
 // reads it.
 static constexpr double kPoolShare = 1e-3;
 
+// How far down the species that may be at a zero are put, of where they were
+// returned, to see whether one grows from there (ss_species_scales).
+static constexpr double kNextToNothing = 1e-6;
+
 // How many times the species that may be at a zero are gone over
 // (ss_species_scales). Each pass takes at least one out, and a chain of
 // species each made by the one before takes a pass a link.
@@ -2886,7 +2890,9 @@ static double ss_pivot_share(const std::vector<double> &lu, int n, const std::ve
 // at the corrected state with all of them set to zero: nothing that is left
 // makes it. A species with a rate there is made by something that stays, and
 // has a steady value, however small; it is taken out, and the rest are asked
-// again, until none is. Whether a species is at a zero is then a matter of what
+// again, until none is. Nor is it one that grows from next to nothing: zero is
+// a steady state of anything that makes itself, and not where it rests.
+// Whether a species is at a zero is then a matter of what
 // makes it and not of how small it is: `0 -> S -> 0` from 1, stopped at 1e-7
 // on its way to 1e-11, has a rate of k0 at S = 0, and keeps its own scale.
 //
@@ -2910,7 +2916,7 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
                                              const double *y_c) {
     std::vector<double> own(static_cast<size_t>(ns)), was(static_cast<size_t>(ns));
     std::vector<double> scale(static_cast<size_t>(ns));
-    std::vector<char> at_zero(static_cast<size_t>(ns), 0);
+    std::vector<char> at_zero(static_cast<size_t>(ns), 0), falling(static_cast<size_t>(ns), 0);
     double all = 0.0;
     for (int i = 0; i < ns; ++i) {
         const size_t k = static_cast<size_t>(i);
@@ -2999,19 +3005,29 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         const bool pooled = std::isfinite(allowed[k]);
         const double around = std::max(fed, pooled ? allowed[k] : beside);
         const bool holds_a_share = pooled && corrected > kPoolShare * allowed[k];
-        at_zero[k] = !holds_a_share &&
-                     (corrected <= kZeroShare * returned || corrected <= kRoundingShare * around);
+        const bool rounding = corrected <= kRoundingShare * around;
+        at_zero[k] = !holds_a_share && (corrected <= kZeroShare * returned || rounding);
+        falling[k] = at_zero[k] && !rounding;
     }
-    // Those that something left over makes are not at a zero.
+    // Those that something left over makes are not at a zero, and neither is one
+    // that grows from next to nothing: with every such species at a millionth
+    // of where it was returned (kNextToNothing), in the proportions they have,
+    // a species that is running out is still running out, and one whose rate
+    // makes it grow rests somewhere else. A population above what its
+    // surroundings carry falls towards that, and a Newton step can take it more
+    // than half the way, with nothing at zero to make it. (Asked of the species
+    // a step halves, and not of those at rounding: what they have is no
+    // proportion of anything.)
     {
         std::vector<double> at(static_cast<size_t>(ns)), rate(static_cast<size_t>(ns));
         bool settled = false;
         for (int pass = 0; pass < kZeroPasses && !settled; ++pass) {
-            bool any = false;
+            bool any = false, any_falling = false;
             for (int i = 0; i < ns; ++i) {
                 const size_t k = static_cast<size_t>(i);
                 at[k] = at_zero[k] ? 0.0 : y_c[i];
                 any = any || at_zero[k];
+                any_falling = any_falling || (at_zero[k] && falling[k]);
             }
             settled = true;
             if (!any) {
@@ -3023,6 +3039,22 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
                 const size_t k = static_cast<size_t>(i);
                 // A rate that is not a number is not a rate of zero.
                 if (at_zero[k] && !(rate[k] == 0.0)) {
+                    at_zero[k] = 0;
+                    settled = false;
+                }
+            }
+            if (!settled || !any_falling) {
+                continue;
+            }
+            for (int i = 0; i < ns; ++i) {
+                const size_t k = static_cast<size_t>(i);
+                at[k] = at_zero[k] ? kNextToNothing * std::abs(y_ss[i]) : y_c[i];
+            }
+            std::fill(rate.begin(), rate.end(), 0.0);
+            rhs.eval(0.0, at.data(), rate.data());
+            for (int i = 0; i < ns; ++i) {
+                const size_t k = static_cast<size_t>(i);
+                if (at_zero[k] && falling[k] && rate[k] > 0.0) {
                     at_zero[k] = 0;
                     settled = false;
                 }
