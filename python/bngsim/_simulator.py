@@ -7133,12 +7133,11 @@ class Simulator:
     #: see what it lost: a step of 0.28 into a pair that exchanges at 1e9 came
     #: back with a column of 0, every measure clean (and at 1e7 4.6% off, at
     #: 1e8 20%; at 1e6, a pivot share of 6e-7, 0.1%). These hold what
-    #: cancellation loses of such a matrix. They do not hold what the
-    #: difference itself gets wrong: its step is 1.5e-8 of the largest
-    #: concentration in the model, for every species, and a term of second
-    #: order in a species that much smaller is differenced over many times
-    #: the species (7% off beside an unrelated species at 1e7, on main too,
-    #: with a pivot share of 1).
+    #: cancellation loses of such a matrix. What the difference's step cost
+    #: a species far below the largest concentration, which it was stepped
+    #: by 1.5e-8 of (7% off beside an unrelated species at 1e7, with a pivot
+    #: share of 1), is taken back where the matrix is made: such an entry is
+    #: extrapolated to a step of zero (issue #1002).
     _SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED = 1e-6
     _SS_ROOT_CONDITION_MAX_DIFFERENCED = 1e6
 

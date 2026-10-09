@@ -588,9 +588,14 @@ better than a thousandth. Where the Jacobian is a difference quotient
 1e-8 of their neighbours and not to rounding, and the two limits are 1e-6 and
 1e6: an entry a hundred million times smaller than its neighbours reads as
 nothing there, and no measure taken on that matrix sees what it lost. (The
-limits hold that loss. They do not hold what the difference itself gets wrong
-where a species is far smaller than the largest in the model, whose size sets
-the step: prefer the closed form for sensitivities.) (A determinant
+limits hold that loss. The difference's step is 1.5e-8 of the larger of the
+species and the largest concentration in the model, so a species far below
+that is stepped by many times itself; an entry that is not linear in such a
+species is extrapolated to a step of zero from a ladder of halved steps, and
+one that is linear in it is the one quotient it was (issue #1002). A term too
+small to move the first two quotients apart, a saturating law whose whole
+flux is under a millionth of its row's, is not seen: prefer the closed form
+for sensitivities.) (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller
