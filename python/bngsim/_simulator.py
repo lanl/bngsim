@@ -9166,9 +9166,9 @@ class SteadyStateResult:
     sens_root_column_shift : float
         The largest move of a column of ``dY_ss/dp`` when it is solved again a
         Newton step on, as a fraction of the column's largest entry, each
-        entry over its species' scale (``sens_species_scale``), or of
-        ``1e-3 / |p|`` for a column smaller than that: how far the columns are
-        from those of the root. Above 0.01 the solve steps the state on, up to
+        entry over its species' scale (``sens_species_scale``), the column's
+        largest entry being the largest it has had at any of the states: how
+        far the columns are from those of the root. Above 0.01 the solve steps the state on, up to
         ten times, until it is not, and this is the move at the last step;
         ``steady_state`` raises where it is still above 0.01. ``0.0`` when no
         sensitivity was requested.

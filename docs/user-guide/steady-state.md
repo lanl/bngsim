@@ -604,10 +604,10 @@ last bit. A root that was stepped to has to be where the run below ends, within
 1% in every species: Newton can step to a root the system leaves. The solve
 refuses where the state and its columns have not settled in ten steps:
 the state is far from a root for the size of its rates, which a smaller `tol`
-mends, or the steady state is not an isolated root. A column whose every
-entry, over its species' scale, is below `1e-3/|p|` is measured against that
-instead of its own largest entry: a species that moves by less than a
-thousandth of its scale when the parameter doubles.
+mends, or the steady state is not an isolated root. A column is measured
+against the largest it has been at any of these states: one that is nothing at
+the root, and at the solver's state what `tol` left of nothing, moves by all
+of itself under the first step and is returned as the nothing it is.
 
 A species that is small beside the rest is solved to its own steady value by
 the same steps. A made at `5e-10·G` and removed at 5e-3 has a steady value of

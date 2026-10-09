@@ -2395,13 +2395,18 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 // Simulator._raise_if_not_an_isolated_root, which holds the limits and the
 // corpus measurement behind them).
 
-// A column of dY_ss/dp whose every entry, over its species' scale, is below this
-// fraction of 1/|p| is a zero for the column shift: its entries are what the
-// solve's tolerance left of one, and a move of all of it is not a move of a
-// derivative. 1e-3 is a species moving by 0.1% of its scale when the parameter
-// doubles. A move of a concentration is small against the same fraction of the
-// species' scale.
-static constexpr double kZeroColumnFraction = 1e-3;
+// A column is asked how far it moved against the largest it has been, at the
+// returned state or at any it was stepped to (ss_measure_root, 4): a column
+// that is nothing at the root, and at the returned state what the solve's
+// tolerance left of nothing, moves by all of itself under the first step and by
+// none of that after. Under this of 1/|p|, with each entry over its species'
+// scale, it is rounding, and no move of it is one.
+//
+// (The limit was 1e-3 of 1/|p|, a species moving by 0.1% of its scale when the
+// parameter doubles, and a column under it was not asked how far it moved: one
+// of 5,000, for a parameter of 1e-8, came back 4% off beside a root that was
+// nearly double.)
+static constexpr double kZeroColumn = 1e-13;
 
 // The least a species' scale is of the largest among the species the Jacobian
 // couples it to (ss_species_scales). An entry of a column is computed to about
@@ -2898,7 +2903,8 @@ static double ss_pivot_share(const std::vector<double> &lu, int n, const std::ve
 static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkModel &model,
                                              const double *J, int ns,
                                              const std::vector<double> &start, const double *y_ss,
-                                             const double *y_c, bool ended_a_run = false) {
+                                             const double *y_c, bool ended_a_run = false,
+                                             std::vector<char> *zeros = nullptr) {
     std::vector<double> own(static_cast<size_t>(ns)), was(static_cast<size_t>(ns));
     std::vector<double> scale(static_cast<size_t>(ns));
     std::vector<char> at_zero(static_cast<size_t>(ns), 0), falling(static_cast<size_t>(ns), 0);
@@ -3086,6 +3092,9 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
             v = all > 0.0 ? all : 1.0;
         }
     }
+    if (zeros != nullptr) {
+        *zeros = at_zero;
+    }
     return scale;
 }
 
@@ -3272,7 +3281,10 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // returned ones, until the state is stepped on (6). `stepped_columns` are
     // those of the state last measured, and `A_at` its factors.
     std::vector<double> in_hand(result.sensitivity), stepped_columns, A_at, matrix_at;
+    // The largest each column has been, at any of the states (kZeroColumn).
+    std::vector<double> column_size(static_cast<size_t>(np), 0.0);
     std::vector<double> at(returned);
+    std::vector<char> at_a_zero; // which species are at a zero, at the last state measured
     bool factored_at = false;
 
     // 3 and 4, at the state a step from `at` led to. False where the rates have
@@ -3289,8 +3301,8 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
             matrix_at = A_c; // for the spectrum, if this is the state returned
         }
         ss_lu_in_row_order(A_c, n, row);
-        species_scale =
-            ss_species_scales(rhs, *sys.model, J, ns, *sys.start, at.data(), state.data());
+        species_scale = ss_species_scales(rhs, *sys.model, J, ns, *sys.start, at.data(),
+                                          state.data(), false, &at_a_zero);
         // How far the step moved the state, each species over its scale.
         double state_shift = 0.0;
         result.sens_root_state_species = -1;
@@ -3398,9 +3410,9 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                     }
                 }
                 const double pv = std::abs(sys.param_values[static_cast<size_t>(p)]);
-                const double floor = kZeroColumnFraction / (pv > 0.0 ? pv : 1.0);
-                const double scale = std::max(top, floor);
-                scales[static_cast<size_t>(p)] = scale;
+                const double floor = kZeroColumn / (pv > 0.0 ? pv : 1.0);
+                double &largest_yet = column_size[static_cast<size_t>(p)];
+                largest_yet = std::max(largest_yet, top);
                 // How far the column moved (the total's own share is the same
                 // at both states and drops out of a dependent's entry).
                 std::vector<double> change(x);
@@ -3408,13 +3420,21 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                     change[static_cast<size_t>(r)] -=
                         in_hand[static_cast<size_t>(unknown(r)) * np + p];
                 }
-                const double moved_by = over_scale(largest(change, 1.0), scale);
+                const double change_size = largest(change, 1.0);
                 // The column at this state: the one in hand and its move, on
                 // every species (`over` is what `largest` left).
+                double top_stepped = 0.0;
                 for (int i = 0; i < ns; ++i) {
-                    stepped_columns[static_cast<size_t>(i) * np + p] +=
-                        over[static_cast<size_t>(i)];
+                    double &entry = stepped_columns[static_cast<size_t>(i) * np + p];
+                    entry += over[static_cast<size_t>(i)];
+                    if (sub.includes(i) && std::isfinite(entry)) {
+                        top_stepped = std::max(top_stepped, std::abs(entry) / scale_of(i));
+                    }
                 }
+                largest_yet = std::max(largest_yet, top_stepped);
+                const double scale = std::max(largest_yet, floor);
+                scales[static_cast<size_t>(p)] = scale;
+                const double moved_by = over_scale(change_size, scale);
                 if (!(moved_by <= column_shift)) {
                     column_shift = std::isfinite(moved_by) ? moved_by : inf;
                     result.sens_root_column_param = p;
@@ -3519,6 +3539,14 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         // The excluded species' rows are what they were (the caller writes
         // them), and a law's dependent has followed its law.
         result.sensitivity = in_hand;
+        // A species at a zero is returned at zero where the last step left it
+        // below: -1e-27 is what rounding left, and no concentration.
+        for (int i = 0; i < ns; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            if (k < at_a_zero.size() && at_a_zero[k] && returned[k] >= 0.0 && at[k] < 0.0) {
+                at[k] = 0.0;
+            }
+        }
         std::copy(at.begin(), at.end(), result.concentrations.begin());
         result.residual = compute_residual(rhs, at.data(), ns, sub);
         // The eigenvalues are those of the state that is returned.
@@ -3639,8 +3667,8 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                     change = std::isfinite(c) ? std::max(change, c) : inf;
                 }
                 const double pv = std::abs(sys.param_values[static_cast<size_t>(p)]);
-                const double moved_by =
-                    change / std::max(top, kZeroColumnFraction / (pv > 0.0 ? pv : 1.0));
+                const double moved_by = change / std::max({top, column_size[static_cast<size_t>(p)],
+                                                           kZeroColumn / (pv > 0.0 ? pv : 1.0)});
                 if (!(moved_by <= worst)) {
                     worst = std::isfinite(moved_by) ? moved_by : inf;
                     result.sens_root_hold_param = p;

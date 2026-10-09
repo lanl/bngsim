@@ -1374,10 +1374,10 @@ struct SteadyStateResult {
     //   columns. The same in any units of the species and of the equations.
     //   Infinite where the matrix has no inverse.
     // sens_root_column_shift: the largest move of a column of dY_ss/dp when it
-    //   is solved again a Newton step on, as a fraction of the column's largest
-    //   entry, each entry over its species' scale (or of 1e-3/|p| where the
-    //   column is smaller than that). How far the columns are from those of
-    //   the root. Where the first step moves one by more than 1%, the state is
+    //   is solved again a Newton step on, as a fraction of the largest the
+    //   column has been at any of the states, each entry over its species'
+    //   scale (or of 1e-13/|p|, which is rounding). How far the columns are
+    //   from those of the root. Where the first step moves one by more than 1%, the state is
     //   stepped on until none does, up to ten steps, and this is the move at
     //   the last.
     // sens_root_state_shift: the largest move of a species under that step,
