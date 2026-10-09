@@ -50,11 +50,15 @@ NET = """begin parameters
     7 k3  0.4
     8 KH  {kh!r}
     9 VH  0.9
+   10 kw  1e-4
+   11 kbig 1e8
+   12 xc  {xc!r}
 end parameters
 begin functions
     1 xsq() abs(Xo)*Xo
     2 hill() VH*Xo^4/(KH^4+Xo^4)
     3 weak() 1e-3*Xo
+    4 root() sqrt(abs(Xo-xc))
 end functions
 begin species
     1 X() 0
@@ -75,9 +79,11 @@ end groups
 """
 
 
-def _model(tmp_path, big, more="", kh=1.0):
+def _model(tmp_path, big, more="", kh=1.0, xc=0.0):
     path = tmp_path / "small.net"
-    path.write_text(NET.format(s=S, k1=K1, k2=K2, kd=KD, big=float(big), more=more, kh=kh))
+    path.write_text(
+        NET.format(s=S, k1=K1, k2=K2, kd=KD, big=float(big), more=more, kh=kh, xc=float(xc))
+    )
     return bngsim.Model.from_net(path)
 
 
@@ -199,17 +205,53 @@ def _first_quotient(model, y, j):
     return (np.asarray(model.rhs(stepped, 0.0)) - np.asarray(model.rhs(y, 0.0))) / h
 
 
+def _quotient(model, y, j, h):
+    y = np.asarray(y, dtype=float)
+    stepped = y.copy()
+    stepped[j] = y[j] + h
+    h = stepped[j] - y[j]
+    return (np.asarray(model.rhs(stepped, 0.0)) - np.asarray(model.rhs(y, 0.0))) / h
+
+
 def test_an_entry_a_small_species_enters_linearly_is_bit_for_bit_what_it_was(tmp_path):
-    """Control. G gains ``k3·X`` (reaction 7) beside fluxes of 1e8. Half the
-    step gives the same quotient to rounding, so the entry is the first
-    quotient: extrapolating it would only add the rounding of two more
-    evaluations to a row whose terms are 1e8."""
-    model = _model(tmp_path, 1e8, more="    7 1 1,3 k3\n")
+    """Control. G gains ``kw·X`` (reaction 7), 1e-4 a unit of X, beside
+    fluxes of 1e8. The quotients at the step and at half of it differ by the
+    rounding of those fluxes, 1e-4 of the entry, which is nothing the entry
+    was not known to already: it is the first quotient. Extrapolating it
+    would add the rounding of two more evaluations."""
+    model = _model(tmp_path, 1e8, more="    7 1 1,3 kw\n")
     y = _state(1e8)
     jac = _fd(model, y)
     first = _first_quotient(model, y, 0)
     assert jac[2, 0] == first[2]
-    assert jac[2, 0] == pytest.approx(0.4, rel=1e-6)
+    assert jac[2, 0] == pytest.approx(1e-4, rel=1e-2)
+
+
+def test_a_row_with_a_large_term_no_species_is_in(tmp_path):
+    """Control. D is made at 1e8 (reaction 7), which no species is in, and
+    the state is not a steady one. That flux is in the row's rounding, and
+    the entry of a species at 1e-6 in it is the first quotient."""
+    model = _model(tmp_path, 1.0, more="    7 0 2 kbig\n")
+    y = np.array([1e-6, 0.0, 1.0])
+    assert _fd(model, y)[1, 0] == _first_quotient(model, y, 0)[1]
+
+
+@pytest.mark.parametrize("x", [0.0, 1e-3])
+def test_a_law_that_is_not_smooth_at_the_species_is_left_as_a_plain_quotient(tmp_path, x):
+    """``0 -> D`` at ``sqrt(abs(X - xc))`` with X on ``xc``: the quotient is
+    ``h^(-1/2)`` and no two estimates agree. The entry is the quotient at the
+    smallest step of the ladder, which ends at forty halvings for a species
+    at 0 and above the species' own step, √eps of itself, for one that is
+    not."""
+    model = _model(tmp_path, 1e8, more="    7 0 2 root\n", xc=x)
+    y = _state(1e8, x=x)
+    h = SQRT_EPS * 1e8
+    halvings = 0
+    while halvings < 40 and (halvings < 1 or h / 2 >= SQRT_EPS * x):
+        h /= 2
+        halvings += 1
+    assert halvings == (40 if x == 0.0 else 36)
+    assert _fd(model, y)[1, 0] == _quotient(model, y, 0, h)[1]
 
 
 def test_the_column_of_a_species_at_the_states_scale_is_what_it_was(tmp_path):
