@@ -666,9 +666,12 @@ root reaches with compartments 1e5 apart in size. It is asked what every model
 is asked now.)
 
 With `mask=`, the columns are solved on the equations of the species the mask
-kept (issue #995). A conservation law that holds a masked-out species is not
-one of those, unless that species is the one the law is solved for: the
-species it was solved for is an unknown instead, with its own equation. Where
+kept (issue #995), with the laws that hold among those species alone. A
+masked-out species is taken out of the laws that have it by one of them: that
+law is given up, and the species it was solved for is an unknown instead, with
+its own equation; the other laws are kept as the combinations that leave the
+species out (`A + P` and `B + P` with P masked out leave `B - A`). A masked-out
+species that a law is solved for is given by that law, as before. Where
 the masked sink drains the law (`A <-> B -> P`: A and B end at 0 whatever the
 total) the columns are what they were. Where a share of the total stays out of
 the sink, which no steady-state solve can know, they are refused as those of a

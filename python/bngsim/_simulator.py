@@ -7089,7 +7089,7 @@ class Simulator:
         no warning where the sink was masked out.
 
         The solve takes one Newton step from the state it returned and factors
-        its system again there (``ss_measure_root``). Three ratios come of it,
+        its system again there (``ss_measure_root``). Four ratios come of it,
         each of two quantities in the same units, so that none depends on the
         units of a species or the size of a compartment, as ``min|U|/max|U|``
         (``sens_jacobian_rcond``) did: that ratio falls with the square of a
