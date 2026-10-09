@@ -571,7 +571,7 @@ which the solve does.
 | `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; ((m-1)/m)^(m-1) at a root of order m, which is 1/2 at a double root; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
 | `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. | below 1e-10 |
 | `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed. | above 1e12 |
-| `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry. Above 0.01, or where the state itself moves by more (`sens_root_state_shift`), the state is stepped on, up to ten times (`sens_root_newton_steps`), until neither does. | either still above 0.01 after ten steps |
+| `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry and of no less than `1e-3/\|p\|`. Where a column moves by more than 0.01 of itself, or the state does (`sens_root_state_shift`), the state is stepped on, up to ten times (`sens_root_newton_steps`). | either still above 0.01 after the steps |
 | `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from a millionth beside the returned state. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
 | `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | times `max_time`, above 0.01 |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
@@ -608,12 +608,19 @@ by, and `ss.sens_root_newton_steps` says how many steps that took. Where the
 first step moves no column, it is 0 and the result is the solver's own, to the
 last bit. A root that was stepped to has to be where the run below ends, within
 1% in every species: Newton can step to a root the system leaves. The solve
-refuses where the state and its columns have not settled in ten steps:
+refuses where the state and its columns have not settled when the steps end:
 the state is far from a root for the size of its rates, which a smaller `tol`
-mends, or the steady state is not an isolated root. A column is measured
-against the largest it has been at any of these states: one that is nothing at
-the root, and at the solver's state what `tol` left of nothing, moves by all
-of itself under the first step and is returned as the nothing it is.
+mends, or the steady state is not an isolated root.
+
+A column's move is measured twice. The steps go by its move against itself,
+however small it is, down to what rounding makes of a column (1e-12 of
+`1/|p|`): a column of 5,000 for a parameter of
+1e-8 is small beside `1/|p|` and came back 4% off, at a state a step moved by
+less than 1%. The refusal goes by its move against the larger of itself and
+`1e-3/|p|`, which is a species moving by 0.1% of its scale when the parameter
+doubles. A column that is nothing at the root is, at any state, what the
+state's rounding makes of 0/0, and can move by all of itself under every step:
+under `1e-5/|p|` it is returned as the nothing it is.
 
 A species that is small beside the rest is solved to its own steady value by
 the same steps. A made at `5e-10·G` and removed at 5e-3 has a steady value of
@@ -630,8 +637,9 @@ exactly the state is on it: the middle root of a bistable switch, or the fixed
 point inside a limit cycle, which `method="newton"` finds and a model can be
 started on. `-J⁻¹·∂f/∂p` there is how the root moves, not where a run ends. The
 run starts a millionth beside the state because one started on such a root
-stays on it. A species that is absent is not moved: a state is not asked
-whether it would last the arrival of something the model does not start with.
+stays on it. A species that is absent is not moved: the run does not ask
+whether a state would last the arrival of something the model does not start
+with. (The eigenvalues below do, and refuse a state that would not.)
 
 The run has `max_steps` steps. Where it uses them short of `max_time`, it was
 not seen to stay, and the columns are refused: an oscillation about the state
@@ -646,7 +654,11 @@ and the columns are refused where the largest real part among them, times
 further from it after a run of that length. The limit goes with `max_time`
 because the question does: what a run of that length ends at. A real part
 under `0.01/max_time` is returned, and so is a state in a system of more than
-512 unknowns that the run does not show the system leaving. An eigenvalue is
+512 unknowns that the run does not show the system leaving. (Such a system is
+asked for the eigenvalues of the species the state has at a zero, among
+themselves: a population seeded at a hundredth of what it grows to is stepped
+to nothing, which it leaves, and an implicit run among many species can stay
+there.) An eigenvalue is
 computed to about 1e-16 of the largest of them, so in a system whose rates
 are that far apart the refusal can be of a state the system rests at.
 

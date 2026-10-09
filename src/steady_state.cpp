@@ -2360,7 +2360,8 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  row agree: the state and the columns that are returned are
 //                  those of the root (6, in ss_measure_root). What is left for
 //                  the caller to refuse is a state whose columns have not
-//                  settled after kNewtonSteps.
+//                  settled when the steps end (kZeroColumn has the two
+//                  measures of a column's move, and which is reported).
 //   hold           The same at y_h: what the columns of where a run ends are,
 //                  and whether the run got there. An integration stops at the
 //                  first state whose residual is under `tol`, which says where
@@ -2383,7 +2384,9 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  relaxation below, whose implicit steps damp whatever
 //                  oscillates. The spectrum does, and the caller refuses
 //                  where the growth over max_time is more than a hundredth:
-//                  the limit goes with the time, as the question does.
+//                  the limit goes with the time, as the question does. A
+//                  system above that size is asked for the eigenvalues of the
+//                  species it has at a zero, among themselves.
 //   relaxation     How much of a column a run of the time the solve was given
 //                  (max_time) would leave unestablished. A species whose
 //                  turnover is switched off at the steady state has a pivot
@@ -2404,11 +2407,10 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //
 // For whether to step on, against that and what rounding makes of a column:
 // an entry is computed to 1e-16 of its terms, which are the fluxes over |p|,
-// times what the solve magnifies an error by, the condition number (3 in
-// ss_measure_root). kZeroColumn of 1/|p|, times that number, is 1e4 times
-// that, and no move of a column under it is one. (A parameter that scales
-// every rate has a column of nothing, by cancellation: 7e-17 in a network of
-// seven species, moving by 1.4e-16 under every step.) A column of 5,000, for a
+// and no move of a column under kZeroColumn of 1/|p|, 1e4 times that, is one.
+// (A parameter that scales every rate has a column of nothing, by
+// cancellation: 7e-17 in a network of seven species, moving by 1.4e-16 under
+// every step.) A column of 5,000, for a
 // parameter of 1e-8, is 5e-5 of 1/|p| and came back 4% off beside a root that
 // was nearly double, at a state a step moved by under 1%.
 //
@@ -2447,10 +2449,6 @@ static constexpr double kZeroShare = 0.5;
 // 1e5, and each step leaves them there.
 static constexpr double kRoundingShare = 1e-13;
 
-// The most the rate of a species may be, of what it loses, for it to be at rest
-// at a value where a run ended (ss_species_scales).
-static constexpr double kAtRest = 1e-3;
-
 // How far down the species that may be at a zero are put, of where they were
 // returned, to see whether one grows from there (ss_species_scales).
 static constexpr double kNextToNothing = 1e-6;
@@ -2462,13 +2460,6 @@ static constexpr double kNextToNothing = 1e-6;
 // (Simulator._SS_ROOT_COLUMN_SHIFT_MAX), and the two are one number.
 static constexpr double kColumnsSettled = 0.01;
 static constexpr int kNewtonSteps = 10;
-
-// A Newton step that moves no species by more than this of its scale led to
-// the root as nearly as it is computed. Where a column still moves by as much
-// of itself under such a step as under the one before (kStalled of it), it is
-// what rounding makes of nothing, and no further step settles it.
-static constexpr double kStateAtRounding = 1e-10;
-static constexpr double kStalled = 0.5;
 
 // How far, of itself, each concentration is moved before the run is taken on
 // from the returned state (find_steady_state): a state the system rests at
@@ -2941,7 +2932,6 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
     std::vector<double> own(static_cast<size_t>(ns)), was(static_cast<size_t>(ns));
     std::vector<double> scale(static_cast<size_t>(ns));
     std::vector<char> at_zero(static_cast<size_t>(ns), 0), falling(static_cast<size_t>(ns), 0);
-    std::vector<char> resting(static_cast<size_t>(ns), 0);
     double all = 0.0;
     for (int i = 0; i < ns; ++i) {
         const size_t k = static_cast<size_t>(i);
@@ -3032,39 +3022,24 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         const double around = std::max(fed, pooled ? allowed[k] : beside);
         const bool rounding = corrected <= kRoundingShare * around;
         const bool halved = corrected <= kZeroShare * returned;
-        at_zero[k] = halved || rounding;
-        // Asked whether it grows from next to nothing (below): one that came
-        // down from something, whatever it came down to. Not asked of where a
-        // run ended: the species that have run out are there at what the
+        // What a Newton step halves may be at a zero, and so may what a run
+        // came up from. What a run brought down by half and left above
+        // rounding is something where the run ended, and is taken over what
+        // it is there. (X' = v·X²/(K² + X²) - d·X has a root at nothing that
+        // it rests at as well as the one a run from above ends at, 1e-9:
+        // stopped at 1e-7 it is halved by a step, nothing makes it at zero and
+        // it does not grow from next to nothing. Beside a species at 200 whose
+        // column is asked, X's own entry is no part of what the steps go by,
+        // and came back 124 times what it is. The run ends with X at 1e-9.)
+        at_zero[k] = rounding || (halved && pair != SsPair::RunEnd);
+        // Asked whether it grows from next to nothing (below): one that a
+        // Newton step brought down to something. Not asked of where a run
+        // ended: the species that have run out are there at what the
         // integrator's tolerance left of them, of either sign and in no
         // proportion (z at -5e-14 and ez at 4e-13 in BIOMD0000000092, where
         // e + z <-> ez -> e + w has used z up), and one of them grows towards
         // what the other would keep of it.
-        falling[k] = pair != SsPair::RunStart && halved && returned > kRoundingShare * around;
-        // Asked whether it has come to rest, of where a run ended: one that is
-        // still something there.
-        resting[k] = halved && !rounding;
-    }
-    // Where `y_c` is where a run ended, a species that is still something there
-    // and whose rate is nothing beside what it loses has come to rest at a
-    // value. One that is running out loses all it loses. (X' = v·X²/(K² + X²)
-    // - d·X has a root at nothing that it rests at as well as the one a run
-    // from above ends at, 1e-9: stopped at 1e-7 it is halved by a step, nothing
-    // makes it at zero and it does not grow from next to nothing. The run ends
-    // with it at 1e-9, at rest. Beside a species at 200 whose column is asked,
-    // X's own entry is no part of what the steps go by, and came back 124
-    // times what it is.)
-    if (pair == SsPair::RunEnd) {
-        std::vector<double> rate(static_cast<size_t>(ns), 0.0);
-        rhs.eval(0.0, y_c, rate.data());
-        for (int i = 0; i < ns; ++i) {
-            const size_t k = static_cast<size_t>(i);
-            const double loss = std::abs(J[k * static_cast<size_t>(ns) + k]);
-            if (at_zero[k] && resting[k] &&
-                std::abs(rate[k]) <= kAtRest * loss * std::abs(y_c[i])) {
-                at_zero[k] = 0;
-            }
-        }
+        falling[k] = pair == SsPair::NewtonStep && halved && !rounding;
     }
     // Those that something left over makes are not at a zero, and neither is one
     // that grows from next to nothing: with every such species at a millionth
@@ -3321,13 +3296,9 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // returned ones, until the state is stepped on (6). `stepped_columns` are
     // those of the state last measured, and `A_at` its factors.
     std::vector<double> in_hand(result.sensitivity), stepped_columns, A_at, matrix_at;
-    // How far a column moved under the last step, of itself: what the steps go
-    // by. What is reported is that against kSmallColumn. And what rounding makes
-    // of a column, of 1/|p| (kZeroColumn), which is never more than that.
+    // How far a column moved under the last step, of itself (kZeroColumn): what
+    // the steps go by. What is reported is that against kSmallColumn.
     double moved_of_itself = 0.0;
-    const double magnified =
-        std::isfinite(result.sens_root_condition) ? std::max(1.0, result.sens_root_condition) : inf;
-    const double rounding_share = std::min(kZeroColumn * magnified, kSmallColumn);
     std::vector<double> at(returned);
     std::vector<char> at_a_zero; // which species are at a zero, at the last state measured
     bool factored_at = false;
@@ -3484,7 +3455,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                     result.sens_root_column_param = p;
                 }
                 const double of_itself =
-                    over_scale(change_size, std::max(size, rounding_share * per_p));
+                    over_scale(change_size, std::max(size, kZeroColumn * per_p));
                 if (!(of_itself <= moved_of_itself)) {
                     moved_of_itself = std::isfinite(of_itself) ? of_itself : inf;
                 }
@@ -3550,9 +3521,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     //    back four orders off at a state four orders from its root.) They
     //    are then taken at the stepped state, which is nearer, and that state
     //    is stepped again, until a step moves neither the state nor any column
-    //    by more than kColumnsSettled of itself, or moves the state by no more
-    //    than rounding and the columns by no less than the step before
-    //    (kStateAtRounding, kStalled), or kNewtonSteps are spent. The
+    //    by more than kColumnsSettled of itself, or kNewtonSteps are spent. The
     //    last state is the one returned, with its columns, where the step to
     //    it moved the state and the columns by no more than the caller
     //    refuses above (a column against kSmallColumn, as reported): those of
@@ -3560,7 +3529,6 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     //    step moves nothing, nothing is changed, and the result is the
     //    solver's own to the last bit.
     int steps = 0;
-    double moved_before = inf;
     for (int k = 1; k <= kNewtonSteps; ++k) {
         const std::vector<double> *to = &stepped.to;
         bool evaluated = measure_at(*to, k == 1);
@@ -3570,11 +3538,8 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         }
         const bool state_settled = result.sens_root_state_shift <= kColumnsSettled;
         const bool settled = moved_of_itself <= kColumnsSettled && state_settled;
-        const bool stalled = k > 1 && result.sens_root_state_shift <= kStateAtRounding &&
-                             moved_of_itself >= kStalled * moved_before;
-        moved_before = moved_of_itself;
         const bool usable = evaluated && factored_at && all_finite(stepped_columns);
-        if (settled || stalled || !usable || k == kNewtonSteps) {
+        if (settled || !usable || k == kNewtonSteps) {
             const bool theirs =
                 usable && state_settled && result.sens_root_column_shift <= kColumnsSettled;
             if (theirs && k > 1) {
@@ -3710,10 +3675,10 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         // (ss_species_scales), and either way round: of the two, either can be
         // the one nearer the steady state. A species that has run out is at
         // nothing in the state Newton stepped to and at 1e-12 where the run
-        // from the solver's state has got to (BIOMD0000000178), or the other
-        // way about, where the steps stopped with a cascade still on its way
-        // down (BIOMD0000001000): it is at a zero in both. How far the run
-        // moved each species is taken over the same.
+        // from the solver's state has got to (BIOMD0000000178, and a substrate
+        // an enzyme has used up), or the other way about, where the steps
+        // stopped with a cascade still on its way down: it is at a zero in
+        // both. How far the run moved each species is taken over the same.
         std::vector<double> held_scale =
             ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_ss, y_h.data(), SsPair::RunEnd);
         {
@@ -3777,7 +3742,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                 const bool stayed = result.sens_root_hold_drift <= kColumnsSettled;
                 const double moved_by =
                     change /
-                    std::max(top, (stayed ? kSmallColumn : rounding_share) / (pv > 0.0 ? pv : 1.0));
+                    std::max(top, (stayed ? kSmallColumn : kZeroColumn) / (pv > 0.0 ? pv : 1.0));
                 if (!(moved_by <= worst)) {
                     worst = std::isfinite(moved_by) ? moved_by : inf;
                     result.sens_root_hold_param = p;

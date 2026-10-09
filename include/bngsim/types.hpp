@@ -1374,12 +1374,12 @@ struct SteadyStateResult {
     //   columns. The same in any units of the species and of the equations.
     //   Infinite where the matrix has no inverse.
     // sens_root_column_shift: the largest move of a column of dY_ss/dp when it
-    //   is solved again a Newton step on, as a fraction of the largest the
-    //   column has been at any of the states, each entry over its species'
-    //   scale (or of 1e-13/|p|, which is rounding). How far the columns are
-    //   from those of the root. Where the first step moves one by more than 1%, the state is
-    //   stepped on until none does, up to ten steps, and this is the move at
-    //   the last.
+    //   is solved again a Newton step on, as a fraction of the larger the
+    //   column is at the two states, each entry over its species' scale, and
+    //   of no less than 1e-3/|p|. How far the columns are from those of the
+    //   root. Where the first step moves one by more than 1% of itself (what
+    //   rounding makes of a column apart), the state is stepped on until none
+    //   does, up to ten steps, and this is the move at the last.
     // sens_root_state_shift: the largest move of a species under that step,
     //   over its scale, and sens_root_state_species the species (0-based). A
     //   state that moves is stepped on as one whose columns move is.
@@ -1398,7 +1398,9 @@ struct SteadyStateResult {
     // sens_root_growth_rate / sens_root_spectral_radius: the largest real part
     //   among the eigenvalues of that system at the returned state, and the
     //   largest eigenvalue in size (up to 512 unknowns, with the eigensolver of
-    //   root_stability). Not a number, and 0, where they were not taken.
+    //   root_stability). Above 512, those of the species the state has at a
+    //   zero, among themselves: whether one grows from next to nothing. Not a
+    //   number, and 0, where none were taken.
     // sens_root_relaxation: the most of a column of dY_ss/dp that a run of
     //   max_time would leave unestablished, as a fraction of the column's
     //   largest entry (as above): the bound A⁻¹·column/max_time where that is

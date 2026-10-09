@@ -546,13 +546,16 @@ def test_a_column_that_is_nothing_at_the_root_is_returned_as_nothing(tmp_path):
     away: a column that moves by all of itself. The state is stepped, the
     columns are nothing at the next state and at the one after, and that is
     what is returned. (X and Y are at a zero, taken over the 100 that G, which
-    makes them, started at.)"""
+    makes them, started at. The last step leaves one of them at -6e-59, and
+    it is returned at zero: what rounding left below a zero is no
+    concentration.)"""
     out = bngsim.Simulator(_net(tmp_path, DECAY), method="ode").steady_state(
         sensitivity_params=["k1", "k2", "k3"]
     )
     assert out.sens_root_newton_steps == 2
     assert np.max(np.abs(np.asarray(out.sensitivity))) < 1e-30
     assert np.max(np.abs(np.asarray(out.concentrations))) < 1e-30
+    assert np.min(np.asarray(out.concentrations)) >= 0.0
     np.testing.assert_allclose(out.sens_species_scale, [100.0, 100.0, 100.0])
 
 
@@ -2016,19 +2019,23 @@ end reactions
 def test_species_that_ran_out_are_at_a_zero_where_the_run_ends_too(tmp_path):
     """S is used up, and the solver stops with S and ES at -3e-9 and -2e-9, a
     thousandth of what they were. The steps take them to nothing. The run that
-    is taken on ends with them at what its tolerance left, of either sign, and
-    taken over that they would have moved by all of themselves: the two states
-    are asked either way round what a species is taken over, and one that is
-    at a zero in either is at a zero. dP*/dS0 = 1 and dE*/dE0 = 1, and nothing
-    else moves anything."""
+    is taken on for 200 ends with them at what it has left of that, 1e-17,
+    which is not rounding beside the 2e-6 they share with P: taken over that
+    they would have moved by all of themselves. The two states are asked
+    either way round what a species is taken over, and one that is at a zero
+    in either is at a zero. dP*/dS0 = 1 and dE*/dE0 = 1, and nothing else
+    moves anything."""
     sim = bngsim.Simulator(_net(tmp_path, USED_UP), method="ode")
-    out = sim.steady_state(sensitivity_params=["kf", "kc", "S0", "E0"])
-    assert out.sens_root_newton_steps >= 2
-    np.testing.assert_allclose(out.concentrations, [1e-6, 0.0, 0.0, 2e-6], rtol=1e-12, atol=1e-20)
-    expected = np.zeros((4, 4))
-    expected[0, 3] = expected[3, 2] = 1.0
-    np.testing.assert_allclose(out.sensitivity, expected, rtol=1e-12, atol=1e-12)
-    assert out.sens_root_hold_drift < 1e-3
+    for max_time in (200.0, 1e6):
+        out = sim.steady_state(sensitivity_params=["kf", "kc", "S0", "E0"], max_time=max_time)
+        assert out.sens_root_newton_steps >= 2
+        np.testing.assert_allclose(
+            out.concentrations, [1e-6, 0.0, 0.0, 2e-6], rtol=1e-12, atol=1e-20
+        )
+        expected = np.zeros((4, 4))
+        expected[0, 3] = expected[3, 2] = 1.0
+        np.testing.assert_allclose(out.sensitivity, expected, rtol=1e-12, atol=1e-12)
+        assert out.sens_root_hold_drift < 1e-3
 
 
 # B is made at s·sqrt(1 - A), beside an A that nothing moves, a billionth under 1.
@@ -2213,6 +2220,32 @@ def test_the_same_beside_a_species_with_the_larger_entry_is_refused_by_the_run(t
         match=r"#995.*not one a run stays at.*moves X\(\) by 1\d\d% of what it is taken over",
     ):
         sim.steady_state(sensitivity_params=["d"])
+
+
+def test_a_parameter_that_hardly_matters_does_not_hide_a_state_a_run_leaves(tmp_path):
+    """d = d0 + eps·q with eps = 1e-12, and the column of q asked alone: it is
+    eps times that of d. At the state the solver stopped at, with X at 1.3e-7
+    and taken over the 1 it started at, the column is under what rounding
+    makes of one, and no step is taken. The run that is taken on ends with X
+    at 9.9e-10. Where a run moved a species, a column is asked how far it
+    moved of itself, however small it is, and this one moved by 99%. (At
+    eps = 1e-8 the column is something, the steps are taken, and
+    dX*/dq = eps·dX*/dd is returned.)"""
+    weak = ACTIVATES_ITSELF.replace(
+        "    3 d   5e-3\n", "    3 d0  5e-3\n    4 eps {eps}\n    5 q   1.0\n    6 d   d0+eps*q\n"
+    )
+    assert weak != ACTIVATES_ITSELF
+    root, by_d, _ = _self_activation()
+    sim = bngsim.Simulator(_net(tmp_path, weak.format(eps="1e-8")), method="ode")
+    out = sim.steady_state(sensitivity_params=["q"])
+    assert np.asarray(out.concentrations)[0] == pytest.approx(root, rel=1e-5)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(1e-8 * by_d, rel=1e-5)
+    sim = bngsim.Simulator(_net(tmp_path, weak.format(eps="1e-12"), "weaker.net"), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*not one a run stays at.*moves X\(\) by 99% .*the column of q",
+    ):
+        sim.steady_state(sensitivity_params=["q"])
 
 
 # X' = s - k·(X - c)²: X rests at c + sqrt(s/k), 1e-4 above a point where the
@@ -2547,6 +2580,25 @@ def test_biomd1001_species_that_ran_out_are_taken_over_what_stands_beside_them()
     assert out.sens_root_hold_time >= 1e6
     scale = dict(zip(out.species_names, out.sens_species_scale, strict=True))
     assert scale["TGFb_In"] > 1.0 and scale["pS2_c"] > 1.0
+
+
+def test_biomd92_species_that_ran_out_are_not_asked_what_grows_where_a_run_ended():
+    """e + z <-> ez -> e + w has used z up. The steps take z and ez to
+    nothing, and the run that is taken on ends with them at -5e-14 and 4e-13:
+    what its tolerance left, of either sign and in no proportion. Asked
+    whether one grows from next to nothing in the proportions they have
+    there, ez does, towards what z would keep of it, and it was taken for a
+    species with a value of its own that had moved by all of itself. That is
+    asked of a Newton step, and not of where a run ended."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000092")), method="ode")
+    out = sim.steady_state(
+        sensitivity_params=["_lp_v1_k1", "_lp_v2_k21", "_lp_v2_k22", "_lp_v3_k3"]
+    )
+    assert out.sens_root_newton_steps >= 2
+    at = dict(zip(out.species_names, np.asarray(out.concentrations), strict=True))
+    assert abs(at["z"]) < 1e-20 and abs(at["ez"]) < 1e-20
+    assert at["e"] == pytest.approx(2.4e-5, rel=1e-9)
+    assert out.sens_root_hold_drift < 1e-3
 
 
 def test_biomd5_by_newton_is_a_root_inside_its_limit_cycle():

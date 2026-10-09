@@ -7013,47 +7013,63 @@ class Simulator:
     #: an isolated root and the columns are refused (issue #995).
     #: ``ss_measure_root`` in ``steady_state.cpp`` says what is measured and why
     #: the matrix at the returned state cannot be asked instead. A root of
-    #: order m keeps ((m-1)/m)^(m-1), which is 1/2 at most.
+    #: order m keeps ((m-1)/m)^(m-1): 1/2 at a double root, 0.58 at 1.5, and
+    #: 0.70 at 1.2, which the limit lets by. The columns of such a root are
+    #: then asked like any others, and settle at nothing or do not settle.
     #:
     #: Measured over the corpus (issue #995): the 585 ``ode_fullnet`` networks
     #: and the 1,323 BioModels SBML files, with up to 40 parameters each. 791
-    #: return finite columns on main. Each column was held against the forward
-    #: sensitivities of a run to 1e5, and 1,741 of them against central
-    #: differences of plain runs to 1e5 and to 1e6 as well; a column is wrong
-    #: where an entry, over its species' scale, is more than 1% of the column's
-    #: largest such entry from that (a column whose every entry is under
-    #: 1e-3/|p| is a zero). 741 models gave a verdict: 667 right and 74 wrong,
-    #: of which main returned 15 with nothing logged and 57 beside the warning.
+    #: return finite columns on main (12,503 columns). Each column was held
+    #: against the forward sensitivities of a run to 1e5 where that run had
+    #: settled, and 2,041 of them, in 777 models, against central differences
+    #: of plain runs to 1e5 and to 1e6, which decide where the two disagree.
+    #: A column is wrong where an entry, over its species' scale, is more than
+    #: 1% of the column's largest such entry from that (a column whose every
+    #: entry is under 1e-3/|p| is judged against that). Main's own columns:
+    #: 655 models right and 98 wrong, of which main returned 40 with nothing
+    #: logged, 56 beside the warning and 2 it refused (#758); 38 without a
+    #: verdict.
     #:
     #:   ==================  =======  ==========================  ==============
-    #:   ratio               limit    right and returned (648)    beyond it
+    #:   ratio               limit    right and returned (647)    beyond it
     #:   ==================  =======  ==========================  ==============
-    #:   determinant         0.6      0.74 to 1.0                 0.59 and under
-    #:   pivot share         1e-10    4.1e-8 at least             2.9e-11, under
+    #:   determinant         0.6      0.74 to 1.2                 0.59 and under
+    #:   pivot share         1e-10    4.1e-8 at least             3.1e-11, under
     #:   condition           1e12     1.3e9 at most               3.4e13 and up
-    #:   column shift        0.01     7.0e-3 at most              1.4e-2 and up
-    #:   hold shift          0.01     7.0e-3 at most              1.6e-2 and up
-    #:   relaxation          0.01     1.0e-3 at most              2.9e-2 and up
+    #:   column shift        0.01     2.1e-3 at most              1.2e-2 and up
+    #:   hold shift          0.01     6.7e-3 at most              1.2e-2 and up
+    #:   relaxation          0.01     1.0e-3 at most              1.8e-2 and up
     #:   ==================  =======  ==========================  ==============
     #:
-    #: All 74 wrong models are refused, and so are 19 of the 667 right ones:
-    #: four FceRI networks whose ligand does not dissociate (the Jacobian is
-    #: singular once the free receptor is gone, and the columns that were asked
-    #: agree with a time course all the same), six whose state is a root of
-    #: higher order or sits where a rate law switches, two at a state the
-    #: system does not rest at though a run from where the model starts stays
-    #: there, and seven others. The results that are returned are those of
-    #: main to the last bit, in all 791.
+    #: Of the 791, 660 are returned: 647 right, 12 without a verdict, and one
+    #: wrong, for which ``steady_state()`` itself stops at a state that is not
+    #: where a run ends, at the default tolerances and whatever is asked. 131
+    #: are refused: 67 wrong, 27 without a verdict and 37 right. Of main's 98
+    #: wrong models, 72 are refused and 24 are returned right, at the root the
+    #: solve stepped to. 557 results are not stepped, and those are main's to
+    #: the last bit.
+    #:
+    #: The 37 right models that are refused: 14 on the determinant (four FceRI
+    #: networks whose ligand does not dissociate, where the Jacobian is
+    #: singular once the free receptor is gone and the columns asked agree with
+    #: a time course all the same; states that are a root of higher order, or
+    #: sit where a rate law switches), 10 where the run that is taken on ends
+    #: at other columns (species still on their way at ``max_time``), 8 whose
+    #: columns do not settle under the steps (four models of one family have
+    #: species whose turnover stops when a cascade has run out, and columns
+    #: that are 0/0 there), 2 each on the relaxation and on an eigenvalue right
+    #: of zero, and 1 on a pivot.
     #:
     #: ``min|U|/max|U|``, which this replaces, has no cut that does better than
-    #: 10 right models refused and 21 wrong ones returned; at the 1e-8 it warned
-    #: at, 36 and 15. The same ratio after the matrix is equilibrated, and each
-    #: pivot against the norm of its column, do worse (68 either way), and the
-    #: rank at a state moved off the steady state shows none of the 74. All
-    #: three read the epidemic model of the issue as an ordinary system: at the
-    #: state the solve returns its Jacobian has full rank, with a determinant of
-    #: b·g·I, and is of order one in every entry after any scaling. What marks
-    #: it is that the determinant goes with what is left of the residual.
+    #: 14 right models refused and 50 wrong ones returned; at the 1e-8 it warned
+    #: at, 37 and 40. The same ratio after the matrix is equilibrated, and each
+    #: pivot against the norm of its column, do worse (96 and 97 either way),
+    #: and the rank at a state moved off the steady state shows none of the 98.
+    #: All three read the epidemic model of the issue as an ordinary system: at
+    #: the state the solve returns its Jacobian has full rank, with a
+    #: determinant of b·g·I, and is of order one in every entry after any
+    #: scaling. What marks it is that the determinant goes with what is left of
+    #: the residual.
     _SS_ROOT_DETERMINANT_RATIO_MIN = 0.6
 
     #: The largest the componentwise condition number of that system may be:
@@ -7068,12 +7084,14 @@ class Simulator:
 
     #: A column of ``dY_ss/dp`` may move by this fraction of its largest entry
     #: when it is solved again at the state one Newton step on, each entry
-    #: taken over its species' scale (``sens_species_scale``). Beyond it the
-    #: returned state is short of the root for the columns, and the solve
-    #: steps it on, up to ten times, until the columns of two states in a row
-    #: are within this (``kColumnsSettled`` in ``steady_state.cpp``, the same
-    #: number). The state and columns returned are then the last. It refuses
-    #: where they have not settled.
+    #: taken over its species' scale (``sens_species_scale``), and so may the
+    #: state. The solve has stepped the state on by then, up to ten times,
+    #: while a column moved by more than this of itself
+    #: (``kColumnsSettled`` in ``steady_state.cpp``, the same number), and the
+    #: state and columns it returns are the last. What is refused is a column
+    #: that still moves by more than this of the larger of itself and
+    #: ``1e-3/|p|``: one smaller than that is what rounding makes of nothing,
+    #: and is returned as that (``kSmallColumn``).
     _SS_ROOT_COLUMN_SHIFT_MAX = 0.01
 
     #: The most of a column that a run of ``max_time`` may leave unestablished.
@@ -7088,7 +7106,7 @@ class Simulator:
     #: that is what a cancellation left is rounding's share, 1e-16: the matrix
     #: is singular whatever the state, and the componentwise condition number
     #: does not always say so (two sinks of one total: 3.7). The limit is
-    #: between the two: under a millionth of the least among the corpus's right
+    #: between the two: a four-hundredth of the least among the corpus's right
     #: models that are returned, and a million times rounding's share.
     _SS_ROOT_PIVOT_SHARE_MIN = 1e-10
 
@@ -7105,10 +7123,15 @@ class Simulator:
     #: leaves by a hundredth of itself from a millionth away, a growth of 1e4;
     #: this shows the ones between, which a run of ``max_time`` is too short
     #: for, an oscillation among them that the relaxation does not see. Systems
-    #: of up to 512 unknowns are asked. Of the corpus models that are returned,
-    #: none has an eigenvalue right of zero at all (753 with a spectrum; the
-    #: nearest is at -3.4e-6, an exponent of -3.4), and every model that has
-    #: one is refused by something else as well.
+    #: of up to 512 unknowns are asked, and larger ones for the species they
+    #: have at a zero. Of the corpus models that are returned,
+    #: none has an eigenvalue right of zero at all (654 with a spectrum; the
+    #: nearest is at -3.4e-6, an exponent of -3.4). 44 models have one: 38
+    #: are refused before this is asked, one by the run, and 5 by this. Two
+    #: of the 5 are right by the oracle, and the run that is taken on stays at
+    #: each (BIOMD0000000546, at 6.2e-8, and BIOMD0000000908, which has a
+    #: species the model does not start with: the eigenvalues ask what its
+    #: arrival would do, and the run does not).
     _SS_ROOT_GROWTH_MAX = 0.01
 
     def _raise_if_not_an_isolated_root(
