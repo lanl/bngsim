@@ -1348,6 +1348,103 @@ struct SteadyStateResult {
     // Well-posed corpus models land at 1e-4 - 1e-1; singular ones at 1e-12 - 1e-9.
     // 0.0 when no sensitivity was requested. See lu_diag_rcond in steady_state.cpp.
     double sens_jacobian_rcond = 0.0;
+    // Issue #995 — whether the steady state is an isolated root of the system
+    // dY_ss/dp was solved on, one the system rests at, and the returned state
+    // on it: what makes -J⁻¹·(∂f/∂p) the derivative. See ss_measure_root in
+    // steady_state.cpp, which takes one Newton step from the returned state
+    // and factors the system again there, and find_steady_state, which takes
+    // a run on for max_time from a millionth beside the returned state.
+    //
+    // sens_root_determinant_ratio: the determinant of that system at the
+    //   corrected state over the one at the returned state. 1, to the accuracy
+    //   of the solve, at an isolated root; 1e-8 or 0 where the Jacobian is
+    //   singular at the steady state the solve was approaching (a continuum of
+    //   steady states); 1/2 at a root of higher order; anything where a rate
+    //   law is discontinuous between the two states or the returned state is
+    //   far from its root. 0 where the matrix has no factorization, and not a
+    //   number where the corrected state is not one.
+    // sens_root_pivot_share: the least a pivot of the factorization at the
+    //   returned state is of the terms it was computed from. 1 for a pivot
+    //   nothing cancelled into, 1e-16 for one that is what rounding left of a
+    //   zero: a matrix that is singular whatever the state. 0 where a pivot is
+    //   an exact zero.
+    // sens_root_condition: the componentwise condition number of that system
+    //   at the returned state, the Perron root of |A⁻¹|·|A|: how many times a
+    //   relative error in each entry of the Jacobian is magnified in the
+    //   columns. The same in any units of the species and of the equations.
+    //   Infinite where the matrix has no inverse.
+    // sens_root_column_shift: the largest move of a column of dY_ss/dp when it
+    //   is solved again a Newton step on, as a fraction of the larger the
+    //   column is at the two states, each entry over its species' scale, and
+    //   of no less than 1e-3/|p|. How far the columns are from those of the
+    //   root. Where the first step moves one by more than 1% of itself (what
+    //   rounding makes of a column apart), the state is stepped on until none
+    //   does, up to ten steps, and this is the move at the last.
+    // sens_root_state_shift: the largest move of a species under that step,
+    //   over its scale, and sens_root_state_species the species (0-based). A
+    //   state that moves is stepped on as one whose columns move is.
+    // sens_root_newton_steps: the Newton steps that were taken so. 0 where
+    //   neither the state the solver stopped at nor its columns moved: the
+    //   result is then the solver's own. Otherwise concentrations, residual
+    //   and sensitivity are those of the stepped state (a species the mask
+    //   left out follows a law that holds it with the stepped ones).
+    // sens_root_hold_shift: the same at the state that run ends at: how far
+    //   the columns are from those of where a run ends. Not a number where the
+    //   run could not be made. sens_root_hold_drift is the largest move of a
+    //   species over the run, against the larger of its two values;
+    //   sens_root_hold_steps and sens_root_hold_time are the steps the run
+    //   took and the time it reached, which is short of max_time where it
+    //   used up its steps (max_steps).
+    // sens_root_growth_rate / sens_root_spectral_radius: the largest real part
+    //   among the eigenvalues of that system at the returned state, and the
+    //   largest eigenvalue in size (up to 512 unknowns, with the eigensolver of
+    //   root_stability). Above 512, those of the species the state has at a
+    //   zero, among themselves: whether one grows from next to nothing. Not a
+    //   number, and 0, where none were taken.
+    // sens_root_relaxation: the most of a column of dY_ss/dp that a run of
+    //   max_time would leave unestablished, as a fraction of the column's
+    //   largest entry (as above): the bound A⁻¹·column/max_time where that is
+    //   small, and what a few implicit steps over max_time leave of the column
+    //   where it is not. A column that is mostly left is that of a steady
+    //   state no run of that length reaches.
+    // sens_species_scale: what an entry for each species is small against
+    //   (ss_species_scales): its own concentration, the larger of the returned
+    //   and the corrected one. A species at a zero, one that the steady state
+    //   has none of and nothing there makes, is taken over where it has been
+    //   and the largest such among the species the Jacobian couples it to, no
+    //   more than a conserved total it belongs to allows. Empty when no
+    //   sensitivity was requested.
+    // sens_mask_held_species / sens_mask_reader_species: a species the mask
+    //   left out and no law gives, which is held where the solve left it, and
+    //   a kept species whose rate reads it (0-based; -1 where there is none).
+    //   The columns are then not those of the steady state.
+    // sens_root_*_species / sens_root_*_param: the species (0-based) or the
+    //   column (0-based, into sens_param_names) each of the above is read at;
+    //   -1 where none.
+    double sens_root_determinant_ratio = 1.0;
+    double sens_root_pivot_share = 1.0;
+    double sens_root_condition = 1.0;
+    double sens_root_column_shift = 0.0;
+    double sens_root_relaxation = 0.0;
+    double sens_root_hold_drift = 0.0;
+    double sens_root_hold_shift = 0.0;
+    int sens_root_determinant_species = -1;
+    int sens_root_pivot_species = -1;
+    int sens_root_condition_species = -1;
+    int sens_root_column_param = -1;
+    int sens_root_relaxation_param = -1;
+    int sens_root_hold_species = -1;
+    int sens_root_hold_param = -1;
+    std::vector<double> sens_species_scale; // one per species; empty with no sensitivities
+    int sens_root_newton_steps = 0;
+    double sens_root_state_shift = 0.0;
+    int sens_root_state_species = -1;
+    int sens_root_hold_steps = 0;
+    double sens_root_hold_time = 0.0;
+    double sens_root_growth_rate = std::numeric_limits<double>::quiet_NaN();
+    double sens_root_spectral_radius = 0.0;
+    int sens_mask_held_species = -1;
+    int sens_mask_reader_species = -1;
 
     // ─── Observable / function output sensitivities at steady state (GH #12) ───
     // The chain-rule projection of the species dY_ss/dp above onto the model's

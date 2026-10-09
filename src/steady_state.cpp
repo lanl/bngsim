@@ -58,6 +58,7 @@
 #include <cmath>
 #include <complex>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -961,16 +962,22 @@ class SteadyStateMarcher {
                 // Exhausted this march's time budget without converging.
                 break;
             }
+            if (step_budget_ >= 0 && ++steps_taken_ >= step_budget_) {
+                // A run that is taken on (take_on_for): out of steps.
+                break;
+            }
 
             if (resid < best_resid * (1.0 - STAGNATION_RTOL)) {
                 best_resid = resid;
                 stagnant = 0;
             } else if (++stagnant >= STAGNATION_STEPS) {
                 stagnant = 0;
-                if (++reinits > MAX_REINITS) {
+                if (++reinits > MAX_REINITS && step_budget_ < 0) {
                     // Escaped as often as it is worth escaping and still not
                     // settling: this is the model, not the history. Stop here
                     // rather than spend the rest of the budget confirming it.
+                    // (A run that is taken on has its steps for a budget, and
+                    // goes on: its residual is not asked to fall.)
                     break;
                 }
                 // Banked before the reset, which zeroes them.
@@ -1028,6 +1035,49 @@ class SteadyStateMarcher {
     // Did CVODE give up on a march (any negative flag), as opposed to running
     // out of this march's time budget? Sticky across the ladder's rungs.
     bool integrator_failed() const { return integrator_failed_; }
+
+    // The time this session's marches have reached.
+    double time() const { return static_cast<double>(t_); }
+
+    // Let a step fail its error test this many times before the integrator
+    // gives up (CVODE allows 7). A march from a state moved off a steady state
+    // has to bring its first step down to the time of the fastest mode, 5e-15
+    // for a rate of 1e14, and each failure brings it down by a factor of five
+    // at most.
+    void allow_error_test_failures(int n) { CVodeSetMaxErrTestFails(cvode_mem_, n); }
+
+    // Make the marches of this session a run that is taken on: `steps` steps
+    // in all, and no stopping because the residual has ceased to fall, which
+    // at a steady state it has. A march of a solve stops there, having no
+    // steady state to find; this one is asked whether it gets to its time.
+    void take_on_for(long steps) { step_budget_ = steps; }
+
+    // Whether such a run used up its steps.
+    bool out_of_steps() const { return step_budget_ >= 0 && steps_taken_ >= step_budget_; }
+
+    // Start again where a march the integrator gave up on stopped, with every
+    // species that `was` not below zero and is now put at zero. A species on
+    // its way to zero is stepped below it, and a rate that has no value there
+    // (a Hill exponent of 2.5) ends the march; at zero it has one. False if
+    // the integrator cannot be started again.
+    bool restart_at_zero(const std::vector<double> &was) {
+        double *y_data = y_.data();
+        for (int i = 0; i < ns_; ++i) {
+            if (was[static_cast<size_t>(i)] >= 0.0 && !(y_data[i] >= 0.0)) {
+                y_data[i] = 0.0;
+            }
+        }
+        long int nst = 0, nfe = 0;
+        CVodeGetNumSteps(cvode_mem_, &nst);
+        CVodeGetNumRhsEvals(cvode_mem_, &nfe);
+        steps_before_reinit_ += nst;
+        rhs_evals_before_reinit_ += nfe;
+        if (CVodeReInit(cvode_mem_, t_, y_) != CV_SUCCESS) {
+            return false;
+        }
+        integrator_failed_ = false;
+        return true;
+    }
 
   private:
     // The Newton matrix and the solver that factors it.
@@ -1117,6 +1167,8 @@ class SteadyStateMarcher {
     // CVODE's counters, and these carry the total across the resets.
     long int steps_before_reinit_ = 0;
     long int rhs_evals_before_reinit_ = 0;
+    long step_budget_ = -1; // of a run that is taken on; none for a solve
+    long steps_taken_ = 0;
 };
 
 static SteadyStateResult solve_by_integration(NetworkModel &model, SteadyStateRhs &rhs,
@@ -2221,11 +2273,1521 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
     return dx0;
 }
 
-static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
-                                   SteadyStateResult &result,
-                                   const std::vector<std::string> &param_names,
-                                   const std::string &opts_jacobian, const ResidualSubspace &sub,
-                                   const std::vector<double> &dx0) {
+// ---------------------------------------------------------------------------
+// Is the steady state a regular root of the system dY_ss/dp is solved on, and
+// is the returned state on it? (issue #995)
+// ---------------------------------------------------------------------------
+//
+// -J⁻¹·(∂f/∂p) is the derivative of the steady state only where the steady
+// state is an isolated root with a Jacobian of full rank there. Where the roots
+// form a continuum, where a run ends depends on the path it took, and the
+// derivative of that end point is not in the root equations at all. `S + I ->
+// 2 I`, `I -> R` ends at whatever S the epidemic left: every state with I = 0 is
+// a steady state, dS*/dg is 66.05 by the final-size relation, and the solve
+// returned 26.25.
+//
+// The matrix at the state a solve RETURNS does not say so. Integration stops
+// within `tol` of the steady state, not on it, and there the Jacobian of such a
+// system has full rank: for the model above its determinant is b·g·I with
+// I = 1.3e-9, and after any scaling of rows and columns it is a matrix of order
+// one in every entry. Its conditioning, however it is measured, is that of an
+// ordinary system. What marks it is that the determinant is PROPORTIONAL TO
+// WHAT IS LEFT OF THE RESIDUAL: it goes to zero as the state goes to the steady
+// state. So the question is asked of the limit:
+//
+//   1. Factor the matrix at the returned state, y.
+//   2. Take one Newton step from y towards the root, y_c = y − J⁻¹·f(y). (A
+//      concentration the step takes below zero is set to zero only where the
+//      rates have no value below it.)
+//   3. Factor the matrix at y_c in the same elimination order.
+//
+// and, of where a run goes from it:
+//
+//   4. Take a run on for the time the solve was given, from y with every
+//      concentration moved by up to a millionth of itself, to y_h.
+//
+// Where the columns at y_c are not those at y, y is short of the root, and
+// steps 2 and 3 are taken again from y_c, and from where that leads, until the
+// columns stay: the root is what the columns are wanted at.
+//
+// What is read from that is each a ratio of two quantities in the same units:
+// two determinants, a pivot and its terms, a column and the same column at
+// another state. An entry of a column, and a move of a concentration, are taken
+// over the species' own concentration (ss_species_scales), so that the units of
+// a species, the size of its compartment or the scale of a rate change nothing
+// that is asked of it. (A species at a zero has no concentration to be taken
+// over: it is taken over where it has been and what stands beside it.)
+//
+//   determinant    The determinant at y_c over the one at y. At an isolated
+//                  root the step is as small as the solve was accurate and the
+//                  ratio is 1 to that. Where the Jacobian is singular at the
+//                  steady state, the determinant at y is as large as y is far
+//                  from it, and the step removes most of that: the ratio is
+//                  1e-8, or 0. At a double root, which a species nears as
+//                  1/t, a Newton step halves the distance and the ratio is
+//                  1/2; at one of order m it is ((m-1)/m)^(m-1), which is
+//                  0.70 at 1.2, and the columns of such a root are asked
+//                  like any others. A rate law that is discontinuous between the
+//                  two states, `if(x > 1, a, b)` settled at x = 1 where the
+//                  step crosses it, shows the same way, and so does a state
+//                  far from its root: the ratio is then negative, or large.
+//   pivot share    The least a pivot of the factorization at y is of the terms
+//                  it was computed from (ss_pivot_share). A matrix that is
+//                  singular at EVERY state has a zero pivot that is computed
+//                  as whatever rounding left, at y and at y_c alike, and where
+//                  the rows that cancel do not depend on the state the two
+//                  residues are the same number: the ratio above reads 1. Two
+//                  products of one irreversible branch are such a matrix, and
+//                  the pivot of the second is 4e-18 of its terms.
+//   condition      The componentwise condition number of the matrix at y, the
+//                  Perron root of |A⁻¹|·|A|: how many times a relative error in
+//                  each entry is magnified in a solution. A pool of species
+//                  that exchange among themselves and are produced but never
+//                  consumed is singular at every state too, with no pivot
+//                  that small (BIOMD0000000328: 3.88 for -6.32, at 2e16).
+//                  Neither of the two does for the other: the two products
+//                  above read 3.7, the null vectors of the two sides having no
+//                  entry in common. A scaling of the rows or of the columns
+//                  leaves both where they are, as it does not min|U|/max|U|.
+//   column shift   The largest move of a column of dY_ss/dp, as a fraction of
+//                  its largest entry, when the columns are solved again at y_c.
+//                  `tol` bounds the residual, not the distance to the root, and
+//                  a model whose concentrations are 1e-6 passes it a long way
+//                  off: BIOMD0000000002 is accepted 0.02% from its steady
+//                  state, where every column is 5.9% from the derivative. The
+//                  re-solve says so, and the state is then stepped on, a
+//                  Newton step at a time, until the columns of two states in a
+//                  row agree: the state and the columns that are returned are
+//                  those of the root (6, in ss_measure_root). What is left for
+//                  the caller to refuse is a state whose columns have not
+//                  settled when the steps end (kZeroColumn has the two
+//                  measures of a column's move, and which is reported).
+//   hold           The same at y_h: what the columns of where a run ends are,
+//                  and whether the run got there. An integration stops at the
+//                  first state whose residual is under `tol`, which says where
+//                  the run is and not where it is going: BIOMD0000000407
+//                  starts at 3.5e-10 and is returned as it starts, beside a
+//                  root that is stable, so that nothing above marks it, and a
+//                  run takes one of its species from 2.448 to 3e-4. And a
+//                  root, however exactly the state is on it, can be one the
+//                  system leaves: Newton finds the fixed point inside the
+//                  limit cycle of BIOMD0000000005. The run starts a millionth
+//                  beside y because one started on such a root stays on it.
+//                  It has the steps of one output point (max_steps), and one
+//                  that uses them short of its time was not seen to stay.
+//   growth         The largest real part among the eigenvalues of the matrix,
+//                  beside the largest eigenvalue in size, up to the size the
+//                  certificate of a Newton root is held to (issue #78). The
+//                  run shows a state the system leaves within its time. One
+//                  it leaves by an oscillation that grows by less than 1e4 in
+//                  that time the run does not show, and neither does the
+//                  relaxation below, whose implicit steps damp whatever
+//                  oscillates. The spectrum does, and the caller refuses
+//                  where the growth over max_time is more than a hundredth:
+//                  the limit goes with the time, as the question does. A
+//                  system above that size is asked for the eigenvalues of the
+//                  species it has at a zero, among themselves.
+//   relaxation     How much of a column a run of the time the solve was given
+//                  (max_time) would leave unestablished. A species whose
+//                  turnover is switched off at the steady state has a pivot
+//                  that is a number, 7e-105 in MODEL1607210000, and a column
+//                  that is the ratio of two such: 12,500 where no run moves the
+//                  species at all. Nothing above marks it, the state being a
+//                  root to the last bit.
+//
+// A species the mask left out that an equation of the kept species reads is
+// found where the system is built (compute_ss_sensitivity). All of it is
+// reported on the result; the caller refuses the columns (the Python layer, in
+// Simulator._raise_if_not_an_isolated_root, which holds the limits and the
+// corpus measurement behind them).
+
+// A column is asked how far it moved under a Newton step twice
+// (ss_measure_root, 4), each time against the larger it is at the two states,
+// with each entry over its species' scale.
+//
+// For whether to step on, against that and what rounding makes of a column:
+// an entry is computed to 1e-16 of its terms, which are the fluxes over |p|,
+// and no move of a column under kZeroColumn of 1/|p|, 1e4 times that, is one.
+// (A parameter that scales every rate has a column of nothing, by
+// cancellation: 7e-17 in a network of seven species, moving by 1.4e-16 under
+// every step.) A column of 5,000, for a
+// parameter of 1e-8, is 5e-5 of 1/|p| and came back 4% off beside a root that
+// was nearly double, at a state a step moved by under 1%.
+//
+// For whether its columns are those of the root, which is what is reported and
+// what the caller refuses on, against no less than kSmallColumn of 1/|p|: a
+// species moving by 0.1% of its scale when the parameter doubles. A column that
+// is nothing at the root is, at any state, what the state's own rounding makes
+// of 0/0, and can move by all of itself under every step. Where that is under
+// a hundredth of kSmallColumn of 1/|p| it is returned as the nothing it is;
+// above that it is not known (BIOMD0000001000 has a cascade that has run out
+// and species its turnover has stopped for, and a step that moved the state by
+// 1e-14 took a column of theirs from -2.5e-4 to -12,494).
+//
+// (One measure did for both, twice. Against kSmallColumn alone, the column of
+// 5,000 was not asked. Against the largest the column had been at any state,
+// the -12,494 was 0.06% of a transient three steps before and was returned.)
+static constexpr double kZeroColumn = 1e-12;
+static constexpr double kSmallColumn = 1e-3;
+
+// The least a species' scale is of the largest among the species the Jacobian
+// couples it to (ss_species_scales). An entry of a column is computed to about
+// 1e-16 of the column's largest terms times the condition of the solve, and a
+// species nine orders below its neighbours has entries that are that.
+static constexpr double kScaleFloor = 1e-9;
+
+// A species may be at a zero where one Newton step takes it to no more than
+// this of where it was returned (ss_species_scales).
+static constexpr double kZeroShare = 0.5;
+
+// Or where the step takes it under this of what it is computed beside: the
+// terms that make it, over its own rate of loss, and a conserved total it
+// belongs to or, for a species in none, the largest of the species the
+// Jacobian couples it to. A Newton step is computed to 1e-16 of those, and a
+// value a thousand times that is what rounding left, whatever sign it has:
+// species that have run out sit at 1e-24, of either sign, beside others at
+// 1e5, and each step leaves them there.
+static constexpr double kRoundingShare = 1e-13;
+
+// How far down the species that may be at a zero are put, of where they were
+// returned, to see whether one grows from there (ss_species_scales).
+static constexpr double kNextToNothing = 1e-6;
+
+// The most a column may move, of its largest entry, between two states a
+// Newton step apart for the columns to be those of the root, and the Newton
+// steps that are taken from the returned state until none moves by more
+// (ss_measure_root, 6). The first is the limit the caller refuses above
+// (Simulator._SS_ROOT_COLUMN_SHIFT_MAX), and the two are one number.
+static constexpr double kColumnsSettled = 0.01;
+static constexpr int kNewtonSteps = 10;
+
+// What the caller refuses on before it asks how the steps went, whatever they
+// found (Simulator._SS_ROOT_DETERMINANT_RATIO_MIN, _PIVOT_SHARE_MIN and
+// _CONDITION_MAX: the same numbers). No step after the first is taken for a
+// result that is refused already: each is a Jacobian and a factorization, and
+// with them a network of 1,281 species whose determinant had said no took
+// three times what it takes main.
+static constexpr double kDeterminantKept = 0.6;
+static constexpr double kPivotShareLeast = 1e-13;
+static constexpr double kConditionMost = 1e13;
+
+// How far, of itself, each concentration is moved before the run is taken on
+// from the returned state (find_steady_state): a state the system rests at
+// takes that back, and one it does not rest at leaves. A species that is not
+// there is not moved.
+static constexpr double kHoldKick = 1e-6;
+
+// The failures of the error test a step of that run may have
+// (SteadyStateMarcher::allow_error_test_failures).
+static constexpr int kHoldErrorTestFailures = 60;
+
+// How many times a run taken on from the returned state is started again where
+// its integrator gave up (find_steady_state).
+static constexpr int kHoldRestarts = 4;
+
+// What is left of a column after the time the solve was given is found in two
+// steps (ss_measure_root, 4). Under this much by the one-solve bound, the
+// second is not taken: it costs a factorization.
+static constexpr double kRelaxationBoundEnough = 1e-3;
+// The implicit steps the time is taken in where it is. What they leave of a
+// mode of relaxation time τ is (1 + T/(k·τ))^-k against exp(-T/τ): 1.5e-3 for
+// 4.5e-5 at T = 10·τ, 0.39 for 0.37 at T = τ. They err towards a refusal.
+static constexpr int kRelaxationSteps = 8;
+
+// LU of the n×n column-major `a` with partial pivoting (the first largest entry
+// of a column, as SUNDIALS' dense factorization takes it), in place. `row[k]`
+// is the row of the original matrix that ended at k. Returns the column of an
+// exact zero pivot, or -1.
+static int ss_lu_pivoted(std::vector<double> &a, int n, std::vector<int> &row) {
+    row.resize(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) {
+        row[static_cast<size_t>(k)] = k;
+    }
+    for (int k = 0; k < n; ++k) {
+        double *col_k = a.data() + static_cast<size_t>(k) * n;
+        int p = k;
+        for (int i = k + 1; i < n; ++i) {
+            if (std::abs(col_k[i]) > std::abs(col_k[p])) {
+                p = i;
+            }
+        }
+        if (p != k) {
+            for (int j = 0; j < n; ++j) {
+                std::swap(a[static_cast<size_t>(j) * n + k], a[static_cast<size_t>(j) * n + p]);
+            }
+            std::swap(row[static_cast<size_t>(k)], row[static_cast<size_t>(p)]);
+        }
+        const double pivot = col_k[k];
+        if (pivot == 0.0 || !std::isfinite(pivot)) {
+            return k;
+        }
+        for (int i = k + 1; i < n; ++i) {
+            col_k[i] /= pivot;
+        }
+        for (int j = k + 1; j < n; ++j) {
+            double *col_j = a.data() + static_cast<size_t>(j) * n;
+            const double u = col_j[k];
+            if (u == 0.0) {
+                continue;
+            }
+            for (int i = k + 1; i < n; ++i) {
+                col_j[i] -= col_k[i] * u;
+            }
+        }
+    }
+    return -1;
+}
+
+// LU of `a` in the row order another factorization chose, with no pivoting of
+// its own. A pivot that is zero here leaves non-finite entries behind it, which
+// the comparison reads as a pivot that moved.
+static void ss_lu_in_row_order(std::vector<double> &a, int n, const std::vector<int> &row) {
+    std::vector<double> b(a.size());
+    for (int j = 0; j < n; ++j) {
+        const double *src = a.data() + static_cast<size_t>(j) * n;
+        double *dst = b.data() + static_cast<size_t>(j) * n;
+        for (int k = 0; k < n; ++k) {
+            dst[k] = src[row[static_cast<size_t>(k)]];
+        }
+    }
+    for (int k = 0; k < n; ++k) {
+        double *col_k = b.data() + static_cast<size_t>(k) * n;
+        const double pivot = col_k[k];
+        for (int i = k + 1; i < n; ++i) {
+            col_k[i] /= pivot;
+        }
+        for (int j = k + 1; j < n; ++j) {
+            double *col_j = b.data() + static_cast<size_t>(j) * n;
+            const double u = col_j[k];
+            if (u == 0.0) {
+                continue;
+            }
+            for (int i = k + 1; i < n; ++i) {
+                col_j[i] -= col_k[i] * u;
+            }
+        }
+    }
+    a.swap(b);
+}
+
+// Solve with the factors one of the two routines above left: `b` holds the
+// right-hand side on entry and the solution on return.
+static void ss_lu_solve(const std::vector<double> &lu, int n, const std::vector<int> &row,
+                        std::vector<double> &b) {
+    std::vector<double> x(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) {
+        x[static_cast<size_t>(k)] = b[static_cast<size_t>(row[static_cast<size_t>(k)])];
+    }
+    for (int k = 0; k < n; ++k) {
+        const double xk = x[static_cast<size_t>(k)];
+        if (xk == 0.0) {
+            continue;
+        }
+        const double *col_k = lu.data() + static_cast<size_t>(k) * n;
+        for (int i = k + 1; i < n; ++i) {
+            x[static_cast<size_t>(i)] -= col_k[i] * xk;
+        }
+    }
+    for (int k = n - 1; k >= 0; --k) {
+        const double *col_k = lu.data() + static_cast<size_t>(k) * n;
+        x[static_cast<size_t>(k)] /= col_k[k];
+        const double xk = x[static_cast<size_t>(k)];
+        if (xk == 0.0) {
+            continue;
+        }
+        for (int i = 0; i < k; ++i) {
+            x[static_cast<size_t>(i)] -= col_k[i] * xk;
+        }
+    }
+    b.swap(x);
+}
+
+// ss_reduce_jacobian for magnitudes: |J| restricted to `idx`, every product of
+// the reconstruction added with its sign dropped. What the reduced matrix's
+// entries were made of: a law's column and a species' own can cancel in the
+// reduction as two rows can in the elimination, and an entry that is what such
+// a cancellation left is as uncertain as the terms were large.
+static void ss_reduce_jacobian_mass(const double *J, int ns, const ConservationLaws &cl,
+                                    const std::vector<int> &idx, std::vector<double> &mass) {
+    const int n_ind = static_cast<int>(idx.size());
+    std::vector<double> D(static_cast<size_t>(cl.n_laws) * n_ind, 0.0);
+    for (int k = 0; k < cl.n_laws; ++k) {
+        const int dep = cl.dependent[k];
+        const double coeff_dep = std::abs(cl.coefficients[k][dep]);
+        if (coeff_dep < 1e-15)
+            continue;
+        double *Dk = D.data() + static_cast<size_t>(k) * n_ind;
+        for (int j = 0; j < n_ind; ++j) {
+            double acc = std::abs(cl.coefficients[k][idx[j]]);
+            for (int kp = 0; kp < k; ++kp) {
+                const int dep_p = cl.dependent[kp];
+                if (dep_p == dep)
+                    continue;
+                acc += std::abs(cl.coefficients[k][dep_p]) * D[static_cast<size_t>(kp) * n_ind + j];
+            }
+            Dk[j] = acc / coeff_dep;
+        }
+    }
+    mass.assign(static_cast<size_t>(n_ind) * n_ind, 0.0);
+    for (int j = 0; j < n_ind; ++j) {
+        double *col = mass.data() + static_cast<size_t>(j) * n_ind;
+        const double *Jcol_ind = J + static_cast<size_t>(idx[j]) * ns;
+        for (int i = 0; i < n_ind; ++i) {
+            col[i] = std::abs(Jcol_ind[idx[i]]);
+        }
+        for (int k = 0; k < cl.n_laws; ++k) {
+            const double d = D[static_cast<size_t>(k) * n_ind + j];
+            if (d == 0.0)
+                continue;
+            const double *Jcol_dep = J + static_cast<size_t>(cl.dependent[k]) * ns;
+            for (int i = 0; i < n_ind; ++i) {
+                col[i] += std::abs(Jcol_dep[idx[i]]) * d;
+            }
+        }
+    }
+}
+
+// The componentwise condition number of a matrix ss_lu_pivoted factored: the
+// Perron root of |A⁻¹|·|A| (Bauer's and Skeel's), which is how many times a
+// relative error in each entry of the matrix is magnified in a solution, at
+// worst. `magnitude` is |A|, or a bound on it (ss_reduce_jacobian_mass). A
+// scaling of the rows leaves
+// |A⁻¹|·|A| as it is and a scaling of the columns is a similarity of it, so the
+// root is the same in any units. It is 1 for a diagonal matrix whatever its
+// entries, about 1/eps for a matrix that is singular but for rounding, and
+// infinite where the inverse is not a number.
+//
+// The root is bounded from above by max_i (M·v)_i / v_i for any positive v
+// (Collatz and Wielandt), and the bound closes on it as v is iterated; what is
+// returned is the smallest bound seen, so that it errs towards a refusal.
+// `at` is the unknown with the largest share of the iterated vector.
+static double ss_componentwise_condition(const std::vector<double> &lu, int n,
+                                         const std::vector<int> &row,
+                                         const std::vector<double> &magnitude, int &at) {
+    const double inf = std::numeric_limits<double>::infinity();
+    std::vector<double> inverse(static_cast<size_t>(n) * n);
+    std::vector<double> e(static_cast<size_t>(n));
+    at = 0;
+    for (int j = 0; j < n; ++j) {
+        std::fill(e.begin(), e.end(), 0.0);
+        e[static_cast<size_t>(j)] = 1.0;
+        ss_lu_solve(lu, n, row, e);
+        double *col = inverse.data() + static_cast<size_t>(j) * n;
+        for (int i = 0; i < n; ++i) {
+            if (!std::isfinite(e[static_cast<size_t>(i)])) {
+                at = i;
+                return inf;
+            }
+            col[i] = std::abs(e[static_cast<size_t>(i)]);
+        }
+    }
+    std::vector<double> v(static_cast<size_t>(n), 1.0), w(static_cast<size_t>(n)),
+        u(static_cast<size_t>(n));
+    double bound = inf;
+    for (int sweep = 0; sweep < 60; ++sweep) {
+        std::fill(w.begin(), w.end(), 0.0);
+        for (int j = 0; j < n; ++j) {
+            const double vj = v[static_cast<size_t>(j)];
+            const double *col = magnitude.data() + static_cast<size_t>(j) * n;
+            for (int i = 0; i < n; ++i) {
+                w[static_cast<size_t>(i)] += col[i] * vj;
+            }
+        }
+        std::fill(u.begin(), u.end(), 0.0);
+        for (int j = 0; j < n; ++j) {
+            const double wj = w[static_cast<size_t>(j)];
+            if (wj == 0.0) {
+                continue;
+            }
+            const double *col = inverse.data() + static_cast<size_t>(j) * n;
+            for (int i = 0; i < n; ++i) {
+                u[static_cast<size_t>(i)] += col[i] * wj;
+            }
+        }
+        double top = 0.0, grew = 0.0;
+        for (int i = 0; i < n; ++i) {
+            if (!std::isfinite(u[static_cast<size_t>(i)])) {
+                at = i;
+                return inf;
+            }
+            grew = std::max(grew, u[static_cast<size_t>(i)] / v[static_cast<size_t>(i)]);
+            if (u[static_cast<size_t>(i)] > top) {
+                top = u[static_cast<size_t>(i)];
+                at = i;
+            }
+        }
+        const bool settled = grew >= 0.99 * bound;
+        bound = std::min(bound, grew);
+        if (settled || !(top > 0.0)) {
+            break;
+        }
+        // Kept positive, so that the next ratio is a bound too.
+        for (int i = 0; i < n; ++i) {
+            v[static_cast<size_t>(i)] = std::max(u[static_cast<size_t>(i)] / top, 1e-30);
+        }
+    }
+    return bound;
+}
+
+// The system a masked solve has to answer for (issue #995).
+//
+// A masked-out species is held where the integration left it. A law that has
+// one was kept all the same, with its total: the law's dependent was solved
+// from the others with the masked species a constant. That is an equation of
+// the model only while the masked species does not move. `S + I -> 2 I`,
+// `I -> R` with the sink R masked out left one unknown, I, with S following
+// from S + I = T − R: a 1×1 system with a pivot of order one, which returned
+// dS*/dg = 0 at a conditioning ratio of exactly 1. The equations of the species
+// the mask KEPT say otherwise: f_S = 0 and f_I = 0 in S and I, with R in
+// neither, are the singular pair of the unmasked model.
+//
+// So the columns are solved on those equations, with the laws that hold among
+// the kept species alone. A masked species is taken out of the laws that have
+// it, by one of them: that law is subtracted from the others in the proportion
+// that cancels the species there, and is then dropped, and the species it was
+// solved for becomes an unknown with its own equation. `A + P` and `B + P` with
+// P masked out leave `B − A`, which the kept species do keep. (A masked species
+// a law is solved FOR is in no other law, and the law gives it.) `laws` and
+// `unknowns` come back as that system: the model's laws and `solve_idx`, in
+// their order, where no law holds a masked species.
+static void ss_kept_species_system(const NetworkModel &model, const ConservationLaws &cl,
+                                   const ResidualSubspace &sub, const std::vector<int> &solve_idx,
+                                   ConservationLaws &laws, std::vector<int> &unknowns) {
+    laws = cl;
+    unknowns = solve_idx;
+    if (cl.empty() || !sub.masked) {
+        return;
+    }
+    // Which species a law holds is asked of the coefficients over the volumes
+    // they carry (issue #758): row reduction leaves 1e-17 on species a law
+    // does not hold.
+    std::vector<std::vector<int>> members = model.conservation_law_members();
+    const auto holds = [&](int k, int i) {
+        return std::find(members[static_cast<size_t>(k)].begin(),
+                         members[static_cast<size_t>(k)].end(),
+                         i) != members[static_cast<size_t>(k)].end();
+    };
+    std::vector<char> dropped(static_cast<size_t>(cl.n_laws), 0);
+    for (const int e : sub.excluded) {
+        int by = -1;
+        for (int k = 0; k < cl.n_laws; ++k) {
+            if (!dropped[static_cast<size_t>(k)] && laws.dependent[k] != e && holds(k, e)) {
+                by = k;
+                break;
+            }
+        }
+        if (by < 0) {
+            continue;
+        }
+        const std::vector<double> pivot_law = laws.coefficients[by];
+        const double at_e = pivot_law[static_cast<size_t>(e)];
+        for (int k = 0; k < cl.n_laws; ++k) {
+            if (k == by || dropped[static_cast<size_t>(k)] || laws.dependent[k] == e ||
+                !holds(k, e)) {
+                continue;
+            }
+            const double m = laws.coefficients[k][static_cast<size_t>(e)] / at_e;
+            for (int i = 0; i < cl.n_species; ++i) {
+                laws.coefficients[k][static_cast<size_t>(i)] -=
+                    m * pivot_law[static_cast<size_t>(i)];
+            }
+            laws.coefficients[k][static_cast<size_t>(e)] = 0.0;
+            auto &mine = members[static_cast<size_t>(k)];
+            mine.erase(std::remove(mine.begin(), mine.end(), e), mine.end());
+            for (const int i : members[static_cast<size_t>(by)]) {
+                if (i != e && std::find(mine.begin(), mine.end(), i) == mine.end()) {
+                    mine.push_back(i);
+                }
+            }
+        }
+        dropped[static_cast<size_t>(by)] = 1;
+        const int freed = laws.dependent[by];
+        if (sub.includes(freed) && !model.species()[static_cast<size_t>(freed)].fixed) {
+            unknowns.push_back(freed);
+        }
+    }
+    ConservationLaws kept;
+    kept.n_species = cl.n_species;
+    kept.species_weight = cl.species_weight;
+    for (int k = 0; k < cl.n_laws; ++k) {
+        if (dropped[static_cast<size_t>(k)]) {
+            continue;
+        }
+        kept.coefficients.push_back(laws.coefficients[k]);
+        kept.dependent.push_back(laws.dependent[k]);
+        kept.constants.push_back(laws.constants[k]);
+        ++kept.n_laws;
+    }
+    kept.independent = unknowns;
+    laws = kept;
+}
+
+// What a displacement of the unknowns is on every species: each law's dependent
+// follows from its law, in reconstruct_full's order, and nothing else moves.
+static void ss_follow_laws(const ConservationLaws &laws, int ns, std::vector<double> &moved) {
+    for (int k = 0; k < laws.n_laws; ++k) {
+        const int dep = laws.dependent[k];
+        const double cd = laws.coefficients[k][dep];
+        if (std::abs(cd) < 1e-15) {
+            continue;
+        }
+        double s = 0.0;
+        for (int i = 0; i < ns; ++i) {
+            if (i != dep) {
+                s += laws.coefficients[k][i] * moved[static_cast<size_t>(i)];
+            }
+        }
+        moved[static_cast<size_t>(dep)] = -s / cd;
+    }
+}
+
+// The smallest share a pivot of ss_lu_pivoted's factorization is of the terms
+// it was computed from (issue #995). `mass` bounds the magnitude of each entry's
+// terms as the matrix was built (ss_reduce_jacobian_mass), and the elimination
+// is repeated on it with every product added: a pivot nothing cancelled into is
+// all of its mass, 1, and one that is what a cancellation left is rounding's
+// share of it, 1e-16. The two are in the same units, a row's and a column's
+// both, so the share is the same in any. `at` is the unknown of the pivot.
+//
+// It is what tells a matrix that is singular whatever the state where the
+// condition number does not: two sinks of one conserved total have the same
+// column, the pivot of the second is 8e-20, and the Perron root of |A⁻¹|·|A|
+// is 3.7, the null vectors of the two sides having no entry in common.
+static double ss_pivot_share(const std::vector<double> &lu, int n, const std::vector<int> &row,
+                             const std::vector<double> &mass, int &at) {
+    std::vector<double> m(mass.size());
+    for (int j = 0; j < n; ++j) {
+        const double *src = mass.data() + static_cast<size_t>(j) * n;
+        double *dst = m.data() + static_cast<size_t>(j) * n;
+        for (int k = 0; k < n; ++k) {
+            dst[k] = src[row[static_cast<size_t>(k)]];
+        }
+    }
+    for (int k = 0; k < n; ++k) {
+        const double *lower = lu.data() + static_cast<size_t>(k) * n;
+        for (int j = k + 1; j < n; ++j) {
+            double *col_j = m.data() + static_cast<size_t>(j) * n;
+            const double u = col_j[k];
+            if (u == 0.0) {
+                continue;
+            }
+            for (int i = k + 1; i < n; ++i) {
+                col_j[i] += std::abs(lower[i]) * u;
+            }
+        }
+    }
+    double least = std::numeric_limits<double>::infinity();
+    at = 0;
+    for (int j = 0; j < n; ++j) {
+        const double pivot = std::abs(lu[static_cast<size_t>(j) * n + j]);
+        const double of = m[static_cast<size_t>(j) * n + j];
+        const double share = of > 0.0 ? pivot / of : (pivot > 0.0 ? 1.0 : 0.0);
+        if (!(share >= least)) {
+            least = std::isfinite(share) ? share : 0.0;
+            at = j;
+        }
+    }
+    return least;
+}
+
+// What an entry for each species is small against (issue #995).
+//
+// An entry of dY_ss/dp, and a move of a concentration, are judged against the
+// species' own scale: the larger of its concentration at the returned state and
+// at the corrected one. Its units are the species' own, so that nothing another
+// species holds, and no rescaling of one, changes what is asked of it.
+//
+// A species at a zero has no such scale: X in `X -> 0` is returned at 2e-9 and
+// corrected to nothing, and its column, -X/k, is what the tolerance left of a
+// zero. A species is at a zero where the steady state has none of it and
+// nothing there makes any. It may be one where a Newton step halves it
+// (kZeroShare) or takes it under what rounding leaves of a zero, 1e-13
+// (kRoundingShare) of what makes it, Σ|J_ij|·y_j over |J_ii|, and of a
+// conserved total it belongs to or, in no total, of the largest species the
+// Jacobian couples it to. Among those, it is one where its rate is zero
+// at the corrected state with all of them set to zero: nothing that is left
+// makes it. A species with a rate there is made by something that stays, and
+// has a steady value, however small; it is taken out, and the rest are asked
+// again, until none is. Nor is it one that grows from next to nothing: zero is
+// a steady state of anything that makes itself, and not where it rests.
+// Whether a species is at a zero is then a matter of what
+// makes it and not of how small it is: `0 -> S -> 0` from 1, stopped at 1e-7
+// on its way to 1e-11, has a rate of k0 at S = 0, and keeps its own scale.
+//
+// A species at a zero is taken over where it has been, the larger of its start
+// and its two values, and over the largest such among the species the Jacobian
+// couples it to, which is no more than a conserved total it belongs to allows
+// (the total over its coefficient, where every coefficient of the law is
+// positive) and no less than kScaleFloor of those neighbours.
+//
+// Earlier versions took more than that. The largest concentration in the
+// model let an inert species at 1 hide a state 37% short of its steady state
+// in two species at 1e-6; the largest among a species' neighbours, and its own
+// starting value, let `0 -> S -> 0` started at 1 come back 12% from a steady
+// state of 1e-6; the solve's absolute tolerance as the size of a zero did the
+// same for a steady value under it (1e-9 beside 1, at the default 1e-8); and
+// what one Newton step does, alone, took the species stopped at 1e-7 for one
+// running out.
+//
+// `ended_a_run`: `y_c` is where a run from beside `y_ss` ended, and not a
+// Newton step from it or a state a run was started beside.
+static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkModel &model,
+                                             const double *J, int ns,
+                                             const std::vector<double> &start, const double *y_ss,
+                                             const double *y_c, bool ended_a_run = false,
+                                             std::vector<char> *zeros = nullptr) {
+    std::vector<double> own(static_cast<size_t>(ns)), was(static_cast<size_t>(ns));
+    std::vector<double> scale(static_cast<size_t>(ns));
+    std::vector<char> at_zero(static_cast<size_t>(ns), 0), falling(static_cast<size_t>(ns), 0);
+    double all = 0.0;
+    for (int i = 0; i < ns; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        own[k] = std::max(std::abs(y_ss[i]), std::abs(y_c[i]));
+        was[k] = std::max(own[k], k < start.size() ? std::abs(start[k]) : 0.0);
+        all = std::max(all, was[k]);
+    }
+    std::vector<int> parent(static_cast<size_t>(ns));
+    for (int i = 0; i < ns; ++i) {
+        parent[static_cast<size_t>(i)] = i;
+    }
+    const auto find = [&](int i) {
+        while (parent[static_cast<size_t>(i)] != i) {
+            parent[static_cast<size_t>(i)] =
+                parent[static_cast<size_t>(parent[static_cast<size_t>(i)])];
+            i = parent[static_cast<size_t>(i)];
+        }
+        return i;
+    };
+    for (int j = 0; j < ns; ++j) {
+        const double *col = J + static_cast<size_t>(j) * ns;
+        for (int i = 0; i < ns; ++i) {
+            if (i != j && col[i] != 0.0) {
+                const int a = find(i), b = find(j);
+                if (a != b) {
+                    parent[static_cast<size_t>(a)] = b;
+                }
+            }
+        }
+    }
+    std::vector<double> group(static_cast<size_t>(ns), 0.0);
+    for (int i = 0; i < ns; ++i) {
+        const int r = find(i);
+        group[static_cast<size_t>(r)] =
+            std::max(group[static_cast<size_t>(r)], was[static_cast<size_t>(i)]);
+    }
+    // The most a conserved total allows each of its species.
+    std::vector<double> allowed(static_cast<size_t>(ns), std::numeric_limits<double>::infinity());
+    const ConservationLaws &laws = model.conservation_laws();
+    if (!laws.empty()) {
+        const std::vector<std::vector<int>> members = model.conservation_law_members();
+        for (int k = 0; k < laws.n_laws; ++k) {
+            const std::vector<int> &held = members[static_cast<size_t>(k)];
+            double total = 0.0;
+            bool pool = !held.empty();
+            for (const int i : held) {
+                const double c = laws.coefficients[k][static_cast<size_t>(i)];
+                if (!(c > 0.0)) {
+                    pool = false;
+                    break;
+                }
+                total += c * y_ss[i];
+            }
+            if (!pool || !(total > 0.0)) {
+                continue;
+            }
+            for (const int i : held) {
+                allowed[static_cast<size_t>(i)] =
+                    std::min(allowed[static_cast<size_t>(i)],
+                             total / laws.coefficients[k][static_cast<size_t>(i)]);
+            }
+        }
+    }
+    // What makes each species, in its own units: the other species' terms of
+    // its rate over its own rate of loss.
+    std::vector<double> made(static_cast<size_t>(ns), 0.0);
+    for (int j = 0; j < ns; ++j) {
+        const double *col = J + static_cast<size_t>(j) * ns;
+        for (int i = 0; i < ns; ++i) {
+            if (i != j && col[i] != 0.0) {
+                made[static_cast<size_t>(i)] += std::abs(col[i]) * own[static_cast<size_t>(j)];
+            }
+        }
+    }
+    for (int i = 0; i < ns; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        const double loss = std::abs(J[k * static_cast<size_t>(ns) + k]);
+        const double fed = loss > 0.0 && std::isfinite(made[k] / loss) ? made[k] / loss : 0.0;
+        const double returned = std::abs(y_ss[i]), corrected = std::abs(y_c[i]);
+        const double beside = group[static_cast<size_t>(find(i))];
+        // What rounding is of: the pool, for a species that is in one, and
+        // what stands beside it otherwise. The product of a species that ran
+        // out holds all of what the two shared, 1e-12 beside a catalyst at
+        // 1,000, and no rate reads it: nothing need make what a law keeps, and
+        // it is not rounding of its own total.
+        const bool pooled = std::isfinite(allowed[k]);
+        const double around = std::max(fed, pooled ? allowed[k] : beside);
+        const bool rounding = corrected <= kRoundingShare * around;
+        const bool halved = corrected <= kZeroShare * returned;
+        // What a Newton step halves may be at a zero, and so may what a run
+        // came up from. What a run brought down by half and left above
+        // rounding is something where the run ended, and is taken over what
+        // it is there. (X' = v·X²/(K² + X²) - d·X has a root at nothing that
+        // it rests at as well as the one a run from above ends at, 1e-9:
+        // stopped at 1e-7 it is halved by a step, nothing makes it at zero and
+        // it does not grow from next to nothing. Beside a species at 200 whose
+        // column is asked, X's own entry is no part of what the steps go by,
+        // and came back 124 times what it is. The run ends with X at 1e-9.)
+        at_zero[k] = rounding || (halved && !ended_a_run);
+        // Asked whether it grows from next to nothing (below): one that came
+        // down to something. One that came down to rounding is not asked:
+        // species that have run out are at what a tolerance left of them, of
+        // either sign and in no proportion (z at -5e-14 and ez at 4e-13 where
+        // a run ends in BIOMD0000000092, in which e + z <-> ez -> e + w has
+        // used z up), and one of them grows towards what the other would keep
+        // of it.
+        falling[k] = halved && !rounding;
+    }
+    // Those that something left over makes are not at a zero, and neither is one
+    // that grows from next to nothing: with every such species at a millionth
+    // of where it was returned (kNextToNothing), in the proportions they have,
+    // a species that is running out is still running out, and one whose rate
+    // makes it grow rests somewhere else. A population above what its
+    // surroundings carry falls towards that, and a Newton step can take it more
+    // than half the way, with nothing at zero to make it. (Asked of a species
+    // that was halved from something, and not of one that was at rounding
+    // before: what that has is no proportion of anything.)
+    {
+        std::vector<double> at(static_cast<size_t>(ns)), rate(static_cast<size_t>(ns));
+        bool settled = false;
+        // Each pass takes at least one species out, or is the last.
+        for (int pass = 0; pass <= 2 * ns && !settled; ++pass) {
+            bool any = false, any_falling = false;
+            for (int i = 0; i < ns; ++i) {
+                const size_t k = static_cast<size_t>(i);
+                at[k] = at_zero[k] ? 0.0 : y_c[i];
+                any = any || at_zero[k];
+                any_falling = any_falling || (at_zero[k] && falling[k]);
+            }
+            settled = true;
+            if (!any) {
+                break;
+            }
+            std::fill(rate.begin(), rate.end(), 0.0);
+            rhs.eval(0.0, at.data(), rate.data());
+            for (int i = 0; i < ns; ++i) {
+                const size_t k = static_cast<size_t>(i);
+                // A rate that is not a number is not a rate of zero.
+                if (at_zero[k] && !(rate[k] == 0.0)) {
+                    at_zero[k] = 0;
+                    settled = false;
+                }
+            }
+            if (!settled || !any_falling) {
+                continue;
+            }
+            for (int i = 0; i < ns; ++i) {
+                const size_t k = static_cast<size_t>(i);
+                at[k] = at_zero[k] ? kNextToNothing * std::abs(y_ss[i]) : y_c[i];
+            }
+            std::fill(rate.begin(), rate.end(), 0.0);
+            rhs.eval(0.0, at.data(), rate.data());
+            for (int i = 0; i < ns; ++i) {
+                const size_t k = static_cast<size_t>(i);
+                if (at_zero[k] && falling[k] && rate[k] > 0.0) {
+                    at_zero[k] = 0;
+                    settled = false;
+                }
+            }
+        }
+    }
+    for (int i = 0; i < ns; ++i) {
+        const size_t k = static_cast<size_t>(i);
+        double &v = scale[k];
+        if (at_zero[k]) {
+            const double beside = group[static_cast<size_t>(find(i))];
+            v = std::max({was[k], std::min(beside, allowed[k]), kScaleFloor * beside});
+        } else {
+            v = own[k];
+        }
+        if (!(v > 0.0) || !std::isfinite(v)) {
+            v = all > 0.0 ? all : 1.0;
+        }
+    }
+    if (zeros != nullptr) {
+        *zeros = at_zero;
+    }
+    return scale;
+}
+
+// What compute_ss_sensitivity hands ss_measure_root so that it can solve the
+// columns a second time, at another state.
+struct SsColumnSystem {
+    const ConservationLaws *laws = nullptr; // the laws the solve used
+    const std::vector<int> *unknowns = nullptr;
+    // ∂f/∂p (ns×np, column-major by parameter) at a state, given its Jacobian.
+    std::function<void(const double *y, const double *J, std::vector<double> &dfdp)> fill_dfdp;
+    // What the conserved totals and the fixed species a parameter sets add to
+    // the right-hand side of unknown r for parameter p, given the Jacobian.
+    std::function<double(const double *J, int r, int p)> forcing;
+    std::vector<double> param_values; // one per column
+    // What ss_species_scales takes: the model and the state the solve started
+    // from.
+    const NetworkModel *model = nullptr;
+    const std::vector<double> *start = nullptr;
+    // The state a run of `horizon` from the returned state ended at, where one
+    // was made (an integration result), and whether its integrator gave up.
+    const std::vector<double> *held = nullptr;
+    bool hold_failed = false;
+    double horizon = 0.0; // the time the solve was given to settle in (max_time)
+};
+
+// The measurements described above, written to the result. `J` is the full
+// Jacobian at the returned state and `dfdp` the ∂f/∂p the columns were solved
+// from. Leaves the right-hand side's caches as an evaluation at the returned
+// state leaves them.
+static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, const double *J, int ns,
+                            int np, const SsColumnSystem &sys, const ResidualSubspace &sub,
+                            bool want_analytical) {
+    const ConservationLaws &laws = *sys.laws;
+    const std::vector<int> &unknowns = *sys.unknowns;
+    const int n = static_cast<int>(unknowns.size());
+    const double *y_ss = result.concentrations.data();
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    result.sens_root_determinant_ratio = 1.0;
+    result.sens_root_pivot_share = 1.0;
+    result.sens_root_condition = 1.0;
+    result.sens_root_column_shift = 0.0;
+    result.sens_root_state_shift = 0.0;
+    result.sens_root_state_species = -1;
+    result.sens_root_relaxation = 0.0;
+    result.sens_root_hold_drift = 0.0;
+    result.sens_root_hold_shift = 0.0;
+    result.sens_root_growth_rate = nan;
+    result.sens_root_spectral_radius = 0.0;
+    result.sens_root_determinant_species = -1;
+    result.sens_root_pivot_species = -1;
+    result.sens_root_condition_species = -1;
+    result.sens_root_column_param = -1;
+    result.sens_root_relaxation_param = -1;
+    result.sens_root_hold_species = -1;
+    result.sens_root_hold_param = -1;
+    const auto unknown = [&](int k) { return unknowns[static_cast<size_t>(k)]; };
+    // The scales, set where the corrected state is known (measure_at).
+    std::vector<double> species_scale(static_cast<size_t>(ns), 1.0);
+    const auto scale_of = [&](int i) { return species_scale[static_cast<size_t>(i)]; };
+
+    if (sys.hold_failed) {
+        result.sens_root_hold_drift = nan;
+        result.sens_root_hold_shift = nan;
+    }
+    if (n == 0) {
+        return;
+    }
+
+    // 1. The matrix at the returned state: its spectrum, its factors, what
+    //    each pivot is of its terms, and its condition number.
+    std::vector<double> A, magnitude;
+    ss_reduce_jacobian(J, ns, laws, unknowns, A);
+    ss_reduce_jacobian_mass(J, ns, laws, unknowns, magnitude);
+    // With the certificate's own eigensolver and its own limit on the size
+    // (issue #78), on the matrix the columns are solved with: at the returned
+    // state here, and again at the state that is stepped to, where one is (6).
+    // The state as the solver left it.
+    const std::vector<double> returned(y_ss, y_ss + ns);
+    // The eigenvalues are those of every unknown, a species the model does
+    // not have included: one at nothing whose rate is nothing, and which
+    // would grow if there were any. A state it could invade is refused for
+    // that, also where nothing makes it and a run from the model's start
+    // stays (a resident at its capacity beside an invader the model does not
+    // start with: BIOMD0000000908 without its `vs`). Leaving such a species
+    // out takes knowing that nothing asked for would make it, at any order:
+    // not a rate constant of zero or its own initial amount (`0 -> N` at
+    // eps = 0, dN*/deps = -1, the slope of the branch the system leaves), a
+    // total or a fixed species that the parameter moves, or any of those
+    // squared, where every first derivative is nothing. A rule that left it
+    // out was wrong in each of those in turn, and lifted one model of 791.
+    // (Issue #961 has what a rule that does it has to see.)
+    const auto read_spectrum = [&](const std::vector<double> &reduced) {
+        result.sens_root_growth_rate = nan;
+        result.sens_root_spectral_radius = 0.0;
+        if (n > kStabilitySpectrumMaxN || n == 0) {
+            return;
+        }
+        std::vector<double> spectrum_of(reduced), wr(static_cast<size_t>(n)),
+            wi(static_cast<size_t>(n));
+        if (dense_eigenvalues(spectrum_of.data(), n, wr.data(), wi.data())) {
+            double max_re = -inf, radius = 0.0;
+            for (int i = 0; i < n; ++i) {
+                max_re = std::max(max_re, wr[static_cast<size_t>(i)]);
+                radius = std::max(
+                    radius, std::hypot(wr[static_cast<size_t>(i)], wi[static_cast<size_t>(i)]));
+            }
+            result.sens_root_growth_rate = max_re;
+            result.sens_root_spectral_radius = radius;
+        }
+    };
+    read_spectrum(A);
+    std::vector<int> row;
+    const int zero_at = ss_lu_pivoted(A, n, row);
+    if (zero_at >= 0) {
+        // No factorization: the matrix is singular as it stands.
+        result.sens_root_determinant_ratio = 0.0;
+        result.sens_root_pivot_share = 0.0;
+        result.sens_root_condition = inf;
+        result.sens_root_column_shift = inf;
+        result.sens_root_relaxation = inf;
+        result.sens_root_determinant_species = unknown(zero_at);
+        result.sens_root_pivot_species = unknown(zero_at);
+        result.sens_root_condition_species = unknown(zero_at);
+        return;
+    }
+    std::vector<double> pivots(static_cast<size_t>(n));
+    for (int j = 0; j < n; ++j) {
+        pivots[static_cast<size_t>(j)] = A[static_cast<size_t>(j) * n + j];
+    }
+    int share_at = 0;
+    result.sens_root_pivot_share = ss_pivot_share(A, n, row, magnitude, share_at);
+    result.sens_root_pivot_species = unknown(share_at);
+    int condition_at = 0;
+    result.sens_root_condition = ss_componentwise_condition(A, n, row, magnitude, condition_at);
+    result.sens_root_condition_species = unknown(condition_at);
+
+    // 2. A Newton step towards the root, on the reduced system: the unknowns
+    //    move by −A⁻¹·f, each law's dependent follows from its law, and nothing
+    //    else moves. One is taken from the returned state with its factors,
+    //    and, where the columns are found to move, another from each state
+    //    that leads to (6).
+    //
+    //    A step gives the state it leads to and the same with a concentration
+    //    it took below zero set to zero. The second is for a rate that has no
+    //    value below zero (a Hill exponent of 2.5): the first is tried, and the
+    //    second only where the first cannot be evaluated. A variable that has a
+    //    sign has no such limit, and taking one for it hid a state 39% short of
+    //    its root.
+    std::vector<double> f(static_cast<size_t>(ns), 0.0);
+    struct Stepped {
+        std::vector<double> to, floored;
+        bool finite = true, below_zero = false;
+    };
+    const auto newton_step = [&](const std::vector<double> &lu, const double *from) {
+        Stepped stepped;
+        rhs.eval(0.0, from, f.data());
+        std::vector<double> step(static_cast<size_t>(n));
+        for (int k = 0; k < n; ++k) {
+            step[static_cast<size_t>(k)] = -f[static_cast<size_t>(unknown(k))];
+        }
+        ss_lu_solve(lu, n, row, step);
+        std::vector<double> moved(static_cast<size_t>(ns), 0.0);
+        for (int k = 0; k < n; ++k) {
+            moved[static_cast<size_t>(unknown(k))] = step[static_cast<size_t>(k)];
+        }
+        ss_follow_laws(laws, ns, moved);
+        stepped.to.resize(static_cast<size_t>(ns));
+        stepped.floored.resize(static_cast<size_t>(ns));
+        for (int i = 0; i < ns; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            const double v = from[i] + moved[k];
+            stepped.finite = stepped.finite && std::isfinite(v);
+            stepped.to[k] = v;
+            const bool below = returned[k] >= 0.0 && v < 0.0;
+            stepped.below_zero = stepped.below_zero || below;
+            stepped.floored[k] = below ? 0.0 : v;
+        }
+        return stepped;
+    };
+    Stepped stepped = newton_step(A, y_ss);
+    if (!stepped.finite) {
+        result.sens_root_determinant_ratio = nan;
+        result.sens_root_column_shift = inf;
+        result.sens_root_relaxation = inf;
+        return;
+    }
+    const auto all_finite = [](const std::vector<double> &v) {
+        for (const double x : v) {
+            if (!std::isfinite(x)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // The columns in hand (`in_hand`) and the state they are of (`at`): the
+    // returned ones, until the state is stepped on (6). `stepped_columns` are
+    // those of the state last measured, and `A_at` its factors.
+    std::vector<double> in_hand(result.sensitivity), stepped_columns, A_at, matrix_at;
+    // How far a column moved under the last step, of itself (kZeroColumn): what
+    // the steps go by. What is reported is that against kSmallColumn.
+    double moved_of_itself = 0.0;
+    std::vector<double> at(returned);
+    std::vector<char> at_a_zero; // which species are at a zero, at the last state measured
+    bool factored_at = false;
+
+    // 3 and 4, at the state a step from `at` led to. False where the rates have
+    // no value there. `first`: the step is the one from the returned state,
+    // which is the one the determinant is asked of.
+    const auto measure_at = [&](const std::vector<double> &state, bool first) {
+        // 3. The matrix at the stepped state, in the same elimination order.
+        std::vector<double> J_c(static_cast<size_t>(ns) * ns, 0.0);
+        ss_fill_state_jacobian(rhs, state.data(), ns, sub, want_analytical, J_c.data());
+        bool evaluated = all_finite(J_c);
+        std::vector<double> A_c;
+        ss_reduce_jacobian(J_c.data(), ns, laws, unknowns, A_c);
+        if (!first && n <= kStabilitySpectrumMaxN) {
+            matrix_at = A_c; // for the spectrum, if this is the state returned
+        }
+        ss_lu_in_row_order(A_c, n, row);
+        species_scale = ss_species_scales(rhs, *sys.model, J, ns, *sys.start, at.data(),
+                                          state.data(), false, &at_a_zero);
+        // How far the step moved the state, each species over its scale.
+        double state_shift = 0.0;
+        result.sens_root_state_species = -1;
+        for (const int i : sub.included) {
+            const size_t k = static_cast<size_t>(i);
+            const double moved_by = std::abs(state[k] - at[k]) / scale_of(i);
+            if (!(moved_by <= state_shift)) {
+                state_shift = std::isfinite(moved_by) ? moved_by : inf;
+                result.sens_root_state_species = i;
+            }
+        }
+        result.sens_root_state_shift = state_shift;
+        // The determinant at y_c over the one at y, as the product of the
+        // pivots' ratios. A pivot on its own is not a property of the matrix:
+        // where an entry that is next to nothing goes to nothing, the
+        // elimination passes what it carried from one pivot to another, 7 times
+        // one and a seventh of the next, and their product does not move.
+        double log_ratio = 0.0, furthest = -1.0;
+        bool negative = false, factored = true;
+        int furthest_at = -1;
+        for (int j = 0; j < n; ++j) {
+            const double r = A_c[static_cast<size_t>(j) * n + j] / pivots[static_cast<size_t>(j)];
+            const double moved_by = std::abs(std::log(std::abs(r)));
+            // A pivot that is zero or not a number moved without bound.
+            if (!(moved_by <= furthest)) {
+                furthest = moved_by;
+                furthest_at = unknown(j);
+            }
+            if (!std::isfinite(r) || r == 0.0) {
+                factored = false;
+                log_ratio = std::isfinite(r) ? -inf : nan;
+                break;
+            }
+            log_ratio += std::log(std::abs(r));
+            negative = negative != (r < 0.0);
+        }
+        if (first) {
+            result.sens_root_determinant_ratio = (negative ? -1.0 : 1.0) * std::exp(log_ratio);
+            result.sens_root_determinant_species = furthest_at;
+        }
+        factored_at = factored;
+        stepped_columns = in_hand;
+
+        // 4. The columns again, at the corrected state, against the ones
+        //    returned, and how much of each a run of the time the solve was
+        //    given would leave unestablished. Skipped where the factors at y_c
+        //    are not numbers: the determinant has said so.
+        //
+        //    Each entry is taken over its species' scale (ss_species_scales),
+        //    so that a column is compared in units no species sets for another.
+        //
+        //    A step of p moves the state towards the new steady state as
+        //    d(δy)/dt = A·δy + b, so that what is left of the column x after a
+        //    time T is exp(A·T)·x. A⁻¹·x/T bounds it, entry by entry, for a
+        //    system that relaxes, and is one solve: where that is under the
+        //    limit nothing more is asked. Where it is not, a small share of
+        //    the column on a slow mode reads the same as all of it on a frozen
+        //    one, and the run is taken in kRelaxationSteps implicit steps of
+        //    T/k, x ← (I − A·T/k)⁻¹·x, which leaves each share its own
+        //    fraction.
+        double column_shift = factored ? 0.0 : inf;
+        double relaxation = column_shift;
+        moved_of_itself = column_shift;
+        result.sens_root_column_param = -1;
+        result.sens_root_relaxation_param = -1;
+        if (factored) {
+            std::vector<double> dfdp_c;
+            sys.fill_dfdp(state.data(), J_c.data(), dfdp_c);
+            evaluated = evaluated && all_finite(dfdp_c);
+            std::vector<double> x(static_cast<size_t>(n)), over(static_cast<size_t>(ns));
+            std::vector<double> scales(static_cast<size_t>(np), 0.0);
+            std::vector<double> bounds(static_cast<size_t>(np), 0.0);
+            std::vector<double> columns; // the re-solved columns, kept for the slow ones
+            std::vector<int> slow;
+            // The largest entry of what a vector over the unknowns is on every
+            // species, each over its scale: the unknowns directly, a law's
+            // dependent through its law.
+            const auto largest = [&](const std::vector<double> &on_unknowns, double times) {
+                std::fill(over.begin(), over.end(), 0.0);
+                for (int r = 0; r < n; ++r) {
+                    over[static_cast<size_t>(unknown(r))] =
+                        on_unknowns[static_cast<size_t>(r)] * times;
+                }
+                ss_follow_laws(laws, ns, over);
+                double top = 0.0;
+                for (const int i : sub.included) {
+                    const double c = std::abs(over[static_cast<size_t>(i)]) / scale_of(i);
+                    top = std::isfinite(c) ? std::max(top, c) : inf;
+                }
+                return top;
+            };
+            const auto over_scale = [&](double entry, double scale) {
+                return scale > 0.0 ? entry / scale : (entry > 0.0 ? inf : 0.0);
+            };
+            for (int p = 0; p < np; ++p) {
+                for (int r = 0; r < n; ++r) {
+                    x[static_cast<size_t>(r)] = -(dfdp_c[static_cast<size_t>(p) * ns + unknown(r)] +
+                                                  sys.forcing(J_c.data(), r, p));
+                }
+                ss_lu_solve(A_c, n, row, x);
+                double top = 0.0;
+                for (const int i : sub.included) {
+                    const double v = in_hand[static_cast<size_t>(i) * np + p];
+                    if (std::isfinite(v)) {
+                        top = std::max(top, std::abs(v) / scale_of(i));
+                    }
+                }
+                const double pv = std::abs(sys.param_values[static_cast<size_t>(p)]);
+                const double per_p = 1.0 / (pv > 0.0 ? pv : 1.0);
+                // How far the column moved (the total's own share is the same
+                // at both states and drops out of a dependent's entry).
+                std::vector<double> change(x);
+                for (int r = 0; r < n; ++r) {
+                    change[static_cast<size_t>(r)] -=
+                        in_hand[static_cast<size_t>(unknown(r)) * np + p];
+                }
+                const double change_size = largest(change, 1.0);
+                // The column at this state: the one in hand and its move, on
+                // every species (`over` is what `largest` left).
+                double top_stepped = 0.0;
+                for (int i = 0; i < ns; ++i) {
+                    double &entry = stepped_columns[static_cast<size_t>(i) * np + p];
+                    entry += over[static_cast<size_t>(i)];
+                    if (sub.includes(i) && std::isfinite(entry)) {
+                        top_stepped = std::max(top_stepped, std::abs(entry) / scale_of(i));
+                    }
+                }
+                const double size = std::max(top, top_stepped);
+                const double scale = std::max(size, kSmallColumn * per_p);
+                scales[static_cast<size_t>(p)] = scale;
+                const double moved_by = over_scale(change_size, scale);
+                if (!(moved_by <= column_shift)) {
+                    column_shift = std::isfinite(moved_by) ? moved_by : inf;
+                    result.sens_root_column_param = p;
+                }
+                const double of_itself =
+                    over_scale(change_size, std::max(size, kZeroColumn * per_p));
+                if (!(of_itself <= moved_of_itself)) {
+                    moved_of_itself = std::isfinite(of_itself) ? of_itself : inf;
+                }
+                if (!(sys.horizon > 0.0)) {
+                    continue; // no horizon, no question
+                }
+                // A⁻¹·column/T, the bound.
+                std::vector<double> lag(x);
+                ss_lu_solve(A_c, n, row, lag);
+                const double bound = over_scale(largest(lag, 1.0 / sys.horizon), scale);
+                bounds[static_cast<size_t>(p)] = bound;
+                if (!(bound <= kRelaxationBoundEnough)) {
+                    slow.push_back(p);
+                    columns.insert(columns.end(), x.begin(), x.end());
+                }
+            }
+            if (!slow.empty()) {
+                // (A − k/T·I), factored once for every slow column.
+                const double rate = kRelaxationSteps / sys.horizon;
+                std::vector<double> M;
+                ss_reduce_jacobian(J_c.data(), ns, laws, unknowns, M);
+                for (int j = 0; j < n; ++j) {
+                    M[static_cast<size_t>(j) * n + j] -= rate;
+                }
+                std::vector<int> M_row;
+                const bool M_factored = ss_lu_pivoted(M, n, M_row) < 0;
+                for (size_t q = 0; q < slow.size(); ++q) {
+                    const int p = slow[q];
+                    double left = inf;
+                    if (M_factored) {
+                        std::copy(columns.begin() + static_cast<std::ptrdiff_t>(q * n),
+                                  columns.begin() + static_cast<std::ptrdiff_t>((q + 1) * n),
+                                  x.begin());
+                        for (int step_k = 0; step_k < kRelaxationSteps; ++step_k) {
+                            for (double &v : x) {
+                                v *= -rate;
+                            }
+                            ss_lu_solve(M, n, M_row, x);
+                        }
+                        left = over_scale(largest(x, 1.0), scales[static_cast<size_t>(p)]);
+                    }
+                    bounds[static_cast<size_t>(p)] = left;
+                }
+            }
+            for (int p = 0; p < np; ++p) {
+                const double left = bounds[static_cast<size_t>(p)];
+                if (!(left <= relaxation)) {
+                    relaxation = std::isfinite(left) ? left : inf;
+                    result.sens_root_relaxation_param = p;
+                }
+            }
+        }
+        result.sens_root_column_shift = column_shift;
+        result.sens_root_relaxation = relaxation;
+        A_at = std::move(A_c);
+        return evaluated;
+    };
+
+    // 6. Where the columns moved, or the state did, they are not those of the
+    //    root: the state is short of it. (The state is asked as well as the
+    //    columns: a column that is rounding beside 1/|p| is not asked how far
+    //    it moved, and a parameter that hardly matters, asked alone, comes
+    //    back four orders off at a state four orders from its root.) They
+    //    are then taken at the stepped state, which is nearer, and that state
+    //    is stepped again, until a step moves neither the state nor any column
+    //    by more than kColumnsSettled of itself, or kNewtonSteps are spent. The
+    //    last state is the one returned, with its columns, where the step to
+    //    it moved the state and the columns by no more than the caller
+    //    refuses above (a column against kSmallColumn, as reported): those of
+    //    the root, to what a Newton step still moves them by. Where the first
+    //    step moves nothing, nothing is changed, and the result is the
+    //    solver's own to the last bit.
+    int steps = 0;
+    const bool singular_whatever_the_state = !(result.sens_root_pivot_share >= kPivotShareLeast) ||
+                                             !(result.sens_root_condition <= kConditionMost);
+    for (int k = 1; k <= kNewtonSteps; ++k) {
+        const std::vector<double> *to = &stepped.to;
+        bool evaluated = measure_at(*to, k == 1);
+        if (!evaluated && stepped.below_zero) {
+            to = &stepped.floored;
+            evaluated = measure_at(*to, k == 1);
+        }
+        const bool state_settled = result.sens_root_state_shift <= kColumnsSettled;
+        const bool settled = moved_of_itself <= kColumnsSettled && state_settled;
+        const bool usable = evaluated && factored_at && all_finite(stepped_columns);
+        const double kept = result.sens_root_determinant_ratio;
+        const bool refused_already = singular_whatever_the_state || !(kept >= kDeterminantKept) ||
+                                     !(kept <= 1.0 / kDeterminantKept);
+        if (settled || !usable || refused_already || k == kNewtonSteps) {
+            const bool theirs =
+                usable && state_settled && result.sens_root_column_shift <= kColumnsSettled;
+            if (theirs && k > 1) {
+                in_hand = stepped_columns;
+                at = *to;
+                steps = k;
+            }
+            break;
+        }
+        in_hand = stepped_columns;
+        at = *to;
+        stepped = newton_step(A_at, at.data());
+        if (!stepped.finite) {
+            result.sens_root_column_shift = inf;
+            break;
+        }
+    }
+    result.sens_species_scale = species_scale;
+    result.sens_root_newton_steps = steps;
+    if (steps > 0) {
+        // The excluded species' rows are what they were (the caller writes
+        // them), and a law's dependent has followed its law.
+        result.sensitivity = in_hand;
+        // A species at a zero is returned at zero where the last step left it
+        // below: -1e-27 is what rounding left, and no concentration.
+        for (int i = 0; i < ns; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            if (k < at_a_zero.size() && at_a_zero[k] && returned[k] >= 0.0 && at[k] < 0.0) {
+                at[k] = 0.0;
+            }
+        }
+        std::copy(at.begin(), at.end(), result.concentrations.begin());
+        result.residual = compute_residual(rhs, at.data(), ns, sub);
+        // The eigenvalues are those of the state that is returned.
+        if (!matrix_at.empty()) {
+            read_spectrum(matrix_at);
+        }
+        // A species the mask left out was not stepped. Where a law of the model
+        // holds it with species that were, and with no other that was left
+        // out, it is what that law leaves of its total: a sink that the kept
+        // species drain is given what they lost.
+        const ConservationLaws &whole = sys.model->conservation_laws();
+        if (sub.masked && !whole.empty()) {
+            const std::vector<Species> &all_species = sys.model->species();
+            for (int k = 0; k < whole.n_laws; ++k) {
+                int only = -1, left_out = 0;
+                double total = 0.0, kept = 0.0;
+                for (int i = 0; i < ns; ++i) {
+                    const double c = whole.coefficients[k][static_cast<size_t>(i)];
+                    if (c == 0.0) {
+                        continue;
+                    }
+                    total += c * returned[static_cast<size_t>(i)];
+                    if (sub.includes(i)) {
+                        kept += c * at[static_cast<size_t>(i)];
+                    } else {
+                        ++left_out;
+                        only = i;
+                    }
+                }
+                if (left_out == 1 && !all_species[static_cast<size_t>(only)].fixed) {
+                    result.concentrations[static_cast<size_t>(only)] =
+                        (total - kept) / whole.coefficients[k][static_cast<size_t>(only)];
+                }
+            }
+        }
+    }
+
+    // A system too large for its spectrum (1) is still asked this much of it:
+    // whether a species the returned state has at a zero grows from next to
+    // nothing. Such species have no rate while they are all at nothing, whatever
+    // the others hold, so that the Jacobian has no entry from the others in
+    // their rows, and the eigenvalues of their own block are among its own.
+    // (N' = r·N·S·(1 - N/K), seeded at a hundredth of K, is stepped to N = 0,
+    // which it leaves at r·S. The run that is taken on does not always say so:
+    // among 520 other species its error test is met by a step that is long
+    // for r·S, and an implicit step that long lands on N = 0 and stays.)
+    if (n > kStabilitySpectrumMaxN) {
+        std::vector<int> zeros;
+        for (const int i : sub.included) {
+            const size_t k = static_cast<size_t>(i);
+            if (k < at_a_zero.size() && at_a_zero[k]) {
+                zeros.push_back(i);
+            }
+        }
+        const int m = static_cast<int>(zeros.size());
+        if (m > 0 && m <= kStabilitySpectrumMaxN) {
+            std::vector<double> J_at(static_cast<size_t>(ns) * ns, 0.0);
+            ss_fill_state_jacobian(rhs, result.concentrations.data(), ns, sub, want_analytical,
+                                   J_at.data());
+            std::vector<double> block(static_cast<size_t>(m) * m);
+            for (int a = 0; a < m; ++a) {
+                for (int b = 0; b < m; ++b) {
+                    block[static_cast<size_t>(a) * m + b] =
+                        J_at[static_cast<size_t>(zeros[static_cast<size_t>(a)]) * ns +
+                             zeros[static_cast<size_t>(b)]];
+                }
+            }
+            std::vector<double> wr(static_cast<size_t>(m)), wi(static_cast<size_t>(m));
+            if (all_finite(block) && dense_eigenvalues(block.data(), m, wr.data(), wi.data())) {
+                double max_re = -inf, radius = 0.0;
+                for (int a = 0; a < m; ++a) {
+                    max_re = std::max(max_re, wr[static_cast<size_t>(a)]);
+                    radius = std::max(
+                        radius, std::hypot(wr[static_cast<size_t>(a)], wi[static_cast<size_t>(a)]));
+                }
+                result.sens_root_growth_rate = max_re;
+                result.sens_root_spectral_radius = radius;
+            }
+        }
+    }
+
+    // 5. The columns once more, at the state the run that was taken on ended
+    //    at, against the ones returned: what the columns of where a run ends
+    //    are. With its own factorization, since that state need not be near.
+    //    A species the run's last step took below zero is at zero where the
+    //    rates have no value otherwise, as in 2 (MODEL2502210001 with its sink
+    //    masked out ends so).
+    if (sys.held != nullptr && !sys.hold_failed) {
+        std::vector<double> y_h(*sys.held);
+        std::vector<double> J_h(static_cast<size_t>(ns) * ns, 0.0);
+        ss_fill_state_jacobian(rhs, y_h.data(), ns, sub, want_analytical, J_h.data());
+        if (!all_finite(J_h)) {
+            for (int i = 0; i < ns; ++i) {
+                if (returned[static_cast<size_t>(i)] >= 0.0 && y_h[static_cast<size_t>(i)] < 0.0) {
+                    y_h[static_cast<size_t>(i)] = 0.0;
+                }
+            }
+            ss_fill_state_jacobian(rhs, y_h.data(), ns, sub, want_analytical, J_h.data());
+        }
+        // What each species' entries are taken over here is asked of these
+        // two states, the returned one and the one the run ended at
+        // (ss_species_scales), and either way round: of the two, either can be
+        // the one nearer the steady state. A species that has run out is at
+        // nothing in the state Newton stepped to and at 1e-12 where the run
+        // from the solver's state has got to (BIOMD0000000178, and a substrate
+        // an enzyme has used up), or the other way about, where the steps
+        // stopped with a cascade still on its way down: it is at a zero in
+        // both. How far the run moved each species is taken over the same.
+        std::vector<double> held_scale =
+            ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_ss, y_h.data(), true);
+        {
+            const std::vector<double> other =
+                ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_h.data(), y_ss);
+            for (int i = 0; i < ns; ++i) {
+                held_scale[static_cast<size_t>(i)] =
+                    std::max(held_scale[static_cast<size_t>(i)], other[static_cast<size_t>(i)]);
+            }
+        }
+        const auto scale_of = [&](int i) { return held_scale[static_cast<size_t>(i)]; };
+        {
+            double furthest = 0.0;
+            for (const int i : sub.included) {
+                const double moved_by =
+                    std::abs(y_h[static_cast<size_t>(i)] - y_ss[i]) / scale_of(i);
+                if (!(moved_by <= furthest)) {
+                    furthest = std::isfinite(moved_by) ? moved_by : inf;
+                    result.sens_root_hold_species = i;
+                }
+            }
+            result.sens_root_hold_drift = furthest;
+        }
+        std::vector<double> A_h;
+        ss_reduce_jacobian(J_h.data(), ns, laws, unknowns, A_h);
+        std::vector<int> row_h;
+        double worst = 0.0;
+        if (!all_finite(J_h) || ss_lu_pivoted(A_h, n, row_h) >= 0) {
+            worst = inf;
+        } else {
+            std::vector<double> dfdp_h;
+            sys.fill_dfdp(y_h.data(), J_h.data(), dfdp_h);
+            std::vector<double> x(static_cast<size_t>(n)), over(static_cast<size_t>(ns));
+            for (int p = 0; p < np; ++p) {
+                for (int r = 0; r < n; ++r) {
+                    x[static_cast<size_t>(r)] = -(dfdp_h[static_cast<size_t>(p) * ns + unknown(r)] +
+                                                  sys.forcing(J_h.data(), r, p));
+                }
+                ss_lu_solve(A_h, n, row_h, x);
+                std::fill(over.begin(), over.end(), 0.0);
+                for (int r = 0; r < n; ++r) {
+                    over[static_cast<size_t>(unknown(r))] =
+                        x[static_cast<size_t>(r)] -
+                        result.sensitivity[static_cast<size_t>(unknown(r)) * np + p];
+                }
+                ss_follow_laws(laws, ns, over);
+                double top = 0.0, change = 0.0;
+                for (const int i : sub.included) {
+                    const double v = result.sensitivity[static_cast<size_t>(i) * np + p];
+                    if (std::isfinite(v)) {
+                        top = std::max(top, std::abs(v) / scale_of(i));
+                    }
+                    const double c = std::abs(over[static_cast<size_t>(i)]) / scale_of(i);
+                    change = std::isfinite(c) ? std::max(change, c) : inf;
+                }
+                // Against kSmallColumn where the run moved no species by more
+                // than a step may (kColumnsSettled): it ended at this root, as
+                // nearly as its tolerance has it, and what a column that small
+                // is there is that tolerance. Of itself where it moved one.
+                const double pv = std::abs(sys.param_values[static_cast<size_t>(p)]);
+                const bool stayed = result.sens_root_hold_drift <= kColumnsSettled;
+                const double moved_by =
+                    change /
+                    std::max(top, (stayed ? kSmallColumn : kZeroColumn) / (pv > 0.0 ? pv : 1.0));
+                if (!(moved_by <= worst)) {
+                    worst = std::isfinite(moved_by) ? moved_by : inf;
+                    result.sens_root_hold_param = p;
+                }
+            }
+        }
+        result.sens_root_hold_shift = worst;
+    }
+
+    // The caches as an evaluation at the returned state leaves them, for what
+    // is computed after this.
+    rhs.eval(0.0, y_ss, f.data());
+}
+
+static void
+compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResult &result,
+                       const std::vector<std::string> &param_names,
+                       const std::string &opts_jacobian, const ResidualSubspace &sub,
+                       const std::vector<double> &dx0, const std::vector<double> &start_state,
+                       const std::vector<double> *held_state, bool hold_failed, double horizon) {
 
     const int ns = model.n_species();
     const int np = static_cast<int>(param_names.size());
@@ -2261,82 +3823,89 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
     // closed-form path against the one that predates #63) — see
     // ss_want_analytical_jacobian, which is also what the two solver tiers gate
     // their own Jacobian callback on.
-    result.sens_jacobian_source = ss_fill_state_jacobian(
-        rhs, y_ss, ns, sub, ss_want_analytical_jacobian(opts_jacobian), J.data());
+    const bool want_analytical = ss_want_analytical_jacobian(opts_jacobian);
+    result.sens_jacobian_source =
+        ss_fill_state_jacobian(rhs, y_ss, ns, sub, want_analytical, J.data());
 
     // ── Step 2: ∂f/∂p for each sensitivity parameter ──────────────────────────
-    std::vector<double> dfdp(static_cast<size_t>(ns) * np, 0.0); // column-major: dfdp[p*ns+i]
-
-    if (rhs.has_analytical_dfdp()) {
-        result.sens_dfdp_source = "codegen";
-        for (int p = 0; p < np; ++p) {
-            rhs.eval_dfdp(0.0, y_ss, pidx[p], dfdp.data() + static_cast<size_t>(p) * ns);
-        }
-    } else {
-        // Finite differences in the parameter, at the fixed steady state:
-        // ∂f/∂p[:,p] = (f(y_ss; p+h) − f(y_ss; p)) / h. sync_params() re-derives
-        // constant-expression parameters after each write, so a rate law stored
-        // as a derived `_rateLaw{N}` picks up the chain rule (issue #2).
-        //
-        // Two probes, and each component takes the one that answered (issue
-        // #123). The relative step is the derivative-preserving one, but where
-        // p's own term is a small fraction of the f_i it sits in, it moves f_i by
-        // less than f_i's own roundoff and the quotient is noise; those
-        // components take the wide (pre-#76 absolute) probe instead, which
-        // carries a secant error but not a fabricated one. Every entry is
-        // therefore one of the two quotients this file already knew how to
-        // compute — the rule chooses between them, it does not invent a third.
-        result.sens_dfdp_source = "finite-difference";
-        rhs.sync_params();
-        rhs.eval(0.0, y_ss, f0.data());
-
-        std::vector<double> term_scale;
-        rhs_term_scale(J.data(), y_ss, ns, term_scale);
-        std::vector<double> f_wide(ns);
-
-        for (int p = 0; p < np; ++p) {
-            int pi = pidx[p];
-            double pval = params[pi].value;
-            double p_plus = 0.0;
-            const double h = fd_probe(pval, param_fd_step(pval), &p_plus);
-
-            // Perturb parameter, holding it against re-derivation so a probe of a
-            // derived parameter is not immediately undone.
-            const_cast<std::vector<Parameter> &>(params)[pi].value = p_plus;
-            rhs.sync_params(pi);
-            rhs.eval(0.0, y_ss, f1.data());
-
-            // Restore parameter
-            const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
-            rhs.sync_params(pi);
-
-            double *col = dfdp.data() + static_cast<size_t>(p) * ns;
-            for (int i = 0; i < ns; ++i) {
-                col[i] = (f1[i] - f0[i]) / h;
+    // A function of the state and its Jacobian, so that the check of issue
+    // #995 (ss_measure_root) can ask for it again at the state one Newton step
+    // on. At the returned state it is what it was.
+    const auto fill_dfdp = [&](const double *y_at, const double *J_at, std::vector<double> &out) {
+        out.assign(static_cast<size_t>(ns) * np, 0.0); // column-major: out[p*ns+i]
+        if (rhs.has_analytical_dfdp()) {
+            result.sens_dfdp_source = "codegen";
+            for (int p = 0; p < np; ++p) {
+                rhs.eval_dfdp(0.0, y_at, pidx[p], out.data() + static_cast<size_t>(p) * ns);
             }
+        } else {
+            // Finite differences in the parameter, at the fixed steady state:
+            // ∂f/∂p[:,p] = (f(y; p+h) − f(y; p)) / h. sync_params() re-derives
+            // constant-expression parameters after each write, so a rate law stored
+            // as a derived `_rateLaw{N}` picks up the chain rule (issue #2).
+            //
+            // Two probes, and each component takes the one that answered (issue
+            // #123). The relative step is the derivative-preserving one, but where
+            // p's own term is a small fraction of the f_i it sits in, it moves f_i by
+            // less than f_i's own roundoff and the quotient is noise; those
+            // components take the wide (pre-#76 absolute) probe instead, which
+            // carries a secant error but not a fabricated one. Every entry is
+            // therefore one of the two quotients this file already knew how to
+            // compute — the rule chooses between them, it does not invent a third.
+            result.sens_dfdp_source = "finite-difference";
+            rhs.sync_params();
+            rhs.eval(0.0, y_at, f0.data());
 
-            // The wide probe, for the components the narrow one could not
-            // resolve. Skipped entirely when the two steps coincide (|p| >= 1),
-            // which is where it would cost an RHS evaluation for nothing.
-            const double h_wide_req = param_fd_wide_step(pval);
-            if (h_wide_req <= param_fd_step(pval)) {
-                continue;
-            }
-            double p_wide = 0.0;
-            const double h_wide = fd_probe(pval, h_wide_req, &p_wide);
-            const_cast<std::vector<Parameter> &>(params)[pi].value = p_wide;
-            rhs.sync_params(pi);
-            rhs.eval(0.0, y_ss, f_wide.data());
-            const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
-            rhs.sync_params(pi);
+            std::vector<double> term_scale;
+            rhs_term_scale(J_at, y_at, ns, term_scale);
+            std::vector<double> f_wide(ns);
 
-            for (int i = 0; i < ns; ++i) {
-                if (param_fd_widen(f1[i] - f0[i], f0[i], term_scale[i])) {
-                    col[i] = (f_wide[i] - f0[i]) / h_wide;
+            for (int p = 0; p < np; ++p) {
+                int pi = pidx[p];
+                double pval = params[pi].value;
+                double p_plus = 0.0;
+                const double h = fd_probe(pval, param_fd_step(pval), &p_plus);
+
+                // Perturb parameter, holding it against re-derivation so a probe of a
+                // derived parameter is not immediately undone.
+                const_cast<std::vector<Parameter> &>(params)[pi].value = p_plus;
+                rhs.sync_params(pi);
+                rhs.eval(0.0, y_at, f1.data());
+
+                // Restore parameter
+                const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+                rhs.sync_params(pi);
+
+                double *col = out.data() + static_cast<size_t>(p) * ns;
+                for (int i = 0; i < ns; ++i) {
+                    col[i] = (f1[i] - f0[i]) / h;
+                }
+
+                // The wide probe, for the components the narrow one could not
+                // resolve. Skipped entirely when the two steps coincide (|p| >= 1),
+                // which is where it would cost an RHS evaluation for nothing.
+                const double h_wide_req = param_fd_wide_step(pval);
+                if (h_wide_req <= param_fd_step(pval)) {
+                    continue;
+                }
+                double p_wide = 0.0;
+                const double h_wide = fd_probe(pval, h_wide_req, &p_wide);
+                const_cast<std::vector<Parameter> &>(params)[pi].value = p_wide;
+                rhs.sync_params(pi);
+                rhs.eval(0.0, y_at, f_wide.data());
+                const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+                rhs.sync_params(pi);
+
+                for (int i = 0; i < ns; ++i) {
+                    if (param_fd_widen(f1[i] - f0[i], f0[i], term_scale[i])) {
+                        col[i] = (f_wide[i] - f0[i]) / h_wide;
+                    }
                 }
             }
         }
-    }
+    };
+    std::vector<double> dfdp;
+    fill_dfdp(y_ss, J.data(), dfdp);
 
     // Step 3: Solve J * sens[:,p] = -dfdp[:,p] for each parameter.
     //
@@ -2345,13 +3914,27 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
     // solve the reduced system, then reconstruct dependent species from
     // conservation constraints (their sensitivity follows from the chain rule).
 
-    const auto &cl = model.conservation_laws();
+    const auto &all_laws = model.conservation_laws();
 
     result.sensitivity.resize(ns * np, 0.0);
     result.sens_param_names = param_names;
     result.n_sens_params = np;
 
-    if (!cl.empty() || sub.masked) {
+    // Issue #995: what ss_measure_root needs to solve the columns again.
+    SsColumnSystem column_system;
+    column_system.fill_dfdp = fill_dfdp;
+    column_system.model = &model;
+    column_system.start = &start_state;
+    column_system.held = held_state;
+    column_system.hold_failed = hold_failed;
+    column_system.horizon = horizon;
+    result.sens_mask_held_species = -1;
+    result.sens_mask_reader_species = -1;
+    for (int p = 0; p < np; ++p) {
+        column_system.param_values.push_back(params[static_cast<size_t>(pidx[p])].value);
+    }
+
+    if (!all_laws.empty() || sub.masked) {
         // Reduced-space sensitivity solve.
         //
         // `solve_idx` is the unknown set (ss_unknown_species): the
@@ -2362,7 +3945,50 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         // A fixed species' dY_ss/dp is genuinely 0 — a boundary condition does not
         // move with a rate constant — so its row stays 0 rather than NaN: it is
         // the mask, not fixedness, that means "no answer".
-        std::vector<int> solve_idx = ss_unknown_species(model, cl, sub);
+        //
+        // Issue #995: a law that holds a masked-out species is not an equation
+        // of the species the mask kept. Such a species is taken out of the
+        // laws by one of them, which is dropped, and the species that law was
+        // solved for is an unknown, with its own equation. See
+        // ss_kept_species_system. Without a mask, or where no law holds a
+        // masked species, `cl` and `solve_idx` are the model's laws and
+        // ss_unknown_species' set, as they were.
+        ConservationLaws cl;
+        std::vector<int> solve_idx;
+        ss_kept_species_system(model, all_laws, sub, ss_unknown_species(model, all_laws, sub), cl,
+                               solve_idx);
+        // Issue #995: a species the mask left out, that no law gives, is held
+        // where the solve left it. That is its part in the derivative only
+        // where no equation the columns are solved on reads it: `A <-> M` with
+        // M left out and A kept has dA*/dkf = −4/9 where A with M held gives
+        // −2/3. Which species is read, and by whose equation, goes on the
+        // result, and the request is refused by it.
+        if (sub.masked) {
+            const auto &all_species = model.species();
+            for (const int e : sub.excluded) {
+                if (all_species[static_cast<size_t>(e)].fixed) {
+                    continue; // a boundary condition is the constant it is held as
+                }
+                bool given_by_a_law = false;
+                for (int k = 0; k < cl.n_laws; ++k) {
+                    given_by_a_law = given_by_a_law || cl.dependent[k] == e;
+                }
+                if (given_by_a_law) {
+                    continue;
+                }
+                const double *read_by = J.data() + static_cast<size_t>(e) * ns;
+                for (const int r : solve_idx) {
+                    if (read_by[r] != 0.0) {
+                        result.sens_mask_held_species = e;
+                        result.sens_mask_reader_species = r;
+                        break;
+                    }
+                }
+                if (result.sens_mask_held_species >= 0) {
+                    break;
+                }
+            }
+        }
         if (solve_idx.empty()) {
             // Nothing left to differentiate (every included species is pinned by
             // a law). Report NaN rather than a zero matrix a fitter would read as
@@ -2400,31 +4026,19 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         // back to the dependent below.
         //
         // A law that has a species the mask left out, and that does not
-        // reconstruct it, is not differentiated. That species is held where
-        // the integration left it, and for a sink that drains the law it is
-        // what took the total: for S + E <-> ES -> E + P with P masked out, P
-        // ends at S0 and S and ES at 0 whatever S0 is. The total stays fixed
-        // for such a law, as it was. (Where the masked species is the law's
+        // reconstruct it, is not among these (issue #995): that species is
+        // held where the integration left it, and what the law says of the
+        // others is theirs to say, through their own equations. For S + E <->
+        // ES -> E + P with P masked out, S and ES end at 0 whatever S0 is, and
+        // their equations give that. (Where the masked species is the law's
         // dependent it is reconstructed from the total, which moves.) Row
         // reduction leaves 1e-17 on species the law does not hold.
         std::vector<double> dT(static_cast<size_t>(cl.n_laws) * np, 0.0);
         std::vector<double> moved(static_cast<size_t>(cl.n_laws) * np, 0.0);
         bool totals_move = false;
-        // Which species a law holds is asked of the coefficients over the
-        // volumes they carry (issue #758): a size 1e10 of another's is not
-        // rounding.
-        const std::vector<std::vector<int>> members = model.conservation_law_members();
         for (int k = 0; k < cl.n_laws; ++k) {
             const int dep = cl.dependent[k];
             const double cd = cl.coefficients[k][dep];
-            bool held = false;
-            for (const int i : sub.excluded) {
-                held = held || (i != dep && std::find(members[k].begin(), members[k].end(), i) !=
-                                                members[k].end());
-            }
-            if (held) {
-                continue;
-            }
             for (int p = 0; p < np; ++p) {
                 double total = 0.0;
                 for (int i = 0; i < ns; ++i) {
@@ -2543,6 +4157,35 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             }
         }
 
+        // Issue #995: whether this was an isolated root, and the state on it,
+        // asked of the same system. The totals and the fixed species force the
+        // unknowns at the corrected state as they did above, through its
+        // Jacobian.
+        column_system.laws = &cl;
+        column_system.unknowns = &solve_idx;
+        column_system.forcing = [&](const double *J_at, int r, int p) {
+            double add = 0.0;
+            if (totals_move) {
+                for (int k = 0; k < cl.n_laws; ++k) {
+                    const double m = moved[static_cast<size_t>(k) * np + p];
+                    if (m != 0.0) {
+                        add += J_at[static_cast<size_t>(cl.dependent[k]) * ns +
+                                    solve_idx[static_cast<size_t>(r)]] *
+                               m;
+                    }
+                }
+            }
+            for (const int i : set_by_a_parameter) {
+                const double seed = dx0[static_cast<size_t>(i) * np + p];
+                if (seed != 0.0) {
+                    add += J_at[static_cast<size_t>(i) * ns + solve_idx[static_cast<size_t>(r)]] *
+                           seed;
+                }
+            }
+            return add;
+        };
+        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical);
+
         // A masked-out species was held fixed above, which is what made the
         // system solvable — but "held fixed" is not a gradient. Its row read 0
         // through the dependent reconstruction (correct: the law sees it as a
@@ -2583,6 +4226,16 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             for (int i = 0; i < ns; ++i)
                 result.sensitivity[i * np + p] = x_data[i];
         }
+
+        // Issue #995: whether this was an isolated root, and the state on it.
+        std::vector<int> every_species(static_cast<size_t>(ns));
+        for (int i = 0; i < ns; ++i) {
+            every_species[static_cast<size_t>(i)] = i;
+        }
+        column_system.laws = &all_laws;
+        column_system.unknowns = &every_species;
+        column_system.forcing = [](const double *, int, int) { return 0.0; };
+        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical);
 
         // RAII guards handle cleanup
     }
@@ -3150,8 +4803,99 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             restore.saved[static_cast<std::size_t>(i)] = species[i].concentration;
             species[i].concentration = result.concentrations[i];
         }
-        compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub,
-                               dx0);
+        // Issue #995: an integration stops at the first state whose residual
+        // is under `tol`, and that says where the run is and not where it is
+        // going: BIOMD0000000407 starts at 3.5e-10, is returned as it starts,
+        // and a run takes one of its species from 2.448 to 3e-4. A Newton root
+        // can be one the system leaves: BIOMD0000000005 has a root with
+        // eigenvalues 0.16 ± 0.18i, inside its limit cycle. So a run is taken
+        // on for the time the solve was given, from the returned state with
+        // every concentration moved by up to a millionth of itself (each by
+        // its own share of that, of either sign, so that no symmetry of the
+        // model is kept), and the
+        // columns are refused where it does not come back (ss_measure_root,
+        // 5). A species that is not there is not moved: a state is not asked
+        // whether it would last an invasion nothing in the request brings. The
+        // run has the steps of one output point, max_steps
+        // (SteadyStateMarcher::take_on_for), and is not stopped for a residual
+        // that has ceased to fall, as a march of the solve is: at a steady
+        // state it has.
+        std::vector<double> held_state;
+        bool held = false, hold_failed = false;
+        {
+            const auto take_on = [&](const SteadyStateOptions &with) {
+                for (int i = 0; i < ns; ++i) {
+                    // The golden ratio's multiples, in (−1, 1): no two alike.
+                    const double share = 2.0 * std::fmod((i + 1) * 0.6180339887498949, 1.0) - 1.0;
+                    const bool moved = sub.includes(i) && !species[i].fixed;
+                    species[i].concentration =
+                        result.concentrations[i] * (moved ? 1.0 + kHoldKick * share : 1.0);
+                }
+                SteadyStateMarcher hold(model, rhs, with, sub);
+                hold.allow_error_test_failures(kHoldErrorTestFailures);
+                hold.take_on_for(with.max_steps);
+                double left = 0.0;
+                hold.march(0.0, &left);
+                // An integrator that gives up short of the time is started
+                // again where it stopped, a few times (restart_at_zero).
+                for (int again = 0; again < kHoldRestarts && hold.integrator_failed() &&
+                                    hold.time() < opts.max_time && !hold.out_of_steps();
+                     ++again) {
+                    if (!hold.restart_at_zero(result.concentrations)) {
+                        break;
+                    }
+                    hold.march(0.0, &left);
+                }
+                SteadyStateResult on = hold.make_result(false, left);
+                result.sens_root_hold_steps += on.n_steps;
+                result.sens_root_hold_time = hold.time();
+                held_state = std::move(on.concentrations);
+                bool failed = hold.integrator_failed();
+                for (const double v : held_state) {
+                    failed = failed || !std::isfinite(v);
+                }
+                return failed;
+            };
+            try {
+                hold_failed = take_on(*effective);
+                // As the solve itself does where the closed-form Jacobian
+                // stops the integrator (issue #127): once more on differences.
+                if (hold_failed && effective->jacobian == "auto" &&
+                    ss_install_solver_jacobian(rhs, *effective)) {
+                    SteadyStateOptions by_differences = *effective;
+                    by_differences.jacobian = "fd";
+                    hold_failed = take_on(by_differences);
+                }
+                held = !hold_failed;
+            } catch (const std::exception &) {
+                hold_failed = true;
+            }
+            // The run leaves the model where it ended.
+            for (int i = 0; i < ns; ++i) {
+                species[i].concentration = result.concentrations[i];
+            }
+        }
+        compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub, dx0,
+                               restore.saved, held ? &held_state : nullptr, hold_failed,
+                               opts.max_time);
+        // The observables and functions are those of the state that is
+        // returned (issue #995): where the state was stepped on, the ones read
+        // above are the solver's, and a species an assignment rule gives is
+        // reported from them. (Z := 2·A came back 5.77e-11 beside the A of 1e-7
+        // that the steps led to.)
+        if (result.sens_root_newton_steps > 0) {
+            for (int i = 0; i < ns; ++i) {
+                species[i].concentration = result.concentrations[i];
+            }
+            rhs.sync_params();
+            model.update_observables(result.concentrations.data());
+            model.evaluate_functions(0.0);
+            result.observable_values.clear();
+            for (const auto &o : model.observables()) {
+                result.observable_values.push_back(o.total);
+            }
+            result.function_values = model.function_value_cache();
+        }
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
         compute_ss_output_sensitivity(model, rhs, result, opts.sensitivity_params);

@@ -529,6 +529,176 @@ BNGsim automatically builds a reduced Jacobian on the independent species
 subspace, solves the non-singular reduced system, and reconstructs the
 dependent species sensitivities from the conservation constraints.
 
+#### Where the columns are returned: an isolated root (issue #995)
+
+`-J⁻¹·∂f/∂p` is the derivative of the steady state only where the steady state
+is an isolated root that the system rests at, and the state the solve returned
+is on it. Where the steady states form a continuum, the one a run
+ends at depends on the path it took, and that dependence is not in the root
+equations. (A root of higher order, which a species nears as 1/t, has a
+singular Jacobian too, and no derivative with respect to a parameter that would
+move it off zero.) An epidemic that burns out is a continuum: `S + I -> 2 I`, `I -> R` ends at
+whatever S it left, every state with I = 0 being a steady state, and the solve
+returned dS*/dg = 26.25 where the final-size relation gives 66.05. An
+irreversible branch to two products is another, and so is a total that is
+conserved but not by a linear law.
+
+The solve checks, and raises `SimulationError` where a check fails. It takes
+one Newton step from the state it returned and factors its system again there,
+and it takes a run on for `max_time` from that state with every concentration
+moved by up to a millionth of itself. What it reads is each a ratio of two quantities
+in the same units. An entry of a column is taken over its species' own
+concentration, `ss.sens_species_scale`, the larger of the returned value and
+the corrected one, so that the units of a species or the size of its
+compartment change nothing that is asked of a state. Where the solver stops
+is another matter: `tol`, `atol` and `max_time` are in the model's units, and
+the same model in others can be stopped at another state, or at another
+root, and is asked from there.
+
+A species at a zero has no concentration to be taken over. It is one that the
+corrected state has at nothing and that nothing left there makes: its rate is
+zero with every such species set to zero, and from next to nothing it does not
+grow. Its entries are taken over where it has been and the largest among the
+species it is coupled to, no more than a conserved total it belongs to allows.
+A species that is small and has a steady value, 1e-12 beside another at 1, is
+not at a zero, and neither is one that makes itself and is falling towards
+what its surroundings carry. Each keeps its own scale, and has to be solved to
+its steady value before its entries are returned (the column shift, below),
+which the solve does.
+
+| On the result | What it is | Refused |
+| --- | --- | --- |
+| `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; ((m-1)/m)^(m-1) at a root of order m, which is 1/2 at a double root; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
+| `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. Small for a reason too, beside rates that are far apart: `k/(2·F)` for a step at k beside an exchange at F. | below 1e-13 |
+| `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed; `4·F/k` for the step beside the exchange. | above 1e13 |
+| `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry and of no less than `1e-3/\|p\|`. Where a column moves by more than 0.01 of itself, or the state does (`sens_root_state_shift`), the state is stepped on, up to ten times (`sens_root_newton_steps`). | either still above 0.01 after the steps |
+| `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from up to a millionth beside the state the solver stopped at. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
+| `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | times `max_time`, above 0.01 |
+| `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
+
+The request is refused whole where one column fails, so which parameters are
+asked for together can decide it.
+
+The first three say the steady state is not an isolated root, or, for the
+pivot share and the condition number at their limits, that rates of the model
+are so far apart (more than 1e12) that rounding leaves the columns known to no
+better than a thousandth. Where the Jacobian is a difference quotient
+(`ss.sens_jacobian_source` is `"finite-difference"`: `jacobian="fd"` or
+`"jax"`, or a model the closed form declines) its entries are known to about
+1e-8 of their neighbours and not to rounding, and the two limits are 1e-6 and
+1e6: an entry a hundred million times smaller than its neighbours reads as
+nothing there, and no measure taken on that matrix sees what it lost. (The
+limits hold that loss. They do not hold what the difference itself gets wrong
+where a species is far smaller than the largest in the model, whose size sets
+the step: prefer the closed form for sensitivities.) (A determinant
+ratio that is negative, or above 1.67, is also what a state far from an
+isolated root gives, where the rates are so small that `tol` passes it, and
+what a rate law that is discontinuous between the two states gives; a smaller
+`tol` settles the first. A root of an order between one and about 1.4 keeps
+more than 0.6 and is let by: 0.70 for a species that is lost at `k·X^1.2`. Its
+columns are then asked like any others, and settle at nothing under the steps
+or do not settle.) The columns of such a model come from a time course
+with forward sensitivities, run to the steady state:
+
+```python
+sim = bngsim.Simulator(model, sensitivity_params=["g", "I0"])
+result = sim.run(t_span=(0, 1e4), n_points=2)
+result.sensitivities[-1]          # (n_species, n_params) at the last time
+```
+
+The column shift says how far the state the solver stopped at is from the
+steady state, in what matters here: its columns. `tol` bounds the residual
+`||f(y)||₂/n` and not the distance to the root, and a model whose
+concentrations are 1e-6 passes `tol=1e-9` a long way off: BIOMD0000000002 is
+accepted 0.02% from its steady state, where every column is 5.9% from the
+derivative. Where a column moves by more than 1% in one Newton step, the state
+is stepped on, a Newton step at a time, until none does, and what is returned
+is the last: `ss.concentrations`, `ss.residual` and `ss.sensitivity` are then
+those of the stepped state, which is the root to what a step still moves it
+by, and `ss.sens_root_newton_steps` says how many steps that took. Where the
+first step moves no column, it is 0 and the result is the solver's own, to the
+last bit. A root that was stepped to has to be where the run below ends, within
+1% in every species: Newton can step to a root the system leaves. The solve
+refuses where the state and its columns have not settled when the steps end:
+the state is far from a root for the size of its rates, which a smaller `tol`
+mends, or the steady state is not an isolated root.
+
+A column's move is measured twice. The steps go by its move against itself,
+however small it is, down to what rounding makes of a column (1e-12 of
+`1/|p|`): a column of 5,000 for a parameter of
+1e-8 is small beside `1/|p|` and came back 4% off, at a state a step moved by
+less than 1%. The refusal goes by its move against the larger of itself and
+`1e-3/|p|`, which is a species moving by 0.1% of its scale when the parameter
+doubles. A column that is nothing at the root is, at any state, what the
+state's rounding makes of 0/0, and can move by all of itself under every step:
+under `1e-5/|p|` it is returned as the nothing it is.
+
+A species that is small beside the rest is solved to its own steady value by
+the same steps. A made at `5e-10·G` and removed at 5e-3 has a steady value of
+1e-7 beside G at 1, and the residual is under `tol=1e-9` where A starts, at
+nothing: dA*/dkd came back -5.8e-9 for -2e-5. Its entries are taken over its
+own concentration, the column is seen to move, and two steps take A to 1e-7.
+
+The hold shift says the state is not one a run stays at. An integration stops
+at the first state whose residual is under `tol`, and that says where the run
+is, not where it is going: BIOMD0000000407 is returned as it starts, beside a
+stable root, and a run takes one of its species from 2.448 to 3e-4. A smaller
+`tol` runs past such a state. And a root can be one the system leaves, however
+exactly the state is on it: the middle root of a bistable switch, or the fixed
+point inside a limit cycle, which `method="newton"` finds and a model can be
+started on. `-J⁻¹·∂f/∂p` there is how the root moves, not where a run ends. The
+run starts a millionth beside the state because one started on such a root
+stays on it. A species that is at nothing is not moved: the run does not ask
+whether a state would last the arrival of something the model does not start
+with. The eigenvalues below do. A species at nothing is one of the unknowns,
+and a state it would grow from is refused, also where nothing in the model
+makes that species and a run from the model's start stays: a resident at its
+capacity beside an invader the model does not start with. Some of those
+columns are right. They are refused because telling them from the others takes
+knowing that nothing that is asked for would make the species, at any order: a
+rate constant or an initial amount of zero that is asked for does (the steady
+state jumps where it leaves zero, and `-J⁻¹·∂f/∂p` is the slope of the branch
+the system leaves), and so does the square of one, where every first
+derivative is zero.
+
+The run has `max_steps` steps. Where it uses them short of `max_time`, it was
+not seen to stay, and the columns are refused: an oscillation about the state
+does this where it is slow to grow or to die away. Give it more steps.
+
+The growth rate says the same of a state a run of `max_time` is too short to
+be seen leaving. A millionth grows to a hundredth in `9.2/rate`, and a
+deviation that grows more slowly than that leaves the run where it started;
+the relaxation below does not see an oscillation either. The eigenvalues do,
+and the columns are refused where the largest real part among them, times
+`max_time`, is above 0.01: a state beside this one is then more than 1%
+further from it after a run of that length. The limit goes with `max_time`
+because the question does: what a run of that length ends at. A real part
+under `0.01/max_time` is returned, and so is a state in a system of more than
+512 unknowns that the run does not show the system leaving. (Such a system is
+asked for the eigenvalues of the species the state has at a zero, among
+themselves: a population seeded at a hundredth of what it grows to is stepped
+to nothing, which it leaves, and an implicit run among many species can stay
+there.) An eigenvalue is
+computed to about 1e-16 of the largest of them, so in a system whose rates
+are that far apart the refusal can be of a state the system rests at.
+
+Without `sensitivity_params`, `steady_state()` returns what it did: the state
+the solver stopped at.
+
+The relaxation says the column is that of a steady state the model does not reach
+in the time the solve was given. A species whose turnover is switched off at
+the steady state stays where it started, and the state is a root to the last
+bit; its column is the ratio of a production and a removal that are both next
+to nothing, 12,500 in MODEL1607210000 where no run moves the species at all.
+Raise `max_time` to ask about the state such a run does reach, or take the
+column from a time course over the times that matter.
+
+`sens_jacobian_rcond`, `min|U|/max|U|` of the LU, is still reported, and
+decides nothing. It depends on the units: for an isolated root it falls with
+the size ratio between two compartments, to 4e-16 at 1e8 where
+`sens_root_condition` stays at 6.2, and it reads 1.0 for the epidemic above
+with its sink masked out. The warning that was logged below 1e-8 is gone.
+
 #### Observable / expression output sensitivities
 
 `ss.sensitivity` is species-level. To read `∂(observable)/∂θ` or
@@ -588,7 +758,7 @@ contributes nothing, and neither does any species once `save_concentrations()`
 has made the state its own baseline. A fixed species that a parameter sets,
 `$A() A0`, moves what reads it by the same seed.
 
-Four requests are refused, with `SensitivityUnsupportedError`:
+Three requests are refused, with `SensitivityUnsupportedError`:
 
 - a parameter that sets the initial amount of a conserved species, on a state a
   `run()` has advanced. The total is still what the parameter made it, and the
@@ -598,28 +768,35 @@ Four requests are refused, with `SensitivityUnsupportedError`:
 - any parameter, where a law spans compartments of different size and an
   assignment rule sets the size of a compartment. The right-hand side divides
   by the size the model loaded at where the rule gives another (issue #745),
-  so the steady state is that of another system;
-- any parameter, where a law spans compartments of different size and the
-  Jacobian at the steady state is badly conditioned on the reduced subspace
-  (`min|U|/max|U|` below 1e-8, the ratio `ss.sens_jacobian_rcond` reports). A
-  model whose laws each lie within one size gets a warning there. With sizes
-  in a law, a steady state that is one of a continuum has a pivot that is
-  rounding where one size leaves an exact zero, and the columns that came back
-  were not a gradient (-329,603 for 0.0774). With unknowns in compartments of
-  both sizes the ratio also falls with the square of the size ratio, so an
-  isolated root there is refused from sizes about 1e5 apart.
+  so the steady state is that of another system.
 
 A law across compartments of different size is a total of amounts, and carries
 the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in
-one of size 2 (issue #758). Outside the two cases above its columns are
-computed like any other law's.
+one of size 2 (issue #758). Outside the cases above its columns are computed
+like any other law's, where the steady state is an isolated root. (Such a
+model was refused wherever `min|U|/max|U|` was below 1e-8, which an isolated
+root reaches with compartments 1e5 apart in size. It is asked what every model
+is asked now.)
 
-With `mask=`, a conservation law that holds a masked-out species keeps its
-total fixed, as before, unless that species is the one the law is solved for.
-That is right where the masked sink drains the law (`A <-> B -> P`: A and B
-end at 0 whatever the total). It is not where a share of the total stays out
-of the sink, which no steady-state solve can know: `A <-> B -> P` beside
-`A -> C <-> D` returns 0 for every column of C and D, with the mask.
+With `mask=`, the columns are solved on the equations of the species the mask
+kept (issue #995), with the laws that hold among those species alone. A
+masked-out species is taken out of the laws that have it by one of them: that
+law is given up, and the species it was solved for is an unknown instead, with
+its own equation; the other laws are kept as the combinations that leave the
+species out (`A + P` and `B + P` with P masked out leave `B - A`). A masked-out
+species that a law is solved for is given by that law, as before. Where
+the masked sink drains the law (`A <-> B -> P`: A and B end at 0 whatever the
+total) the columns are what they were. Where a share of the total stays out of
+the sink, which no steady-state solve can know, they are refused as those of a
+root that is not isolated: `A <-> B -> P` beside `A -> C <-> D` returned 0 for
+every column of C and D, with the mask, where C + D ends at the share of A
+that took the second branch.
+
+A masked-out species is held where the solve left it, and that is its part in
+`dY_ss/dp` only where no equation of the kept species reads it, as none reads
+a pure sink. A mask that leaves out a species one of them does read is refused
+(`ss.sens_mask_held_species`, `ss.sens_mask_reader_species`): `A <-> M` with M
+left out has dA*/dkf = -4/9, and -2/3 with M held.
 
 The initial-condition axis itself is not computed, and
 `output_sensitivities(..., axis="ic")` raises.
