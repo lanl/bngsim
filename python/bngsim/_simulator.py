@@ -7288,7 +7288,14 @@ class Simulator:
                 f"mask=~model.is_pure_sink()), or take the columns from {time_course}."
             )
         kept = self._SS_ROOT_DETERMINANT_RATIO_MIN
-        if not kept <= ratio <= 1.0 / kept:
+        # No ratio at all: the Newton step from the returned state is no
+        # number, a rate or its derivative having no value there (k/B with B
+        # at exactly nothing). It is said as that, below, and not as a
+        # determinant. (Where the solver stops a little short of such a state
+        # it is a later step that finds it; which of the two is the platform's
+        # arithmetic.)
+        no_value = math.isnan(ratio)
+        if not no_value and not kept <= ratio <= 1.0 / kept:
             measured = (
                 f"{not_isolated}, or the returned state is not on it. Corrected by one "
                 "Newton step, the state gives those equations a determinant that is "
@@ -7305,7 +7312,7 @@ class Simulator:
                     "its rates, which solving again with a smaller tol settles. "
                 )
             else:
-                # Negative, above the upper limit, or not a number.
+                # Negative, or above the upper limit.
                 read = (
                     "a determinant that changes sign or grows so is not that of one matrix "
                     "at two states close together. A rate law is discontinuous between "
@@ -7336,7 +7343,7 @@ class Simulator:
             else "rounding leaves of them"
         )
         apart = "1e5" if differenced else "1e12"
-        if not share >= share_least:
+        if not no_value and not share >= share_least:
             raise SimulationError(
                 f"{not_isolated}, or its columns cannot be computed. The pivot for "
                 f"{result.sens_root_pivot_species} is {share:.1e} of the terms it was "
@@ -7348,7 +7355,7 @@ class Simulator:
                 "beside a slow step), and the columns are not known to the 1% asked of "
                 f"them. {continuum}{remedy}"
             )
-        if not condition <= condition_most:
+        if not no_value and not condition <= condition_most:
             raise SimulationError(
                 f"{not_isolated}, or its columns cannot be computed. A relative error "
                 f"in the entries of the Jacobian is magnified {condition:.1e} times in the "
@@ -7363,8 +7370,8 @@ class Simulator:
             )
         stepped = float(result.sens_root_state_shift)
         limit = self._SS_ROOT_COLUMN_SHIFT_MAX
-        if not column <= limit or not stepped <= limit:
-            if not column <= limit and result.sens_root_column_param is None:
+        if no_value or not column <= limit or not stepped <= limit:
+            if no_value or (not column <= limit and result.sens_root_column_param is None):
                 moved = "the columns cannot be solved there: a rate has no value at that state"
             elif not column <= limit:
                 by = (

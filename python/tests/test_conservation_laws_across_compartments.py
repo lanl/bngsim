@@ -696,14 +696,16 @@ def test_a_continuum_across_sizes_is_refused():
     model was refused for its law (issue #704), then for a law across sizes
     at a ratio min|U|/max|U| below 1e-8 (issue #758), and is refused now for
     what it is, a root that is not isolated (issue #995): the condition
-    number of the reduced Jacobian is 1e16 in any units."""
+    number of the reduced Jacobian is 1e16 in any units. (Which measure says
+    so first is the platform's arithmetic: the pivot that is rounding on one
+    is an exact zero on another, and the determinant says it there.)"""
     model = bngsim.Model.from_antimony_string(CONTINUUM.format(v2=2.3))
     np.testing.assert_allclose(_law(model), [1, 2.3 / 0.7, 2.3 / 0.7, 1, 2.3 / 0.7, 1], rtol=1e-12)
     sim = bngsim.Simulator(model, method="ode")
     for name in ("kp", "k1"):
         with pytest.raises(
             bngsim.SimulationError,
-            match=r"#995.*not an isolated root.*what rounding leaves of them",
+            match=r"#995.*not an isolated root",
         ):
             sim.steady_state(sensitivity_params=[name], tol=1e-10)
         model.reset()

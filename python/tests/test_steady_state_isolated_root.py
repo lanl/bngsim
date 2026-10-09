@@ -60,6 +60,14 @@ end reactions
 """
 
 
+# The older refusal, of a Jacobian whose factorization meets an exact zero.
+# Where a pivot is what rounding leaves of a zero on one platform, it can be
+# that zero on another, and this is then what is raised.
+_EXACTLY_SINGULAR = (
+    r"dY_ss/dp does not exist for this model: the Jacobian at the steady state is singular"
+)
+
+
 def _net(tmp_path, text: str, name: str = "model.net") -> bngsim.Model:
     path = tmp_path / name
     path.write_text(text)
@@ -800,7 +808,10 @@ def test_a_pivot_that_the_law_reduction_cancelled_is_refused(v1, v2, k):
     they cancel to an exact zero. A 1x1 matrix has min|U|/max|U| = 1, and
     dA*/dk came back 258.7, 1556 and -1.19 for the three pairs of sizes, where
     it is 0, with no warning. What the entry was made of is carried into the
-    pivot's share of them, which is 1e-16 to 1e-18."""
+    pivot's share of them, which is 1e-16 to 1e-18. (Whether two numbers
+    cancel to rounding or to an exact zero is the platform's arithmetic: x86-64
+    has the zero for the first two pairs, and there the older refusal of an
+    exactly singular Jacobian is raised first.)"""
     model = bngsim.Model.from_antimony_string(
         f"compartment c1, c2; c1 = {v1}; c2 = {v2}; species A in c1, B in c2; A = 1.3; B = 0.2;\n"
         f"k = {k}; T0 = {v1 * 1.3 + v2 * 0.2!r};\nR1: A -> B; k*(A*c1 + B*c2)\nR2: B -> A; k*T0\n"
@@ -808,7 +819,8 @@ def test_a_pivot_that_the_law_reduction_cancelled_is_refused(v1, v2, k):
     assert model.conservation_laws["n_laws"] == 1
     sim = bngsim.Simulator(model, method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*pivot for B is \d\.\de-1[5-9] of the terms"
+        bngsim.SimulationError,
+        match=rf"#995.*pivot for B is \d\.\de-1[5-9] of the terms|{_EXACTLY_SINGULAR}",
     ):
         sim.steady_state(sensitivity_params=["k"])
     out = sim.steady_state()  # the state itself is where the model started
@@ -1051,11 +1063,13 @@ def test_a_branch_to_two_products_is_refused(tmp_path, method):
     once Z is gone, and dP1*/dk4 is 0.969. The two products have one column
     between them in the reduced system. Its second pivot is 4e-18 of the
     terms it was computed from, and the condition number, 15, does not see
-    it: the null vectors of the two sides have no entry in common."""
+    it: the null vectors of the two sides have no entry in common. (On x86-64
+    the pivot is an exact zero, and the older refusal says so first.)"""
     sim = bngsim.Simulator(_net(tmp_path, BRANCH), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*pivot for P[12]\(\) is \d\.\de-1[5-9] of the terms.*singular whatever",
+        match=r"#995.*pivot for P[12]\(\) is \d\.\de-1[5-9] of the terms.*singular whatever"
+        rf"|{_EXACTLY_SINGULAR}",
     ):
         sim.steady_state(sensitivity_params=["k4", "k5"], method=method)
 
@@ -2194,12 +2208,14 @@ def test_a_species_that_could_rest_at_nothing_and_does_not_is_stepped_to_its_roo
 
 
 def test_the_same_solved_to_the_root_it_rests_at_is_returned(tmp_path):
-    """Control. With ``tol=1e-15`` the solve stops on the upper root."""
+    """Control. With ``tol=1e-15`` the solve stops on the upper root. (The
+    state is the solver's, where its integration left it, and the columns are
+    that state's: 2e-4 from the root's on one platform.)"""
     root, by_d, by_k = _self_activation()
     sim = bngsim.Simulator(_net(tmp_path, ACTIVATES_ITSELF), method="ode")
     out = sim.steady_state(sensitivity_params=["d", "K"], tol=1e-15)
     assert np.asarray(out.concentrations)[0] == pytest.approx(root, rel=1e-4)
-    np.testing.assert_allclose(np.asarray(out.sensitivity)[0], [by_d, by_k], rtol=1e-4)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[0], [by_d, by_k], rtol=2e-3)
 
 
 def test_the_same_beside_a_species_with_the_larger_entry_is_refused_by_the_run(tmp_path):
@@ -2670,13 +2686,14 @@ def test_a_step_beside_a_fast_exchange_is_returned(tmp_path, fast):
     """An isolated root, B* = s/k and A* = s/k + s/F, with a pivot for B of
     -k that is computed from terms of F: k/(2·F) of them, 5e-11 and 5e-13.
     Under 1e-10 it was refused, and called singular whatever the state, where
-    main had the columns to twelve digits. Rounding leaves 1e-16 of the terms,
+    main had the columns to twelve digits on the machine that was measured on
+    (and the state to 2e-9 on another). Rounding leaves 1e-16 of the terms,
     which at 5e-13 is still a pivot known to a five-thousandth."""
     sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=fast)), method="ode")
     out = sim.steady_state(sensitivity_params=["s", "k"])
     assert out.sens_root_pivot_share == pytest.approx(0.5 / fast, rel=1e-3)
     assert out.sens_root_condition == pytest.approx(4 * fast, rel=0.5)
-    np.testing.assert_allclose(out.concentrations, [1 + 1 / fast, 1.0], rtol=1e-9)
+    np.testing.assert_allclose(out.concentrations, [1 + 1 / fast, 1.0], rtol=1e-7)
     np.testing.assert_allclose(out.sensitivity, [[1 + 1 / fast, -1.0], [1.0, -1.0]], rtol=1e-3)
 
 
@@ -2695,6 +2712,25 @@ def test_rates_too_far_apart_for_one_percent_are_refused_as_that(tmp_path, fast,
     sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=fast)), method="ode")
     with pytest.raises(bngsim.SimulationError, match=rf"#995.*cannot be computed.*{said}"):
         sim.steady_state(sensitivity_params=["s", "k"])
+
+
+def test_a_newton_step_that_is_no_number_is_said_as_a_rate_with_no_value(tmp_path):
+    """Where the Newton step from the returned state is itself no number, the
+    measures come back with no determinant ratio. That was reported as "a
+    determinant that is nan of the one the returned state gives" on the
+    platform whose solve stops exactly on such a state; it is the state a
+    later step finds elsewhere, and is said the same way."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=10.0)), method="ode")
+    out = sim.steady_state(sensitivity_params=["s", "k"])
+    out.sens_root_determinant_ratio = math.nan
+    out.sens_root_pivot_share, out.sens_root_condition = math.nan, math.nan
+    out.sens_root_column_shift, out.sens_root_relaxation = math.inf, math.inf
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*no state near.*the columns cannot be solved there: a rate has no value",
+    ) as caught:
+        sim._raise_if_not_an_isolated_root(out, 1e6, False)
+    assert "determinant" not in str(caught.value)
 
 
 def test_a_condition_number_above_the_limit_is_refused_and_one_under_it_is_not(tmp_path):
