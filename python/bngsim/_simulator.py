@@ -7031,34 +7031,35 @@ class Simulator:
     #: verdict.
     #:
     #:   ==================  =======  ==========================  ==============
-    #:   ratio               limit    right and returned (647)    beyond it
+    #:   ratio               limit    right and returned (645)    beyond it
     #:   ==================  =======  ==========================  ==============
-    #:   determinant         0.6      0.74 to 1.2                 0.59 and under
+    #:   determinant         0.6      0.96 to 1.2                 0.59 and under
     #:   pivot share         1e-10    4.1e-8 at least             3.1e-11, under
     #:   condition           1e12     1.3e9 at most               3.4e13 and up
-    #:   column shift        0.01     2.1e-3 at most              1.2e-2 and up
+    #:   column shift        0.01     2.1e-3 at most              1.8e-2 and up
     #:   hold shift          0.01     6.7e-3 at most              1.2e-2 and up
     #:   relaxation          0.01     1.0e-3 at most              1.8e-2 and up
     #:   ==================  =======  ==========================  ==============
     #:
-    #: Of the 791, 660 are returned: 647 right, 12 without a verdict, and one
+    #: Of the 791, 658 are returned: 645 right, 12 without a verdict, and one
     #: wrong, for which ``steady_state()`` itself stops at a state that is not
-    #: where a run ends, at the default tolerances and whatever is asked. 131
-    #: are refused: 67 wrong, 27 without a verdict and 37 right. Of main's 98
+    #: where a run ends, at the default tolerances and whatever is asked. 133
+    #: are refused: 67 wrong, 27 without a verdict and 39 right. Of main's 98
     #: wrong models, 72 are refused and 24 are returned right, at the root the
-    #: solve stepped to. 557 results are not stepped, and those are main's to
+    #: solve stepped to. 547 results are not stepped, and those are main's to
     #: the last bit.
     #:
-    #: The 37 right models that are refused: 14 on the determinant (four FceRI
+    #: The 39 right models that are refused: 14 on the determinant (four FceRI
     #: networks whose ligand does not dissociate, where the Jacobian is
     #: singular once the free receptor is gone and the columns asked agree with
     #: a time course all the same; states that are a root of higher order, or
     #: sit where a rate law switches), 10 where the run that is taken on ends
-    #: at other columns (species still on their way at ``max_time``), 8 whose
-    #: columns do not settle under the steps (four models of one family have
-    #: species whose turnover stops when a cascade has run out, and columns
-    #: that are 0/0 there), 2 each on the relaxation and on an eigenvalue right
-    #: of zero, and 1 on a pivot.
+    #: at other columns (species still on their way at ``max_time``), 10 whose
+    #: columns do not settle under the steps (six models of one family have
+    #: species whose turnover stops when a cascade has run out: the Jacobian
+    #: is singular at that state and the columns are 0/0 there, and what main
+    #: returned is what they are a little short of it), 2 each on the
+    #: relaxation and on an eigenvalue right of zero, and 1 on a pivot.
     #:
     #: ``min|U|/max|U|``, which this replaces, has no cut that does better than
     #: 14 right models refused and 50 wrong ones returned; at the 1e-8 it warned
@@ -7125,8 +7126,8 @@ class Simulator:
     #: for, an oscillation among them that the relaxation does not see. Systems
     #: of up to 512 unknowns are asked, and larger ones for the species they
     #: have at a zero. Of the corpus models that are returned,
-    #: none has an eigenvalue right of zero at all (654 with a spectrum; the
-    #: nearest is at -3.4e-6, an exponent of -3.4). 44 models have one: 38
+    #: none has an eigenvalue right of zero at all (652 with a spectrum; the
+    #: nearest is at -3.4e-6, an exponent of -3.4). 43 models have one: 37
     #: are refused before this is asked, one by the run, and 5 by this. Two
     #: of the 5 are right by the oracle, and the run that is taken on stays at
     #: each (BIOMD0000000546, at 6.2e-8, and BIOMD0000000908, which has a
