@@ -2603,13 +2603,13 @@ def test_biomd92_species_that_ran_out_are_at_a_zero_where_the_run_ends():
 
 
 def test_biomd416_a_column_of_nothing_that_never_settles_is_returned_as_that():
-    """The steady state does not move with ``eps``, and its column is what
-    rounding makes of that at each state: 1e-10, of either sign, and all of
-    itself different at the next. No step settles it, the ten are taken, and
-    the last state is returned with the column it has there: it is under
-    1e-5 of 1/|eps|, which is nothing, and is not refused for moving."""
+    """The steady state does not move with ``etaAuxTIR1``, and its column is
+    what rounding makes of that at each state: 1e-12, of either sign, and all
+    of itself different at the next. No step settles it, the ten are taken,
+    and the last state is returned with the column it has there: it is under
+    1e-5 of 1/|p|, which is nothing, and is not refused for moving."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000416")), method="ode")
-    out = sim.steady_state(sensitivity_params=["eps"])
+    out = sim.steady_state(sensitivity_params=["etaAuxTIR1"])
     assert out.sens_root_newton_steps == 10
     assert np.max(np.abs(np.asarray(out.sensitivity))) < 1e-8
     assert out.sens_root_column_shift < 1e-6 and out.sens_root_state_shift < 1e-9
