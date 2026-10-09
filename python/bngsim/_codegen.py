@@ -34,6 +34,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from bngsim import _term_order
+
 if TYPE_CHECKING:
     # Import-time cycle: _switch_sensitivity imports this module. Only the
     # annotation needs the name, and `from __future__ import annotations` keeps
@@ -282,7 +284,10 @@ _compile_counter = itertools.count()
 # sides of a reaction (`E + S -> E + P`) keeps `(x - rate) + rate` in that
 # species' derivative, the rounding of the rate: 0 for a synthesis of 0.01
 # beside a rate of 1e15. Invalidate v37.
-_CODEGEN_VERSION = "38"
+# v39: sums, products and the arguments of min, max, and, or are printed in an
+# order that does not follow the hash seed (issue #550). A cached v38 .so is one
+# of the two or three sources a model with a tied sum had. Invalidate v38.
+_CODEGEN_VERSION = "39"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -291,8 +296,9 @@ _CODEGEN_VERSION = "38"
 # delegates to; ``_switch_sensitivity`` owns the clock-threshold recognizer that
 # decides whether a conditional Functional rate law is emitted at all (issue
 # #68), so an edit there changes which models get a sensitivity RHS — exactly the
-# kind of silent inertness this digest exists to prevent. A change to any of them
-# can change the generated source.
+# kind of silent inertness this digest exists to prevent; ``_term_order`` is the
+# order every emitter prints the terms of a sum in (issue #550). A change to any
+# of them can change the generated source.
 #
 # This tuple is the ONLY list. CONTRIBUTING.md's "Changing generated code"
 # section — the thing a contributor reads to decide whether they must bump
@@ -304,6 +310,7 @@ _CODEGEN_SOURCE_MODULES = (
     "_jacobian",
     "_saturable_jacobian",
     "_switch_sensitivity",
+    "_term_order",
 )
 
 
@@ -2799,7 +2806,9 @@ def _direct_derived_partials(
         # rate was right (issue #720). The printing itself stays sp.ccode.
         deriv = _guard_zero_base(deriv)
         try:
-            c_str = sp.ccode(deriv)
+            # sp.ccode, with a sum's terms in an order that does not follow the
+            # hash seed (issue #550).
+            c_str = _term_order.ccode(deriv)
         except Exception as exc:
             # A derivative sympy cannot render as C (an un-inlined user function
             # call, erf, DiracDelta, ...). Refuse the whole expression rather
@@ -8675,6 +8684,31 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
     return out
 
 
+def _shift_spellings(shift, sp) -> list:
+    """``shift`` as it is, and with the sign of its numerator and of its
+    denominator both changed: ``1/(w - v)`` and ``-1/(v - w)``.
+
+    The two are one shift, and they do not do the same to a law. Where the law
+    has ``1/(w - v)`` and the shift is spelled ``-1/(v - w)``, what sympy adds
+    up along the shift keeps terms that are nothing times something, and it
+    does not always come back from the conditional at all: it rewrites a
+    comparison one way and then the other until the recursion limit. On main a
+    plan that met that was dropped whole, so a model with an onset
+    ``on/(wb - wa)`` had no comoving case in any process (``cancel`` returns
+    ``-1/(wa - wb)`` for its shift), and its columns were the plain ones, 0.4%
+    off (issue #760's error). For two names sympy's order of generators ties
+    on, ``w01`` and ``w1``, ``cancel`` returns either by the hash seed: the
+    same model with its cases in one process and without them in the next
+    (issue #550).
+
+    So both are tried where the cases are derived, and the one that leaves
+    the least is taken.
+    """
+    numer, denom = shift.as_numer_denom()
+    other = sp.Mul(-numer, sp.Pow(-denom, -1))
+    return [shift] if other == shift else [shift, other]
+
+
 def _singular_clock_powers(expr, clock_names: set[str], sp) -> set[tuple[str, str]]:
     """The (base, exponent) of every singular power in the derivative ``expr``.
 
@@ -8696,7 +8730,14 @@ def _singular_clock_powers(expr, clock_names: set[str], sp) -> set[tuple[str, st
 
 
 def _comoving_shifted_partial(
-    expr, p_alias: str, c, clock_weights: dict, derived_shift: dict, constants: set[str], sp
+    expr,
+    p_alias: str,
+    c,
+    clock_weights: dict,
+    derived_shift: dict,
+    constants: set[str],
+    sp,
+    written_out: dict | None = None,
 ):
     """``d/dε expr(clock + c·ε, p + ε, p_d + (∂p_d/∂p)·ε)`` at ``ε = 0``.
 
@@ -8707,6 +8748,21 @@ def _comoving_shifted_partial(
     ``c = 0`` is the plain column (derived parameters still follow ``p``), which is
     what the removed-exponent test compares against. The zero-base twin of issue
     #541 runs over ``ε`` as it runs over a parameter on the plain path.
+
+    A singular power whose base does not move with ``ε`` is left as it is, its
+    base not shifted (issue #550). That is the power the shift is for: ``c`` is
+    ``-(∂base/∂p)/(∂base/∂clock)``, so ``d base/dε`` is nothing, and with it the
+    power's ``e·base^(e-1)·(d base/dε)``. It was left to sympy to see that, as
+    it added ``∂base/∂p`` and ``c·∂base/∂clock`` up, which it does where the two
+    are spelled alike and not otherwise: not for an onset ``on/(wb - wa)``
+    beside the shift ``-1/(wa - wb)`` that ``cancel`` returns for it, for
+    ``on/(wb - wa)^2`` beside ``1/(wa^2 - 2·wa·wb + wb^2)``, for
+    ``on/(kk·(wb - wa))``, or for ``on/wd`` with ``wd`` a derived parameter
+    that the shift has written out. What was left then is a zero times a
+    power that is unbounded at the crossing. Here the rate of the base, with
+    each derived parameter written out (``written_out``), is put through
+    ``cancel`` and asked. A law in which sympy's own sum clears every such
+    base is not touched, and has the text it had.
     """
     from bngsim._jacobian import _finish_zero_bases, _prepare_zero_bases
 
@@ -8718,7 +8774,25 @@ def _comoving_shifted_partial(
     sub[sp.Symbol(p_alias)] = sp.Symbol(p_alias) + eps
     for d_sym, d_rate in derived_shift.items():
         sub[d_sym] = d_sym + d_rate * eps
-    shifted = expr.subs(sub, simultaneous=True)
+    still: dict = {}
+    if c != 0:
+        clock_names = set(clock_weights)
+        seen: set = set()
+        for node in _pow_nodes_in_values(expr, sp):
+            base = node.base
+            if base in seen or not _singular_power(node, clock_names, sp):
+                continue
+            seen.add(base)
+            rate = sp.diff(base.subs(sub, simultaneous=True), eps).subs(eps, 0)
+            if rate == 0:
+                continue  # sympy's own sum has cleared it
+            if written_out:
+                rate = rate.xreplace(written_out)
+            if sp.cancel(rate) == 0:
+                still[base] = sp.Dummy(f"still_{len(still)}")
+    shifted = (expr.xreplace(still) if still else expr).subs(sub, simultaneous=True)
+    if still:
+        shifted = shifted.xreplace({held: base for base, held in still.items()})
     prepared = _prepare_zero_bases(shifted, {_COMOVING_EPS}, constants | {_COMOVING_EPS})
     return _finish_zero_bases(sp.diff(prepared, eps)).subs(eps, 0)
 
@@ -8811,7 +8885,7 @@ def _counter_powers(
         """*exponent* with each condition in it taken each way, or ``None``
         where that is more than 64 expressions. A chain
         ``if(c1, a1, if(c2, a2, ...))`` is one expression a value."""
-        chosen = sorted(exponent.atoms(sp.Piecewise), key=sp.srepr)
+        chosen = sorted(exponent.atoms(sp.Piecewise), key=_term_order.srepr)
         if not chosen:
             return [exponent]
         # The outermost: one that is in no other's values.
@@ -8845,7 +8919,7 @@ def _counter_powers(
         at: list[str] = []
         # In a fixed order: the tests are written out in the order found, and
         # a set's order goes by the hash seed.
-        for rel in sorted(law.atoms(sp.core.relational.Relational), key=sp.srepr):
+        for rel in sorted(law.atoms(sp.core.relational.Relational), key=_term_order.srepr):
             on = [s for s in rel.free_symbols if s.name in names]
             if len(on) != 1:
                 continue
@@ -9163,6 +9237,37 @@ def _functional_comoving_plan(
     terms: dict[int, dict[int, str]] = {}
     approach: list[tuple[int, tuple[str, ...], str, tuple[str, ...]]] = []
 
+    def removes_a_power(
+        p_alias: str, c, derived_shift, written_out
+    ) -> tuple[bool, dict[str, str | None]]:
+        """Whether the shift ``c`` removes a singular power from a law's
+        ``∂/∂p``, and each law's comoving ``∂/∂p`` under it, as C."""
+        eligible = False
+        law_c: dict[str, str | None] = {}
+        for text in rxns_of_law:
+            pieces = []
+            for on_cell, cond in laws[text]:
+                _check_derivation_deadline(scope.deadline)
+                plain = _comoving_shifted_partial(
+                    on_cell, p_alias, 0, clock_weights, derived_shift, constants, sp
+                )
+                moved = _comoving_shifted_partial(
+                    on_cell, p_alias, c, clock_weights, derived_shift, constants, sp, written_out
+                )
+                if _singular_clock_powers(plain, clock_names, sp) - _singular_clock_powers(
+                    moved, clock_names, sp
+                ):
+                    eligible = True
+                pieces.append((moved, cond))
+            if len(pieces) == 1:
+                whole = pieces[0][0]
+            else:
+                whole = sp.Piecewise(*pieces[:-1], (pieces[-1][0], True))
+            law_c[text] = None if whole == 0 else sympy_to_c(whole, resolve_symbol)
+            if whole != 0 and law_c[text] is None:
+                return False, law_c
+        return eligible, law_c
+
     def derive(p_alias: str, shifts: dict) -> None:
         """The cases of one parameter, one per shift that removes a singular power."""
         p_name = scope.param_of_alias[p_alias]
@@ -9183,37 +9288,41 @@ def _functional_comoving_plan(
             rate = sp.diff(inlined, p_sym)
             if rate != 0:
                 derived_shift[d_sym] = rate
-        for c in sorted(shifts, key=sp.srepr):
-            c_c = sympy_to_c(c, resolve_symbol)
-            if c_c is None:
-                continue
-            eligible = False
-            law_c: dict[str, str | None] = {}
-            for text in rxns_of_law:
-                pieces = []
-                for on_cell, cond in laws[text]:
-                    _check_derivation_deadline(scope.deadline)
-                    plain = _comoving_shifted_partial(
-                        on_cell, p_alias, 0, clock_weights, derived_shift, constants, sp
+
+        def spelled(shift) -> list:
+            return sorted(_shift_spellings(shift, sp), key=_term_order.srepr)
+
+        # In the order of the first of each shift's two spellings: the one the
+        # table has is whichever ``cancel`` returned, which can go by the seed.
+        for first in sorted(shifts, key=lambda shift: _term_order.srepr(spelled(shift)[0])):
+            best = None
+            for spelling in spelled(first):
+                spelled_c = sympy_to_c(spelling, resolve_symbol)
+                if spelled_c is None:
+                    continue
+                try:
+                    eligible, spelled_law_c = removes_a_power(
+                        p_alias, spelling, derived_shift, inline
                     )
-                    moved = _comoving_shifted_partial(
-                        on_cell, p_alias, c, clock_weights, derived_shift, constants, sp
-                    )
-                    if _singular_clock_powers(plain, clock_names, sp) - _singular_clock_powers(
-                        moved, clock_names, sp
-                    ):
-                        eligible = True
-                    pieces.append((moved, cond))
-                if len(pieces) == 1:
-                    whole = pieces[0][0]
-                else:
-                    whole = sp.Piecewise(*pieces[:-1], (pieces[-1][0], True))
-                law_c[text] = None if whole == 0 else sympy_to_c(whole, resolve_symbol)
-                if whole != 0 and law_c[text] is None:
-                    eligible = False
-                    break
-            if not eligible:
+                except RecursionError:
+                    # sympy did not come back from a conditional under this
+                    # spelling (see ``_shift_spellings``). It is no candidate.
+                    logger.debug("issue #550: a shift's spelling sympy cannot carry: %s", spelling)
+                    continue
+                if not eligible:
+                    continue
+                # What is left of the law along the shift, as it will be
+                # written out: nothing, for a parameter that only moves the
+                # window, where the spelling lets sympy see it. The other
+                # spelling leaves a zero times every factor, and a factor
+                # that is no number there (a split power under a negative
+                # scale) makes the column no number.
+                left = sum(len(text) for text in spelled_law_c.values() if text is not None)
+                if best is None or left < best[0]:
+                    best = (left, spelling, spelled_c, spelled_law_c)
+            if best is None:
                 continue
+            _left, c, c_c, law_c = best
             virtual = n_params + len(cases)
             cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
 
@@ -9241,7 +9350,7 @@ def _functional_comoving_plan(
             # fails, the plain column is right.
             tests, bounded, plain_fails = [], [], []
             opens = False
-            for way, exponent in shifts[c]:
+            for way, exponent in shifts[first]:
                 e_c = over_parameters(exponent)
                 singular = "1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)"
                 if way != "close":

@@ -828,3 +828,163 @@ def test_an_exponent_of_zero_through_sbml(shape, param):
     left the case alone at this exponent failed these runs."""
     got = _column(_sbml(shape, 1.0), param)
     assert _worst(got, _exact(shape, 1.0, param)) < 5e-6
+
+
+def _window_from(tmp_path, a, onset, values, second_onset=None):
+    """The closing window with its onset written ``onset``, an expression in
+    ``on`` and the parameters of ``values`` whose value is ``on``: the same
+    window, and the same columns. With ``second_onset``, the closing power is
+    there twice, the second time over that spelling of the onset."""
+    text = NET.format(a=a, close="<=", shape=SHAPES["closing"][0], extra="", tmid=5.0, on=ON)
+    declared = "".join(
+        f"   {9 + i} {name} {value if isinstance(value, str) else repr(value)}\n"
+        for i, (name, value) in enumerate(values)
+    )
+    for old, new in (
+        ("s() (t-on)/D", f"s() (t-({onset}))/D"),
+        ("if(t>=on,", f"if(t>=({onset}),"),
+        ("(on+D)", f"(({onset})+D)"),
+        ("end parameters", f"{declared}end parameters"),
+    ):
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    if second_onset is not None:
+        text = text.replace(
+            "end functions", f"    3 s2() (t-({second_onset}))/D\nend functions"
+        ).replace("((1-s())^(a-1))", "((1-s())^(a-1))*((1-s2())^(a-1))")
+        assert "s2()" in text.split("prod()")[1]
+    path = tmp_path / "window.net"
+    path.write_text(text)
+    return bngsim.Model.from_net(path)
+
+
+def _cases_of(model) -> list[str]:
+    """The shift of each comoving case in the model's sensitivity source."""
+    import re
+
+    from bngsim import _codegen
+
+    source = _codegen.generate_sens_from_model(model._core, functional=True, emit_term_scale=True)
+    return re.findall(r"if \(k == \d+\) \{ \*c_out = (.*?); return", source)
+
+
+_TWO = (("wb", 2.0), ("wa", 1.0))
+
+
+@pytest.mark.parametrize("param", ["D", "on"])
+def test_an_onset_over_a_difference_written_the_other_way_round(tmp_path, param):
+    """The shift of the crossing in ``on`` is ``1/(wb - wa)``. ``cancel``
+    returns it as ``-1/(wa - wb)``, and under that spelling sympy does not
+    come back from the law's conditional: the plan was dropped, the model had
+    no comoving case in any process, and its columns were the plain ones,
+    0.37% (D) and 0.45% (on) off at a = 1.1."""
+    model = _window_from(tmp_path, 1.1, "on/(wb-wa)", _TWO)
+    assert len(_cases_of(model)) == 2  # one for on and one for D
+    assert _worst(_column(model, param), _exact("closing", 1.1, param)) < 5e-6
+
+
+@pytest.mark.parametrize("param", ["D", "on"])
+def test_the_same_onset_written_the_way_cancel_writes_it(tmp_path, param):
+    """Control. ``on/(wa - wb)`` with the two values exchanged: the spelling
+    ``cancel`` returns is the law's, and the model has its cases on main."""
+    model = _window_from(tmp_path, 1.1, "on/(wa-wb)", (("wa", 2.0), ("wb", 1.0)))
+    assert len(_cases_of(model)) == 2
+    assert _worst(_column(model, param), _exact("closing", 1.1, param)) < 5e-6
+
+
+@pytest.mark.parametrize("param", ["D", "on"])
+@pytest.mark.parametrize("larger, smaller", [("w01", "w1"), ("w1", "w01")])
+def test_an_onset_over_two_names_that_sympys_order_ties_on(tmp_path, larger, smaller, param):
+    """``w01`` and ``w1`` differ in the zeros before a trailing number, which
+    is a tie in sympy's order of polynomial generators, and ``cancel`` returns
+    the shift spelled one way or the other by the hash seed (issue #550). On
+    main one of these two models has no case and the columns above, and which
+    one goes by the seed: ``w01 - w1`` under seeds 0 to 5, ``w1 - w01`` under
+    6 and 7."""
+    model = _window_from(
+        tmp_path, 1.1, f"on/({larger}-{smaller})", ((larger, 2.0), (smaller, 1.0))
+    )
+    assert len(_cases_of(model)) == 2
+    assert _worst(_column(model, param), _exact("closing", 1.1, param)) < 5e-6
+
+
+@pytest.mark.parametrize("param", ["D", "on"])
+@pytest.mark.parametrize(
+    "onset, values",
+    [
+        ("on/(kk*(wb-wa))", (("kk", 1.0), *_TWO)),
+        ("on/((wb-wa)*(wd-wc))", (*_TWO, ("wd", 2.0), ("wc", 1.0))),
+        ("on/(wb-wa)^2", _TWO),
+        ("on/wd", (*_TWO, ("wd", "wb-wa"))),
+        ("on/(kk*wd)", (("kk", 1.0), *_TWO, ("wd", "wb-wa"))),
+    ],
+    ids=["a product", "two differences", "a square", "a derived parameter", "a product with one"],
+)
+def test_an_onset_over_a_product_a_power_or_a_derived_parameter(tmp_path, onset, values, param):
+    """``cancel`` multiplies the denominator out, ``1/(kk·wb - kk·wa)`` or
+    ``1/(wa² - 2·wa·wb + wb²)``, and beside the law's own ``1/(kk·(wb - wa))``
+    or ``1/(wb - wa)²`` sympy's sum along the shift does not clear the
+    singular power in either spelling. Nor beside ``1/wd``, where ``wd`` is
+    the derived parameter ``wb - wa`` and the shift has it written out.
+    dX/d(on) was 0.45% off, on main and with both spellings tried. The base
+    of the power is asked how it moves along the shift, with the derived
+    parameters written out and through ``cancel``, and it does not."""
+    model = _window_from(tmp_path, 1.1, onset, values)
+    assert len(_cases_of(model)) == 2
+    assert _worst(_column(model, param), _exact("closing", 1.1, param)) < 5e-6
+
+
+@pytest.mark.parametrize("sign, param", [("+", "on"), ("+", "off"), ("-", "on"), ("-", "off")])
+def test_an_onset_that_has_a_difference_both_ways_round(tmp_path, sign, param):
+    """``on/(wb - wa) ± off/(wa - wb)``, with ``off = 0``. A parameter that
+    only moves the window has nothing left of the law along its shift, where
+    its shift is spelled so that sympy sees that. Spelled the other way, what
+    is left is a zero times every factor, and here one factor is no number:
+    the scale of the closing power is negative, and the power is split over
+    it (issue #760). So the spelling that leaves the least is the one taken.
+    Main took the one ``cancel`` returned: right for ``off`` under either
+    sign, and a run that failed for ``on`` under either. Taking the first of
+    the two in a fixed order failed for ``off`` under the plus sign."""
+    values = (("off", 0.0), *_TWO)
+    model = _window_from(tmp_path, 1.1, f"on/(wb-wa){sign}off/(wa-wb)", values)
+    assert len(_cases_of(model)) == 3  # on, off and D
+    moved_by = {"on": 1.0, "off": -1.0 if sign == "+" else 1.0}[param]
+    assert _worst(_column(model, param), moved_by * _exact("closing", 1.1, "on")) < 5e-6
+
+
+def test_a_power_twice_over_one_onset_written_both_ways_round(tmp_path):
+    """``(1 - s)^(a-1)·(1 - s2)^(a-1)`` with ``s`` over ``on/(wb - wa)`` and
+    ``s2`` over ``-on/(wa - wb)``: one window closing as ``(1 - s)^(2(a-1))``.
+    No spelling of the shift is the law's for both powers. Main had no case,
+    with dX/d(on) 4.7e-4 off and dX/dD 3.6e-4.
+
+    The column of D fails its run now, where it was that 3.6e-4 off: written
+    ``-on/(wa - wb)``, the second power's scale ``D·(wa - wb)`` is negative,
+    and the power that is split over its scale is no number there, which is
+    the limit ``_split_shared_scale`` states (issue #760)."""
+    SHAPES["closing twice"] = ("", lambda u, a: u * (1 - u) ** (2 * (a - 1)))
+    try:
+        model = _window_from(tmp_path, 1.1, "on/(wb-wa)", _TWO, second_onset="-on/(wa-wb)")
+        assert len(_cases_of(model)) == 2
+        assert _worst(_column(model, "on"), _exact("closing twice", 1.1, "on")) < 5e-6
+        with pytest.raises(bngsim.SimulationError, match="non-finite value"):
+            _column(_window_from(tmp_path, 1.1, "on/(wb-wa)", _TWO, "-on/(wa-wb)"), "D")
+    finally:
+        del SHAPES["closing twice"]
+
+
+def test_the_two_spellings_of_a_shift():
+    """What :func:`_shift_spellings` gives: the other spelling where the
+    denominator is a sum, and nothing more where changing both signs gives the
+    same expression back."""
+    import sympy as sp
+    from bngsim._codegen import _shift_spellings
+
+    w, v, k = sp.symbols("w v k")
+    assert _shift_spellings(1 / (w - v), sp) == [1 / (w - v), sp.Mul(-1, sp.Pow(v - w, -1))]
+    assert _shift_spellings(-1 / (v - w), sp) == [-1 / (v - w), 1 / (w - v)]
+    for one in (sp.Integer(1), 1 / k, k / 2, w - v, -k, sp.Float(0.5)):
+        assert _shift_spellings(one, sp) == [one]
+    for shift in (1 / (w - v), (w - v) / (k + v), 2.0 / (w - 1.5)):
+        first, second = _shift_spellings(shift, sp)
+        assert first != second and sp.cancel(first - second) == 0
