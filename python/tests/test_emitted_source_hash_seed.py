@@ -123,10 +123,10 @@ def test_a_tie_is_broken_by_what_the_generators_are():
     assert ccode(expr) == "2.0*pow(A, 1.0)*p + 2*A*q"
 
 
-def _from_every_set_order(expr, monkeypatch):
-    """``(ordered_terms(expr), expr.as_ordered_terms())`` with ``as_terms``
-    made to sort its generators from each order a set could hand them over
-    in, as a hash seed decides it."""
+def _from_every_set_order(expr, monkeypatch, read=None):
+    """``(ordered_terms(expr), expr.as_ordered_terms())``, or ``read(expr)``,
+    with ``as_terms`` made to sort its generators from each order a set could
+    hand them over in, as a hash seed decides it."""
     import itertools
 
     terms, gens = expr.as_terms()
@@ -142,7 +142,7 @@ def _from_every_set_order(expr, monkeypatch):
             moved.append((term, (coeff, tuple(at), ncpart)))
         with monkeypatch.context() as patch:
             patch.setattr(type(expr), "as_terms", lambda self, m=moved, o=other: (m, o))
-            seen.append((ordered_terms(expr), expr.as_ordered_terms()))
+            seen.append(read(expr) if read else (ordered_terms(expr), expr.as_ordered_terms()))
     return seen
 
 
@@ -178,6 +178,41 @@ def test_a_tie_that_is_not_between_neighbours(monkeypatch):
     assert len(seen) == 6
     assert len({tuple(native) for _, native in seen}) > 1
     assert len({tuple(ours) for ours, _ in seen}) == 1
+
+
+@pytest.mark.parametrize(
+    "emitter, text",
+    [("exprtk", "2.0*((A)^(1.0))*p + 2*A*q"), ("c", "2.0*pow(A, 1.0)*p + 2.0*A*q")],
+)
+def test_both_printers_of_the_jacobian_print_the_tied_sum_one_way(monkeypatch, emitter, text):
+    """``sympy_to_exprtk`` writes the Jacobian the interpreter evaluates and
+    ``sympy_to_c`` the one that is compiled. Each has a printer of its own, and
+    each printed the tied sum either way round, with the order its set of
+    generators came in."""
+    from bngsim import _jacobian
+
+    def emit(expr):
+        if emitter == "exprtk":
+            return _jacobian.sympy_to_exprtk(expr)
+        return _jacobian.sympy_to_c(expr, lambda name: name)
+
+    expr, _ = _tied_sum()
+    seen = _from_every_set_order(expr, monkeypatch, read=emit)
+    assert len(seen) == 24 and set(seen) == {text}
+
+
+def test_an_edit_to_the_term_order_changes_the_cache_key(tmp_path):
+    """The order of the terms is part of what is emitted, so the module that
+    decides it is one of those the codegen cache key is a digest of: an edit
+    to it must not be met by a library built before it."""
+    from bngsim import _codegen as cg
+
+    assert "_term_order" in cg._CODEGEN_SOURCE_MODULES
+    for name in (*cg._CODEGEN_SOURCE_MODULES, "_term_order"):
+        (tmp_path / f"{name}.py").write_text(f"# {name}\n")
+    before = cg._compute_codegen_source_digest(tmp_path)
+    (tmp_path / "_term_order.py").write_text("# _term_order\n# another order\n")
+    assert before != "" and cg._compute_codegen_source_digest(tmp_path) != before
 
 
 @pytest.mark.parametrize(
@@ -242,6 +277,22 @@ def test_a_count_is_found_whichever_symbol_a_set_hands_over_first():
         assert done.returncode == 0, done.stderr[-2000:]
         answers[seed] = done.stdout.strip().splitlines()[-1]
     assert set(answers.values()) == {"(2, 0)"}, answers
+
+
+def test_a_symbol_that_gives_no_count_is_passed_over_for_the_next():
+    """The same exponents with the conditional's symbol named so that it is
+    asked first, ``A_calc`` ahead of ``R`` and ``T1``. Against it the ratio of
+    the slopes is not a number, and the next symbol is asked: (2, 0). Taking
+    the first symbol in the order of the names would have answered None for
+    every seed, where main answered it for some."""
+    from bngsim._jacobian import _whole_power_offset
+
+    first, t, t1, r = sp.symbols("A_calc t T1 R")
+    held = sp.Piecewise((first, t <= 1.0), (7.3, True))
+    term = -held + 3.5 + 0.35 * (0.003 - 1 / t1) / r
+    num = -2 * held + 7.0 + 0.7 * (0.003 - 1 / t1) / r
+    assert sorted(s.name for s in term.free_symbols)[0] == "A_calc"
+    assert _whole_power_offset(num, term, sp) == (2, 0)
 
 
 def test_exponents_that_are_not_parallel_are_refused_against_every_symbol():
