@@ -2411,11 +2411,20 @@ static constexpr double kScaleFloor = 1e-9;
 // this of where it was returned (ss_species_scales).
 static constexpr double kZeroShare = 0.5;
 
-// Or where the step takes it under this of what its rate deals in: the terms
-// that make it, over its own rate of loss, and a conserved total it belongs
-// to. A Newton step is computed to 1e-16 of those, and a value a thousand
-// times that is what rounding left, whatever sign it has.
+// Or where the step takes it under this of what it is computed beside: the
+// terms that make it, over its own rate of loss, and a conserved total it
+// belongs to or, for a species in none, the largest of the species the
+// Jacobian couples it to. A Newton step is computed to 1e-16 of those, and a
+// value a thousand times that is what rounding left, whatever sign it has:
+// species that have run out sit at 1e-24, of either sign, beside others at
+// 1e5, and each step leaves them there.
 static constexpr double kRoundingShare = 1e-13;
+
+// A species that holds more than this of a conserved total it belongs to is not
+// at a zero (ss_species_scales): the product of a species that ran out holds
+// all of what the two shared, 1e-12 beside a catalyst at 1,000, and no rate
+// reads it.
+static constexpr double kPoolShare = 1e-3;
 
 // How many times the species that may be at a zero are gone over
 // (ss_species_scales). Each pass takes at least one out, and a chain of
@@ -2862,7 +2871,9 @@ static double ss_pivot_share(const std::vector<double> &lu, int n, const std::ve
 // nothing there makes any. It may be one where a Newton step halves it
 // (kZeroShare) or takes it under what rounding leaves of a zero, 1e-13
 // (kRoundingShare) of what makes it, Σ|J_ij|·y_j over |J_ii|, and of a
-// conserved total it belongs to. Among those, it is one where its rate is zero
+// conserved total it belongs to or, in no total, of the largest species the
+// Jacobian couples it to; and where it does not hold a share of such a total
+// (kPoolShare). Among those, it is one where its rate is zero
 // at the corrected state with all of them set to zero: nothing that is left
 // makes it. A species with a rate there is made by something that stays, and
 // has a steady value, however small; it is taken out, and the rest are asked
@@ -2971,8 +2982,16 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         const double fed = loss > 0.0 && std::isfinite(made[k] / loss) ? made[k] / loss : 0.0;
         const double shared = std::isfinite(allowed[k]) ? allowed[k] : 0.0;
         const double returned = std::abs(y_ss[i]), corrected = std::abs(y_c[i]);
-        at_zero[k] = corrected <= kZeroShare * returned ||
-                     corrected <= kRoundingShare * std::max(fed, shared);
+        const double beside = group[static_cast<size_t>(find(i))];
+        // What rounding is of: the pool, for a species that is in one, and
+        // what stands beside it otherwise. A species that holds a share of a
+        // pool is not at a zero, whatever else is larger: nothing need make
+        // what a law keeps.
+        const bool pooled = std::isfinite(allowed[k]);
+        const double around = std::max(fed, pooled ? allowed[k] : beside);
+        const bool holds_a_share = pooled && corrected > kPoolShare * allowed[k];
+        at_zero[k] = !holds_a_share &&
+                     (corrected <= kZeroShare * returned || corrected <= kRoundingShare * around);
     }
     // Those that something left over makes are not at a zero.
     {
