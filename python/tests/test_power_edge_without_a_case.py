@@ -86,6 +86,7 @@ WINDOWS = {
     "derived": ("closing", "on/wd", "D", (("wb", 2.0), ("wa", 1.0), ("wd", "wb-wa"))),
     "product": ("closing", "on/(kk*(wb-wa))", "D", (("kk", 1.0), ("wb", 2.0), ("wa", 1.0))),
     "scale": ("closing", "on", "dd/dw", (("dd", 8.0), ("dw", 2.0))),
+    "rate": ("closing", "on", "(1/r)", (("r", 0.25),)),
     "square": ("square", "on", "D", ()),
     "scaled_open": ("scaled_open", "on", "D", (("kk", 1.0),)),
     "scaled_close": ("scaled_close", "on", "D", (("kk", 1.0),)),
@@ -202,6 +203,7 @@ NO_CASE = [
     ("product", "kk"),  # 0.55% off
     ("product", "wb"),  # CVODE made no progress
     ("scale", "dw"),  # 0.37% off
+    ("rate", "r"),  # 0.4% off: a width written as a rate, s = (t - on)*r
     ("square", "D"),  # 0.30% off
     ("opening", "wb"),  # CVODE made no progress
     ("both", "wb"),  # CVODE made no progress
@@ -623,12 +625,11 @@ def test_an_onset_chosen_by_a_condition_where_nothing_is_singular(tmp_path):
 def test_a_listed_parameter_that_moves_no_crossing_keeps_its_column(tmp_path):
     """Control. ``kq`` is under the power, in ``(1 - s^kq)^(a-1)``, and the
     zero of that base is at ``s = 1`` whatever ``kq`` is. The base is not
-    linear in the time, so that is not worked out and ``kq`` is listed; it
-    moves no crossing, and nothing asks."""
+    linear in the time, so that is not worked out and ``kq`` is listed. It
+    moves no crossing, and nothing asks it at the crossings ``on`` moves,
+    which is asked for beside it."""
     window = ("closing", "on", "D", (("kq", 2.0),))
     shape = "s()*((1-s()^kq)^(a-1))"
-    model = _model(tmp_path, window, 1.1, shape=shape)
-    assert "kq" in (_without_a_case(model) or {"kq": ""})
 
     def x(kq):
         run = bngsim.Simulator(
@@ -639,7 +640,21 @@ def test_a_listed_parameter_that_moves_no_crossing_keeps_its_column(tmp_path):
     h = 1e-4
     coarse = (x(2 + h) - x(2 - h)) / (2 * h)
     fine = (x(2 + h / 2) - x(2 - h / 2)) / h
-    assert _worst(_column(model, "kq"), (4 * fine - coarse) / 3) < 5e-5
+    model = _model(tmp_path, window, 1.1, shape=shape)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["on", "kq"])
+    run = sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
+    got = np.asarray(run.sensitivities)[:, 0, 1]
+    assert _worst(got, (4 * fine - coarse) / 3) < 5e-5
+
+
+def test_a_parameter_under_a_power_that_is_not_linear_in_the_time_is_listed(tmp_path):
+    """The model of the control above: ``kq`` and ``D`` are listed, and
+    ``on`` has its case."""
+    model = _model(
+        tmp_path, ("closing", "on", "D", (("kq", 2.0),)), 1.1, shape="s()*((1-s()^kq)^(a-1))"
+    )
+    assert _without_a_case(model) == {"D": SINGULAR, "kq": SINGULAR}
+    assert _with_a_case(model) == {"on"}
 
 
 def test_two_windows_and_a_case_for_one_of_them(tmp_path):

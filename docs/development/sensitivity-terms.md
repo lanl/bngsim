@@ -387,6 +387,27 @@ hair from the power's zero. Only on the edge a frame was entered ahead of,
 which is one whose power is singular at the run's values. A power that opens
 on the instant is not yet on when it is read that way.
 
+A parameter whose shift is not a number over the parameters has no case
+(#1003). `_comoving_coefficients` reads `c = −∂N/∂p ÷ ∂N/∂clock` off the
+numerator `N` of the power's base, and drops one that still holds the clock:
+the parameter multiplies the clock in `N` (it is in the denominator or the
+scale of the edge's time), or `N` is not linear in the clock. Such a column
+was integrated plain. The plan now lists each such parameter with the test of
+its power, `bngsim_codegen_edge_without_case(iP, t, p)`: an exponent under 1
+that is not 0 at `p`, and the numerator 0 to rounding at `t`, where it is
+written in the time and the parameters. `comoving_refuse_without_a_case`
+refuses the column at a crossing its parameter moves, ahead of the run for
+the switch times and at the crossing for a root. A parameter that is in the
+base and does not move its zero (`∂N/∂p` is 0 where `N` is, worked out for an
+`N` that is linear in the clock) is not listed. Where the plan ends early (the
+budget, an exception, a model given no case) every parameter that a singular
+power's numerator reads is listed by name (`_edge_parameters_by_name`), `on`
+and `D` among them: the model then has no case at all.
+
+- **Open:** a parameter in the denominator or the scale of the edge's time has
+  no case and is refused (#1003). For an `N = A·t + B` that is linear in the
+  clock the shift on the crossing is `∂(−B/A)/∂p`, a number, and along it the
+  base's rate is `(A_p/A)·N`, not 0: a case would carry `e·(A_p/A)·N^e`.
 - **Open:** a closing edge whose crossing is not a switch time of the run (a
   state-dependent one) is still approached in the plain column.
 - **Open:** a carried phase that starts exactly on a closing edge raises (the
@@ -406,7 +427,7 @@ on the instant is not yet on when it is read that way.
   the window's opening too. Harmless, except that a stretch too short before
   that opening, or a crossing on it, is refused where nothing is singular.
 - **Open:** a width written as a rate, `s = (t − on)·r`, has no case for `r`:
-  0.4% off, as before #760.
+  refused since #1003 (0.4% off before).
 - **Open:** a window narrower than about 1e-6 of the time: dX/dD is 3% off at a
   width of 1e-6 at t = 3 and 33% at 1e-9, as before #760.
 
