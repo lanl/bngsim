@@ -851,12 +851,19 @@ def test_a_count_within_rounding_is_one_answer_from_every_symbol():
 def test_a_ratio_that_is_beside_a_count_and_is_not_it_is_refused():
     """Control. A ratio of 3.000001 is no count, and one that rounding would
     take for 3 is refused by what is left over: ``3·term + 1e-12·q`` keeps q."""
-    from bngsim._jacobian import _count_within_rounding, _whole_power_offset
+    from bngsim._jacobian import _whole_power_offset
 
     q, r = sp.symbols("q r")
     term = 3.5 + (0.00105 - 0.35 / q) / r
     assert _whole_power_offset(3.000001 * term, term, sp) is None
     assert _whole_power_offset(3 * term + 1e-12 * q, term, sp) is None
+
+
+def test_what_is_within_rounding_of_a_count():
+    """A number within 1e-9 of a count, 1 or more, is that count, and nothing
+    else is one."""
+    from bngsim._jacobian import _count_within_rounding
+
     assert _count_within_rounding(sp.Float(3.0000000000000004)) == 3
     assert _count_within_rounding(sp.Float(2.9999999999999996)) == 3
     assert _count_within_rounding(sp.Float(3.00001)) is None
