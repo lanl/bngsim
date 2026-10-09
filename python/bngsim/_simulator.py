@@ -7300,6 +7300,24 @@ class Simulator:
         # either, whatever it had moved by then.
         reached = float(result.sens_root_hold_time)
         short = reached < max_time * (1.0 - 1e-12)
+        # A state the solve stepped to is its own to answer for: it has to be
+        # where the run from beside the solver's state ends, and not only a
+        # state with the columns of that one.
+        steps = int(result.sens_root_newton_steps)
+        stayed = held <= self._SS_ROOT_HOLD_SHIFT_MAX and not short
+        if steps > 0 and stayed and not drift <= self._SS_ROOT_HOLD_SHIFT_MAX:
+            away = f"{drift:.0%}" if drift < 10 else f"{drift:.3g} times"
+            raise SimulationError(
+                f"{opening}the root the solve stepped to is not where a run ends. The "
+                "columns of the state the solver stopped at moved under a Newton step, "
+                f"and {steps} steps led to a root; the run taken on for max_time "
+                f"({max_time:g}) from a millionth beside the solver's state ends "
+                f"{away} from that root in {result.sens_root_hold_species}, of the "
+                f"larger of the two values (the limit is "
+                f"{self._SS_ROOT_HOLD_SHIFT_MAX:.0%}). The solver stopped beside a root "
+                "the system leaves, or between two. Solve again with a smaller tol, or "
+                f"take the columns from {time_course}."
+            )
         if not held <= self._SS_ROOT_HOLD_SHIFT_MAX or short:
             if math.isnan(held):
                 moved = (

@@ -1243,6 +1243,67 @@ def test_a_focus_that_dies_away_slowly_is_returned(tmp_path):
     assert 200 < out.sens_root_hold_steps < 10000
 
 
+# X' = -k·X·(X - a)·(X - 1), slow, started a hundredth above its middle root,
+# beside W made at s·g(X) with g = 1 + c·(X - a)·(X - 1): g is 1 at the middle
+# root and at 1, and 0.963 where X starts.
+BETWEEN_TWO_ROOTS = """begin parameters
+    1 k   4e-7
+    2 a   0.25
+    3 k1  k*a
+    4 k2  k*(1+a)
+    5 k3  k
+    6 s   2.0
+    7 c   5.0
+    8 kd  1.0
+    9 W0  s*(1+c*(0.26-a)*(0.26-1))/kd
+end parameters
+begin functions
+    1 made() s*(1+c*(Xobs-a)*(Xobs-1))
+end functions
+begin species
+    1 X() 0.26
+    2 W() W0
+end species
+begin reactions
+    1 1 0 k1
+    2 1,1 1,1,1 k2
+    3 1,1,1 1,1 k3
+    4 0 2 made
+    5 2 0 kd
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+
+def test_a_root_that_was_stepped_to_is_where_a_run_ends(tmp_path):
+    """The residual is under ``tol`` where the model starts, and the column of
+    s, g(X)/kd for W, is 3.7% from its value at a root: the state is stepped,
+    and Newton takes X to the middle root, 0.25, which the system leaves. A
+    run from where the model starts takes X to 1 instead, in the 1e9 it is
+    given. The column of s is 1/kd at both, so that it does not move, and what
+    says the root is the wrong one is where the run ends: 75% away in X. The
+    growth at the middle root, 7.5e-8, is under what the spectrum is trusted
+    to beside W's rate of 1."""
+    sim = bngsim.Simulator(_net(tmp_path, BETWEEN_TWO_ROOTS), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*stepped to is not where a run ends.*ends 75% from that root in X\(\)",
+    ):
+        sim.steady_state(sensitivity_params=["s"], max_time=1e9)
+
+
+def test_the_same_started_on_the_side_it_stays_on_is_returned(tmp_path):
+    """Control. Started at 0.99 the column of s is 0.4% from its value at the
+    root, no step is taken, and the run ends at 1."""
+    text = BETWEEN_TWO_ROOTS.replace("0.26", "0.99")
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
+    out = sim.steady_state(sensitivity_params=["s"], max_time=1e9)
+    assert np.asarray(out.sensitivity)[1, 0] == pytest.approx(1.0, rel=1e-2)
+    assert out.sens_root_newton_steps == 0
+
+
 SLOW_SADDLE = """begin parameters
     1 e   1e-9
     2 kd  1e3
