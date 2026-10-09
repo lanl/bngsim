@@ -532,7 +532,8 @@ dependent species sensitivities from the conservation constraints.
 #### Where the columns are returned: an isolated root (issue #995)
 
 `-J⁻¹·∂f/∂p` is the derivative of the steady state only where the steady state
-is an isolated root. Where the steady states form a continuum, the one a run
+is an isolated root that the system rests at, and the state the solve returned
+is on it. Where the steady states form a continuum, the one a run
 ends at depends on the path it took, and that dependence is not in the root
 equations. (A root of higher order, which a species nears as 1/t, has a
 singular Jacobian too, and no derivative with respect to a parameter that would
@@ -543,18 +544,29 @@ irreversible branch to two products is another, and so is a total that is
 conserved but not by a linear law.
 
 The solve checks, and raises `SimulationError` where a check fails. It takes
-one Newton step from the state it returned, factors its system again there, and
-reads four ratios. Each is of two quantities in the same units, so none
-depends on the units of a species or the size of a compartment.
+one Newton step from the state it returned and factors its system again there,
+and it takes an integration on from that state for `max_time`. What it reads is
+each a ratio of two quantities in the same units, so none depends on the units
+of a species or the size of a compartment. An entry of a column is taken over
+its species' own scale, `ss.sens_species_scale`: the larger of the species'
+concentration at the start and at the steady state, and for a species at a zero
+the largest among the species it is coupled to, no more than a conserved total
+it belongs to allows.
 
 | On the result | What it is | Refused |
 | --- | --- | --- |
-| `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; 1/2 at a root of higher order. | outside 0.6 to 1.67 |
-| `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 1e16 or more for a matrix that is singular whatever the state, as it is where a set of species exchange among themselves and are produced and never consumed. | above 1e12 |
+| `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; 1/2 at a root of higher order; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
+| `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. | below 1e-10 |
+| `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed. | above 1e12 |
 | `sens_root_column_shift` | The largest move of a column when it is solved again at the corrected state, as a fraction of its largest entry. | above 0.01 |
+| `sens_root_hold_shift` | The same at the state the run ends at when it is taken on for `max_time` (an integration result). | above 0.01 |
+| `sens_root_stability` | Whether the system rests at the state: the eigenvalues of the system, up to 512 unknowns, and the sign of its determinant. | `"unstable"` |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
 
-The first two say the steady state is not an isolated root. (A determinant
+The request is refused whole where one column fails, so which parameters are
+asked for together can decide it.
+
+The first three say the steady state is not an isolated root. (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller
@@ -567,15 +579,32 @@ result = sim.run(t_span=(0, 1e4), n_points=2)
 result.sensitivities[-1]          # (n_species, n_params) at the last time
 ```
 
-The third says the state the solve returned is short of the steady state.
+The column shift says the state the solve returned is short of the steady state.
 `tol` bounds the residual `||f(y)||₂/n` and not the distance to the root, and a
 model whose concentrations are 1e-6 passes `tol=1e-9` a long way off:
 BIOMD0000000002 is accepted 0.02% from its steady state, where every column is
-5.9% from the derivative. Solve again with a smaller `tol`. A column whose
-every entry is below `1e-3·max|y|/|p|` is measured against that instead of its
-own largest entry: it is what `tol` left of a zero.
+5.9% from the derivative. Solve again with a smaller `tol`. (A column that
+moves as far at every `tol` is that of a steady state that is not an isolated
+root.) A column whose every entry, over its species' scale, is below
+`1e-3/|p|` is measured against that instead of its own largest entry: a
+species that moves by less than a thousandth of its scale when the parameter
+doubles.
 
-The fourth says the column is that of a steady state the model does not reach
+The hold shift says the state is not one a run stays at. An integration stops
+at the first state whose residual is under `tol`, and that says where the run
+is, not where it is going: BIOMD0000000407 is returned as it starts, beside a
+stable root, and a run takes one of its species from 2.448 to 3e-4. A smaller
+`tol` runs past such a state. The state `steady_state()` returns is not changed
+by any of this: without `sensitivity_params` it is returned as before.
+
+`"unstable"` says the system does not rest at the state: a model started on a
+root it leaves (the middle root of a bistable switch, the fixed point inside a
+limit cycle) is returned there, and `-J⁻¹·∂f/∂p` is how that root moves, not
+where a run ends. It is refused too for a state with a direction the system
+leaves along that no parameter moves it in, a population that is absent and
+would grow: the columns of such a state are right, and are a time course's.
+
+The relaxation says the column is that of a steady state the model does not reach
 in the time the solve was given. A species whose turnover is switched off at
 the steady state stays where it started, and the state is a root to the last
 bit; its column is the ratio of a production and a removal that are both next
@@ -681,6 +710,12 @@ the sink, which no steady-state solve can know, they are refused as those of a
 root that is not isolated: `A <-> B -> P` beside `A -> C <-> D` returned 0 for
 every column of C and D, with the mask, where C + D ends at the share of A
 that took the second branch.
+
+A masked-out species is held where the solve left it, and that is its part in
+`dY_ss/dp` only where no equation of the kept species reads it, as none reads
+a pure sink. A mask that leaves out a species one of them does read is refused
+(`ss.sens_mask_held_species`, `ss.sens_mask_reader_species`): `A <-> M` with M
+left out has dA*/dkf = -4/9, and -2/3 with M held.
 
 The initial-condition axis itself is not computed, and
 `output_sensitivities(..., axis="ic")` raises.

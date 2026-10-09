@@ -1347,6 +1347,9 @@ class SteadyStateResultCore:
     def sens_root_stability(self) -> str:
         ...
     @property
+    def sens_species_scale(self) -> list[float]:
+        ...
+    @property
     def sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
         ...
     @property

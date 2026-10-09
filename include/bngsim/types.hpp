@@ -1335,40 +1335,65 @@ struct SteadyStateResult {
     // 0.0 when no sensitivity was requested. See lu_diag_rcond in steady_state.cpp.
     double sens_jacobian_rcond = 0.0;
     // Issue #995 — whether the steady state is an isolated root of the system
-    // dY_ss/dp was solved on, and the returned state on it: what makes
-    // -J⁻¹·(∂f/∂p) the derivative. See ss_measure_root in steady_state.cpp,
-    // which takes one Newton step from the returned state and factors the
-    // system again there.
+    // dY_ss/dp was solved on, one the system rests at, and the returned state
+    // on it: what makes -J⁻¹·(∂f/∂p) the derivative. See ss_measure_root in
+    // steady_state.cpp, which takes one Newton step from the returned state
+    // and factors the system again there, and find_steady_state, which takes
+    // an integration on from the returned state for max_time.
     //
     // sens_root_determinant_ratio: the determinant of that system at the
     //   corrected state over the one at the returned state. 1, to the accuracy
     //   of the solve, at an isolated root; 1e-8 or 0 where the Jacobian is
     //   singular at the steady state the solve was approaching (a continuum of
     //   steady states); 1/2 at a root of higher order; anything where a rate
-    //   law is discontinuous between the two states. 0 where the matrix has no
-    //   factorization, and not a number where the corrected state is not one.
+    //   law is discontinuous between the two states or the returned state is
+    //   far from its root. 0 where the matrix has no factorization, and not a
+    //   number where the corrected state is not one.
+    // sens_root_pivot_share: the least a pivot of the factorization at the
+    //   returned state is of the terms it was computed from. 1 for a pivot
+    //   nothing cancelled into, 1e-16 for one that is what rounding left of a
+    //   zero: a matrix that is singular whatever the state. 0 where a pivot is
+    //   an exact zero.
     // sens_root_condition: the componentwise condition number of that system
     //   at the returned state, the Perron root of |A⁻¹|·|A|: how many times a
     //   relative error in each entry of the Jacobian is magnified in the
     //   columns. The same in any units of the species and of the equations.
-    //   About 1/eps, 1e16, where the matrix is singular but for rounding: one
-    //   that is singular at every state. Infinite where it has no inverse.
+    //   Infinite where the matrix has no inverse.
     // sens_root_column_shift: the largest move of a column of dY_ss/dp when it
     //   is solved again at the corrected state, as a fraction of the column's
-    //   largest entry (or of 1e-3·max|concentration|/|p| where the column is
-    //   smaller than that). How far the columns are from those of the root.
+    //   largest entry, each entry over its species' scale (or of 1e-3/|p|
+    //   where the column is smaller than that). How far the columns are from
+    //   those of the root.
+    // sens_root_hold_shift: the same at the state a run of max_time from the
+    //   returned state ends at, for a state an integration returned: how far
+    //   the columns are from those of where a run ends. Not a number where
+    //   that run could not be made. sens_root_hold_drift is the largest move
+    //   of a species over that run, against its value;
+    //   sens_root_hold_steps and sens_root_hold_time are the steps the run
+    //   took and the time it reached.
+    // sens_root_stability: "stable", "unstable" or "undetermined": whether the
+    //   system rests at the returned state, by the eigenvalues of the matrix
+    //   (up to 512 unknowns, the rule of root_stability) and the sign of its
+    //   determinant. sens_root_growth_rate is the largest real part among the
+    //   eigenvalues, not a number where they were not taken.
     // sens_root_relaxation: the most of a column of dY_ss/dp that a run of
     //   max_time would leave unestablished, as a fraction of the column's
-    //   largest entry (or of 1e-3·max|concentration|/|p|): the bound
-    //   A⁻¹·column/max_time where that is small, and what a few implicit steps
-    //   over max_time leave of the column where it is not. A column that is
-    //   mostly left is that of a steady state no run of that length reaches.
-    // sens_root_determinant_species / sens_root_condition_species: the species
-    //   (0-based) the first two point at (for the first, the one whose pivot
-    //   moved furthest); sens_root_column_param / sens_root_relaxation_param:
-    //   the column (0-based, into sens_param_names) the last two are read at.
+    //   largest entry (as above): the bound A⁻¹·column/max_time where that is
+    //   small, and what a few implicit steps over max_time leave of the column
+    //   where it is not. A column that is mostly left is that of a steady
+    //   state no run of that length reaches.
+    // sens_species_scale: what an entry for each species is small against
+    //   (ss_species_scales): the larger of its concentration at the start and
+    //   at the steady state, and for a species at a zero the largest such
+    //   among the species the Jacobian couples it to, no more than a conserved
+    //   total it belongs to allows. Empty when no sensitivity was requested.
+    // sens_mask_held_species / sens_mask_reader_species: a species the mask
+    //   left out and no law gives, which is held where the solve left it, and
+    //   a kept species whose rate reads it (0-based; -1 where there is none).
+    //   The columns are then not those of the steady state.
+    // sens_root_*_species / sens_root_*_param: the species (0-based) or the
+    //   column (0-based, into sens_param_names) each of the above is read at;
     //   -1 where none.
-    // 1, 1, 0, 0 and -1 when no sensitivity was requested.
     double sens_root_determinant_ratio = 1.0;
     double sens_root_pivot_share = 1.0;
     double sens_root_condition = 1.0;
@@ -1385,6 +1410,7 @@ struct SteadyStateResult {
     int sens_root_relaxation_param = -1;
     int sens_root_hold_species = -1;
     int sens_root_hold_param = -1;
+    std::vector<double> sens_species_scale; // one per species; empty with no sensitivities
     int sens_root_hold_steps = 0;
     double sens_root_hold_time = 0.0;
     int sens_mask_held_species = -1;

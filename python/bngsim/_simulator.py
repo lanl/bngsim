@@ -7020,32 +7020,36 @@ class Simulator:
     #: return finite columns on main. Each column was held against the forward
     #: sensitivities of a run to 1e5, and 1,741 of them against central
     #: differences of plain runs to 1e5 and to 1e6 as well; a column is wrong
-    #: where it is more than 1% of its largest entry from that (a column whose
-    #: every entry is under 1e-3·max|y|/|p| is a zero). 743 models gave a
-    #: verdict: 670 right and 73 wrong, of which main returned 14 with nothing
-    #: logged and 57 beside the warning.
+    #: where an entry, over its species' scale, is more than 1% of the column's
+    #: largest such entry from that (a column whose every entry is under
+    #: 1e-3/|p| is a zero). 741 models gave a verdict: 667 right and 74 wrong,
+    #: of which main returned 15 with nothing logged and 57 beside the warning.
     #:
     #:   ==================  =======  ==========================  ==============
-    #:   ratio               limit    right and returned (652)    beyond it
+    #:   ratio               limit    right and returned (648)    beyond it
     #:   ==================  =======  ==========================  ==============
     #:   determinant         0.6      0.74 to 1.0                 0.59 and under
+    #:   pivot share         1e-10    4.1e-8 at least             2.9e-11, under
     #:   condition           1e12     1.3e9 at most               3.4e13 and up
-    #:   column shift        0.01     7.0e-3 at most              1.5e-2 and up
-    #:   relaxation          0.01     1.0e-3 at most              2.6e-2 and up
+    #:   column shift        0.01     7.0e-3 at most              1.4e-2 and up
+    #:   hold shift          0.01     7.0e-3 at most              1.6e-2 and up
+    #:   relaxation          0.01     1.0e-3 at most              2.9e-2 and up
     #:   ==================  =======  ==========================  ==============
     #:
-    #: All 73 wrong models are refused, and so are 18 of the 670 right ones:
-    #: five FceRI networks whose ligand does not dissociate (the Jacobian is
+    #: All 74 wrong models are refused, and so are 19 of the 667 right ones:
+    #: four FceRI networks whose ligand does not dissociate (the Jacobian is
     #: singular once the free receptor is gone, and the columns that were asked
     #: agree with a time course all the same), six whose state is a root of
-    #: higher order or sits where a rate law switches, and seven others. The
-    #: results that are returned are those of main to the last bit, in all 791.
+    #: higher order or sits where a rate law switches, two at a state the
+    #: system does not rest at though a run from where the model starts stays
+    #: there, and seven others. The results that are returned are those of
+    #: main to the last bit, in all 791.
     #:
     #: ``min|U|/max|U|``, which this replaces, has no cut that does better than
-    #: 10 right models refused and 20 wrong ones returned; at the 1e-8 it warned
-    #: at, 36 and 14. The same ratio after the matrix is equilibrated, and each
-    #: pivot against the norm of its column, do worse (67 either way), and the
-    #: rank at a state moved off the steady state shows none of the 73. All
+    #: 10 right models refused and 21 wrong ones returned; at the 1e-8 it warned
+    #: at, 36 and 15. The same ratio after the matrix is equilibrated, and each
+    #: pivot against the norm of its column, do worse (68 either way), and the
+    #: rank at a state moved off the steady state shows none of the 74. All
     #: three read the epidemic model of the issue as an ordinary system: at the
     #: state the solve returns its Jacobian has full rank, with a determinant of
     #: b·g·I, and is of order one in every entry after any scaling. What marks
@@ -7057,12 +7061,15 @@ class Simulator:
     #: each entry of the Jacobian is magnified in the columns. A matrix that is
     #: singular at every state has a pivot that is only what rounding left of a
     #: zero, and where the rows that cancel do not depend on the state a Newton
-    #: step does not move it; its condition number is 1e16 or more.
+    #: step does not move it. A pool that is only produced and exchanges
+    #: within itself reads 2e16 (BIOMD0000000328). Two products of one branch
+    #: read 3.7, which is why the pivots are asked as well.
     _SS_ROOT_CONDITION_MAX = 1e12
 
     #: A column of ``dY_ss/dp`` may move by this fraction of its largest entry
     #: when it is solved again at the state one Newton step on; beyond it the
     #: returned state is not close enough to the steady state for the columns.
+    #: Each entry is taken over its species' scale (``sens_species_scale``).
     _SS_ROOT_COLUMN_SHIFT_MAX = 0.01
 
     #: The most of a column that a run of ``max_time`` may leave unestablished.
@@ -7076,7 +7083,9 @@ class Simulator:
     #: was computed from. A pivot nothing cancelled into is all of them, and one
     #: that is what a cancellation left is rounding's share, 1e-16: the matrix
     #: is singular whatever the state, and the componentwise condition number
-    #: does not always say so (two sinks of one total: 3.7).
+    #: does not always say so (two sinks of one total: 3.7). The limit is
+    #: between the two: under a millionth of the least among the corpus's right
+    #: models that are returned, and a million times rounding's share.
     _SS_ROOT_PIVOT_SHARE_MIN = 1e-10
 
     #: The most a column may move, of its largest entry, when it is solved
@@ -7269,15 +7278,23 @@ class Simulator:
                     f"({max_time:g}) failed, so that it is not known to stay there."
                 )
             else:
-                by = f"{held:.1%}" if held < 10 else f"{held:.3g} times"
                 state = f"{drift:.0%}" if drift < 10 else f"{drift:.3g} times"
                 moved = (
                     f"Taken on from it for max_time ({max_time:g}), the run moves "
-                    f"{result.sens_root_hold_species} by {state} of its value, and the "
-                    f"column of {result.sens_root_hold_param}, solved again where the run "
-                    f"ends, by {by} of its largest entry (the limit is "
-                    f"{self._SS_ROOT_HOLD_SHIFT_MAX:.0%})."
+                    f"{result.sens_root_hold_species} by {state} of its value, and "
                 )
+                if math.isinf(held):
+                    moved += (
+                        "where it ends the equations the columns are solved on have no "
+                        "solution: their Jacobian is singular there."
+                    )
+                else:
+                    by = f"{held:.1%}" if held < 10 else f"{held:.3g} times"
+                    moved += (
+                        f"the column of {result.sens_root_hold_param}, solved again where "
+                        f"the run ends, moves by {by} of its largest entry (the limit is "
+                        f"{self._SS_ROOT_HOLD_SHIFT_MAX:.0%})."
+                    )
             raise SimulationError(
                 f"{opening}the state the solve returned is not one a run stays at. {moved} "
                 "An integration stops at the first state whose residual ||f(y)||/n is "
@@ -9041,31 +9058,62 @@ class SteadyStateResult:
         inverted — how close to singular the sensitivity system was.
         ``dY_ss/dp`` exists only when that Jacobian has full rank; a steady state
         that is a *continuum* rather than an isolated point makes it
-        rank-deficient, and the returned matrix is then meaningless. Well-posed
-        corpus models measure 1e-4 to 1e-1; rank-deficient ones 1e-12 to 1e-9.
-        ``0.0`` when no sensitivity was requested. It depends on the units of
-        the species and is not what decides whether the columns are returned:
-        the four ``sens_root_*`` ratios are.
+        rank-deficient. Well-posed corpus models measure 1e-4 to 1e-1;
+        rank-deficient ones 1e-12 to 1e-9. ``0.0`` when no sensitivity was
+        requested. It depends on the units of the species and is not what
+        decides whether the columns are returned: the ``sens_root_*``
+        measures are (issue #995), and a result that carries sensitivities has
+        passed them.
     sens_root_determinant_ratio : float
         The determinant of the system ``dY_ss/dp`` is solved on at the state
         one Newton step on, over the one at the returned state (issue #995). 1,
         to the accuracy of the solve, at an isolated root; next to nothing
         where the Jacobian is singular at the steady state, a continuum of
-        steady states; 1/2 at a root of higher order. ``steady_state`` raises
-        outside 0.6 to 1.67, so a result that carries sensitivities has it
-        within that. ``1.0`` when no sensitivity was requested.
+        steady states; 1/2 at a root of higher order; negative or large where
+        the returned state is far from its root or a rate law is discontinuous
+        between the two. ``steady_state`` raises outside 0.6 to 1.67. ``1.0``
+        when no sensitivity was requested.
+    sens_root_pivot_share : float
+        The least a pivot of that system's factorization is of the terms it
+        was computed from: 1 for a pivot nothing cancelled into, 1e-16 for one
+        that is what rounding left of a zero, where the Jacobian is singular
+        whatever the state. ``steady_state`` raises below 1e-10. ``1.0`` when
+        no sensitivity was requested.
     sens_root_condition : float
         The componentwise condition number of that system, the Perron root of
         ``|A⁻¹|·|A|``: how many times a relative error in each entry of the
-        Jacobian is magnified in the columns. The same in any units; 1e16 or
-        more where the matrix is singular but for rounding. ``steady_state``
-        raises above 1e12. ``1.0`` when no sensitivity was requested.
+        Jacobian is magnified in the columns. The same in any units.
+        ``steady_state`` raises above 1e12. ``1.0`` when no sensitivity was
+        requested.
     sens_root_column_shift : float
         The largest move of a column of ``dY_ss/dp`` when it is solved again at
-        the corrected state, as a fraction of the column's largest entry (or of
-        ``1e-3 * max|concentration| / |p|`` for a column smaller than that):
-        how far the columns are from those of the root. ``steady_state``
-        raises above 0.01. ``0.0`` when no sensitivity was requested.
+        the corrected state, as a fraction of the column's largest entry, each
+        entry over its species' scale (``sens_species_scale``), or of
+        ``1e-3 / |p|`` for a column smaller than that: how far the columns are
+        from those of the root. ``steady_state`` raises above 0.01. ``0.0``
+        when no sensitivity was requested.
+    sens_root_hold_shift, sens_root_hold_drift : float
+        For a state an integration returned, the run is taken on from it for
+        ``max_time``. ``sens_root_hold_shift`` is the largest move of a column
+        when it is solved again where that run ends, measured as the column
+        shift is, and ``steady_state`` raises above 0.01, or where the run
+        could not be made (not a number). ``sens_root_hold_drift`` is the
+        largest move of a species over the run, against its value. ``0.0`` for
+        a Newton result and when no sensitivity was requested.
+    sens_root_hold_steps : int
+    sens_root_hold_time : float
+        The steps that run took and the time it reached.
+    sens_root_stability : str
+        ``"stable"``, ``"unstable"`` or ``"undetermined"``: whether the system
+        rests at the returned state, by the eigenvalues of the system the
+        columns are solved on (up to 512 unknowns, by the rule of
+        ``root_stability``) and by the sign of its determinant, which an odd
+        number of eigenvalues right of zero gives away at any size.
+        ``steady_state`` raises on ``"unstable"``. ``"undetermined"`` when no
+        sensitivity was requested.
+    sens_root_growth_rate : float
+        The largest real part among those eigenvalues; not a number where
+        they were not taken.
     sens_root_relaxation : float
         The most of a column of ``dY_ss/dp`` that a run of ``max_time`` would
         leave unestablished, as a fraction of the column's largest entry: the
@@ -9073,11 +9121,23 @@ class SteadyStateResult:
         eight implicit steps of ``max_time/8`` leave of the column where it is
         not. ``steady_state`` raises above 0.01. ``0.0`` when no sensitivity
         was requested.
-    sens_root_determinant_species, sens_root_condition_species : str or None
-        The species the first two point at: for the determinant, the one whose
-        pivot moved furthest.
-    sens_root_column_param, sens_root_relaxation_param : str or None
-        The parameter whose column the last two are read at.
+    sens_species_scale : numpy.ndarray
+        What an entry for each species is small against: the larger of its
+        concentration at the start and at the steady state, and for a species
+        at a zero the largest such among the species the Jacobian couples it
+        to, no more than a conserved total it belongs to allows. Empty when no
+        sensitivity was requested.
+    sens_mask_held_species, sens_mask_reader_species : str or None
+        A species ``mask=`` left out that is held where the solve left it, and
+        a kept species whose rate reads it. ``steady_state`` raises where
+        there is one: the columns are not those of the steady state then.
+    sens_root_determinant_species, sens_root_pivot_species : str or None
+    sens_root_condition_species, sens_root_hold_species : str or None
+        The species each of those points at: for the determinant, the one
+        whose pivot moved furthest.
+    sens_root_column_param, sens_root_hold_param : str or None
+    sens_root_relaxation_param : str or None
+        The parameter whose column each of those is read at.
 
     Notes
     -----
@@ -9135,6 +9195,7 @@ class SteadyStateResult:
         "sens_root_hold_drift",
         "sens_root_hold_shift",
         "sens_root_hold_steps",
+        "sens_species_scale",
         "sens_root_hold_time",
         "sens_root_growth_rate",
         "sens_root_stability",
@@ -9205,6 +9266,9 @@ class SteadyStateResult:
         self.sens_root_hold_drift = getattr(core, "sens_root_hold_drift", 0.0)
         self.sens_root_hold_shift = getattr(core, "sens_root_hold_shift", 0.0)
         self.sens_root_hold_steps = int(getattr(core, "sens_root_hold_steps", 0))
+        self.sens_species_scale = np.asarray(
+            getattr(core, "sens_species_scale", ()), dtype=np.float64
+        )
         self.sens_root_hold_time = getattr(core, "sens_root_hold_time", 0.0)
         self.sens_root_growth_rate = getattr(core, "sens_root_growth_rate", float("nan"))
         self.sens_root_stability = getattr(core, "sens_root_stability", "undetermined")

@@ -10,17 +10,24 @@ logged warning; with the sink masked out it returned 0 and no warning, at a
 conditioning ratio of exactly 1.
 
 The solve now takes one Newton step from the state it returned and factors its
-system again there. Four ratios come of that, and the columns are refused on
-any of them:
+system again there, and takes an integration on from that state for
+``max_time``. The columns are refused on any of what comes of that:
 
 - a determinant that keeps less than 0.6 of itself: the Jacobian is singular
   at the steady state the solve was approaching;
-- a componentwise condition number above 1e12: the Jacobian is singular
+- a pivot that is under 1e-10 of the terms it was computed from, or a
+  componentwise condition number above 1e12: the Jacobian is singular
   whatever the state, but for rounding;
-- a column that moves by more than 1%: the returned state is short of the
-  steady state;
+- a column that moves by more than 1%, each species over its own scale: the
+  returned state is short of the steady state;
+- a column that moves by more than 1% where the run ends: the returned state
+  is one a run leaves;
+- an eigenvalue right of zero, or a determinant of the sign an odd number of
+  them gives it: the system does not rest at the state;
 - a column of which a run of ``max_time`` would leave more than 1%
-  unestablished: the steady state is one no run of that length reaches.
+  unestablished: the steady state is one no run of that length reaches;
+
+and on a species ``mask=`` left out that an equation of the kept ones reads.
 """
 
 from __future__ import annotations

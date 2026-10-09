@@ -2279,13 +2279,19 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 // state. So the question is asked of the limit:
 //
 //   1. Factor the matrix at the returned state, y.
-//   2. Take one Newton step from y towards the root, y_c = y − J⁻¹·f(y), and
-//      set to zero a concentration the step takes below it.
+//   2. Take one Newton step from y towards the root, y_c = y − J⁻¹·f(y). (A
+//      concentration the step takes below zero is set to zero only where the
+//      rates have no value below it.)
 //   3. Factor the matrix at y_c in the same elimination order.
 //
-// Four things are read from that, each a ratio of two quantities in the same
-// units, so that none depends on the units of a species, the size of a
-// compartment or the scale of a rate:
+// and, of a state an integration returned, where a run goes from it:
+//
+//   4. Take the run on from y for the time the solve was given, to y_h.
+//
+// What is read from that is each a ratio of two quantities in the same units,
+// so that none depends on the units of a species, the size of a compartment or
+// the scale of a rate. An entry of a column, and a move of a concentration, are
+// taken over the species' own scale (ss_species_scales).
 //
 //   determinant    The determinant at y_c over the one at y. At an isolated
 //                  root the step is as small as the solve was accurate and the
@@ -2296,19 +2302,26 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  nears as 1/t, a Newton step halves the distance and the
 //                  ratio is 1/2. A rate law that is discontinuous between the
 //                  two states, `if(x > 1, a, b)` settled at x = 1 where the
-//                  step crosses it, shows the same way.
+//                  step crosses it, shows the same way, and so does a state
+//                  far from its root: the ratio is then negative, or large.
+//   pivot share    The least a pivot of the factorization at y is of the terms
+//                  it was computed from (ss_pivot_share). A matrix that is
+//                  singular at EVERY state has a zero pivot that is computed
+//                  as whatever rounding left, at y and at y_c alike, and where
+//                  the rows that cancel do not depend on the state the two
+//                  residues are the same number: the ratio above reads 1. Two
+//                  products of one irreversible branch are such a matrix, and
+//                  the pivot of the second is 4e-18 of its terms.
 //   condition      The componentwise condition number of the matrix at y, the
 //                  Perron root of |A⁻¹|·|A|: how many times a relative error in
-//                  each entry is magnified in a solution. A matrix that is
-//                  singular at EVERY state has a zero pivot that is computed as
-//                  whatever rounding left, at y and at y_c alike, and where the
-//                  rows that cancel do not depend on the state the two residues
-//                  are the same number: the ratio above reads 1. A pool of species
+//                  each entry is magnified in a solution. A pool of species
 //                  that exchange among themselves and are produced but never
-//                  consumed is one (BIOMD0000000328: 3.88 for -6.32). Its
-//                  condition number is 1e16 or more, where min|U|/max|U| of an
-//                  isolated root says nothing: a scaling of the rows or of the
-//                  columns moves that ratio and leaves this one where it is.
+//                  consumed is singular at every state too, with no pivot
+//                  that small (BIOMD0000000328: 3.88 for -6.32, at 2e16).
+//                  Neither of the two does for the other: the two products
+//                  above read 3.7, the null vectors of the two sides having no
+//                  entry in common. A scaling of the rows or of the columns
+//                  leaves both where they are, as it does not min|U|/max|U|.
 //   column shift   The largest move of a column of dY_ss/dp, as a fraction of
 //                  its largest entry, when the columns are solved again at y_c.
 //                  `tol` bounds the residual, not the distance to the root, and
@@ -2316,6 +2329,20 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  off: BIOMD0000000002 is accepted 0.02% from its steady
 //                  state, where every column is 5.9% from the derivative. The
 //                  re-solve says so, and by how much.
+//   hold           The same at y_h: what the columns of where a run ends are.
+//                  An integration stops at the first state whose residual is
+//                  under `tol`, which says where the run is and not where it is
+//                  going. BIOMD0000000407 starts at 3.5e-10 and is returned as
+//                  it starts, beside a root that is stable, so that nothing
+//                  above marks it; a run takes one of its species from 2.448 to
+//                  3e-4.
+//   stability      Whether the system rests at y. The eigenvalues of the matrix,
+//                  by the rule and up to the size of the certificate a Newton
+//                  root is held to (issue #78), and the sign of its
+//                  determinant: an odd number of eigenvalues right of zero
+//                  gives it the wrong one, at any size and however near zero
+//                  they are. -J⁻¹·(∂f/∂p) at a root the system leaves is how
+//                  the root moves, and not where a run ends.
 //   relaxation     How much of a column a run of the time the solve was given
 //                  (max_time) would leave unestablished. A species whose
 //                  turnover is switched off at the steady state has a pivot
@@ -2324,16 +2351,25 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  species at all. Nothing above marks it, the state being a
 //                  root to the last bit.
 //
-// All four are reported on the result; the caller refuses the columns (the
-// Python layer, in Simulator._raise_if_not_an_isolated_root, which holds the
-// limits and the corpus measurement behind them).
+// A species the mask left out that an equation of the kept species reads is
+// found where the system is built (compute_ss_sensitivity). All of it is
+// reported on the result; the caller refuses the columns (the Python layer, in
+// Simulator._raise_if_not_an_isolated_root, which holds the limits and the
+// corpus measurement behind them).
 
-// A column of dY_ss/dp whose every entry is below this fraction of (the largest
-// concentration, at the start or at the steady state) / |p| is a zero for the
-// column shift: its entries are what the solve's tolerance left of one, and a
-// move of all of it is not a move of a derivative. 1e-3 is a species moving by
-// 0.1% of the model's largest when the parameter doubles.
+// A column of dY_ss/dp whose every entry, over its species' scale, is below this
+// fraction of 1/|p| is a zero for the column shift: its entries are what the
+// solve's tolerance left of one, and a move of all of it is not a move of a
+// derivative. 1e-3 is a species moving by 0.1% of its scale when the parameter
+// doubles. A move of a concentration is small against the same fraction of the
+// species' scale.
 static constexpr double kZeroColumnFraction = 1e-3;
+
+// The least a species' scale is of the largest among the species the Jacobian
+// couples it to (ss_species_scales). An entry of a column is computed to about
+// 1e-16 of the column's largest terms times the condition of the solve, and a
+// species nine orders below its neighbours has entries that are that.
+static constexpr double kScaleFloor = 1e-9;
 
 // How many times a run taken on from the returned state is started again where
 // its integrator gave up (find_steady_state).
@@ -2843,7 +2879,10 @@ static std::vector<double> ss_species_scales(const NetworkModel &model, const do
     }
     for (int i = 0; i < ns; ++i) {
         double &v = scale[static_cast<size_t>(i)];
-        v = std::max(v, own[static_cast<size_t>(i)]);
+        // No less than what the species it is coupled to leave it resolved to:
+        // a total of 4e-11 beside concentrations of 1e3 is their rounding.
+        v = std::max(
+            {v, own[static_cast<size_t>(i)], kScaleFloor * group[static_cast<size_t>(find(i))]});
         if (!(v > 0.0) || !std::isfinite(v)) {
             v = all > 0.0 ? all : 1.0;
         }
@@ -3408,6 +3447,7 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
     column_system.fill_dfdp = fill_dfdp;
     column_system.species_scale =
         ss_species_scales(model, J.data(), ns, start_state, result.concentrations.data());
+    result.sens_species_scale = column_system.species_scale;
     column_system.held = held_state;
     column_system.hold_failed = hold_failed;
     column_system.horizon = horizon;
