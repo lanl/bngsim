@@ -687,21 +687,25 @@ CONTINUUM = (
 )
 
 
-def test_a_badly_conditioned_solve_across_sizes_is_still_refused():
+def test_a_continuum_across_sizes_is_refused():
     """A steady state that is one of a continuum has a singular reduced
     Jacobian. With one size the pivot is an exact zero and the solve is
     refused for it; with sizes 0.7 and 2.3 it is rounding, 1e-17 of the
     largest, and the columns came back with a warning beside them:
     dP*/dkp = -329,603 where runs to the steady state give 0.0774. Such a
-    model was refused for its law (issue #704) and stays refused, for its
-    conditioning."""
+    model was refused for its law (issue #704), then for a law across sizes
+    at a ratio min|U|/max|U| below 1e-8 (issue #758), and is refused now for
+    what it is, a root that is not isolated (issue #995): the condition
+    number of the reduced Jacobian is 1e16 in any units. (Which measure says
+    so first is the platform's arithmetic: the pivot that is rounding on one
+    is an exact zero on another, and the determinant says it there.)"""
     model = bngsim.Model.from_antimony_string(CONTINUUM.format(v2=2.3))
     np.testing.assert_allclose(_law(model), [1, 2.3 / 0.7, 2.3 / 0.7, 1, 2.3 / 0.7, 1], rtol=1e-12)
     sim = bngsim.Simulator(model, method="ode")
     for name in ("kp", "k1"):
         with pytest.raises(
-            bngsim.SensitivityUnsupportedError,
-            match=r"badly conditioned.*min\|U\|/max\|U\| = .*#758",
+            bngsim.SimulationError,
+            match=r"#995.*not an isolated root",
         ):
             sim.steady_state(sensitivity_params=[name], tol=1e-10)
         model.reset()
@@ -713,8 +717,7 @@ def test_a_zero_pivot_beside_a_law_across_sizes_is_refused_as_having_no_gradient
     """X goes to P and to nothing, so P is in no law and no rate reads it: its
     column of the reduced Jacobian is zero, whatever the sizes of the law
     beside it. The factorization stops at that pivot and the columns are not
-    finite. The refusal is the one that says no gradient exists, not the one
-    for a badly conditioned solve across sizes."""
+    finite. The refusal is the one that says no gradient exists."""
     model = bngsim.Model.from_antimony_string(
         "compartment c1, c2; c1 = 1; c2 = 2; species A in c1, B in c2, X in c1, P in c1;\n"
         "A = 1; B = 0.2; X = 1; P = 0; k1 = 1; k2 = 0.5; kp = 0.3; kd = 0.2;\n"
@@ -730,8 +733,9 @@ def test_the_continuum_in_amounts_under_a_rate_rule_is_refused():
     """The same network with its species held as amounts and ``c2`` under a
     rate rule that settles at 2.3. ``c2`` is then a species and not a size
     parameter, and the law still spans two sizes: dP*/dkp came back 396,941
-    on a pivot of 6e-17 of the largest, for 0.089. Whether a law spans sizes is asked of the
-    species it holds, not of how many size parameters the model has."""
+    on a pivot of 6e-17 of the largest, for 0.089. It was refused for a law
+    across sizes at such a ratio (issue #758), and is refused for a root that
+    is not isolated (issue #995)."""
     model = bngsim.Model.from_antimony_string(
         "compartment c1, c2; c1 = 0.7; c2 = 1.1; c2' = 0.9*(2.3 - c2);\n"
         "substanceOnly species A in c1, B in c2, P in c2, P2 in c1, Q in c2, Q2 in c1;\n"
@@ -741,7 +745,7 @@ def test_the_continuum_in_amounts_under_a_rate_rule_is_refused():
         "R5: P -> P2; a*P\nR6: P2 -> P; b*P2\nR7: Q -> Q2; d*Q\nR8: Q2 -> Q; e*Q2\n"
     )
     assert model.compartment_size_params == ["c1"]
-    with pytest.raises(bngsim.SensitivityUnsupportedError, match=r"badly conditioned.*#758"):
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*not an isolated root"):
         bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["kp"], tol=1e-10)
 
 
@@ -813,15 +817,21 @@ MASKED = (
 
 
 @pytest.mark.parametrize("v2", [2.0, 1e6, 1e10, 1e12])
-def test_a_masked_out_species_is_held_by_its_law_at_any_size(v2):
-    """With D masked out, the law that holds it keeps its total fixed, so
-    dA*/dA0 = 0 (the guide's rule for a mask). Whether the law holds D was
-    asked of the coefficients without the sizes, where D's is 1e-10 of B's
-    at V2 = 1e10: the column came back 1/3 there and 0 at V2 = 2."""
-    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(MASKED.format(v2=v2)), method="ode")
-    out = sim.steady_state(sensitivity_params=["A0"], mask=["A", "B"], tol=1e-10)
-    column = np.asarray(out.sensitivity)[:, 0]
-    assert abs(column[0]) < 1e-9 and abs(column[1]) * v2 < 1e-9
+def test_a_masked_out_species_is_one_its_law_holds_at_any_size(v2):
+    """Whether the law holds D was asked of the coefficients without the
+    sizes, where D's is 1e-10 of B's at V2 = 1e10, and D was taken for a
+    species no law holds. Asked with them, the law holds all three at any
+    size. (This was read off dA*/dA0 with D masked out, 0 where the law keeps
+    its total and 1/3 where it was not found to. A's rate reads D, so that
+    request is refused now, issue #995: with D held, 0 is not the derivative
+    either.)"""
+    model = bngsim.Model.from_antimony_string(MASKED.format(v2=v2))
+    assert [sorted(members) for members in model._core.conservation_law_members()] == [[0, 1, 2]]
+    sim = bngsim.Simulator(model, method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*mask= leaves out D, which the rate of A reads"
+    ):
+        sim.steady_state(sensitivity_params=["A0"], mask=["A", "B"], tol=1e-10)
 
 
 WITH_A_TOTAL = (
