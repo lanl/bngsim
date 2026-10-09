@@ -3043,28 +3043,25 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         falling[k] = pair != SsPair::RunStart && halved && returned > kRoundingShare * around;
         // Asked whether it has come to rest, of where a run ended: one that is
         // still something there.
-        const bool something =
-            pair == SsPair::RunStart ? returned > kRoundingShare * around : !rounding;
-        resting[k] = halved && something && loss > 0.0;
+        resting[k] = halved && !rounding;
     }
-    // Where one of the two is where a run ended, a species that is still
-    // something there and whose rate is nothing beside what it loses has come
-    // to rest at a value. One that is running out loses all it loses. (X' =
-    // v·X²/(K² + X²) - d·X has a root at nothing that it rests at as well as
-    // the one a run from above ends at, 1e-9: stopped at 1e-7 it is halved by
-    // a step, nothing makes it at zero and it does not grow from next to
-    // nothing. The run ends with it at 1e-9, at rest. And N' = r·N·S·(1 - N/K)
-    // seeded at 1e-8 is stepped to nothing, where S at 1 stands beside it, and
-    // the run ends with N at K = 1e-6, at rest.)
-    if (pair != SsPair::NewtonStep) {
-        const double *ended = pair == SsPair::RunEnd ? y_c : y_ss;
+    // Where `y_c` is where a run ended, a species that is still something there
+    // and whose rate is nothing beside what it loses has come to rest at a
+    // value. One that is running out loses all it loses. (X' = v·X²/(K² + X²)
+    // - d·X has a root at nothing that it rests at as well as the one a run
+    // from above ends at, 1e-9: stopped at 1e-7 it is halved by a step, nothing
+    // makes it at zero and it does not grow from next to nothing. The run ends
+    // with it at 1e-9, at rest. Beside a species at 200 whose column is asked,
+    // X's own entry is no part of what the steps go by, and came back 124
+    // times what it is.)
+    if (pair == SsPair::RunEnd) {
         std::vector<double> rate(static_cast<size_t>(ns), 0.0);
-        rhs.eval(0.0, ended, rate.data());
+        rhs.eval(0.0, y_c, rate.data());
         for (int i = 0; i < ns; ++i) {
             const size_t k = static_cast<size_t>(i);
             const double loss = std::abs(J[k * static_cast<size_t>(ns) + k]);
             if (at_zero[k] && resting[k] &&
-                std::abs(rate[k]) <= kAtRest * loss * std::abs(ended[i])) {
+                std::abs(rate[k]) <= kAtRest * loss * std::abs(y_c[i])) {
                 at_zero[k] = 0;
             }
         }

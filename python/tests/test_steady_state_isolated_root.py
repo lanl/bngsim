@@ -1991,6 +1991,82 @@ def test_the_same_removed_in_pairs_too_takes_a_step_more(tmp_path):
     assert out.sens_root_growth_rate == pytest.approx(-5e-3 - 4 * 3.5 * stepped_to, rel=1e-7)
 
 
+# E + S <-> ES -> E + P at a millionth, with nothing left out.
+USED_UP = """begin parameters
+    1 kf  1e6
+    2 kr  1.0
+    3 kc  1.0
+    4 E0  1e-6
+    5 S0  2e-6
+end parameters
+begin species
+    1 E() E0
+    2 S() S0
+    3 ES() 0
+    4 P() 0
+end species
+begin reactions
+    1 1,2 3 kf
+    2 3 1,2 kr
+    3 3 1,4 kc
+end reactions
+"""
+
+
+def test_species_that_ran_out_are_at_a_zero_where_the_run_ends_too(tmp_path):
+    """S is used up, and the solver stops with S and ES at -3e-9 and -2e-9, a
+    thousandth of what they were. The steps take them to nothing. The run that
+    is taken on ends with them at what its tolerance left, of either sign, and
+    taken over that they would have moved by all of themselves: the two states
+    are asked either way round what a species is taken over, and one that is
+    at a zero in either is at a zero. dP*/dS0 = 1 and dE*/dE0 = 1, and nothing
+    else moves anything."""
+    sim = bngsim.Simulator(_net(tmp_path, USED_UP), method="ode")
+    out = sim.steady_state(sensitivity_params=["kf", "kc", "S0", "E0"])
+    assert out.sens_root_newton_steps >= 2
+    np.testing.assert_allclose(out.concentrations, [1e-6, 0.0, 0.0, 2e-6], rtol=1e-12, atol=1e-20)
+    expected = np.zeros((4, 4))
+    expected[0, 3] = expected[3, 2] = 1.0
+    np.testing.assert_allclose(out.sensitivity, expected, rtol=1e-12, atol=1e-12)
+    assert out.sens_root_hold_drift < 1e-3
+
+
+# B is made at s·sqrt(1 - A), beside an A that nothing moves, a billionth under 1.
+NO_VALUE_A_MILLIONTH_ON = """begin parameters
+    1 s   1.0
+    2 d   1.0
+    3 A0  0.999999999
+end parameters
+begin functions
+    1 made() s*sqrt(1-Aobs)
+end functions
+begin species
+    1 A() A0
+    2 B() 0
+end species
+begin reactions
+    1 0 2 made
+    2 2 0 d
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+
+
+def test_a_run_that_cannot_be_taken_on_is_refused(tmp_path):
+    """The state is a root, B* = s·sqrt(1 - A)/d, and its column is right. The
+    run that is to show the system stays there starts a millionth beside the
+    state, where A is above 1 and the rate is not a number, and fails. The
+    columns are refused for a state that is not known to be one a run stays
+    at: a failed run is not a run that stayed."""
+    sim = bngsim.Simulator(_net(tmp_path, NO_VALUE_A_MILLIONTH_ON), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*not one a run stays at.*failed, so that"
+    ):
+        sim.steady_state(sensitivity_params=["s"])
+
+
 # N' = r·N·S·(1 - N/K): N makes itself on S, from the 1e-8 it starts with.
 SEEDED = """begin parameters
     1 r   1e-3
@@ -2115,6 +2191,28 @@ def test_the_same_solved_to_the_root_it_rests_at_is_returned(tmp_path):
     out = sim.steady_state(sensitivity_params=["d", "K"], tol=1e-15)
     assert np.asarray(out.concentrations)[0] == pytest.approx(root, rel=1e-4)
     np.testing.assert_allclose(np.asarray(out.sensitivity)[0], [by_d, by_k], rtol=1e-4)
+
+
+def test_the_same_beside_a_species_with_the_larger_entry_is_refused_by_the_run(tmp_path):
+    """W, made at s and removed at the same d, is at 200, and the column of d
+    is asked alone. Its largest entry is W's, which no step moves. X's own
+    entry, over the 1 that X started at, is a millionth of that, so that no
+    step is taken and the state is the solver's, with X at 1.3e-7: dX*/dd
+    came back 124 times what it is. The run that is taken on ends with X at
+    9.9e-10 and at rest. X is then not at a zero: it has moved by all of
+    itself, and its entry with it."""
+    text = (
+        ACTIVATES_ITSELF.replace("    3 d   5e-3\n", "    3 d   5e-3\n    4 s   1.0\n")
+        .replace("    1 X() 1.0\n", "    1 X() 1.0\n    2 W() 200.0\n")
+        .replace("    2 1 0 d\n", "    2 1 0 d\n    3 0 2 s\n    4 2 0 d\n")
+    )
+    assert text.count("\n") == ACTIVATES_ITSELF.count("\n") + 4
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*not one a run stays at.*moves X\(\) by 1\d\d% of what it is taken over",
+    ):
+        sim.steady_state(sensitivity_params=["d"])
 
 
 # X' = s - k·(X - c)²: X rests at c + sqrt(s/k), 1e-4 above a point where the
