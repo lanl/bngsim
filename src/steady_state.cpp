@@ -3032,14 +3032,14 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         // column is asked, X's own entry is no part of what the steps go by,
         // and came back 124 times what it is. The run ends with X at 1e-9.)
         at_zero[k] = rounding || (halved && pair != SsPair::RunEnd);
-        // Asked whether it grows from next to nothing (below): one that a
-        // Newton step brought down to something. Not asked of where a run
-        // ended: the species that have run out are there at what the
-        // integrator's tolerance left of them, of either sign and in no
-        // proportion (z at -5e-14 and ez at 4e-13 in BIOMD0000000092, where
-        // e + z <-> ez -> e + w has used z up), and one of them grows towards
-        // what the other would keep of it.
-        falling[k] = pair == SsPair::NewtonStep && halved && !rounding;
+        // Asked whether it grows from next to nothing (below): one that came
+        // down to something. One that came down to rounding is not asked:
+        // species that have run out are at what a tolerance left of them, of
+        // either sign and in no proportion (z at -5e-14 and ez at 4e-13 where
+        // a run ends in BIOMD0000000092, in which e + z <-> ez -> e + w has
+        // used z up), and one of them grows towards what the other would keep
+        // of it.
+        falling[k] = halved && !rounding;
     }
     // Those that something left over makes are not at a zero, and neither is one
     // that grows from next to nothing: with every such species at a millionth

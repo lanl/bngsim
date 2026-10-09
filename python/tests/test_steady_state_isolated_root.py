@@ -2582,14 +2582,15 @@ def test_biomd1001_species_that_ran_out_are_taken_over_what_stands_beside_them()
     assert scale["TGFb_In"] > 1.0 and scale["pS2_c"] > 1.0
 
 
-def test_biomd92_species_that_ran_out_are_not_asked_what_grows_where_a_run_ended():
+def test_biomd92_species_that_ran_out_are_at_a_zero_where_the_run_ends():
     """e + z <-> ez -> e + w has used z up. The steps take z and ez to
     nothing, and the run that is taken on ends with them at -5e-14 and 4e-13:
-    what its tolerance left, of either sign and in no proportion. Asked
-    whether one grows from next to nothing in the proportions they have
-    there, ez does, towards what z would keep of it, and it was taken for a
-    species with a value of its own that had moved by all of itself. That is
-    asked of a Newton step, and not of where a run ended."""
+    what its tolerance left, of either sign and in no proportion, and 2e-8 of
+    the total they share with w. Asked whether one grows from next to nothing
+    in the proportions they have there, ez does, towards what z would keep of
+    it, and it was taken for a species with a value of its own that had moved
+    by all of itself. That is asked of a species that came down to something,
+    and these came down to nothing."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000092")), method="ode")
     out = sim.steady_state(
         sensitivity_params=["_lp_v1_k1", "_lp_v2_k21", "_lp_v2_k22", "_lp_v3_k3"]
@@ -2599,6 +2600,19 @@ def test_biomd92_species_that_ran_out_are_not_asked_what_grows_where_a_run_ended
     assert abs(at["z"]) < 1e-20 and abs(at["ez"]) < 1e-20
     assert at["e"] == pytest.approx(2.4e-5, rel=1e-9)
     assert out.sens_root_hold_drift < 1e-3
+
+
+def test_biomd416_a_column_of_nothing_that_never_settles_is_returned_as_that():
+    """The steady state does not move with ``eps``, and its column is what
+    rounding makes of that at each state: 1e-10, of either sign, and all of
+    itself different at the next. No step settles it, the ten are taken, and
+    the last state is returned with the column it has there: it is under
+    1e-5 of 1/|eps|, which is nothing, and is not refused for moving."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000416")), method="ode")
+    out = sim.steady_state(sensitivity_params=["eps"])
+    assert out.sens_root_newton_steps == 10
+    assert np.max(np.abs(np.asarray(out.sensitivity))) < 1e-8
+    assert out.sens_root_column_shift < 1e-6 and out.sens_root_state_shift < 1e-9
 
 
 def test_biomd5_by_newton_is_a_root_inside_its_limit_cycle():
