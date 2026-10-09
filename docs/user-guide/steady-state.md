@@ -583,11 +583,14 @@ The first three say the steady state is not an isolated root, or, for the
 pivot share and the condition number at their limits, that rates of the model
 are so far apart (more than 1e12) that rounding leaves the columns known to no
 better than a thousandth. Where the Jacobian is a difference quotient
-(`ss.sens_jacobian_source` is `"finite-difference"`: `jacobian="fd"`, or a
-model the closed form declines) its entries are known to 1e-8 and not to
-rounding, and the two limits are 1e-6 and 1e6: an entry a hundred million times
-smaller than its neighbours reads as nothing there, and no measure taken on
-that matrix sees what it lost. (A determinant
+(`ss.sens_jacobian_source` is `"finite-difference"`: `jacobian="fd"` or
+`"jax"`, or a model the closed form declines) its entries are known to about
+1e-8 of their neighbours and not to rounding, and the two limits are 1e-6 and
+1e6: an entry a hundred million times smaller than its neighbours reads as
+nothing there, and no measure taken on that matrix sees what it lost. (The
+limits hold that loss. They do not hold what the difference itself gets wrong
+where a species is far smaller than the largest in the model, whose size sets
+the step: prefer the closed form for sensitivities.) (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller
@@ -648,8 +651,8 @@ run starts a millionth beside the state because one started on such a root
 stays on it. A species that is absent is not moved: the run does not ask
 whether a state would last the arrival of something the model does not start
 with. (Nor do the eigenvalues below: a species that is absent, at exactly
-nothing with a rate of exactly nothing, and that nothing the model has makes,
-is left out of them. `ss.root_stability`, the certificate of a Newton root,
+nothing with a rate of exactly nothing, that nothing the model has makes and
+that no parameter that is asked for would make, is left out of them. `ss.root_stability`, the certificate of a Newton root,
 does count it, and can read `"unstable"` beside columns that are returned.)
 
 The run has `max_steps` steps. Where it uses them short of `max_time`, it was

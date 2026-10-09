@@ -2868,8 +2868,8 @@ def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, fas
 
 @pytest.mark.parametrize("fast", [1e8, 1e9, 1e11])
 def test_the_same_with_the_closed_form_jacobian_is_returned(tmp_path, fast):
-    """The closed-form Jacobian has the entry to rounding, and the columns are
-    right to a ten-thousandth at every one of these."""
+    """Control. The closed-form Jacobian has the entry to rounding, and the
+    columns are right to a ten-thousandth at every one of these."""
     sim, relative, _ = _into_a_fast_exchange(tmp_path, fast)
     out = sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
     assert out.sens_jacobian_source != "finite-difference"
@@ -2948,3 +2948,127 @@ def test_a_run_that_stayed_beside_columns_that_did_not_is_said_as_that(tmp_path)
         r"column of k.*moves by 40\.8 times its largest entry",
     ):
         sim._raise_if_not_an_isolated_root(out, 1e6, False)
+
+
+# The resident and the invader again, with what could make the invader at
+# nothing: a source of it at eps = 0, and its own initial amount N0 = 0.
+AN_INVADER_A_PARAMETER_WOULD_MAKE = """begin parameters
+    1 b   1.0
+    2 c   1.0
+    3 g   2.0
+    4 d   1.0
+    5 eps 0
+    6 N0  0
+end parameters
+begin species
+    1 R() 1.0
+    2 N() N0
+end species
+begin reactions
+    1 1 1,1 b
+    2 1,1 1 c
+    3 2 2,2 g
+    4 1,2 1 d
+    5 2,2 2 d
+    6 0 2 eps
+end reactions
+"""
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+@pytest.mark.parametrize("asked", [["eps"], ["N0"], ["b", "eps"]])
+def test_an_absent_species_is_asked_where_the_parameter_asked_for_would_make_it(
+    tmp_path, asked, method
+):
+    """N is at nothing and its rate is nothing: with eps = 0 and N0 = 0 it is
+    a species the model does not have. But any eps above nothing, or any N0,
+    makes some, and N then leaves nothing at g - d·R = 1 for where the two
+    coexist: a run ends at N = 1 for eps = 1e-9. The steady state jumps
+    there, and -J⁻¹·∂f/∂eps = -1 is the slope of the branch the system
+    leaves. Left out of the eigenvalues, N came back with that."""
+    sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_A_PARAMETER_WOULD_MAKE), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+        sim.steady_state(sensitivity_params=asked, method=method)
+
+
+def test_the_same_asked_for_the_resident_alone_is_returned(tmp_path):
+    """Control. Asked for b alone, nothing that is asked makes N, and the
+    resident's column is that of where a run ends."""
+    sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_A_PARAMETER_WOULD_MAKE), method="ode")
+    out = sim.steady_state(sensitivity_params=["b"])
+    np.testing.assert_allclose(out.concentrations, [1.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(out.sensitivity, [[1.0], [0.0]], atol=1e-7)
+
+
+# The invader is made at k·(R - 1): at nothing where the resident is at its
+# capacity of 1, and nowhere else.
+AN_INVADER_MADE_ANYWHERE_BUT_HERE = """begin parameters
+    1 b   1.0
+    2 c   1.0
+    3 g   2.0
+    4 d   1.0
+    5 k   1e-3
+end parameters
+begin functions
+    1 leak() k*(Robs-1)
+end functions
+begin species
+    1 R() 1.0
+    2 N() 0
+end species
+begin reactions
+    1 1 1,1 b
+    2 1,1 1 c
+    3 2 2,2 g
+    4 1,2 1 d
+    5 2,2 2 d
+    6 0 2 leak
+end reactions
+begin groups
+    1 Robs 1
+end groups
+"""
+
+
+def test_a_species_made_by_a_rate_that_is_nothing_only_here_is_not_left_out(tmp_path):
+    """N is at nothing with a rate of exactly nothing, the resident being at
+    exactly 1 where a Newton solve stops; but its row of the Jacobian has an
+    entry in R's column, and beside this state something makes it. Its block
+    is not one of its own, and it is in the eigenvalues."""
+    sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_MADE_ANYWHERE_BUT_HERE), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+        sim.steady_state(sensitivity_params=["b"], method="newton")
+
+
+@pytest.mark.parametrize(
+    ("limit", "measure"),
+    [
+        ("_SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED", "pivot"),
+        ("_SS_ROOT_CONDITION_MAX_DIFFERENCED", "x"),
+    ],
+)
+def test_each_limit_of_a_differenced_jacobian_refuses_alone(tmp_path, monkeypatch, limit, measure):
+    """The pivot share and the condition number go together in a stiff model
+    (one is about twice the reciprocal of the other), and either limit refuses
+    the fast exchange at F = 1e8 with the other out of the way."""
+    other = {
+        "_SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED": ("_SS_ROOT_CONDITION_MAX_DIFFERENCED", math.inf),
+        "_SS_ROOT_CONDITION_MAX_DIFFERENCED": ("_SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED", 0.0),
+    }[limit]
+    monkeypatch.setattr(bngsim.Simulator, other[0], other[1])
+    sim, _, _ = _into_a_fast_exchange(tmp_path, 1e8, jacobian="fd")
+    said = "The pivot for" if measure == "pivot" else "magnified"
+    with pytest.raises(bngsim.SimulationError, match=rf"#995.*{said}.*difference quotient"):
+        sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
+
+
+def test_a_differenced_jacobian_just_inside_its_limits_is_right(tmp_path):
+    """At F = 2e5 the pivot share is 3e-6 and the condition number 5e5, just
+    inside 1e-6 and 1e6, and the columns of the difference quotient are 0.13%
+    off: within the 1% that is asked, which is where the limits are put."""
+    sim, relative, _ = _into_a_fast_exchange(tmp_path, 2e5, jacobian="fd")
+    out = sim.steady_state(sensitivity_params=["kx"], tol=1e-9)
+    assert out.sens_jacobian_source == "finite-difference"
+    assert 1e-6 < out.sens_root_pivot_share < 1e-5 and out.sens_root_condition < 1e6
+    got = np.asarray(out.sensitivity)[:, 0] / np.asarray(out.concentrations)
+    np.testing.assert_allclose(got, relative, rtol=5e-3)

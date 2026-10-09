@@ -3134,6 +3134,9 @@ struct SsColumnSystem {
     // from.
     const NetworkModel *model = nullptr;
     const std::vector<double> *start = nullptr;
+    // How the state the solve started from moves with each column (issue #704),
+    // species by column: what an initial amount that is asked for seeds.
+    const std::vector<double> *start_moves = nullptr;
     // The state a run of `horizon` from the returned state ended at, where one
     // was made (an integration result), and whether its integrator gave up.
     const std::vector<double> *held = nullptr;
@@ -3203,9 +3206,29 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // and not absent. (A Newton solve leaves such a species at exactly
     // nothing. It was taken for absent, and N' = eps + g·N - d·N² came back at
     // N = -1e-12 where a run ends at 1.)
+    //
+    // Nor is it absent for a column that would make it: a rate constant of
+    // zero that is asked for (`0 -> N` at eps = 0, dN*/deps), or its own
+    // initial amount of zero. The steady state jumps where such a parameter
+    // leaves zero, and -J⁻¹·∂f/∂p there is the slope of the branch the system
+    // leaves (-1 came back for it). So its row of ∂f/∂p, and of how the start
+    // moves, has to be nothing in every column that is asked.
+    std::vector<double> dfdp_there;
+    sys.fill_dfdp(returned.data(), J, dfdp_there);
     const auto absent = [&](int i) {
         const size_t k = static_cast<size_t>(i);
-        return returned[k] == 0.0 && rate_there[k] == 0.0;
+        if (!(returned[k] == 0.0 && rate_there[k] == 0.0)) {
+            return false;
+        }
+        for (int p = 0; p < np; ++p) {
+            if (dfdp_there[static_cast<size_t>(p) * ns + k] != 0.0) {
+                return false;
+            }
+            if (sys.start_moves != nullptr && (*sys.start_moves)[k * np + p] != 0.0) {
+                return false;
+            }
+        }
+        return true;
     };
     // The eigenvalues are those of the species the model has. One that is
     // absent, and that nothing present makes at any state beside this one
@@ -3237,6 +3260,12 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                 if (reduced[static_cast<size_t>(c) * n + r] != 0.0) {
                     apart = false;
                     break;
+                }
+            }
+            // Nor does a conserved total that a column moves make it.
+            for (int p = 0; p < np && apart; ++p) {
+                if (sys.forcing(J, r, p) != 0.0) {
+                    apart = false;
                 }
             }
         }
@@ -3963,6 +3992,7 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
     column_system.fill_dfdp = fill_dfdp;
     column_system.model = &model;
     column_system.start = &start_state;
+    column_system.start_moves = &dx0;
     column_system.held = held_state;
     column_system.hold_failed = hold_failed;
     column_system.horizon = horizon;

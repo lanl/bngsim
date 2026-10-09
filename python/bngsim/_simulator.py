@@ -7125,15 +7125,20 @@ class Simulator:
     _SS_ROOT_PIVOT_SHARE_MIN = 1e-13
 
     #: The same two limits for a Jacobian that is a difference quotient
-    #: (``sens_jacobian_source == "finite-difference"``: ``jacobian="fd"``, or
-    #: a model the closed form declines). Its entries are known to 1e-8 of the
-    #: fluxes in their row and not to rounding, so an entry a hundred million
-    #: times smaller than its neighbours reads as nothing, and the measures
-    #: above, which are taken on that matrix, do not see what it lost: a step
-    #: of 0.28 into a pair that exchanges at 1e9 came back with a column of
-    #: 0, every measure clean (and at 1e7 4.6% off, at 1e8 20%). A thousand
-    #: times what such an entry is known to, as the limits above are a
-    #: thousand times rounding.
+    #: (``sens_jacobian_source == "finite-difference"``: ``jacobian="fd"`` or
+    #: ``"jax"``, or a model the closed form declines). Its entries are known
+    #: to about 1e-8 of the fluxes in their row and not to rounding, so an
+    #: entry a hundred million times smaller than its neighbours reads as
+    #: nothing, and the measures above, which are taken on that matrix, do not
+    #: see what it lost: a step of 0.28 into a pair that exchanges at 1e9 came
+    #: back with a column of 0, every measure clean (and at 1e7 4.6% off, at
+    #: 1e8 20%; at 1e6, a pivot share of 6e-7, 0.1%). These hold what
+    #: cancellation loses of such a matrix. They do not hold what the
+    #: difference itself gets wrong: its step is 1.5e-8 of the largest
+    #: concentration in the model, for every species, and a term of second
+    #: order in a species that much smaller is differenced over many times
+    #: the species (7% off beside an unrelated species at 1e7, on main too,
+    #: with a pivot share of 1).
     _SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED = 1e-6
     _SS_ROOT_CONDITION_MAX_DIFFERENCED = 1e6
 
@@ -7321,9 +7326,9 @@ class Simulator:
             self._SS_ROOT_CONDITION_MAX_DIFFERENCED if differenced else self._SS_ROOT_CONDITION_MAX
         )
         known_to = (
-            "the difference quotient this Jacobian is leaves of them (1e-8; a closed-form "
-            'Jacobian, jacobian="analytical" or codegen, has its entries to rounding and '
-            "these limits a hundred million times further out)"
+            "the difference quotient this Jacobian is leaves of them (about 1e-8; a "
+            'closed-form Jacobian, jacobian="analytical" or codegen, has its entries to '
+            "rounding and these limits a hundred million times further out)"
             if differenced
             else "rounding leaves of them"
         )
