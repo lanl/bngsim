@@ -87,7 +87,16 @@ def test_it_lands_on_the_true_root_not_a_passing_dip(fixture_net, tmp_path, data
     the march is sitting on the steady state itself.
     """
     net = _regapped(tmp_path, data_dir, "49.999999999998")
-    result = _solve(net, tol=1e-13)
+    # (A horizon of 1e7. A tolerance of 1e-13 is a last place of this model's
+    # concentrations, about 958, and whether the march is under it at the
+    # moment a horizon ends is a matter of its last places. Two reactions here
+    # have a species on both sides (`4 -> 2 + 4`, `6 -> 2 + 6`); with that
+    # species' net change applied in the right-hand side, where the rate was
+    # taken off it and put back, the march stands at 1.03e-13 when a horizon
+    # of 1e6 ends, and at 1.25e-14, 3.2e-14 and 4.1e-14 at 1e7, 1e8 and 1e9.
+    # Before that change it was the other cells of this table that missed:
+    # 3.4e-14 for 1e-14 at 1e6, 3.97e-13 for 1e-14 at 1e8 with k_v_stim 49.5.)
+    result = _solve(net, max_time=1e7, tol=1e-13)
     assert result.converged
     assert result.residual < 1e-13
 
