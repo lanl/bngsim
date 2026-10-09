@@ -1334,6 +1334,49 @@ struct SteadyStateResult {
     // Well-posed corpus models land at 1e-4 - 1e-1; singular ones at 1e-12 - 1e-9.
     // 0.0 when no sensitivity was requested. See lu_diag_rcond in steady_state.cpp.
     double sens_jacobian_rcond = 0.0;
+    // Issue #995 — whether the steady state is an isolated root of the system
+    // dY_ss/dp was solved on, and the returned state on it: what makes
+    // -J⁻¹·(∂f/∂p) the derivative. See ss_measure_root in steady_state.cpp,
+    // which takes one Newton step from the returned state and factors the
+    // system again there.
+    //
+    // sens_root_determinant_ratio: the determinant of that system at the
+    //   corrected state over the one at the returned state. 1, to the accuracy
+    //   of the solve, at an isolated root; 1e-8 or 0 where the Jacobian is
+    //   singular at the steady state the solve was approaching (a continuum of
+    //   steady states); 1/2 at a root of higher order; anything where a rate
+    //   law is discontinuous between the two states. 0 where the matrix has no
+    //   factorization, and not a number where the corrected state is not one.
+    // sens_root_condition: the componentwise condition number of that system
+    //   at the returned state, the Perron root of |A⁻¹|·|A|: how many times a
+    //   relative error in each entry of the Jacobian is magnified in the
+    //   columns. The same in any units of the species and of the equations.
+    //   About 1/eps, 1e16, where the matrix is singular but for rounding: one
+    //   that is singular at every state. Infinite where it has no inverse.
+    // sens_root_column_shift: the largest move of a column of dY_ss/dp when it
+    //   is solved again at the corrected state, as a fraction of the column's
+    //   largest entry (or of 1e-3·max|concentration|/|p| where the column is
+    //   smaller than that). How far the columns are from those of the root.
+    // sens_root_relaxation: the most of a column of dY_ss/dp that a run of
+    //   max_time would leave unestablished, as a fraction of the column's
+    //   largest entry (or of 1e-3·max|concentration|/|p|): the bound
+    //   A⁻¹·column/max_time where that is small, and what a few implicit steps
+    //   over max_time leave of the column where it is not. A column that is
+    //   mostly left is that of a steady state no run of that length reaches.
+    // sens_root_determinant_species / sens_root_condition_species: the species
+    //   (0-based) the first two point at (for the first, the one whose pivot
+    //   moved furthest); sens_root_column_param / sens_root_relaxation_param:
+    //   the column (0-based, into sens_param_names) the last two are read at.
+    //   -1 where none.
+    // 1, 1, 0, 0 and -1 when no sensitivity was requested.
+    double sens_root_determinant_ratio = 1.0;
+    double sens_root_condition = 1.0;
+    double sens_root_column_shift = 0.0;
+    double sens_root_relaxation = 0.0;
+    int sens_root_determinant_species = -1;
+    int sens_root_condition_species = -1;
+    int sens_root_column_param = -1;
+    int sens_root_relaxation_param = -1;
 
     // ─── Observable / function output sensitivities at steady state (GH #12) ───
     // The chain-rule projection of the species dY_ss/dp above onto the model's

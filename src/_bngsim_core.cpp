@@ -3300,6 +3300,20 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // block, so a caller can tell the compiled chain rule from the fallback.
         .def_readonly("sens_output_source", &bngsim::SteadyStateResult::sens_output_source)
         .def_readonly("sens_jacobian_rcond", &bngsim::SteadyStateResult::sens_jacobian_rcond)
+        // Issue #995 — whether the steady state is an isolated root of the
+        // system dY_ss/dp was solved on, and the returned state on it.
+        .def_readonly("sens_root_determinant_ratio",
+                      &bngsim::SteadyStateResult::sens_root_determinant_ratio)
+        .def_readonly("sens_root_condition", &bngsim::SteadyStateResult::sens_root_condition)
+        .def_readonly("sens_root_column_shift", &bngsim::SteadyStateResult::sens_root_column_shift)
+        .def_readonly("sens_root_determinant_species",
+                      &bngsim::SteadyStateResult::sens_root_determinant_species)
+        .def_readonly("sens_root_condition_species",
+                      &bngsim::SteadyStateResult::sens_root_condition_species)
+        .def_readonly("sens_root_column_param", &bngsim::SteadyStateResult::sens_root_column_param)
+        .def_readonly("sens_root_relaxation", &bngsim::SteadyStateResult::sens_root_relaxation)
+        .def_readonly("sens_root_relaxation_param",
+                      &bngsim::SteadyStateResult::sens_root_relaxation_param)
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::SteadyStateResult &r) {
