@@ -336,33 +336,28 @@ class TestSensitivityNumerics:
         ss = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-12)
         assert ss.sens_jacobian_rcond > 1e-4
 
-    def test_ill_conditioned_but_nonsingular_sensitivity_warns(self, tmp_path, caplog):
-        """The warning branch: a root that is isolated and full rank, but whose
-        reduced Jacobian is badly conditioned. The gradient is *correct* — the
-        warning is advisory, exactly as its own text says.
+    def test_ill_conditioned_but_nonsingular_sensitivity_is_returned(self, tmp_path, caplog):
+        """A root that is isolated and full rank, whose reduced Jacobian is
+        badly conditioned by ``min|U|/max|U|``. The gradient is correct, and is
+        returned with nothing logged (issue #995): the ratio is that of the two
+        rates, which a scaling of the rows takes out, and the solve is asked
+        whether the root is isolated instead. It warned here, "may not be
+        reliable", while the ratio was what decided.
 
         Two decoupled reversible pairs, ten orders of magnitude apart in rate:
         ``A ⇌ B`` at 1 and ``C ⇌ D`` at 1e10. Each pair conserves its own total,
         so the reduction leaves a 2x2 whose LU pivots are -(kf+kr) and
         -(kff+kfr): ``rcond`` is their ratio, ``1e-10``, analytically and to the
-        last digit. That is two orders below ``_SS_SENS_RCOND_FLOOR`` (so the
-        warning fires) and six orders *above* machine epsilon (so no rounding can
-        collapse it to a zero pivot and tip the solve into the sibling's refusal
-        branch).
+        last digit.
 
-        That last property is the point, and it is why this test does not use
-        ``nested_derived_rate_const.net`` (lanl/bngsim#176). That model's
-        equilibrium set is genuinely a line — J is rank 2 of 4 with one
+        ``nested_derived_rate_const.net`` (lanl/bngsim#176) is the other kind.
+        That model's equilibrium set is a line — J is rank 2 of 4 with one
         conservation law, so the reduced 3x3 is exactly singular in exact
-        arithmetic — and the "ill-conditioned" pivot ratio this test used to
-        assert was 1.26e-17, *below* eps. It was rounding noise, not conditioning,
-        so which of the two branches fired was decided by the LU implementation:
-        on one machine the same macOS/Accelerate build warns under LAPACK
-        ``dgetrf`` and refuses under SUNDIALS' built-in GETRF. A fixture that
-        cannot be held on one side of the line cannot discriminate the two
-        branches, so the refusal branch keeps its own structural fixture
-        (``test_singular_solve_is_refused_rather_than_returning_nan``) and this
-        one gets a root that is honestly, stably ill-conditioned.
+        arithmetic — and its pivot ratio was 1.26e-17, rounding noise, so that
+        whether it was refused or warned about was decided by the LU
+        implementation: on one machine the same macOS/Accelerate build warned
+        under LAPACK ``dgetrf`` and refused under SUNDIALS' built-in GETRF. It is
+        refused either way now (``test_singular_refusal_points_at_the_mask``).
         """
         text = """\
 begin parameters
@@ -398,14 +393,14 @@ end groups
 
         assert ss.converged
         assert ss.sens_jacobian_rcond == pytest.approx(1e-10, rel=1e-9)
-        assert any("badly conditioned" in r.message for r in caplog.records)
+        assert not any("conditioned" in r.message for r in caplog.records)
+        assert ss.sens_root_condition < 10 and ss.sens_root_determinant_ratio == 1.0
 
         # Isolated root, reached exactly: each pair equilibrates at half its total.
         assert np.asarray(ss.concentrations) == pytest.approx([0.5, 0.5, 0.5, 0.5], abs=1e-9)
 
-        # ...and the flagged gradient is right. y* = (kr/(kf+kr), kf/(kf+kr)) per
-        # pair, so dA/dkf = -kr/(kf+kr)^2 and the pairs do not cross-couple. A
-        # warning the caller can act on has to be one they can also overrule.
+        # ...and the gradient is right. y* = (kr/(kf+kr), kf/(kf+kr)) per
+        # pair, so dA/dkf = -kr/(kf+kr)^2 and the pairs do not cross-couple.
         kf = kr = 1.0
         kff = kfr = 1e10
         exact = np.array(
@@ -422,10 +417,9 @@ end groups
         """When the reduced LU hits an exact zero pivot there is no answer at all.
 
         SUNDIALS' dense solver has no least-squares fallback, so the result comes
-        back NaN. That is the one case a refusal needs no threshold for — and the
-        only refusal the corpus supports, since no cut on the conditioning
-        separates correct gradients from wrong ones (see
-        ``Simulator._SS_SENS_RCOND_FLOOR``).
+        back NaN. That is the one case a refusal needs no threshold for. (A pivot
+        that is small without being zero is refused by
+        ``Simulator._raise_if_not_an_isolated_root``, issue #995.)
 
         The vehicle is ``A -> B``, ``A -> C``: B and C are only ever produced,
         both fed from the same irreversible step, so the equilibrium set is the
