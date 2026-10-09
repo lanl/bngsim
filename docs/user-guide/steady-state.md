@@ -554,12 +554,14 @@ compartment change nothing that is asked of it.
 
 A species at a zero has no concentration to be taken over. It is one that the
 corrected state has at nothing and that nothing left there makes: its rate is
-zero with every such species set to zero. Its entries are taken over where it
-has been and the largest among the species it is coupled to, no more than a
-conserved total it belongs to allows. A species that is small and has a steady
-value, 1e-12 beside another at 1, is not at a zero. It keeps its own scale, and
-has to be solved to that value before its entries are returned (the column
-shift, below), which the solve does.
+zero with every such species set to zero, and from next to nothing it does not
+grow. Its entries are taken over where it has been and the largest among the
+species it is coupled to, no more than a conserved total it belongs to allows.
+A species that is small and has a steady value, 1e-12 beside another at 1, is
+not at a zero, and neither is one that makes itself and is falling towards
+what its surroundings carry. Each keeps its own scale, and has to be solved to
+its steady value before its entries are returned (the column shift, below),
+which the solve does.
 
 | On the result | What it is | Refused |
 | --- | --- | --- |
@@ -598,7 +600,9 @@ is the last: `ss.concentrations`, `ss.residual` and `ss.sensitivity` are then
 those of the stepped state, which is the root to what a step still moves it
 by, and `ss.sens_root_newton_steps` says how many steps that took. Where the
 first step moves no column, it is 0 and the result is the solver's own, to the
-last bit. The solve refuses where the columns have not settled in six steps:
+last bit. A root that was stepped to has to be where the run below ends, within
+1% in every species: Newton can step to a root the system leaves. The solve
+refuses where the columns have not settled in six steps:
 the state is far from a root for the size of its rates, which a smaller `tol`
 mends, or the steady state is not an isolated root. A column whose every
 entry, over its species' scale, is below `1e-3/|p|` is measured against that

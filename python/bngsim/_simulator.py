@@ -9150,6 +9150,8 @@ class SteadyStateResult:
         and the sensitivities are those of the stepped state, which is nearer
         the root: ``tol`` bounds the residual and not the distance to it, and a
         model whose concentrations are small passes it a long way off.
+        ``steady_state`` raises where a state that was stepped to is more than
+        1% in any species from where the run that is taken on ends.
     sens_root_hold_shift, sens_root_hold_drift : float
         A run is taken on for ``max_time`` from the returned state with every
         concentration moved by a millionth of itself. ``sens_root_hold_shift``
@@ -9184,7 +9186,8 @@ class SteadyStateResult:
         concentration, the larger of the returned one and the corrected one. A
         species at a zero has none. It is one the corrected state has at
         nothing and that nothing left there makes (its rate is zero with every
-        such species set to zero), and it is taken over where it has been, its
+        such species set to zero, and it does not grow from next to nothing),
+        and it is taken over where it has been, its
         starting value among them, and the largest such among the species the
         Jacobian couples it to, no more than a conserved total it belongs to
         allows. A species that is small and has a steady value, 1e-12 beside
