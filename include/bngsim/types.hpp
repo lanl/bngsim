@@ -1339,7 +1339,7 @@ struct SteadyStateResult {
     // on it: what makes -J⁻¹·(∂f/∂p) the derivative. See ss_measure_root in
     // steady_state.cpp, which takes one Newton step from the returned state
     // and factors the system again there, and find_steady_state, which takes
-    // an integration on from the returned state for max_time.
+    // a run on for max_time from a millionth beside the returned state.
     //
     // sens_root_determinant_ratio: the determinant of that system at the
     //   corrected state over the one at the returned state. 1, to the accuracy
@@ -1364,18 +1364,17 @@ struct SteadyStateResult {
     //   largest entry, each entry over its species' scale (or of 1e-3/|p|
     //   where the column is smaller than that). How far the columns are from
     //   those of the root.
-    // sens_root_hold_shift: the same at the state a run of max_time from the
-    //   returned state ends at, for a state an integration returned: how far
-    //   the columns are from those of where a run ends. Not a number where
-    //   that run could not be made. sens_root_hold_drift is the largest move
-    //   of a species over that run, against its value;
+    // sens_root_hold_shift: the same at the state that run ends at: how far
+    //   the columns are from those of where a run ends. Not a number where the
+    //   run could not be made. sens_root_hold_drift is the largest move of a
+    //   species over the run, against the larger of its two values;
     //   sens_root_hold_steps and sens_root_hold_time are the steps the run
-    //   took and the time it reached.
-    // sens_root_stability: "stable", "unstable" or "undetermined": whether the
-    //   system rests at the returned state, by the eigenvalues of the matrix
-    //   (up to 512 unknowns, the rule of root_stability) and the sign of its
-    //   determinant. sens_root_growth_rate is the largest real part among the
-    //   eigenvalues, not a number where they were not taken.
+    //   took and the time it reached, which is short of max_time where it
+    //   used up its steps (max_steps).
+    // sens_root_growth_rate / sens_root_spectral_radius: the largest real part
+    //   among the eigenvalues of that system at the returned state, and the
+    //   largest eigenvalue in size (up to 512 unknowns, with the eigensolver of
+    //   root_stability). Not a number, and 0, where they were not taken.
     // sens_root_relaxation: the most of a column of dY_ss/dp that a run of
     //   max_time would leave unestablished, as a fraction of the column's
     //   largest entry (as above): the bound A⁻¹·column/max_time where that is
@@ -1383,10 +1382,12 @@ struct SteadyStateResult {
     //   where it is not. A column that is mostly left is that of a steady
     //   state no run of that length reaches.
     // sens_species_scale: what an entry for each species is small against
-    //   (ss_species_scales): the larger of its concentration at the start and
-    //   at the steady state, and for a species at a zero the largest such
-    //   among the species the Jacobian couples it to, no more than a conserved
-    //   total it belongs to allows. Empty when no sensitivity was requested.
+    //   (ss_species_scales): its own concentration, the larger of the returned
+    //   and the corrected one. A species at a zero, one that the steady state
+    //   has none of and nothing there makes, is taken over where it has been
+    //   and the largest such among the species the Jacobian couples it to, no
+    //   more than a conserved total it belongs to allows. Empty when no
+    //   sensitivity was requested.
     // sens_mask_held_species / sens_mask_reader_species: a species the mask
     //   left out and no law gives, which is held where the solve left it, and
     //   a kept species whose rate reads it (0-based; -1 where there is none).

@@ -545,13 +545,21 @@ conserved but not by a linear law.
 
 The solve checks, and raises `SimulationError` where a check fails. It takes
 one Newton step from the state it returned and factors its system again there,
-and it takes an integration on from that state for `max_time`. What it reads is
-each a ratio of two quantities in the same units, so none depends on the units
-of a species or the size of a compartment. An entry of a column is taken over
-its species' own scale, `ss.sens_species_scale`: the larger of the species'
-concentration at the start and at the steady state, and for a species at a zero
-the largest among the species it is coupled to, no more than a conserved total
-it belongs to allows.
+and it takes a run on for `max_time` from that state with every concentration
+moved by a millionth of itself. What it reads is each a ratio of two quantities
+in the same units. An entry of a column is taken over its species' own
+concentration, `ss.sens_species_scale`, the larger of the returned value and
+the corrected one, so that the units of a species or the size of its
+compartment change nothing that is asked of it.
+
+A species at a zero has no concentration to be taken over. It is one that the
+corrected state has at nothing and that nothing left there makes: its rate is
+zero with every such species set to zero. Its entries are taken over where it
+has been and the largest among the species it is coupled to, no more than a
+conserved total it belongs to allows. A species that is small and has a steady
+value, 1e-12 beside another at 1, is not at a zero. It keeps its own scale, and
+has to be solved to that value before its entries are returned (the column
+shift, below).
 
 | On the result | What it is | Refused |
 | --- | --- | --- |
@@ -559,8 +567,8 @@ it belongs to allows.
 | `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. | below 1e-10 |
 | `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed. | above 1e12 |
 | `sens_root_column_shift` | The largest move of a column when it is solved again at the corrected state, as a fraction of its largest entry. | above 0.01 |
-| `sens_root_hold_shift` | The same at the state the run ends at when it is taken on for `max_time` (an integration result). | above 0.01 |
-| `sens_root_stability` | Whether the system rests at the state: the eigenvalues of the system, up to 512 unknowns, and the sign of its determinant. | `"unstable"` |
+| `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from a millionth beside the returned state. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
+| `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | above 1e-6 of the spectral radius |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
 
 The request is refused whole where one column fails, so which parameters are
@@ -590,19 +598,40 @@ root.) A column whose every entry, over its species' scale, is below
 species that moves by less than a thousandth of its scale when the parameter
 doubles.
 
+A species that is small beside the rest has to be at its own steady value too.
+A made at `5e-10·G` and removed at 5e-3 has a steady value of 1e-7 beside G at
+1, and the residual is under `tol=1e-9` where A starts, at nothing: dA*/dkd came
+back -5.8e-9 for -2e-5. Its entries are taken over its own 1e-7, and the
+columns are refused until `tol` is small enough for it (1e-15 here).
+
 The hold shift says the state is not one a run stays at. An integration stops
 at the first state whose residual is under `tol`, and that says where the run
 is, not where it is going: BIOMD0000000407 is returned as it starts, beside a
 stable root, and a run takes one of its species from 2.448 to 3e-4. A smaller
-`tol` runs past such a state. The state `steady_state()` returns is not changed
-by any of this: without `sensitivity_params` it is returned as before.
+`tol` runs past such a state. And a root can be one the system leaves, however
+exactly the state is on it: the middle root of a bistable switch, or the fixed
+point inside a limit cycle, which `method="newton"` finds and a model can be
+started on. `-J⁻¹·∂f/∂p` there is how the root moves, not where a run ends. The
+run starts a millionth beside the state because one started on such a root
+stays on it. A species that is absent is not moved: a state is not asked
+whether it would last the arrival of something the model does not start with.
 
-`"unstable"` says the system does not rest at the state: a model started on a
-root it leaves (the middle root of a bistable switch, the fixed point inside a
-limit cycle) is returned there, and `-J⁻¹·∂f/∂p` is how that root moves, not
-where a run ends. It is refused too for a state with a direction the system
-leaves along that no parameter moves it in, a population that is absent and
-would grow: the columns of such a state are right, and are a time course's.
+The run has `max_steps` steps. Where it uses them short of `max_time`, it was
+not seen to stay, and the columns are refused: an oscillation about the state
+does this where it is slow to grow or to die away. Give a `max_time` such a
+run reaches, or more steps.
+
+The growth rate says the same of a state a run of `max_time` is too short to
+leave. A millionth grows to a hundredth in `9.2/rate`, and an oscillation that
+grows more slowly than that leaves the run where it started; the relaxation
+below does not see it either. The eigenvalues do, where the growth is above
+what they are themselves known to, a millionth of the largest of them. What
+neither shows is returned: a state the system leaves by an oscillation that
+grows more slowly than `9.2/max_time` and than a millionth of the fastest rate
+in the model, or one in a system of more than 512 unknowns.
+
+The state `steady_state()` returns is not changed by any of this: without
+`sensitivity_params` it is returned as before.
 
 The relaxation says the column is that of a steady state the model does not reach
 in the time the solve was given. A species whose turnover is switched off at

@@ -2308,14 +2308,18 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //      rates have no value below it.)
 //   3. Factor the matrix at y_c in the same elimination order.
 //
-// and, of a state an integration returned, where a run goes from it:
+// and, of where a run goes from it:
 //
-//   4. Take the run on from y for the time the solve was given, to y_h.
+//   4. Take a run on for the time the solve was given, from y with every
+//      concentration moved by a millionth of itself, to y_h.
 //
-// What is read from that is each a ratio of two quantities in the same units,
-// so that none depends on the units of a species, the size of a compartment or
-// the scale of a rate. An entry of a column, and a move of a concentration, are
-// taken over the species' own scale (ss_species_scales).
+// What is read from that is each a ratio of two quantities in the same units:
+// two determinants, a pivot and its terms, a column and the same column at
+// another state. An entry of a column, and a move of a concentration, are taken
+// over the species' own concentration (ss_species_scales), so that the units of
+// a species, the size of its compartment or the scale of a rate change nothing
+// that is asked of it. (A species at a zero has no concentration to be taken
+// over: it is taken over where it has been and what stands beside it.)
 //
 //   determinant    The determinant at y_c over the one at y. At an isolated
 //                  root the step is as small as the solve was accurate and the
@@ -2353,20 +2357,28 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  off: BIOMD0000000002 is accepted 0.02% from its steady
 //                  state, where every column is 5.9% from the derivative. The
 //                  re-solve says so, and by how much.
-//   hold           The same at y_h: what the columns of where a run ends are.
-//                  An integration stops at the first state whose residual is
-//                  under `tol`, which says where the run is and not where it is
-//                  going. BIOMD0000000407 starts at 3.5e-10 and is returned as
-//                  it starts, beside a root that is stable, so that nothing
-//                  above marks it; a run takes one of its species from 2.448 to
-//                  3e-4.
-//   stability      Whether the system rests at y. The eigenvalues of the matrix,
-//                  by the rule and up to the size of the certificate a Newton
-//                  root is held to (issue #78), and the sign of its
-//                  determinant: an odd number of eigenvalues right of zero
-//                  gives it the wrong one, at any size and however near zero
-//                  they are. -J⁻¹·(∂f/∂p) at a root the system leaves is how
-//                  the root moves, and not where a run ends.
+//   hold           The same at y_h: what the columns of where a run ends are,
+//                  and whether the run got there. An integration stops at the
+//                  first state whose residual is under `tol`, which says where
+//                  the run is and not where it is going: BIOMD0000000407
+//                  starts at 3.5e-10 and is returned as it starts, beside a
+//                  root that is stable, so that nothing above marks it, and a
+//                  run takes one of its species from 2.448 to 3e-4. And a
+//                  root, however exactly the state is on it, can be one the
+//                  system leaves: Newton finds the fixed point inside the
+//                  limit cycle of BIOMD0000000005. The run starts a millionth
+//                  beside y because one started on such a root stays on it.
+//                  It has the steps of one output point (max_steps), and one
+//                  that uses them short of its time was not seen to stay.
+//   growth         The largest real part among the eigenvalues of the matrix,
+//                  beside the largest eigenvalue in size, up to the size the
+//                  certificate of a Newton root is held to (issue #78). The
+//                  run shows a state the system leaves within its time. One
+//                  it leaves by an oscillation that grows by less than 1e4 in
+//                  that time the run does not show, and neither does the
+//                  relaxation below, whose implicit steps damp whatever
+//                  oscillates. The spectrum does, where the growth is above
+//                  what it is itself known to: 1e-6 of the largest eigenvalue.
 //   relaxation     How much of a column a run of the time the solve was given
 //                  (max_time) would leave unestablished. A species whose
 //                  turnover is switched off at the steady state has a pivot
@@ -2412,7 +2424,8 @@ static constexpr int kZeroPasses = 64;
 
 // How far, of itself, each concentration is moved before the run is taken on
 // from the returned state (find_steady_state): a state the system rests at
-// takes that back, and one it does not rest at leaves.
+// takes that back, and one it does not rest at leaves. A species that is not
+// there is not moved.
 static constexpr double kHoldKick = 1e-6;
 
 // The failures of the error test a step of that run may have
@@ -4442,7 +4455,11 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         // share of that, so that no symmetry of the model is kept), and the
         // columns are refused where it does not come back (ss_measure_root,
         // 5). A species that is not there is not moved: a state is not asked
-        // whether it would last an invasion nothing in the request brings.
+        // whether it would last an invasion nothing in the request brings. The
+        // run has the steps of one output point, max_steps
+        // (SteadyStateMarcher::take_on_for), and is not stopped for a residual
+        // that has ceased to fall, as a march of the solve is: at a steady
+        // state it has.
         std::vector<double> held_state;
         bool held = false, hold_failed = false;
         {

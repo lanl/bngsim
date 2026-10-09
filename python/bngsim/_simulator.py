@@ -9131,7 +9131,16 @@ class SteadyStateResult:
         was requested.
     sens_root_hold_steps : int
     sens_root_hold_time : float
-        The steps that run took and the time it reached.
+        The steps that run took and the time it reached. The run has
+        ``max_steps`` steps, and ``steady_state`` raises where they are used up
+        short of ``max_time``: the run was not seen to stay.
+    sens_root_growth_rate, sens_root_spectral_radius : float
+        The largest real part among the eigenvalues of that system at the
+        returned state, and the largest eigenvalue in size, for systems of up
+        to 512 unknowns. ``steady_state`` raises where the first is above 1e-6
+        of the second: a state beside this one moves away at that rate. Not a
+        number, and ``0.0``, where the eigenvalues were not taken and when no
+        sensitivity was requested.
     sens_root_relaxation : float
         The most of a column of ``dY_ss/dp`` that a run of ``max_time`` would
         leave unestablished, as a fraction of the column's largest entry: the
@@ -9140,13 +9149,15 @@ class SteadyStateResult:
         not. ``steady_state`` raises above 0.01. ``0.0`` when no sensitivity
         was requested.
     sens_species_scale : numpy.ndarray
-        What an entry for each species is small against: the larger of its
-        concentration at the returned state and at the corrected one. A
-        species at a zero (its corrected value under its ``atol``, and its
-        returned one too or a thousand times that) is taken over where it has
-        been, its starting value among them, and the largest such among the
-        species the Jacobian couples it to, no more than a conserved total it
-        belongs to allows. Empty when no sensitivity was requested.
+        What an entry for each species is small against: its own
+        concentration, the larger of the returned one and the corrected one. A
+        species at a zero has none. It is one the corrected state has at
+        nothing and that nothing left there makes (its rate is zero with every
+        such species set to zero), and it is taken over where it has been, its
+        starting value among them, and the largest such among the species the
+        Jacobian couples it to, no more than a conserved total it belongs to
+        allows. A species that is small and has a steady value, 1e-12 beside
+        another at 1, keeps its own. Empty when no sensitivity was requested.
     sens_mask_held_species, sens_mask_reader_species : str or None
         A species ``mask=`` left out that is held where the solve left it, and
         a kept species whose rate reads it. ``steady_state`` raises where
