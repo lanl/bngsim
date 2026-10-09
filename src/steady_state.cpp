@@ -2402,8 +2402,13 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 // (ss_measure_root, 4), each time against the larger it is at the two states,
 // with each entry over its species' scale.
 //
-// For whether to step on, against that and nothing else: under kZeroColumn of
-// 1/|p| it is rounding, and no move of it is one. A column of 5,000, for a
+// For whether to step on, against that and what rounding makes of a column:
+// an entry is computed to 1e-16 of its terms, which are the fluxes over |p|,
+// times what the solve magnifies an error by, the condition number (3 in
+// ss_measure_root). kZeroColumn of 1/|p|, times that number, is 1e4 times
+// that, and no move of a column under it is one. (A parameter that scales
+// every rate has a column of nothing, by cancellation: 7e-17 in a network of
+// seven species, moving by 1.4e-16 under every step.) A column of 5,000, for a
 // parameter of 1e-8, is 5e-5 of 1/|p| and came back 4% off beside a root that
 // was nearly double, at a state a step moved by under 1%.
 //
@@ -2411,16 +2416,16 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 // what the caller refuses on, against no less than kSmallColumn of 1/|p|: a
 // species moving by 0.1% of its scale when the parameter doubles. A column that
 // is nothing at the root is, at any state, what the state's own rounding makes
-// of 0/0, and moves by all of itself under every step. Under a thousandth of
-// kSmallColumn it is returned as the nothing it is; above that it is not known
-// (BIOMD0000001000 has a cascade that has run out, and a step that moved the
-// state by 1e-14 took a column of its parameters from -2.5e-4 to -12,494).
+// of 0/0, and can move by all of itself under every step. Where that is under
+// a hundredth of kSmallColumn of 1/|p| it is returned as the nothing it is;
+// above that it is not known (BIOMD0000001000 has a cascade that has run out
+// and species its turnover has stopped for, and a step that moved the state by
+// 1e-14 took a column of theirs from -2.5e-4 to -12,494).
 //
 // (One measure did for both, twice. Against kSmallColumn alone, the column of
 // 5,000 was not asked. Against the largest the column had been at any state,
-// with kZeroColumn, the -12,494 was 0.06% of a transient three steps before
-// and was returned.)
-static constexpr double kZeroColumn = 1e-13;
+// the -12,494 was 0.06% of a transient three steps before and was returned.)
+static constexpr double kZeroColumn = 1e-12;
 static constexpr double kSmallColumn = 1e-3;
 
 // The least a species' scale is of the largest among the species the Jacobian
@@ -3319,9 +3324,13 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // returned ones, until the state is stepped on (6). `stepped_columns` are
     // those of the state last measured, and `A_at` its factors.
     std::vector<double> in_hand(result.sensitivity), stepped_columns, A_at, matrix_at;
-    // How far a column moved under the last step, of itself (kZeroColumn): what
-    // the steps go by. What is reported is that against kSmallColumn.
+    // How far a column moved under the last step, of itself: what the steps go
+    // by. What is reported is that against kSmallColumn. And what rounding makes
+    // of a column, of 1/|p| (kZeroColumn), which is never more than that.
     double moved_of_itself = 0.0;
+    const double magnified =
+        std::isfinite(result.sens_root_condition) ? std::max(1.0, result.sens_root_condition) : inf;
+    const double rounding_share = std::min(kZeroColumn * magnified, kSmallColumn);
     std::vector<double> at(returned);
     std::vector<char> at_a_zero; // which species are at a zero, at the last state measured
     bool factored_at = false;
@@ -3478,7 +3487,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                     result.sens_root_column_param = p;
                 }
                 const double of_itself =
-                    over_scale(change_size, std::max(size, kZeroColumn * per_p));
+                    over_scale(change_size, std::max(size, rounding_share * per_p));
                 if (!(of_itself <= moved_of_itself)) {
                     moved_of_itself = std::isfinite(of_itself) ? of_itself : inf;
                 }
@@ -3771,7 +3780,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                 const bool stayed = result.sens_root_hold_drift <= kColumnsSettled;
                 const double moved_by =
                     change /
-                    std::max(top, (stayed ? kSmallColumn : kZeroColumn) / (pv > 0.0 ? pv : 1.0));
+                    std::max(top, (stayed ? kSmallColumn : rounding_share) / (pv > 0.0 ? pv : 1.0));
                 if (!(moved_by <= worst)) {
                     worst = std::isfinite(moved_by) ? moved_by : inf;
                     result.sens_root_hold_param = p;
