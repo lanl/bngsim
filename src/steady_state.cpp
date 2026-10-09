@@ -3505,11 +3505,23 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         }
         // What each species' entries are taken over here is asked of these
         // two states, the returned one and the one the run ended at
-        // (ss_species_scales): a species that ran out over the run is at a
-        // zero, whatever it was returned at, and one the run brought back is
-        // not. How far the run moved each species is taken over the same.
-        const std::vector<double> held_scale =
+        // (ss_species_scales), and either way round: of the two, either can be
+        // the one nearer the steady state. A species that has run out is at
+        // nothing in the state Newton stepped to and at 1e-12 where the run
+        // from the solver's state has got to (BIOMD0000000178), or the other
+        // way about, where the steps stopped with a cascade still on its way
+        // down (BIOMD0000001000): it is at a zero in both. How far the run
+        // moved each species is taken over the same.
+        std::vector<double> held_scale =
             ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_ss, y_h.data());
+        {
+            const std::vector<double> other =
+                ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_h.data(), y_ss);
+            for (int i = 0; i < ns; ++i) {
+                held_scale[static_cast<size_t>(i)] =
+                    std::max(held_scale[static_cast<size_t>(i)], other[static_cast<size_t>(i)]);
+            }
+        }
         const auto scale_of = [&](int i) { return held_scale[static_cast<size_t>(i)]; };
         {
             double furthest = 0.0;
