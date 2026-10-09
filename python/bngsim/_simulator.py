@@ -7412,8 +7412,8 @@ class Simulator:
                 f"{self._SS_ROOT_GROWTH_MAX:.0%}. -J⁻¹·∂f/∂p there is how the root moves, "
                 "and not where a run ends. (A species that is at nothing counts, with "
                 "what it would do if there were any, also where nothing in the model "
-                "makes it.) Solve from a state that is not on the root, or take the "
-                f"columns from {time_course}."
+                "makes it; a time course is then the way to its columns.) Solve from a "
+                f"state that is not on the root, or take the columns from {time_course}."
             )
         # A run that used up its steps before max_time was not seen to stay
         # either, whatever it had moved by then.
