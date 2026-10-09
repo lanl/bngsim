@@ -7321,8 +7321,8 @@ class Simulator:
                 "columns of the state the solver stopped at moved under a Newton step, "
                 f"and {steps} steps led to a root; the run taken on for max_time "
                 f"({max_time:g}) from a millionth beside the solver's state ends "
-                f"{away} from that root in {result.sens_root_hold_species}, of the "
-                f"larger of the two values (the limit is "
+                f"{away} from that root in {result.sens_root_hold_species}, of what that "
+                f"species is taken over (the limit is "
                 f"{self._SS_ROOT_HOLD_SHIFT_MAX:.0%}). The solver stopped beside a root "
                 "the system leaves, or between two. Solve again with a smaller tol, or "
                 f"take the columns from {time_course}."
@@ -7352,8 +7352,8 @@ class Simulator:
                         if short
                         else f"for max_time ({max_time:g})"
                     )
-                    + f", the run moves {result.sens_root_hold_species} by {state} of the "
-                    "larger of its two values, and "
+                    + f", the run moves {result.sens_root_hold_species} by {state} of what "
+                    "it is taken over, and "
                 )
                 if math.isinf(held):
                     moved += (
@@ -9169,8 +9169,9 @@ class SteadyStateResult:
         above 0.01, or where the run could not be made (not a number): the
         state is one a run is passing, or a root the system leaves.
         ``sens_root_hold_drift`` is the largest move of a species over the
-        run, against the larger of its two values. ``0.0`` when no sensitivity
-        was requested.
+        run, against what its entries are taken over there: the larger of its
+        two values, or for a species at a zero what stands beside it. ``0.0``
+        when no sensitivity was requested.
     sens_root_hold_steps : int
     sens_root_hold_time : float
         The steps that run took and the time it reached. The run has

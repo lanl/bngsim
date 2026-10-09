@@ -3485,23 +3485,6 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         }
     }
 
-    // How far the run that was taken on moved each species the residual covers,
-    // against the larger of its two values and of what it is small against.
-    if (sys.held != nullptr && !sys.hold_failed) {
-        double worst = 0.0;
-        for (const int i : sub.included) {
-            const double from = y_ss[i], to = (*sys.held)[static_cast<size_t>(i)];
-            const double against =
-                std::max({std::abs(from), std::abs(to), kZeroColumnFraction * scale_of(i)});
-            const double moved_by = std::abs(to - from) / against;
-            if (!(moved_by <= worst)) {
-                worst = std::isfinite(moved_by) ? moved_by : inf;
-                result.sens_root_hold_species = i;
-            }
-        }
-        result.sens_root_hold_drift = worst;
-    }
-
     // 5. The columns once more, at the state the run that was taken on ended
     //    at, against the ones returned: what the columns of where a run ends
     //    are. With its own factorization, since that state need not be near.
@@ -3519,6 +3502,26 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                 }
             }
             ss_fill_state_jacobian(rhs, y_h.data(), ns, sub, want_analytical, J_h.data());
+        }
+        // What each species' entries are taken over here is asked of these
+        // two states, the returned one and the one the run ended at
+        // (ss_species_scales): a species that ran out over the run is at a
+        // zero, whatever it was returned at, and one the run brought back is
+        // not. How far the run moved each species is taken over the same.
+        const std::vector<double> held_scale =
+            ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_ss, y_h.data());
+        const auto scale_of = [&](int i) { return held_scale[static_cast<size_t>(i)]; };
+        {
+            double furthest = 0.0;
+            for (const int i : sub.included) {
+                const double moved_by =
+                    std::abs(y_h[static_cast<size_t>(i)] - y_ss[i]) / scale_of(i);
+                if (!(moved_by <= furthest)) {
+                    furthest = std::isfinite(moved_by) ? moved_by : inf;
+                    result.sens_root_hold_species = i;
+                }
+            }
+            result.sens_root_hold_drift = furthest;
         }
         std::vector<double> A_h;
         ss_reduce_jacobian(J_h.data(), ns, laws, unknowns, A_h);

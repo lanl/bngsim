@@ -1967,14 +1967,26 @@ def test_biomd599_is_refused_on_its_condition_number():
         sim.steady_state(sensitivity_params=["parameter_1", "parameter_2", "parameter_3"])
 
 
-def test_biomd1001_is_taken_on_with_a_differenced_jacobian():
+def test_biomd1000_is_taken_on_with_a_differenced_jacobian():
     """The run taken on from the returned state stops the integrator on the
-    closed-form Jacobian, started again or not, and reaches
-    ``max_time`` on a differenced one, as the solve itself does where its
-    integrator gives up (issue #127). Ten of its species have run out, at
-    1e-8 to 1e-21 beside others at 1,000, and nothing that is left makes
-    them: their entries are taken over what stands beside them. The columns
-    are returned, as they were."""
+    closed-form Jacobian, started again or not, and reaches ``max_time`` on a
+    differenced one, as the solve itself does where its integrator gives up
+    (issue #127). The state is stepped twice, to where a cascade of species
+    is still running out (pS2_n at 2e-9, from 9e-6): the run ends with them
+    at nothing, which is where they are taken to be, and not 100% away."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000001000")), method="ode")
+    out = sim.steady_state(
+        sensitivity_params=["R1_total_C3", "index_k_out_1_relative_speed_C3", "k_in_R1_C3"]
+    )
+    assert np.all(np.isfinite(np.asarray(out.sensitivity)))
+    assert out.sens_root_hold_time >= 1e6 and out.sens_root_newton_steps == 2
+    assert out.sens_root_hold_drift < 1e-3
+
+
+def test_biomd1001_species_that_ran_out_are_taken_over_what_stands_beside_them():
+    """Ten of its species have run out, at 1e-8 to 1e-21 beside others at
+    1,000, and nothing that is left makes them: their entries are taken over
+    what stands beside them, and the columns are returned, as they were."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000001001")), method="ode")
     out = sim.steady_state(sensitivity_params=["R1_total_C4", "k_in_R1_C4", "kdeg_R1"])
     assert np.all(np.isfinite(np.asarray(out.sensitivity)))
