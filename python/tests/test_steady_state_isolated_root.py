@@ -1297,7 +1297,7 @@ def test_a_boundary_species_the_mask_leaves_out_is_the_constant_it_is_held_as(tm
 
 # ── The corpus witnesses ────────────────────────────────────────────────────
 #
-# Two BioModels files that no small model stood in for. The corpus is fetched,
+# Three BioModels files that no small model stood in for. The corpus is fetched,
 # not vendored, and these skip where it is absent.
 
 
@@ -1332,3 +1332,17 @@ def test_biomd1001_is_taken_on_with_a_differenced_jacobian():
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000001001")), method="ode")
     out = sim.steady_state(sensitivity_params=["R1_total_C4", "k_in_R1_C4", "kdeg_R1"])
     assert np.all(np.isfinite(np.asarray(out.sensitivity)))
+
+
+def test_model2502210001_ends_a_species_below_zero_where_a_rate_has_no_value():
+    """Control. With its four sinks masked out, the run taken on from the
+    returned state ends with a species its last step took below zero, where a
+    rate has no value and the Jacobian is not a number. The columns are solved
+    there with that species at zero, and returned, as they were."""
+    model = bngsim.Model.from_sbml(_biomodel("MODEL2502210001"))
+    sim = bngsim.Simulator(model, method="ode")
+    kept = ~np.asarray(model.is_pure_sink())
+    out = sim.steady_state(
+        sensitivity_params=["_lp_r1_0_k1", "_lp_r2_0_Km", "_lp_r2_0_V"], mask=kept
+    )
+    assert np.all(np.isfinite(np.asarray(out.sensitivity)[kept]))
