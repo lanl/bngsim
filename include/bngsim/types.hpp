@@ -250,12 +250,26 @@ struct Reaction {
     std::vector<int> reactant_indices; // 1-based species indices
     std::vector<int> product_indices;  // 1-based species indices
     // The two lists above folded to (0-based species, multiplicity), in order of
-    // first appearance, by ModelBuilder::build (issue #801). A coefficient is one
-    // index entry per unit, so an SBML stoichiometry of 1e6 is a million entries;
-    // the ODE right-hand side applies one `multiplicity * rate` per species from
-    // these instead of one update per entry.
-    std::vector<std::pair<int, double>> reactant_multiplicity;
-    std::vector<std::pair<int, double>> product_multiplicity;
+    // first appearance, and then by net change, by ModelBuilder::build: the
+    // species a firing takes from, with how many it takes more than it gives
+    // back (`net_loss`), and the species it adds to, with how many more it
+    // gives than it took (`net_gain`). They are what the ODE right-hand side
+    // takes the rate off and puts it on, one update per species.
+    //
+    // Folded (issue #801): a coefficient is one index entry per unit, so an SBML
+    // stoichiometry of 1e6 is a million entries, and was a million updates.
+    //
+    // By net change: a species on both sides of a reaction in equal numbers (a
+    // catalyst written as `E + S -> E + P`) is in `net_loss` with a multiplicity
+    // of zero. Applied one side after the other, its derivative held
+    // `(x - rate) + rate`, which is the rounding of `rate` and not nothing: 0
+    // for a synthesis of 0.01 beside a rate of 1e15. `0 * rate` is nothing
+    // exactly for a rate that is finite, and NaN for one that is not, so a rate
+    // law outside its domain still reaches the derivative of every free species
+    // its reaction names and fails the run, as it did. A species on one side
+    // alone is in its side's list with the multiplicity it has there, as before.
+    std::vector<std::pair<int, double>> net_loss;
+    std::vector<std::pair<int, double>> net_gain;
     RateLawType rate_law_type;
     std::string comment; // trailing #comment from .net
 
