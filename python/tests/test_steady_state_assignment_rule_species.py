@@ -263,3 +263,25 @@ class TestBatch:
         results = sim.steady_state_batch([{"ks": 5.0}, {"ks": 10.0}], **_SS)
         for r in results:
             assert list(r.excluded_species) == [list(r.species_names).index("S")]
+
+
+def test_a_rule_species_is_reported_at_the_state_the_solve_stepped_to():
+    """Issue #995. With ks = 5e-10 and kd = 5e-3, A* = 1e-7 and the residual
+    is under ``tol`` where A starts, at nothing: the solve steps the state to
+    the root for its sensitivities, and what it returns is the stepped state.
+    S = 2·A was read off the state before the steps and came back 5.8e-11
+    beside the A of 1e-7 (dS*/dkd, which is computed after them, was right)."""
+    text = (
+        LINEAR.replace(f'value="{KS}"', 'value="5e-10"')
+        .replace(f'value="{KD}"', 'value="5e-3"')
+        .replace('initialConcentration="1"', 'initialConcentration="0"')
+    )
+    assert text.count("5e-10") == 1 and text.count("5e-3") == 1
+    model = bngsim.Model.from_sbml_string(text)
+    out = bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["kd"])
+    at = dict(zip(out.species_names, np.asarray(out.concentrations), strict=True))
+    assert at["A"] == pytest.approx(1e-7, rel=1e-8)
+    assert at["S"] == pytest.approx(2e-7, rel=1e-8)
+    row = list(out.species_names).index("S")
+    assert np.asarray(out.sensitivity)[row, 0] == pytest.approx(-4e-5, rel=1e-6)
+    assert out.sens_root_newton_steps >= 1
