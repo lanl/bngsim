@@ -1378,12 +1378,16 @@ struct SteadyStateResult {
     //   entry, each entry over its species' scale (or of 1e-3/|p| where the
     //   column is smaller than that). How far the columns are from those of
     //   the root. Where the first step moves one by more than 1%, the state is
-    //   stepped on until none does, up to six steps, and this is the move at
+    //   stepped on until none does, up to ten steps, and this is the move at
     //   the last.
-    // sens_root_newton_steps: the Newton steps that were taken so. 0 where the
-    //   columns of the state the solver stopped at did not move: the result is
-    //   then the solver's own. Otherwise concentrations, residual and
-    //   sensitivity are those of the stepped state.
+    // sens_root_state_shift: the largest move of a species under that step,
+    //   over its scale, and sens_root_state_species the species (0-based). A
+    //   state that moves is stepped on as one whose columns move is.
+    // sens_root_newton_steps: the Newton steps that were taken so. 0 where
+    //   neither the state the solver stopped at nor its columns moved: the
+    //   result is then the solver's own. Otherwise concentrations, residual
+    //   and sensitivity are those of the stepped state (a species the mask
+    //   left out follows a law that holds it with the stepped ones).
     // sens_root_hold_shift: the same at the state that run ends at: how far
     //   the columns are from those of where a run ends. Not a number where the
     //   run could not be made. sens_root_hold_drift is the largest move of a
@@ -1431,6 +1435,8 @@ struct SteadyStateResult {
     int sens_root_hold_param = -1;
     std::vector<double> sens_species_scale; // one per species; empty with no sensitivities
     int sens_root_newton_steps = 0;
+    double sens_root_state_shift = 0.0;
+    int sens_root_state_species = -1;
     int sens_root_hold_steps = 0;
     double sens_root_hold_time = 0.0;
     double sens_root_growth_rate = std::numeric_limits<double>::quiet_NaN();

@@ -7070,7 +7070,7 @@ class Simulator:
     #: when it is solved again at the state one Newton step on, each entry
     #: taken over its species' scale (``sens_species_scale``). Beyond it the
     #: returned state is short of the root for the columns, and the solve
-    #: steps it on, up to six times, until the columns of two states in a row
+    #: steps it on, up to ten times, until the columns of two states in a row
     #: are within this (``kColumnsSettled`` in ``steady_state.cpp``, the same
     #: number). The state and columns returned are then the last. It refuses
     #: where they have not settled.
@@ -7097,14 +7097,19 @@ class Simulator:
     #: millionth beside the returned state.
     _SS_ROOT_HOLD_SHIFT_MAX = 0.01
 
-    #: How far right of zero the real part of an eigenvalue of that system may
-    #: be, of the largest eigenvalue in size: the rule of ``root_stability``
-    #: (issue #78), whose eigensolver agrees with LAPACK's to 1.1e-8 of the
-    #: spectral radius over the corpus. The run taken on is what tells a state
-    #: the system leaves; this tells one it leaves too slowly for a run of
-    #: ``max_time`` to show, an oscillation growing by less than 1e4 in that
-    #: time. Systems of up to 512 unknowns are asked.
-    _SS_ROOT_GROWTH_MAX = 1e-6
+    #: The most a deviation along an eigenvector of that system may grow in
+    #: ``max_time``, as the exponent: the largest real part among the
+    #: eigenvalues, times ``max_time``. Above it a state beside this one is more
+    #: than 1% further off after a run of that length, and the state is not one
+    #: the system rests at. The run that is taken on shows a state the system
+    #: leaves by a hundredth of itself from a millionth away, a growth of 1e4;
+    #: this shows the ones between, which a run of ``max_time`` is too short
+    #: for, an oscillation among them that the relaxation does not see. Systems
+    #: of up to 512 unknowns are asked. Of the corpus models that are returned,
+    #: none has an eigenvalue right of zero at all (753 with a spectrum; the
+    #: nearest is at -3.4e-6, an exponent of -3.4), and every model that has
+    #: one is refused by something else as well.
+    _SS_ROOT_GROWTH_MAX = 0.01
 
     def _raise_if_not_an_isolated_root(
         self,
@@ -7194,12 +7199,12 @@ class Simulator:
             continuum += (
                 " If Model.pure_sink_species() names species, "
                 "steady_state(mask=~model.is_pure_sink()) solves on the equations of the "
-                "others, and returns their columns where those have an isolated root."
+                "others, and returns their columns where those have an isolated root. Where "
+                "it is one part of the model that has none, and the columns wanted are "
+                "those of another that it does not touch, mask= with the species of that "
+                "other part does the same."
             )
-        remedy = (
-            f" Take the columns from {time_course}, or difference steady states solved "
-            "again at p +/- h."
-        )
+        remedy = f" Take the columns from {time_course}."
         opening = (
             "steady_state(sensitivity_params=...) does not return dY_ss/dp for this model "
             "at this steady state (issue #995): "
@@ -7268,10 +7273,12 @@ class Simulator:
                 "is produced and never consumed, or a quantity is conserved that no law "
                 f"of the model holds. {continuum}{remedy}"
             )
-        if not column <= self._SS_ROOT_COLUMN_SHIFT_MAX:
-            if result.sens_root_column_param is None:
+        stepped = float(result.sens_root_state_shift)
+        limit = self._SS_ROOT_COLUMN_SHIFT_MAX
+        if not column <= limit or not stepped <= limit:
+            if not column <= limit and result.sens_root_column_param is None:
                 moved = "the columns cannot be solved there: a rate has no value at that state"
-            else:
+            elif not column <= limit:
                 by = (
                     f"{column:.1%}"
                     if math.isfinite(column) and column < 10
@@ -7280,30 +7287,43 @@ class Simulator:
                 moved = (
                     f"the column of {result.sens_root_column_param} still moves by {by} of "
                     "its largest entry, each species taken over its own concentration (the "
-                    f"limit is {self._SS_ROOT_COLUMN_SHIFT_MAX:.0%})"
+                    f"limit is {limit:.0%})"
+                )
+            else:
+                by = f"{stepped:.1%}" if stepped < 10 else f"{stepped:.3g} times"
+                moved = (
+                    f"a step still moves {result.sens_root_state_species} by {by} of what "
+                    f"it is taken over (the limit is {limit:.0%})"
                 )
             raise SimulationError(
-                f"{opening}no state near the one the solve returned has columns that stay "
-                "where they are. The columns are solved again a Newton step on, and where "
-                f"they move the state is stepped again, up to six times: after the last, "
-                f"{moved}. The returned state is far from a root for the size of its rates "
-                "(tol bounds the residual ||f(y)||/n and not the distance to the root: this "
-                f"solve stopped at {result.residual:.1e}, and a smaller tol starts the steps "
-                "nearer), or the steady state is not an isolated root, or a species runs "
-                "out through a rate that has no value at nothing, so that it cannot be "
-                f"shown to be at a zero. The columns are those of {time_course}."
+                f"{opening}no state near the one the solve returned is one that a Newton "
+                "step leaves where it is, with its columns. The columns are solved again a "
+                "Newton step on, and where they or the state move the state is stepped "
+                f"again, up to ten times: after the last, {moved}. The returned state is "
+                "far from a root for the size of its rates (tol bounds the residual "
+                "||f(y)||/n and not the distance to the root: this solve stopped at "
+                f"{result.residual:.1e}, and a smaller tol starts the steps nearer), or the "
+                "steady state is not an isolated root, or a species runs out through a "
+                "rate that has no value at nothing, so that it cannot be shown to be at a "
+                f"zero. The columns are those of {time_course}."
             )
         growth = float(result.sens_root_growth_rate)
         radius = float(result.sens_root_spectral_radius)
-        if growth > self._SS_ROOT_GROWTH_MAX * radius:
+        if growth * max_time > self._SS_ROOT_GROWTH_MAX:
             raise SimulationError(
                 f"{opening}the system does not rest at the state the solve returned. The "
                 "Jacobian of the equations the columns are solved on has an eigenvalue "
                 f"with a real part of {growth:.3g} there (the largest in size is "
-                f"{radius:.3g}, and the limit is {self._SS_ROOT_GROWTH_MAX:g} of that): a "
-                "state beside this one moves away from it at that rate. -J⁻¹·∂f/∂p there "
-                "is how the root moves, and not where a run ends. Solve from a state that "
-                f"is not on the root, or take the columns from {time_course}."
+                f"{radius:.3g}): a state beside this one is "
+                + (
+                    f"{math.expm1(growth * max_time):.0%} further from it"
+                    if growth * max_time < 5.0
+                    else f"exp({growth * max_time:.3g}) times as far from it"
+                )
+                + f" after max_time ({max_time:g}), where the limit is "
+                f"{self._SS_ROOT_GROWTH_MAX:.0%}. -J⁻¹·∂f/∂p there is how the root moves, "
+                "and not where a run ends. Solve from a state that is not on the root, or "
+                f"take the columns from {time_course}."
             )
         # A run that used up its steps before max_time was not seen to stay
         # either, whatever it had moved by then.
@@ -7339,8 +7359,8 @@ class Simulator:
                     f"({max_time:g}): it was at t = {reached:.3g} after the "
                     f"{result.sens_root_hold_steps} steps it had (max_steps), so that it "
                     "is not known to stay there. An oscillation about the state does "
-                    "this, growing or dying away, where it is slow to do either. Give a "
-                    "max_time such a run reaches, or more steps."
+                    "this, growing or dying away, where it is slow to do either. Give the "
+                    f"run more steps (max_steps), or take the columns from {time_course}."
                 )
             else:
                 state = f"{drift:.0%}" if drift < 10 else f"{drift:.3g} times"
@@ -7370,8 +7390,8 @@ class Simulator:
             raise SimulationError(
                 f"{opening}the state the solve returned is not one a run stays at. {moved} "
                 "An integration stops at the first state whose residual ||f(y)||/n is "
-                f"under tol ({result.residual:.1e} here), which says where the run is and "
-                "not where it is going, and a root can be one the system leaves, where "
+                "under tol, which says where the run is and not where it is going, and a "
+                "root can be one the system leaves, where "
                 "-J⁻¹·∂f/∂p is how the root moves and not where a run ends. Solve again "
                 "with a smaller tol, or from a state that is not on such a root, or take "
                 f"the columns from {time_course}."
@@ -9149,13 +9169,19 @@ class SteadyStateResult:
         entry over its species' scale (``sens_species_scale``), or of
         ``1e-3 / |p|`` for a column smaller than that: how far the columns are
         from those of the root. Above 0.01 the solve steps the state on, up to
-        six times, until it is not, and this is the move at the last step;
+        ten times, until it is not, and this is the move at the last step;
         ``steady_state`` raises where it is still above 0.01. ``0.0`` when no
         sensitivity was requested.
+    sens_root_state_shift : float
+    sens_root_state_species : str or None
+        The largest move of a species under that Newton step, over its scale,
+        and the species. A state that moves by more than 0.01 is stepped on as
+        one whose columns move is, and ``steady_state`` raises where it still
+        does after ten steps.
     sens_root_newton_steps : int
         The Newton steps the returned state and columns are from the state
-        the solver stopped at: 0 where its columns did not move, and the
-        result is the solver's own. Otherwise ``concentrations``, ``residual``
+        the solver stopped at: 0 where neither it nor its columns moved, and
+        the result is the solver's own. Otherwise ``concentrations``, ``residual``
         and the sensitivities are those of the stepped state, which is nearer
         the root: ``tol`` bounds the residual and not the distance to it, and a
         model whose concentrations are small passes it a long way off.
@@ -9180,10 +9206,11 @@ class SteadyStateResult:
     sens_root_growth_rate, sens_root_spectral_radius : float
         The largest real part among the eigenvalues of that system at the
         returned state, and the largest eigenvalue in size, for systems of up
-        to 512 unknowns. ``steady_state`` raises where the first is above 1e-6
-        of the second: a state beside this one moves away at that rate. Not a
-        number, and ``0.0``, where the eigenvalues were not taken and when no
-        sensitivity was requested.
+        to 512 unknowns. ``steady_state`` raises where the first, times
+        ``max_time``, is above 0.01: a state beside this one is more than 1%
+        further off after a run of that length. Not a number, and ``0.0``,
+        where the eigenvalues were not taken and when no sensitivity was
+        requested.
     sens_root_relaxation : float
         The most of a column of ``dY_ss/dp`` that a run of ``max_time`` would
         leave unestablished, as a fraction of the column's largest entry: the
@@ -9273,6 +9300,8 @@ class SteadyStateResult:
         "sens_species_scale",
         "sens_root_hold_time",
         "sens_root_newton_steps",
+        "sens_root_state_shift",
+        "sens_root_state_species",
         "sens_root_growth_rate",
         "sens_root_spectral_radius",
         "sens_root_determinant_species",
@@ -9347,6 +9376,7 @@ class SteadyStateResult:
         )
         self.sens_root_hold_time = getattr(core, "sens_root_hold_time", 0.0)
         self.sens_root_newton_steps = int(getattr(core, "sens_root_newton_steps", 0))
+        self.sens_root_state_shift = getattr(core, "sens_root_state_shift", 0.0)
         self.sens_root_growth_rate = getattr(core, "sens_root_growth_rate", float("nan"))
         self.sens_root_spectral_radius = getattr(core, "sens_root_spectral_radius", 0.0)
 
@@ -9358,6 +9388,9 @@ class SteadyStateResult:
             species, getattr(core, "sens_root_pivot_species", -1)
         )
         self.sens_root_hold_species = _named(species, getattr(core, "sens_root_hold_species", -1))
+        self.sens_root_state_species = _named(
+            species, getattr(core, "sens_root_state_species", -1)
+        )
         self.sens_mask_held_species = _named(species, getattr(core, "sens_mask_held_species", -1))
         self.sens_mask_reader_species = _named(
             species, getattr(core, "sens_mask_reader_species", -1)

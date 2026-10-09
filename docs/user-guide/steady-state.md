@@ -568,7 +568,7 @@ which the solve does.
 | `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; 1/2 at a root of higher order; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
 | `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. | below 1e-10 |
 | `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed. | above 1e12 |
-| `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry. Above 0.01 the state is stepped on, up to six times (`sens_root_newton_steps`), until it is not. | still above 0.01 after six steps |
+| `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry. Above 0.01, or where the state itself moves by more (`sens_root_state_shift`), the state is stepped on, up to ten times (`sens_root_newton_steps`), until neither does. | either still above 0.01 after ten steps |
 | `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from a millionth beside the returned state. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
 | `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | above 1e-6 of the spectral radius |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
@@ -602,7 +602,7 @@ by, and `ss.sens_root_newton_steps` says how many steps that took. Where the
 first step moves no column, it is 0 and the result is the solver's own, to the
 last bit. A root that was stepped to has to be where the run below ends, within
 1% in every species: Newton can step to a root the system leaves. The solve
-refuses where the columns have not settled in six steps:
+refuses where the state and its columns have not settled in ten steps:
 the state is far from a root for the size of its rates, which a smaller `tol`
 mends, or the steady state is not an isolated root. A column whose every
 entry, over its species' scale, is below `1e-3/|p|` is measured against that

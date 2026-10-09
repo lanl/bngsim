@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from pathlib import Path
 
 import bngsim
@@ -63,6 +64,27 @@ def _net(tmp_path, text: str, name: str = "model.net") -> bngsim.Model:
     path = tmp_path / name
     path.write_text(text)
     return bngsim.Model.from_net(str(path))
+
+
+def _among_many(text: str, n: int = 520) -> str:
+    """``text`` with ``n`` species beside it, each made and removed on its own
+    and at its steady state: more unknowns than the eigenvalues are taken for
+    (512), so that what is left to say whether the system rests at a state is
+    the run that is taken on."""
+
+    def lines(block: str) -> int:
+        body = re.search(rf"begin {block}\n(.*?)end {block}", text, re.S).group(1)
+        return len([line for line in body.splitlines() if line.strip()])
+
+    p, s, r = lines("parameters"), lines("species"), lines("reactions")
+    text = text.replace("end parameters", f"    {p + 1} kz 1.0\nend parameters")
+    species = "".join(f"    {s + 1 + i} Z{i}() 1.0\n" for i in range(n))
+    reactions = "".join(
+        f"    {r + 1 + 2 * i} 0 {s + 1 + i} kz\n    {r + 2 + 2 * i} {s + 1 + i} 0 kz\n"
+        for i in range(n)
+    )
+    text = text.replace("end species", species + "end species")
+    return text.replace("end reactions", reactions + "end reactions")
 
 
 def _final_size(g: float = 1.0, i0: float = 1.0, s0: float = 99.0, b: float = 0.018) -> float:
@@ -742,14 +764,17 @@ def test_a_pivot_that_the_law_reduction_cancelled_is_refused(v1, v2, k):
 def test_the_column_shift_is_the_distance_to_the_columns_of_the_root(tmp_path):
     """For a linear model one Newton step lands on the steady state, so the
     column shift is how far the returned column is from the one a solve to
-    1e-15 returns, over its largest entry: 0.1% here at ``tol=1e-11``. The
+    1e-15 returns, over its largest entry: 0.1% here at ``tol=3e-12``, where
+    neither it nor the state moves by the 1% that would have the state stepped
+    on. The
     largest of the three differences is that of A, which the law is solved
     for and which follows from the other two."""
     model = _net(tmp_path, STAR)
     assert [model.species_names[i] for i in model.conservation_laws["dependent"]] == ["A()"]
     loose = bngsim.Simulator(model, method="ode").steady_state(
-        sensitivity_params=["k1"], tol=1e-11
+        sensitivity_params=["k1"], tol=3e-12
     )
+    assert loose.sens_root_newton_steps == 0 and 1e-4 < loose.sens_root_state_shift < 1e-2
     tight = bngsim.Simulator(_net(tmp_path, STAR), method="ode").steady_state(
         sensitivity_params=["k1"], tol=1e-15
     )
@@ -1189,13 +1214,27 @@ BESIDE_A_FAST_SPECIES = (
 
 
 @pytest.mark.parametrize("method", ["integration", "newton"])
-def test_a_focus_beside_a_fast_species_is_refused_by_the_run(tmp_path, method):
+def test_a_focus_beside_a_fast_species_is_refused_all_the_same(tmp_path, method):
     """The same fixed point beside a species turned over at 1e7. The
-    eigenvalue of 0.5 is 5e-8 of the largest, under what the spectrum is
-    trusted to (1e-6 of it), and the columns came back. The run taken on from
-    a millionth beside the state is what says so: it is on the limit cycle
-    when its steps are used up."""
+    eigenvalue of 0.5 is 5e-8 of the largest, and it was asked against that:
+    under a millionth of it the point was taken for one the system rests at,
+    and the columns came back. It is asked against the time the solve was
+    given, whatever stands beside it."""
     text = BESIDE_A_FAST_SPECIES.format(B="3.0", kfast="1e7")
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.5 "
+    ):
+        sim.steady_state(sensitivity_params=["A", "B"], method=method)
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+def test_a_focus_among_too_many_species_for_the_spectrum_is_refused_by_the_run(tmp_path, method):
+    """The fixed point with B = 3 in a model of 522 unknowns, where the
+    eigenvalues are not taken. The run taken on from a millionth beside the
+    state is what says the system leaves it: it is on the limit cycle when
+    its steps are used up."""
+    text = _among_many(BRUSSELATOR.format(B="3.0"))
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
@@ -1219,17 +1258,35 @@ def test_a_focus_that_grows_slowly_is_refused_by_its_eigenvalue(tmp_path):
 
 
 def test_a_run_that_does_not_get_to_max_time_is_not_known_to_stay(tmp_path):
-    """With B = 2.001 beside the fast species, the growth of 0.0005 is too
-    slow for the spectrum (5e-11 of the largest eigenvalue) and for the run:
-    in the 10,000 steps it has it gets to t = 2,500, 1.2e-4 from where it
-    started, with ``max_time`` at 1e6. That is not a run that stayed."""
-    text = BESIDE_A_FAST_SPECIES.format(B="2.001", kfast="1e7")
+    """With B = 2.001 the growth is 0.0005, and among 520 other species there
+    are no eigenvalues to say so. The run has 10,000 steps, gets to t = 6,000
+    in them with ``max_time`` at 1e6, and is 1e-4 from where it started. That
+    is not a run that stayed."""
+    text = _among_many(BRUSSELATOR.format(B="2.001"))
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
         match=r"#995.*did not get to max_time \(1e\+06\).*10000 steps.*not known to stay",
-    ):
+    ) as caught:
         sim.steady_state(sensitivity_params=["A", "B"])
+    assert "more steps (max_steps)" in str(caught.value)
+    assert "max_time such a run reaches" not in str(caught.value)
+
+
+def test_a_shorter_max_time_does_not_get_a_growing_focus_returned(tmp_path):
+    """The refusal above said to give a ``max_time`` the run reaches. With
+    2,000, beside a species turned over at 1e7, the run does reach it, a
+    millionth has grown to 2.7 of them, and the columns came back: (1, -2.001;
+    0, 1) where differences of runs of that length give (6.16, -3.66; -2.48,
+    4.52). The eigenvalue of 0.0005 is asked against the 2,000: a state beside
+    this one is 172% further off by then."""
+    text = BESIDE_A_FAST_SPECIES.format(B="2.001", kfast="1e7")
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*does not rest at.*real part of 0\.0005 .*172% further",
+    ):
+        sim.steady_state(sensitivity_params=["A", "B"], max_time=2000.0)
 
 
 def test_a_focus_that_dies_away_slowly_is_returned(tmp_path):
@@ -1279,16 +1336,24 @@ end groups
 """
 
 
-def test_a_root_that_was_stepped_to_is_where_a_run_ends(tmp_path):
+def test_a_root_the_solve_steps_to_and_the_system_leaves_is_refused(tmp_path):
     """The residual is under ``tol`` where the model starts, and the column of
     s, g(X)/kd for W, is 3.7% from its value at a root: the state is stepped,
-    and Newton takes X to the middle root, 0.25, which the system leaves. A
-    run from where the model starts takes X to 1 instead, in the 1e9 it is
-    given. The column of s is 1/kd at both, so that it does not move, and what
-    says the root is the wrong one is where the run ends: at 1 for 0.25. The
-    growth at the middle root, 7.5e-8, is under what the spectrum is trusted
-    to beside W's rate of 1."""
+    and Newton takes X to the middle root, 0.25, which the system leaves at
+    7.5e-8. In the 1e9 it is given that is a growth of exp(75)."""
     sim = bngsim.Simulator(_net(tmp_path, BETWEEN_TWO_ROOTS), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 7\.5e-08 "
+    ):
+        sim.steady_state(sensitivity_params=["s"], max_time=1e9)
+
+
+def test_a_root_that_was_stepped_to_is_where_a_run_ends(tmp_path):
+    """The same among 520 other species, with no eigenvalues. A run from
+    where the model starts takes X to 1, and not to the 0.25 Newton stepped
+    to. The column of s is 1/kd at both, so that it does not move, and what
+    says the root is the wrong one is where the run ends."""
+    sim = bngsim.Simulator(_net(tmp_path, _among_many(BETWEEN_TWO_ROOTS)), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
         match=r"#995.*stepped to is not where a run ends.*ends \d\d% from that root in X\(\)",
@@ -1477,7 +1542,7 @@ def test_a_species_that_runs_out_through_a_rate_with_no_value_at_nothing_is_refu
     sim = bngsim.Simulator(_net(tmp_path, NO_VALUE_AT_NOTHING), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*no state near.*has columns that stay.*no value at nothing",
+        match=r"#995.*no state near.*a Newton step leaves where it is.*no value at nothing",
     ):
         sim.steady_state(sensitivity_params=["k"])
 
@@ -1815,6 +1880,232 @@ def test_the_same_removed_in_pairs_too_takes_a_step_more(tmp_path):
     assert out.sens_root_growth_rate == pytest.approx(-5e-3 - 4 * 3.5 * stepped_to, rel=1e-7)
 
 
+# N' = r·N·S·(1 - N/K): N makes itself on S, from the 1e-8 it starts with.
+SEEDED = """begin parameters
+    1 r   1e-3
+    2 K   1e-6
+end parameters
+begin functions
+    1 crowd() r*Sobs*Nobs/K
+end functions
+begin species
+    1 N() 1e-8
+    2 S() 1.0
+end species
+begin reactions
+    1 1,2 1,1,2 r
+    2 1 0 crowd
+end reactions
+begin groups
+    1 Nobs 1
+    2 Sobs 2
+end groups
+"""
+
+
+def test_a_species_on_its_way_up_from_a_seed_is_not_stepped_down_to_nothing(tmp_path):
+    """N starts at a hundredth of what S carries and grows towards it at 1e-3,
+    with a residual under ``tol``: the solve returns the start. Newton steps
+    from there to the root beside it, N = 0, which the system leaves, and
+    there N is at rounding beside S: it was taken for a species at a zero, its
+    entries over S's 1, and the state came back stepped to -1e-14 with dN*/dK
+    = -1e-16, where a run ends at K and dN*/dK = 1. The eigenvalue of 1e-3
+    says the system does not rest where the solve stopped."""
+    sim = bngsim.Simulator(_net(tmp_path, SEEDED), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.001 "
+    ):
+        sim.steady_state(sensitivity_params=["K", "r"])
+
+
+def test_the_same_among_too_many_species_for_the_spectrum_is_refused_by_the_run(tmp_path):
+    """Among 520 other species there are no eigenvalues, the state is stepped
+    to N = 0, and the run taken on from the seed ends at K. N came down to
+    nothing from something, in the two states that are compared, and from
+    next to nothing it grows: it is not at a zero, and it has moved by all of
+    itself."""
+    sim = bngsim.Simulator(_net(tmp_path, _among_many(SEEDED)), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*(not one a run stays at|not where a run ends).*N\(\)",
+    ):
+        sim.steady_state(sensitivity_params=["K", "r"])
+
+
+# X' = v·X²/(K² + X²) - d·X: a species that activates its own making. It rests
+# at nothing, and at b = (v/d + sqrt((v/d)² - 4·K²))/2 = 9.9e-10, with a root
+# it leaves between the two.
+ACTIVATES_ITSELF = """begin parameters
+    1 v   5e-12
+    2 K   1e-10
+    3 d   5e-3
+end parameters
+begin functions
+    1 made() v*Xobs/(K^2+Xobs^2)
+end functions
+begin species
+    1 X() 1.0
+end species
+begin reactions
+    1 1 1,1 made
+    2 1 0 d
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+
+def _self_activation() -> tuple[float, float, float]:
+    """(b, dX*/dd, dX*/dK) at the upper root, by the implicit function
+    theorem on f = v·X²/(K² + X²) - d·X."""
+    v, k, d = 5e-12, 1e-10, 5e-3
+    b = (v / d + math.sqrt((v / d) ** 2 - 4 * k * k)) / 2
+    f_x = 2 * v * b * k * k / (k * k + b * b) ** 2 - d
+    f_k = -2 * v * b * b * k / (k * k + b * b) ** 2
+    return b, b / f_x, -f_k / f_x
+
+
+def test_a_species_that_could_rest_at_nothing_and_does_not_is_refused(tmp_path):
+    """From 1, X falls to its upper root, 9.9e-10, and the solve stops on the
+    way at 1.3e-7. Everything said X was running out: a Newton step takes most
+    of it, nothing makes it with X at nothing, and from next to nothing it
+    does not grow, nothing being a state it rests at too. Its entries were
+    taken over the 1 it started at, and dX*/dd came back 124 times -2.02e-7.
+    The run that is taken on ends with X at 9.9e-10 and at rest there: what it
+    loses, something makes. It is taken over itself, and it has moved by 99%
+    of that."""
+    sim = bngsim.Simulator(_net(tmp_path, ACTIVATES_ITSELF), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*not one a run stays at.*the run moves X\(\) by 99%"
+    ):
+        sim.steady_state(sensitivity_params=["d", "K"])
+
+
+def test_the_same_solved_to_the_root_it_rests_at_is_returned(tmp_path):
+    """Control. What the refusal says to do: with ``tol=1e-15`` the solve
+    stops on the upper root."""
+    root, by_d, by_k = _self_activation()
+    sim = bngsim.Simulator(_net(tmp_path, ACTIVATES_ITSELF), method="ode")
+    out = sim.steady_state(sensitivity_params=["d", "K"], tol=1e-15)
+    assert np.asarray(out.concentrations)[0] == pytest.approx(root, rel=1e-4)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[0], [by_d, by_k], rtol=1e-4)
+
+
+# 0 -> S -> 0 from 1, removed at kd + eps·q: q is a thousandth of a millionth
+# of the rate.
+A_PARAMETER_THAT_HARDLY_MATTERS = """begin parameters
+    1 k0  5e-14
+    2 kd  5e-3
+    3 eps 1e-8
+    4 q   1.0
+    5 kq  kd+eps*q
+end parameters
+begin species
+    1 S() 1.0
+end species
+begin reactions
+    1 0 1 k0
+    2 1 0 kq
+end reactions
+"""
+
+
+def test_a_state_short_of_its_root_is_stepped_whatever_is_asked(tmp_path):
+    """The solve stops with S at 1.2e-7, for a steady 1e-11. Asked with kd,
+    the column of kd moves and the state is stepped. Asked alone, the column
+    of q is 2e-6 of S over q, which is next to nothing beside 1/|q| and is not
+    asked how far it moved: dS*/dq came back -2.5e-13 for -2e-17, at the state
+    as the solver left it. The state is asked as well as the columns, and S
+    moves by all of itself."""
+    sim = bngsim.Simulator(_net(tmp_path, A_PARAMETER_THAT_HARDLY_MATTERS), method="ode")
+    out = sim.steady_state(sensitivity_params=["q"])
+    assert out.sens_root_newton_steps == 2
+    assert np.asarray(out.concentrations)[0] == pytest.approx(1e-11, rel=1e-5)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-2e-17, rel=1e-5)
+    assert out.sens_root_state_shift < 1e-6 and out.sens_root_state_species == "S()"
+
+
+# E + S <-> ES -> E + P, at a millionth: with P masked out, the solve stops
+# with most of S still there.
+A_SINK_THAT_IS_MASKED = """begin parameters
+    1 kf  1e6
+    2 kr  1.0
+    3 kc  1.0
+    4 E0  1e-6
+    5 S0  2e-6
+end parameters
+begin species
+    1 S()  S0
+    2 E()  E0
+    3 ES() 0
+    4 P()  0
+end species
+begin reactions
+    1 1,2 3 kf
+    2 3 1,2 kr
+    3 3 2,4 kc
+end reactions
+"""
+
+
+def test_a_masked_sink_is_given_what_the_stepped_species_lost(tmp_path):
+    """The state is stepped to S = ES = 0, on the equations of the species
+    the mask kept. P, which the mask left out, was not stepped, and came back
+    as the solver left it, at 1e-14: a state with 1e-14 of a substrate of
+    2e-6 in it. A law of the model holds P with S and ES, and P is what it
+    leaves. dE*/dE0 = 1, and nothing else moves."""
+    model = _net(tmp_path, A_SINK_THAT_IS_MASKED)
+    sim = bngsim.Simulator(model, method="ode")
+    out = sim.steady_state(sensitivity_params=["kc", "E0"], mask=~np.asarray(model.is_pure_sink()))
+    assert out.sens_root_newton_steps >= 1
+    state = np.asarray(out.concentrations)
+    assert state[[0, 2, 3]].sum() == pytest.approx(2e-6, rel=1e-12)
+    np.testing.assert_allclose(state, [0.0, 1e-6, 0.0, 2e-6], rtol=1e-9, atol=1e-20)
+    columns = np.asarray(out.sensitivity)
+    np.testing.assert_allclose(columns[:3], [[0, 0], [0, 1], [0, 0]], atol=1e-9)
+    assert np.all(np.isnan(columns[3]))
+
+
+# X <-> Y, and beside it A + A -> D, which has a root of second order.
+BESIDE_A_PART_WITH_NO_ROOT = """begin parameters
+    1 kf  1.0
+    2 kr  2.0
+    3 ka  1.0
+end parameters
+begin species
+    1 X() 2.0
+    2 Y() 0
+    3 A() 1.0
+    4 D() 0
+end species
+begin reactions
+    1 1 2 kf
+    2 2 1 kr
+    3 3,3 4 ka
+end reactions
+"""
+
+
+def test_the_refusal_of_one_part_says_how_to_ask_for_another(tmp_path):
+    """Every column is refused where any part of the model has no isolated
+    root, the columns of X <-> Y among them, which are -T·kr/(kf + kr)² and
+    T·kf/(kf + kr)² and came back right. The refusal said to mask the pure
+    sinks, which refuses again, A being no sink. It says now that a mask on
+    the species of the part that is wanted does it."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_PART_WITH_NO_ROOT), method="ode")
+    with pytest.raises(bngsim.SimulationError) as caught:
+        sim.steady_state(sensitivity_params=["kf", "kr"])
+    message = str(caught.value)
+    assert "#995" in message and "a determinant that is 0.5 of the one" in message
+    assert "mask= with the species of that other part" in message
+    assert "difference steady states" not in message
+    out = sim.steady_state(sensitivity_params=["kf", "kr"], mask=["X()", "Y()"])
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity)[:2], [[-4 / 9, 2 / 9], [4 / 9, -2 / 9]], rtol=1e-8
+    )
+
+
 # N' = r·N·S·(1 - (N/K)^0.2): N makes itself, on S, and is crowded out above K.
 ABOVE_ITS_CAPACITY = """begin parameters
     1 r   1e-7
@@ -1971,15 +2262,15 @@ def test_biomd1000_is_taken_on_with_a_differenced_jacobian():
     """The run taken on from the returned state stops the integrator on the
     closed-form Jacobian, started again or not, and reaches ``max_time`` on a
     differenced one, as the solve itself does where its integrator gives up
-    (issue #127). The state is stepped twice, to where a cascade of species
-    is still running out (pS2_n at 2e-9, from 9e-6): the run ends with them
-    at nothing, which is where they are taken to be, and not 100% away."""
+    (issue #127). The state is stepped on until a cascade of species that is
+    running out (pS2_n, from 9e-6) is at rounding, and the run ends with them
+    at nothing."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000001000")), method="ode")
     out = sim.steady_state(
         sensitivity_params=["R1_total_C3", "index_k_out_1_relative_speed_C3", "k_in_R1_C3"]
     )
     assert np.all(np.isfinite(np.asarray(out.sensitivity)))
-    assert out.sens_root_hold_time >= 1e6 and out.sens_root_newton_steps == 2
+    assert out.sens_root_hold_time >= 1e6 and out.sens_root_newton_steps >= 2
     assert out.sens_root_hold_drift < 1e-3
 
 
@@ -1998,11 +2289,11 @@ def test_biomd1001_species_that_ran_out_are_taken_over_what_stands_beside_them()
 def test_biomd5_by_newton_is_a_root_inside_its_limit_cycle():
     """Tyson's cell cycle oscillates, and Newton finds the fixed point the
     cycle goes round, with eigenvalues 0.16 ± 0.18i beside one of -1e6: 1.6e-7
-    of the largest, which the spectrum is not trusted to. The run taken on
-    leaves for the cycle."""
+    of the largest, which was under what they were asked against, so that the
+    point was taken for one the system rests at."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000005")), method="ode")
     with pytest.raises(
-        bngsim.SimulationError, match=r"#995.*not one a run stays at.*the run moves \w+ by \d+%"
+        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.163 "
     ):
         sim.steady_state(
             sensitivity_params=["_lp_Reaction1_k6", "_lp_Reaction4_k3", "_lp_Reaction9_k4"],
