@@ -1401,8 +1401,6 @@ struct SteadyStateResult {
     double sens_root_relaxation = 0.0;
     double sens_root_hold_drift = 0.0;
     double sens_root_hold_shift = 0.0;
-    double sens_root_growth_rate = std::numeric_limits<double>::quiet_NaN();
-    std::string sens_root_stability = "undetermined";
     int sens_root_determinant_species = -1;
     int sens_root_pivot_species = -1;
     int sens_root_condition_species = -1;
@@ -1413,6 +1411,8 @@ struct SteadyStateResult {
     std::vector<double> sens_species_scale; // one per species; empty with no sensitivities
     int sens_root_hold_steps = 0;
     double sens_root_hold_time = 0.0;
+    double sens_root_growth_rate = std::numeric_limits<double>::quiet_NaN();
+    double sens_root_spectral_radius = 0.0;
     int sens_mask_held_species = -1;
     int sens_mask_reader_species = -1;
 

@@ -7089,9 +7089,18 @@ class Simulator:
     _SS_ROOT_PIVOT_SHARE_MIN = 1e-10
 
     #: The most a column may move, of its largest entry, when it is solved
-    #: again at the state the run an integration stopped ends at, taken on for
-    #: ``max_time`` from the state it returned.
+    #: again where a run ends that is taken on for ``max_time`` from a
+    #: millionth beside the returned state.
     _SS_ROOT_HOLD_SHIFT_MAX = 0.01
+
+    #: How far right of zero the real part of an eigenvalue of that system may
+    #: be, of the largest eigenvalue in size: the rule of ``root_stability``
+    #: (issue #78), whose eigensolver agrees with LAPACK's to 1.1e-8 of the
+    #: spectral radius over the corpus. The run taken on is what tells a state
+    #: the system leaves; this tells one it leaves too slowly for a run of
+    #: ``max_time`` to show, an oscillation growing by less than 1e4 in that
+    #: time. Systems of up to 512 unknowns are asked.
+    _SS_ROOT_GROWTH_MAX = 1e-6
 
     def _raise_if_not_an_isolated_root(
         self,
@@ -7139,10 +7148,10 @@ class Simulator:
         - how far a column moves: ``tol`` bounds the residual and not the
           distance to the root, and a model with small concentrations is
           accepted where its columns are several percent off;
-        - how far the state moves when the run is taken on: an integration
-          stops at the first state under ``tol``, which a run may be passing;
-        - whether the system rests at the state: the sign of the determinant
-          and, up to 512 unknowns, the eigenvalues;
+        - how far a column moves where a run ends that is taken on for
+          ``max_time`` from a millionth beside the returned state: an
+          integration stops at the first state under ``tol``, which a run may
+          be passing, and a root can be one the system leaves;
         - how much of a column a run of ``max_time`` would leave unestablished:
           a state that is a root to the last bit, with a species in it that
           nothing turns over, has a column no run reaches.
@@ -7271,17 +7280,49 @@ class Simulator:
                 "moves as far at every tol, the steady state is not an isolated root, and "
                 f"the columns are those of {time_course}."
             )
-        if not held <= self._SS_ROOT_HOLD_SHIFT_MAX:
+        growth = float(result.sens_root_growth_rate)
+        radius = float(result.sens_root_spectral_radius)
+        if growth > self._SS_ROOT_GROWTH_MAX * radius:
+            raise SimulationError(
+                f"{opening}the system does not rest at the state the solve returned. The "
+                "Jacobian of the equations the columns are solved on has an eigenvalue "
+                f"with a real part of {growth:.3g} there (the largest in size is "
+                f"{radius:.3g}, and the limit is {self._SS_ROOT_GROWTH_MAX:g} of that): a "
+                "state beside this one moves away from it at that rate. -J⁻¹·∂f/∂p there "
+                "is how the root moves, and not where a run ends. Solve from a state that "
+                f"is not on the root, or take the columns from {time_course}."
+            )
+        # A run that used up its steps before max_time was not seen to stay
+        # either, whatever it had moved by then.
+        reached = float(result.sens_root_hold_time)
+        short = reached < max_time * (1.0 - 1e-12)
+        if not held <= self._SS_ROOT_HOLD_SHIFT_MAX or short:
             if math.isnan(held):
                 moved = (
                     "The run that was to be taken on from it for max_time "
                     f"({max_time:g}) failed, so that it is not known to stay there."
                 )
+            elif held <= self._SS_ROOT_HOLD_SHIFT_MAX:
+                moved = (
+                    "The run taken on from a millionth beside it did not get to max_time "
+                    f"({max_time:g}): it was at t = {reached:.3g} after the "
+                    f"{result.sens_root_hold_steps} steps it had (max_steps), so that it "
+                    "is not known to stay there. An oscillation about the state does "
+                    "this, growing or dying away, where it is slow to do either. Give a "
+                    "max_time such a run reaches, or more steps."
+                )
             else:
                 state = f"{drift:.0%}" if drift < 10 else f"{drift:.3g} times"
                 moved = (
-                    f"Taken on from it for max_time ({max_time:g}), the run moves "
-                    f"{result.sens_root_hold_species} by {state} of its value, and "
+                    "Taken on from a millionth beside it, "
+                    + (
+                        f"to t = {reached:.3g}, where it had used its steps (max_steps) "
+                        f"short of max_time ({max_time:g})"
+                        if short
+                        else f"for max_time ({max_time:g})"
+                    )
+                    + f", the run moves {result.sens_root_hold_species} by {state} of the "
+                    "larger of its two values, and "
                 )
                 if math.isinf(held):
                     moved += (
@@ -7298,25 +7339,11 @@ class Simulator:
             raise SimulationError(
                 f"{opening}the state the solve returned is not one a run stays at. {moved} "
                 "An integration stops at the first state whose residual ||f(y)||/n is "
-                f"under tol ({result.residual:.1e} here), and that says where the run is "
-                "and not where it is going. Solve again with a smaller tol, or take the "
-                f"columns from {time_course}."
-            )
-        if result.sens_root_stability == "unstable":
-            growth = result.sens_root_growth_rate
-            if math.isfinite(growth) and growth > 0.0:
-                seen = f"has an eigenvalue of {growth:.3g}"
-            else:
-                seen = (
-                    "has a determinant of the sign that an odd number of eigenvalues right "
-                    "of zero gives it"
-                )
-            raise SimulationError(
-                f"{opening}the system does not rest at the state the solve returned. The "
-                f"Jacobian of the equations the columns are solved on {seen}: a state "
-                "beside this one moves away from it. -J⁻¹·∂f/∂p there is the derivative "
-                "of the root, and not of where a run ends. Solve from a state that is not "
-                f"on the root, or take the columns from {time_course}."
+                f"under tol ({result.residual:.1e} here), which says where the run is and "
+                "not where it is going, and a root can be one the system leaves, where "
+                "-J⁻¹·∂f/∂p is how the root moves and not where a run ends. Solve again "
+                "with a smaller tol, or from a state that is not on such a root, or take "
+                f"the columns from {time_course}."
             )
         if not relaxation <= self._SS_ROOT_RELAXATION_MAX:
             raise SimulationError(
@@ -9093,27 +9120,18 @@ class SteadyStateResult:
         from those of the root. ``steady_state`` raises above 0.01. ``0.0``
         when no sensitivity was requested.
     sens_root_hold_shift, sens_root_hold_drift : float
-        For a state an integration returned, the run is taken on from it for
-        ``max_time``. ``sens_root_hold_shift`` is the largest move of a column
-        when it is solved again where that run ends, measured as the column
-        shift is, and ``steady_state`` raises above 0.01, or where the run
-        could not be made (not a number). ``sens_root_hold_drift`` is the
-        largest move of a species over the run, against its value. ``0.0`` for
-        a Newton result and when no sensitivity was requested.
+        A run is taken on for ``max_time`` from the returned state with every
+        concentration moved by a millionth of itself. ``sens_root_hold_shift``
+        is the largest move of a column when it is solved again where that
+        run ends, measured as the column shift is, and ``steady_state`` raises
+        above 0.01, or where the run could not be made (not a number): the
+        state is one a run is passing, or a root the system leaves.
+        ``sens_root_hold_drift`` is the largest move of a species over the
+        run, against the larger of its two values. ``0.0`` when no sensitivity
+        was requested.
     sens_root_hold_steps : int
     sens_root_hold_time : float
         The steps that run took and the time it reached.
-    sens_root_stability : str
-        ``"stable"``, ``"unstable"`` or ``"undetermined"``: whether the system
-        rests at the returned state, by the eigenvalues of the system the
-        columns are solved on (up to 512 unknowns, by the rule of
-        ``root_stability``) and by the sign of its determinant, which an odd
-        number of eigenvalues right of zero gives away at any size.
-        ``steady_state`` raises on ``"unstable"``. ``"undetermined"`` when no
-        sensitivity was requested.
-    sens_root_growth_rate : float
-        The largest real part among those eigenvalues; not a number where
-        they were not taken.
     sens_root_relaxation : float
         The most of a column of ``dY_ss/dp`` that a run of ``max_time`` would
         leave unestablished, as a fraction of the column's largest entry: the
@@ -9123,10 +9141,12 @@ class SteadyStateResult:
         was requested.
     sens_species_scale : numpy.ndarray
         What an entry for each species is small against: the larger of its
-        concentration at the start and at the steady state, and for a species
-        at a zero the largest such among the species the Jacobian couples it
-        to, no more than a conserved total it belongs to allows. Empty when no
-        sensitivity was requested.
+        concentration at the returned state and at the corrected one. A
+        species at a zero (its corrected value under its ``atol``, and its
+        returned one too or a thousand times that) is taken over where it has
+        been, its starting value among them, and the largest such among the
+        species the Jacobian couples it to, no more than a conserved total it
+        belongs to allows. Empty when no sensitivity was requested.
     sens_mask_held_species, sens_mask_reader_species : str or None
         A species ``mask=`` left out that is held where the solve left it, and
         a kept species whose rate reads it. ``steady_state`` raises where
@@ -9198,7 +9218,7 @@ class SteadyStateResult:
         "sens_species_scale",
         "sens_root_hold_time",
         "sens_root_growth_rate",
-        "sens_root_stability",
+        "sens_root_spectral_radius",
         "sens_root_determinant_species",
         "sens_root_pivot_species",
         "sens_root_condition_species",
@@ -9271,7 +9291,7 @@ class SteadyStateResult:
         )
         self.sens_root_hold_time = getattr(core, "sens_root_hold_time", 0.0)
         self.sens_root_growth_rate = getattr(core, "sens_root_growth_rate", float("nan"))
-        self.sens_root_stability = getattr(core, "sens_root_stability", "undetermined")
+        self.sens_root_spectral_radius = getattr(core, "sens_root_spectral_radius", 0.0)
 
         def _named(names: Sequence[str], index: int) -> str | None:
             return names[index] if 0 <= index < len(names) else None

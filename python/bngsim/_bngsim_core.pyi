@@ -1344,7 +1344,7 @@ class SteadyStateResultCore:
     def sens_root_relaxation_param(self) -> int:
         ...
     @property
-    def sens_root_stability(self) -> str:
+    def sens_root_spectral_radius(self) -> float:
         ...
     @property
     def sens_species_scale(self) -> list[float]:

@@ -3322,7 +3322,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("sens_species_scale", &bngsim::SteadyStateResult::sens_species_scale)
         .def_readonly("sens_root_hold_time", &bngsim::SteadyStateResult::sens_root_hold_time)
         .def_readonly("sens_root_growth_rate", &bngsim::SteadyStateResult::sens_root_growth_rate)
-        .def_readonly("sens_root_stability", &bngsim::SteadyStateResult::sens_root_stability)
+        .def_readonly("sens_root_spectral_radius",
+                      &bngsim::SteadyStateResult::sens_root_spectral_radius)
         .def_readonly("sens_root_pivot_species",
                       &bngsim::SteadyStateResult::sens_root_pivot_species)
         .def_readonly("sens_root_hold_species", &bngsim::SteadyStateResult::sens_root_hold_species)
