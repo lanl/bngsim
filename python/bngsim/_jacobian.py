@@ -35,6 +35,7 @@ falls back to the finite-difference Jacobian — exactly the pre-#76 behavior.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import threading
@@ -1871,18 +1872,45 @@ def _whole_power_offset(num_exp, term_exp, sp):
     in it is the answer of every symbol: it is ``m`` or the exponents are not
     parallel, and no other is asked (which is what a mismatch costs on main,
     one ``cancel``).
+
+    A ratio is ``m`` to rounding, though, where the exponents have floats in
+    them: ``3·(0.00105 - 0.35/q)/r`` over ``(0.00105 - 0.35/q)/r`` is 3 against
+    ``r`` and 3.0000000000000004 against ``q``, where 3·0.35 was multiplied
+    out. A number within 1e-9 of a count is taken for that count
+    (:func:`_count_within_rounding`), and what settles it is the leftover, as
+    for any count: with a count that is not the ratio, a symbol is left in it.
     """
     ratio = num_exp / term_exp
     if ratio.is_number:
         m = _integer_at_least(ratio, 1)
         return None if m is None else (m, 0)
+    by_name = sorted(term_exp.free_symbols, key=lambda s: (s.name, sp.srepr(s)))
+    return _whole_power_offset_asking(num_exp, term_exp, by_name, sp)
 
-    for pivot in sorted(term_exp.free_symbols, key=lambda s: (s.name, sp.srepr(s))):
+
+def _count_within_rounding(value) -> int | None:
+    """The count, 1 or more, that the number ``value`` is within 1e-9 of."""
+    if not getattr(value, "is_number", False):
+        return None
+    try:
+        v = float(value)
+    except (TypeError, OverflowError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    n = round(v)
+    return n if n >= 1 and abs(v - n) <= 1e-9 * n else None
+
+
+def _whole_power_offset_asking(num_exp, term_exp, pivots, sp):
+    """:func:`_whole_power_offset`'s answer from the slopes, the symbols asked
+    in the order ``pivots`` gives them."""
+    for pivot in pivots:
         slope = sp.diff(term_exp, pivot)
         if slope == 0:
             continue
         slopes = sp.cancel(sp.diff(num_exp, pivot) / slope)
-        m = _integer_at_least(slopes, 1)
+        m = _count_within_rounding(slopes)
         if m is None:
             if not slopes.has(sp.Piecewise):
                 return None

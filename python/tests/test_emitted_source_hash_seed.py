@@ -7,11 +7,16 @@ that differ only in the type of a number, ``X`` and the ``X**1.0`` that
 differentiating ``X**2.0`` leaves, have keys of which neither is less than the
 other. They stay in the order the set gave them, which follows
 ``PYTHONHASHSEED``: one corpus model, MODEL0847869198, had two sensitivity
-sources, 8 lines of 2,094 apart, and which of them a run compiled changed from
+sources, 8 lines of 2,099 apart, and which of them a run compiled changed from
 process to process.
 
-``bngsim._term_order.ordered_terms`` breaks the tie by the generators'
-``srepr``.
+``bngsim._term_order`` computes the keys the orders are taken from, with no
+ties in them, and the emitters print by those.
+
+Several tests here ask the module for an order and compare it with sympy's
+own. On main there is no such module: with sympy's orders standing in for it,
+those that say an expression with no tie is printed as it was pass under every
+seed, and those that say a tie is broken fail under some.
 """
 
 from __future__ import annotations
@@ -332,9 +337,10 @@ def test_an_edit_to_the_term_order_changes_the_cache_key(tmp_path):
     ],
 )
 def test_a_sum_with_no_tie_is_ordered_as_sympy_orders_it(text):
-    """What the fix must not change: without a tie the order is sympy's own,
-    term for term and factor for factor, and so are the key and the text an
-    emitter prints for such an expression."""
+    """Control (of the module against sympy's own). What the fix must not
+    change: without a tie the order is sympy's own, term for term and factor
+    for factor, and so are the key and the text an emitter prints for such an
+    expression."""
     from bngsim import _term_order
 
     expr = sp.sympify(text)
@@ -533,8 +539,7 @@ _EMIT_WHOLE = _EMIT.replace(
 def test_a_model_with_a_tied_sum_inside_another_has_one_source(tmp_path, net):
     """Six processes, six seeds, one combined source, for a rate law with a
     tied sum under a power in each of two terms, and for one with two sums
-    that hold a tie as factors of one product. On main the first has three
-    sources and the second two."""
+    that hold a tie as factors of one product. On main each has two."""
     text = globals()[net]
     assert text.count("Bobs") >= 2 and "^2.0" in text
     path = tmp_path / "model.net"
@@ -641,7 +646,8 @@ def test_a_product_that_was_never_evaluated_is_printed_in_the_order_it_was_built
 
 
 def test_expressions_with_no_tie_are_printed_as_sympy_prints_them():
-    """Four hundred expressions with no tie in them, built at random from
+    """Control (of the module against sympy's own). Four hundred expressions
+    with no tie in them, built at random from
     sums, products, powers, ``Max`` and products that were never evaluated,
     with negative, rational and floating coefficients: the key, the C text
     and ``srepr`` are sympy's own. (Its own are the same under every seed for
@@ -686,3 +692,284 @@ def test_expressions_with_no_tie_are_printed_as_sympy_prints_them():
         assert _term_order.stable_key(expr) == expr.sort_key(), expr
         assert _term_order.ccode(expr) == sp.ccode(expr), expr
         assert _term_order.srepr(expr) == sp.srepr(expr), expr
+
+
+# ── The factors of a product, and who is given them ──────────────────────────
+#
+# sympy's ``_print_Mul`` asks the product for its factors, so the method it
+# calls is what answers with this module's order: for a ``_print_Mul`` on a
+# thread where one of this module's printers is printing, and for no one else.
+
+
+class _Asked(Exception):
+    """This module's order of factors was asked for."""
+
+
+def _printing_with(monkeypatch, inside):
+    """Run ``inside()`` from within one of this module's printers, with this
+    module's order of factors replaced by one that raises."""
+    from bngsim import _term_order
+    from sympy.printing.repr import ReprPrinter
+
+    def raises(expr):
+        raise _Asked
+
+    class Hooked(_term_order.SeedFreeTermOrder, ReprPrinter):
+        def _print_Symbol(self, expr):
+            return str(inside())
+
+    monkeypatch.setattr(_term_order, "ordered_factors", raises)
+    return Hooked().doprint(sp.Symbol("hook"))
+
+
+def test_a_printer_of_this_module_is_given_this_modules_factors(monkeypatch):
+    """The wiring, each way: a product printed by one of this module's
+    printers has its factors from this module, and one printed by sympy's own
+    printer has sympy's."""
+    from bngsim import _term_order
+
+    a, b, c = sp.symbols("a b c")
+    product = a * (b + c) * (a + c)
+    theirs = sp.srepr(product)
+    monkeypatch.setattr(
+        _term_order, "ordered_factors", lambda expr: (_ for _ in ()).throw(_Asked())
+    )
+    with pytest.raises(_Asked):
+        _term_order.srepr(product)
+    with pytest.raises(_Asked):
+        _term_order.ccode(product)
+    assert sp.srepr(product) == theirs and sp.ccode(product) == "a*(a + c)*(b + c)"
+
+
+def test_a_product_asked_for_its_factors_by_anything_else_is_answered_by_sympy(monkeypatch):
+    """While a printer of this module is printing, a product asked for its
+    factors by something that is no ``_print_Mul`` has sympy's own: a direct
+    call, and ``sort_key``, whose result sympy keeps for the rest of the
+    process. A first version changed the method for every caller while a
+    product was being printed, and a key computed then was served afterwards
+    (6f8fba16 for f36b7c69 under seed 0). Nor is an order asked for by name
+    this module's, from a ``_print_Mul`` or not."""
+    a, b, c = sp.symbols("a b c")
+    product = sp.Mul(2, a, (b + c) ** 2, (1.0 * a + c), evaluate=False)
+    fresh = sp.Mul(3, a, (b + 2 * c) ** 2, (1.0 * b + c), evaluate=False)
+    want = product.as_ordered_factors(), product.as_ordered_factors(order="rev-lex")
+    got = []
+
+    def inside():
+        def _print_Mul():  # an order by name, asked for from a function of this name
+            return fresh.as_ordered_factors(order="lex")
+
+        _print_Mul()
+        got.append((product.as_ordered_factors(), product.as_ordered_factors(order="rev-lex")))
+        got.append(fresh.sort_key())
+        return "done"
+
+    assert _printing_with(monkeypatch, inside) == "done"
+    assert got == [want, fresh.sort_key()]
+
+
+def test_a_print_that_raises_leaves_no_printer_inside(monkeypatch):
+    """A printer that is left by an exception, a ``KeyboardInterrupt``
+    included, is no longer inside: sympy's own printer on the same thread has
+    sympy's factors afterwards. (The first version put sympy's method back on
+    the way out, and an interrupt between its two steps left it changed: 2 of
+    147.)"""
+    from bngsim import _term_order
+
+    a, b, c = sp.symbols("a b c")
+    product = a * (b + c) * (a + c)
+    for error in (ValueError, KeyboardInterrupt):
+
+        def inside(error=error):
+            raise error
+
+        with pytest.raises(error):
+            _printing_with(monkeypatch, inside)
+        assert getattr(_term_order._here, "printing", 0) == 0
+        assert sp.srepr(product).startswith("Mul(")  # ordered_factors raises if it is asked
+
+
+def test_another_threads_printing_is_not_answered(monkeypatch):
+    """While one thread is inside a printer of this module, sympy's own
+    printer on another thread has sympy's factors."""
+    import threading
+
+    a, b, c = sp.symbols("a b c")
+    product = a * (b + c) * (a + c)
+    seen = []
+
+    def inside():
+        other = threading.Thread(target=lambda: seen.append(sp.srepr(product)))
+        other.start()
+        other.join(60)
+        return "done"
+
+    assert _printing_with(monkeypatch, inside) == "done"
+    assert seen == [sp.srepr(product)]
+
+
+def test_a_nest_as_deep_as_main_prints_is_printed():
+    """Control. A product of a sum of a product, 190 deep, which main prints
+    (it stops at 197). The version of this change that wrapped ``_print_Mul``
+    stopped at 165: a frame more for each product on the way down."""
+    from bngsim._jacobian import sympy_to_c
+
+    x, a = sp.symbols("x a")
+    expr = x
+    for i in range(190):
+        expr = sp.Symbol(f"k{i % 7}") * (expr + a)
+    text = sympy_to_c(expr, lambda name: name)
+    assert text is not None and text.count("(") >= 190
+
+
+# ── A count that rounding left beside itself ─────────────────────────────────
+
+
+def test_a_count_within_rounding_is_one_answer_from_every_symbol():
+    """``num = 3·term`` with floats in the exponents: against ``r`` the ratio
+    of the slopes is 3, and against ``q``, where 3·0.35 was multiplied out, it
+    is 3.0000000000000004 (or 2.9999999999999996). That was no count, so the
+    answer was (3, 0) or None by which symbol was asked first: 52 of 2,800
+    pairs of exponents. Every order of the symbols gives (3, 0)."""
+    import itertools
+
+    from bngsim._jacobian import _whole_power_offset, _whole_power_offset_asking
+
+    p, q, r, t = sp.symbols("p q r t")
+    term = -sp.Piecewise((p, t <= 1.0), (7.3, True)) + 3.5 + (0.00105 - 0.35 / q) / r
+    num = 3 * term
+    against_q = sp.cancel(sp.diff(num, q) / sp.diff(term, q))
+    assert against_q.is_number and float(against_q) != 3.0 and abs(float(against_q) - 3) < 1e-14
+    answers = {
+        _whole_power_offset_asking(num, term, list(order), sp)
+        for order in itertools.permutations([p, q, r, t])
+    }
+    assert answers == {(3, 0)}
+    assert _whole_power_offset(num, term, sp) == (3, 0)
+
+
+def test_a_ratio_that_is_beside_a_count_and_is_not_it_is_refused():
+    """Control. A ratio of 3.000001 is no count, and one that rounding would
+    take for 3 is refused by what is left over: ``3·term + 1e-12·q`` keeps q."""
+    from bngsim._jacobian import _count_within_rounding, _whole_power_offset
+
+    q, r = sp.symbols("q r")
+    term = 3.5 + (0.00105 - 0.35 / q) / r
+    assert _whole_power_offset(3.000001 * term, term, sp) is None
+    assert _whole_power_offset(3 * term + 1e-12 * q, term, sp) is None
+    assert _count_within_rounding(sp.Float(3.0000000000000004)) == 3
+    assert _count_within_rounding(sp.Float(2.9999999999999996)) == 3
+    assert _count_within_rounding(sp.Float(3.00001)) is None
+    assert _count_within_rounding(sp.Float(0.4)) is None
+    assert _count_within_rounding(sp.Symbol("q")) is None
+
+
+# ── A comoving case, under every seed ────────────────────────────────────────
+
+_COMOVING = """begin parameters
+    1 k0    0.1
+    2 k1    2.0
+    3 a     1.1
+    4 on    3.0
+    5 D     4.0
+    6 kdeg  0.3
+    7 _rateLaw1 1
+    8 w01   2.0
+    9 w1    1.0
+end parameters
+begin functions
+    1 s() (t-on/(w01-w1))/D
+    2 prod() k0+if(t>=on/(w01-w1),if(t<=(on/(w01-w1)+D),k1*s()*((1-s())^(a-1)),0),0)
+end functions
+begin species
+    1 X() 0
+    2 Tc() 0
+end species
+begin reactions
+    1 0 1 prod
+    2 1 0 kdeg
+    3 0 2 _rateLaw1
+end reactions
+begin groups
+    1 t 2
+end groups
+"""
+
+_EMIT_SENS = """
+import hashlib, logging, sys
+logging.disable(logging.CRITICAL)
+import bngsim
+from bngsim import _codegen as cg
+core = bngsim.Model.from_net(sys.argv[1])._core
+source = cg.generate_sens_from_model(core, functional=True, emit_term_scale=True)
+print(hashlib.sha256(source.encode()).hexdigest(), source.count("*c_out ="))
+"""
+
+
+def test_a_model_has_its_comoving_case_under_every_hash_seed(tmp_path):
+    """A window whose onset is ``on/(w01 - w1)``. The shift of its crossings
+    in ``on`` is ``1/(w01 - w1)``, which ``cancel`` returned as that or as
+    ``-1/(-w01 + w1)`` by the seed, sympy's order of the two names being a
+    tie; only the first removes the singular power, so the model had its two
+    comoving cases under seeds 6 and 7 and none under 0 to 5, where dX/dD was
+    the plain column, 0.37% off."""
+    path = tmp_path / "model.net"
+    path.write_text(_COMOVING)
+    emitted = {}
+    for seed in (0, 1, 6, 7):
+        done = subprocess.run(
+            [sys.executable, "-c", _EMIT_SENS, str(path)],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        emitted[seed] = done.stdout.strip().splitlines()[-1]
+    assert len(set(emitted.values())) == 1, emitted
+    assert emitted[0].split()[1] == "2", emitted
+
+
+# ── What the emitters sort by ────────────────────────────────────────────────
+
+
+def test_no_emitter_sorts_by_a_key_of_sympys_that_can_follow_the_seed():
+    """``sp.srepr`` and ``default_sort_key`` of an expression that holds a
+    tied sum follow the seed, so neither is a key to put a set of expressions
+    in order by where the order is written out. The emitters sorted the
+    conditionals of an exponent, the relationals of a law and the shifts of a
+    parameter by ``srepr``, and the steps of a staircase by
+    ``default_sort_key``. (A symbol's ``srepr`` is its name, and may be
+    sorted by.)"""
+    import ast
+    import inspect
+
+    from bngsim import _codegen, _jacobian, _switch_sensitivity
+
+    found = []
+    for module in (_codegen, _jacobian, _switch_sensitivity):
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", getattr(node.func, "attr", ""))
+            if name not in ("sorted", "sort", "min", "max"):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "key":
+                    continue
+                text = ast.unparse(keyword.value)
+                by_symbol_name = "s.name, sp.srepr(s)" in text
+                if ("sp.srepr" in text or "default_sort_key" in text) and not by_symbol_name:
+                    found.append(f"{module.__name__}:{node.lineno}: {text}")
+    assert found == [
+        # Guards that are one clock against one number: no sum to tie.
+        "bngsim._switch_sensitivity:" + found[0].split(":")[1] + ": sp.srepr"
+    ], found
+
+
+def test_the_cache_does_not_serve_a_source_built_before_the_orders_changed():
+    """The version the codegen cache is keyed by is past the one main has."""
+    from bngsim import _codegen
+
+    assert int(_codegen._CODEGEN_VERSION) >= 39

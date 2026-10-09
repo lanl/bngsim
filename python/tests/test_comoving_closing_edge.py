@@ -828,3 +828,83 @@ def test_an_exponent_of_zero_through_sbml(shape, param):
     left the case alone at this exponent failed these runs."""
     got = _column(_sbml(shape, 1.0), param)
     assert _worst(got, _exact(shape, 1.0, param)) < 5e-6
+
+
+def _onset_over_a_difference(tmp_path, a, larger, smaller, second_power=False):
+    """The closing window with its onset written ``on/(larger - smaller)``, the
+    two being 2 and 1: the same window, and the same columns."""
+    onset = f"on/({larger}-{smaller})"
+    text = NET.format(a=a, close="<=", shape=SHAPES["closing"][0], extra="", tmid=5.0, on=ON)
+    for old, new in (
+        ("s() (t-on)/D", f"s() (t-{onset})/D"),
+        ("if(t>=on,", f"if(t>={onset},"),
+        ("(on+D)", f"({onset}+D)"),
+        ("end parameters", f"    9 {larger} 2.0\n   10 {smaller} 1.0\nend parameters"),
+    ):
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    if second_power:
+        # The same power again, over the same s written from the other end:
+        # t + on/(smaller - larger).
+        text = text.replace(
+            "end functions", f"    3 s2() (t+on/({smaller}-{larger}))/D\nend functions"
+        ).replace("((1-s())^(a-1))", "((1-s())^(a-1))*((1-s2())^(a-1))")
+        assert "s2()" in text.split("prod()")[1]
+    path = tmp_path / f"m_{larger}_{smaller}.net"
+    path.write_text(text)
+    return bngsim.Model.from_net(path)
+
+
+def _cases_of(model) -> list[str]:
+    """The shift of each comoving case in the model's sensitivity source."""
+    import re
+
+    from bngsim import _codegen
+
+    source = _codegen.generate_sens_from_model(model._core, functional=True, emit_term_scale=True)
+    return re.findall(r"if \(k == \d+\) \{ \*c_out = (.*?); return", source)
+
+
+@pytest.mark.parametrize("param", ["D", "on"])
+@pytest.mark.parametrize(
+    "larger, smaller", [("wb", "wa"), ("wa", "wb"), ("w01", "w1"), ("w1", "w01")]
+)
+def test_an_onset_over_a_difference_spelled_either_way_round(tmp_path, larger, smaller, param):
+    """The shift of the crossing in ``on`` is ``1/(larger - smaller)``, and it
+    removes the singular power only as the law spells it. ``cancel`` returned
+    ``-1/(wa - wb)`` for ``1/(wb - wa)``: the model had no comoving case, and
+    dX/dD was the plain column, 0.37% low at a = 1.1. Spelled ``wa - wb`` it
+    had its case. For ``w01 - w1``, two names sympy's order of generators ties
+    on, it was either by the hash seed (issue #550): seeds 0 to 5 without a
+    case, 6 and 7 with one."""
+    model = _onset_over_a_difference(tmp_path, 1.1, larger, smaller)
+    assert len(_cases_of(model)) == 2  # one for on and one for D
+    got = _column(model, param)
+    assert _worst(got, _exact("closing", 1.1, param)) < 5e-6
+
+
+def test_a_shift_has_one_case_whichever_way_it_is_spelled(tmp_path):
+    """Two powers over the same onset, one law spelling its shift
+    ``1/(wb - wa)`` and the other ``-1/(wa - wb)``: each spelling removes one
+    of them, and both are the same shift. The solver enters a case by its
+    shift, so there is one."""
+    model = _onset_over_a_difference(tmp_path, 1.1, "wb", "wa", second_power=True)
+    cases = _cases_of(model)
+    assert len(cases) == 2 and sum("p[" in c for c in cases) == 1, cases
+
+
+def test_the_two_spellings_of_a_shift():
+    """What :func:`_shift_spellings` gives: the other spelling where the
+    denominator is a sum, and nothing more where changing both signs gives the
+    same expression back."""
+    import sympy as sp
+    from bngsim._codegen import _shift_spellings
+
+    w, v, k = sp.symbols("w v k")
+    assert _shift_spellings(1 / (w - v), sp) == [1 / (w - v), sp.Mul(-1, sp.Pow(v - w, -1))]
+    assert _shift_spellings(-1 / (v - w), sp) == [-1 / (v - w), 1 / (w - v)]
+    for one in (sp.Integer(1), 1 / k, k / 2, w - v, -k, sp.Float(0.5)):
+        assert _shift_spellings(one, sp) == [one]
+    for shift in (1 / (w - v), (w - v) / (k + v), 2.0 / (w - 1.5)):
+        first, second = _shift_spellings(shift, sp)
+        assert first != second and sp.cancel(first - second) == 0

@@ -48,7 +48,7 @@ gives, and the printed text is what it was.
 
 from __future__ import annotations
 
-import contextlib
+import sys
 import threading
 from functools import cmp_to_key, lru_cache
 
@@ -291,14 +291,15 @@ def _ordered_terms(expr, order) -> list:
     return [term for term, _ in sorted(terms, key=key, reverse=reverse)]
 
 
-_swap = threading.RLock()
-_swapped: list = []  # sympy's own method, once for each printer that is inside
+_here = threading.local()  # .printing: this module's printers that are inside, on this thread
+_theirs: list = []  # sympy's own ``Mul.as_ordered_factors``, once it has been taken
 
 
-@contextlib.contextmanager
-def _our_factor_order():
-    """While this is open, a sympy product hands over its factors in
-    :func:`ordered_factors`' order.
+def _factors_for_a_printer(self, order=None):
+    """``Mul.as_ordered_factors``, answered by :func:`ordered_factors` for one
+    caller: a ``_print_Mul`` on a thread where one of this module's printers
+    is printing, asking for the default order. Every other call is sympy's
+    own, as it was.
 
     A sum's terms are asked for through the printer (``_as_ordered_terms``),
     and a printer can answer. A product's factors are not: sympy's
@@ -309,27 +310,35 @@ def _our_factor_order():
     already in order, or one of another class, or the sign taken off outside,
     each printed some product in a way sympy does not: ``-1.0*4.0*p``,
     ``-1.0*1*p`` for ``-1.0*1*1*p``, ``-1.0/3.0/b`` for ``-(1.0/3.0)/b``. So
-    the method it calls is the one that is changed, for as long as one of
-    this module's printers is printing a product, and put back.
+    the method it calls is the one that answers.
 
-    The order it gives while it is swapped is sympy's own wherever sympy's
-    does not follow the seed, for every caller in the process.
+    It answers that one caller and no other because the same method is what
+    ``Expr.sort_key`` builds a product's key from, and sympy keeps its keys:
+    one computed from this module's order would be served to sympy afterwards,
+    for the rest of the process. Nor is another thread's printing, or an
+    ``order`` that was asked for by name, this module's to answer.
     """
+    if (
+        order is None
+        and getattr(_here, "printing", 0)
+        and sys._getframe(1).f_code.co_name == "_print_Mul"
+    ):
+        return ordered_factors(self)
+    return _theirs[0](self, order)
+
+
+def _answer_for_products() -> None:
+    """Put :func:`_factors_for_a_printer` in place of sympy's method, once. It
+    stays: with no printer of this module inside it is sympy's own."""
     from sympy import Mul
 
     with _swap:
-        if not _swapped:
-            _swapped.append(Mul.as_ordered_factors)
-            Mul.as_ordered_factors = lambda self, order=None: ordered_factors(self)  # type: ignore[method-assign]
-        else:
-            _swapped.append(_swapped[0])
-    try:
-        yield
-    finally:
-        with _swap:
-            theirs = _swapped.pop()
-            if not _swapped:
-                Mul.as_ordered_factors = theirs  # type: ignore[method-assign]
+        if not _theirs:
+            _theirs.append(Mul.as_ordered_factors)
+            Mul.as_ordered_factors = _factors_for_a_printer  # type: ignore[method-assign]
+
+
+_swap = threading.Lock()
 
 
 class SeedFreeTermOrder:
@@ -337,15 +346,19 @@ class SeedFreeTermOrder:
     product's factors and the arguments of ``Min``, ``Max``, ``And`` and
     ``Or`` in this module's orders."""
 
+    def doprint(self, expr, *args, **kwargs):
+        _answer_for_products()
+        try:
+            _here.printing = getattr(_here, "printing", 0) + 1
+            return super().doprint(expr, *args, **kwargs)  # type: ignore[misc]
+        finally:
+            _here.printing = max(getattr(_here, "printing", 1) - 1, 0)
+
     def _as_ordered_terms(self, expr, order=None):
         order = order or self.order  # type: ignore[attr-defined]
         if order in ("old", "none"):
             return super()._as_ordered_terms(expr, order=order)  # type: ignore[misc]
         return ordered_terms(expr, order)
-
-    def _print_Mul(self, expr, *args, **kwargs):
-        with _our_factor_order():
-            return super()._print_Mul(expr, *args, **kwargs)  # type: ignore[misc]
 
 
 _printers: dict = {}

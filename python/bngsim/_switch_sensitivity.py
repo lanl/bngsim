@@ -1004,7 +1004,8 @@ def clock_guard_cells(expr, clock_names: AbstractSet[str], sp) -> list[tuple]:
     if len(clocks) != 1:
         return [(expr, (), ())]
     (clock,) = clocks
-    ordered = tuple(sorted(guards, key=_term_order.srepr))
+    # (One clock against one number each: no sum in them for a key to tie on.)
+    ordered = tuple(sorted(guards, key=sp.srepr))
     points = sorted({float(rel.rhs if rel.rhs.is_Number else rel.lhs) for rel in ordered})
     probes = [points[0] - 1.0]
     for lo, hi in zip(points, points[1:], strict=False):

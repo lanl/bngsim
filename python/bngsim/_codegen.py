@@ -8647,7 +8647,10 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
     folded. Once :func:`_clock_guard_cells` has collapsed a year chain, the ratio
     at a real onset is a plain rational — 1 for every onset in the corpus — and a
     ``Piecewise`` left over is a guard the cells did not resolve, where the shift
-    could not cancel anyway."""
+    could not cancel anyway.
+
+    Each shift is given in both of its spellings (:func:`_shift_spellings`),
+    since which of them ``cancel`` returns is not the model's to say."""
     from bngsim._jacobian import _value_symbol_names
 
     out: dict[str, dict] = {}
@@ -8680,8 +8683,32 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
                         if not {s.name for s in leaf.free_symbols} <= allowed:
                             continue
                         seen = out.setdefault(p_alias, {})
-                        seen[leaf] = seen.get(leaf, ()) + power
+                        for spelling in _shift_spellings(leaf, sp):
+                            seen[spelling] = seen.get(spelling, ()) + power
     return out
+
+
+def _shift_spellings(shift, sp) -> list:
+    """``shift`` as it is, and with the sign of its numerator and of its
+    denominator both changed: ``1/(w - v)`` and ``-1/(v - w)``.
+
+    A shift removes a singular power where ``∂law/∂p + shift·∂law/∂clock``
+    loses the power as sympy adds the two up, and that takes the shift spelled
+    as the law spells it: an onset ``on/(w - v)`` has ``1/(w - v)`` in its
+    ``∂/∂on``, and ``-1/(v - w)`` beside it cancels nothing. ``cancel`` returns
+    one spelling or the other by the order it puts the symbols in. For
+    ``on/(wb - wa)`` that was the other one, in every process: the model got no
+    comoving case, and its column was the plain one, 0.37% off (issue #760's
+    error). For two names sympy's order ties on, ``w01`` and ``w1``, it was
+    either, by the hash seed: the same model with a case in one process and
+    none in the next (issue #550).
+
+    So both are candidates. The one that removes nothing is dropped where the
+    cases are derived, as any shift is that removes nothing.
+    """
+    numer, denom = shift.as_numer_denom()
+    other = sp.Mul(-numer, sp.Pow(-denom, -1))
+    return [shift] if other == shift else [shift, other]
 
 
 def _singular_clock_powers(expr, clock_names: set[str], sp) -> set[tuple[str, str]]:
@@ -9172,6 +9199,35 @@ def _functional_comoving_plan(
     terms: dict[int, dict[int, str]] = {}
     approach: list[tuple[int, tuple[str, ...], str, tuple[str, ...]]] = []
 
+    def removes_a_power(p_alias: str, c, derived_shift) -> tuple[bool, dict[str, str | None]]:
+        """Whether the shift ``c`` removes a singular power from a law's
+        ``∂/∂p``, and each law's comoving ``∂/∂p`` under it, as C."""
+        eligible = False
+        law_c: dict[str, str | None] = {}
+        for text in rxns_of_law:
+            pieces = []
+            for on_cell, cond in laws[text]:
+                _check_derivation_deadline(scope.deadline)
+                plain = _comoving_shifted_partial(
+                    on_cell, p_alias, 0, clock_weights, derived_shift, constants, sp
+                )
+                moved = _comoving_shifted_partial(
+                    on_cell, p_alias, c, clock_weights, derived_shift, constants, sp
+                )
+                if _singular_clock_powers(plain, clock_names, sp) - _singular_clock_powers(
+                    moved, clock_names, sp
+                ):
+                    eligible = True
+                pieces.append((moved, cond))
+            if len(pieces) == 1:
+                whole = pieces[0][0]
+            else:
+                whole = sp.Piecewise(*pieces[:-1], (pieces[-1][0], True))
+            law_c[text] = None if whole == 0 else sympy_to_c(whole, resolve_symbol)
+            if whole != 0 and law_c[text] is None:
+                return False, law_c
+        return eligible, law_c
+
     def derive(p_alias: str, shifts: dict) -> None:
         """The cases of one parameter, one per shift that removes a singular power."""
         p_name = scope.param_of_alias[p_alias]
@@ -9192,37 +9248,27 @@ def _functional_comoving_plan(
             rate = sp.diff(inlined, p_sym)
             if rate != 0:
                 derived_shift[d_sym] = rate
+        taken: list = []
         for c in sorted(shifts, key=_term_order.srepr):
             c_c = sympy_to_c(c, resolve_symbol)
             if c_c is None:
                 continue
-            eligible = False
-            law_c: dict[str, str | None] = {}
-            for text in rxns_of_law:
-                pieces = []
-                for on_cell, cond in laws[text]:
-                    _check_derivation_deadline(scope.deadline)
-                    plain = _comoving_shifted_partial(
-                        on_cell, p_alias, 0, clock_weights, derived_shift, constants, sp
-                    )
-                    moved = _comoving_shifted_partial(
-                        on_cell, p_alias, c, clock_weights, derived_shift, constants, sp
-                    )
-                    if _singular_clock_powers(plain, clock_names, sp) - _singular_clock_powers(
-                        moved, clock_names, sp
-                    ):
-                        eligible = True
-                    pieces.append((moved, cond))
-                if len(pieces) == 1:
-                    whole = pieces[0][0]
-                else:
-                    whole = sp.Piecewise(*pieces[:-1], (pieces[-1][0], True))
-                law_c[text] = None if whole == 0 else sympy_to_c(whole, resolve_symbol)
-                if whole != 0 and law_c[text] is None:
-                    eligible = False
-                    break
+            # A shift that has its case already, in its other spelling.
+            if any(sp.cancel(c - have) == 0 for have in taken):
+                continue
+            try:
+                eligible, law_c = removes_a_power(p_alias, c, derived_shift)
+            except RecursionError:
+                # sympy does not always come back from building a conditional
+                # whose condition it can write two ways (it rewrites one as
+                # the other and that one as the first), and which spelling of
+                # a shift does that to it is not known ahead. Such a spelling
+                # is no candidate; the other one is tried as any is.
+                logger.debug("issue #550: a shift's spelling that sympy cannot carry: %s", c)
+                continue
             if not eligible:
                 continue
+            taken.append(c)
             virtual = n_params + len(cases)
             cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
 
