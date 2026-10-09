@@ -24,7 +24,20 @@ import pytest
 
 sp = pytest.importorskip("sympy")
 
-from bngsim._term_order import ccode, ordered_terms  # noqa: E402
+
+def ordered_terms(expr):
+    """``bngsim._term_order.ordered_terms``, imported where it is used so that
+    the controls run on a build that does not have the module."""
+    from bngsim._term_order import ordered_terms
+
+    return ordered_terms(expr)
+
+
+def ccode(expr):
+    from bngsim._term_order import ccode
+
+    return ccode(expr)
+
 
 # The rate of A -> B is a*Aobs^2.0 + b*Aobs^2. Its derivative in Aobs is
 # 2.0*a*Aobs**1.0 + 2*b*Aobs: two terms, over the generators Aobs**1.0, Aobs,
@@ -162,9 +175,11 @@ def test_two_generators_that_tie_are_what_the_model_has():
 
 def test_a_tie_is_broken_by_what_the_generators_are():
     """The term in ``A**1.0`` is printed first, whichever of the two the set
-    gave first: ``Pow(...)`` is ahead of ``Symbol(...)`` in ``srepr``, and the
-    first generator's power leads the monomial order. sympy's own order for
-    this sum is one or the other with the seed of the process."""
+    gave first. The keys of ``A**1.0`` and ``A`` differ where one has the
+    exponent ``Float(1.0)`` and the other ``Integer(1)``, and ``Float`` is
+    ahead of ``Integer`` in the order of the types' names; the first
+    generator's power leads the monomial order. sympy's own order for this sum
+    is one or the other with the seed of the process."""
     expr, x = _tied_sum()
     terms = ordered_terms(expr)
     assert len(terms) == 2
@@ -306,14 +321,26 @@ def test_an_edit_to_the_term_order_changes_the_cache_key(tmp_path):
         "-1.0*a*b + a*b**2 - 3",
         "x",
         "2*x",
+        "k*(a + x)*(b + y)*(a + 2.5*y)",
+        "-k*(a + x)**2*exp(b + y)/(c + x*y)",
+        "Max(a*x, b + y, 1) - Min(x + y, 2*a)",
+        "k*(a*x + b)**(c + 1) + k*(b*x + a)**(c + 1)",
     ],
 )
 def test_a_sum_with_no_tie_is_ordered_as_sympy_orders_it(text):
-    """Control. Without a tie the order is sympy's own, term for term, so the
-    text an emitter prints for such a sum is what it was."""
+    """What the fix must not change: without a tie the order is sympy's own,
+    term for term and factor for factor, and so are the key and the text an
+    emitter prints for such an expression."""
+    from bngsim import _term_order
+
     expr = sp.sympify(text)
     assert ordered_terms(expr) == expr.as_ordered_terms()
     assert ccode(expr) == sp.ccode(expr)
+    assert _term_order.srepr(expr) == sp.srepr(expr)
+    for part in sp.preorder_traversal(expr):
+        assert _term_order.stable_key(part) == part.sort_key()
+        if part.is_Mul:
+            assert _term_order.ordered_factors(part) == part.as_ordered_factors()
 
 
 # ── A symbol picked out of a set ─────────────────────────────────────────────
@@ -360,17 +387,22 @@ def test_a_count_is_found_whichever_symbol_a_set_hands_over_first():
 def test_a_symbol_that_gives_no_count_is_passed_over_for_the_next():
     """The same exponents with the conditional's symbol named so that it is
     asked first, ``A_calc`` ahead of ``R`` and ``T1``. Against it the ratio of
-    the slopes is not a number, and the next symbol is asked: (2, 0). Taking
-    the first symbol in the order of the names would have answered None for
-    every seed, where main answered it for some."""
-    from bngsim._jacobian import _whole_power_offset
-
-    first, t, t1, r = sp.symbols("A_calc t T1 R")
-    held = sp.Piecewise((first, t <= 1.0), (7.3, True))
-    term = -held + 3.5 + 0.35 * (0.003 - 1 / t1) / r
-    num = -2 * held + 7.0 + 0.7 * (0.003 - 1 / t1) / r
-    assert sorted(s.name for s in term.free_symbols)[0] == "A_calc"
-    assert _whole_power_offset(num, term, sp) == (2, 0)
+    the slopes is not a number, and the next symbol is asked: (2, 0), under
+    six seeds in six processes. Taking the first symbol in the order of the
+    names would have answered None for every seed, where main answers it for
+    some."""
+    answers = {}
+    for seed in (0, 1, 2, 3, 5, 9):
+        done = subprocess.run(
+            [sys.executable, "-c", _PIVOT.replace("pH_calc", "A_calc")],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        answers[seed] = done.stdout.strip().splitlines()[-1]
+    assert set(answers.values()) == {"(2, 0)"}, answers
 
 
 def test_exponents_that_are_not_parallel_are_refused_against_every_symbol():
@@ -382,3 +414,150 @@ def test_exponents_that_are_not_parallel_are_refused_against_every_symbol():
     term = 3.5 + 0.35 * (0.003 - 1 / t1) / r
     assert _whole_power_offset(2 * term + r, term, sp) is None
     assert _whole_power_offset(2 * term + 1, term, sp) == (2, 1)
+
+
+def test_a_mismatch_costs_one_cancel(monkeypatch):
+    """Exponents that are not parallel, in three symbols and with no condition
+    in them: the ratio of the slopes against the first symbol is no count, and
+    it is every symbol's answer, so no other is asked. (Asking each in turn
+    cost MODEL1006230049 3 s of 90.)"""
+    from bngsim._jacobian import _whole_power_offset
+
+    t1, r, u = sp.symbols("T1 R U")
+    term = 3.5 + 0.35 * (0.003 - 1 / t1) / r + u
+    calls = []
+    cancel = sp.cancel
+    monkeypatch.setattr(sp, "cancel", lambda e: (calls.append(e), cancel(e))[1])
+    assert _whole_power_offset(2 * term + r * u, term, sp) is None
+    assert len(calls) == 1
+
+
+# ── A key that is made of a tied sum ─────────────────────────────────────────
+#
+# The key of a sum is made of its ordered terms, so whatever holds a tied sum
+# has a key that follows the seed, and so has every order taken from keys.
+
+_PRINTED = """
+import sympy as sp
+from bngsim._jacobian import sympy_to_c, sympy_to_exprtk
+a, b, c, k, X, Y = sp.symbols("a b c k X Y")
+tied = 2.0*a*X**1.0 + 2*b*X
+other = 2*a*X + c*Y
+cases = [
+    k*tied**2 + k*other**2,
+    k*sp.exp(tied) + k*sp.exp(other),
+    k*tied*(2*b*X + c*Y),
+    -k*tied*(2*b*X + c*Y)/(a + X),
+    sp.Min(a*X**2.0 + 1, b*X**2 + 1.0),
+    sp.Max(a*X**2.0 + 1, b*X**2 + 1.0, tied),
+    sp.And(2.0*X**2 > Y, 2*X**2.0 > Y),
+    sp.Or(2.0*X**2 > Y, 2*X**2.0 > Y),
+]
+for e in cases:
+    print(PRINTERS)
+"""
+
+
+def _printed_under(seed: int, script: str) -> str:
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "PYTHONHASHSEED": str(seed)},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    return done.stdout
+
+
+def test_what_holds_a_tied_sum_is_printed_one_way_under_every_hash_seed():
+    """A sum of two powers of sums, of two exponentials of sums; a product of
+    two bracketed sums, and the same with a sign and a denominator; ``min``,
+    ``max``, ``and`` and ``or`` of expressions that tie. Each through both
+    printers of the Jacobian, under six seeds in six processes: one text. On
+    main the two terms, the two factors and the two arguments come out either
+    way round."""
+    script = _PRINTED.replace(
+        "PRINTERS", 'sympy_to_c(e, lambda name: name), "|", sympy_to_exprtk(e)'
+    )
+    printed = {seed: _printed_under(seed, script) for seed in _SEEDS}
+    assert len(set(printed.values())) == 1, printed
+    lines = printed[_SEEDS[0]].splitlines()
+    assert len(lines) == 8 and "None" not in printed[_SEEDS[0]]
+
+
+def test_the_c_printer_of_a_derived_parameter_and_srepr_are_one_way_too():
+    """The same expressions through ``_term_order.ccode``, which prints the
+    partials of a derived parameter, and ``_term_order.srepr``, which is what
+    sets of expressions are sorted by where their order is emitted."""
+    script = _PRINTED.replace(
+        "from bngsim._jacobian import sympy_to_c, sympy_to_exprtk",
+        "from bngsim._term_order import ccode, srepr",
+    ).replace("PRINTERS", 'ccode(e), "|", srepr(e)')
+    printed = {seed: _printed_under(seed, script) for seed in _SEEDS}
+    assert len(set(printed.values())) == 1, printed
+
+
+def test_sympys_own_srepr_of_a_tied_sum_follows_the_seed():
+    """Control. ``srepr`` prints a sum's terms in the order of
+    ``as_ordered_terms``, so it is no key to sort a set by: under these six
+    seeds it gives the tied sum both ways."""
+    script = (
+        "import sympy as sp\n"
+        "a, b, X = sp.symbols('a b X')\n"
+        "print(sp.srepr(2.0*a*X**1.0 + 2*b*X))\n"
+    )
+    assert len({_printed_under(seed, script) for seed in (0, 1, 2, 3, 5, 9)}) == 2
+
+
+# The rate of A -> B holds two tied sums: as the bases of two squares that are
+# added, and as two factors of one product.
+_WITH_B = NET.replace("    1 Aobs  1\nend groups", "    1 Aobs  1\n    2 Bobs  2\nend groups")
+NESTED = _WITH_B.replace(
+    "a*Aobs^2.0+b*Aobs^2", "a*(a*Aobs^2.0+b*Aobs^2)^2+a*(a*Aobs^2+b*Aobs*Bobs)^2"
+)
+FACTORS = _WITH_B.replace("a*Aobs^2.0+b*Aobs^2", "a*(a*Aobs^2.0+b*Aobs^2)^2*(4*b*Aobs+a*Bobs)")
+
+_EMIT_WHOLE = _EMIT.replace(
+    'line = next(l for l in source.splitlines() if "/* made */" in l and "obs_sens_c" in l)\n',
+    "",
+).replace(', "|", line.strip()', "")
+
+
+@pytest.mark.parametrize("net", ["NESTED", "FACTORS"])
+def test_a_model_with_a_tied_sum_inside_another_has_one_source(tmp_path, net):
+    """Six processes, six seeds, one combined source, for a rate law with a
+    tied sum under a power in each of two terms, and for one with two sums
+    that hold a tie as factors of one product. On main the first has three
+    sources and the second two."""
+    text = globals()[net]
+    assert text.count("Bobs") >= 2 and "^2.0" in text
+    path = tmp_path / "model.net"
+    path.write_text(text)
+    emitted = set()
+    for seed in _SEEDS:
+        done = subprocess.run(
+            [sys.executable, "-c", _EMIT_WHOLE, str(path)],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        emitted.add(done.stdout.strip().splitlines()[-1])
+    assert len(emitted) == 1, emitted
+
+
+def test_arguments_from_a_set_have_one_order_from_any():
+    """``ordered_args`` and ``in_order`` from each of the six orders three
+    items can be handed over in, two of which tie and one of which holds a
+    tied sum: one order."""
+    import itertools
+
+    from bngsim import _term_order
+
+    a, b, X = sp.symbols("a b X")
+    tied = 2.0 * a * X**1.0 + 2 * b * X
+    items = [X**2.0 + 1, X**2 + 1.0, sp.exp(tied)]
+    for order in (_term_order.ordered_args, _term_order.in_order):
+        assert len({tuple(order(p)) for p in itertools.permutations(items)}) == 1

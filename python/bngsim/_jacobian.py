@@ -1855,19 +1855,22 @@ def _whole_power_offset(num_exp, term_exp, sp):
     ``num_exp − m·term_exp`` keeps a symbol and the match is refused, whichever
     symbol was picked.
 
-    Each symbol is asked in turn until one gives a count (issue #550). The
-    first that ``free_symbols`` returned was asked, and no other, and a set's
-    first follows the hash seed: against one symbol the ratio of the slopes
-    cancels to a count, and against another, of an exponent with a condition
-    in it, ``cancel`` leaves an expression that is no count to
-    :func:`_integer_at_least`. The same model was rewritten in one process and
-    not in the next (MODEL1006230049).
+    Where an exponent has a condition in it, each symbol is asked in turn
+    until one gives a count (issue #550). The first that ``free_symbols``
+    returned was asked, and no other, and a set's first follows the hash seed:
+    against one symbol the ratio of the slopes cancels to a count, and against
+    another, the one the condition holds, ``cancel`` leaves a product of
+    conditionals that is no count to :func:`_integer_at_least`. The same model
+    was rewritten in one process and not in the next (MODEL1006230049).
 
     Which symbol is asked first does not change the answer now: where the
     exponents are parallel, ``num = m·term + c``, every symbol whose ratio
     cancels gives that ``m``, and where they are not, none gives a count that
     leaves a number. They are asked in the order of their names all the same,
-    so that every process does the same work.
+    so that every process does the same work. And a ratio with no conditional
+    in it is the answer of every symbol: it is ``m`` or the exponents are not
+    parallel, and no other is asked (which is what a mismatch costs on main,
+    one ``cancel``).
     """
     ratio = num_exp / term_exp
     if ratio.is_number:
@@ -1878,8 +1881,11 @@ def _whole_power_offset(num_exp, term_exp, sp):
         slope = sp.diff(term_exp, pivot)
         if slope == 0:
             continue
-        m = _integer_at_least(sp.cancel(sp.diff(num_exp, pivot) / slope), 1)
+        slopes = sp.cancel(sp.diff(num_exp, pivot) / slope)
+        m = _integer_at_least(slopes, 1)
         if m is None:
+            if not slopes.has(sp.Piecewise):
+                return None
             continue
         leftover = sp.expand(num_exp - m * term_exp)
         if not leftover.is_number:
@@ -2061,7 +2067,7 @@ def _make_printer():
     optional)."""
     from sympy.printing.str import StrPrinter
 
-    from bngsim._term_order import SeedFreeTermOrder
+    from bngsim._term_order import SeedFreeTermOrder, ordered_args
 
     class _ExprTkPrinter(SeedFreeTermOrder, StrPrinter):
         def _print_Pow(self, expr):
@@ -2119,10 +2125,10 @@ def _make_printer():
         # symbol named `and` or `or`; a printed keyword would be, exactly as the
         # model's own text used to be.
         def _print_And(self, expr):
-            return "(" + " && ".join(self._print(a) for a in expr.args) + ")"
+            return "(" + " && ".join(self._print(a) for a in ordered_args(expr.args)) + ")"
 
         def _print_Or(self, expr):
-            return "(" + " || ".join(self._print(a) for a in expr.args) + ")"
+            return "(" + " || ".join(self._print(a) for a in ordered_args(expr.args)) + ")"
 
         def _print_Not(self, expr):
             return f"(not({self._print(expr.args[0])}))"
@@ -2154,10 +2160,10 @@ def _make_printer():
         # C twin below and the shape the loader already produces for an n-ary
         # ``max()`` in a model's own text.
         def _print_Min(self, expr):
-            return self._fold("min", expr.args)
+            return self._fold("min", ordered_args(expr.args))
 
         def _print_Max(self, expr):
-            return self._fold("max", expr.args)
+            return self._fold("max", ordered_args(expr.args))
 
         def _fold(self, fn, args):
             printed = [self._print(a) for a in args]
@@ -2325,7 +2331,7 @@ def _make_c_printer():
     symbol is routed through the instance ``_resolver`` callback."""
     from sympy.printing.str import StrPrinter
 
-    from bngsim._term_order import SeedFreeTermOrder
+    from bngsim._term_order import SeedFreeTermOrder, ordered_args
 
     class _CPrinter(SeedFreeTermOrder, StrPrinter):
         # Set per call by sympy_to_c; None outside an emission.
@@ -2385,10 +2391,10 @@ def _make_c_printer():
             return "0"
 
         def _print_And(self, expr):
-            return "(" + " && ".join(self._print(a) for a in expr.args) + ")"
+            return "(" + " && ".join(self._print(a) for a in ordered_args(expr.args)) + ")"
 
         def _print_Or(self, expr):
-            return "(" + " || ".join(self._print(a) for a in expr.args) + ")"
+            return "(" + " || ".join(self._print(a) for a in ordered_args(expr.args)) + ")"
 
         def _print_Not(self, expr):
             return f"(!({self._print(expr.args[0])}))"
@@ -2415,10 +2421,10 @@ def _make_c_printer():
             return f"ceil({self._print(expr.args[0])})"
 
         def _print_Min(self, expr):
-            return self._cfold("fmin", expr.args)
+            return self._cfold("fmin", ordered_args(expr.args))
 
         def _print_Max(self, expr):
-            return self._cfold("fmax", expr.args)
+            return self._cfold("fmax", ordered_args(expr.args))
 
         def _print_LatticeOp(self, expr):
             # The ExprTk twin's note applies here too (issue #460). This printer

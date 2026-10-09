@@ -284,7 +284,10 @@ _compile_counter = itertools.count()
 # sides of a reaction (`E + S -> E + P`) keeps `(x - rate) + rate` in that
 # species' derivative, the rounding of the rate: 0 for a synthesis of 0.01
 # beside a rate of 1e15. Invalidate v37.
-_CODEGEN_VERSION = "38"
+# v39: sums, products and the arguments of min, max, and, or are printed in an
+# order that does not follow the hash seed (issue #550). A cached v38 .so is one
+# of the two or three sources a model with a tied sum had. Invalidate v38.
+_CODEGEN_VERSION = "39"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -8817,7 +8820,7 @@ def _counter_powers(
         """*exponent* with each condition in it taken each way, or ``None``
         where that is more than 64 expressions. A chain
         ``if(c1, a1, if(c2, a2, ...))`` is one expression a value."""
-        chosen = sorted(exponent.atoms(sp.Piecewise), key=sp.srepr)
+        chosen = sorted(exponent.atoms(sp.Piecewise), key=_term_order.srepr)
         if not chosen:
             return [exponent]
         # The outermost: one that is in no other's values.
@@ -8851,7 +8854,7 @@ def _counter_powers(
         at: list[str] = []
         # In a fixed order: the tests are written out in the order found, and
         # a set's order goes by the hash seed.
-        for rel in sorted(law.atoms(sp.core.relational.Relational), key=sp.srepr):
+        for rel in sorted(law.atoms(sp.core.relational.Relational), key=_term_order.srepr):
             on = [s for s in rel.free_symbols if s.name in names]
             if len(on) != 1:
                 continue
@@ -9189,7 +9192,7 @@ def _functional_comoving_plan(
             rate = sp.diff(inlined, p_sym)
             if rate != 0:
                 derived_shift[d_sym] = rate
-        for c in sorted(shifts, key=sp.srepr):
+        for c in sorted(shifts, key=_term_order.srepr):
             c_c = sympy_to_c(c, resolve_symbol)
             if c_c is None:
                 continue

@@ -44,6 +44,7 @@ from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from typing import NamedTuple
 
+from bngsim import _term_order
 from bngsim._codegen import (
     _BUILTIN_CONSTANT_VALUES,
     _DERIVED_BARE_NAME,
@@ -1003,7 +1004,7 @@ def clock_guard_cells(expr, clock_names: AbstractSet[str], sp) -> list[tuple]:
     if len(clocks) != 1:
         return [(expr, (), ())]
     (clock,) = clocks
-    ordered = tuple(sorted(guards, key=sp.srepr))
+    ordered = tuple(sorted(guards, key=_term_order.srepr))
     points = sorted({float(rel.rhs if rel.rhs.is_Number else rel.lhs) for rel in ordered})
     probes = [points[0] - 1.0]
     for lo, hi in zip(points, points[1:], strict=False):
@@ -2546,7 +2547,11 @@ def _resolve_step_edge_stop_times(
     def n_inner(e) -> int:
         return len(e.args[0].atoms(sp.floor) | e.args[0].atoms(trunc))
 
-    steps.sort(key=lambda e: (n_inner(e), sp.default_sort_key(e)))
+    # Within a count, in an order with no ties: the steps come from a set.
+    by_count: dict[int, list] = {}
+    for e in steps:
+        by_count.setdefault(n_inner(e), []).append(e)
+    steps = [e for n in sorted(by_count) for e in _term_order.in_order(by_count[n])]
     n_leaves = sum(1 for e in steps if n_inner(e) == 0)
     marks = [sp.Symbol(f"_bng_step_{i}") for i in range(len(steps))]
     to_mark = dict(zip(steps, marks, strict=True))
