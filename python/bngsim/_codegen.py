@@ -8730,7 +8730,14 @@ def _singular_clock_powers(expr, clock_names: set[str], sp) -> set[tuple[str, st
 
 
 def _comoving_shifted_partial(
-    expr, p_alias: str, c, clock_weights: dict, derived_shift: dict, constants: set[str], sp
+    expr,
+    p_alias: str,
+    c,
+    clock_weights: dict,
+    derived_shift: dict,
+    constants: set[str],
+    sp,
+    written_out: dict | None = None,
 ):
     """``d/dε expr(clock + c·ε, p + ε, p_d + (∂p_d/∂p)·ε)`` at ``ε = 0``.
 
@@ -8742,21 +8749,20 @@ def _comoving_shifted_partial(
     what the removed-exponent test compares against. The zero-base twin of issue
     #541 runs over ``ε`` as it runs over a parameter on the plain path.
 
-    Where that leaves a singular power, each such power is asked how its base
-    moves with ``ε`` (issue #550). For the power a shift is for, it does not:
-    ``c`` is ``-(∂base/∂p)/(∂base/∂clock)``, so ``d base/dε`` is nothing, and
-    with it the power's ``e·base^(e-1)·(d base/dε)``. Or it moves with itself,
-    ``d base/dε = q·base`` with no clock in ``q`` (the width of a window, in the
-    column of that width), and the power's derivative is ``e·q·base^e``, which
-    is no more singular than the power. It was left to sympy to see either, as
-    it added ``∂base/∂p`` and ``c·∂base/∂clock`` up, which it does where the
-    two are spelled alike and not otherwise: not for an onset ``on/(wb - wa)``
+    A singular power whose base does not move with ``ε`` is left as it is, its
+    base not shifted (issue #550). That is the power the shift is for: ``c`` is
+    ``-(∂base/∂p)/(∂base/∂clock)``, so ``d base/dε`` is nothing, and with it the
+    power's ``e·base^(e-1)·(d base/dε)``. It was left to sympy to see that, as
+    it added ``∂base/∂p`` and ``c·∂base/∂clock`` up, which it does where the two
+    are spelled alike and not otherwise: not for an onset ``on/(wb - wa)``
     beside the shift ``-1/(wa - wb)`` that ``cancel`` returns for it, for
-    ``on/(wb - wa)^2`` beside ``1/(wa^2 - 2·wa·wb + wb^2)``, or for
-    ``on/(kk·(wb - wa))``. What was left then is a zero times a power that is
-    unbounded at the crossing. Here the rate of the base is put through
-    ``cancel``, and the base is carried as ``base·(1 + q·ε)``. A law that
-    sympy's own sum already clears is not touched, and has the text it had.
+    ``on/(wb - wa)^2`` beside ``1/(wa^2 - 2·wa·wb + wb^2)``, for
+    ``on/(kk·(wb - wa))``, or for ``on/wd`` with ``wd`` a derived parameter
+    that the shift has written out. What was left then is a zero times a
+    power that is unbounded at the crossing. Here the rate of the base, with
+    each derived parameter written out (``written_out``), is put through
+    ``cancel`` and asked. A law in which sympy's own sum clears every such
+    base is not touched, and has the text it had.
     """
     from bngsim._jacobian import _finish_zero_bases, _prepare_zero_bases
 
@@ -8768,42 +8774,27 @@ def _comoving_shifted_partial(
     sub[sp.Symbol(p_alias)] = sp.Symbol(p_alias) + eps
     for d_sym, d_rate in derived_shift.items():
         sub[d_sym] = d_sym + d_rate * eps
-
-    def along(shifted):
-        prepared = _prepare_zero_bases(shifted, {_COMOVING_EPS}, constants | {_COMOVING_EPS})
-        return _finish_zero_bases(sp.diff(prepared, eps)).subs(eps, 0)
-
-    as_summed = along(expr.subs(sub, simultaneous=True))
-    if c == 0:
-        return as_summed
-    clock_names = set(clock_weights)
-    carried: dict = {}
-    seen: set = set()
-    for node in _pow_nodes_in_values(expr, sp):
-        base = node.base
-        if base in seen or not _singular_power(node, clock_names, sp):
-            continue
-        seen.add(base)
-        rate = sp.diff(base.subs(sub, simultaneous=True), eps).subs(eps, 0)
-        if rate == 0:
-            continue  # sympy's own sum has cleared it: nothing to carry
-        rate = sp.cancel(rate)
-        with_itself = sp.Integer(0) if rate == 0 else sp.cancel(rate / base)
-        if with_itself.has(sp.nan, sp.zoo, sp.oo, -sp.oo) or (
-            {symbol.name for symbol in with_itself.free_symbols} & clock_names
-        ):
-            continue  # it moves otherwise: a power of another crossing
-        carried[base] = (sp.Dummy(f"carried_{len(carried)}"), with_itself)
-    if not carried:
-        return as_summed
-    shifted = expr.xreplace({base: held for base, (held, _q) in carried.items()})
-    shifted = shifted.subs(sub, simultaneous=True)
-    shifted = shifted.xreplace({held: base * (1 + q * eps) for base, (held, q) in carried.items()})
-    as_carried = along(shifted)
-    left = _singular_clock_powers(as_summed, clock_names, sp)
-    if len(_singular_clock_powers(as_carried, clock_names, sp)) < len(left):
-        return as_carried
-    return as_summed
+    still: dict = {}
+    if c != 0:
+        clock_names = set(clock_weights)
+        seen: set = set()
+        for node in _pow_nodes_in_values(expr, sp):
+            base = node.base
+            if base in seen or not _singular_power(node, clock_names, sp):
+                continue
+            seen.add(base)
+            rate = sp.diff(base.subs(sub, simultaneous=True), eps).subs(eps, 0)
+            if rate == 0:
+                continue  # sympy's own sum has cleared it
+            if written_out:
+                rate = rate.xreplace(written_out)
+            if sp.cancel(rate) == 0:
+                still[base] = sp.Dummy(f"still_{len(still)}")
+    shifted = (expr.xreplace(still) if still else expr).subs(sub, simultaneous=True)
+    if still:
+        shifted = shifted.xreplace({held: base for base, held in still.items()})
+    prepared = _prepare_zero_bases(shifted, {_COMOVING_EPS}, constants | {_COMOVING_EPS})
+    return _finish_zero_bases(sp.diff(prepared, eps)).subs(eps, 0)
 
 
 def _comoving_derived_axes(names: set[str], upstream, inline_map, derived_aliases: dict, allowed):
@@ -9246,7 +9237,9 @@ def _functional_comoving_plan(
     terms: dict[int, dict[int, str]] = {}
     approach: list[tuple[int, tuple[str, ...], str, tuple[str, ...]]] = []
 
-    def removes_a_power(p_alias: str, c, derived_shift) -> tuple[bool, dict[str, str | None]]:
+    def removes_a_power(
+        p_alias: str, c, derived_shift, written_out
+    ) -> tuple[bool, dict[str, str | None]]:
         """Whether the shift ``c`` removes a singular power from a law's
         ``∂/∂p``, and each law's comoving ``∂/∂p`` under it, as C."""
         eligible = False
@@ -9259,7 +9252,7 @@ def _functional_comoving_plan(
                     on_cell, p_alias, 0, clock_weights, derived_shift, constants, sp
                 )
                 moved = _comoving_shifted_partial(
-                    on_cell, p_alias, c, clock_weights, derived_shift, constants, sp
+                    on_cell, p_alias, c, clock_weights, derived_shift, constants, sp, written_out
                 )
                 if _singular_clock_powers(plain, clock_names, sp) - _singular_clock_powers(
                     moved, clock_names, sp
@@ -9295,14 +9288,22 @@ def _functional_comoving_plan(
             rate = sp.diff(inlined, p_sym)
             if rate != 0:
                 derived_shift[d_sym] = rate
-        for first in sorted(shifts, key=_term_order.srepr):
+
+        def spelled(shift) -> list:
+            return sorted(_shift_spellings(shift, sp), key=_term_order.srepr)
+
+        # In the order of the first of each shift's two spellings: the one the
+        # table has is whichever ``cancel`` returned, which can go by the seed.
+        for first in sorted(shifts, key=lambda shift: _term_order.srepr(spelled(shift)[0])):
             best = None
-            for spelling in sorted(_shift_spellings(first, sp), key=_term_order.srepr):
+            for spelling in spelled(first):
                 spelled_c = sympy_to_c(spelling, resolve_symbol)
                 if spelled_c is None:
                     continue
                 try:
-                    eligible, spelled_law_c = removes_a_power(p_alias, spelling, derived_shift)
+                    eligible, spelled_law_c = removes_a_power(
+                        p_alias, spelling, derived_shift, inline
+                    )
                 except RecursionError:
                     # sympy did not come back from a conditional under this
                     # spelling (see ``_shift_spellings``). It is no candidate.

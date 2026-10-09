@@ -936,6 +936,47 @@ print(hashlib.sha256(source.encode()).hexdigest(), source.count("*c_out ="))
 """
 
 
+# Two such windows in one law, the second ten later and over another pair of
+# tied names: the crossings move with ``on`` at two shifts.
+_TWO_WINDOWS = (
+    _COMOVING.replace("    9 w1    1.0\n", "    9 w1    1.0\n   10 v01   2.0\n   11 v1    1.0\n")
+    .replace(
+        "    1 s() (t-on/(w01-w1))/D\n",
+        "    1 s() (t-on/(w01-w1))/D\n    3 s2() (t-(10+on/(v01-v1)))/D\n",
+    )
+    .replace(
+        "k1*s()*((1-s())^(a-1)),0),0)\n",
+        "k1*s()*((1-s())^(a-1)),0),0)"
+        "+if(t>=(10+on/(v01-v1)),if(t<=((10+on/(v01-v1))+D),k1*s2()*((1-s2())^(a-1)),0),0)\n",
+    )
+)
+
+
+def test_the_cases_of_two_shifts_are_in_one_order_under_every_hash_seed(tmp_path):
+    """``on`` moves the crossings of the two windows at two shifts, and has a
+    case for each. They were put in the order of the spelling ``cancel``
+    returned for each, which goes by the seed for these names: the two cases
+    changed places (seeds 1 and 3 against the others), and dX/d(on) with
+    them, by 1.1e-7. They are in the order of the first of each shift's two
+    spellings."""
+    assert _TWO_WINDOWS.count("v01-v1") == 3 and _TWO_WINDOWS.count("s2()") == 3
+    path = tmp_path / "model.net"
+    path.write_text(_TWO_WINDOWS)
+    emitted = {}
+    for seed in (0, 1, 3, 6):
+        done = subprocess.run(
+            [sys.executable, "-c", _EMIT_SENS, str(path)],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        emitted[seed] = done.stdout.strip().splitlines()[-1]
+    assert len(set(emitted.values())) == 1, emitted
+    assert emitted[0].split()[1] == "3", emitted  # two for on, one for D
+
+
 def test_a_model_has_its_comoving_case_under_every_hash_seed(tmp_path):
     """A window whose onset is ``on/(w01 - w1)``. The shift of its crossings
     in ``on`` is ``1/(w01 - w1)``, which ``cancel`` returned as that or as
@@ -999,7 +1040,9 @@ def test_no_emitter_sorts_by_a_key_of_sympys_that_can_follow_the_seed():
     ], found
     # And what they are sorted by: nothing else of sympy's (``str`` and
     # ``sort_key`` follow the seed as ``srepr`` does).
-    assert inspect.getsource(_codegen).count("key=_term_order.srepr") == 4
+    emitter = inspect.getsource(_codegen)
+    assert emitter.count("key=_term_order.srepr") == 3
+    assert emitter.count("key=lambda shift: _term_order.srepr(spelled(shift)[0])") == 1
     assert inspect.getsource(_switch_sensitivity).count("_term_order.in_order(by_count[n])") == 1
 
 

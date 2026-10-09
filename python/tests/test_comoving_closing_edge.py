@@ -836,7 +836,10 @@ def _window_from(tmp_path, a, onset, values, second_onset=None):
     window, and the same columns. With ``second_onset``, the closing power is
     there twice, the second time over that spelling of the onset."""
     text = NET.format(a=a, close="<=", shape=SHAPES["closing"][0], extra="", tmid=5.0, on=ON)
-    declared = "".join(f"   {9 + i} {name} {value!r}\n" for i, (name, value) in enumerate(values))
+    declared = "".join(
+        f"   {9 + i} {name} {value if isinstance(value, str) else repr(value)}\n"
+        for i, (name, value) in enumerate(values)
+    )
     for old, new in (
         ("s() (t-on)/D", f"s() (t-({onset}))/D"),
         ("if(t>=on,", f"if(t>=({onset}),"),
@@ -912,16 +915,20 @@ def test_an_onset_over_two_names_that_sympys_order_ties_on(tmp_path, larger, sma
         ("on/(kk*(wb-wa))", (("kk", 1.0), *_TWO)),
         ("on/((wb-wa)*(wd-wc))", (*_TWO, ("wd", 2.0), ("wc", 1.0))),
         ("on/(wb-wa)^2", _TWO),
+        ("on/wd", (*_TWO, ("wd", "wb-wa"))),
+        ("on/(kk*wd)", (("kk", 1.0), *_TWO, ("wd", "wb-wa"))),
     ],
-    ids=["a product", "two differences", "a square"],
+    ids=["a product", "two differences", "a square", "a derived parameter", "a product with one"],
 )
-def test_an_onset_over_a_product_or_a_power(tmp_path, onset, values, param):
+def test_an_onset_over_a_product_a_power_or_a_derived_parameter(tmp_path, onset, values, param):
     """``cancel`` multiplies the denominator out, ``1/(kk·wb - kk·wa)`` or
     ``1/(wa² - 2·wa·wb + wb²)``, and beside the law's own ``1/(kk·(wb - wa))``
     or ``1/(wb - wa)²`` sympy's sum along the shift does not clear the
-    singular power in either spelling: dX/d(on) was 0.45% off, on main and
-    with both spellings tried. The base of the power is asked how it moves
-    along the shift, through ``cancel``, and it does not."""
+    singular power in either spelling. Nor beside ``1/wd``, where ``wd`` is
+    the derived parameter ``wb - wa`` and the shift has it written out.
+    dX/d(on) was 0.45% off, on main and with both spellings tried. The base
+    of the power is asked how it moves along the shift, with the derived
+    parameters written out and through ``cancel``, and it does not."""
     model = _window_from(tmp_path, 1.1, onset, values)
     assert len(_cases_of(model)) == 2
     assert _worst(_column(model, param), _exact("closing", 1.1, param)) < 5e-6
@@ -949,12 +956,19 @@ def test_a_power_twice_over_one_onset_written_both_ways_round(tmp_path):
     """``(1 - s)^(a-1)·(1 - s2)^(a-1)`` with ``s`` over ``on/(wb - wa)`` and
     ``s2`` over ``-on/(wa - wb)``: one window closing as ``(1 - s)^(2(a-1))``.
     No spelling of the shift is the law's for both powers. Main had no case,
-    and dX/d(on) 4.7e-4 off."""
+    with dX/d(on) 4.7e-4 off and dX/dD 3.6e-4.
+
+    The column of D fails its run now, where it was that 3.6e-4 off: written
+    ``-on/(wa - wb)``, the second power's scale ``D·(wa - wb)`` is negative,
+    and the power that is split over its scale is no number there, which is
+    the limit ``_split_shared_scale`` states (issue #760)."""
     SHAPES["closing twice"] = ("", lambda u, a: u * (1 - u) ** (2 * (a - 1)))
     try:
         model = _window_from(tmp_path, 1.1, "on/(wb-wa)", _TWO, second_onset="-on/(wa-wb)")
         assert len(_cases_of(model)) == 2
         assert _worst(_column(model, "on"), _exact("closing twice", 1.1, "on")) < 5e-6
+        with pytest.raises(bngsim.SimulationError, match="non-finite value"):
+            _column(_window_from(tmp_path, 1.1, "on/(wb-wa)", _TWO, "-on/(wa-wb)"), "D")
     finally:
         del SHAPES["closing twice"]
 
