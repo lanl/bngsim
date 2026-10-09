@@ -3241,20 +3241,10 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // 5. The columns once more, at the state the run that was taken on ended
     //    at, against the ones returned: what the columns of where a run ends
     //    are. With its own factorization, since that state need not be near.
-    //    A species the run took below zero is at zero where the rates have no
-    //    value otherwise, as in 2.
     if (sys.held != nullptr && !sys.hold_failed) {
-        std::vector<double> y_h(*sys.held);
+        const std::vector<double> &y_h = *sys.held;
         std::vector<double> J_h(static_cast<size_t>(ns) * ns, 0.0);
         ss_fill_state_jacobian(rhs, y_h.data(), ns, sub, want_analytical, J_h.data());
-        if (!all_finite(J_h)) {
-            for (int i = 0; i < ns; ++i) {
-                if (y_ss[i] >= 0.0 && y_h[static_cast<size_t>(i)] < 0.0) {
-                    y_h[static_cast<size_t>(i)] = 0.0;
-                }
-            }
-            ss_fill_state_jacobian(rhs, y_h.data(), ns, sub, want_analytical, J_h.data());
-        }
         std::vector<double> A_h;
         ss_reduce_jacobian(J_h.data(), ns, laws, unknowns, A_h);
         std::vector<int> row_h;

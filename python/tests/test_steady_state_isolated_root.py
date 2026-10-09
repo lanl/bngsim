@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+from pathlib import Path
 
 import bngsim
 import numpy as np
@@ -1076,8 +1078,6 @@ def test_the_root_a_run_of_it_ends_at_is_returned(tmp_path):
     out = sim.steady_state(sensitivity_params=["a"])
     assert np.asarray(out.concentrations)[0] == pytest.approx(1.0, rel=1e-8)
     assert abs(np.asarray(out.sensitivity)[0, 0]) < 1e-8
-    assert out.sens_root_stability == "stable"
-    assert out.sens_root_growth_rate == pytest.approx(-0.75, rel=1e-6)
 
 
 BRUSSELATOR = """begin parameters
@@ -1118,6 +1118,18 @@ def test_a_focus_the_system_spirals_into_is_returned(tmp_path):
     np.testing.assert_allclose(
         np.asarray(out.sensitivity), [[1.0, 0.0], [-1.5, 1.0]], rtol=1e-9, atol=1e-12
     )
+
+
+def test_a_state_the_system_rests_at_is_reported_as_one(tmp_path):
+    """The two controls above, as the result describes them: the cubic at its
+    root at 1, where the Jacobian is -k·(1 - a) = -0.75, and the focus with
+    eigenvalues -0.25 ± 0.97i."""
+    cubic = bngsim.Simulator(_net(tmp_path, THREE_ROOTS.format(x0="0.9")), method="ode")
+    out = cubic.steady_state(sensitivity_params=["a"])
+    assert out.sens_root_stability == "stable"
+    assert out.sens_root_growth_rate == pytest.approx(-0.75, rel=1e-6)
+    focus = bngsim.Simulator(_net(tmp_path, BRUSSELATOR.format(B="1.5")), method="ode")
+    out = focus.steady_state(sensitivity_params=["A", "B"])
     assert out.sens_root_stability == "stable"
     assert out.sens_root_growth_rate == pytest.approx(-0.25, rel=1e-9)
 
@@ -1169,3 +1181,154 @@ def test_the_share_a_slow_mode_has_of_a_column_is_what_is_reported(tmp_path):
     out = sim.steady_state(sensitivity_params=["s"])
     assert out.sens_root_relaxation == pytest.approx(1e-3, rel=1e-3)
     assert out.sens_root_relaxation_param == "s"
+
+
+SCALES = """begin parameters
+    1 kf  1.0
+    2 kr  1.0
+    3 kc  1.0
+    4 kb  2.0
+    5 s   1e-3
+    6 kd  1.0
+end parameters
+begin species
+    1 A() 1e-12
+    2 B() 0
+    3 C() 1000
+    4 D() 0
+    5 Z() 7
+    6 E() 0
+end species
+begin reactions
+    1 1 2 kf
+    2 2 1 kr
+    3 1,3 1,4 kc
+    4 4 3 kb
+    5 0 6 s
+    6 6 0 kd
+end reactions
+"""
+
+
+def test_what_an_entry_for_each_species_is_small_against(tmp_path):
+    """The scale of a species is the larger of its concentration at the start
+    and at the steady state, and for one at a zero the largest among the
+    species the Jacobian couples it to, no more than a conserved total it
+    belongs to allows, and no less than 1e-9 of those neighbours. A and B
+    share a total of 1e-12 and A's rate reads C, at 1000: 1e-6, the floor. C
+    and D share 1000. Z, which nothing touches, is 7, and E, made and removed
+    on its own, is its steady 1e-3: neither takes the 1000 of a species it has
+    nothing to do with."""
+    sim = bngsim.Simulator(_net(tmp_path, SCALES), method="ode")
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-13)
+    np.testing.assert_allclose(
+        out.sens_species_scale, [1e-6, 1e-6, 1000.0, 1000.0, 7.0, 1e-3], rtol=1e-6
+    )
+    assert sim.steady_state().sens_species_scale.size == 0
+
+
+STOPS = """begin parameters
+    1 kd  1.0
+    2 c   1.0
+    3 ky  1.0
+end parameters
+begin functions
+    1 made() -c*Xobs*ln(Xobs)
+end functions
+begin species
+    1 X() 0.5
+    2 Y() 0
+end species
+begin reactions
+    1 1 0 kd
+    2 0 2 made
+    3 2 0 ky
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+
+def test_a_run_that_cannot_be_taken_on_is_not_known_to_stay(tmp_path):
+    """X decays, and Y is made at -c·X·ln(X), which goes to zero with X and
+    has no value at it. The solve stops at X = 6e-12; the run taken on from
+    there reaches X = 0 and stops, started again at zero or on a differenced
+    Jacobian alike. A state a run was not seen to stay at is refused, here
+    with columns that are right."""
+    sim = bngsim.Simulator(_net(tmp_path, STOPS), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*not one a run stays at.*max_time \(1e\+06\) failed.*not known to stay",
+    ):
+        sim.steady_state(sensitivity_params=["c", "ky"], atol=1e-30, rtol=1e-10)
+
+
+BOUNDARY = """begin parameters
+    1 kf  1.0
+    2 kr  0.5
+end parameters
+begin species
+    1 A() 2.0
+    2 B() 0
+    3 $E() 3.0
+end species
+begin reactions
+    1 1,3 2,3 kf
+    2 2 1 kr
+end reactions
+"""
+
+
+def test_a_boundary_species_the_mask_leaves_out_is_the_constant_it_is_held_as(tmp_path):
+    """Control. A + E -> B + E with E a boundary species, and E masked out.
+    A's rate reads E, and E is what a masked species is held as: a constant.
+    With T = A + B, dA*/dkf = -T·kr·E/(kf·E + kr)² and dA*/dkr =
+    T·kf·E/(kf·E + kr)²."""
+    sim = bngsim.Simulator(_net(tmp_path, BOUNDARY), method="ode")
+    out = sim.steady_state(sensitivity_params=["kf", "kr"], mask=["A()", "B()"], tol=1e-12)
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity)[:2],
+        [[-3.0 / 12.25, 6.0 / 12.25], [3.0 / 12.25, -6.0 / 12.25]],
+        rtol=1e-8,
+    )
+    assert np.all(np.isnan(np.asarray(out.sensitivity)[2]))
+
+
+# ── The corpus witnesses ────────────────────────────────────────────────────
+#
+# Two BioModels files that no small model stood in for. The corpus is fetched,
+# not vendored, and these skip where it is absent.
+
+
+def _biomodel(name: str) -> str:
+    fetched = (
+        Path(__file__).resolve().parents[2] / "benchmarks/suites/biomodels/data/sbml_downloads"
+    )
+    path = Path(os.environ.get("BIOMODELS_SBML_DIR", fetched)) / f"{name}.xml"
+    if not path.exists():
+        pytest.skip(f"{name} not available")
+    return str(path)
+
+
+def test_biomd599_is_refused_on_its_condition_number():
+    """A group of species that exchange among themselves, with what fed them
+    gone: their total is where the run left it, and the Jacobian has an
+    eigenvalue of 2e-18. No pivot of its factorization is under 4% of the
+    terms it was computed from, and one Newton step leaves the determinant and
+    the columns where they were. The condition number is 3e16. Every small
+    model built to be refused on it was refused on a pivot first."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000599")), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*magnified \d\.\de\+1[5-9] times"):
+        sim.steady_state(sensitivity_params=["parameter_1", "parameter_2", "parameter_3"])
+
+
+def test_biomd1001_is_taken_on_with_a_differenced_jacobian():
+    """Control. The run taken on from the returned state stops the integrator
+    on the closed-form Jacobian at t = 7,856, started again or not, and
+    reaches ``max_time`` on a differenced one, as the solve itself does where
+    its integrator gives up (issue #127). The columns are returned, as they
+    were."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000001001")), method="ode")
+    out = sim.steady_state(sensitivity_params=["R1_total_C4", "k_in_R1_C4", "kdeg_R1"])
+    assert np.all(np.isfinite(np.asarray(out.sensitivity)))
