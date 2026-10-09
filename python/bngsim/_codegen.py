@@ -287,7 +287,11 @@ _compile_counter = itertools.count()
 # v39: sums, products and the arguments of min, max, and, or are printed in an
 # order that does not follow the hash seed (issue #550). A cached v38 .so is one
 # of the two or three sources a model with a tied sum had. Invalidate v38.
-_CODEGEN_VERSION = "39"
+# v40: lanl/bngsim #1003 — a new export says which parameters move the edge of
+# a singular power that has no comoving case (bngsim_codegen_edge_without_case),
+# and the solver refuses their columns. A cached v39 .so does not say, and such
+# a column would keep coming back plain, up to 12% off. Invalidate v39.
+_CODEGEN_VERSION = "40"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -3350,6 +3354,7 @@ def _emit_sens_rhs_body(
     comoving_clock_lines: tuple[list[str], list[str]] | None = None,
     comoving_approach: tuple[tuple[int, tuple[str, ...], str, tuple[str, ...]], ...] = (),
     counter_powers: tuple[tuple[int, tuple[str, ...]], ...] | None = None,
+    edges_without_case: tuple[tuple[int, tuple[str, ...]], ...] | None = None,
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -4214,10 +4219,31 @@ def _emit_sens_rhs_body(
         _emit("    return -1;")
         _emit("}")
 
+    def _emit_edge_without_case_export() -> None:
+        """Issue #1003: the parameters whose column has no frame to cross the
+        edge of a singular power in. Emitted with or without a comoving case:
+        a model in which no shift is a number has none."""
+        if not edges_without_case:
+            return
+        _emit("")
+        _emit("/* Whether parameter iP moves the edge of a power of the time, or of a counter,")
+        _emit("   that is singular at these parameter values (an exponent under 1), and has no")
+        _emit("   comoving case that removes that power from its column: 1, or 0. The plain")
+        _emit("   column's forcing is unbounded at such an edge. (Issue #1003) */")
+        _emit("BNGSIM_EXPORT int bngsim_codegen_edge_without_case(int iP, const double* p) {")
+        _emit("    (void)p;")
+        _emit("    switch (iP) {")
+        for param_idx, tests in edges_without_case:
+            _emit(f"    case {int(param_idx)}: return ({' || '.join(tests)}) ? 1 : 0;")
+        _emit("    default: return 0;")
+        _emit("    }")
+        _emit("}")
+
     # ── Term scale of the sensitivity RHS (issue #177) ──────────────────────
     if not emit_term_scale:
         _emit_comoving_exports()
         _emit_counter_power_export()
+        _emit_edge_without_case_export()
         return "\n".join(lines) + "\n"
 
     # A separate entry point rather than an extra output on the RHS above: the
@@ -4256,6 +4282,7 @@ def _emit_sens_rhs_body(
     _emit("}")
     _emit_comoving_exports()
     _emit_counter_power_export()
+    _emit_edge_without_case_export()
 
     return "\n".join(lines) + "\n"
 
@@ -8628,7 +8655,26 @@ def _base_closes(base, clock_names: set[str], sp) -> bool:
     return False
 
 
-def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, dict]:
+def _edge_is_not_moved(numerator, d_p, clock, d_clock, sp) -> bool:
+    """Whether ``∂N/∂p`` is 0 where the numerator ``N`` is: the parameter is in
+    the base and does not move its zero, as ``kk`` in ``(kk·(t - on))^e``. The
+    plain column of such a parameter has no unbounded forcing: ``e·N^(e-1)·N_p``
+    is ``N^e`` times a number.
+
+    Worked out only for an ``N`` that is linear in the clock, where its zero is
+    one expression. False where it is not worked out."""
+    if d_clock.has(clock) or numerator.has(sp.Piecewise):
+        return False
+    try:
+        zero = -numerator.subs(clock, 0) / d_clock
+        return sp.cancel(d_p.subs(clock, zero)) == 0
+    except Exception:  # noqa: BLE001 - not worked out
+        return False
+
+
+def _comoving_coefficients(
+    expr, clock_names: set[str], axes, sp, asked: dict | None = None
+) -> dict[str, dict]:
     """``{param_alias: {c: exponents}}``: the shifts ``c = ∂t*/∂p`` at which a singular power
     of ``expr`` has its base vanish, read off that base's numerator ``N`` as
     ``-∂N/∂p ÷ ∂N/∂clock``. A value that still reads the clock is not a fixed
@@ -8647,7 +8693,14 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
     folded. Once :func:`_clock_guard_cells` has collapsed a year chain, the ratio
     at a real onset is a plain rational — 1 for every onset in the corpus — and a
     ``Piecewise`` left over is a guard the cells did not resolve, where the shift
-    could not cancel anyway."""
+    could not cancel anyway.
+
+    ``asked``, where given, is filled with what became of each power for each
+    parameter its numerator reads (issue #1003):
+    ``{param_alias: {(power, way): [shift, ...]}}``, a shift that was kept, or
+    ``None`` for one that was dropped. A parameter that does not move the
+    power's zero has an empty list. A dropped shift is a column with no frame
+    to be carried in across that power's edge."""
     from bngsim._jacobian import _value_symbol_names
 
     out: dict[str, dict] = {}
@@ -8664,21 +8717,32 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
             numerator = written.xreplace(inline) if inline else written
             value_names = _value_symbol_names(numerator, sp)
             for clock_name in sorted(value_names & clock_names):
-                d_clock = sp.diff(numerator, sp.Symbol(clock_name))
+                clock = sp.Symbol(clock_name)
+                d_clock = sp.diff(numerator, clock)
                 if d_clock == 0:
                     continue
                 for p_alias in sorted(value_names & aliases):
+                    became: list = []
+                    if asked is not None:
+                        became = asked.setdefault(p_alias, {}).setdefault((node, way), [])
                     d_p = sp.diff(numerator, sp.Symbol(p_alias))
                     if d_p == 0:
                         continue
                     for leaf in _piecewise_value_leaves(-d_p / d_clock, sp):
                         if leaf.has(sp.Piecewise):
+                            became.append(None)
                             continue
                         leaf = sp.cancel(leaf)
-                        if leaf == 0 or leaf.has(sp.nan, sp.zoo, sp.oo, -sp.oo):
+                        if leaf == 0:
+                            continue
+                        if leaf.has(sp.nan, sp.zoo, sp.oo, -sp.oo):
+                            became.append(None)
                             continue
                         if not {s.name for s in leaf.free_symbols} <= allowed:
+                            if not _edge_is_not_moved(numerator, d_p, clock, d_clock, sp):
+                                became.append(None)
                             continue
+                        became.append(leaf)
                         seen = out.setdefault(p_alias, {})
                         seen[leaf] = seen.get(leaf, ()) + power
     return out
@@ -9045,11 +9109,21 @@ def _functional_comoving_plan(
     n_params: int,
     observable_clock_weights: dict[str, float] | None = None,
     unshiftable: frozenset[str] = frozenset(),
+    edges_out: list | None = None,
 ) -> _ComovingPlan | None:
     """The comoving cases of a model whose plain ``∂f/∂p`` has already derived
     (see the note above), or ``None`` when it has none. Never declines the model:
     anything that goes wrong here leaves the plain column, which is what the model
     had before issue #545.
+
+    ``edges_out`` is given the parameters that are left without a case they need
+    (issue #1003), as ``((param_idx, C tests), ...)``: each moves the edge of a
+    singular power, and no case of its own removes that power from its column.
+    Its plain column has a forcing that is unbounded at the edge where a test
+    holds at the run's values, and the solver refuses it. Appended once, where
+    the plan has worked that out, with or without a case; a plan that ends
+    before it has (an exception, the budget, a law it does not shift) appends
+    nothing, and the caller takes :func:`_edge_parameters_by_name`.
 
     ``observable_clock_weights`` is ``{aliased observable: weight}`` for every
     observable that sums a clock species without being the clock's own name
@@ -9062,6 +9136,7 @@ def _functional_comoving_plan(
         _DerivationBudgetExceeded,
         _exprtk_to_sympy,
         _inline_functions,
+        _value_symbol_names,
         sympy_to_c,
     )
 
@@ -9201,6 +9276,8 @@ def _functional_comoving_plan(
         if parsed_laws[text] is not None:
             rxns_of_law.setdefault(text, []).append(rxn_idx)
     if not rxns_of_law:
+        if edges_out is not None:
+            edges_out.append(())
         return None
     # Cheap before anything costly: with no singular power in any law, there is no
     # singular term for a case to cancel, and the model has none.
@@ -9209,6 +9286,8 @@ def _functional_comoving_plan(
         for text in rxns_of_law
         for node in _pow_nodes_in_values(parsed_laws[text], sp)
     ):
+        if edges_out is not None:
+            edges_out.append(())
         return None
 
     def over_parameters(exponent) -> str | None:
@@ -9222,12 +9301,20 @@ def _functional_comoving_plan(
         for text in rxns_of_law
     }
 
+    # Issue #1003: what became of each singular power for each parameter its
+    # numerator reads (see ``_comoving_coefficients``), and the shifts that were
+    # made cases.
+    asked: dict[str, dict] = {}
+    made: dict[str, set] = {}
+
     def shifts_of(axes) -> dict[str, dict]:
         found: dict[str, dict] = {}
         for text in rxns_of_law:
             for on_cell, _cond in laws[text]:
                 _check_derivation_deadline(scope.deadline)
-                for p_alias, cs in _comoving_coefficients(on_cell, clock_names, axes, sp).items():
+                for p_alias, cs in _comoving_coefficients(
+                    on_cell, clock_names, axes, sp, asked
+                ).items():
                     seen = found.setdefault(p_alias, {})
                     for c, powers in cs.items():
                         seen[c] = seen.get(c, ()) + powers
@@ -9325,6 +9412,7 @@ def _functional_comoving_plan(
             _left, c, c_c, law_c = best
             virtual = n_params + len(cases)
             cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
+            made.setdefault(p_alias, set()).add(first)
 
             # Whether a power is singular is asked of its exponent when the
             # run asks, at the parameter values of that run. An exponent
@@ -9392,6 +9480,54 @@ def _functional_comoving_plan(
             derive(p_alias, derived[p_alias])
     except _DerivationBudgetExceeded:
         logger.debug("issue #750: the derived comoving axes ran out of derivation budget")
+
+    # Issue #1003: every parameter that a singular power's numerator reads, by
+    # name, through the derived parameters too. One is left without a case
+    # unless the above has asked it of that power and found a case for each
+    # shift, or found that it does not move the power's zero. So a parameter
+    # the above did not reach (the budget ran out among the derived axes, or a
+    # derived parameter was not written out) is left without one.
+    def primaries_of(name: str) -> set[str]:
+        found: set[str] = set()
+        for one in {name} | above(name):
+            parsed = parse_derived(one)
+            for sym in () if parsed is None else parsed.free_symbols:
+                read = scope.param_of_alias.get(sym.name, sym.name)
+                if read in primary:
+                    found.add(read)
+        return found
+
+    edges: dict[int, list[str]] = {}
+    for text in sorted(rxns_of_law):
+        for on_cell, _cond in laws[text]:
+            for node in sorted(set(_pow_nodes_in_values(on_cell, sp)), key=_term_order.srepr):
+                if not _singular_power(node, clock_names, sp):
+                    continue
+                way = "close" if _base_closes(node.base, clock_names, sp) else "open"
+                e_c = over_parameters(node.exp)
+                if e_c is None:
+                    test = "1"
+                elif way == "close":
+                    test = f"(({e_c}) < 1.0 && ({e_c}) != 0.0)"
+                else:
+                    test = f"(({e_c}) < 1.0)"
+                in_base = _value_symbol_names(sp.numer(sp.together(node.base)), sp)
+                named: set[str] = set()
+                for alias in in_base & param_aliases:
+                    name = scope.param_of_alias[alias]
+                    named.add(name)
+                    if name in derived_names:
+                        named |= above(name) | primaries_of(name)
+                for name in sorted(named):
+                    became = asked.get(alias_of_name.get(name, ""), {}).get((node, way))
+                    if became is not None and all(
+                        shift is not None and shift in made.get(alias_of_name[name], ())
+                        for shift in became
+                    ):
+                        continue
+                    edges.setdefault(scope.param_idx_by_name[name], []).append(test)
+    if edges_out is not None:
+        edges_out.append(tuple((idx, tuple(dict.fromkeys(edges[idx]))) for idx in sorted(edges)))
     if not cases:
         return None
     # A clock-dependent law with no term in a case is a zero comoving ∂func/∂p there,
@@ -9400,6 +9536,87 @@ def _functional_comoving_plan(
         for rxn_idx in rxn_ids:
             terms.setdefault(rxn_idx, {})
     return _ComovingPlan(cases, terms, tuple(sorted(clock_species)), tuple(approach))
+
+
+def _edge_parameters_by_name(
+    reactions, frxn_by_idx: dict, scope: _FunctionalDfdpScope, clock_names: set[str]
+) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    """The parameters without a comoving case in a model whose plan did not
+    say (issue #1003): every one that a singular power's numerator reads, by
+    name and through the derived parameters, each with the C test of that
+    power's exponent being under 1 at the run's values.
+
+    For a plan that ended early: it raised, it ran out of its budget, or it
+    met a law it does not shift. The model then has no case at all, and every
+    column that needed one is plain. By name, so wider than what the plan
+    works out: a parameter that is in a power's base and does not move its
+    zero is listed, and a closing power is listed at an exponent of exactly 0.
+
+    It does not give up either. A law that cannot be read is taken to hold
+    such a power for every parameter: what the solver refuses by this is a
+    wrong number."""
+    import sympy as sp
+
+    from bngsim._jacobian import (
+        _TIME_SYM,
+        _exprtk_to_sympy,
+        _inline_functions,
+        _value_symbol_names,
+        sympy_to_c,
+    )
+
+    clocks = set(clock_names) | {_TIME_SYM}
+
+    def resolve_symbol(name: str) -> str | None:
+        if name == _TIME_SYM:
+            return "t"
+        mapped = scope.c_ref.get(name)
+        return mapped if mapped is not None else _MATH_CONSTANT_C.get(name)
+
+    derived_names = set(scope.derived_exprs)
+    behind: dict[str, set[str]] = {}
+
+    def reach(name: str) -> set[str]:
+        """*name*, and every parameter it is defined from, through any depth."""
+        if name not in behind:
+            behind[name] = found = {name}
+            text = scope.derived_exprs.get(name, "") if name in derived_names else ""
+            parsed = _exprtk_to_sympy(text) if text else None
+            for sym in () if parsed is None else parsed.free_symbols:
+                read = scope.param_of_alias.get(sym.name, sym.name)
+                if read in scope.param_idx_by_name and read not in found:
+                    found |= reach(read)
+        return behind[name]
+
+    tests: dict[int, list[str]] = {}
+    seen: set[str] = set()
+    for rxn_idx, rxn in enumerate(reactions):
+        frxn = frxn_by_idx.get(rxn_idx) if rxn["type"] == "functional" else None
+        if frxn is None or frxn["rate_expr"] in seen:
+            continue
+        seen.add(frxn["rate_expr"])
+        try:
+            inlined = _inline_functions(frxn["rate_expr"], scope.func_map)
+            parsed = _exprtk_to_sympy(inlined) if inlined is not None else None
+            if parsed is None:
+                raise ValueError("a rate law that is not read")
+            if not {symbol.name for symbol in parsed.free_symbols} & clocks:
+                continue
+            found: list[tuple[str, str]] = []
+            for node in sorted(set(_pow_nodes_in_values(parsed, sp)), key=_term_order.srepr):
+                if not _singular_power(node, clocks, sp):
+                    continue
+                e_c = _exponent_over_parameters(node.exp, resolve_symbol, sympy_to_c)
+                test = "1" if e_c is None else f"(({e_c}) < 1.0)"
+                reads = _value_symbol_names(sp.numer(sp.together(node.base)), sp)
+                for alias in sorted(reads & set(scope.param_of_alias)):
+                    for name in sorted(reach(scope.param_of_alias[alias])):
+                        found.append((name, test))
+        except Exception:  # noqa: BLE001 - a law that is not read
+            found = [(name, "1") for name in sorted(scope.param_idx_by_name)]
+        for name, test in found:
+            tests.setdefault(scope.param_idx_by_name[name], []).append(test)
+    return tuple((idx, tuple(dict.fromkeys(tests[idx]))) for idx in sorted(tests))
 
 
 def _observable_volume_weights(species, observables, alias) -> dict[str, dict[int, str]]:
@@ -9690,23 +9907,40 @@ def _functional_dfdp_terms(
             if summed and (weight != 0.0 or name in unshiftable):
                 counter_species[name] = frozenset(i for i in summed if i >= 0)
 
-        def comoving(counter_powers_out: list) -> _ComovingPlan | None:
+        def edges_by_name() -> tuple:
+            return _edge_parameters_by_name(
+                reactions, frxn_by_idx, scope, clock_names | set(weights) | unshiftable
+            )
+
+        def comoving(
+            counter_powers_out: list, edges_out: list | None = None
+        ) -> _ComovingPlan | None:
             # Issue #948: the counters' powers first, and whatever becomes of
             # the plan after them.
             found = _counter_powers(reactions, frxn_by_idx, scope, counter_species)
             if found is not None:
                 counter_powers_out.append(found)
-            return _functional_comoving_plan(
-                reactions,
-                frxn_by_idx,
-                scope,
-                clock_names,
-                len(params),
-                weights,
-                frozenset(unshiftable),
-            )
+            # Issue #1003: the parameters left without a case, from the plan
+            # where it worked them out and by name where it did not, whatever
+            # ended it.
+            worked_out: list = []
+            try:
+                return _functional_comoving_plan(
+                    reactions,
+                    frxn_by_idx,
+                    scope,
+                    clock_names,
+                    len(params),
+                    weights,
+                    frozenset(unshiftable),
+                    worked_out,
+                )
+            finally:
+                if edges_out is not None:
+                    edges_out.append(worked_out[0] if worked_out else edges_by_name())
 
         comoving_out.append(comoving)
+        comoving_out.append(edges_by_name)
     return out, None
 
 
@@ -9860,7 +10094,7 @@ def generate_sens_from_model(
     # Elementary models never enter here (and the gate above already returned).
     functional_terms: dict[int, list[tuple[int, str]]] = {}
     functional_jacv_groups: list[list[str]] = []
-    comoving_thunks: list[Callable[[list], _ComovingPlan | None]] = []
+    comoving_thunks: list[Callable] = []
     if functional:
         functional_terms, decline = _functional_dfdp_terms(
             core, data, deadline, comoving_out=comoving_thunks
@@ -9993,9 +10227,11 @@ def generate_sens_from_model(
     # Issue #948: filled by the plan before it looks for a case, and kept
     # whatever becomes of the plan.
     counter_powers: list = []
+    # Issue #1003: likewise, the parameters that are left without a case.
+    edges_without_case: list = []
     if comoving_thunks:
         try:
-            comoving_plan = comoving_thunks[0](counter_powers)
+            comoving_plan = comoving_thunks[0](counter_powers, edges_without_case)
         except _DerivationBudgetExceeded:
             comoving_plan = None
         except Exception as exc:  # pragma: no cover - defensive
@@ -10206,6 +10442,8 @@ def generate_sens_from_model(
     rxn_data.extend(volume_storage_rows)
     if comoving_live_volume_clock:
         comoving_plan = None
+        # The cases are gone, so every parameter of an edge is without one.
+        edges_without_case = [comoving_thunks[1]()]
 
     # Issue #749: a Michaelis-Menten rate whose enzyme or substrate is a clock.
     # Its ∂rate/∂E and ∂rate/∂S are the Jacobian's, written through the same
@@ -10246,6 +10484,7 @@ def generate_sens_from_model(
         comoving_clock_lines=comoving_clock_lines,
         comoving_approach=comoving_plan.approach if comoving_plan is not None else (),
         counter_powers=counter_powers[0] if counter_powers else None,
+        edges_without_case=edges_without_case[0] if edges_without_case else None,
     )
     if src is None and functional_terms:
         # Every Functional rate law differentiated, but the emitter could not give

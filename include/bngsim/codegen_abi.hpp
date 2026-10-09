@@ -150,6 +150,17 @@ using CodegenComovingApproachFn = int (*)(int case_idx, const double *p);
 // off the powers themselves, so it is emitted for a model with no comoving case
 // too. Resolved with try_symbol.
 using CodegenCounterPowerFn = int (*)(int k, const double *p);
+// Issue #1003: bngsim_codegen_edge_without_case(iP, p) is 1 where parameter
+// iP moves the edge of a power that is singular at the parameter values p and
+// has no comoving case that removes that power from its column, and 0
+// otherwise. The shift a case is entered at has to be a number over p alone;
+// for a parameter in the denominator or the scale of the edge's time, or under
+// a base that is not linear in the time, it is not, and the generator makes no
+// case. A column of such a parameter is refused before the run. Emitted with
+// or without a comoving case, and listed by name (every parameter a singular
+// power's base reads) for a model whose plan of cases ended early. Resolved
+// with try_symbol; a .so without it refuses nothing.
+using CodegenEdgeWithoutCaseFn = int (*)(int iP, const double *p);
 
 // Dense analytical Jacobian into an n×n COLUMN-MAJOR buffer
 // (jac[j*n + i] = ∂f_i/∂x_j). The emitted C memsets the buffer itself.

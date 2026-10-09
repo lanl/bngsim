@@ -1888,6 +1888,9 @@ struct ComovingFrames {
     // that is singular at the run's values (issue #948). A column that moves
     // one of them is refused.
     std::vector<int> counters_under_a_power;
+    // The parameter values bngsim_codegen_edge_without_case is asked at (issue
+    // #1003), whether or not the .so has a case: null with no codegen .so.
+    const double *edge_param_values = nullptr;
     std::vector<int> plist;      // per column: the case the comoving RHS reads, or -1
     std::vector<double> c;       // per column: the shift the column was entered with
     std::vector<char> clock_row; // per species: a unit-rate clock, whose row stays S
@@ -2275,6 +2278,7 @@ struct CvodeSimulator::Impl {
     CodegenComovingClockFn codegen_comoving_clock_fn = nullptr;
     CodegenComovingApproachFn codegen_comoving_approach_fn = nullptr; // issue #760
     CodegenCounterPowerFn codegen_counter_power_fn = nullptr;         // issue #948
+    CodegenEdgeWithoutCaseFn codegen_edge_without_case_fn = nullptr;  // issue #1003
     CvodeUserData::CodegenJacFn codegen_jac_fn = nullptr;
     CvodeUserData::CodegenJacSparseFn codegen_jac_sparse_fn = nullptr;
     CvodeUserData::CodegenOutputsFn codegen_outputs_fn = nullptr;
@@ -2542,6 +2546,9 @@ struct CvodeSimulator::Impl {
     // The same asked of every switch time the run has, before it starts, so
     // that a closing edge is refused before the plain column is carried up to it.
     void comoving_refuse_ahead_without_a_frame(const SensitivityState &sens);
+    void comoving_refuse_without_a_case(const SensitivityState &sens, double t,
+                                        const std::vector<double> &dtstar_dp);
+    void comoving_refuse_ahead_without_a_case(const SensitivityState &sens);
     // Issue #948: refuses a column, parameter or initial-condition axis, with a
     // nonzero row of a counter species under a power that is singular at the
     // run's values. `cols` holds all n_total columns.
@@ -2844,6 +2851,8 @@ CVRhsFn CvodeSimulator::Impl::setup_codegen_rhs(const SolverOptions &opts, Cvode
                 "bngsim_codegen_comoving_approach");
             codegen_counter_power_fn =
                 codegen_jit.try_symbol<CodegenCounterPowerFn>("bngsim_codegen_counter_power");
+            codegen_edge_without_case_fn = codegen_jit.try_symbol<CodegenEdgeWithoutCaseFn>(
+                "bngsim_codegen_edge_without_case");
             codegen_jac_fn =
                 codegen_jit.try_symbol<CvodeUserData::CodegenJacFn>("bngsim_codegen_jac");
             codegen_jac_sparse_fn = codegen_jit.try_symbol<CvodeUserData::CodegenJacSparseFn>(
@@ -2881,6 +2890,8 @@ CVRhsFn CvodeSimulator::Impl::setup_codegen_rhs(const SolverOptions &opts, Cvode
                 "bngsim_codegen_comoving_approach");
             codegen_counter_power_fn =
                 codegen_lib.try_symbol<CodegenCounterPowerFn>("bngsim_codegen_counter_power");
+            codegen_edge_without_case_fn = codegen_lib.try_symbol<CodegenEdgeWithoutCaseFn>(
+                "bngsim_codegen_edge_without_case");
             codegen_jac_fn =
                 codegen_lib.try_symbol<CvodeUserData::CodegenJacFn>("bngsim_codegen_jac");
             codegen_jac_sparse_fn = codegen_lib.try_symbol<CvodeUserData::CodegenJacSparseFn>(
@@ -5089,6 +5100,8 @@ void CvodeSimulator::Impl::setup_comoving_frames(SensitivityState &sens, int ns,
     if (env != nullptr && std::string(env) == "0") {
         return;
     }
+    // Issue #1003: what the refusal of a column with no case is asked at.
+    frames.edge_param_values = user_data.codegen_param_values;
     // Issue #948: asked of the powers themselves, whether or not the model has
     // a case: a window written in numbers has none.
     if (codegen_counter_power_fn != nullptr && user_data.codegen_param_values != nullptr) {
@@ -5214,6 +5227,66 @@ void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_frame(const Sensitivi
     // counter (issue #948).
     for (const SwitchTimeSens *sw : *frames.switches) {
         comoving_refuse_without_a_frame(sens, sw->t_star, sw->dtstar_dp, 1e-9);
+    }
+}
+
+// ─── A column that has no case for an edge it moves (issue #1003) ────────────
+//
+// A case is entered at a crossing that its parameter moves at the case's c, a
+// number over the parameters. For a parameter in the denominator or the scale
+// of the edge's time (`on/(wb - wa)`, asked for `wb`), or under a power whose
+// base is not linear in the time, ∂t*/∂p as the generator reads it off the
+// base still holds the time, and there is no case. The plain column has a
+// forcing that is unbounded at the edge: 12% off before a closing edge at an
+// exponent of 0.1, and a run that ends in a solver error after an opening
+// one. Which of the run's crossings is that edge is not known without the
+// case, so the column is refused at any crossing its parameter moves: ahead
+// of the run for the switch times it has, and at the crossing for one that is
+// only found as a root. A run that reaches none of them keeps its column.
+
+void CvodeSimulator::Impl::comoving_refuse_without_a_case(const SensitivityState &sens, double t,
+                                                          const std::vector<double> &dtstar_dp) {
+    const ComovingFrames &frames = sens.comoving;
+    if (codegen_edge_without_case_fn == nullptr || frames.edge_param_values == nullptr) {
+        return;
+    }
+    for (int c = 0; c < sens.n_p && static_cast<size_t>(c) < dtstar_dp.size(); ++c) {
+        if (dtstar_dp[static_cast<size_t>(c)] == 0.0) {
+            continue; // this column does not move this crossing
+        }
+        const int param = sens.plist[static_cast<size_t>(c)];
+        if (codegen_edge_without_case_fn(param, frames.edge_param_values) == 0) {
+            continue;
+        }
+        const auto &params = model.parameters();
+        const std::string name = param >= 0 && static_cast<size_t>(param) < params.size()
+                                     ? params[static_cast<size_t>(param)].name
+                                     : std::string("?");
+        std::ostringstream msg;
+        msg << "Forward sensitivity: parameter '" << name
+            << "' moves the crossing at t=" << std::setprecision(17) << t
+            << ", and it moves the edge of a rate law's power of the time, or of a counter, "
+               "that is singular at this run's values, one with an exponent under 1. A column "
+               "is carried across such an edge in a frame that moves with it, and the column "
+               "of '"
+            << name << "' has none: either the rate at which the edge's time changes with '" << name
+            << "' is not a number that holds along the run (the parameter is in the "
+               "denominator or the scale of the edge's time, or the power's base is not linear "
+               "in the time), or the frames of this model were not worked out. The plain "
+               "column has a forcing that is unbounded at the edge: it comes back up to 12% "
+               "off, or ends in a solver error (issue #1003). Drop '"
+            << name << "' from sensitivity_params, or difference plain runs.";
+        throw std::runtime_error(msg.str());
+    }
+}
+
+void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_case(const SensitivityState &sens) {
+    const ComovingFrames &frames = sens.comoving;
+    if (frames.switches == nullptr) {
+        return;
+    }
+    for (const SwitchTimeSens *sw : *frames.switches) {
+        comoving_refuse_without_a_case(sens, sw->t_star, sw->dtstar_dp);
     }
 }
 
@@ -5518,6 +5591,7 @@ int CvodeSimulator::Impl::comoving_enter(SensitivityState &sens, int ns, double 
                                          const std::vector<double> &f_instant,
                                          const std::vector<double> &dtstar_dp, double rel_tol) {
     ComovingFrames &frames = sens.comoving;
+    comoving_refuse_without_a_case(sens, t, dtstar_dp); // issue #1003
     if (!frames.enabled) {
         if (frames.off_for_events) {
             comoving_refuse_without_a_frame(sens, t, dtstar_dp, rel_tol);
@@ -12218,6 +12292,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     sens.comoving.entry_request = std::numeric_limits<double>::quiet_NaN();
     if (sens.comoving.enabled && n_sens_p > 0) {
         impl_->comoving_ask(sens, times.t_start);
+    }
+    // Issue #1003: so is a column that has no case for an edge it moves.
+    if (n_sens_p > 0) {
+        impl_->comoving_refuse_ahead_without_a_case(sens);
     }
     // Issues #958, #948: a column that needs a frame it cannot have is refused
     // before the run is taken, where that is known from where it starts.
