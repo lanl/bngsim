@@ -418,6 +418,52 @@ def test_a_root_of_higher_order_is_refused(tmp_path):
         sim.steady_state(sensitivity_params=["k"])
 
 
+ORDER_M = """begin parameters
+    1 k   1.0
+    2 p   0
+    3 m   {m}
+end parameters
+begin functions
+    1 loss() k*Xobs^(m-1)
+end functions
+begin species
+    1 X() 1.0
+end species
+begin reactions
+    1 1 0 loss
+    2 0 1 p
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+
+def test_a_root_of_an_order_under_two_has_no_column_for_what_moves_it(tmp_path):
+    """X' = p - k·X^m at p = 0 has a root at nothing of order m. Under a Newton
+    step the determinant keeps ((m-1)/m)^(m-1) of itself: 0.58 at m = 1.5,
+    which is refused for that, and 0.70 at 1.2, which the limit lets by. The
+    columns answer there. X* = (p/k)^(1/m) has no derivative with respect to p
+    at p = 0, and the column of p is 6^0.2 times what it was at every step, so
+    that it moves by 30% of itself and never settles: 29.4 came back, and 721
+    at 1.5. With respect to k the derivative is 0, which the steps settle at."""
+    low = bngsim.Simulator(_net(tmp_path, ORDER_M.format(m="1.2")), method="ode")
+    for asked in (["p"], ["k", "p"]):
+        with pytest.raises(
+            bngsim.SimulationError,
+            match=r"#995.*no state near.*the column of p still moves by 30\.1%",
+        ):
+            low.steady_state(sensitivity_params=asked)
+    out = low.steady_state(sensitivity_params=["k"])
+    assert out.sens_root_determinant_ratio == pytest.approx((1 / 6) ** 0.2, rel=1e-6)
+    assert out.sens_root_newton_steps >= 2
+    assert abs(np.asarray(out.concentrations)[0]) < 1e-9
+    assert abs(np.asarray(out.sensitivity)[0, 0]) < 1e-9
+    half = bngsim.Simulator(_net(tmp_path, ORDER_M.format(m="1.5"), "half.net"), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*that is 0\.58 of"):
+        half.steady_state(sensitivity_params=["k", "p"])
+
+
 FAR = """begin parameters
     1 k   1e-12
     2 d   1.0
@@ -2125,18 +2171,22 @@ end reactions
 """
 
 
-def test_a_state_short_of_its_root_is_stepped_whatever_is_asked(tmp_path):
+@pytest.mark.parametrize("eps", [1e-8, 1e-20])
+def test_a_state_short_of_its_root_is_stepped_whatever_is_asked(tmp_path, eps):
     """The solve stops with S at 1.2e-7, for a steady 1e-11. Asked with kd,
     the column of kd moves and the state is stepped. Asked alone, the column
-    of q is 2e-6 of S over q, which is next to nothing beside 1/|q| and is not
-    asked how far it moved: dS*/dq came back -2.5e-13 for -2e-17, at the state
-    as the solver left it. The state is asked as well as the columns, and S
-    moves by all of itself."""
-    sim = bngsim.Simulator(_net(tmp_path, A_PARAMETER_THAT_HARDLY_MATTERS), method="ode")
+    of q is eps·S/kd: 2e-6 of S over q at eps = 1e-8, where dS*/dq came back
+    -2.5e-13 for -2e-17 at the state as the solver left it, and 2e-18 of it at
+    1e-20, which is rounding beside 1/|q| and is not asked how far it moved.
+    The state is asked as well as the columns, and S moves by all of itself.
+    dS*/dq = -k0·eps/kd²."""
+    text = A_PARAMETER_THAT_HARDLY_MATTERS.replace("    3 eps 1e-8\n", f"    3 eps {eps:g}\n")
+    assert text != A_PARAMETER_THAT_HARDLY_MATTERS or eps == 1e-8
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     out = sim.steady_state(sensitivity_params=["q"])
     assert out.sens_root_newton_steps == 2
     assert np.asarray(out.concentrations)[0] == pytest.approx(1e-11, rel=1e-5)
-    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-2e-17, rel=1e-5)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-2e-9 * eps, rel=1e-5)
     assert out.sens_root_state_shift < 1e-6 and out.sens_root_state_species == "S()"
 
 

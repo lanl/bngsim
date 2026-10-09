@@ -550,7 +550,10 @@ moved by a millionth of itself. What it reads is each a ratio of two quantities
 in the same units. An entry of a column is taken over its species' own
 concentration, `ss.sens_species_scale`, the larger of the returned value and
 the corrected one, so that the units of a species or the size of its
-compartment change nothing that is asked of it.
+compartment change nothing that is asked of a state. Where the solver stops
+is another matter: `tol`, `atol` and `max_time` are in the model's units, and
+the same model in others can be stopped at another state, or at another
+root, and is asked from there.
 
 A species at a zero has no concentration to be taken over. It is one that the
 corrected state has at nothing and that nothing left there makes: its rate is
@@ -565,12 +568,12 @@ which the solve does.
 
 | On the result | What it is | Refused |
 | --- | --- | --- |
-| `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; 1/2 at a root of higher order; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
+| `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; ((m-1)/m)^(m-1) at a root of order m, which is 1/2 at a double root; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
 | `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. | below 1e-10 |
 | `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed. | above 1e12 |
 | `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry. Above 0.01, or where the state itself moves by more (`sens_root_state_shift`), the state is stepped on, up to ten times (`sens_root_newton_steps`), until neither does. | either still above 0.01 after ten steps |
 | `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from a millionth beside the returned state. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
-| `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | above 1e-6 of the spectral radius |
+| `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | times `max_time`, above 0.01 |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
 
 The request is refused whole where one column fails, so which parameters are
@@ -580,7 +583,10 @@ The first three say the steady state is not an isolated root. (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller
-`tol` settles the first.) The columns of such a model come from a time course
+`tol` settles the first. A root of an order between one and about 1.45 keeps
+more than 0.6 and is let by: 0.70 for a species that is lost at `k·X^1.2`. Its
+columns are then asked like any others, and settle at nothing under the steps
+or do not settle.) The columns of such a model come from a time course
 with forward sensitivities, run to the steady state:
 
 ```python
@@ -629,17 +635,20 @@ whether it would last the arrival of something the model does not start with.
 
 The run has `max_steps` steps. Where it uses them short of `max_time`, it was
 not seen to stay, and the columns are refused: an oscillation about the state
-does this where it is slow to grow or to die away. Give a `max_time` such a
-run reaches, or more steps.
+does this where it is slow to grow or to die away. Give it more steps.
 
 The growth rate says the same of a state a run of `max_time` is too short to
-leave. A millionth grows to a hundredth in `9.2/rate`, and an oscillation that
-grows more slowly than that leaves the run where it started; the relaxation
-below does not see it either. The eigenvalues do, where the growth is above
-what they are themselves known to, a millionth of the largest of them. What
-neither shows is returned: a state the system leaves by an oscillation that
-grows more slowly than `9.2/max_time` and than a millionth of the fastest rate
-in the model, or one in a system of more than 512 unknowns.
+be seen leaving. A millionth grows to a hundredth in `9.2/rate`, and a
+deviation that grows more slowly than that leaves the run where it started;
+the relaxation below does not see an oscillation either. The eigenvalues do,
+and the columns are refused where the largest real part among them, times
+`max_time`, is above 0.01: a state beside this one is then more than 1%
+further from it after a run of that length. The limit goes with `max_time`
+because the question does: what a run of that length ends at. A real part
+under `0.01/max_time` is returned, and so is a state in a system of more than
+512 unknowns that the run does not show the system leaving. An eigenvalue is
+computed to about 1e-16 of the largest of them, so in a system whose rates
+are that far apart the refusal can be of a state the system rests at.
 
 Without `sensitivity_params`, `steady_state()` returns what it did: the state
 the solver stopped at.

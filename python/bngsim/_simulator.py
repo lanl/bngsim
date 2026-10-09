@@ -7145,18 +7145,22 @@ class Simulator:
           on reads: it is held where the solve left it, which is not its part
           in the derivative;
         - what the determinant keeps of itself: next to nothing where the
-          Jacobian is singular at the steady state, a half at a root of higher
-          order, and all of it, to the accuracy of the solve, where the root
-          is isolated. One that changes sign, or grows, is that of a state
+          Jacobian is singular at the steady state, a half at a double root,
+          and all of it, to the accuracy of the solve, where the root is
+          isolated. One that changes sign, or grows, is that of a state
           with a singular Jacobian or a discontinuity between it and its
           correction, or of a state far from the root;
         - what the smallest pivot is of the terms it was computed from, and the
           componentwise condition number, the Perron root of ``|A⁻¹|·|A|``:
           what tell a matrix that is singular whatever the state, whose zero
           pivot is rounding;
-        - how far a column moves: ``tol`` bounds the residual and not the
-          distance to the root, and a model with small concentrations is
-          accepted where its columns are several percent off;
+        - how far a column moves, and the state: ``tol`` bounds the residual
+          and not the distance to the root, and a model with small
+          concentrations is accepted where its columns are several percent
+          off. The solve has stepped such a state on by then, and what is
+          refused is one that has not settled;
+        - whether the system rests there by its eigenvalues: the largest
+          real part among them, over ``max_time``;
         - how far a column moves where a run ends that is taken on for
           ``max_time`` from a millionth beside the returned state: an
           integration stops at the first state under ``tol``, which a run may

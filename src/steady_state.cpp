@@ -2323,9 +2323,11 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  ratio is 1 to that. Where the Jacobian is singular at the
 //                  steady state, the determinant at y is as large as y is far
 //                  from it, and the step removes most of that: the ratio is
-//                  1e-8, or 0. At a root of higher order, which a species
-//                  nears as 1/t, a Newton step halves the distance and the
-//                  ratio is 1/2. A rate law that is discontinuous between the
+//                  1e-8, or 0. At a double root, which a species nears as
+//                  1/t, a Newton step halves the distance and the ratio is
+//                  1/2; at one of order m it is ((m-1)/m)^(m-1), which is
+//                  0.70 at 1.2, and the columns of such a root are asked
+//                  like any others. A rate law that is discontinuous between the
 //                  two states, `if(x > 1, a, b)` settled at x = 1 where the
 //                  step crosses it, shows the same way, and so does a state
 //                  far from its root: the ratio is then negative, or large.
@@ -2379,8 +2381,9 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  it leaves by an oscillation that grows by less than 1e4 in
 //                  that time the run does not show, and neither does the
 //                  relaxation below, whose implicit steps damp whatever
-//                  oscillates. The spectrum does, where the growth is above
-//                  what it is itself known to: 1e-6 of the largest eigenvalue.
+//                  oscillates. The spectrum does, and the caller refuses
+//                  where the growth over max_time is more than a hundredth:
+//                  the limit goes with the time, as the question does.
 //   relaxation     How much of a column a run of the time the solve was given
 //                  (max_time) would leave unestablished. A species whose
 //                  turnover is switched off at the steady state has a pivot
@@ -3496,9 +3499,9 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
 
     // 6. Where the columns moved, or the state did, they are not those of the
     //    root: the state is short of it. (The state is asked as well as the
-    //    columns: a column that is next to nothing against 1/|p| is not asked
-    //    how far it moved, and one parameter that hardly matters, asked alone,
-    //    came back four orders off at a state four orders from its root.) They
+    //    columns: a column that is rounding beside 1/|p| is not asked how far
+    //    it moved, and a parameter that hardly matters, asked alone, comes
+    //    back four orders off at a state four orders from its root.) They
     //    are then taken at the stepped state, which is nearer, and that state
     //    is stepped again, until the state and the columns of two states in a
     //    row agree (kColumnsSettled) or kNewtonSteps are spent. The
