@@ -252,11 +252,12 @@ def test_a_table_function_on_one_clone_is_not_its_siblings(tmp_path):
     assert len(set(keys)) == len(keys)
 
 
-def test_what_the_tables_are_read_over_is_asked_once_for_each_list_of_them(tmp_path):
+def test_what_the_tables_are_read_over_is_kept_with_the_list_of_them(tmp_path):
     """The key has what each table function is read over, which is in
     ``codegen_data()``: the whole model, 0.1 s for one of 58,000 reactions,
     and the key is asked for on every sensitivity run. It is kept on the
-    model for the list of table names it was read for, and a clone has it."""
+    model for the list of table names it was read for, and a clone is given
+    what its parent has kept."""
     from bngsim._codegen import _output_sens_analysis_key, _table_function_bindings
 
     model = _model(tmp_path, READS_A_FUNCTION)
@@ -282,6 +283,36 @@ def test_what_the_tables_are_read_over_is_asked_once_for_each_list_of_them(tmp_p
     other.add_table_function("one", times=[0.0, 1.0], values=[0.0, 1.0], index="k")
     output_sens_support(other)
     assert other._table_function_bindings == (("one",), first)
+
+
+def test_clones_of_a_model_with_tables_that_was_never_asked_do_not_each_ask(tmp_path):
+    """The loop of the issue again, for a model with a table function: the
+    base is cloned and never run or analyzed itself. Cloning it asks the base
+    once, and every clone has that answer: kept on each model as it was asked,
+    it was read from ``codegen_data()`` afresh for each clone of a base that
+    had not been."""
+    from bngsim._codegen import _table_function_bindings, output_sens_support
+
+    base = _model(tmp_path, READS_A_FUNCTION)
+    base.add_table_function("one", times=[0.0, 1.0], values=[0.0, 1.0], index="k")
+    assert base._table_function_bindings is None
+    clones = [base.clone() for _ in range(3)]
+    kept = base._table_function_bindings
+    assert kept is not None and kept[0] == ("one",)
+    for clone in clones:
+        assert clone._table_function_bindings is kept
+        output_sens_support(clone)
+        assert _table_function_bindings(clone._core, clone) is kept[1]
+    # A table added to the base since: the next clone is given the new list.
+    base.add_table_function("two", times=[0.0, 1.0], values=[0.0, 1.0])
+    later = base.clone()
+    assert later._table_function_bindings[0] == ("one", "two")
+    assert clones[0]._table_function_bindings is kept
+    # A model with no table is not asked at all.
+    plain = _model(tmp_path, READS_A_FUNCTION, name="plain.net")
+    assert (
+        plain.clone()._table_function_bindings is None and plain._table_function_bindings is None
+    )
 
 
 def test_models_that_are_not_clones_share_nothing(tmp_path, monkeypatch):

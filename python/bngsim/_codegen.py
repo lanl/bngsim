@@ -10385,9 +10385,10 @@ def _output_sens_analysis_key(core, model=None) -> tuple:
     Cheap by construction — four counters off the built model, the attachment
     vector, the table functions and the budget override — because avoiding
     ``codegen_data()`` and the sympy behind it is the whole point. (A model with
-    table functions is asked for ``codegen_data()`` once for each set of them,
-    where ``model`` is given to keep the answer on: see
-    :func:`_table_function_bindings`.) The counters are a structural guard, not a
+    table functions is asked for ``codegen_data()`` when its tables have changed
+    since it, or the model it was cloned from, was last asked, where ``model``
+    is given to keep the answer on: see :func:`_table_function_bindings`.) The
+    counters are a structural guard, not a
     content hash: the analysis is a pure function of the model's *shape* (function
     bodies, parameter expressions, and the species/parameter/observable ordering
     its emitted ``y[i]``/``p[k]`` references are indices into), and none of that
@@ -10434,9 +10435,11 @@ def _table_function_bindings(core, model=None) -> tuple:
 
     ``()`` for a model with none, without asking for ``codegen_data()``, which
     is the whole model and 0.1 s on one of 58,000 reactions. For a model with
-    tables it is asked once for each list of their names and kept on ``model``:
-    a table function is added and never changed or taken away, so the same
-    names in the same order are the same tables.
+    tables it is asked for and kept on ``model`` with the list of their names:
+    a table function is added and never changed or taken away, so for one
+    model the same names in the same order are the same tables. ``clone``
+    hands what is kept to the clone, asking first if the model has tables and
+    was never asked, so that clones of one model do not each ask.
     """
     names = tuple(getattr(core, "table_function_names", ()))
     if not names:

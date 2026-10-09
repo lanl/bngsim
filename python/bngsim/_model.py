@@ -338,9 +338,9 @@ class Model:
         # the corpus — pays nothing and never touches sympy.
         # A clone is handed its parent's list (issue #979): the core it is made
         # on has the parent's functions as the guard left them, and deciding
-        # again could decide otherwise (the parser gives up when it runs out of
-        # stack), which would leave two models of one family with different
-        # functions and one memo of their analysis.
+        # again could decide otherwise (the guard gives up on any exception,
+        # running out of stack among them), which would leave two models of
+        # one family with different functions and one memo of their analysis.
         self._guarded_functions: list[tuple[str, str, str]] = (
             _guard_function_expressions(_core) if _guarded is None else list(_guarded)
         )
@@ -1075,6 +1075,13 @@ class Model:
         # clones made after, so that cloning a model that was never run does
         # not start each clone from nothing.
         m._output_sens_family = self._output_sens_family
+        # What the table functions are read over is the clone's too. A model
+        # that has tables and was never asked is asked here, once, and not by
+        # each of its clones in turn (a model with none is not asked at all).
+        if self._core.n_table_functions:
+            from bngsim._codegen import _table_function_bindings
+
+            _table_function_bindings(self._core, self)
         m._table_function_bindings = self._table_function_bindings
         m._ssa_issues = list(self._ssa_issues)
         m._ar_report_map = dict(self._ar_report_map)
