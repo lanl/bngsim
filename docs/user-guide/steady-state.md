@@ -554,9 +554,12 @@ depends on the units of a species or the size of a compartment.
 | `sens_root_column_shift` | The largest move of a column when it is solved again at the corrected state, as a fraction of its largest entry. | above 0.01 |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
 
-The first two say the steady state is not an isolated root. The columns of such
-a model come from a time course with forward sensitivities, run to the steady
-state:
+The first two say the steady state is not an isolated root. (A determinant
+ratio that is negative, or above 1.67, is also what a state far from an
+isolated root gives, where the rates are so small that `tol` passes it, and
+what a rate law that is discontinuous between the two states gives; a smaller
+`tol` settles the first.) The columns of such a model come from a time course
+with forward sensitivities, run to the steady state:
 
 ```python
 sim = bngsim.Simulator(model, sensitivity_params=["g", "I0"])

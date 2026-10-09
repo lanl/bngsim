@@ -7101,7 +7101,9 @@ class Simulator:
         - what the determinant keeps of itself: next to nothing where the
           Jacobian is singular at the steady state, a half at a root of higher
           order, and all of it, to the accuracy of the solve, where the root
-          is isolated;
+          is isolated. One that changes sign, or grows, is that of a state
+          with a singular Jacobian or a discontinuity between it and its
+          correction, or of a state far from the root;
         - the componentwise condition number, the Perron root of
           ``|A⁻¹|·|A|``: what tells a matrix that is singular whatever the
           state, whose zero pivot is rounding;
@@ -7149,17 +7151,34 @@ class Simulator:
         )
         kept = self._SS_ROOT_DETERMINANT_RATIO_MIN
         if not kept <= ratio <= 1.0 / kept:
-            raise SimulationError(
+            measured = (
                 f"{opening}the steady state is not an isolated root of the equations the "
-                "columns are solved on. Corrected by one Newton step, the state gives "
-                f"those equations a determinant that is {ratio:.2g} of the one the "
-                f"returned state gives (the limits are {kept:g} and {1.0 / kept:.2g}; the "
-                f"pivot for {result.sens_root_determinant_species} moves furthest): the "
-                "Jacobian loses rank at the steady state the solve was approaching (it is "
-                "one of a continuum, or a root of higher order, which a species nears as "
-                "1/t), or a rate law is discontinuous between the two states. "
-                f"{continuum}{remedy}"
+                "columns are solved on, or the returned state is not on it. Corrected by "
+                "one Newton step, the state gives those equations a determinant that is "
+                f"{ratio:.2g} of the one the returned state gives (the limits are {kept:g} "
+                f"and {1.0 / kept:.2g}; the pivot for "
+                f"{result.sens_root_determinant_species} moves furthest): "
             )
+            if 0.0 <= ratio < kept:
+                read = (
+                    "the Jacobian loses rank at the steady state the solve was approaching "
+                    "(it is one of a continuum, or a root of higher order, which a species "
+                    "nears as 1/t), or a rate law is discontinuous between the two states, "
+                    "or the returned state is far from the steady state for the size of "
+                    "its rates, which solving again with a smaller tol settles. "
+                )
+            else:
+                # Negative, above the upper limit, or not a number.
+                read = (
+                    "a determinant that changes sign or grows so is not that of one matrix "
+                    "at two states close together. A rate law is discontinuous between "
+                    "the two, or the returned state is far from the steady state for the "
+                    "size of its rates (tol bounds the residual and not the distance to "
+                    "the root: solve again with a smaller tol), or the determinant is what "
+                    "rounding leaves of a zero, and the Jacobian is singular whatever the "
+                    "state. "
+                )
+            raise SimulationError(f"{measured}{read}{continuum}{remedy}")
         if not condition <= self._SS_ROOT_CONDITION_MAX:
             raise SimulationError(
                 f"{opening}the steady state is not an isolated root of the equations the "

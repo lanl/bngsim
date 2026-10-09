@@ -371,6 +371,82 @@ def test_a_root_of_higher_order_is_refused(tmp_path):
         sim.steady_state(sensitivity_params=["k"])
 
 
+FAR = """begin parameters
+    1 k   1e-12
+    2 d   1.0
+end parameters
+begin species
+    1 A() 3e-7
+end species
+begin reactions
+    1 0 1 k
+    2 1,1 0 d
+end reactions
+"""
+
+
+def test_a_determinant_that_grows_is_refused(tmp_path):
+    """dA/dt = k - 2·d·A² has an isolated root, sqrt(k/(2·d)) = 7.07e-7. With
+    k = 1e-12 the residual at the start, A = 3e-7, is below ``tol`` already, and
+    the solve returns the start. A Newton step from there lands at 9.8e-7,
+    where the Jacobian, -4·d·A, is 3.3 times what it was: the state is not
+    near the root, and dA*/dk came back 8.3e5 for 3.5e5 with nothing logged."""
+    sim = bngsim.Simulator(_net(tmp_path, FAR), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*that is 3\.3 of.*grows.*smaller tol"):
+        sim.steady_state(sensitivity_params=["k"])
+
+
+def test_the_same_solved_to_its_root_is_returned(tmp_path):
+    """Control. What the refusal advises, done: at ``tol=1e-17`` the solve runs
+    to the root, and the columns are 1/(4·d·A*) and -A*/(2·d)."""
+    sim = bngsim.Simulator(_net(tmp_path, FAR), method="ode")
+    out = sim.steady_state(sensitivity_params=["k", "d"], tol=1e-17, max_time=1e9)
+    root = math.sqrt(1e-12 / 2.0)
+    assert np.asarray(out.concentrations)[0] == pytest.approx(root, rel=1e-5)
+    assert np.asarray(out.sensitivity)[0] == pytest.approx(
+        [1.0 / (4.0 * root), -root / 2.0], rel=1e-4
+    )
+
+
+TWO_SIDES = """begin parameters
+    1 c   1e-12
+    2 k0  6*c
+    3 k1  11*c
+    4 k2  6*c
+    5 k3  c
+    6 kb  2.0
+    7 db  1.0
+end parameters
+begin species
+    1 A() 2.475
+    2 B() 2.0
+end species
+begin reactions
+    1 0 1 k0
+    2 1 0 k1
+    3 1,1 1,1,1 k2
+    4 1,1,1 1,1 k3
+    5 0 2 kb
+    6 2 0 db
+end reactions
+"""
+
+
+@pytest.mark.parametrize("param", ["k0", "kb"])
+def test_a_determinant_that_changes_sign_is_refused(tmp_path, param):
+    """dA/dt = -c·(A-1)·(A-2)·(A-3), which a run takes from 2.475 to 3, passes
+    ``tol`` where it starts with c = 1e-12; B beside it is at its root. The
+    Jacobian of A is zero at 1.42 and at 2.58, and a Newton step from 2.475
+    lands at 1.34, past the first: the determinant is -0.99 of what it was.
+    dA*/dk0 came back -3.1e12 for 5e11. B's column, the one ``kb`` asks for, is
+    the same at both states and was right: it is refused with a state that has
+    a singular Jacobian between it and its correction, which only the sign of
+    the ratio shows."""
+    sim = bngsim.Simulator(_net(tmp_path, TWO_SIDES), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*that is -0\.99 of.*changes sign"):
+        sim.steady_state(sensitivity_params=[param])
+
+
 def test_a_column_of_zeros_is_not_a_column_that_moved(tmp_path):
     """Control. Everything decays to zero, and so does every column. What is
     returned is what ``tol`` left of them, 1e-9, and one Newton step takes all
@@ -520,6 +596,10 @@ def test_a_column_that_would_take_longer_than_max_time_is_refused(tmp_path):
     assert "#995" in message and "column of s" in message
     assert "max_time (1e+06) would leave 100% of the column" in message
     assert "Raise max_time" in message
+    # The time it names is the one the solve was given.
+    again = bngsim.Simulator(_net(tmp_path, SLOW), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"max_time \(1e\+09\) would leave 100%"):
+        again.steady_state(sensitivity_params=["s"], max_time=1e9)
 
 
 @pytest.mark.parametrize("max_time", [1e14, 3e13])
