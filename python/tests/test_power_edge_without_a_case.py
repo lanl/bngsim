@@ -17,10 +17,12 @@ and for the width under a base that is not linear in the time
 (``(1 - s²)^(a-1)``: 0.3% off). Under an opening power the run ended in
 "CVODE made no progress".
 
-Such a column is refused now, at any crossing its parameter moves, and only
-where the power is singular at the run's own values. A parameter that is in
-the base and does not move its zero (``kk`` in ``(kk·(1-s))^(a-1)``) keeps its
-column, which was right.
+Such a column is refused now, and only where the power is singular at the
+run's own values: at a crossing its parameter moves where the power's base is
+0, or at any crossing its parameter moves where the base cannot be asked at
+the crossing's time (it reads a counter, as the ``.net`` windows here do, or a
+state). A parameter that is in the base and does not move its zero (``kk`` in
+``(kk·(1-s))^(a-1)``) keeps its column, which was right.
 
 Every expected value is a central difference of plain runs at ``rtol=1e-12``,
 at two steps and extrapolated, on models built with the parameter moved.
@@ -162,7 +164,7 @@ def _source(model) -> str:
     return _codegen.generate_sens_from_model(model._core, functional=True, emit_term_scale=True)
 
 
-EXPORT = "int bngsim_codegen_edge_without_case(int iP, const double* p)"
+EXPORT = "int bngsim_codegen_edge_without_case(int iP, double t,"
 
 
 def _without_a_case(model, source=None) -> dict[str, str]:
@@ -296,26 +298,41 @@ def test_a_run_that_reaches_no_crossing_the_parameter_moves(tmp_path):
     assert np.all(got == 0.0)
 
 
-def test_a_run_that_ends_inside_the_window_is_refused(tmp_path):
+def test_a_run_that_ends_inside_a_window_on_a_counter_is_refused(tmp_path):
     """The run ends at 5, before the closing edge at 7. ``wb`` moves the
-    opening at 3, and which crossing is the power's edge is not known without
-    a case, so the column is refused at any crossing its parameter moves."""
+    opening at 3, and the base of a power of a counter cannot be asked where
+    the counter is at a crossing, so the column is refused at any crossing its
+    parameter moves."""
     _refused(_model(tmp_path, "quotient", 1.1), "wb", times=[0.0, 1.0, 4.0, 5.0])
 
 
 # ─── Through SBML, and beside an event ───────────────────────────────────────
 
 
-def _antimony(a, event=False, wb=2.0):
+def _antimony(a, event=False, wb=2.0, shape="closing"):
+    """The window on the literal time, its onset over ``wb - wa``."""
     onset = "(on/(wb - wa))"
     s = f"((time - {onset})/D)"
+    pulse = {"closing": f"{s}*(1 - {s})^(a - 1)", "opening": f"{s}^(a - 1)*(1 - {s})"}[shape]
     return bngsim.Model.from_antimony_string(
         f"species X; X = 0; k0 = 0.1; k1 = 2; a = {a}; on = 3; D = 4; kdeg = 0.3; "
         f"wb = {wb!r}; wa = 1; q = 0\n"
-        f"J1: -> X; k0 + piecewise(piecewise(k1*{s}*(1 - {s})^(a - 1), "
+        f"J1: -> X; k0 + piecewise(piecewise(k1*{pulse}, "
         f"time <= {onset} + D, 0), time >= {onset}, 0)\n"
         "J2: X -> ; kdeg*X\n" + ("E1: at (time > 5): q = 1\n" if event else "")
     )
+
+
+def _antimony_differences(a, times, shape="closing", h=1e-4):
+    def x(wb):
+        run = bngsim.Simulator(_antimony(a, wb=wb, shape=shape), method="ode").run(
+            sample_times=list(times), rtol=1e-12, atol=1e-14, timeout=120
+        )
+        return np.asarray(run.species)[:, 0]
+
+    coarse = (x(2 + h) - x(2 - h)) / (2 * h)
+    fine = (x(2 + h / 2) - x(2 - h / 2)) / h
+    return (4 * fine - coarse) / 3
 
 
 def _refused_in_sbml(model, param, issue=1003):
@@ -324,9 +341,59 @@ def _refused_in_sbml(model, param, issue=1003):
         sim.run(sample_times=T, rtol=1e-8, atol=1e-10, timeout=120)
 
 
+@pytest.mark.parametrize("shape", ["closing", "opening"])
 @pytest.mark.parametrize("param", ["wb", "wa"])
-def test_refused_through_sbml(param):
-    _refused_in_sbml(_antimony(1.1), param)
+def test_refused_through_sbml(shape, param):
+    """On the literal time the base is asked at the crossing: 0 at the close
+    of the closing power and at the opening of the opening one."""
+    _refused_in_sbml(_antimony(1.1, shape=shape), param)
+
+
+def test_on_the_literal_time_a_crossing_that_is_not_the_edge_is_let_by():
+    """Control. The run ends at 5, inside the window. ``wb`` moves the opening
+    at 3, where the base ``1 - s`` of the closing power is 1: that crossing is
+    not the power's edge, and up to 5 nothing is unbounded."""
+    times = [0.0, 1.0, 2.0, 3.5, 4.0, 5.0]
+    got = _column(_antimony(1.1), "wb", times=times)
+    assert _worst(got, _antimony_differences(1.1, times)) < 5e-6
+
+
+def _never_zero(t0=3.3):
+    """``(Ca/S)^m`` with ``Ca`` switched on at ``t0``, as in BIOMD0000000276.
+    A singular power by its shape: its exponent reads the time, and nothing
+    says its base is never 0. At ``t0`` the base is ``Ca0/S``."""
+    return bngsim.Model.from_antimony_string(
+        f"species X; X = 0; Ca0 = 1.255; Ca1 = 0.18; t0 = {t0!r}; alpha = 0.4; S = 1.1; "
+        "m1 = 0.3; m2 = 0.4; beta = 2; R = 1.2; A = 2; B = 0.5; kdeg = 0.3\n"
+        "Ca := piecewise(Ca0, time < t0, Ca0 - Ca1*(1 - exp(-alpha*(time - t0))))\n"
+        "m := m1/(1 + exp(-beta*(R - Ca))) + m2\n"
+        "J1: -> X; (A - B)/(1 + (Ca/S)^m) + B\n"
+        "J2: X -> ; kdeg*X\n"
+    )
+
+
+def test_a_power_whose_base_is_never_zero_is_listed_with_its_base():
+    """``t0`` moves the crossing at ``t0`` and has no case, so it is listed,
+    and the test it is listed with asks the base at the crossing's time."""
+    listed = _without_a_case(_never_zero())
+    assert "t0" in listed
+    assert listed["t0"].startswith("(!(fabs(") and "> 1e-9 * (fabs(" in listed["t0"]
+
+
+def test_a_power_whose_base_is_never_zero_keeps_its_columns():
+    """Control. The column of ``t0``, which is right, is returned: the
+    crossing at ``t0`` is not an edge of the power. No sample is on ``t0``."""
+
+    def x(t0):
+        run = bngsim.Simulator(_never_zero(t0), method="ode").run(
+            sample_times=T, rtol=1e-12, atol=1e-14, timeout=120
+        )
+        return np.asarray(run.species)[:, 0]
+
+    h = 1e-4
+    coarse = (x(3.3 + h) - x(3.3 - h)) / (2 * h)
+    fine = (x(3.3 + h / 2) - x(3.3 - h / 2)) / h
+    assert _worst(_column(_never_zero(), "t0"), (4 * fine - coarse) / 3) < 5e-6
 
 
 @pytest.mark.parametrize("param", ["wb", "wa"])
@@ -344,17 +411,7 @@ def test_beside_an_event_a_column_with_a_case_is_refused_for_the_event():
 
 def test_through_sbml_a_power_that_is_not_singular_keeps_its_column():
     """Control."""
-
-    def x(wb):
-        run = bngsim.Simulator(_antimony(3.0, wb=wb), method="ode").run(
-            sample_times=T, rtol=1e-12, atol=1e-14, timeout=120
-        )
-        return np.asarray(run.species)[:, 0]
-
-    h = 1e-4
-    coarse = (x(2 + h) - x(2 - h)) / (2 * h)
-    fine = (x(2 + h / 2) - x(2 - h / 2)) / h
-    assert _worst(_column(_antimony(3.0), "wb"), (4 * fine - coarse) / 3) < 5e-6
+    assert _worst(_column(_antimony(3.0), "wb"), _antimony_differences(3.0, T)) < 5e-6
 
 
 # ─── What the generator writes ───────────────────────────────────────────────
@@ -391,6 +448,36 @@ def test_an_exponent_that_is_a_number_is_listed_at_every_value(tmp_path):
     model = _model(tmp_path, "quotient", 3.0, shape="s()*((1-s())^0.1)")
     assert _without_a_case(model) == dict.fromkeys({"wc", "wb", "wa"}, "1")
     _refused(model, "wb")
+
+
+CHOSEN = ("closing", "on/(wc+wb-wa)", "D", (*QUOTIENT, ("a2", 3.0), ("tsw", 5.0)))
+
+
+def _chosen(tmp_path, a, a2):
+    """The exponent is ``a`` before ``tsw`` and ``a2`` after it, as a year's
+    exponent is chosen in a model of several seasons."""
+    shape = "s()*((1-s())^(if(t<tsw,a,a2)-1))"
+    return _model(tmp_path, CHOSEN, a, shape=shape, a2=a2)
+
+
+def test_an_exponent_chosen_by_a_condition_is_asked_branch_by_branch(tmp_path):
+    """Each value the exponent can take is asked at the run's parameters,
+    whichever the run is on at the edge."""
+    one = "((p[2] - 1.0) < 1.0 && (p[2] - 1.0) != 0.0)"
+    other = "((p[10] - 1.0) < 1.0 && (p[10] - 1.0) != 0.0)"
+    listed = _without_a_case(_chosen(tmp_path, 3.0, 3.0))
+    assert set(listed) == {"wc", "wb", "wa"}
+    assert set(listed["wb"].split(" || ")) == {one, other}
+    _refused(_chosen(tmp_path, 3.0, 1.1), "wb")
+    _refused(_chosen(tmp_path, 1.1, 3.0), "wb")
+
+
+def test_an_exponent_chosen_by_a_condition_and_singular_on_no_branch(tmp_path):
+    """Control. Neither value is under 1, and the column is returned. A test
+    that could not ask a chosen exponent would refuse every such model at
+    every value: a model of several seasons with no singular power in any."""
+    model = _chosen(tmp_path, 3.0, 2.5)
+    assert np.all(np.isfinite(_column(model, "wb")))
 
 
 def test_two_windows_and_a_case_for_one_of_them(tmp_path):

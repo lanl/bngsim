@@ -4227,10 +4227,14 @@ def _emit_sens_rhs_body(
             return
         _emit("")
         _emit("/* Whether parameter iP moves the edge of a power of the time, or of a counter,")
-        _emit("   that is singular at these parameter values (an exponent under 1), and has no")
-        _emit("   comoving case that removes that power from its column: 1, or 0. The plain")
-        _emit("   column's forcing is unbounded at such an edge. (Issue #1003) */")
-        _emit("BNGSIM_EXPORT int bngsim_codegen_edge_without_case(int iP, const double* p) {")
+        _emit("   that is singular at these parameter values (an exponent under 1), has no")
+        _emit("   comoving case that removes that power from its column, and the crossing at")
+        _emit("   the time t is that edge, where the power's base is written in the time and")
+        _emit("   the parameters and can be asked: 1, or 0. The plain column's forcing is")
+        _emit("   unbounded at such an edge. (Issue #1003) */")
+        _emit("BNGSIM_EXPORT int bngsim_codegen_edge_without_case(int iP, double t,")
+        _emit("                            const double* p) {")
+        _emit("    (void)t;")
         _emit("    (void)p;")
         _emit("    switch (iP) {")
         for param_idx, tests in edges_without_case:
@@ -8894,6 +8898,87 @@ def _over_parameters(expr, resolve_symbol, sympy_to_c) -> str | None:
     return _exponent_over_parameters(expr, resolve_symbol, sympy_to_c)
 
 
+def _exponent_branches(exponent, sp) -> list | None:
+    """*exponent* with each condition in it taken each way, or ``None``
+    where that is more than 64 expressions. A chain
+    ``if(c1, a1, if(c2, a2, ...))`` is one expression a value."""
+    chosen = sorted(exponent.atoms(sp.Piecewise), key=_term_order.srepr)
+    if not chosen:
+        return [exponent]
+    # The outermost: one that is in no other's values.
+    inner = {q for pw in chosen for value, _c in pw.args for q in value.atoms(sp.Piecewise)}
+    top = next((pw for pw in chosen if pw not in inner), chosen[0])
+    out: list = []
+    for value, _cond in top.args:
+        below = _exponent_branches(exponent.xreplace({top: value}), sp)
+        if below is None or len(out) + len(below) > 64:
+            return None
+        out.extend(below)
+    return out
+
+
+def _exponent_under_one(exponent, closes: bool, over_parameters, sp) -> list[str]:
+    """The C tests, any of which says the power is singular at the run's
+    values (issue #1003): its exponent is under 1, and for a power that closes
+    at its edge is not 0, where it is the constant 1 with nothing behind it.
+    The same test a comoving case's own powers are asked (issue #958).
+
+    An exponent chosen by a condition, ``if(t < t1, a_1, a_2)``, is asked
+    branch by branch, whichever the run is on. ``"1"`` for one that cannot be
+    asked: it reads a species or the time, or is a number between 0 and 1.
+    Empty where no branch can be under 1."""
+    whole = over_parameters(exponent)
+    if whole is not None or exponent.is_number:
+        each: list | None = [exponent]
+    else:
+        each = _exponent_branches(exponent, sp)
+    if each is None:
+        return ["1"]
+    tests: list[str] = []
+    for one in each:
+        if one.is_number:
+            if one.is_real is True and bool(one < 1) and (bool(one != 0) or not closes):
+                tests.append("1")
+            continue
+        e_c = over_parameters(one)
+        if e_c is None:
+            tests.append("1")
+        elif closes:
+            tests.append(f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
+        else:
+            tests.append(f"(({e_c}) < 1.0)")
+    return ["1"] if "1" in tests else list(dict.fromkeys(tests))
+
+
+def _base_is_zero_at(base, time_and_parameters, sp) -> str:
+    """The C test, over the time ``t`` and ``p[]``, of *base* being 0 to
+    rounding at ``t`` (issue #1003): the crossing at ``t`` is the power's own
+    edge. Asked of the base's numerator against the sum of its terms.
+    ``"1"`` where that is not worked out: the base reads a species or an
+    observable (a counter clock among them), or is not written out.
+
+    A power that is singular by its shape is not at its edge at every
+    crossing a parameter of its base moves. ``(Ca/S)^m`` with
+    ``Ca = if(t < t0, Ca0, Ca0 - Ca1·(1 - exp(-alpha·(t - t0))))`` reads
+    ``t0``, and at ``t = t0`` its base is ``Ca0/S``, nowhere near 0
+    (BIOMD0000000276): the plain column of ``t0`` is right there."""
+    try:
+        numerator = sp.numer(sp.together(base))
+        if numerator.has(sp.Piecewise):
+            terms: tuple = (numerator,)
+        else:
+            terms = sp.Add.make_args(sp.expand(numerator))
+        whole = time_and_parameters(numerator)
+        written = [time_and_parameters(term) for term in terms]
+    except Exception:  # noqa: BLE001 - not worked out
+        return "1"
+    if whole is None or None in written:
+        return "1"
+    scale = " + ".join(f"fabs({term})" for term in written)
+    # Written so that a numerator that is no number counts as 0.
+    return f"(!(fabs({whole}) > 1e-9 * ({scale})))"
+
+
 def _counter_powers(
     reactions,
     frxn_by_idx: dict,
@@ -8944,24 +9029,6 @@ def _counter_powers(
     def resolve_symbol(name: str) -> str | None:
         mapped = scope.c_ref.get(name)
         return mapped if mapped is not None else _MATH_CONSTANT_C.get(name)
-
-    def branches(exponent) -> list | None:
-        """*exponent* with each condition in it taken each way, or ``None``
-        where that is more than 64 expressions. A chain
-        ``if(c1, a1, if(c2, a2, ...))`` is one expression a value."""
-        chosen = sorted(exponent.atoms(sp.Piecewise), key=_term_order.srepr)
-        if not chosen:
-            return [exponent]
-        # The outermost: one that is in no other's values.
-        inner = {q for pw in chosen for value, _c in pw.args for q in value.atoms(sp.Piecewise)}
-        top = next((pw for pw in chosen if pw not in inner), chosen[0])
-        out: list = []
-        for value, _cond in top.args:
-            below = branches(exponent.xreplace({top: value}))
-            if below is None or len(out) + len(below) > 64:
-                return None
-            out.extend(below)
-        return out
 
     def gated_at_its_zero(base, law) -> str | None:
         """Where *base* is 0 at a condition *law* has on a counter it reads, as
@@ -9047,7 +9114,11 @@ def _counter_powers(
             # The whole exponent first: one written in parameters alone is
             # evaluated where the run is, conditions and all.
             whole = _exponent_over_parameters(node.exp, resolve_symbol, sympy_to_c)
-            each = [node.exp] if whole is not None or node.exp.is_number else branches(node.exp)
+            each = (
+                [node.exp]
+                if whole is not None or node.exp.is_number
+                else _exponent_branches(node.exp, sp)
+            )
             tests = []
             for exponent in each or ():
                 if exponent.is_number:
@@ -9293,6 +9364,16 @@ def _functional_comoving_plan(
     def over_parameters(exponent) -> str | None:
         return _exponent_over_parameters(exponent, resolve_symbol, sympy_to_c)
 
+    def time_and_parameters(expr) -> str | None:
+        """*expr* as C over the literal time ``t`` and ``p[]``, or ``None``."""
+        for symbol in expr.free_symbols:
+            ref = resolve_symbol(symbol.name)
+            if symbol.name == _TIME_SYM or symbol.name in _MATH_CONSTANT_C:
+                continue
+            if not (ref or "").startswith("p["):
+                return None
+        return sympy_to_c(expr, resolve_symbol)
+
     laws: dict[str, list[tuple]] = {
         text: [
             (_split_shared_scale(on_cell, clock_names, sp), cond)
@@ -9504,13 +9585,13 @@ def _functional_comoving_plan(
                 if not _singular_power(node, clock_names, sp):
                     continue
                 way = "close" if _base_closes(node.base, clock_names, sp) else "open"
-                e_c = over_parameters(node.exp)
-                if e_c is None:
-                    test = "1"
-                elif way == "close":
-                    test = f"(({e_c}) < 1.0 && ({e_c}) != 0.0)"
-                else:
-                    test = f"(({e_c}) < 1.0)"
+                under_one = _exponent_under_one(node.exp, way == "close", over_parameters, sp)
+                if not under_one:
+                    continue
+                test = " || ".join(under_one)
+                at_zero = _base_is_zero_at(node.base, time_and_parameters, sp)
+                if at_zero != "1":
+                    test = at_zero if test == "1" else f"(({test}) && {at_zero})"
                 in_base = _value_symbol_names(sp.numer(sp.together(node.base)), sp)
                 named: set[str] = set()
                 for alias in in_base & param_aliases:
@@ -9550,7 +9631,8 @@ def _edge_parameters_by_name(
     met a law it does not shift. The model then has no case at all, and every
     column that needed one is plain. By name, so wider than what the plan
     works out: a parameter that is in a power's base and does not move its
-    zero is listed, and a closing power is listed at an exponent of exactly 0.
+    zero is listed, a closing power is listed at an exponent of exactly 0, and
+    a power is taken to be at its edge at every crossing.
 
     It does not give up either. A law that cannot be read is taken to hold
     such a power for every parameter: what the solver refuses by this is a
@@ -9606,8 +9688,15 @@ def _edge_parameters_by_name(
             for node in sorted(set(_pow_nodes_in_values(parsed, sp)), key=_term_order.srepr):
                 if not _singular_power(node, clocks, sp):
                     continue
-                e_c = _exponent_over_parameters(node.exp, resolve_symbol, sympy_to_c)
-                test = "1" if e_c is None else f"(({e_c}) < 1.0)"
+                under_one = _exponent_under_one(
+                    node.exp,
+                    False,
+                    lambda e: _exponent_over_parameters(e, resolve_symbol, sympy_to_c),
+                    sp,
+                )
+                if not under_one:
+                    continue
+                test = " || ".join(under_one)
                 reads = _value_symbol_names(sp.numer(sp.together(node.base)), sp)
                 for alias in sorted(reads & set(scope.param_of_alias)):
                     for name in sorted(reach(scope.param_of_alias[alias])):

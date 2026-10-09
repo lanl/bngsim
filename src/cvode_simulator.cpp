@@ -5240,9 +5240,12 @@ void CvodeSimulator::Impl::comoving_refuse_ahead_without_a_frame(const Sensitivi
 // forcing that is unbounded at the edge: 12% off before a closing edge at an
 // exponent of 0.1, and a run that ends in a solver error after an opening
 // one. Which of the run's crossings is that edge is not known without the
-// case, so the column is refused at any crossing its parameter moves: ahead
-// of the run for the switch times it has, and at the crossing for one that is
-// only found as a root. A run that reaches none of them keeps its column.
+// case, so the column is refused at a crossing its parameter moves where the
+// power's base is 0, as the generator wrote that test over the time and the
+// parameters, and at any crossing its parameter moves where it could not (a
+// base that reads a counter or a state): ahead of the run for the switch times
+// it has, and at the crossing for one that is only found as a root. A run that
+// reaches none of them keeps its column.
 
 void CvodeSimulator::Impl::comoving_refuse_without_a_case(const SensitivityState &sens, double t,
                                                           const std::vector<double> &dtstar_dp) {
@@ -5255,7 +5258,7 @@ void CvodeSimulator::Impl::comoving_refuse_without_a_case(const SensitivityState
             continue; // this column does not move this crossing
         }
         const int param = sens.plist[static_cast<size_t>(c)];
-        if (codegen_edge_without_case_fn(param, frames.edge_param_values) == 0) {
+        if (codegen_edge_without_case_fn(param, t, frames.edge_param_values) == 0) {
             continue;
         }
         const auto &params = model.parameters();
