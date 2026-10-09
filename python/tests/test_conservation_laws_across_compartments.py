@@ -703,7 +703,7 @@ def test_a_continuum_across_sizes_is_refused():
     for name in ("kp", "k1"):
         with pytest.raises(
             bngsim.SimulationError,
-            match=r"#995.*not an isolated root.*what rounding leaves of a zero",
+            match=r"#995.*not an isolated root.*what rounding leaves of them",
         ):
             sim.steady_state(sensitivity_params=[name], tol=1e-10)
         model.reset()

@@ -546,7 +546,7 @@ conserved but not by a linear law.
 The solve checks, and raises `SimulationError` where a check fails. It takes
 one Newton step from the state it returned and factors its system again there,
 and it takes a run on for `max_time` from that state with every concentration
-moved by a millionth of itself. What it reads is each a ratio of two quantities
+moved by up to a millionth of itself. What it reads is each a ratio of two quantities
 in the same units. An entry of a column is taken over its species' own
 concentration, `ss.sens_species_scale`, the larger of the returned value and
 the corrected one, so that the units of a species or the size of its
@@ -569,8 +569,8 @@ which the solve does.
 | On the result | What it is | Refused |
 | --- | --- | --- |
 | `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; ((m-1)/m)^(m-1) at a root of order m, which is 1/2 at a double root; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
-| `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. | below 1e-10 |
-| `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed. | above 1e12 |
+| `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. Small for a reason too, beside rates that are far apart: `k/(2·F)` for a step at k beside an exchange at F. | below 1e-13 |
+| `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed; `4·F/k` for the step beside the exchange. | above 1e13 |
 | `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry and of no less than `1e-3/\|p\|`. Where a column moves by more than 0.01 of itself, or the state does (`sens_root_state_shift`), the state is stepped on, up to ten times (`sens_root_newton_steps`). | either still above 0.01 after the steps |
 | `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from a millionth beside the returned state. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
 | `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | times `max_time`, above 0.01 |
@@ -579,11 +579,14 @@ which the solve does.
 The request is refused whole where one column fails, so which parameters are
 asked for together can decide it.
 
-The first three say the steady state is not an isolated root. (A determinant
+The first three say the steady state is not an isolated root, or, for the
+pivot share and the condition number at their limits, that rates of the model
+are so far apart (1e13) that rounding leaves the columns known to no better
+than a thousandth. (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller
-`tol` settles the first. A root of an order between one and about 1.45 keeps
+`tol` settles the first. A root of an order between one and about 1.4 keeps
 more than 0.6 and is let by: 0.70 for a species that is lost at `k·X^1.2`. Its
 columns are then asked like any others, and settle at nothing under the steps
 or do not settle.) The columns of such a model come from a time course
@@ -639,7 +642,7 @@ started on. `-J⁻¹·∂f/∂p` there is how the root moves, not where a run en
 run starts a millionth beside the state because one started on such a root
 stays on it. A species that is absent is not moved: the run does not ask
 whether a state would last the arrival of something the model does not start
-with. (The eigenvalues below do, and refuse a state that would not.)
+with. (Nor do the eigenvalues below: a species that is absent, and that nothing the model has makes, is left out of them.)
 
 The run has `max_steps` steps. Where it uses them short of `max_time`, it was
 not seen to stay, and the columns are refused: an oscillation about the state

@@ -7034,8 +7034,8 @@ class Simulator:
     #:   ratio               limit    right and returned (645)    beyond it
     #:   ==================  =======  ==========================  ==============
     #:   determinant         0.6      0.96 to 1.2                 0.59 and under
-    #:   pivot share         1e-10    4.1e-8 at least             3.1e-11, under
-    #:   condition           1e12     1.3e9 at most               3.4e13 and up
+    #:   pivot share         1e-13    4.1e-8 at least             5.9e-14, under
+    #:   condition           1e13     1.3e9 at most               3.4e13 and up
     #:   column shift        0.01     2.1e-3 at most              1.8e-2 and up
     #:   hold shift          0.01     6.7e-3 at most              1.2e-2 and up
     #:   relaxation          0.01     1.0e-3 at most              1.8e-2 and up
@@ -7080,8 +7080,14 @@ class Simulator:
     #: zero, and where the rows that cancel do not depend on the state a Newton
     #: step does not move it. A pool that is only produced and exchanges
     #: within itself reads 2e16 (BIOMD0000000328). Two products of one branch
-    #: read 3.7, which is why the pivots are asked as well.
-    _SS_ROOT_CONDITION_MAX = 1e12
+    #: read 3.7, which is why the pivots are asked as well. A system that is
+    #: only stiff reads the ratio of its rates, 4·F/k for an exchange at F
+    #: beside a step at k, and at this limit its columns are known to a
+    #: thousandth, as at the least pivot share. (It was 1e12, with a message
+    #: that called such a system singular.) The right corpus models that are
+    #: returned are at 1.3e9 and under; the nearest above the limit is at
+    #: 3.4e13.
+    _SS_ROOT_CONDITION_MAX = 1e13
 
     #: A column of ``dY_ss/dp`` may move by this fraction of its largest entry
     #: when it is solved again at the state one Newton step on, each entry
@@ -7106,10 +7112,16 @@ class Simulator:
     #: was computed from. A pivot nothing cancelled into is all of them, and one
     #: that is what a cancellation left is rounding's share, 1e-16: the matrix
     #: is singular whatever the state, and the componentwise condition number
-    #: does not always say so (two sinks of one total: 3.7). The limit is
-    #: between the two: a four-hundredth of the least among the corpus's right
-    #: models that are returned, and a million times rounding's share.
-    _SS_ROOT_PIVOT_SHARE_MIN = 1e-10
+    #: does not always say so (two sinks of one total: 3.7). A pivot can also
+    #: be small for a reason: beside an exchange at F, a step at k has a pivot
+    #: that is k/(2·F) of its terms. Rounding leaves 1e-16 of the terms, so at
+    #: this limit a pivot is known to a thousandth of itself, and the columns
+    #: with it; under it they are not known to the 1% the other limits ask.
+    #: (It was 1e-10, which refused a chain with rates 5e9 apart whose columns
+    #: main had to twelve digits, and called it singular.) Among the corpus
+    #: models, those refused on this alone are at 3.6e-17 and under, and the
+    #: least among the right ones that are returned is 4.1e-8.
+    _SS_ROOT_PIVOT_SHARE_MIN = 1e-13
 
     #: The most a column may move, of its largest entry, when it is solved
     #: again where a run ends that is taken on for ``max_time`` from a
@@ -7283,23 +7295,28 @@ class Simulator:
             raise SimulationError(f"{measured}{read}{continuum}{remedy}")
         if not share >= self._SS_ROOT_PIVOT_SHARE_MIN:
             raise SimulationError(
-                f"{not_isolated}. The pivot for {result.sens_root_pivot_species} is "
-                f"{share:.1e} of the terms it was computed from (the limit is "
-                f"{self._SS_ROOT_PIVOT_SHARE_MIN:g}): it is what rounding leaves of a zero, "
-                "and the Jacobian is singular whatever the state, as it is where a total is "
-                "shared out among species that nothing takes it back from, or a quantity is "
-                f"conserved that no law of the model holds. {continuum}{remedy}"
+                f"{not_isolated}, or its columns cannot be computed. The pivot for "
+                f"{result.sens_root_pivot_species} is {share:.1e} of the terms it was "
+                f"computed from (the limit is {self._SS_ROOT_PIVOT_SHARE_MIN:g}), which is "
+                "what rounding leaves of them. Either the pivot is a zero, and the Jacobian "
+                "is singular whatever the state, as it is where a total is shared out among "
+                "species that nothing takes it back from, or a quantity is conserved that "
+                "no law of the model holds; or two rates of the model are that far apart "
+                "(an exchange beside a step 1e13 times slower), and the columns are not "
+                f"known to the 1% asked of them. {continuum}{remedy}"
             )
         if not condition <= self._SS_ROOT_CONDITION_MAX:
             raise SimulationError(
-                f"{not_isolated}. A relative error in the entries of the Jacobian is "
-                f"magnified {condition:.1e} times in the columns (the limit is "
-                f"{self._SS_ROOT_CONDITION_MAX:.0e}; the entry for "
-                f"{result.sens_root_condition_species} takes most of it), which at 1e16 "
-                "is a matrix whose smallest pivot is what rounding leaves of a zero: the "
-                "Jacobian is singular whatever the state, as it is where a set of species "
-                "is produced and never consumed, or a quantity is conserved that no law "
-                f"of the model holds. {continuum}{remedy}"
+                f"{not_isolated}, or its columns cannot be computed. A relative error "
+                f"in the entries of the Jacobian is magnified {condition:.1e} times in the "
+                f"columns (the limit is {self._SS_ROOT_CONDITION_MAX:.0e}; the entry for "
+                f"{result.sens_root_condition_species} takes most of it), and rounding is "
+                "1e-16 of each entry. Either the Jacobian is singular whatever the state "
+                "(at 1e16 its smallest pivot is what rounding leaves of a zero), as it is "
+                "where a set of species is produced and never consumed, or a quantity is "
+                "conserved that no law of the model holds; or two rates of the model are "
+                "that far apart, and the columns are not known to the 1% asked of them. "
+                f"{continuum}{remedy}"
             )
         stepped = float(result.sens_root_state_shift)
         limit = self._SS_ROOT_COLUMN_SHIFT_MAX
@@ -7308,19 +7325,19 @@ class Simulator:
                 moved = "the columns cannot be solved there: a rate has no value at that state"
             elif not column <= limit:
                 by = (
-                    f"{column:.1%}"
+                    f"{column:.1%} of"
                     if math.isfinite(column) and column < 10
                     else f"{column:.3g} times"
                 )
                 moved = (
-                    f"the column of {result.sens_root_column_param} still moves by {by} of "
+                    f"the column of {result.sens_root_column_param} still moves by {by} "
                     "its largest entry, each species taken over its own concentration (the "
                     f"limit is {limit:.0%})"
                 )
             else:
-                by = f"{stepped:.1%}" if stepped < 10 else f"{stepped:.3g} times"
+                by = f"{stepped:.1%} of" if stepped < 10 else f"{stepped:.3g} times"
                 moved = (
-                    f"a step still moves {result.sens_root_state_species} by {by} of what "
+                    f"a step still moves {result.sens_root_state_species} by {by} what "
                     f"it is taken over (the limit is {limit:.0%})"
                 )
             raise SimulationError(
@@ -7390,8 +7407,22 @@ class Simulator:
                     "this, growing or dying away, where it is slow to do either. Give the "
                     f"run more steps (max_steps), or take the columns from {time_course}."
                 )
+            elif not short and drift <= self._SS_ROOT_HOLD_SHIFT_MAX and not math.isinf(held):
+                by = f"{held:.1%} of" if held < 10 else f"{held:.3g} times"
+                raise SimulationError(
+                    f"{opening}the columns at the state the solve returned are not those of "
+                    "where a run from beside it ends, though the run ends beside it. Taken "
+                    f"on from a millionth beside the state for max_time ({max_time:g}), the "
+                    f"run moves no species by more than {drift:.1g} of what it is taken "
+                    f"over, and the column of {result.sens_root_hold_param}, solved again "
+                    f"where it ends, moves by {by} its largest entry (the limit is "
+                    f"{self._SS_ROOT_HOLD_SHIFT_MAX:.0%}). A column that moves so under so "
+                    "small a move of the state is not one the root decides: the Jacobian "
+                    "is all but singular there, as it is where the turnover of a species "
+                    f"has stopped. Take the columns from {time_course}."
+                )
             else:
-                state = f"{drift:.0%}" if drift < 10 else f"{drift:.3g} times"
+                state = f"{drift:.0%} of" if drift < 10 else f"{drift:.3g} times"
                 moved = (
                     "Taken on from a millionth beside it, "
                     + (
@@ -7400,7 +7431,7 @@ class Simulator:
                         if short
                         else f"for max_time ({max_time:g})"
                     )
-                    + f", the run moves {result.sens_root_hold_species} by {state} of what "
+                    + f", the run moves {result.sens_root_hold_species} by {state} what "
                     "it is taken over, and "
                 )
                 if math.isinf(held):
@@ -7409,10 +7440,10 @@ class Simulator:
                         "solution: their Jacobian is singular there."
                     )
                 else:
-                    by = f"{held:.1%}" if held < 10 else f"{held:.3g} times"
+                    by = f"{held:.1%} of" if held < 10 else f"{held:.3g} times"
                     moved += (
                         f"the column of {result.sens_root_hold_param}, solved again where "
-                        f"the run ends, moves by {by} of its largest entry (the limit is "
+                        f"the run ends, moves by {by} its largest entry (the limit is "
                         f"{self._SS_ROOT_HOLD_SHIFT_MAX:.0%})."
                     )
             raise SimulationError(
@@ -9175,7 +9206,7 @@ class SteadyStateResult:
         one Newton step on, over the one at the returned state (issue #995). 1,
         to the accuracy of the solve, at an isolated root; next to nothing
         where the Jacobian is singular at the steady state, a continuum of
-        steady states; 1/2 at a root of higher order; negative or large where
+        steady states; 1/2 at a double root; negative or large where
         the returned state is far from its root or a rate law is discontinuous
         between the two. ``steady_state`` raises outside 0.6 to 1.67. ``1.0``
         when no sensitivity was requested.
@@ -9183,23 +9214,24 @@ class SteadyStateResult:
         The least a pivot of that system's factorization is of the terms it
         was computed from: 1 for a pivot nothing cancelled into, 1e-16 for one
         that is what rounding left of a zero, where the Jacobian is singular
-        whatever the state. ``steady_state`` raises below 1e-10. ``1.0`` when
+        whatever the state. Read at the state the solver stopped at, as the
+        condition number is. ``steady_state`` raises below 1e-13. ``1.0`` when
         no sensitivity was requested.
     sens_root_condition : float
         The componentwise condition number of that system, the Perron root of
         ``|A⁻¹|·|A|``: how many times a relative error in each entry of the
         Jacobian is magnified in the columns. The same in any units.
-        ``steady_state`` raises above 1e12. ``1.0`` when no sensitivity was
+        ``steady_state`` raises above 1e13. ``1.0`` when no sensitivity was
         requested.
     sens_root_column_shift : float
         The largest move of a column of ``dY_ss/dp`` when it is solved again a
-        Newton step on, as a fraction of the column's largest entry, each
-        entry over its species' scale (``sens_species_scale``), the column's
-        largest entry being the largest it has had at any of the states: how
-        far the columns are from those of the root. Above 0.01 the solve steps the state on, up to
-        ten times, until it is not, and this is the move at the last step;
-        ``steady_state`` raises where it is still above 0.01. ``0.0`` when no
-        sensitivity was requested.
+        Newton step on, as a fraction of the column's largest entry at the
+        two states and of no less than ``1e-3/|p|``, each entry over its
+        species' scale (``sens_species_scale``): how far the columns are from
+        those of the root. Where a column moves by more than 0.01 of itself
+        the solve steps the state on, up to ten times, and this is the move at
+        the last step; ``steady_state`` raises where it is still above 0.01.
+        ``0.0`` when no sensitivity was requested.
     sens_root_state_shift : float
     sens_root_state_species : str or None
         The largest move of a species under that Newton step, over its scale,
@@ -9216,8 +9248,9 @@ class SteadyStateResult:
         ``steady_state`` raises where a state that was stepped to is more than
         1% in any species from where the run that is taken on ends.
     sens_root_hold_shift, sens_root_hold_drift : float
-        A run is taken on for ``max_time`` from the returned state with every
-        concentration moved by a millionth of itself. ``sens_root_hold_shift``
+        A run is taken on for ``max_time`` from the state the solver stopped
+        at, with every concentration moved by up to a millionth of itself (a
+        species that is absent is not moved). ``sens_root_hold_shift``
         is the largest move of a column when it is solved again where that
         run ends, measured as the column shift is, and ``steady_state`` raises
         above 0.01, or where the run could not be made (not a number): the
@@ -9234,7 +9267,10 @@ class SteadyStateResult:
     sens_root_growth_rate, sens_root_spectral_radius : float
         The largest real part among the eigenvalues of that system at the
         returned state, and the largest eigenvalue in size, for systems of up
-        to 512 unknowns. ``steady_state`` raises where the first, times
+        to 512 unknowns (above that, those of the species the state has at a
+        zero). A species that is absent and that nothing present makes is left
+        out: what its arrival would do is not asked. ``steady_state`` raises
+        where the first, times
         ``max_time``, is above 0.01: a state beside this one is more than 1%
         further off after a run of that length. Not a number, and ``0.0``,
         where the eigenvalues were not taken and when no sensitivity was

@@ -2304,7 +2304,7 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 // and, of where a run goes from it:
 //
 //   4. Take a run on for the time the solve was given, from y with every
-//      concentration moved by a millionth of itself, to y_h.
+//      concentration moved by up to a millionth of itself, to y_h.
 //
 // Where the columns at y_c are not those at y, y is short of the root, and
 // steps 2 and 3 are taken again from y_c, and from where that leads, until the
@@ -2468,8 +2468,8 @@ static constexpr int kNewtonSteps = 10;
 // the ten of them were 6 s of 9 for a network of 1,281 species whose
 // determinant had said no.
 static constexpr double kDeterminantKept = 0.6;
-static constexpr double kPivotShareLeast = 1e-10;
-static constexpr double kConditionMost = 1e12;
+static constexpr double kPivotShareLeast = 1e-13;
+static constexpr double kConditionMost = 1e13;
 
 // How far, of itself, each concentration is moved before the run is taken on
 // from the returned state (find_steady_state): a state the system rests at
@@ -2929,15 +2929,12 @@ static double ss_pivot_share(const std::vector<double> &lu, int n, const std::ve
 // what one Newton step does, alone, took the species stopped at 1e-7 for one
 // running out.
 //
-// `y_c` is a Newton step from `y_ss` (SsPair::NewtonStep), or where a run from
-// beside it ended (RunEnd), or `y_ss` is where a run ended and `y_c` the state
-// it was started beside (RunStart).
-enum class SsPair { NewtonStep, RunEnd, RunStart };
-
+// `ended_a_run`: `y_c` is where a run from beside `y_ss` ended, and not a
+// Newton step from it or a state a run was started beside.
 static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkModel &model,
                                              const double *J, int ns,
                                              const std::vector<double> &start, const double *y_ss,
-                                             const double *y_c, SsPair pair = SsPair::NewtonStep,
+                                             const double *y_c, bool ended_a_run = false,
                                              std::vector<char> *zeros = nullptr) {
     std::vector<double> own(static_cast<size_t>(ns)), was(static_cast<size_t>(ns));
     std::vector<double> scale(static_cast<size_t>(ns));
@@ -3020,7 +3017,6 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         const size_t k = static_cast<size_t>(i);
         const double loss = std::abs(J[k * static_cast<size_t>(ns) + k]);
         const double fed = loss > 0.0 && std::isfinite(made[k] / loss) ? made[k] / loss : 0.0;
-        const double shared = std::isfinite(allowed[k]) ? allowed[k] : 0.0;
         const double returned = std::abs(y_ss[i]), corrected = std::abs(y_c[i]);
         const double beside = group[static_cast<size_t>(find(i))];
         // What rounding is of: the pool, for a species that is in one, and
@@ -3041,7 +3037,7 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         // it does not grow from next to nothing. Beside a species at 200 whose
         // column is asked, X's own entry is no part of what the steps go by,
         // and came back 124 times what it is. The run ends with X at 1e-9.)
-        at_zero[k] = rounding || (halved && pair != SsPair::RunEnd);
+        at_zero[k] = rounding || (halved && !ended_a_run);
         // Asked whether it grows from next to nothing (below): one that came
         // down to something. One that came down to rounding is not asked:
         // species that have run out are at what a tolerance left of them, of
@@ -3197,17 +3193,58 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // With the certificate's own eigensolver and its own limit on the size
     // (issue #78), on the matrix the columns are solved with: at the returned
     // state here, and again at the state that is stepped to, where one is (6).
+    // The state as the solver left it.
+    const std::vector<double> returned(y_ss, y_ss + ns);
+    // The eigenvalues are those of the species the model has. One that is
+    // absent, exactly at nothing where the solver stopped, and that nothing
+    // present makes (its row has no entry in a present species' column) has a
+    // block of its own, whose eigenvalues say what its arrival would do. That
+    // is not asked of a state, here or by the run that is taken on, which
+    // does not move it: a resident at its capacity beside an invader the model
+    // does not start with rests where it is, and its columns are those of
+    // where a run ends.
     const auto read_spectrum = [&](const std::vector<double> &reduced) {
         result.sens_root_growth_rate = nan;
         result.sens_root_spectral_radius = 0.0;
         if (n > kStabilitySpectrumMaxN) {
             return;
         }
-        std::vector<double> spectrum_of(reduced), wr(static_cast<size_t>(n)),
-            wi(static_cast<size_t>(n));
-        if (dense_eigenvalues(spectrum_of.data(), n, wr.data(), wi.data())) {
+        std::vector<int> present;
+        for (int r = 0; r < n; ++r) {
+            if (returned[static_cast<size_t>(unknown(r))] != 0.0) {
+                present.push_back(r);
+            }
+        }
+        bool apart = static_cast<int>(present.size()) < n;
+        for (int r = 0; r < n && apart; ++r) {
+            if (returned[static_cast<size_t>(unknown(r))] != 0.0) {
+                continue;
+            }
+            for (const int c : present) {
+                // Column-major: the entry of row r in column c.
+                if (reduced[static_cast<size_t>(c) * n + r] != 0.0) {
+                    apart = false;
+                    break;
+                }
+            }
+        }
+        const int m = apart ? static_cast<int>(present.size()) : n;
+        if (m == 0) {
+            return;
+        }
+        std::vector<double> spectrum_of(static_cast<size_t>(m) * m), wr(static_cast<size_t>(m)),
+            wi(static_cast<size_t>(m));
+        for (int c = 0; c < m; ++c) {
+            for (int r = 0; r < m; ++r) {
+                const int from_c = apart ? present[static_cast<size_t>(c)] : c;
+                const int from_r = apart ? present[static_cast<size_t>(r)] : r;
+                spectrum_of[static_cast<size_t>(c) * m + r] =
+                    reduced[static_cast<size_t>(from_c) * n + from_r];
+            }
+        }
+        if (dense_eigenvalues(spectrum_of.data(), m, wr.data(), wi.data())) {
             double max_re = -inf, radius = 0.0;
-            for (int i = 0; i < n; ++i) {
+            for (int i = 0; i < m; ++i) {
                 max_re = std::max(max_re, wr[static_cast<size_t>(i)]);
                 radius = std::max(
                     radius, std::hypot(wr[static_cast<size_t>(i)], wi[static_cast<size_t>(i)]));
@@ -3255,7 +3292,6 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     //    sign has no such limit, and taking one for it hid a state 39% short of
     //    its root.
     std::vector<double> f(static_cast<size_t>(ns), 0.0);
-    const std::vector<double> returned(y_ss, y_ss + ns);
     struct Stepped {
         std::vector<double> to, floored;
         bool finite = true, below_zero = false;
@@ -3328,7 +3364,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         }
         ss_lu_in_row_order(A_c, n, row);
         species_scale = ss_species_scales(rhs, *sys.model, J, ns, *sys.start, at.data(),
-                                          state.data(), SsPair::NewtonStep, &at_a_zero);
+                                          state.data(), false, &at_a_zero);
         // How far the step moved the state, each species over its scale.
         double state_shift = 0.0;
         result.sens_root_state_species = -1;
@@ -3636,7 +3672,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         std::vector<int> zeros;
         for (const int i : sub.included) {
             const size_t k = static_cast<size_t>(i);
-            if (k < at_a_zero.size() && at_a_zero[k]) {
+            if (k < at_a_zero.size() && at_a_zero[k] && returned[k] != 0.0) {
                 zeros.push_back(i);
             }
         }
@@ -3695,10 +3731,10 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         // stopped with a cascade still on its way down: it is at a zero in
         // both. How far the run moved each species is taken over the same.
         std::vector<double> held_scale =
-            ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_ss, y_h.data(), SsPair::RunEnd);
+            ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_ss, y_h.data(), true);
         {
-            const std::vector<double> other = ss_species_scales(rhs, *sys.model, J, ns, *sys.start,
-                                                                y_h.data(), y_ss, SsPair::RunStart);
+            const std::vector<double> other =
+                ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_h.data(), y_ss);
             for (int i = 0; i < ns; ++i) {
                 held_scale[static_cast<size_t>(i)] =
                     std::max(held_scale[static_cast<size_t>(i)], other[static_cast<size_t>(i)]);
@@ -4800,8 +4836,9 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         // can be one the system leaves: BIOMD0000000005 has a root with
         // eigenvalues 0.16 ± 0.18i, inside its limit cycle. So a run is taken
         // on for the time the solve was given, from the returned state with
-        // every concentration moved by a millionth of itself (each by its own
-        // share of that, so that no symmetry of the model is kept), and the
+        // every concentration moved by up to a millionth of itself (each by
+        // its own share of that, of either sign, so that no symmetry of the
+        // model is kept), and the
         // columns are refused where it does not come back (ss_measure_root,
         // 5). A species that is not there is not moved: a state is not asked
         // whether it would last an invasion nothing in the request brings. The
@@ -4867,6 +4904,24 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub, dx0,
                                restore.saved, held ? &held_state : nullptr, hold_failed,
                                opts.max_time);
+        // The observables and functions are those of the state that is
+        // returned (issue #995): where the state was stepped on, the ones read
+        // above are the solver's, and a species an assignment rule gives is
+        // reported from them. (Z := 2·A came back 5.77e-11 beside the A of 1e-7
+        // that the steps led to.)
+        if (result.sens_root_newton_steps > 0) {
+            for (int i = 0; i < ns; ++i) {
+                species[i].concentration = result.concentrations[i];
+            }
+            rhs.sync_params();
+            model.update_observables(result.concentrations.data());
+            model.evaluate_functions(0.0);
+            result.observable_values.clear();
+            for (const auto &o : model.observables()) {
+                result.observable_values.push_back(o.total);
+            }
+            result.function_values = model.function_value_cache();
+        }
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
         compute_ss_output_sensitivity(model, rhs, result, opts.sensitivity_params);

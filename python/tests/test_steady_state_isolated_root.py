@@ -15,15 +15,15 @@ system again there, and takes an integration on from that state for
 
 - a determinant that keeps less than 0.6 of itself: the Jacobian is singular
   at the steady state the solve was approaching;
-- a pivot that is under 1e-10 of the terms it was computed from, or a
-  componentwise condition number above 1e12: the Jacobian is singular
-  whatever the state, but for rounding;
+- a pivot that is under 1e-13 of the terms it was computed from, or a
+  componentwise condition number above 1e13: the Jacobian is singular
+  whatever the state, but for rounding, or its columns are not known to 1%;
 - a column that moves by more than 1%, each species over its own scale: the
   returned state is short of the steady state;
 - a column that moves by more than 1% where the run ends: the returned state
   is one a run leaves;
-- an eigenvalue right of zero, or a determinant of the sign an odd number of
-  them gives it: the system does not rest at the state;
+- an eigenvalue far enough right of zero for ``max_time``: the system does
+  not rest at the state;
 - a column of which a run of ``max_time`` would leave more than 1%
   unestablished: the steady state is one no run of that length reaches;
 
@@ -264,9 +264,11 @@ BOTH_SIZES = (
 @pytest.mark.parametrize("v2", [1e5, 1e7, 1e-6])
 def test_an_isolated_root_with_sizes_far_apart_is_returned(v2):
     """A* = 2/15, X* = A*/2, B* = 2·A*/V2 and C* = 2·B*: an isolated root,
-    whose min|U|/max|U| falls with the size ratio. It was refused for a law
-    across sizes at a ratio below 1e-8 (issue #758), though the columns are
-    right: dA*/dk1 = -8/75, dX*/dk1 = -4/75, dB*/dk1 = 4/(75·V2)."""
+    whose min|U|/max|U| falls with the size ratio. At V2 = 1e-6 the ratio is
+    below 1e-8 and it was refused for a law across sizes (issue #758), though
+    the columns are right: dA*/dk1 = -8/75, dX*/dk1 = -4/75,
+    dB*/dk1 = 4/(75·V2). (At 1e5 and 1e7 main returned them; what is new there
+    is that the condition number says the same at every size.)"""
     model = bngsim.Model.from_antimony_string(BOTH_SIZES.format(v2=v2))
     out = bngsim.Simulator(model, method="ode").steady_state(
         sensitivity_params=["k1"], tol=1e-13, method="newton"
@@ -312,7 +314,7 @@ end reactions
 
 
 # A <-> B at concentrations of 1e-6 and rates of 5e-3: the residual is below
-# tol = 1e-9 while B is still 28% short.
+# tol = 1e-9 while B is still 20% short.
 SMALL = """begin parameters
     1 kf     5e-3
     2 kr     5e-3
@@ -331,8 +333,8 @@ end reactions
 
 def test_a_state_short_of_the_steady_state_is_stepped_to_it(tmp_path):
     """``tol`` bounds ||f||/n. With concentrations of 1e-6 and rates of 5e-3
-    the residual passes 1e-9 while A is 28% from A* = 5e-7, and dA*/dkf
-    came back 28% from -5e-5 with ``converged=True`` and nothing logged. The
+    the residual passes 1e-9 while A is 20% from A* = 5e-7, and dA*/dkf
+    came back 20% from -5e-5 with ``converged=True`` and nothing logged. The
     columns are solved again one Newton step on, and where they move the state
     is stepped on until they do not: the state and the columns returned are
     those of the root."""
@@ -2642,3 +2644,145 @@ def test_model2502210001_ends_a_species_below_zero_where_a_rate_has_no_value():
         sensitivity_params=["_lp_r1_0_k1", "_lp_r2_0_Km", "_lp_r2_0_V"], mask=kept
     )
     assert np.all(np.isfinite(np.asarray(out.sensitivity)[kept]))
+
+
+# 0 -> A at s, A <-> B at F each way, B -> 0 at k.
+BESIDE_A_FAST_EXCHANGE = """begin parameters
+    1 s   1.0
+    2 F   {F}
+    3 k   1.0
+end parameters
+begin species
+    1 A() 0
+    2 B() 0
+end species
+begin reactions
+    1 0 1 s
+    2 1 2 F
+    3 2 1 F
+    4 2 0 k
+end reactions
+"""
+
+
+@pytest.mark.parametrize("fast", [1e10, 1e12])
+def test_a_step_beside_a_fast_exchange_is_returned(tmp_path, fast):
+    """An isolated root, B* = s/k and A* = s/k + s/F, with a pivot for B of
+    -k that is computed from terms of F: k/(2·F) of them, 5e-11 and 5e-13.
+    Under 1e-10 it was refused, and called singular whatever the state, where
+    main had the columns to twelve digits. Rounding leaves 1e-16 of the terms,
+    which at 5e-13 is still a pivot known to a five-thousandth."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=fast)), method="ode")
+    out = sim.steady_state(sensitivity_params=["s", "k"])
+    assert out.sens_root_pivot_share == pytest.approx(0.5 / fast, rel=1e-3)
+    assert out.sens_root_condition == pytest.approx(4 * fast, rel=0.5)
+    np.testing.assert_allclose(out.concentrations, [1 + 1 / fast, 1.0], rtol=1e-9)
+    np.testing.assert_allclose(out.sensitivity, [[1 + 1 / fast, -1.0], [1.0, -1.0]], rtol=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("fast", "said"),
+    [
+        (3e12, r"magnified 1\.2e\+13 times.*or two rates of the model are that far apart"),
+        (1e14, r"The pivot for B\(\) is 5\.0e-15 of the terms.*or two rates of the model are"),
+    ],
+)
+def test_rates_too_far_apart_for_one_percent_are_refused_as_that(tmp_path, fast, said):
+    """The same with the exchange 1.2e13 and 2e14 times the step: the columns
+    are not known to 1%, and the refusal says that it is this or a Jacobian
+    that is singular whatever the state, and not that it is the second."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=fast)), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=rf"#995.*cannot be computed.*{said}"):
+        sim.steady_state(sensitivity_params=["s", "k"])
+
+
+def test_a_condition_number_above_the_limit_is_refused_and_one_under_it_is_not(tmp_path):
+    """The limit on the condition number, on a result that has everything
+    else in order: the corpus models that only it refuses are not in the
+    repository (BIOMD0000000599 below)."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=10.0)), method="ode")
+    out = sim.steady_state(sensitivity_params=["s", "k"])
+    out.sens_root_condition = 0.9e13
+    sim._raise_if_not_an_isolated_root(out, 1e6, False)
+    out.sens_root_condition = 1.1e13
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*magnified 1\.1e\+13 times"):
+        sim._raise_if_not_an_isolated_root(out, 1e6, False)
+
+
+# A resident at its capacity b/c, and an invader that makes itself at g and is
+# removed by the resident and by itself at d: N' = N·(g - d·R - d·N).
+BESIDE_AN_INVADER = """begin parameters
+    1 b   1.0
+    2 c   1.0
+    3 g   2.0
+    4 d   1.0
+end parameters
+begin species
+    1 R() 0.5
+    2 N() {n0}
+end species
+begin reactions
+    1 1 1,1 b
+    2 1,1 1 c
+    3 2 2,2 g
+    4 1,2 1 d
+    5 2,2 2 d
+end reactions
+"""
+
+
+def test_a_species_the_model_does_not_have_is_not_asked_what_its_arrival_would_do(tmp_path):
+    """Control. With N at nothing the resident rests at b/c, and that is where
+    every run of this model ends: dR*/db = 1/c, dR*/dc = -b/c², and nothing
+    for g. The Jacobian has an eigenvalue of g - d·R = 1 there, which is what
+    N would do if it arrived. A species that is absent and that nothing
+    present makes is left out of the eigenvalues, as the run that is taken on
+    leaves it where it is; with it in, this was refused as a state the system
+    does not rest at (and 10 of 354 random networks with it)."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_AN_INVADER.format(n0="0")), method="ode")
+    out = sim.steady_state(sensitivity_params=["b", "c", "g"])
+    np.testing.assert_allclose(out.concentrations, [1.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(out.sensitivity, [[1.0, -1.0, 0.0], [0.0, 0.0, 0.0]], atol=1e-7)
+
+
+def test_the_eigenvalues_are_those_of_the_species_the_model_has(tmp_path):
+    """The same result's growth rate is the resident's own, -b, and not the
+    invader's 1."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_AN_INVADER.format(n0="0")), method="ode")
+    out = sim.steady_state(sensitivity_params=["b", "c", "g"])
+    assert out.sens_root_growth_rate == pytest.approx(-1.0, rel=1e-6)
+
+
+def test_an_invader_that_is_there_takes_the_system_where_it_goes(tmp_path):
+    """Control. Seeded at 1e-9, N grows, and the solve ends where the two
+    coexist: R* = b/c and N* = g/d - R*."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_AN_INVADER.format(n0="1e-9")), method="ode")
+    out = sim.steady_state(sensitivity_params=["b", "g"])
+    np.testing.assert_allclose(out.concentrations, [1.0, 1.0], rtol=1e-6)
+    np.testing.assert_allclose(out.sensitivity, [[1.0, 0.0], [-1.0, 1.0]], rtol=1e-5, atol=1e-7)
+
+
+def test_biomd908_rests_where_it_is_without_the_species_it_does_not_start_with():
+    """S is at nothing from the start and nothing makes it; the Jacobian has
+    an eigenvalue of 0.277 that is S's own. The run that is taken on stays,
+    the columns agree with differences of runs, and they were refused for a
+    state the system does not rest at."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000908")), method="ode")
+    out = sim.steady_state(sensitivity_params=["d", "l", "s"])
+    at = dict(zip(out.species_names, np.asarray(out.concentrations), strict=True))
+    assert at["S"] == 0.0
+    assert out.sens_root_growth_rate < 0.0
+    assert np.all(np.isfinite(np.asarray(out.sensitivity)))
+
+
+def test_model1607210000_says_that_the_run_stayed_and_the_columns_did_not():
+    """A species whose turnover has stopped: the run that is taken on ends
+    3e-6 from the state, and the column of v15_h solved again there is 40
+    times what it was. The refusal said the state was not one a run stays at,
+    and then that the run moved a species by 0%."""
+    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("MODEL1607210000")), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*though the run ends beside it.*column of v15_h.*moves by 40\.\d times its",
+    ):
+        sim.steady_state(sensitivity_params=["v15_h"])
