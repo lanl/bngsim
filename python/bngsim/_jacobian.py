@@ -2044,7 +2044,9 @@ def _make_printer():
     optional)."""
     from sympy.printing.str import StrPrinter
 
-    class _ExprTkPrinter(StrPrinter):
+    from bngsim._term_order import SeedFreeTermOrder
+
+    class _ExprTkPrinter(SeedFreeTermOrder, StrPrinter):
         def _print_Pow(self, expr):
             from sympy import S
 
@@ -2306,7 +2308,9 @@ def _make_c_printer():
     symbol is routed through the instance ``_resolver`` callback."""
     from sympy.printing.str import StrPrinter
 
-    class _CPrinter(StrPrinter):
+    from bngsim._term_order import SeedFreeTermOrder
+
+    class _CPrinter(SeedFreeTermOrder, StrPrinter):
         # Set per call by sympy_to_c; None outside an emission.
         _resolver: Callable[[str], str | None] | None = None
 

@@ -1,0 +1,172 @@
+"""The emitted source of a model is the same for every hash seed (issue #550).
+
+Every emitter prints a sum through sympy's ``as_ordered_terms``, which sorts
+the terms by their monomials over the sum's generators. sympy collects the
+generators in a set and sorts it by ``default_sort_key``, and two generators
+that differ only in the type of a number, ``X`` and the ``X**1.0`` that
+differentiating ``X**2.0`` leaves, have keys of which neither is less than the
+other. They stay in the order the set gave them, which follows
+``PYTHONHASHSEED``: one corpus model, MODEL0847869198, had two sensitivity
+sources, 8 lines of 2,094 apart, and which of them a run compiled changed from
+process to process.
+
+``bngsim._term_order.ordered_terms`` breaks the tie by the generators'
+``srepr``.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+import pytest
+
+sp = pytest.importorskip("sympy")
+
+from bngsim._term_order import ccode, ordered_terms  # noqa: E402
+
+# The rate of A -> B is a*Aobs^2.0 + b*Aobs^2. Its derivative in Aobs is
+# 2.0*a*Aobs**1.0 + 2*b*Aobs: two terms, over the generators Aobs**1.0, Aobs,
+# a and b, the first two of which tie.
+NET = """begin parameters
+    1 a   1.5
+    2 b   0.5
+    3 kd  0.1
+end parameters
+begin functions
+    1 made() a*Aobs^2.0+b*Aobs^2
+end functions
+begin species
+    1 A() 1
+    2 B() 0
+end species
+begin reactions
+    1 1 2 made
+    2 2 1 kd
+end reactions
+begin groups
+    1 Aobs  1
+end groups
+"""
+
+_EMIT = """
+import hashlib, logging, sys
+logging.disable(logging.CRITICAL)
+import bngsim
+from bngsim import _codegen as cg
+model = bngsim.Model.from_net(sys.argv[1])
+source = cg.generate_combined_from_model(model, emit_output_sens=True)[0]
+line = next(l for l in source.splitlines() if "/* made */" in l and "obs_sens_c" in l)
+print(hashlib.sha256(source.encode()).hexdigest(), "|", line.strip())
+"""
+
+# On main, under CPython 3.12, seeds 0 and 1 print the term in a first and
+# seeds 3 and 5 the term in b first.
+_SEEDS = (0, 1, 3, 5, 7, 8)
+
+
+def _emitted_under(seed: int, net: str) -> str:
+    done = subprocess.run(
+        [sys.executable, "-c", _EMIT, net],
+        env={**os.environ, "PYTHONHASHSEED": str(seed)},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    return done.stdout.strip().splitlines()[-1]
+
+
+def test_the_combined_source_is_the_same_under_every_hash_seed(tmp_path):
+    """Six processes, six seeds, one source. On main there were two, with
+    ``2.0*pow(obs[0], 1.0)*p[0] + 2.0*obs[0]*p[1]`` in one and the two terms
+    the other way round in the other."""
+    net = tmp_path / "tie.net"
+    net.write_text(NET)
+    emitted = {seed: _emitted_under(seed, str(net)) for seed in _SEEDS}
+    assert len(set(emitted.values())) == 1, emitted
+    line = emitted[_SEEDS[0]].split("|", 1)[1]
+    assert "pow(obs[0], 1.0)" in line and "obs[0]*p[1]" in line
+
+
+def _tied_sum():
+    """2.0*p*A**1.0 + 2*q*A. The generators sort as A and A**1.0, tied, then p
+    and q, so the tied pair leads the monomials and decides the order."""
+    x, p, q = sp.symbols("A p q")
+    whole = sp.Float(2.0) * p * sp.Pow(x, sp.Float(1.0), evaluate=False)
+    return whole + 2 * q * x, x
+
+
+def test_two_generators_that_tie_are_what_the_model_has():
+    """Control. What the fix rests on: ``A`` and ``A**1.0`` are different
+    expressions whose sort keys are not equal and of which neither is less
+    than the other, so ``sorted`` keeps them in the order it was given."""
+    expr, x = _tied_sum()
+    power = sp.Pow(x, sp.Float(1.0), evaluate=False)
+    assert power != x
+    first, second = sp.default_sort_key(x), sp.default_sort_key(power)
+    assert first != second
+    assert not first < second and not second < first
+    assert {g for g in expr.as_terms()[1] if g.has(x)} == {x, power}
+
+
+def test_a_tie_is_broken_by_what_the_generators_are():
+    """The term in ``A**1.0`` is printed first, whichever of the two the set
+    gave first: ``Pow(...)`` is ahead of ``Symbol(...)`` in ``srepr``, and the
+    first generator's power leads the monomial order. sympy's own order for
+    this sum is one or the other with the seed of the process."""
+    expr, x = _tied_sum()
+    terms = ordered_terms(expr)
+    assert len(terms) == 2
+    assert terms[0].has(sp.Float(1.0)) and not terms[1].has(sp.Float(1.0))
+    assert ccode(expr) == "2.0*pow(A, 1.0)*p + 2*A*q"
+
+
+def test_the_generators_are_asked_for_in_either_order(monkeypatch):
+    """The same sum with ``as_terms`` made to give the tied pair each way
+    round, as two seeds do: one order of the terms comes back."""
+    expr, x = _tied_sum()
+    terms, gens = expr.as_terms()
+    tied = [i for i, g in enumerate(gens) if g.has(x)]
+    assert len(tied) == 2 and tied[1] == tied[0] + 1
+    i, j = tied
+
+    def swapped(self):
+        other = list(gens)
+        other[i], other[j] = other[j], other[i]
+        moved = []
+        for term, (coeff, monom, ncpart) in terms:
+            at = list(monom)
+            at[i], at[j] = at[j], at[i]
+            moved.append((term, (coeff, tuple(at), ncpart)))
+        return moved, other
+
+    one, native = ordered_terms(expr), expr.as_ordered_terms()
+    monkeypatch.setattr(type(expr), "as_terms", swapped)
+    # sympy's own order follows the generators; this one does not.
+    assert expr.as_ordered_terms() == native[::-1]
+    assert ordered_terms(expr) == one
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a*x**2 + b*x + c",
+        "1 - 2*x",
+        "x - 1",
+        "-x*y + 3*x**2*y - y**3 + 2",
+        "exp(-k*t)*a - b*log(x) + x/(1 + x)",
+        "a*(x + y)**2 - (x - y)*(a + b) + 1.5",
+        "x**2.5 + x**0.5 - 2.0*x",
+        "-1.0*a*b + a*b**2 - 3",
+        "x",
+        "2*x",
+    ],
+)
+def test_a_sum_with_no_tie_is_ordered_as_sympy_orders_it(text):
+    """Control. Without a tie the order is sympy's own, term for term, so the
+    text an emitter prints for such a sum is what it was."""
+    expr = sp.sympify(text)
+    assert ordered_terms(expr) == expr.as_ordered_terms()
+    assert ccode(expr) == sp.ccode(expr)

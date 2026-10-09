@@ -34,6 +34,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
+from bngsim import _term_order
+
 if TYPE_CHECKING:
     # Import-time cycle: _switch_sensitivity imports this module. Only the
     # annotation needs the name, and `from __future__ import annotations` keeps
@@ -285,8 +287,9 @@ _CODEGEN_VERSION = "37"
 # delegates to; ``_switch_sensitivity`` owns the clock-threshold recognizer that
 # decides whether a conditional Functional rate law is emitted at all (issue
 # #68), so an edit there changes which models get a sensitivity RHS — exactly the
-# kind of silent inertness this digest exists to prevent. A change to any of them
-# can change the generated source.
+# kind of silent inertness this digest exists to prevent; ``_term_order`` is the
+# order every emitter prints the terms of a sum in (issue #550). A change to any
+# of them can change the generated source.
 #
 # This tuple is the ONLY list. CONTRIBUTING.md's "Changing generated code"
 # section — the thing a contributor reads to decide whether they must bump
@@ -298,6 +301,7 @@ _CODEGEN_SOURCE_MODULES = (
     "_jacobian",
     "_saturable_jacobian",
     "_switch_sensitivity",
+    "_term_order",
 )
 
 
@@ -2793,7 +2797,9 @@ def _direct_derived_partials(
         # rate was right (issue #720). The printing itself stays sp.ccode.
         deriv = _guard_zero_base(deriv)
         try:
-            c_str = sp.ccode(deriv)
+            # sp.ccode, with a sum's terms in an order that does not follow the
+            # hash seed (issue #550).
+            c_str = _term_order.ccode(deriv)
         except Exception as exc:
             # A derivative sympy cannot render as C (an un-inlined user function
             # call, erf, DiracDelta, ...). Refuse the whole expression rather

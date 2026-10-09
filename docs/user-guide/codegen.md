@@ -50,7 +50,8 @@ exact class of bug the cache exists to avoid. So it grows until you bound it.
 
 It grows faster than "a cache grows" suggests. The key folds a digest of the
 codegen emitters' own source, so *any* edit to `_codegen.py` / `_jacobian.py` /
-`_saturable_jacobian.py` / `_switch_sensitivity.py` — a comment included — orphans
+`_saturable_jacobian.py` / `_switch_sensitivity.py` / `_term_order.py` — a comment
+included — orphans
 every artifact on the machine at once. That is the right trade (the alternative,
 under-invalidation, is a silently wrong gradient), but on a machine that tracks
 bngsim development it means a fresh corpus of dead artifacts per emitter edit: six
