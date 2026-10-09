@@ -3318,6 +3318,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("sens_root_hold_drift", &bngsim::SteadyStateResult::sens_root_hold_drift)
         .def_readonly("sens_root_hold_shift", &bngsim::SteadyStateResult::sens_root_hold_shift)
         .def_readonly("sens_root_hold_param", &bngsim::SteadyStateResult::sens_root_hold_param)
+        .def_readonly("sens_root_newton_steps", &bngsim::SteadyStateResult::sens_root_newton_steps)
         .def_readonly("sens_root_hold_steps", &bngsim::SteadyStateResult::sens_root_hold_steps)
         .def_readonly("sens_species_scale", &bngsim::SteadyStateResult::sens_species_scale)
         .def_readonly("sens_root_hold_time", &bngsim::SteadyStateResult::sens_root_hold_time)

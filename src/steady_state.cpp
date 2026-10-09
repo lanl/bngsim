@@ -2422,6 +2422,14 @@ static constexpr double kRoundingShare = 1e-13;
 // species each made by the one before takes a pass a link.
 static constexpr int kZeroPasses = 64;
 
+// The most a column may move, of its largest entry, between two states a
+// Newton step apart for the columns to be those of the root, and the Newton
+// steps that are taken from the returned state until none moves by more
+// (ss_measure_root, 6). The first is the limit the caller refuses above
+// (Simulator._SS_ROOT_COLUMN_SHIFT_MAX), and the two are one number.
+static constexpr double kColumnsSettled = 0.01;
+static constexpr int kNewtonSteps = 6;
+
 // How far, of itself, each concentration is moved before the run is taken on
 // from the returned state (find_steady_state): a state the system rests at
 // takes that back, and one it does not rest at leaves. A species that is not
@@ -3121,37 +3129,52 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     result.sens_root_condition = ss_componentwise_condition(A, n, row, magnitude, condition_at);
     result.sens_root_condition_species = unknown(condition_at);
 
-    // 2. One Newton step towards the root, on the reduced system: the unknowns
+    // 2. A Newton step towards the root, on the reduced system: the unknowns
     //    move by −A⁻¹·f, each law's dependent follows from its law, and nothing
-    //    else moves.
+    //    else moves. One is taken from the returned state with its factors,
+    //    and, where the columns are found to move, another from each state
+    //    that leads to (6).
+    //
+    //    A step gives the state it leads to and the same with a concentration
+    //    it took below zero set to zero. The second is for a rate that has no
+    //    value below zero (a Hill exponent of 2.5): the first is tried, and the
+    //    second only where the first cannot be evaluated. A variable that has a
+    //    sign has no such limit, and taking one for it hid a state 39% short of
+    //    its root.
     std::vector<double> f(static_cast<size_t>(ns), 0.0);
-    rhs.eval(0.0, y_ss, f.data());
-    std::vector<double> step(static_cast<size_t>(n));
-    for (int k = 0; k < n; ++k) {
-        step[static_cast<size_t>(k)] = -f[static_cast<size_t>(unknown(k))];
-    }
-    ss_lu_solve(A, n, row, step);
-    std::vector<double> moved(static_cast<size_t>(ns), 0.0);
-    for (int k = 0; k < n; ++k) {
-        moved[static_cast<size_t>(unknown(k))] = step[static_cast<size_t>(k)];
-    }
-    ss_follow_laws(laws, ns, moved);
-    // The corrected state, and the same with a concentration the step took
-    // below zero set to zero. The second is for a rate that has no value below
-    // zero (a Hill exponent of 2.5): the first is tried, and the second only
-    // where the first cannot be evaluated. A variable that has a sign has no
-    // such limit, and taking one for it hid a state 39% short of its root.
-    std::vector<double> y_c(static_cast<size_t>(ns)), y_floor(static_cast<size_t>(ns));
-    bool finite = true, below_zero = false;
-    for (int i = 0; i < ns; ++i) {
-        const double v = y_ss[i] + moved[static_cast<size_t>(i)];
-        finite = finite && std::isfinite(v);
-        y_c[static_cast<size_t>(i)] = v;
-        const bool below = y_ss[i] >= 0.0 && v < 0.0;
-        below_zero = below_zero || below;
-        y_floor[static_cast<size_t>(i)] = below ? 0.0 : v;
-    }
-    if (!finite) {
+    const std::vector<double> returned(y_ss, y_ss + ns);
+    struct Stepped {
+        std::vector<double> to, floored;
+        bool finite = true, below_zero = false;
+    };
+    const auto newton_step = [&](const std::vector<double> &lu, const double *from) {
+        Stepped stepped;
+        rhs.eval(0.0, from, f.data());
+        std::vector<double> step(static_cast<size_t>(n));
+        for (int k = 0; k < n; ++k) {
+            step[static_cast<size_t>(k)] = -f[static_cast<size_t>(unknown(k))];
+        }
+        ss_lu_solve(lu, n, row, step);
+        std::vector<double> moved(static_cast<size_t>(ns), 0.0);
+        for (int k = 0; k < n; ++k) {
+            moved[static_cast<size_t>(unknown(k))] = step[static_cast<size_t>(k)];
+        }
+        ss_follow_laws(laws, ns, moved);
+        stepped.to.resize(static_cast<size_t>(ns));
+        stepped.floored.resize(static_cast<size_t>(ns));
+        for (int i = 0; i < ns; ++i) {
+            const size_t k = static_cast<size_t>(i);
+            const double v = from[i] + moved[k];
+            stepped.finite = stepped.finite && std::isfinite(v);
+            stepped.to[k] = v;
+            const bool below = returned[k] >= 0.0 && v < 0.0;
+            stepped.below_zero = stepped.below_zero || below;
+            stepped.floored[k] = below ? 0.0 : v;
+        }
+        return stepped;
+    };
+    Stepped stepped = newton_step(A, y_ss);
+    if (!stepped.finite) {
         result.sens_root_determinant_ratio = nan;
         result.sens_root_column_shift = inf;
         result.sens_root_relaxation = inf;
@@ -3166,16 +3189,26 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         return true;
     };
 
-    // 3 and 4, at a corrected state. False where the rates have no value there.
-    const auto measure_at = [&](const std::vector<double> &state) {
-        // 3. The matrix at the corrected state, in the same elimination order.
+    // The columns in hand (`in_hand`) and the state they are of (`at`): the
+    // returned ones, until the state is stepped on (6). `stepped_columns` are
+    // those of the state last measured, and `A_at` its factors.
+    std::vector<double> in_hand(result.sensitivity), stepped_columns, A_at;
+    std::vector<double> at(returned);
+    bool factored_at = false;
+
+    // 3 and 4, at the state a step from `at` led to. False where the rates have
+    // no value there. `first`: the step is the one from the returned state,
+    // which is the one the determinant is asked of.
+    const auto measure_at = [&](const std::vector<double> &state, bool first) {
+        // 3. The matrix at the stepped state, in the same elimination order.
         std::vector<double> J_c(static_cast<size_t>(ns) * ns, 0.0);
         ss_fill_state_jacobian(rhs, state.data(), ns, sub, want_analytical, J_c.data());
         bool evaluated = all_finite(J_c);
         std::vector<double> A_c;
         ss_reduce_jacobian(J_c.data(), ns, laws, unknowns, A_c);
         ss_lu_in_row_order(A_c, n, row);
-        species_scale = ss_species_scales(rhs, *sys.model, J, ns, *sys.start, y_ss, state.data());
+        species_scale =
+            ss_species_scales(rhs, *sys.model, J, ns, *sys.start, at.data(), state.data());
         // The determinant at y_c over the one at y, as the product of the
         // pivots' ratios. A pivot on its own is not a property of the matrix:
         // where an entry that is next to nothing goes to nothing, the
@@ -3183,14 +3216,14 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         // one and a seventh of the next, and their product does not move.
         double log_ratio = 0.0, furthest = -1.0;
         bool negative = false, factored = true;
-        result.sens_root_determinant_species = -1;
+        int furthest_at = -1;
         for (int j = 0; j < n; ++j) {
             const double r = A_c[static_cast<size_t>(j) * n + j] / pivots[static_cast<size_t>(j)];
             const double moved_by = std::abs(std::log(std::abs(r)));
             // A pivot that is zero or not a number moved without bound.
             if (!(moved_by <= furthest)) {
                 furthest = moved_by;
-                result.sens_root_determinant_species = unknown(j);
+                furthest_at = unknown(j);
             }
             if (!std::isfinite(r) || r == 0.0) {
                 factored = false;
@@ -3200,7 +3233,12 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
             log_ratio += std::log(std::abs(r));
             negative = negative != (r < 0.0);
         }
-        result.sens_root_determinant_ratio = (negative ? -1.0 : 1.0) * std::exp(log_ratio);
+        if (first) {
+            result.sens_root_determinant_ratio = (negative ? -1.0 : 1.0) * std::exp(log_ratio);
+            result.sens_root_determinant_species = furthest_at;
+        }
+        factored_at = factored;
+        stepped_columns = in_hand;
 
         // 4. The columns again, at the corrected state, against the ones
         //    returned, and how much of each a run of the time the solve was
@@ -3260,7 +3298,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                 ss_lu_solve(A_c, n, row, x);
                 double top = 0.0;
                 for (const int i : sub.included) {
-                    const double v = result.sensitivity[static_cast<size_t>(i) * np + p];
+                    const double v = in_hand[static_cast<size_t>(i) * np + p];
                     if (std::isfinite(v)) {
                         top = std::max(top, std::abs(v) / scale_of(i));
                     }
@@ -3274,9 +3312,15 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
                 std::vector<double> change(x);
                 for (int r = 0; r < n; ++r) {
                     change[static_cast<size_t>(r)] -=
-                        result.sensitivity[static_cast<size_t>(unknown(r)) * np + p];
+                        in_hand[static_cast<size_t>(unknown(r)) * np + p];
                 }
                 const double moved_by = over_scale(largest(change, 1.0), scale);
+                // The column at this state: the one in hand and its move, on
+                // every species (`over` is what `largest` left).
+                for (int i = 0; i < ns; ++i) {
+                    stepped_columns[static_cast<size_t>(i) * np + p] +=
+                        over[static_cast<size_t>(i)];
+                }
                 if (!(moved_by <= column_shift)) {
                     column_shift = std::isfinite(moved_by) ? moved_by : inf;
                     result.sens_root_column_param = p;
@@ -3332,12 +3376,53 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         }
         result.sens_root_column_shift = column_shift;
         result.sens_root_relaxation = relaxation;
+        A_at = std::move(A_c);
         return evaluated;
     };
-    if (!measure_at(y_c) && below_zero) {
-        measure_at(y_floor);
+
+    // 6. Where the columns moved, they are not those of the root: the state is
+    //    short of it. They are then taken at the stepped state, which is
+    //    nearer, and that state is stepped again, until the columns of two
+    //    states in a row agree (kColumnsSettled) or kNewtonSteps are spent. The
+    //    state and the columns that are returned are then the last ones: those
+    //    of the root, to what a Newton step still moves them by. Where the
+    //    first step moves no column, nothing is changed, and the result is the
+    //    solver's own to the last bit.
+    int steps = 0;
+    for (int k = 1; k <= kNewtonSteps; ++k) {
+        const std::vector<double> *to = &stepped.to;
+        bool evaluated = measure_at(*to, k == 1);
+        if (!evaluated && stepped.below_zero) {
+            to = &stepped.floored;
+            evaluated = measure_at(*to, k == 1);
+        }
+        const bool settled = result.sens_root_column_shift <= kColumnsSettled;
+        if (settled || !evaluated || !factored_at || !all_finite(stepped_columns) ||
+            k == kNewtonSteps) {
+            if (settled && k > 1) {
+                in_hand = stepped_columns;
+                at = *to;
+                steps = k;
+            }
+            break;
+        }
+        in_hand = stepped_columns;
+        at = *to;
+        stepped = newton_step(A_at, at.data());
+        if (!stepped.finite) {
+            result.sens_root_column_shift = inf;
+            break;
+        }
     }
     result.sens_species_scale = species_scale;
+    result.sens_root_newton_steps = steps;
+    if (steps > 0) {
+        // The excluded species' rows are what they were (the caller writes
+        // them), and a law's dependent has followed its law.
+        result.sensitivity = in_hand;
+        std::copy(at.begin(), at.end(), result.concentrations.begin());
+        result.residual = compute_residual(rhs, at.data(), ns, sub);
+    }
 
     // How far the run that was taken on moved each species the residual covers,
     // against the larger of its two values and of what it is small against.
@@ -3368,7 +3453,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         ss_fill_state_jacobian(rhs, y_h.data(), ns, sub, want_analytical, J_h.data());
         if (!all_finite(J_h)) {
             for (int i = 0; i < ns; ++i) {
-                if (y_ss[i] >= 0.0 && y_h[static_cast<size_t>(i)] < 0.0) {
+                if (returned[static_cast<size_t>(i)] >= 0.0 && y_h[static_cast<size_t>(i)] < 0.0) {
                     y_h[static_cast<size_t>(i)] = 0.0;
                 }
             }
@@ -4518,6 +4603,11 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub, dx0,
                                restore.saved, held ? &held_state : nullptr, hold_failed,
                                opts.max_time);
+        // The state the columns are of, where it was stepped on from the one the
+        // solve returned (ss_measure_root, 6): what the outputs are read at.
+        for (int i = 0; i < ns; ++i) {
+            species[i].concentration = result.concentrations[i];
+        }
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
         compute_ss_output_sensitivity(model, rhs, result, opts.sensitivity_params);

@@ -1332,6 +1332,9 @@ class SteadyStateResultCore:
     def sens_root_hold_time(self) -> float:
         ...
     @property
+    def sens_root_newton_steps(self) -> int:
+        ...
+    @property
     def sens_root_pivot_share(self) -> float:
         ...
     @property

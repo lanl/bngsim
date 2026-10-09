@@ -7067,9 +7067,13 @@ class Simulator:
     _SS_ROOT_CONDITION_MAX = 1e12
 
     #: A column of ``dY_ss/dp`` may move by this fraction of its largest entry
-    #: when it is solved again at the state one Newton step on; beyond it the
-    #: returned state is not close enough to the steady state for the columns.
-    #: Each entry is taken over its species' scale (``sens_species_scale``).
+    #: when it is solved again at the state one Newton step on, each entry
+    #: taken over its species' scale (``sens_species_scale``). Beyond it the
+    #: returned state is short of the root for the columns, and the solve
+    #: steps it on, up to six times, until the columns of two states in a row
+    #: are within this (``kColumnsSettled`` in ``steady_state.cpp``, the same
+    #: number). The state and columns returned are then the last. It refuses
+    #: where they have not settled.
     _SS_ROOT_COLUMN_SHIFT_MAX = 0.01
 
     #: The most of a column that a run of ``max_time`` may leave unestablished.
@@ -7269,16 +7273,16 @@ class Simulator:
                 f"{column:.1%}" if math.isfinite(column) and column < 10 else f"{column:.3g} times"
             )
             raise SimulationError(
-                f"{opening}the state the solve returned is not close enough to the steady "
-                f"state. Solved again one Newton step on, the column of "
-                f"{result.sens_root_column_param} moves by {moved} of its largest entry, "
-                "each species taken over its own scale (the limit is "
-                f"{self._SS_ROOT_COLUMN_SHIFT_MAX:.0%}). tol bounds the residual ||f(y)||/n "
-                "and not the distance to the root, and a model whose concentrations or "
-                "rates are small passes it early (this solve stopped at a residual of "
-                f"{result.residual:.1e}). Solve again with a smaller tol. Where the column "
-                "moves as far at every tol, the steady state is not an isolated root, and "
-                f"the columns are those of {time_course}."
+                f"{opening}no state near the one the solve returned has columns that stay "
+                "where they are. The columns are solved again a Newton step on, and where "
+                "they move the state is stepped again, up to six times: after the last, the "
+                f"column of {result.sens_root_column_param} still moves by {moved} of its "
+                "largest entry, each species taken over its own concentration (the limit "
+                f"is {self._SS_ROOT_COLUMN_SHIFT_MAX:.0%}). The returned state is far from "
+                "a root for the size of its rates (tol bounds the residual ||f(y)||/n and "
+                f"not the distance to the root: this solve stopped at {result.residual:.1e}, "
+                "and a smaller tol starts the steps nearer), or the steady state is not an "
+                f"isolated root, and the columns are those of {time_course}."
             )
         growth = float(result.sens_root_growth_rate)
         radius = float(result.sens_root_spectral_radius)
@@ -9113,12 +9117,21 @@ class SteadyStateResult:
         ``steady_state`` raises above 1e12. ``1.0`` when no sensitivity was
         requested.
     sens_root_column_shift : float
-        The largest move of a column of ``dY_ss/dp`` when it is solved again at
-        the corrected state, as a fraction of the column's largest entry, each
+        The largest move of a column of ``dY_ss/dp`` when it is solved again a
+        Newton step on, as a fraction of the column's largest entry, each
         entry over its species' scale (``sens_species_scale``), or of
         ``1e-3 / |p|`` for a column smaller than that: how far the columns are
-        from those of the root. ``steady_state`` raises above 0.01. ``0.0``
-        when no sensitivity was requested.
+        from those of the root. Above 0.01 the solve steps the state on, up to
+        six times, until it is not, and this is the move at the last step;
+        ``steady_state`` raises where it is still above 0.01. ``0.0`` when no
+        sensitivity was requested.
+    sens_root_newton_steps : int
+        The Newton steps the returned state and columns are from the state
+        the solver stopped at: 0 where its columns did not move, and the
+        result is the solver's own. Otherwise ``concentrations``, ``residual``
+        and the sensitivities are those of the stepped state, which is nearer
+        the root: ``tol`` bounds the residual and not the distance to it, and a
+        model whose concentrations are small passes it a long way off.
     sens_root_hold_shift, sens_root_hold_drift : float
         A run is taken on for ``max_time`` from the returned state with every
         concentration moved by a millionth of itself. ``sens_root_hold_shift``
@@ -9228,6 +9241,7 @@ class SteadyStateResult:
         "sens_root_hold_steps",
         "sens_species_scale",
         "sens_root_hold_time",
+        "sens_root_newton_steps",
         "sens_root_growth_rate",
         "sens_root_spectral_radius",
         "sens_root_determinant_species",
@@ -9301,6 +9315,7 @@ class SteadyStateResult:
             getattr(core, "sens_species_scale", ()), dtype=np.float64
         )
         self.sens_root_hold_time = getattr(core, "sens_root_hold_time", 0.0)
+        self.sens_root_newton_steps = int(getattr(core, "sens_root_newton_steps", 0))
         self.sens_root_growth_rate = getattr(core, "sens_root_growth_rate", float("nan"))
         self.sens_root_spectral_radius = getattr(core, "sens_root_spectral_radius", 0.0)
 

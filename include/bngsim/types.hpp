@@ -1410,6 +1410,7 @@ struct SteadyStateResult {
     int sens_root_hold_species = -1;
     int sens_root_hold_param = -1;
     std::vector<double> sens_species_scale; // one per species; empty with no sensitivities
+    int sens_root_newton_steps = 0;
     int sens_root_hold_steps = 0;
     double sens_root_hold_time = 0.0;
     double sens_root_growth_rate = std::numeric_limits<double>::quiet_NaN();

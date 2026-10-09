@@ -307,30 +307,39 @@ end reactions
 """
 
 
-def test_a_state_short_of_the_steady_state_is_refused(tmp_path):
+def test_a_state_short_of_the_steady_state_is_stepped_to_it(tmp_path):
     """``tol`` bounds ||f||/n. With concentrations of 1e-6 and rates of 5e-3
     the residual passes 1e-9 while A is 28% from A* = 5e-7, and dA*/dkf
     came back 28% from -5e-5 with ``converged=True`` and nothing logged. The
-    columns are solved again one Newton step on, and refused where they
-    move."""
+    columns are solved again one Newton step on, and where they move the state
+    is stepped on until they do not: the state and the columns returned are
+    those of the root."""
     sim = bngsim.Simulator(_net(tmp_path, SMALL), method="ode")
-    with pytest.raises(bngsim.SimulationError) as caught:
-        sim.steady_state(sensitivity_params=["kf", "kr"])
-    message = str(caught.value)
-    assert "#995" in message and "not close enough to the steady state" in message
-    assert "column of kf" in message or "column of kr" in message
-    assert "smaller tol" in message
+    out = sim.steady_state(sensitivity_params=["kf", "kr"])
+    np.testing.assert_allclose(np.asarray(out.concentrations), [5e-7, 5e-7], rtol=1e-9)
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity), [[-5e-5, 5e-5], [5e-5, -5e-5]], rtol=1e-9
+    )
+    assert out.sens_root_newton_steps == 2 and out.residual < 1e-20
+    assert out.sens_root_column_shift < 1e-9
+    # Without the columns, the state is the solver's own, as it was.
+    plain = np.asarray(sim.steady_state().concentrations)
+    assert abs(plain[0] - 5e-7) > 0.2 * 5e-7
 
 
-def test_the_same_solved_to_its_steady_state_is_returned(tmp_path):
-    """Control. What the refusal says to do: with ``tol=1e-14``, A* = B* =
-    5e-7 and dA*/dkf = -A0·kr/(kf + kr)² = -5e-5, dA*/dkr = +5e-5."""
+def test_the_same_solved_to_its_steady_state_is_as_the_solver_left_it(tmp_path):
+    """Control. With ``tol=1e-14`` the solver's own state is on the root, no
+    column moves, and no step is taken: A* = B* = 5e-7 and dA*/dkf =
+    -A0·kr/(kf + kr)² = -5e-5, dA*/dkr = +5e-5."""
     sim = bngsim.Simulator(_net(tmp_path, SMALL), method="ode")
     out = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-14)
     np.testing.assert_allclose(np.asarray(out.concentrations), [5e-7, 5e-7], rtol=1e-4)
     np.testing.assert_allclose(
         np.asarray(out.sensitivity), [[-5e-5, 5e-5], [5e-5, -5e-5]], rtol=1e-3
     )
+    assert out.sens_root_newton_steps == 0
+    plain = sim.steady_state(tol=1e-14)
+    assert np.array_equal(np.asarray(plain.concentrations), np.asarray(out.concentrations))
 
 
 DECAY = """begin parameters
@@ -352,12 +361,15 @@ end reactions
 """
 
 
-def test_a_state_short_of_the_steady_state_by_less_is_refused_too(tmp_path):
-    """The star below at ``tol=1e-10``: the column of k1 is 8.5% from the one
-    at the steady state."""
+def test_a_state_short_of_the_steady_state_by_less_is_stepped_to_it_too(tmp_path):
+    """The star below at ``tol=1e-10``: the column of k1 was 8.5% from the one
+    at the steady state. A* = A0/(1 + k1/k2 + k1/k4) and dA*/dk1 =
+    -A0·(1/k2 + 1/k4)/(1 + k1/k2 + k1/k4)²."""
     sim = bngsim.Simulator(_net(tmp_path, STAR), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*not close enough.*column of k1"):
-        sim.steady_state(sensitivity_params=["k1"], tol=1e-10)
+    out = sim.steady_state(sensitivity_params=["k1"], tol=1e-10)
+    assert np.asarray(out.concentrations)[0] == pytest.approx(1e-6 / 4.75, rel=1e-9)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-750e-6 / 4.75**2, rel=1e-9)
+    assert out.sens_root_newton_steps >= 1
 
 
 SECOND_ORDER = """begin parameters
@@ -895,18 +907,26 @@ def _small_beside(beside: str) -> str:
 
 
 @pytest.mark.parametrize("beside", sorted(BESIDE))
-def test_a_state_short_of_the_steady_state_is_refused_whatever_stands_beside_it(tmp_path, beside):
+def test_a_state_short_of_the_steady_state_is_stepped_to_it_whatever_stands_beside_it(
+    tmp_path, beside
+):
     """The pair at 1e-6 above, 20% and more short of its steady state, in a
     model that also holds a species at 1 that nothing touches, or a pair at
     0.5 each that is at its own steady state, or a species at 1 that the
     pair's own rate reads. A column was small or not against the largest
     concentration in the model, and then against the largest among the
     species a rate couples it to, and the 1 made every entry of this one
-    small: dA*/dkf came back 37% and 55% off. Each species is taken over its
-    own concentration now."""
+    small: dA*/dkf came back 37% and 55% off, with nothing said. Each species
+    is taken over its own concentration now, the columns are seen to move,
+    and the state is stepped to the root."""
     sim = bngsim.Simulator(_net(tmp_path, _small_beside(beside)), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*not close enough.*column of k[fr]"):
-        sim.steady_state(sensitivity_params=["kf", "kr"])
+    out = sim.steady_state(sensitivity_params=["kf", "kr"])
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity)[:2], [[-5e-5, 5e-5], [5e-5, -5e-5]], rtol=1e-8
+    )
+    assert np.all(np.asarray(out.sensitivity)[2:] == 0.0)
+    assert out.sens_root_newton_steps >= 1
+    np.testing.assert_allclose(out.sens_species_scale[:2], [5e-7, 5e-7], rtol=1e-6)
 
 
 @pytest.mark.parametrize("beside", sorted(BESIDE))
@@ -1042,11 +1062,14 @@ def test_a_variable_with_a_sign_is_not_stopped_at_zero(tmp_path):
     """X' = c·(a - b·exp(X/s)) rests at s·ln(a/b), -5e-6, where dX*/da = s/a
     = 1e-5. It starts at +1e-8 with a residual under ``tol`` and is returned
     there, 6.1e-6 for the column. The Newton step takes it below zero, and
-    with the corrected state held at zero, as it is for a concentration a rate
-    has no value below, the column moved by 0.1% and came back."""
+    with the stepped state held at zero, as it is for a concentration a rate
+    has no value below, the column moved by 0.1% and came back. It is stepped
+    to where it rests, until a step moves the column by under 1%."""
     sim = bngsim.Simulator(_net(tmp_path, SIGNED), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*not close enough.*column of a"):
-        sim.steady_state(sensitivity_params=["a"])
+    out = sim.steady_state(sensitivity_params=["a"])
+    assert np.asarray(out.concentrations)[0] == pytest.approx(-5e-6, rel=1e-4)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(1e-5, rel=1e-4)
+    assert out.sens_root_newton_steps >= 2
 
 
 def test_the_same_solved_to_its_root_below_zero_is_returned(tmp_path):
@@ -1344,28 +1367,33 @@ end reactions
 """
 
 
-@pytest.mark.parametrize("k0, options", [("5e-10", {}), ("5e-10", {"atol": 1e-5}), ("5e-13", {})])
-def test_a_small_species_short_of_its_steady_state_beside_a_large_one_is_refused(
+@pytest.mark.parametrize(
+    "k0, options",
+    [
+        ("5e-10", {}),
+        ("5e-10", {"atol": 1e-5}),
+        ("5e-13", {}),
+        ("5e-16", {}),
+        ("5e-10", {"tol": 1e-15}),
+    ],
+)
+def test_a_small_species_beside_a_large_one_is_solved_to_its_own_steady_state(
     tmp_path, k0, options
 ):
-    """A, at 1e-7 or 1e-10 of the G that makes it, is returned 30% and more
-    short of its steady state: the residual is under ``tol`` long before. Its
+    """A, at 1e-7 to 1e-13 of the G that makes it, is returned where it
+    starts, at 3e-11: the residual is under ``tol`` from the first step. Its
     entries were small against G's 1, and against the solve's absolute
-    tolerance where A is under that, and dA*/dkd came back -5.8e-9 for
-    -2e-5. A has a steady value, and its entries are taken over that."""
+    tolerance where A is under that, and dA*/dkd came back -5.8e-9 for -2e-5.
+    A has a steady value, k0·G/kd, and its entries are taken over that: the
+    column moves, and the state is stepped to the root. dA*/dkd = -k0·G/kd²,
+    and nothing for G."""
     sim = bngsim.Simulator(_net(tmp_path, OPEN_POOL.format(k0=k0)), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*not close enough.*column of kd"):
-        sim.steady_state(sensitivity_params=["kd"], **options)
-
-
-@pytest.mark.parametrize("k0, tol", [("5e-10", 1e-15), ("5e-13", 1e-18)])
-def test_the_same_solved_to_its_steady_state_beside_it_is_returned(tmp_path, k0, tol):
-    """Control. dA*/dkd = -k0·G/kd² = -2e-5 and -2e-8, and nothing for G."""
-    sim = bngsim.Simulator(_net(tmp_path, OPEN_POOL.format(k0=k0)), method="ode")
-    out = sim.steady_state(sensitivity_params=["kd"], tol=tol)
-    exact = -float(k0) / 5e-3**2
-    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [exact, 0.0], rtol=1e-5)
-    np.testing.assert_allclose(out.sens_species_scale, [float(k0) / 5e-3, 1.0], rtol=1e-5)
+    out = sim.steady_state(sensitivity_params=["kd"], **options)
+    steady = float(k0) / 5e-3
+    np.testing.assert_allclose(np.asarray(out.concentrations), [steady, 1.0], rtol=1e-6)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [-steady / 5e-3, 0.0], rtol=1e-6)
+    np.testing.assert_allclose(out.sens_species_scale, [steady, 1.0], rtol=1e-6)
+    assert (out.sens_root_newton_steps == 0) == ("tol" in options)
 
 
 # 0 -> S -> 0 started at 1: S* = k0/kd.
@@ -1383,27 +1411,39 @@ end reactions
 """
 
 
+# The same with S removed in pairs as well, at k2·S².
+FROM_ABOVE_IN_PAIRS = FROM_ABOVE.replace(
+    "    2 kd  5e-3\n", "    2 kd  5e-3\n    3 k2  3.5\n"
+).replace("    2 1 0 kd\n", "    2 1 0 kd\n    3 1,1 0 k2\n")
+
+
 @pytest.mark.parametrize("k0", ["5e-9", "5e-14"])
-def test_a_species_stopped_above_a_steady_value_it_has_is_refused(tmp_path, k0):
+def test_a_species_stopped_above_a_steady_value_it_has_is_stepped_down_to_it(tmp_path, k0):
     """S decays from 1 towards k0/kd, 1e-6 or 1e-11, and the solve stops when
     the residual is under ``tol``: at 1.1e-6, and at 1.2e-7. dS*/dkd = -S/kd
     came back 12% off, and four orders off, against the 1 that S started at.
-    One Newton step takes S to its steady value, a thousandth of where it was
-    in the second case, and a second leaves it there: it is not running out,
-    and its entries are taken over itself."""
+    S is not running out: with S at nothing its rate is k0. Its entries are
+    taken over itself, and the state is stepped to k0/kd."""
     sim = bngsim.Simulator(_net(tmp_path, FROM_ABOVE.format(k0=k0)), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995.*not close enough.*column of kd"):
-        sim.steady_state(sensitivity_params=["kd"])
+    out = sim.steady_state(sensitivity_params=["kd"])
+    steady = float(k0) / 5e-3
+    assert np.asarray(out.concentrations)[0] == pytest.approx(steady, rel=1e-8)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-steady / 5e-3, rel=1e-8)
+    assert out.sens_species_scale[0] == pytest.approx(steady, rel=1e-8)
+    assert out.sens_root_newton_steps == 2
 
 
-@pytest.mark.parametrize(
-    "k0, options", [("5e-9", {"tol": 1e-14}), ("5e-14", {"method": "newton"})]
-)
-def test_the_same_at_its_steady_value_is_returned(tmp_path, k0, options):
-    """Control. dS*/dkd = -k0/kd² = -2e-4 and -2e-9."""
-    sim = bngsim.Simulator(_net(tmp_path, FROM_ABOVE.format(k0=k0)), method="ode")
-    out = sim.steady_state(sensitivity_params=["kd"], **options)
-    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-float(k0) / 5e-3**2, rel=1e-5)
+def test_the_same_removed_in_pairs_too_takes_a_step_more(tmp_path):
+    """With S + S -> 0 at 3.5 beside it, one Newton step from 1.2e-7 lands at
+    twice the steady value and the next on it: a species that one step takes
+    to a thousandth of where it was, and the next halves, is still not one
+    that is running out. S* = k0/kd to one part in 1e8, the pairs taking
+    k2·S*² of 5e-14."""
+    sim = bngsim.Simulator(_net(tmp_path, FROM_ABOVE_IN_PAIRS.format(k0="5e-14")), method="ode")
+    out = sim.steady_state(sensitivity_params=["kd"])
+    assert np.asarray(out.concentrations)[0] == pytest.approx(1e-11, rel=1e-6)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-2e-9, rel=1e-6)
+    assert out.sens_root_newton_steps >= 3
 
 
 # X is held at 1 by 0 -> X -> 0, and Y is made at c·sqrt(1.0000001 - X): a
