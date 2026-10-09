@@ -166,9 +166,8 @@ def test_a_family_keeps_a_few_analyses_and_no_more(tmp_path, monkeypatch):
     monkeypatch.setattr(_codegen, "_compute_output_sens_analysis", lambda model, core: {})
     for _ in range(3 * _codegen._OUTPUT_SENS_ANALYSES_KEPT):
         _codegen._analyze_output_sens(base.clone())
-    kept = base._output_sens_analysis
-    assert len(kept) == _codegen._OUTPUT_SENS_ANALYSES_KEPT
-    assert max(k[1] for k in kept) == 3 * _codegen._OUTPUT_SENS_ANALYSES_KEPT - 1
+    limit = _codegen._OUTPUT_SENS_ANALYSES_KEPT
+    assert sorted(k[1] for k in base._output_sens_analysis) == list(range(2 * limit, 3 * limit))
 
 
 def _parses(monkeypatch) -> list:
