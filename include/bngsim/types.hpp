@@ -1370,13 +1370,25 @@ struct SteadyStateResult {
     //   -1 where none.
     // 1, 1, 0, 0 and -1 when no sensitivity was requested.
     double sens_root_determinant_ratio = 1.0;
+    double sens_root_pivot_share = 1.0;
     double sens_root_condition = 1.0;
     double sens_root_column_shift = 0.0;
     double sens_root_relaxation = 0.0;
+    double sens_root_hold_drift = 0.0;
+    double sens_root_hold_shift = 0.0;
+    double sens_root_growth_rate = std::numeric_limits<double>::quiet_NaN();
+    std::string sens_root_stability = "undetermined";
     int sens_root_determinant_species = -1;
+    int sens_root_pivot_species = -1;
     int sens_root_condition_species = -1;
     int sens_root_column_param = -1;
     int sens_root_relaxation_param = -1;
+    int sens_root_hold_species = -1;
+    int sens_root_hold_param = -1;
+    int sens_root_hold_steps = 0;
+    double sens_root_hold_time = 0.0;
+    int sens_mask_held_species = -1;
+    int sens_mask_reader_species = -1;
 
     // ─── Observable / function output sensitivities at steady state (GH #12) ───
     // The chain-rule projection of the species dY_ss/dp above onto the model's

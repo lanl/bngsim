@@ -3314,6 +3314,20 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("sens_root_relaxation", &bngsim::SteadyStateResult::sens_root_relaxation)
         .def_readonly("sens_root_relaxation_param",
                       &bngsim::SteadyStateResult::sens_root_relaxation_param)
+        .def_readonly("sens_root_pivot_share", &bngsim::SteadyStateResult::sens_root_pivot_share)
+        .def_readonly("sens_root_hold_drift", &bngsim::SteadyStateResult::sens_root_hold_drift)
+        .def_readonly("sens_root_hold_shift", &bngsim::SteadyStateResult::sens_root_hold_shift)
+        .def_readonly("sens_root_hold_param", &bngsim::SteadyStateResult::sens_root_hold_param)
+        .def_readonly("sens_root_hold_steps", &bngsim::SteadyStateResult::sens_root_hold_steps)
+        .def_readonly("sens_root_hold_time", &bngsim::SteadyStateResult::sens_root_hold_time)
+        .def_readonly("sens_root_growth_rate", &bngsim::SteadyStateResult::sens_root_growth_rate)
+        .def_readonly("sens_root_stability", &bngsim::SteadyStateResult::sens_root_stability)
+        .def_readonly("sens_root_pivot_species",
+                      &bngsim::SteadyStateResult::sens_root_pivot_species)
+        .def_readonly("sens_root_hold_species", &bngsim::SteadyStateResult::sens_root_hold_species)
+        .def_readonly("sens_mask_held_species", &bngsim::SteadyStateResult::sens_mask_held_species)
+        .def_readonly("sens_mask_reader_species",
+                      &bngsim::SteadyStateResult::sens_mask_reader_species)
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::SteadyStateResult &r) {
