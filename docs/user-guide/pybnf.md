@@ -23,7 +23,9 @@ pre-baked loss — objective/noise/normalization composition stays in the fronte
 
 **Statelessness / re-entrancy.** Every evaluation runs against an independent
 model clone with no shared mutable state (the C++ engine is instance-based with no
-globals, no file I/O, no stdout). `run_batch` clones the model per row, so many
+globals, no file I/O, no stdout). What a model and its clones do share, on the
+Python side, is a memo of the analysis of their functions, which is the same for
+all of them: an entry is read-only once made, and the memo is changed under a lock. `run_batch` clones the model per row, so many
 threads — or many processes — evaluate concurrently against the **one** read-only
 compiled `.so` without interfering. For a fixed `(model, θ, sensitivity set,
 solver options)` the result is deterministic, and batch rows are returned in input
