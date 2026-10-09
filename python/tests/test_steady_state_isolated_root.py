@@ -1513,6 +1513,181 @@ def test_a_species_that_is_held_is_not_moved_for_the_run(tmp_path):
     assert out.sens_root_hold_shift < 1e-4
 
 
+# X -> 0 at k1 beside X + X -> 0 at k2: X runs out, and near the end a Newton
+# step leaves 2·k2·X²/k1 of it, which is not nothing: 5e-4 of where it was.
+RUNS_OUT_IN_TWO_WAYS = """begin parameters
+    1 k1  1.0
+    2 k2  1e6
+end parameters
+begin species
+    1 X() 1e-3
+end species
+begin reactions
+    1 1 0 k1
+    2 1,1 0 k2
+end reactions
+"""
+
+
+def test_a_species_a_newton_step_takes_most_of_is_running_out(tmp_path):
+    """X is returned at 3.6e-10, and one Newton step takes it to 2.6e-13: more
+    than rounding leaves of the 1e-3 it started at, and nothing like where it
+    was. It is at a zero for that, its entries are taken over the 1e-3, and
+    the state is the solver's own. Asked for a value under rounding only, X
+    kept its own scale, its column moved by all of itself, and the state was
+    stepped on to 1e-19 for it."""
+    sim = bngsim.Simulator(_net(tmp_path, RUNS_OUT_IN_TWO_WAYS), method="ode")
+    out = sim.steady_state(sensitivity_params=["k1", "k2"])
+    assert out.sens_root_newton_steps == 0
+    assert out.sens_species_scale[0] == pytest.approx(1e-3)
+    plain = np.asarray(sim.steady_state().concentrations)
+    assert np.array_equal(np.asarray(out.concentrations), plain) and 1e-10 < plain[0] < 1e-9
+
+
+# A corpus network, verbatim but for its comments and its observables
+# (benchmarks/suites/ode_fullnet: my_models/ode/egfr_path.bngl). EGF starts at
+# nothing, so that all that happens is Grb2 + Sos <-> Grb2_Sos, and the thirteen
+# species EGF would make are returned at 1e-24 to 1e-52, of either sign: what
+# the integrator's linear solves left of nothing beside species at 1e5.
+NO_LIGAND = """begin parameters
+    1 EGF_tot       1.2e6
+    2 Rec_tot       1.8e5
+    3 Grb2_tot      1.0e5
+    4 Shc_tot       2.7e5
+    5 SOS_tot       1.3e4
+    6 Grb2_SOS_tot  4.9e4
+    7 kp1           1.667e-06
+    8 km1           0.06
+    9 kp2           5.556e-06
+   10 km2           0.1
+   11 kp3           1
+   12 km3           9
+   13 kp14          6
+   14 km14          0.06
+   15 km16          0.005
+   16 kp9           1.666e-6
+   17 km9           0.05
+   18 kp10          5.556e-06
+   19 km10          0.06
+   20 kp11          2.5e-06
+   21 km11          0.03
+   22 kp13          5e-05
+   23 km13          0.6
+   24 kp15          5e-07
+   25 km15          0.3
+   26 kp17          1.667e-06
+   27 km17          0.1
+   28 kp18          5e-07
+   29 km18          0.3
+   30 kp19          5.556e-06
+   31 km19          0.0214
+   32 kp20          1.333e-07
+   33 km20          0.12
+   34 kp24          5e-06
+   35 km24          0.0429
+   36 kp21          1.667e-06
+   37 km21          0.01
+   38 kp23          1.167e-05
+   39 km23          0.1
+   40 kp12          5.556e-08
+   41 km12          0.0015
+   42 kp22          1.667e-05
+   43 km22          0.064
+   44 loop1         ((kp9/km9)*(kp10/km10))/((kp11/km11)*(kp12/km12))
+   45 loop2         ((kp15/km15)*(kp17/km17))/((kp21/km21)*(kp18/km18))
+   46 loop3         ((kp18/km18)*(kp19/km19))/((kp22/km22)*(kp20/km20))
+   47 loop4         ((kp12/km12)*(kp23/km23))/((kp22/km22)*(kp21/km21))
+   48 loop5         ((kp15/km15)*(kp24/km24))/((kp20/km20)*(kp23/km23))
+end parameters
+begin species
+    1 EGF() 0
+    2 Grb2() Grb2_tot
+    3 Grb2_Sos() Grb2_SOS_tot
+    4 Shc() Shc_tot
+    5 ShcP() 0
+    6 ShcP_Grb2() 0
+    7 ShcP_Grb2_Sos() 0
+    8 Sos() SOS_tot
+    9 R() Rec_tot
+   10 RA() 0
+   11 R2() 0
+   12 RP() 0
+   13 R_Sh() 0
+   14 R_ShP() 0
+   15 R_Sh_G() 0
+   16 R_Sh_G_S() 0
+   17 R_G() 0
+   18 R_G_S() 0
+end species
+begin reactions
+    1 1,9 10 kp1
+    2 10 1,9 km1
+    3 10,10 11 0.5*kp2
+    4 11 10,10 km2
+    5 11 12 kp3
+    6 12 11 km3
+    7 2,12 17 kp9
+    8 17 2,12 km9
+    9 8,17 18 kp10
+   10 18 8,17 km10
+   11 3,12 18 kp11
+   12 18 3,12 km11
+   13 4,12 13 kp13
+   14 13 4,12 km13
+   15 13 14 kp14
+   16 14 13 km14
+   17 5,12 14 kp15
+   18 14 5,12 km15
+   19 2,14 15 kp17
+   20 15 2,14 km17
+   21 6,12 15 kp18
+   22 15 6,12 km18
+   23 8,15 16 kp19
+   24 16 8,15 km19
+   25 7,12 16 kp20
+   26 16 7,12 km20
+   27 3,14 16 kp24
+   28 16 3,14 km24
+   29 2,5 6 kp21
+   30 6 2,5 km21
+   31 3,5 7 kp23
+   32 7 3,5 km23
+   33 5 4 km16
+   34 2,8 3 kp12
+   35 3 2,8 km12
+   36 6,8 7 kp22
+   37 7 6,8 km22
+end reactions
+"""
+
+
+def test_species_at_rounding_beside_large_ones_are_at_a_zero(tmp_path):
+    """A Newton step leaves each of the thirteen where it is, at 1e-24, so
+    that none is halved; and each is made by others of them, so that what
+    makes it is as small as it is. What they are rounding of is the species
+    the Jacobian couples them to, at 1e5. Taken over themselves, their entries
+    moved by seven times the column at every step, and the model was refused.
+    Nothing but Grb2, Sos and their complex moves with kp12, and nothing at
+    all with kp1 or km16."""
+    sim = bngsim.Simulator(_net(tmp_path, NO_LIGAND), method="ode")
+    out = sim.steady_state(sensitivity_params=["kp12", "km12", "kp1", "km16"])
+    assert out.sens_root_newton_steps == 0
+    names = list(out.species_names)
+    scale = dict(zip(names, out.sens_species_scale, strict=True))
+    assert min(scale.values()) > 1e4 and scale["EGF()"] > 1e4
+    columns = np.asarray(out.sensitivity)
+    # kp1 multiplies nothing, and km16 what is left of ShcP, 1e-23.
+    assert np.all(columns[:, 2] == 0.0) and np.max(np.abs(columns[:, 3])) < 1e-12
+    moving = [names.index(n) for n in ("Grb2()", "Grb2_Sos()", "Sos()")]
+    # Grb2 + Sos <-> Grb2_Sos: with x the complex, kp12·G·S = km12·x and
+    # dG = dS = -dx, so that dx/dkp12 = G·S/(km12 + kp12·(G + S)).
+    g, x, s = (float(np.asarray(out.concentrations)[i]) for i in moving)
+    exact = g * s / (0.0015 + 5.556e-08 * (g + s))
+    np.testing.assert_allclose(columns[moving, 0], [-exact, exact, -exact], rtol=1e-6)
+    still = [i for i in range(len(names)) if i not in moving]
+    assert np.max(np.abs(columns[still, 0])) < 1e-6 * exact
+
+
 # A is made at k0·G and removed at kd: A* = k0·G/kd = 1e-7 beside G at 1.
 OPEN_POOL = """begin parameters
     1 k0  {k0}

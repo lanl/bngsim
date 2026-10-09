@@ -4664,11 +4664,6 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub, dx0,
                                restore.saved, held ? &held_state : nullptr, hold_failed,
                                opts.max_time);
-        // The state the columns are of, where it was stepped on from the one the
-        // solve returned (ss_measure_root, 6): what the outputs are read at.
-        for (int i = 0; i < ns; ++i) {
-            species[i].concentration = result.concentrations[i];
-        }
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
         compute_ss_output_sensitivity(model, rhs, result, opts.sensitivity_params);
