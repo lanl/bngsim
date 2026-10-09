@@ -48,6 +48,8 @@ gives, and the printed text is what it was.
 
 from __future__ import annotations
 
+import contextlib
+import threading
 from functools import cmp_to_key, lru_cache
 
 _MEMO = 1 << 17
@@ -210,19 +212,14 @@ def ordered_args(args) -> list:
     return _in_order(items, [(_nodes(a), stable_key(a)) for a in items])
 
 
-def ordered_factors(expr, whole_coefficient: bool = False) -> list:
+def ordered_factors(expr) -> list:
     """``expr.as_ordered_factors()`` with the keys from :func:`stable_key`.
 
     The commutative factors are sorted from the order of ``expr.args``, which
     sympy fixes by structure and not by hash, so the sort itself is sympy's:
     two factors whose keys tie stay in that order, in every process.
-
-    sympy hands a negative coefficient over as -1 and its size, ``-4*p`` as
-    ``[-1, 4, p]``. ``whole_coefficient`` leaves it whole, for a product that
-    is to be printed: with a number beside its first factor a printer takes
-    it for one that was never evaluated, and prints ``-1*4*p``.
     """
-    commutative, rest = expr.args_cnc(split_1=not whole_coefficient)
+    commutative, rest = expr.args_cnc()
     commutative.sort(key=stable_key)
     return commutative + rest
 
@@ -294,54 +291,61 @@ def _ordered_terms(expr, order) -> list:
     return [term for term, _ in sorted(terms, key=key, reverse=reverse)]
 
 
-def _never_evaluated(expr) -> bool:
-    """sympy's test, in ``StrPrinter._print_Mul``, for a product that was
-    built unevaluated, ``p*q*1*x**n``: a number that is not its first
-    argument, or a first argument of 1. It prints such a product as its
-    ``args`` have it, which is the order it was built in."""
-    from sympy import S
-    from sympy.core.numbers import Number
+_swap = threading.RLock()
+_swapped: list = []  # sympy's own method, once for each printer that is inside
 
-    args = expr.args
-    return args[0] is S.One or any(
-        isinstance(a, Number) or (a.is_Pow and all(ai.is_Integer for ai in a.args))
-        for a in args[1:]
-    )
+
+@contextlib.contextmanager
+def _our_factor_order():
+    """While this is open, a sympy product hands over its factors in
+    :func:`ordered_factors`' order.
+
+    A sum's terms are asked for through the printer (``_as_ordered_terms``),
+    and a printer can answer. A product's factors are not: sympy's
+    ``_print_Mul`` asks the product itself, ``expr.as_ordered_factors()``, and
+    asks it of a product it has built again without its sign. What it prints
+    also goes by what it found on the way (a number that is not the first
+    argument, a sign, a lone numerator), so that handing it a product that is
+    already in order, or one of another class, or the sign taken off outside,
+    each printed some product in a way sympy does not: ``-1.0*4.0*p``,
+    ``-1.0*1*p`` for ``-1.0*1*1*p``, ``-1.0/3.0/b`` for ``-(1.0/3.0)/b``. So
+    the method it calls is the one that is changed, for as long as one of
+    this module's printers is printing a product, and put back.
+
+    The order it gives while it is swapped is sympy's own wherever sympy's
+    does not follow the seed, for every caller in the process.
+    """
+    from sympy import Mul
+
+    with _swap:
+        if not _swapped:
+            _swapped.append(Mul.as_ordered_factors)
+            Mul.as_ordered_factors = lambda self, order=None: ordered_factors(self)  # type: ignore[method-assign]
+        else:
+            _swapped.append(_swapped[0])
+    try:
+        yield
+    finally:
+        with _swap:
+            theirs = _swapped.pop()
+            if not _swapped:
+                Mul.as_ordered_factors = theirs  # type: ignore[method-assign]
 
 
 class SeedFreeTermOrder:
     """Mix into a sympy printer, ahead of it, to print each sum's terms, each
     product's factors and the arguments of ``Min``, ``Max``, ``And`` and
-    ``Or`` in this module's orders.
-
-    The printer is given ``order="none"``, under which sympy sorts nothing
-    and prints a product's factors as its ``args`` have them: the product it
-    is handed has them in :func:`ordered_factors`' order. (sympy's
-    ``_print_Mul`` asks ``as_ordered_factors`` of a product it has rebuilt
-    without its sign, which a subclass of ``Mul`` would not survive.)
-    """
-
-    def __init__(self, settings=None):
-        settings = dict(settings or {})
-        settings["order"] = "none"
-        super().__init__(settings)
+    ``Or`` in this module's orders."""
 
     def _as_ordered_terms(self, expr, order=None):
-        return ordered_terms(expr)
+        order = order or self.order  # type: ignore[attr-defined]
+        if order in ("old", "none"):
+            return super()._as_ordered_terms(expr, order=order)  # type: ignore[misc]
+        return ordered_terms(expr, order)
 
-    def _print_Mul(self, expr):
-        from sympy import Mul
-        from sympy.printing.str import StrPrinter
-
-        theirs = getattr(super()._print_Mul, "__func__", None)  # type: ignore[misc]
-        if theirs is StrPrinter._print_Mul and _never_evaluated(expr):
-            # sympy prints such a product as its args have it, in no order of
-            # its own, and so it is printed here.
-            return super()._print_Mul(expr)  # type: ignore[misc]
-        factors = Mul._from_args(ordered_factors(expr, whole_coefficient=True))
-        if not factors.is_Mul:
-            return self._print(factors)  # type: ignore[attr-defined]
-        return super()._print_Mul(factors)  # type: ignore[misc]
+    def _print_Mul(self, expr, *args, **kwargs):
+        with _our_factor_order():
+            return super()._print_Mul(expr, *args, **kwargs)  # type: ignore[misc]
 
 
 _printers: dict = {}
@@ -394,12 +398,6 @@ def srepr(expr) -> str:
         from sympy.printing.repr import ReprPrinter
 
         class _Repr(SeedFreeTermOrder, ReprPrinter):
-            def _print_Mul(self, expr, order=None):
-                # As sympy's: the factors as as_ordered_factors hands them
-                # over, a negative coefficient as -1 and its size.
-                args = ", ".join(self._print(a) for a in ordered_factors(expr))
-                return f"{type(expr).__name__}({args})"
-
             def _set_like(self, expr):
                 args = ", ".join(self._print(a) for a in ordered_args(expr.args))
                 return f"{type(expr).__name__}({args})"

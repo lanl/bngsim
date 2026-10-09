@@ -638,3 +638,51 @@ def test_a_product_that_was_never_evaluated_is_printed_in_the_order_it_was_built
     for expr, c, exprtk in built:
         assert sympy_to_c(expr, lambda name: name) == c
         assert sympy_to_exprtk(expr) == exprtk
+
+
+def test_expressions_with_no_tie_are_printed_as_sympy_prints_them():
+    """Four hundred expressions with no tie in them, built at random from
+    sums, products, powers, ``Max`` and products that were never evaluated,
+    with negative, rational and floating coefficients: the key, the C text
+    and ``srepr`` are sympy's own. (Its own are the same under every seed for
+    these, which is what makes them something to compare with.) A product
+    with several numbers in it, ``1*1*(-1.0)*p``, is among them: sympy takes
+    the sign off and builds the product again before it orders the factors,
+    and doing that twice lost one of the ones to the coefficient."""
+    import random
+
+    from bngsim import _term_order
+
+    rng = random.Random(550)
+    a, b, c, k, x, y = sp.symbols("a b c k x y")
+    atoms = [a, b, c, k, x, y, sp.Integer(2), sp.Integer(-3), sp.Rational(1, 3), sp.Float(2.5)]
+    atoms += [sp.Float(-1.5), sp.Integer(1)]
+
+    def build(depth=0):
+        r = rng.random()
+        if depth > 3 or r < 0.3:
+            return rng.choice(atoms)
+        if r < 0.5:
+            return build(depth + 1) + build(depth + 1)
+        if r < 0.7:
+            return build(depth + 1) * build(depth + 1)
+        if r < 0.8:
+            return sp.Mul(*(build(depth + 1) for _ in range(3)), evaluate=False)
+        if r < 0.9:
+            return build(depth + 1) ** rng.choice([2, -1, 3])
+        if r < 0.95:
+            return sp.Max(build(depth + 1), build(depth + 1))
+        return sp.exp(build(depth + 1))
+
+    cases = [sp.Mul(1, 1, sp.Float(-1.0), a, b, 1 / (1 + x), evaluate=False)]
+    while len(cases) < 401:
+        try:
+            cases.append(build())
+        except (ValueError, TypeError):  # a Max of what cannot be compared
+            continue
+    for expr in cases:
+        if not isinstance(expr, sp.Basic) or expr.has(sp.zoo, sp.nan):
+            continue
+        assert _term_order.stable_key(expr) == expr.sort_key(), expr
+        assert _term_order.ccode(expr) == sp.ccode(expr), expr
+        assert _term_order.srepr(expr) == sp.srepr(expr), expr
