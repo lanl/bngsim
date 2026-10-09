@@ -2029,16 +2029,17 @@ def test_a_species_on_its_way_up_from_a_seed_is_not_stepped_down_to_nothing(tmp_
         sim.steady_state(sensitivity_params=["K", "r"])
 
 
-def test_the_same_among_too_many_species_for_the_spectrum_is_refused_by_the_run(tmp_path):
-    """Among 520 other species there are no eigenvalues, the state is stepped
-    to N = 0, and the run taken on from the seed ends at K. N came down to
-    nothing from something, in the two states that are compared, and from
-    next to nothing it grows: it is not at a zero, and it has moved by all of
-    itself."""
+def test_the_same_among_too_many_species_for_the_spectrum_is_refused_too(tmp_path):
+    """Among 520 other species the eigenvalues of the whole system are not
+    taken, and the state is stepped to N = 0. The run that is taken on from
+    the seed does not show that the system leaves it: its error test, over
+    522 species, is met by a step that is long for r·S, and an implicit step
+    that long lands on N = 0 and stays, so that dN*/dK = 0 came back for 1.
+    The species the returned state has at a zero are asked by the eigenvalues
+    of their own block, which is N's own r·S."""
     sim = bngsim.Simulator(_net(tmp_path, _among_many(SEEDED)), method="ode")
     with pytest.raises(
-        bngsim.SimulationError,
-        match=r"#995.*(not one a run stays at|not where a run ends).*N\(\)",
+        bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.001 "
     ):
         sim.steady_state(sensitivity_params=["K", "r"])
 
