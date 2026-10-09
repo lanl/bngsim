@@ -240,10 +240,10 @@ def test_a_law_that_is_not_smooth_at_the_species_is_what_it_was(tmp_path, x):
 
 
 SHARE = """begin parameters
-    1 r      0.04
-    2 delta  0.01
-    3 g      0.05
-    4 alpha  2e-7
+    1 r      0.99
+    2 delta  0.0001
+    3 g      1.0
+    4 alpha  1e-7
     5 p      0.3
 end parameters
 begin functions
@@ -272,19 +272,31 @@ def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
     """Control. The lysogens of BIOMD0000000884: L is made at
     ``r·L + p·alpha·U·V`` and lost at ``(delta + phi)·L`` with
     ``phi = ((r - delta)·L + g·U - alpha·U·V·(1 - p))/(L + U)``. With U next
-    to nothing, terms of 4e4 cancel in the row's value and in its entry for
-    L, so neither says how large the row's rounding is: 1e-11. The entry of U
-    is ``alpha·V - g + r - delta``, and a quotient of the row at a small step
-    is all rounding, then exactly 0. With the rounding taken from the row's
-    value and entries, the ladder met those zeros and settled on one. It is
-    measured, and the entry stays the first quotient."""
+    to nothing, terms of 1e6 cancel in the row's value and in its entry for
+    L, so neither says how large the row's rounding is: 1e-10. The entry of U
+    is ``alpha·V - g + r - delta``, 0.0056, and a quotient of the row at a
+    small step is all rounding (0.016 at a step of 1e-8), then exactly 0.
+    With the rounding taken from the row's value and entries, the ladder met
+    those zeros and settled on one: 1e-11 for 0.0056. It is measured, and
+    the entry stays the first quotient. The state is the model's at t = 100."""
     path = tmp_path / "share.net"
     path.write_text(SHARE)
     model = bngsim.Model.from_net(path)
-    y = np.array([1e6, 4.3e-9, 1.57e5])
+    y = np.array([999999.9999999902, 4.312687078760201e-09, 157089.2524458467])
     jac = _fd(model, y)
     assert jac[0, 1] == _first_quotient(model, y, 1)[0]
-    assert jac[0, 1] == pytest.approx(2e-7 * 1.57e5 - 0.05 + 0.04 - 0.01, rel=1e-4)
+    assert jac[0, 1] == pytest.approx(1e-7 * y[2] - 1.0 + 0.99 - 0.0001, rel=1e-4)
+
+
+def test_two_quotients_that_agree_to_a_millionth_are_one(tmp_path):
+    """Control. Beside a species a hundred times its size, X is stepped by
+    1.5e-6 of itself, and the two quotients of its dimerization differ by
+    4e-7 of the entry: under the millionth an entry is asked to, so it is
+    the first quotient, as it was."""
+    big = 100 * X_SS
+    model = _model(tmp_path, big)
+    y = _state(big)
+    assert _fd(model, y)[0, 0] == _first_quotient(model, y, 0)[0]
 
 
 def test_the_column_of_a_species_at_the_states_scale_is_what_it_was(tmp_path):
