@@ -7124,6 +7124,19 @@ class Simulator:
     #: least among the right ones that are returned is 4.1e-8.
     _SS_ROOT_PIVOT_SHARE_MIN = 1e-13
 
+    #: The same two limits for a Jacobian that is a difference quotient
+    #: (``sens_jacobian_source == "finite-difference"``: ``jacobian="fd"``, or
+    #: a model the closed form declines). Its entries are known to 1e-8 of the
+    #: fluxes in their row and not to rounding, so an entry a hundred million
+    #: times smaller than its neighbours reads as nothing, and the measures
+    #: above, which are taken on that matrix, do not see what it lost: a step
+    #: of 0.28 into a pair that exchanges at 1e9 came back with a column of
+    #: 0, every measure clean (and at 1e7 4.6% off, at 1e8 20%). A thousand
+    #: times what such an entry is known to, as the limits above are a
+    #: thousand times rounding.
+    _SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED = 1e-6
+    _SS_ROOT_CONDITION_MAX_DIFFERENCED = 1e6
+
     #: The most a column may move, of its largest entry, when it is solved
     #: again where a run ends that is taken on for ``max_time`` from a
     #: millionth beside the returned state.
@@ -7295,30 +7308,50 @@ class Simulator:
                     "state. "
                 )
             raise SimulationError(f"{measured}{read}{continuum}{remedy}")
-        if not share >= self._SS_ROOT_PIVOT_SHARE_MIN:
+        # A Jacobian that is a difference quotient has its entries to 1e-8 of
+        # the fluxes, and the two limits that say what rounding leaves are those
+        # of that.
+        differenced = result.sens_jacobian_source == "finite-difference"
+        share_least = (
+            self._SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED
+            if differenced
+            else self._SS_ROOT_PIVOT_SHARE_MIN
+        )
+        condition_most = (
+            self._SS_ROOT_CONDITION_MAX_DIFFERENCED if differenced else self._SS_ROOT_CONDITION_MAX
+        )
+        known_to = (
+            "the difference quotient this Jacobian is leaves of them (1e-8; a closed-form "
+            'Jacobian, jacobian="analytical" or codegen, has its entries to rounding and '
+            "these limits a hundred million times further out)"
+            if differenced
+            else "rounding leaves of them"
+        )
+        apart = "1e5" if differenced else "1e12"
+        if not share >= share_least:
             raise SimulationError(
                 f"{not_isolated}, or its columns cannot be computed. The pivot for "
                 f"{result.sens_root_pivot_species} is {share:.1e} of the terms it was "
-                f"computed from (the limit is {self._SS_ROOT_PIVOT_SHARE_MIN:g}), which is "
-                "what rounding leaves of them. Either the pivot is a zero, and the Jacobian "
-                "is singular whatever the state, as it is where a total is shared out among "
-                "species that nothing takes it back from, or a quantity is conserved that "
-                "no law of the model holds; or two rates of the model are that far apart "
-                "(an exchange beside a step 1e13 times slower), and the columns are not "
-                f"known to the 1% asked of them. {continuum}{remedy}"
+                f"computed from (the limit is {share_least:g}), which is what {known_to}. "
+                "Either the pivot is a zero, and the Jacobian is singular whatever the "
+                "state, as it is where a total is shared out among species that nothing "
+                "takes it back from, or a quantity is conserved that no law of the model "
+                f"holds; or two rates of the model are more than {apart} apart (an exchange "
+                "beside a slow step), and the columns are not known to the 1% asked of "
+                f"them. {continuum}{remedy}"
             )
-        if not condition <= self._SS_ROOT_CONDITION_MAX:
+        if not condition <= condition_most:
             raise SimulationError(
                 f"{not_isolated}, or its columns cannot be computed. A relative error "
                 f"in the entries of the Jacobian is magnified {condition:.1e} times in the "
-                f"columns (the limit is {self._SS_ROOT_CONDITION_MAX:.0e}; the entry for "
-                f"{result.sens_root_condition_species} takes most of it), and rounding is "
-                "1e-16 of each entry. Either the Jacobian is singular whatever the state "
-                "(at 1e16 its smallest pivot is what rounding leaves of a zero), as it is "
-                "where a set of species is produced and never consumed, or a quantity is "
-                "conserved that no law of the model holds; or two rates of the model are "
-                "that far apart, and the columns are not known to the 1% asked of them. "
-                f"{continuum}{remedy}"
+                f"columns (the limit is {condition_most:.0e}; the entry for "
+                f"{result.sens_root_condition_species} takes most of it), and an entry is "
+                f"known to what {known_to}. Either the Jacobian is singular whatever the "
+                "state (at 1e16 its smallest pivot is what rounding leaves of a zero), as "
+                "it is where a set of species is produced and never consumed, or a "
+                "quantity is conserved that no law of the model holds; or two rates of the "
+                f"model are more than {apart} apart, and the columns are not known to the "
+                f"1% asked of them. {continuum}{remedy}"
             )
         stepped = float(result.sens_root_state_shift)
         limit = self._SS_ROOT_COLUMN_SHIFT_MAX

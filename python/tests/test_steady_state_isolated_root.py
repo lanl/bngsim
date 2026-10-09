@@ -2683,14 +2683,15 @@ def test_a_step_beside_a_fast_exchange_is_returned(tmp_path, fast):
 @pytest.mark.parametrize(
     ("fast", "said"),
     [
-        (3e12, r"magnified 1\.2e\+13 times.*or two rates of the model are that far apart"),
+        (3e12, r"magnified 1\.2e\+13 times.*or two rates of the model are more than 1e12 apart"),
         (1e14, r"The pivot for B\(\) is 5\.0e-15 of the terms.*or two rates of the model are"),
     ],
 )
 def test_rates_too_far_apart_for_one_percent_are_refused_as_that(tmp_path, fast, said):
-    """The same with the exchange 1.2e13 and 2e14 times the step: the columns
-    are not known to 1%, and the refusal says that it is this or a Jacobian
-    that is singular whatever the state, and not that it is the second."""
+    """The same with the exchange 3e12 and 1e14 times the step, a condition
+    number of 1.2e13 and a pivot share of 5e-15: the columns are not known to
+    1%, and the refusal says that it is this or a Jacobian that is singular
+    whatever the state, and not that it is the second."""
     sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=fast)), method="ode")
     with pytest.raises(bngsim.SimulationError, match=rf"#995.*cannot be computed.*{said}"):
         sim.steady_state(sensitivity_params=["s", "k"])
@@ -2807,3 +2808,143 @@ def test_model1607210000_says_that_the_run_stayed_and_the_columns_did_not():
         match=r"#995.*though the run ends beside it.*column of v15_h.*moves by 40\.\d times its",
     ):
         sim.steady_state(sensitivity_params=["v15_h"])
+
+
+# 0 -> X at s, X -> A at k1, X -> 0 at kx, A <-> B at 1.37·F and 0.73·F, B -> 0.
+A_STEP_INTO_A_FAST_EXCHANGE = """begin parameters
+    1 s  1.3
+    2 k1 0.28
+    3 kx 3.2
+    4 F1 {forward!r}
+    5 F2 {back!r}
+    6 k  0.917
+end parameters
+begin species
+    1 X() 0
+    2 A() 0
+    3 B() 0
+end species
+begin reactions
+    1 0 1 s
+    2 1 2 k1
+    3 1 0 kx
+    4 2 3 F1
+    5 3 2 F2
+    6 3 0 k
+end reactions
+"""
+
+
+def _into_a_fast_exchange(tmp_path, fast, **simulator):
+    """The model, its dY*/dkx in closed form over Y*, and the Simulator."""
+    s, k1, kx, k = 1.3, 0.28, 3.2, 0.917
+    forward, back = 1.37 * fast, 0.73 * fast
+    x = s / (k1 + kx)
+    b = k1 * x / k
+    a = (k1 * x + back * b) / forward
+    dx = -s / (k1 + kx) ** 2
+    relative = np.array([dx / x, (k1 + back * k1 / k) / forward * dx / a, k1 / k * dx / b])
+    text = A_STEP_INTO_A_FAST_EXCHANGE.format(forward=forward, back=back)
+    model = _net(tmp_path, text, f"exchange_{fast:g}_{len(simulator)}.net")
+    return bngsim.Simulator(model, method="ode", **simulator), relative, np.array([x, a, b])
+
+
+@pytest.mark.parametrize("fast", [1e8, 1e9])
+def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, fast):
+    """With ``jacobian="fd"`` the entry dA'/dX = 0.28 is under what a
+    difference quotient resolves beside the fluxes of A's row, F·A, and reads
+    as nothing: the columns are those of a model in which X does not make A,
+    dB*/dkx = 0 for -0.033 at F = 1e9 and 20% off at 1e8, with every measure
+    clean, the measures being taken on the same matrix. The pivot share, 6e-9
+    and 6e-10, is far above what rounding leaves and under what a difference
+    does, and that is the limit such a Jacobian is held to."""
+    sim, _, _ = _into_a_fast_exchange(tmp_path, fast, jacobian="fd")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*cannot be computed.*the difference quotient this Jacobian is",
+    ):
+        sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
+
+
+@pytest.mark.parametrize("fast", [1e8, 1e9, 1e11])
+def test_the_same_with_the_closed_form_jacobian_is_returned(tmp_path, fast):
+    """The closed-form Jacobian has the entry to rounding, and the columns are
+    right to a ten-thousandth at every one of these."""
+    sim, relative, _ = _into_a_fast_exchange(tmp_path, fast)
+    out = sim.steady_state(sensitivity_params=["kx"], tol=1e-6)
+    assert out.sens_jacobian_source != "finite-difference"
+    got = np.asarray(out.sensitivity)[:, 0] / np.asarray(out.concentrations)
+    np.testing.assert_allclose(got, relative, rtol=1e-4)
+
+
+def test_a_differenced_jacobian_of_rates_that_are_not_far_apart_is_returned(tmp_path):
+    """Control. At F = 1e3 the difference quotient has every entry, and the
+    columns are right."""
+    sim, relative, _ = _into_a_fast_exchange(tmp_path, 1e3, jacobian="fd")
+    out = sim.steady_state(sensitivity_params=["kx"], tol=1e-9)
+    got = np.asarray(out.sensitivity)[:, 0] / np.asarray(out.concentrations)
+    np.testing.assert_allclose(got, relative, rtol=1e-4)
+
+
+# N' = eps + g·N - d·N², from nothing.
+MADE_FROM_NOTHING = """begin parameters
+    1 g   1.0
+    2 d   1.0
+    3 eps 1e-12
+end parameters
+begin species
+    1 N() 0
+end species
+begin reactions
+    1 1 1,1 g
+    2 1,1 1 d
+    3 0 1 eps
+end reactions
+"""
+
+# D + N -> 2 N at g, N -> D at kr, D -> N at eps: D + N is conserved, and a run
+# from D = 1 ends at N = 1 - kr/g.
+MADE_BY_WHAT_A_LAW_GIVES = """begin parameters
+    1 g   2.0
+    2 kr  1.0
+    3 eps 1e-12
+end parameters
+begin species
+    1 D() 1.0
+    2 N() 0
+end species
+begin reactions
+    1 1,2 2,2 g
+    2 2 1 kr
+    3 1 2 eps
+end reactions
+"""
+
+
+@pytest.mark.parametrize("text", [MADE_FROM_NOTHING, MADE_BY_WHAT_A_LAW_GIVES], ids=["0", "law"])
+def test_a_species_at_nothing_that_is_being_made_is_not_absent(tmp_path, text):
+    """N is at exactly nothing where a Newton solve stops, the residual being
+    1e-12, and it is made: from nothing, or by D, which the conservation law
+    gives and which has no column of its own among the unknowns. Its row has
+    no entry in a present species' column either way, and it was taken for a
+    species the model does not have: N came back at -1e-12 with dN*/dg =
+    1e-12, where a run ends at 1 and at 1/2. A species is absent where its
+    rate is nothing too."""
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at"):
+        sim.steady_state(sensitivity_params=["g"], method="newton")
+
+
+def test_a_run_that_stayed_beside_columns_that_did_not_is_said_as_that(tmp_path):
+    """The refusal for a run that ends beside the state with other columns,
+    on a result that has everything else in order: the corpus model that it
+    was written for is not in the repository (MODEL1607210000 below)."""
+    sim = bngsim.Simulator(_net(tmp_path, BESIDE_A_FAST_EXCHANGE.format(F=10.0)), method="ode")
+    out = sim.steady_state(sensitivity_params=["s", "k"])
+    out.sens_root_hold_shift, out.sens_root_hold_drift, out.sens_root_hold_param = 40.8, 3e-6, "k"
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*though the run ends beside it.*no species by more than 3e-06.*"
+        r"column of k.*moves by 40\.8 times its largest entry",
+    ):
+        sim._raise_if_not_an_isolated_root(out, 1e6, False)

@@ -2465,8 +2465,8 @@ static constexpr int kNewtonSteps = 10;
 // found (Simulator._SS_ROOT_DETERMINANT_RATIO_MIN, _PIVOT_SHARE_MIN and
 // _CONDITION_MAX: the same numbers). No step after the first is taken for a
 // result that is refused already: each is a Jacobian and a factorization, and
-// the ten of them were 6 s of 9 for a network of 1,281 species whose
-// determinant had said no.
+// with them a network of 1,281 species whose determinant had said no took
+// three times what it takes main.
 static constexpr double kDeterminantKept = 0.6;
 static constexpr double kPivotShareLeast = 1e-13;
 static constexpr double kConditionMost = 1e13;
@@ -3193,14 +3193,26 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // With the certificate's own eigensolver and its own limit on the size
     // (issue #78), on the matrix the columns are solved with: at the returned
     // state here, and again at the state that is stepped to, where one is (6).
-    // The state as the solver left it.
+    // The state as the solver left it, and the rates there.
     const std::vector<double> returned(y_ss, y_ss + ns);
+    std::vector<double> rate_there(static_cast<size_t>(ns), 0.0);
+    rhs.eval(0.0, returned.data(), rate_there.data());
+    // A species is absent where it is exactly at nothing where the solver
+    // stopped and its rate there is exactly nothing too: one that something
+    // makes, from nothing at 1e-12 or by a species a law gives, is on its way
+    // and not absent. (A Newton solve leaves such a species at exactly
+    // nothing. It was taken for absent, and N' = eps + g·N - d·N² came back at
+    // N = -1e-12 where a run ends at 1.)
+    const auto absent = [&](int i) {
+        const size_t k = static_cast<size_t>(i);
+        return returned[k] == 0.0 && rate_there[k] == 0.0;
+    };
     // The eigenvalues are those of the species the model has. One that is
-    // absent, exactly at nothing where the solver stopped, and that nothing
-    // present makes (its row has no entry in a present species' column) has a
-    // block of its own, whose eigenvalues say what its arrival would do. That
-    // is not asked of a state, here or by the run that is taken on, which
-    // does not move it: a resident at its capacity beside an invader the model
+    // absent, and that nothing present makes at any state beside this one
+    // either (its row has no entry in a present species' column), has a block
+    // of its own, whose eigenvalues say what its arrival would do. That is
+    // not asked of a state, here or by the run that is taken on, which does
+    // not move it: a resident at its capacity beside an invader the model
     // does not start with rests where it is, and its columns are those of
     // where a run ends.
     const auto read_spectrum = [&](const std::vector<double> &reduced) {
@@ -3211,13 +3223,13 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         }
         std::vector<int> present;
         for (int r = 0; r < n; ++r) {
-            if (returned[static_cast<size_t>(unknown(r))] != 0.0) {
+            if (!absent(unknown(r))) {
                 present.push_back(r);
             }
         }
         bool apart = static_cast<int>(present.size()) < n;
         for (int r = 0; r < n && apart; ++r) {
-            if (returned[static_cast<size_t>(unknown(r))] != 0.0) {
+            if (!absent(unknown(r))) {
                 continue;
             }
             for (const int c : present) {
@@ -3672,7 +3684,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         std::vector<int> zeros;
         for (const int i : sub.included) {
             const size_t k = static_cast<size_t>(i);
-            if (k < at_a_zero.size() && at_a_zero[k] && returned[k] != 0.0) {
+            if (k < at_a_zero.size() && at_a_zero[k] && !absent(i)) {
                 zeros.push_back(i);
             }
         }

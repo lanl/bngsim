@@ -572,7 +572,7 @@ which the solve does.
 | `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. Small for a reason too, beside rates that are far apart: `k/(2·F)` for a step at k beside an exchange at F. | below 1e-13 |
 | `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed; `4·F/k` for the step beside the exchange. | above 1e13 |
 | `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry and of no less than `1e-3/\|p\|`. Where a column moves by more than 0.01 of itself, or the state does (`sens_root_state_shift`), the state is stepped on, up to ten times (`sens_root_newton_steps`). | either still above 0.01 after the steps |
-| `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from a millionth beside the returned state. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
+| `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from up to a millionth beside the state the solver stopped at. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
 | `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | times `max_time`, above 0.01 |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
 
@@ -581,8 +581,13 @@ asked for together can decide it.
 
 The first three say the steady state is not an isolated root, or, for the
 pivot share and the condition number at their limits, that rates of the model
-are so far apart (1e13) that rounding leaves the columns known to no better
-than a thousandth. (A determinant
+are so far apart (more than 1e12) that rounding leaves the columns known to no
+better than a thousandth. Where the Jacobian is a difference quotient
+(`ss.sens_jacobian_source` is `"finite-difference"`: `jacobian="fd"`, or a
+model the closed form declines) its entries are known to 1e-8 and not to
+rounding, and the two limits are 1e-6 and 1e6: an entry a hundred million times
+smaller than its neighbours reads as nothing there, and no measure taken on
+that matrix sees what it lost. (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller
@@ -642,7 +647,10 @@ started on. `-J⁻¹·∂f/∂p` there is how the root moves, not where a run en
 run starts a millionth beside the state because one started on such a root
 stays on it. A species that is absent is not moved: the run does not ask
 whether a state would last the arrival of something the model does not start
-with. (Nor do the eigenvalues below: a species that is absent, and that nothing the model has makes, is left out of them.)
+with. (Nor do the eigenvalues below: a species that is absent, at exactly
+nothing with a rate of exactly nothing, and that nothing the model has makes,
+is left out of them. `ss.root_stability`, the certificate of a Newton root,
+does count it, and can read `"unstable"` beside columns that are returned.)
 
 The run has `max_steps` steps. Where it uses them short of `max_time`, it was
 not seen to stay, and the columns are refused: an oscillation about the state
