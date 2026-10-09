@@ -3000,6 +3000,78 @@ def test_the_same_asked_for_the_resident_alone_is_returned(tmp_path):
     np.testing.assert_allclose(out.sensitivity, [[1.0], [0.0]], atol=1e-7)
 
 
+# The resident and the invader, and E, which makes the invader at k·E and is no
+# unknown of the solve: nothing changes it, so it is the dependent of a
+# conservation law of its own, whose total E0 sets.
+AN_INVADER_MADE_BY_A_CATALYST = """begin parameters
+    1 b   1.0
+    2 c   1.0
+    3 g   {g}
+    4 d   1.0
+    5 k   1.0
+    6 E0  0
+end parameters
+begin species
+    1 R() 1.0
+    2 N() 0
+    3 E() E0
+end species
+begin reactions
+    1 1 1,1 b
+    2 1,1 1 c
+    3 2 2,2 g
+    4 1,2 1 d
+    5 2,2 2 d
+    6 3 2,3 k
+end reactions
+"""
+
+# The same with E fixed, `$E`, and set by E0. (Y is there for the solve to be
+# the one on the unknowns: with no law and no rule a fixed species is refused
+# as a singular Jacobian, as on main.)
+AN_INVADER_MADE_BY_A_FIXED_SPECIES = (
+    "species $E, R, N, $Y; E0 = 0; E = E0; R = 1; N = 0; "
+    "b = 1; c = 1; g = {g}; d = 1; k = 1; Y := 2*R\n"
+    "J1: R -> 2 R; b*R\nJ2: 2 R -> R; c*R*R\nJ3: N -> 2 N; g*N\n"
+    "J4: N -> ; d*R*N\nJ5: N -> ; d*N*N\nJ6: -> N; k*E\n"
+)
+
+
+def _made_by_what_is_no_unknown(tmp_path, which, g):
+    if which == "catalyst":
+        return _net(tmp_path, AN_INVADER_MADE_BY_A_CATALYST.format(g=g))
+    return bngsim.Model.from_antimony_string(AN_INVADER_MADE_BY_A_FIXED_SPECIES.format(g=g))
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+@pytest.mark.parametrize("asked", [["E0"], ["b", "E0"]])
+@pytest.mark.parametrize("which", ["catalyst", "fixed"])
+def test_an_absent_species_is_asked_where_what_is_no_unknown_would_make_it(
+    tmp_path, which, asked, method
+):
+    """N is made at k·E, and E is at E0 = 0 and is no unknown: the dependent
+    of its own conservation law, or fixed. Neither ∂f/∂E0 nor the start of N
+    reads E0, and N's row has no entry in an unknown's column; what makes N is
+    the total, or the fixed species, that E0 moves. Any E0 above nothing makes
+    some N, which leaves nothing at g - d·R = 1: a run ends at N = 1 for E0 =
+    1e-9, and -1 came back for dN*/dE0, the slope of the branch the system
+    leaves."""
+    sim = bngsim.Simulator(_made_by_what_is_no_unknown(tmp_path, which, 2.0), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+        sim.steady_state(sensitivity_params=asked, method=method)
+
+
+@pytest.mark.parametrize("which", ["catalyst", "fixed"])
+def test_the_same_where_the_invader_dies_out_is_returned(tmp_path, which):
+    """Control. At g = 1/2 what E0 makes of N is removed at d·R - g = 1/2,
+    N* = k·E0/(d·R - g) beside nothing, and dN*/dE0 = 2 is the derivative."""
+    sim = bngsim.Simulator(_made_by_what_is_no_unknown(tmp_path, which, 0.5), method="ode")
+    out = sim.steady_state(sensitivity_params=["E0"])
+    names = [n.rstrip("()") for n in out.species_names]
+    got = np.asarray(out.sensitivity)[[names.index(n) for n in ("R", "N", "E")], 0]
+    np.testing.assert_allclose(got, [0.0, 2.0, 1.0], atol=1e-7)
+
+
 # The invader is made at k·(R - 1): at nothing where the resident is at its
 # capacity of 1, and nowhere else.
 AN_INVADER_MADE_ANYWHERE_BUT_HERE = """begin parameters
