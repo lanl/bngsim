@@ -10412,19 +10412,42 @@ def _output_sens_analysis_key(core) -> tuple:
         core.n_parameters,
         core.n_observables,
         core.n_functions,
-        # A table function can be added after load (``Model.add_table_function``),
-        # and a function that reads one is deferred: by name, since two clones
-        # of one model can each be given a different one (issue #979).
-        tuple(getattr(core, "table_function_names", ())),
+        _table_function_bindings(core),
         tuple(bool(x) for x in core.param_is_expression),
         _sens_budget_cache_tag(),
     )
 
 
-#: How many analyses one family of clones keeps (:func:`_analyze_output_sens`):
-#: one for each attachment its members are run under, and a batch that pins a
-#: derived parameter on some rows has two.
-_OUTPUT_SENS_ANALYSES_KEPT = 4
+def _table_function_bindings(core) -> tuple:
+    """Each of the model's table functions with what it is read over, in the
+    order the model has them, which is what the emitted code calls them by.
+
+    A table function can be added after load (``Model.add_table_function``),
+    and the analysis reads them: a function that has a table's name is no
+    function to differentiate, and a table's index is what its call is written
+    over. The key had the number of functions and no table in it, so a model
+    given a table over one of its functions kept the analysis it had, and
+    ``dg/dk`` came back for a ``g`` the code reads from the table (issue #979).
+    ``()`` for a model with none, without asking for ``codegen_data()``.
+    """
+    if not getattr(core, "n_table_functions", 0):
+        return ()
+    return tuple(
+        (
+            spec["name"],
+            spec.get("index_kind"),
+            spec.get("index_param_idx"),
+            spec.get("index_obs_idx"),
+        )
+        for spec in core.codegen_data().get("table_functions", ())
+    )
+
+
+#: How many analyses one family of clones keeps for clones to come
+#: (:func:`_analyze_output_sens`): one for each key its members were analyzed
+#: under. A model keeps its own besides, whatever becomes of these.
+_OUTPUT_SENS_ANALYSES_KEPT = 8
+_output_sens_family_lock = threading.Lock()
 
 
 def _analyze_output_sens(model) -> dict:
@@ -10459,27 +10482,41 @@ def _analyze_output_sens(model) -> dict:
     emitted C would carry a NaN sentinel for a function the support map reports as
     supported. One evaluation, one cut, one answer.
 
-    The memo is one ``dict`` that a model and every clone of it hold together
-    (issue #979). It was a slot of each model, copied when one was cloned, so a
-    clone of a model that had not been analyzed yet started with nothing, and
-    so did the next: a fitting loop that clones one base model for every
-    evaluation paid the analysis every time, 2.2 s for 300 functions and 20 s
-    for 500, for a run of milliseconds. An analysis made on any of them now
-    serves all of them. They have the same functions, and what can differ
-    between them is in the key.
+    That is the model's own slot, and it holds as it did: a model's analysis is
+    its own until its key changes, whatever else is analyzed.
+
+    Beside it there is a memo that a model and every clone of it hold together
+    (issue #979). The slot is copied when a model is cloned, so a clone of a
+    model that had not been analyzed yet started with nothing, and so did the
+    next: a fitting loop that clones one base model for every evaluation paid
+    the analysis every time, 2.2 s for 300 functions and 20 s for 500, for a
+    run of milliseconds. An analysis made on any of them is now there for the
+    others, to take into their own slots. They have the same functions, and
+    what can differ between them is in the key. The shared memo keeps a few
+    and drops the oldest; a model whose analysis it has dropped still has it.
     """
     core = model._core if hasattr(model, "_core") else model
     key = _output_sens_analysis_key(core)
-    memo = getattr(model, "_output_sens_analysis", None)
-    if memo is not None and key in memo:
-        return memo[key]
-    analysis = _compute_output_sens_analysis(model, core)
+    own = getattr(model, "_output_sens_analysis", None)
+    if own is not None and own[0] == key:
+        return own[1]
+    family = getattr(model, "_output_sens_family", None)
+    analysis = None
+    if family is not None:
+        with _output_sens_family_lock:
+            analysis = family.get(key)
+    if analysis is None:
+        analysis = _compute_output_sens_analysis(model, core)
+        if family is not None:
+            with _output_sens_family_lock:
+                # Another thread's clone may have made it meanwhile: one answer.
+                analysis = family.setdefault(key, analysis)
+                while len(family) > _OUTPUT_SENS_ANALYSES_KEPT:
+                    family.pop(next(iter(family)))
     # A bare ``NetworkModel`` core has no slot to hold it and simply re-analyzes;
     # both callers that matter pass the Model.
-    if memo is not None:
-        while len(memo) >= _OUTPUT_SENS_ANALYSES_KEPT:
-            memo.pop(next(iter(memo)))
-        memo[key] = analysis
+    if hasattr(model, "_output_sens_analysis"):
+        model._output_sens_analysis = (key, analysis)
     return analysis
 
 
@@ -10504,7 +10541,6 @@ def _compute_output_sens_analysis(model, core) -> dict:
         "species": species,
         "observables": observables,
         "functions": functions,
-        "reactions": data["reactions"],
     }
 
     if n_func == 0:

@@ -120,6 +120,7 @@ class Model:
         "_ssa_clock_functions",
         "_want_output_sens",
         "_output_sens_analysis",
+        "_output_sens_family",
         "_named_conc_states",
         "_named_sens_seeds",
         "_declared_ic_sens",
@@ -137,14 +138,16 @@ class Model:
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
         # run needs it, since its build-time differentiation is expensive).
         self._want_output_sens: bool = False
-        # GH #97: the memo for the #198 per-function output-sens analysis
-        # (``_codegen._analyze_output_sens``), which both the C emitter and the
-        # Result's support map run: ``{key: analysis}``. An analysis is shared,
-        # so nothing may mutate one, and keyed
-        # (``_codegen._output_sens_analysis_key``) so a budget override does not
-        # read back an analysis made under a different one. The dict itself is
-        # shared with every clone (issue #979): see ``clone``.
-        self._output_sens_analysis: dict[tuple, dict] = {}
+        # GH #97: ``(key, analysis)`` memo for the #198 per-function output-sens
+        # analysis (``_codegen._analyze_output_sens``), which both the C emitter
+        # and the Result's support map run. Shared, so nothing may mutate it, and
+        # keyed (``_codegen._output_sens_analysis_key``) so a budget override does
+        # not read back an analysis made under a different one.
+        self._output_sens_analysis: tuple | None = None
+        # Issue #979: ``{key: analysis}``, the same analyses as a model and all
+        # of its clones have made them, for the next of them to take. One dict,
+        # which ``clone`` hands on.
+        self._output_sens_family: dict[tuple, dict] = {}
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
@@ -1005,7 +1008,10 @@ class Model:
         """Deep copy the model for parallel workers.
 
         Each clone is fully independent — it has its own parameter values,
-        species concentrations, and expression evaluator state.
+        species concentrations, and expression evaluator state. (What a model
+        and its clones do hold together is a memo of analyses of their
+        functions, which are the same for all of them: read-only once made,
+        and kept under a lock.)
 
         This is also the answer to "give me my own copy" in general: all of a
         ``Model``'s state lives behind one handle into the compiled extension,
@@ -1046,13 +1052,15 @@ class Model:
         m._jac_decline_reason = self._jac_decline_reason
         # GH #97: same warm-clone reasoning for the #198 output-sens analysis — a
         # clone has the parent's structure, so re-running its sympy would be N×
-        # waste in parallel fitting. The memo itself is shared, not its
-        # contents at the time (issue #979): an analysis made on a clone is
-        # there for the parent and for the clones made after, so that cloning
-        # a model that was never run does not start each clone from nothing.
-        # Looked up by the clone's own key, so one that does not match
-        # re-derives.
+        # waste in parallel fitting. Shared by reference (the analysis is
+        # read-only) and re-keyed on the clone's own counters, so a clone that
+        # somehow did not match simply re-derives.
         m._output_sens_analysis = self._output_sens_analysis
+        # Issue #979: and the family's memo itself, not its contents at the
+        # time. An analysis made on a clone is there for the parent and for the
+        # clones made after, so that cloning a model that was never run does
+        # not start each clone from nothing.
+        m._output_sens_family = self._output_sens_family
         m._ssa_issues = list(self._ssa_issues)
         m._ar_report_map = dict(self._ar_report_map)
         m._varvol_conc_map = dict(self._varvol_conc_map)
