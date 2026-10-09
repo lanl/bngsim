@@ -559,14 +559,14 @@ has been and the largest among the species it is coupled to, no more than a
 conserved total it belongs to allows. A species that is small and has a steady
 value, 1e-12 beside another at 1, is not at a zero. It keeps its own scale, and
 has to be solved to that value before its entries are returned (the column
-shift, below).
+shift, below), which the solve does.
 
 | On the result | What it is | Refused |
 | --- | --- | --- |
 | `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; 1/2 at a root of higher order; negative or large where the state is far from its root, or a rate law is discontinuous between the two. | outside 0.6 to 1.67 |
 | `sens_root_pivot_share` | The least a pivot of the factorization is of the terms it was computed from. 1e-16 where a pivot is what rounding left of a zero: a Jacobian that is singular whatever the state, as two products of one irreversible branch make it. | below 1e-10 |
 | `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 2e16 for a set of species that exchange among themselves and are produced and never consumed. | above 1e12 |
-| `sens_root_column_shift` | The largest move of a column when it is solved again at the corrected state, as a fraction of its largest entry. | above 0.01 |
+| `sens_root_column_shift` | The largest move of a column when it is solved again a Newton step on, as a fraction of its largest entry. Above 0.01 the state is stepped on, up to six times (`sens_root_newton_steps`), until it is not. | still above 0.01 after six steps |
 | `sens_root_hold_shift` | The same where a run ends that is taken on for `max_time` from a millionth beside the returned state. Not a number where that run failed. `sens_root_hold_time` is the time it reached, with the `max_steps` steps it has. | above 0.01, not a number, or a run short of `max_time` |
 | `sens_root_growth_rate` | The largest real part among the eigenvalues of the system, up to 512 unknowns, beside `sens_root_spectral_radius`, the largest eigenvalue in size. | above 1e-6 of the spectral radius |
 | `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
@@ -587,22 +587,29 @@ result = sim.run(t_span=(0, 1e4), n_points=2)
 result.sensitivities[-1]          # (n_species, n_params) at the last time
 ```
 
-The column shift says the state the solve returned is short of the steady state.
-`tol` bounds the residual `||f(y)||₂/n` and not the distance to the root, and a
-model whose concentrations are 1e-6 passes `tol=1e-9` a long way off:
-BIOMD0000000002 is accepted 0.02% from its steady state, where every column is
-5.9% from the derivative. Solve again with a smaller `tol`. (A column that
-moves as far at every `tol` is that of a steady state that is not an isolated
-root.) A column whose every entry, over its species' scale, is below
-`1e-3/|p|` is measured against that instead of its own largest entry: a
-species that moves by less than a thousandth of its scale when the parameter
-doubles.
+The column shift says how far the state the solver stopped at is from the
+steady state, in what matters here: its columns. `tol` bounds the residual
+`||f(y)||₂/n` and not the distance to the root, and a model whose
+concentrations are 1e-6 passes `tol=1e-9` a long way off: BIOMD0000000002 is
+accepted 0.02% from its steady state, where every column is 5.9% from the
+derivative. Where a column moves by more than 1% in one Newton step, the state
+is stepped on, a Newton step at a time, until none does, and what is returned
+is the last: `ss.concentrations`, `ss.residual` and `ss.sensitivity` are then
+those of the stepped state, which is the root to what a step still moves it
+by, and `ss.sens_root_newton_steps` says how many steps that took. Where the
+first step moves no column, it is 0 and the result is the solver's own, to the
+last bit. The solve refuses where the columns have not settled in six steps:
+the state is far from a root for the size of its rates, which a smaller `tol`
+mends, or the steady state is not an isolated root. A column whose every
+entry, over its species' scale, is below `1e-3/|p|` is measured against that
+instead of its own largest entry: a species that moves by less than a
+thousandth of its scale when the parameter doubles.
 
-A species that is small beside the rest has to be at its own steady value too.
-A made at `5e-10·G` and removed at 5e-3 has a steady value of 1e-7 beside G at
-1, and the residual is under `tol=1e-9` where A starts, at nothing: dA*/dkd came
-back -5.8e-9 for -2e-5. Its entries are taken over its own 1e-7, and the
-columns are refused until `tol` is small enough for it (1e-15 here).
+A species that is small beside the rest is solved to its own steady value by
+the same steps. A made at `5e-10·G` and removed at 5e-3 has a steady value of
+1e-7 beside G at 1, and the residual is under `tol=1e-9` where A starts, at
+nothing: dA*/dkd came back -5.8e-9 for -2e-5. Its entries are taken over its
+own concentration, the column is seen to move, and two steps take A to 1e-7.
 
 The hold shift says the state is not one a run stays at. An integration stops
 at the first state whose residual is under `tol`, and that says where the run
@@ -630,8 +637,8 @@ neither shows is returned: a state the system leaves by an oscillation that
 grows more slowly than `9.2/max_time` and than a millionth of the fastest rate
 in the model, or one in a system of more than 512 unknowns.
 
-The state `steady_state()` returns is not changed by any of this: without
-`sensitivity_params` it is returned as before.
+Without `sensitivity_params`, `steady_state()` returns what it did: the state
+the solver stopped at.
 
 The relaxation says the column is that of a steady state the model does not reach
 in the time the solve was given. A species whose turnover is switched off at

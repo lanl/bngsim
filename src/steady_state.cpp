@@ -2313,6 +2313,10 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //   4. Take a run on for the time the solve was given, from y with every
 //      concentration moved by a millionth of itself, to y_h.
 //
+// Where the columns at y_c are not those at y, y is short of the root, and
+// steps 2 and 3 are taken again from y_c, and from where that leads, until the
+// columns stay: the root is what the columns are wanted at.
+//
 // What is read from that is each a ratio of two quantities in the same units:
 // two determinants, a pivot and its terms, a column and the same column at
 // another state. An entry of a column, and a move of a concentration, are taken
@@ -2356,7 +2360,12 @@ static std::vector<double> ss_start_state_sensitivity(const NetworkModel &model,
 //                  a model whose concentrations are 1e-6 passes it a long way
 //                  off: BIOMD0000000002 is accepted 0.02% from its steady
 //                  state, where every column is 5.9% from the derivative. The
-//                  re-solve says so, and by how much.
+//                  re-solve says so, and the state is then stepped on, a
+//                  Newton step at a time, until the columns of two states in a
+//                  row agree: the state and the columns that are returned are
+//                  those of the root (6, in ss_measure_root). What is left for
+//                  the caller to refuse is a state whose columns have not
+//                  settled after kNewtonSteps.
 //   hold           The same at y_h: what the columns of where a run ends are,
 //                  and whether the run got there. An integration stops at the
 //                  first state whose residual is under `tol`, which says where
