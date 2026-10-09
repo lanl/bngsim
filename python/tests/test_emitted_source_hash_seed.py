@@ -204,6 +204,9 @@ def _from_every_set_order(expr, monkeypatch, read=None):
             for i, power in zip(to, monom, strict=True):
                 at[i] = power
             moved.append((term, (coeff, tuple(at), ncpart)))
+        from bngsim import _term_order
+
+        _term_order._forget()  # what an earlier order left memoized
         with monkeypatch.context() as patch:
             patch.setattr(type(expr), "as_terms", lambda self, m=moved, o=other: (m, o))
             seen.append(read(expr) if read else (ordered_terms(expr), expr.as_ordered_terms()))
@@ -325,6 +328,7 @@ def test_an_edit_to_the_term_order_changes_the_cache_key(tmp_path):
         "-k*(a + x)**2*exp(b + y)/(c + x*y)",
         "Max(a*x, b + y, 1) - Min(x + y, 2*a)",
         "k*(a*x + b)**(c + 1) + k*(b*x + a)**(c + 1)",
+        "Max(x*y*a*b, c + k) + Min(a*b*c*x, y + k)",
     ],
 )
 def test_a_sum_with_no_tie_is_ordered_as_sympy_orders_it(text):
@@ -446,6 +450,7 @@ other = 2*a*X + c*Y
 cases = [
     k*tied**2 + k*other**2,
     k*sp.exp(tied) + k*sp.exp(other),
+    sp.exp(tied*(2*b*X + c*Y)) + sp.exp(other*(2*b*X + c*Y)),
     k*tied*(2*b*X + c*Y),
     -k*tied*(2*b*X + c*Y)/(a + X),
     sp.Min(a*X**2.0 + 1, b*X**2 + 1.0),
@@ -483,7 +488,7 @@ def test_what_holds_a_tied_sum_is_printed_one_way_under_every_hash_seed():
     printed = {seed: _printed_under(seed, script) for seed in _SEEDS}
     assert len(set(printed.values())) == 1, printed
     lines = printed[_SEEDS[0]].splitlines()
-    assert len(lines) == 8 and "None" not in printed[_SEEDS[0]]
+    assert len(lines) == 9 and "None" not in printed[_SEEDS[0]]
 
 
 def test_the_c_printer_of_a_derived_parameter_and_srepr_are_one_way_too():
@@ -561,3 +566,52 @@ def test_arguments_from_a_set_have_one_order_from_any():
     items = [X**2.0 + 1, X**2 + 1.0, sp.exp(tied)]
     for order in (_term_order.ordered_args, _term_order.in_order):
         assert len({tuple(order(p)) for p in itertools.permutations(items)}) == 1
+
+
+@pytest.mark.parametrize("kind", ["Min", "Max", "And", "Or"])
+def test_the_key_of_a_set_like_operation_is_one_whichever_way_its_arguments_are_kept(kind):
+    """sympy keeps the arguments of ``Min``, ``Max``, ``And`` and ``Or`` in the
+    order ``ordered`` gave them from a set, and its key for the operation is
+    made of them in that order. With two arguments that tie, the same
+    operation has two keys there and one here."""
+    from bngsim import _term_order
+
+    x, y = sp.symbols("X Y")
+    if kind in ("Min", "Max"):
+        first, second = x**2.0 + 1, x**2 + 1.0
+    else:
+        first, second = 2.0 * x**2 > y, 2 * x**2.0 > y
+    cls = getattr(sp, kind)
+    one, other = sp.Basic.__new__(cls, first, second), sp.Basic.__new__(cls, second, first)
+    assert one.args == other.args[::-1]
+    assert one.sort_key() != other.sort_key()
+    _term_order._forget()
+    assert _term_order.stable_key(one) == _term_order.stable_key(other)
+
+
+@pytest.mark.parametrize(
+    ("text", "c", "exprtk"),
+    [
+        ("1 - 4*p", "1.0 - 4.0*p", "1 - 4*p"),
+        ("-x*y/2", "-x*y/2.0", "-x*y/2"),
+        ("-2*x/p**2", "-2.0*x/((p)*(p))", "-2*x/((p)^(2))"),
+        (
+            "x/2 - (y - z)/(2*(1 - 4*p))",
+            "x/2.0 - (y - z)/(2.0 - 8.0*p)",
+            "x/2 - (y - z)/(2 - 8*p)",
+        ),
+        ("-(y - z)/2", "-y/2.0 + z/2.0", "-y/2 + z/2"),
+        ("-1.5*x*(y + z)/(p + 1)", "-1.5*x*(y + z)/(p + 1.0)", "-1.5*x*(y + z)/(p + 1)"),
+    ],
+)
+def test_a_product_with_a_sign_is_printed_as_it_was(text, c, exprtk):
+    """Control. The text the two printers of the Jacobian give a product with
+    a negative coefficient, which is main's. sympy hands such a coefficient
+    over as -1 and its size, and a product given back to its printer that way
+    is printed ``-1.0*4.0*p``: a first version of the factor order did, and
+    changed the sensitivity source of 117 corpus models of 203."""
+    from bngsim._jacobian import sympy_to_c, sympy_to_exprtk
+
+    expr = sp.sympify(text)
+    assert sympy_to_c(expr, lambda name: name) == c
+    assert sympy_to_exprtk(expr) == exprtk

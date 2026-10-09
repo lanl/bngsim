@@ -150,6 +150,13 @@ def stable_key(expr):
     return expr.sort_key()
 
 
+def _forget() -> None:
+    """Drop what is memoized here (the keys and the default order of each
+    sum's terms)."""
+    for memo in (_follows_the_seed, stable_key, _default_order_terms):
+        memo.cache_clear()
+
+
 def _nodes(expr) -> float:
     """The number of nodes in ``expr`` as sympy's ``ordered`` counts them, a
     ``Float`` for half of one: what it sorts by ahead of the keys."""
@@ -203,14 +210,19 @@ def ordered_args(args) -> list:
     return _in_order(items, [(_nodes(a), stable_key(a)) for a in items])
 
 
-def ordered_factors(expr) -> list:
+def ordered_factors(expr, whole_coefficient: bool = False) -> list:
     """``expr.as_ordered_factors()`` with the keys from :func:`stable_key`.
 
     The commutative factors are sorted from the order of ``expr.args``, which
     sympy fixes by structure and not by hash, so the sort itself is sympy's:
     two factors whose keys tie stay in that order, in every process.
+
+    sympy hands a negative coefficient over as -1 and its size, ``-4*p`` as
+    ``[-1, 4, p]``. ``whole_coefficient`` leaves it whole, for a product that
+    is to be printed: with a number beside its first factor a printer takes
+    it for one that was never evaluated, and prints ``-1*4*p``.
     """
-    commutative, rest = expr.args_cnc()
+    commutative, rest = expr.args_cnc(split_1=not whole_coefficient)
     commutative.sort(key=stable_key)
     return commutative + rest
 
@@ -305,7 +317,7 @@ class SeedFreeTermOrder:
     def _print_Mul(self, expr):
         from sympy import Mul
 
-        factors = Mul._from_args(ordered_factors(expr))
+        factors = Mul._from_args(ordered_factors(expr, whole_coefficient=True))
         if not factors.is_Mul:
             return self._print(factors)  # type: ignore[attr-defined]
         return super()._print_Mul(factors)  # type: ignore[misc]
@@ -361,6 +373,12 @@ def srepr(expr) -> str:
         from sympy.printing.repr import ReprPrinter
 
         class _Repr(SeedFreeTermOrder, ReprPrinter):
+            def _print_Mul(self, expr, order=None):
+                # As sympy's: the factors as as_ordered_factors hands them
+                # over, a negative coefficient as -1 and its size.
+                args = ", ".join(self._print(a) for a in ordered_factors(expr))
+                return f"{type(expr).__name__}({args})"
+
             def _set_like(self, expr):
                 args = ", ".join(self._print(a) for a in ordered_args(expr.args))
                 return f"{type(expr).__name__}({args})"
