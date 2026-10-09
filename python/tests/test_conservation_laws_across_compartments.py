@@ -815,15 +815,21 @@ MASKED = (
 
 
 @pytest.mark.parametrize("v2", [2.0, 1e6, 1e10, 1e12])
-def test_a_masked_out_species_is_held_by_its_law_at_any_size(v2):
-    """With D masked out, the law that holds it keeps its total fixed, so
-    dA*/dA0 = 0 (the guide's rule for a mask). Whether the law holds D was
-    asked of the coefficients without the sizes, where D's is 1e-10 of B's
-    at V2 = 1e10: the column came back 1/3 there and 0 at V2 = 2."""
-    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(MASKED.format(v2=v2)), method="ode")
-    out = sim.steady_state(sensitivity_params=["A0"], mask=["A", "B"], tol=1e-10)
-    column = np.asarray(out.sensitivity)[:, 0]
-    assert abs(column[0]) < 1e-9 and abs(column[1]) * v2 < 1e-9
+def test_a_masked_out_species_is_one_its_law_holds_at_any_size(v2):
+    """Whether the law holds D was asked of the coefficients without the
+    sizes, where D's is 1e-10 of B's at V2 = 1e10, and D was taken for a
+    species no law holds. Asked with them, the law holds all three at any
+    size. (This was read off dA*/dA0 with D masked out, 0 where the law keeps
+    its total and 1/3 where it was not found to. A's rate reads D, so that
+    request is refused now, issue #995: with D held, 0 is not the derivative
+    either.)"""
+    model = bngsim.Model.from_antimony_string(MASKED.format(v2=v2))
+    assert [sorted(members) for members in model._core.conservation_law_members()] == [[0, 1, 2]]
+    sim = bngsim.Simulator(model, method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*mask= leaves out D, which the rate of A reads"
+    ):
+        sim.steady_state(sensitivity_params=["A0"], mask=["A", "B"], tol=1e-10)
 
 
 WITH_A_TOTAL = (

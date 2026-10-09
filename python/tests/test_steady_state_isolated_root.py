@@ -495,7 +495,7 @@ def test_a_share_of_a_total_that_stays_out_of_the_masked_sink_is_refused(tmp_pat
     model = _net(tmp_path, SHARE_OUT_OF_THE_SINK)
     assert model.pure_sink_species() == ["P()"]
     sim = bngsim.Simulator(model, method="ode")
-    with pytest.raises(bngsim.SimulationError):
+    with pytest.raises(bngsim.SimulationError, match=r"dY_ss/dp does not exist.*singular"):
         sim.steady_state(sensitivity_params=["k2"], mask=~np.asarray(model.is_pure_sink()))
 
 
@@ -645,7 +645,6 @@ def test_a_small_share_of_a_column_on_a_slow_mode_is_returned(tmp_path):
     sim = bngsim.Simulator(_net(tmp_path, SMALL_SHARE), method="ode")
     out = sim.steady_state(sensitivity_params=["s"])
     np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [1e-3, 1.0], rtol=1e-9)
-    assert getattr(out, "sens_root_relaxation", 1e-3) == pytest.approx(1e-3, rel=1e-3)
 
 
 def test_what_a_run_of_max_time_gives_for_it(tmp_path):
@@ -671,11 +670,20 @@ def test_a_healthy_solve_reports_what_was_measured(tmp_path):
     assert out.sens_root_relaxation == pytest.approx(1e-6, rel=1e-6)
     assert out.sens_root_condition_species in ("A()", "B()")
     assert out.sens_root_relaxation_param == "kf"
+    # One pivot, and nothing cancelled into it; the run taken on from the
+    # state stays; the one eigenvalue is -(kf + kr).
+    assert out.sens_root_pivot_share == pytest.approx(1.0) and out.sens_root_pivot_species
+    assert out.sens_root_hold_shift < 1e-6 and out.sens_root_hold_drift < 1e-6
+    assert out.sens_root_stability == "stable"
+    assert out.sens_root_growth_rate == pytest.approx(-1.0, rel=1e-9)
+    assert out.sens_mask_held_species is None and out.sens_mask_reader_species is None
     plain = sim.steady_state()
     assert plain.sens_root_determinant_ratio == 1.0 and plain.sens_root_condition == 1.0
     assert plain.sens_root_column_shift == 0.0 and plain.sens_root_relaxation == 0.0
     assert plain.sens_root_determinant_species is None and plain.sens_root_column_param is None
     assert plain.sens_root_relaxation_param is None
+    assert plain.sens_root_pivot_share == 1.0 and plain.sens_root_hold_shift == 0.0
+    assert plain.sens_root_stability == "undetermined" and math.isnan(plain.sens_root_growth_rate)
 
 
 @pytest.mark.parametrize("v1, v2, k", [(0.7, 2.3, 0.37), (0.3, 1.9, 0.41), (1.1, 0.7, 0.53)])
@@ -687,14 +695,16 @@ def test_a_pivot_that_the_law_reduction_cancelled_is_refused(v1, v2, k):
     they cancel to an exact zero. A 1x1 matrix has min|U|/max|U| = 1, and
     dA*/dk came back 258.7, 1556 and -1.19 for the three pairs of sizes, where
     it is 0, with no warning. What the entry was made of is carried into the
-    condition number, which is 1e16 to 1e18."""
+    pivot's share of them, which is 1e-16 to 1e-18."""
     model = bngsim.Model.from_antimony_string(
         f"compartment c1, c2; c1 = {v1}; c2 = {v2}; species A in c1, B in c2; A = 1.3; B = 0.2;\n"
         f"k = {k}; T0 = {v1 * 1.3 + v2 * 0.2!r};\nR1: A -> B; k*(A*c1 + B*c2)\nR2: B -> A; k*T0\n"
     )
     assert model.conservation_laws["n_laws"] == 1
     sim = bngsim.Simulator(model, method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"#995|dY_ss/dp does not exist"):
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*pivot for B is \d\.\de-1[5-9] of the terms"
+    ):
         sim.steady_state(sensitivity_params=["k"])
     out = sim.steady_state()  # the state itself is where the model started
     np.testing.assert_allclose(np.asarray(out.concentrations), [1.3, 0.2], rtol=1e-9)
@@ -760,3 +770,395 @@ def test_a_concentration_the_newton_step_takes_below_zero_is_set_to_zero(tmp_pat
     out = sim.steady_state(sensitivity_params=["kd", "v", "K"], atol=1e-14, rtol=1e-10)
     assert out.converged and 0 < np.asarray(out.concentrations)[0] < 1e-12
     assert np.max(np.abs(np.asarray(out.sensitivity))) < 1e-10
+
+
+# ── What the first review found ──────────────────────────────────────────────
+
+READ_BY_ITS_NEIGHBOUR = """begin parameters
+    1 s  1.0
+    2 k1 1.0
+    3 k2 0.5
+    4 k3 0.25
+end parameters
+begin species
+    1 A() 0
+    2 M() 0
+end species
+begin reactions
+    1 0 1 s
+    2 1 2 k1
+    3 2 1 k2
+    4 2 0 k3
+end reactions
+"""
+
+
+def test_a_mask_that_leaves_out_a_species_an_equation_reads_is_refused(tmp_path):
+    """A is made at s and exchanges with M, which is removed at k3: A* =
+    s·(k2 + k3)/(k1·k3), 3 here, and dA*/ds = 3. With M masked out, A is
+    solved for with M held where it is, 4, and that has dA/ds = 1/k1 = 1,
+    which came back with nothing said. A species the mask leaves out is held,
+    and that is its part in the derivative only where no equation the columns
+    are solved on reads it."""
+    sim = bngsim.Simulator(_net(tmp_path, READ_BY_ITS_NEIGHBOUR), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*mask= leaves out M\(\), which the rate of A\(\) reads.*pure_sink_species",
+    ):
+        sim.steady_state(sensitivity_params=["s", "k1"], mask=["A()"])
+
+
+def test_the_same_with_nothing_left_out_is_returned(tmp_path):
+    """Control. dA*/ds = 3, dA*/dk1 = -3, dM*/ds = 4 and dM*/dk1 = 0."""
+    sim = bngsim.Simulator(_net(tmp_path, READ_BY_ITS_NEIGHBOUR), method="ode")
+    out = sim.steady_state(sensitivity_params=["s", "k1"], tol=1e-12)
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity), [[3.0, -3.0], [4.0, 0.0]], rtol=1e-6, atol=1e-6
+    )
+
+
+EXCHANGE = """begin parameters
+    1 kf 1.0
+    2 kr 0.5
+    3 A0 2.0
+end parameters
+begin species
+    1 A() A0
+    2 M() 0
+end species
+begin reactions
+    1 1 2 kf
+    2 2 1 kr
+end reactions
+"""
+
+
+def test_a_masked_species_a_law_holds_with_one_that_reads_it_is_refused(tmp_path):
+    """A <-> M, with A + M conserved, A the species the law is solved for, and
+    M masked out. The law is not an equation of A alone, so A is an unknown
+    with its own equation, and that equation reads M: dA*/dkf is -4/9, and
+    with M held it is -2/3, which a first version of this fix returned where
+    main refused the request as leaving nothing to solve for."""
+    model = _net(tmp_path, EXCHANGE)
+    assert [model.species_names[i] for i in model.conservation_laws["dependent"]] == ["A()"]
+    sim = bngsim.Simulator(model, method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*mask= leaves out M\(\)"):
+        sim.steady_state(sensitivity_params=["kf", "kr", "A0"], mask=["A()"])
+
+
+def test_a_masked_species_its_law_gives_is_not_held(tmp_path):
+    """Control. The same with A masked out and M kept: A is what the law is
+    solved for, it follows M through the law, and M's columns are those of
+    M* = A0·kf/(kf + kr): 4/9, -8/9 and 2/3."""
+    sim = bngsim.Simulator(_net(tmp_path, EXCHANGE), method="ode")
+    out = sim.steady_state(sensitivity_params=["kf", "kr", "A0"], mask=["M()"], tol=1e-12)
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[1], [4 / 9, -8 / 9, 2 / 3], rtol=1e-6)
+    assert np.all(np.isnan(np.asarray(out.sensitivity)[0]))
+
+
+BESIDE = {
+    "a species nothing touches": ("    3 Z() 1", ""),
+    "a pair of its own": ("    3 C() 0.5\n    4 D() 0.5", "    3 3 4 kc\n    4 4 3 kc"),
+}
+
+
+def _small_beside(beside: str) -> str:
+    species, reactions = BESIDE[beside]
+    text = SMALL.replace("    3 A0     1e-6\n", "    3 A0     1e-6\n    4 kc     5.0\n")
+    text = text.replace("    2 B() 0\n", f"    2 B() 0\n{species}\n")
+    return text.replace(
+        "    2 2 1 kr\n", f"    2 2 1 kr\n{reactions}\n" if reactions else "    2 2 1 kr\n"
+    )
+
+
+@pytest.mark.parametrize("beside", sorted(BESIDE))
+def test_a_state_short_of_the_steady_state_is_refused_whatever_stands_beside_it(tmp_path, beside):
+    """The pair at 1e-6 above, 20% and more short of its steady state, in a
+    model that also holds a species at 1 that nothing touches, or a pair at
+    0.5 each that is at its own steady state. A column was small or not
+    against the largest concentration in the model, and the 1 made every
+    entry of this one small: dA*/dkf came back 37% and 55% off. Each species
+    is taken over its own scale now, which for A and B is their total."""
+    sim = bngsim.Simulator(_net(tmp_path, _small_beside(beside)), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*not close enough.*column of k[fr]"):
+        sim.steady_state(sensitivity_params=["kf", "kr"])
+
+
+@pytest.mark.parametrize("beside", sorted(BESIDE))
+def test_the_same_solved_to_its_steady_state_beside_them_is_returned(tmp_path, beside):
+    """Control. dA*/dkf = -A0·kr/(kf + kr)² = -5e-5, and nothing for the
+    species beside."""
+    sim = bngsim.Simulator(_net(tmp_path, _small_beside(beside)), method="ode")
+    out = sim.steady_state(sensitivity_params=["kf"], tol=1e-15)
+    column = np.asarray(out.sensitivity)[:, 0]
+    np.testing.assert_allclose(column[:2], [-5e-5, 5e-5], rtol=1e-4)
+    assert np.all(column[2:] == 0.0)
+
+
+BRANCH = """begin parameters
+    1 k1 1.0
+    2 k2 0.7
+    3 k3 0.9
+    4 k4 0.8025
+    5 k5 1.5115
+end parameters
+begin species
+    1 X() 3.432
+    2 Y() 0
+    3 Z() 0
+    4 P1() 0
+    5 P2() 0
+end species
+begin reactions
+    1 1 2 k1
+    2 2 1 k2
+    3 2 3 k3
+    4 3 4 k4
+    5 3 5 k5
+end reactions
+"""
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+def test_a_branch_to_two_products_is_refused(tmp_path, method):
+    """X <-> Y -> Z, and Z goes to P1 at k4 and to P2 at k5: P1* is the share
+    k4/(k4 + k5) of the total, which no equation of the steady state holds
+    once Z is gone, and dP1*/dk4 is 0.969. The two products have one column
+    between them in the reduced system. Its second pivot is 4e-18 of the
+    terms it was computed from, and the condition number, 15, does not see
+    it: the null vectors of the two sides have no entry in common."""
+    sim = bngsim.Simulator(_net(tmp_path, BRANCH), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*pivot for P[12]\(\) is \d\.\de-1[5-9] of the terms.*singular whatever",
+    ):
+        sim.steady_state(sensitivity_params=["k4", "k5"], method=method)
+
+
+SWITCH = """begin parameters
+    1 d   0.5
+    2 Xu  1e-5
+    3 K   1.0
+    4 k1  d*Xu*K
+    5 k2  d*(Xu+K)
+    6 k3  d
+    7 c   1e-5
+    8 g   1e-5
+end parameters
+begin species
+    1 X() 0
+    2 Y() 5e-5
+end species
+begin reactions
+    1 1 0 k1
+    2 1,1 1,1,1 k2
+    3 1,1,1 1,1 k3
+    4 2 1,2 c
+    5 2 0 g
+end reactions
+"""
+
+
+def test_a_state_that_a_run_leaves_is_refused(tmp_path):
+    """X' = -d·X·(X - Xu)·(X - K) + c·Y and Y' = -g·Y: X rests at 0 and at K,
+    with a threshold at Xu = 1e-5 between, and Y, which decays, pushes X over
+    it. The residual where the model starts is 3.5e-10, under ``tol``, so the
+    solve returns the start, X = 0 beside the root at 0, which is stable: no
+    pivot moves, the columns stay where they are and dX*/dK = 0. A run ends at
+    X = K, where dX*/dK = 1. The run is taken on from the returned state for
+    ``max_time``, and the columns solved again where it ends."""
+    sim = bngsim.Simulator(_net(tmp_path, SWITCH), method="ode")
+    with pytest.raises(bngsim.SimulationError) as caught:
+        sim.steady_state(sensitivity_params=["K"])
+    message = str(caught.value)
+    assert "#995" in message and "not one a run stays at" in message
+    assert "max_time (1e+06)" in message and "column of K" in message
+    assert "Solve again with a smaller tol" in message
+
+
+def test_the_same_solved_past_its_switch_is_returned(tmp_path):
+    """Control. What the refusal advises: at ``tol=1e-14`` the solve runs on
+    to X = K, and dX*/dK = 1."""
+    sim = bngsim.Simulator(_net(tmp_path, SWITCH), method="ode")
+    out = sim.steady_state(sensitivity_params=["K"], tol=1e-14)
+    assert np.asarray(out.concentrations)[0] == pytest.approx(1.0, rel=1e-6)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_where_a_run_of_it_ends(tmp_path):
+    """Control. X = K at 1e6."""
+    sim = bngsim.Simulator(_net(tmp_path, SWITCH), method="ode")
+    end = np.asarray(sim.run(t_span=(0, 1e6), n_points=3).species)[-1]
+    assert end[0] == pytest.approx(1.0, rel=1e-6) and abs(end[1]) < 1e-8
+
+
+SIGNED = """begin parameters
+    1 c  1e-9
+    2 a  1.0
+    3 b  1.6487212707001282
+    4 s  1e-5
+end parameters
+begin functions
+    1 rate() c*(a-b*exp(Xobs/s))
+end functions
+begin species
+    1 X() 1e-8
+end species
+begin reactions
+    1 0 1 rate
+end reactions
+begin groups
+    1 Xobs 1
+end groups
+"""
+
+
+def test_a_variable_with_a_sign_is_not_stopped_at_zero(tmp_path):
+    """X' = c·(a - b·exp(X/s)) rests at s·ln(a/b), -5e-6, where dX*/da = s/a
+    = 1e-5. It starts at +1e-8 with a residual under ``tol`` and is returned
+    there, 6.1e-6 for the column. The Newton step takes it below zero, and
+    with the corrected state held at zero, as it is for a concentration a rate
+    has no value below, the column moved by 0.1% and came back."""
+    sim = bngsim.Simulator(_net(tmp_path, SIGNED), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*not close enough.*column of a"):
+        sim.steady_state(sensitivity_params=["a"])
+
+
+def test_the_same_solved_to_its_root_below_zero_is_returned(tmp_path):
+    """Control."""
+    sim = bngsim.Simulator(_net(tmp_path, SIGNED), method="ode")
+    out = sim.steady_state(sensitivity_params=["a"], tol=1e-16, max_time=1e9)
+    assert np.asarray(out.concentrations)[0] == pytest.approx(-5e-6, rel=1e-5)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(1e-5, rel=1e-5)
+
+
+THREE_ROOTS = """begin parameters
+    1 k  1.0
+    2 a  0.25
+    3 k1 k*a
+    4 k2 k*(1+a)
+    5 k3 k
+end parameters
+begin species
+    1 X() {x0}
+end species
+begin reactions
+    1 1 0 k1
+    2 1,1 1,1,1 k2
+    3 1,1,1 1,1 k3
+end reactions
+"""
+
+
+def test_a_root_the_system_does_not_rest_at_is_refused(tmp_path):
+    """X' = -k·X·(X - a)·(X - 1) started on its middle root, a: the residual
+    is zero, the solve returns the start, and nothing moves it. The Jacobian
+    there is +k·a·(1 - a) = 0.1875, and a state beside a goes to 0 or to 1.
+    dX*/da = 1 came back, which is how the root moves and not where a run
+    ends."""
+    sim = bngsim.Simulator(_net(tmp_path, THREE_ROOTS.format(x0="a")), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*does not rest at.*eigenvalue of 0\.188"
+    ):
+        sim.steady_state(sensitivity_params=["a"])
+
+
+def test_the_root_a_run_of_it_ends_at_is_returned(tmp_path):
+    """Control. From 0.9 the run ends at 1, which a does not move."""
+    sim = bngsim.Simulator(_net(tmp_path, THREE_ROOTS.format(x0="0.9")), method="ode")
+    out = sim.steady_state(sensitivity_params=["a"])
+    assert np.asarray(out.concentrations)[0] == pytest.approx(1.0, rel=1e-8)
+    assert abs(np.asarray(out.sensitivity)[0, 0]) < 1e-8
+    assert out.sens_root_stability == "stable"
+    assert out.sens_root_growth_rate == pytest.approx(-0.75, rel=1e-6)
+
+
+BRUSSELATOR = """begin parameters
+    1 A   1.0
+    2 B   {B}
+    3 one 1.0
+end parameters
+begin species
+    1 X() 1.0
+    2 Y() {B}
+end species
+begin reactions
+    1 0 1 A
+    2 1 2 B
+    3 1,1,2 1,1,1 one
+    4 1 0 one
+end reactions
+"""
+
+
+def test_a_focus_the_system_spirals_out_of_is_refused(tmp_path):
+    """The Brusselator started on its fixed point, (A, B/A), with B = 3: the
+    eigenvalues are 0.5 ± 0.87i, and a state beside it spirals out to a limit
+    cycle. The determinant is positive, as a stable point's is in two
+    unknowns, so it is the spectrum that says so."""
+    sim = bngsim.Simulator(_net(tmp_path, BRUSSELATOR.format(B="3.0")), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError, match=r"#995.*does not rest at.*eigenvalue of 0\.5"
+    ):
+        sim.steady_state(sensitivity_params=["A", "B"])
+
+
+def test_a_focus_the_system_spirals_into_is_returned(tmp_path):
+    """Control. With B = 1.5 the eigenvalues are -0.25 ± 0.97i, and the
+    columns are those of (A, B/A): 1, 0, -B/A² and 1/A."""
+    sim = bngsim.Simulator(_net(tmp_path, BRUSSELATOR.format(B="1.5")), method="ode")
+    out = sim.steady_state(sensitivity_params=["A", "B"])
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity), [[1.0, 0.0], [-1.5, 1.0]], rtol=1e-9, atol=1e-12
+    )
+    assert out.sens_root_stability == "stable"
+    assert out.sens_root_growth_rate == pytest.approx(-0.25, rel=1e-9)
+
+
+SLOW_SADDLE = """begin parameters
+    1 e   1e-9
+    2 kd  1e3
+end parameters
+begin species
+    1 X() 0
+    2 Y() 0
+end species
+begin reactions
+    1 1 1,1 e
+    2 2 0 kd
+end reactions
+"""
+
+
+def test_a_saddle_too_slow_for_the_spectrum_is_refused_by_the_sign(tmp_path):
+    """X' = e·X with e = 1e-9, beside Y' = -kd·Y with kd = 1e3: the growth is
+    1e-12 of the spectral radius, which the eigenvalues are not known to, and
+    the spectrum's rule calls the point stable. The determinant, -e·kd, has
+    the sign that one eigenvalue right of zero gives it in two unknowns."""
+    sim = bngsim.Simulator(_net(tmp_path, SLOW_SADDLE), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at"):
+        sim.steady_state(sensitivity_params=["e", "kd"])
+
+
+def test_the_refusal_of_a_model_with_a_rule_species_does_not_speak_of_a_mask():
+    """A species an assignment rule sets is left out of the solve by the
+    solver itself, and the refusal took that for a mask of the caller's: it
+    gave the paragraph on masks in place of the advice on pure sinks."""
+    model = bngsim.Model.from_antimony_string(
+        "species S, I, R, Q; S = 99; I = 1; R = 0; b = 0.018; g = 1;\n"
+        "Q := S + I;\nJ1: S + I -> 2 I; b*S*I;\nJ2: I -> R; g*I;\n"
+    )
+    sim = bngsim.Simulator(model, method="ode")
+    with pytest.raises(bngsim.SimulationError) as caught:
+        sim.steady_state(sensitivity_params=["g"])
+    message = str(caught.value)
+    assert "#995" in message and "the limits are 0.6 and 1.67" in message
+    assert "pure_sink_species" in message and "With mask=" not in message
+
+
+def test_the_share_a_slow_mode_has_of_a_column_is_what_is_reported(tmp_path):
+    """The column of the control above: a thousandth of it is W's."""
+    sim = bngsim.Simulator(_net(tmp_path, SMALL_SHARE), method="ode")
+    out = sim.steady_state(sensitivity_params=["s"])
+    assert out.sens_root_relaxation == pytest.approx(1e-3, rel=1e-3)
+    assert out.sens_root_relaxation_param == "s"
