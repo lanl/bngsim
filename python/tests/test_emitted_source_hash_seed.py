@@ -123,30 +123,61 @@ def test_a_tie_is_broken_by_what_the_generators_are():
     assert ccode(expr) == "2.0*pow(A, 1.0)*p + 2*A*q"
 
 
-def test_the_generators_are_asked_for_in_either_order(monkeypatch):
-    """The same sum with ``as_terms`` made to give the tied pair each way
-    round, as two seeds do: one order of the terms comes back."""
-    expr, x = _tied_sum()
-    terms, gens = expr.as_terms()
-    tied = [i for i, g in enumerate(gens) if g.has(x)]
-    assert len(tied) == 2 and tied[1] == tied[0] + 1
-    i, j = tied
+def _from_every_set_order(expr, monkeypatch):
+    """``(ordered_terms(expr), expr.as_ordered_terms())`` with ``as_terms``
+    made to sort its generators from each order a set could hand them over
+    in, as a hash seed decides it."""
+    import itertools
 
-    def swapped(self):
-        other = list(gens)
-        other[i], other[j] = other[j], other[i]
+    terms, gens = expr.as_terms()
+    seen = []
+    for handed in itertools.permutations(gens):
+        other = sorted(handed, key=sp.default_sort_key)
+        to = [other.index(g) for g in gens]
         moved = []
         for term, (coeff, monom, ncpart) in terms:
-            at = list(monom)
-            at[i], at[j] = at[j], at[i]
+            at = [0] * len(gens)
+            for i, power in zip(to, monom, strict=True):
+                at[i] = power
             moved.append((term, (coeff, tuple(at), ncpart)))
-        return moved, other
+        with monkeypatch.context() as patch:
+            patch.setattr(type(expr), "as_terms", lambda self, m=moved, o=other: (m, o))
+            seen.append((ordered_terms(expr), expr.as_ordered_terms()))
+    return seen
 
-    one, native = ordered_terms(expr), expr.as_ordered_terms()
-    monkeypatch.setattr(type(expr), "as_terms", swapped)
-    # sympy's own order follows the generators; this one does not.
-    assert expr.as_ordered_terms() == native[::-1]
-    assert ordered_terms(expr) == one
+
+def test_the_generators_are_asked_for_in_either_order(monkeypatch):
+    """The tied sum with its generators sorted from each of the 24 orders a
+    set could give them in: sympy's own order of the terms comes out both
+    ways, and this one comes out one way."""
+    expr, _ = _tied_sum()
+    seen = _from_every_set_order(expr, monkeypatch)
+    assert len(seen) == 24
+    assert len({tuple(native) for _, native in seen}) == 2
+    assert len({tuple(ours) for ours, _ in seen}) == 1
+    assert seen[0][0] == ordered_terms(expr)
+
+
+def test_a_tie_that_is_not_between_neighbours(monkeypatch):
+    """``<`` on sympy's sort keys is not an order: ``g(1, a)`` is below
+    ``g(1, b)``, and ``g(1.0, c)`` ties with both, since the comparison stops
+    at the 1 and the 1.0. ``sorted`` leaves the three in an order that depends
+    on all of the order it was given, and breaking the tie between neighbours
+    only, which a first version of this did, left MODEL0847999575 with two
+    sources (36 such sums). Sorted from each of the 720 orders of its six
+    generators, the sum has one order of its terms here and more in sympy."""
+    a, b, c, u, v, w = sp.symbols("a b c u v w")
+    g = sp.Function("g")
+    low, tied, high = g(1, a), g(sp.Float(1.0), c), g(1, b)
+    expr = u * low + v * tied + w * high
+    k_low, k_tied, k_high = (sp.default_sort_key(x) for x in (low, tied, high))
+    assert k_low < k_high
+    assert not k_low < k_tied and not k_tied < k_low
+    assert not k_tied < k_high and not k_high < k_tied
+    seen = _from_every_set_order(expr, monkeypatch)
+    assert len(seen) == 720
+    assert len({tuple(native) for _, native in seen}) > 1
+    assert len({tuple(ours) for ours, _ in seen}) == 1
 
 
 @pytest.mark.parametrize(

@@ -19,33 +19,77 @@ two are the same sum, added up in a different order: they differ in the last
 bits of a column, and which of them a cache holds is whichever was built
 first.
 
-``ordered_terms`` is ``as_ordered_terms`` with such a tie broken by the
-generators' ``srepr``, which does not read a hash. A sum with no tie among
-its generators comes back exactly as sympy orders it, so its printed text is
-what it was.
+``ordered_terms`` is ``as_ordered_terms`` with the generators sorted by an
+order that has no ties: sympy's keys, with two numbers of one value and two
+types put in the order of the types' names, and ``srepr`` after that. None of
+it reads a hash. A sum with no tie among its generators comes back exactly as
+sympy orders it, so its printed text is what it was.
 """
 
 from __future__ import annotations
 
 
+def _cmp(a, b) -> int:
+    return (a > b) - (a < b)
+
+
+def _key_cmp(a, b) -> int:
+    """Order two sort keys as tuples are ordered, with one difference: two
+    entries that are not equal and of which neither is less than the other,
+    ``Integer(1)`` and ``Float(1.0)``, are put in the order of their types'
+    names and then of their ``srepr``.
+
+    Where ``a < b`` holds for the keys as they are, this agrees. Unlike
+    ``<``, it is an order: with ``<`` alone, ``(1, x)`` is below ``(1, y)``
+    and ``(1.0, z)`` is tied with both.
+    """
+    if isinstance(a, tuple) and isinstance(b, tuple):
+        for x, y in zip(a, b, strict=False):
+            c = _key_cmp(x, y)
+            if c:
+                return c
+        return _cmp(len(a), len(b))
+    try:
+        if a == b:
+            return 0
+        if a < b:
+            return -1
+        if b < a:
+            return 1
+    except TypeError:
+        pass
+    from sympy import Basic, srepr
+
+    def what(x):
+        return type(x).__name__, srepr(x) if isinstance(x, Basic) else repr(x)
+
+    return _cmp(what(a), what(b))
+
+
 def _untied(gens: list) -> list:
-    """``gens``, which sympy sorted by ``default_sort_key``, with each run of
-    tied neighbours put in the order of their ``srepr``."""
+    """``gens``, which sympy sorted by ``default_sort_key``, in an order that
+    does not depend on the order they were sorted from.
+
+    Where each key is below the next, that is the order they are in, and the
+    list comes back as it is: ``<`` being true agrees with :func:`_key_cmp`,
+    which is an order, so the list is sorted by it. Otherwise two of them tie,
+    and they are all sorted again by :func:`_key_cmp` and then ``srepr``. (A
+    tie is not confined to its neighbours: ``<`` on these keys is not
+    transitive, and what ``sorted`` makes of such a list depends on all of the
+    order it was given.)
+    """
+    from functools import cmp_to_key
+
     from sympy import default_sort_key, srepr
 
     keys = [default_sort_key(g) for g in gens]
-    fixed = list(gens)
-    n = len(gens)
-    i = 0
-    while i < n:
-        j = i + 1
-        # Sorted, so a key that is not above the one before it is tied with it.
-        while j < n and not keys[j - 1] < keys[j]:
-            j += 1
-        if j - i > 1:
-            fixed[i:j] = sorted(gens[i:j], key=srepr)
-        i = j
-    return fixed
+    if all(keys[i] < keys[i + 1] for i in range(len(keys) - 1)):
+        return gens
+
+    def by_key_then_structure(i, j):
+        return _key_cmp(keys[i], keys[j]) or _cmp(srepr(gens[i]), srepr(gens[j]))
+
+    return [gens[i] for i in sorted(range(len(gens)), key=cmp_to_key(by_key_then_structure))]
 
 
 def ordered_terms(expr, order=None) -> list:
@@ -87,7 +131,7 @@ def ordered_terms(expr, order=None) -> list:
         return expr.as_ordered_terms(order=order)
 
     fixed = _untied(gens)
-    if any(a is not b for a, b in zip(fixed, gens, strict=True)):
+    if fixed is not gens and any(a is not b for a, b in zip(fixed, gens, strict=True)):
         place = {g: i for i, g in enumerate(fixed)}
         to = [place[g] for g in gens]
         moved = []
