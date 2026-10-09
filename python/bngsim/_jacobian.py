@@ -1976,8 +1976,23 @@ def _divided_through(f, m, offset, rest, sp):
 _LOG_CALL_RE = re.compile(r"\b(?:ln|log|log10|log2)\s*\(")
 
 
+#: What :func:`guard_rate_law_text` made of a text, for the texts it could
+#: decide on (issue #979). Emptied when it is full.
+_GUARD_MEMO: dict[str, str | None] = {}
+_GUARD_MEMO_MAX = 1 << 14
+
+
 def guard_rate_law_text(text: str) -> str | None:
     """Guarded ExprTk spelling of one rate law, or ``None`` if it needs no guard.
+
+    Memoized by the text (issue #979): every ``Model`` is guarded when it is
+    made, a clone included, and a law with a logarithm that needs no guard was
+    parsed again for each one, 0.25 s a clone for 300 such functions. (A clone
+    no longer asks at all; a model loaded again does.) Only an answer that was
+    reached is kept. A text that did not parse, or could not be written back,
+    is asked again the next time: the parser and the writer each give up on
+    any exception, and one of those is running out of stack, which says
+    nothing about the text.
 
     The single implementation of GH #333's rewrite, so the model path
     (:func:`guard_function_expressions`) and the ``.net`` codegen emitter, which
@@ -2009,6 +2024,10 @@ def guard_rate_law_text(text: str) -> str | None:
     if not _LOG_CALL_RE.search(text) or "if(" in text:
         return None
     try:
+        return _GUARD_MEMO[text]
+    except KeyError:
+        pass
+    try:
         import sympy  # noqa: F401
     except ImportError:
         return None
@@ -2016,15 +2035,23 @@ def guard_rate_law_text(text: str) -> str | None:
     if sym is None:
         return None
     guarded = sympy_to_exprtk(sym)
-    if guarded is None or guarded == text or "if(" not in guarded:
+    if guarded is None:
+        return None
+    if guarded == text or "if(" not in guarded:
         # An unguarded round trip only re-spells an expression (``a*b`` → ``b*a``);
         # only a rewrite that actually introduced the branch is worth taking.
-        return None
-    # Back to the instrumented spelling. ``\blog\(`` cannot match ``log10(`` or
-    # ``log2(`` — the digits sit between the name and the paren — and the only
-    # other thing it reaches is the constant divisor those two are rewritten to
-    # (``log(10)``), where ln and log agree and no argument is ever non-finite.
-    return re.sub(r"\blog\(", "ln(", guarded)
+        answer = None
+    else:
+        # Back to the instrumented spelling. ``\blog\(`` cannot match ``log10(``
+        # or ``log2(`` — the digits sit between the name and the paren — and the
+        # only other thing it reaches is the constant divisor those two are
+        # rewritten to (``log(10)``), where ln and log agree and no argument is
+        # ever non-finite.
+        answer = re.sub(r"\blog\(", "ln(", guarded)
+    if len(_GUARD_MEMO) >= _GUARD_MEMO_MAX:
+        _GUARD_MEMO.clear()
+    _GUARD_MEMO[text] = answer
+    return answer
 
 
 def guard_function_expressions(core) -> list[tuple[str, str, str]]:
