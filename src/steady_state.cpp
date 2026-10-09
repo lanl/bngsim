@@ -3149,10 +3149,17 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     std::vector<double> A, magnitude;
     ss_reduce_jacobian(J, ns, laws, unknowns, A);
     ss_reduce_jacobian_mass(J, ns, laws, unknowns, magnitude);
-    if (n <= kStabilitySpectrumMaxN) {
-        // With the certificate's own eigensolver and its own limit on the size
-        // (issue #78), on the matrix the columns are solved with.
-        std::vector<double> spectrum_of(A), wr(static_cast<size_t>(n)), wi(static_cast<size_t>(n));
+    // With the certificate's own eigensolver and its own limit on the size
+    // (issue #78), on the matrix the columns are solved with: at the returned
+    // state here, and again at the state that is stepped to, where one is (6).
+    const auto read_spectrum = [&](const std::vector<double> &reduced) {
+        result.sens_root_growth_rate = nan;
+        result.sens_root_spectral_radius = 0.0;
+        if (n > kStabilitySpectrumMaxN) {
+            return;
+        }
+        std::vector<double> spectrum_of(reduced), wr(static_cast<size_t>(n)),
+            wi(static_cast<size_t>(n));
         if (dense_eigenvalues(spectrum_of.data(), n, wr.data(), wi.data())) {
             double max_re = -inf, radius = 0.0;
             for (int i = 0; i < n; ++i) {
@@ -3163,7 +3170,8 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
             result.sens_root_growth_rate = max_re;
             result.sens_root_spectral_radius = radius;
         }
-    }
+    };
+    read_spectrum(A);
     std::vector<int> row;
     const int zero_at = ss_lu_pivoted(A, n, row);
     if (zero_at >= 0) {
@@ -3252,7 +3260,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // The columns in hand (`in_hand`) and the state they are of (`at`): the
     // returned ones, until the state is stepped on (6). `stepped_columns` are
     // those of the state last measured, and `A_at` its factors.
-    std::vector<double> in_hand(result.sensitivity), stepped_columns, A_at;
+    std::vector<double> in_hand(result.sensitivity), stepped_columns, A_at, matrix_at;
     std::vector<double> at(returned);
     bool factored_at = false;
 
@@ -3266,6 +3274,9 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         bool evaluated = all_finite(J_c);
         std::vector<double> A_c;
         ss_reduce_jacobian(J_c.data(), ns, laws, unknowns, A_c);
+        if (!first && n <= kStabilitySpectrumMaxN) {
+            matrix_at = A_c; // for the spectrum, if this is the state returned
+        }
         ss_lu_in_row_order(A_c, n, row);
         species_scale =
             ss_species_scales(rhs, *sys.model, J, ns, *sys.start, at.data(), state.data());
@@ -3482,6 +3493,10 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         result.sensitivity = in_hand;
         std::copy(at.begin(), at.end(), result.concentrations.begin());
         result.residual = compute_residual(rhs, at.data(), ns, sub);
+        // The eigenvalues are those of the state that is returned.
+        if (!matrix_at.empty()) {
+            read_spectrum(matrix_at);
+        }
     }
 
     // How far the run that was taken on moved each species the residual covers,
