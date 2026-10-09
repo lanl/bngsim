@@ -2062,8 +2062,8 @@ NetworkModel::ConservationLawDrift NetworkModel::conservation_law_drift() {
         }
         // Each species' rate as compute_derivs sums it, and the same terms
         // with their absolute values summed. The rate is rounded from the
-        // second: a catalyst of a reaction at 1e6, written on both sides of
-        // it, has a rate that is 1e-10 of rounding whatever else moves it, so
+        // second: a species one reaction makes at 1e6 and another uses at
+        // 1e6 has a rate that is 1e-10 of rounding whatever else moves it, so
         // the total is measured against the fluxes and not the net rates.
         compute_flux_split(t_now, state.data(), nullptr, net.data(), gross.data());
         for (int k = 0; k < cl.n_laws; ++k) {
@@ -3939,15 +3939,18 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
                 }
                 return species_list[si].volume_factor;
             };
-            // One update per species, `multiplicity * term` (issue #801); a
-            // multiplicity of 1 is the pre-#801 statement, byte for byte.
-            for (const auto &[si, m] : rxn.reactant_multiplicity) {
+            // One update per species, `net * term` (issue #801), by the net
+            // change of each and not one side after the other (see
+            // Reaction::net_loss; a net of zero is `0 * term`, nothing unless
+            // the rate is not finite). For a species on one side alone it is
+            // the statement it was, bit for bit.
+            for (const auto &[si, m] : rxn.net_loss) {
                 if (si < ns) {
                     const double term = rate / species_divisor(si);
                     derivs[si] -= m == 1.0 ? term : m * term;
                 }
             }
-            for (const auto &[si, m] : rxn.product_multiplicity) {
+            for (const auto &[si, m] : rxn.net_gain) {
                 if (si < ns) {
                     const double term = rate / species_divisor(si);
                     derivs[si] += m == 1.0 ? term : m * term;
@@ -3956,16 +3959,21 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
             continue;
         }
 
-        // Subtract from reactants, add to products: one update per species of
-        // `multiplicity * rate`, not one per unit of stoichiometry (issue #801).
-        // An SBML coefficient of 1e6 was a million updates per evaluation, and
-        // their rounding drift; a multiplicity of 1 is the pre-#801 statement.
-        for (const auto &[si, m] : rxn.reactant_multiplicity) {
+        // Each species' net change times the rate: one update per species, not
+        // one per unit of stoichiometry (issue #801: an SBML coefficient of 1e6
+        // was a million updates per evaluation, and their rounding drift), and
+        // not one per side. A species on both sides of the reaction in equal
+        // numbers gets `0 * rate`: `(x - rate) + rate` left the rounding of the
+        // rate in a catalyst's derivative, 0 for a synthesis of 0.01 beside a
+        // rate of 1e15. Zero times a finite rate is nothing; times a rate that
+        // is not finite it is NaN, which fails the run as it did. For a species
+        // on one side alone this is the statement it was, bit for bit.
+        for (const auto &[si, m] : rxn.net_loss) {
             if (si < ns) {
                 derivs[si] -= m == 1.0 ? rate : m * rate;
             }
         }
-        for (const auto &[si, m] : rxn.product_multiplicity) {
+        for (const auto &[si, m] : rxn.net_gain) {
             if (si < ns) {
                 derivs[si] += m == 1.0 ? rate : m * rate;
             }
@@ -4021,7 +4029,7 @@ void NetworkModel::compute_flux_split(double t, const double *conc, const std::v
             }
             return species_list[si].volume_factor;
         };
-        for (const auto &[si, m] : rxn.reactant_multiplicity) {
+        for (const auto &[si, m] : rxn.net_loss) {
             if (si < ns) {
                 const double term = m * rate / divisor(si);
                 net[si] -= term;
@@ -4030,7 +4038,7 @@ void NetworkModel::compute_flux_split(double t, const double *conc, const std::v
                 }
             }
         }
-        for (const auto &[si, m] : rxn.product_multiplicity) {
+        for (const auto &[si, m] : rxn.net_gain) {
             if (si < ns) {
                 const double term = m * rate / divisor(si);
                 net[si] += term;
