@@ -6988,7 +6988,7 @@ class Simulator:
         self._note_ss_jacobian_retry(result)
         self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
-        self._raise_if_not_an_isolated_root(result, max_time)
+        self._raise_if_not_an_isolated_root(result, max_time, mask is not None)
         return result
 
     @staticmethod
@@ -7072,12 +7072,27 @@ class Simulator:
     #: ratio of two such.
     _SS_ROOT_RELAXATION_MAX = 0.01
 
+    #: The least a pivot of that system's factorization may be of the terms it
+    #: was computed from. A pivot nothing cancelled into is all of them, and one
+    #: that is what a cancellation left is rounding's share, 1e-16: the matrix
+    #: is singular whatever the state, and the componentwise condition number
+    #: does not always say so (two sinks of one total: 3.7).
+    _SS_ROOT_PIVOT_SHARE_MIN = 1e-10
+
+    #: The most a column may move, of its largest entry, when it is solved
+    #: again at the state the run an integration stopped ends at, taken on for
+    #: ``max_time`` from the state it returned.
+    _SS_ROOT_HOLD_SHIFT_MAX = 0.01
+
     def _raise_if_not_an_isolated_root(
-        self, result: SteadyStateResult, max_time: float = 1e6
+        self,
+        result: SteadyStateResult,
+        max_time: float = 1e6,
+        masked_by_caller: bool = False,
     ) -> None:
         """Refuse ``dY_ss/dp`` where the steady state is not an isolated root
-        with a Jacobian of full rank, or the returned state is not on it (issue
-        #995).
+        with a Jacobian of full rank that the system rests at, or the returned
+        state is not on it (issue #995).
 
         ``-J⁻¹·(∂f/∂p)`` is the derivative of the steady state only where the
         steady state is an isolated root and the Jacobian has full rank there.
@@ -7089,37 +7104,57 @@ class Simulator:
         no warning where the sink was masked out.
 
         The solve takes one Newton step from the state it returned and factors
-        its system again there (``ss_measure_root``). Four ratios come of it,
-        each of two quantities in the same units, so that none depends on the
+        its system again there (``ss_measure_root``), and an integration is
+        taken on from that state for ``max_time``. What is read off is each a
+        ratio of two quantities in the same units, so that none depends on the
         units of a species or the size of a compartment, as ``min|U|/max|U|``
         (``sens_jacobian_rcond``) did: that ratio falls with the square of a
         size ratio for an isolated root, and it reads 1.0 for the masked model
         above. The warning it gated, and the refusal it gated for a law across
         compartments of different size (issue #758), are both replaced by
-        this.
+        this. In the order they are asked:
 
+        - a species ``mask=`` left out that an equation the columns are solved
+          on reads: it is held where the solve left it, which is not its part
+          in the derivative;
         - what the determinant keeps of itself: next to nothing where the
           Jacobian is singular at the steady state, a half at a root of higher
           order, and all of it, to the accuracy of the solve, where the root
           is isolated. One that changes sign, or grows, is that of a state
           with a singular Jacobian or a discontinuity between it and its
           correction, or of a state far from the root;
-        - the componentwise condition number, the Perron root of
-          ``|A⁻¹|·|A|``: what tells a matrix that is singular whatever the
-          state, whose zero pivot is rounding;
+        - what the smallest pivot is of the terms it was computed from, and the
+          componentwise condition number, the Perron root of ``|A⁻¹|·|A|``:
+          what tell a matrix that is singular whatever the state, whose zero
+          pivot is rounding;
         - how far a column moves: ``tol`` bounds the residual and not the
           distance to the root, and a model with small concentrations is
           accepted where its columns are several percent off;
+        - how far the state moves when the run is taken on: an integration
+          stops at the first state under ``tol``, which a run may be passing;
+        - whether the system rests at the state: the sign of the determinant
+          and, up to 512 unknowns, the eigenvalues;
         - how much of a column a run of ``max_time`` would leave unestablished:
           a state that is a root to the last bit, with a species in it that
           nothing turns over, has a column no run reaches.
+
+        The request is refused whole where one column fails: which parameters
+        are asked for together can decide it.
         """
         if result.sensitivity is None:
             return
         ratio = result.sens_root_determinant_ratio
+        share = result.sens_root_pivot_share
         condition = result.sens_root_condition
         column = result.sens_root_column_shift
+        drift = result.sens_root_hold_drift
+        held = result.sens_root_hold_shift
         relaxation = result.sens_root_relaxation
+        time_course = (
+            "a time course with forward sensitivities run to the steady state, "
+            "Simulator(model, sensitivity_params=[...]).run(...), reading "
+            "result.sensitivities at the last time point"
+        )
         continuum = (
             "Where the steady states form a continuum, the one a run ends at depends on "
             "the path it took (an epidemic that burns out, an irreversible branch to two "
@@ -7127,7 +7162,7 @@ class Simulator:
             "-J⁻¹·∂f/∂p is not the derivative of it: such a model returned 26.25 for "
             "66.05."
         )
-        if result.excluded_species:
+        if masked_by_caller:
             continuum += (
                 " With mask=, the columns are solved on the equations of the species the "
                 "mask kept, and it is those that have no isolated root: a share of a "
@@ -7136,27 +7171,39 @@ class Simulator:
         else:
             continuum += (
                 " If Model.pure_sink_species() names species, "
-                "steady_state(mask=~model.is_pure_sink()) solves for the columns of the "
-                "others."
+                "steady_state(mask=~model.is_pure_sink()) solves on the equations of the "
+                "others, and returns their columns where those have an isolated root."
             )
         remedy = (
-            " Take the columns from a time course with forward sensitivities run to the "
-            "steady state, Simulator(model, sensitivity_params=[...]).run(...), reading "
-            "result.sensitivities at the last time point, or difference steady states "
-            "solved again at p +/- h."
+            f" Take the columns from {time_course}, or difference steady states solved "
+            "again at p +/- h."
         )
         opening = (
             "steady_state(sensitivity_params=...) does not return dY_ss/dp for this model "
             "at this steady state (issue #995): "
         )
+        not_isolated = (
+            f"{opening}the steady state is not an isolated root of the equations the "
+            "columns are solved on"
+        )
+        if result.sens_mask_held_species is not None:
+            raise SimulationError(
+                f"{opening}mask= leaves out {result.sens_mask_held_species}, which the rate "
+                f"of {result.sens_mask_reader_species} reads. A species the mask leaves out "
+                "is held where the solve left it, and that is its part in dY_ss/dp only "
+                "where no equation the columns are solved on reads it: here the steady "
+                f"state of {result.sens_mask_reader_species} moves with "
+                f"{result.sens_mask_held_species}, whose own column the mask gives up. Leave "
+                "out only species that nothing reads (Model.pure_sink_species(), "
+                f"mask=~model.is_pure_sink()), or take the columns from {time_course}."
+            )
         kept = self._SS_ROOT_DETERMINANT_RATIO_MIN
         if not kept <= ratio <= 1.0 / kept:
             measured = (
-                f"{opening}the steady state is not an isolated root of the equations the "
-                "columns are solved on, or the returned state is not on it. Corrected by "
-                "one Newton step, the state gives those equations a determinant that is "
+                f"{not_isolated}, or the returned state is not on it. Corrected by one "
+                "Newton step, the state gives those equations a determinant that is "
                 f"{ratio:.2g} of the one the returned state gives (the limits are {kept:g} "
-                f"and {1.0 / kept:.2g}; the pivot for "
+                f"and {1.0 / kept:.3g}; the pivot for "
                 f"{result.sens_root_determinant_species} moves furthest): "
             )
             if 0.0 <= ratio < kept:
@@ -7179,10 +7226,18 @@ class Simulator:
                     "state. "
                 )
             raise SimulationError(f"{measured}{read}{continuum}{remedy}")
+        if not share >= self._SS_ROOT_PIVOT_SHARE_MIN:
+            raise SimulationError(
+                f"{not_isolated}. The pivot for {result.sens_root_pivot_species} is "
+                f"{share:.1e} of the terms it was computed from (the limit is "
+                f"{self._SS_ROOT_PIVOT_SHARE_MIN:g}): it is what rounding leaves of a zero, "
+                "and the Jacobian is singular whatever the state, as it is where a total is "
+                "shared out among species that nothing takes it back from, or a quantity is "
+                f"conserved that no law of the model holds. {continuum}{remedy}"
+            )
         if not condition <= self._SS_ROOT_CONDITION_MAX:
             raise SimulationError(
-                f"{opening}the steady state is not an isolated root of the equations the "
-                "columns are solved on. A relative error in the entries of the Jacobian is "
+                f"{not_isolated}. A relative error in the entries of the Jacobian is "
                 f"magnified {condition:.1e} times in the columns (the limit is "
                 f"{self._SS_ROOT_CONDITION_MAX:.0e}; the entry for "
                 f"{result.sens_root_condition_species} takes most of it), which at 1e16 "
@@ -7198,11 +7253,53 @@ class Simulator:
             raise SimulationError(
                 f"{opening}the state the solve returned is not close enough to the steady "
                 f"state. Solved again one Newton step on, the column of "
-                f"{result.sens_root_column_param} moves by {moved} of its largest entry "
-                f"(the limit is {self._SS_ROOT_COLUMN_SHIFT_MAX:.0%}). tol bounds the "
-                "residual ||f(y)||/n and not the distance to the root, and a model whose "
-                "concentrations or rates are small passes it early (this solve stopped at "
-                f"a residual of {result.residual:.1e}). Solve again with a smaller tol."
+                f"{result.sens_root_column_param} moves by {moved} of its largest entry, "
+                "each species taken over its own scale (the limit is "
+                f"{self._SS_ROOT_COLUMN_SHIFT_MAX:.0%}). tol bounds the residual ||f(y)||/n "
+                "and not the distance to the root, and a model whose concentrations or "
+                "rates are small passes it early (this solve stopped at a residual of "
+                f"{result.residual:.1e}). Solve again with a smaller tol. Where the column "
+                "moves as far at every tol, the steady state is not an isolated root, and "
+                f"the columns are those of {time_course}."
+            )
+        if not held <= self._SS_ROOT_HOLD_SHIFT_MAX:
+            if math.isnan(held):
+                moved = (
+                    "The run that was to be taken on from it for max_time "
+                    f"({max_time:g}) failed, so that it is not known to stay there."
+                )
+            else:
+                by = f"{held:.1%}" if held < 10 else f"{held:.3g} times"
+                state = f"{drift:.0%}" if drift < 10 else f"{drift:.3g} times"
+                moved = (
+                    f"Taken on from it for max_time ({max_time:g}), the run moves "
+                    f"{result.sens_root_hold_species} by {state} of its value, and the "
+                    f"column of {result.sens_root_hold_param}, solved again where the run "
+                    f"ends, by {by} of its largest entry (the limit is "
+                    f"{self._SS_ROOT_HOLD_SHIFT_MAX:.0%})."
+                )
+            raise SimulationError(
+                f"{opening}the state the solve returned is not one a run stays at. {moved} "
+                "An integration stops at the first state whose residual ||f(y)||/n is "
+                f"under tol ({result.residual:.1e} here), and that says where the run is "
+                "and not where it is going. Solve again with a smaller tol, or take the "
+                f"columns from {time_course}."
+            )
+        if result.sens_root_stability == "unstable":
+            growth = result.sens_root_growth_rate
+            if math.isfinite(growth) and growth > 0.0:
+                seen = f"has an eigenvalue of {growth:.3g}"
+            else:
+                seen = (
+                    "has a determinant of the sign that an odd number of eigenvalues right "
+                    "of zero gives it"
+                )
+            raise SimulationError(
+                f"{opening}the system does not rest at the state the solve returned. The "
+                f"Jacobian of the equations the columns are solved on {seen}: a state "
+                "beside this one moves away from it. -J⁻¹·∂f/∂p there is the derivative "
+                "of the root, and not of where a run ends. Solve from a state that is not "
+                f"on the root, or take the columns from {time_course}."
             )
         if not relaxation <= self._SS_ROOT_RELAXATION_MAX:
             raise SimulationError(
@@ -9031,13 +9128,25 @@ class SteadyStateResult:
         "sens_output_source",
         "sens_jacobian_rcond",
         "sens_root_determinant_ratio",
+        "sens_root_pivot_share",
         "sens_root_condition",
         "sens_root_column_shift",
         "sens_root_relaxation",
+        "sens_root_hold_drift",
+        "sens_root_hold_shift",
+        "sens_root_hold_steps",
+        "sens_root_hold_time",
+        "sens_root_growth_rate",
+        "sens_root_stability",
         "sens_root_determinant_species",
+        "sens_root_pivot_species",
         "sens_root_condition_species",
         "sens_root_column_param",
         "sens_root_relaxation_param",
+        "sens_root_hold_species",
+        "sens_root_hold_param",
+        "sens_mask_held_species",
+        "sens_mask_reader_species",
         "_sensitivity",
         "_sens_param_names",
         "_observable_names",
@@ -9092,11 +9201,26 @@ class SteadyStateResult:
         self.sens_root_condition = getattr(core, "sens_root_condition", 1.0)
         self.sens_root_column_shift = getattr(core, "sens_root_column_shift", 0.0)
         self.sens_root_relaxation = getattr(core, "sens_root_relaxation", 0.0)
+        self.sens_root_pivot_share = getattr(core, "sens_root_pivot_share", 1.0)
+        self.sens_root_hold_drift = getattr(core, "sens_root_hold_drift", 0.0)
+        self.sens_root_hold_shift = getattr(core, "sens_root_hold_shift", 0.0)
+        self.sens_root_hold_steps = int(getattr(core, "sens_root_hold_steps", 0))
+        self.sens_root_hold_time = getattr(core, "sens_root_hold_time", 0.0)
+        self.sens_root_growth_rate = getattr(core, "sens_root_growth_rate", float("nan"))
+        self.sens_root_stability = getattr(core, "sens_root_stability", "undetermined")
 
         def _named(names: Sequence[str], index: int) -> str | None:
             return names[index] if 0 <= index < len(names) else None
 
         species = list(core.species_names)
+        self.sens_root_pivot_species = _named(
+            species, getattr(core, "sens_root_pivot_species", -1)
+        )
+        self.sens_root_hold_species = _named(species, getattr(core, "sens_root_hold_species", -1))
+        self.sens_mask_held_species = _named(species, getattr(core, "sens_mask_held_species", -1))
+        self.sens_mask_reader_species = _named(
+            species, getattr(core, "sens_mask_reader_species", -1)
+        )
         self.sens_root_determinant_species = _named(
             species, getattr(core, "sens_root_determinant_species", -1)
         )
@@ -9104,6 +9228,7 @@ class SteadyStateResult:
             species, getattr(core, "sens_root_condition_species", -1)
         )
         columns = list(core.sens_param_names)
+        self.sens_root_hold_param = _named(columns, getattr(core, "sens_root_hold_param", -1))
         self.sens_root_column_param = _named(columns, getattr(core, "sens_root_column_param", -1))
         self.sens_root_relaxation_param = _named(
             columns, getattr(core, "sens_root_relaxation_param", -1)
