@@ -1445,9 +1445,9 @@ def test_a_species_that_is_not_there_is_not_moved(tmp_path):
     """X' = e·X with X = 0, beside Y' = -kd·Y. Any X grows, and there is
     none: a run from the state the model starts in stays, whatever e is, and
     the columns are zeros, as they were. The run that is taken on moves each
-    concentration by a millionth of itself, which leaves a species that is
-    absent absent: a state is not asked whether it would last an invasion
-    nothing in the request brings."""
+    concentration by a millionth of itself, which leaves a species that is at
+    nothing where it is. (The eigenvalues do ask what X would do: e·max_time
+    is a thousandth here, under their limit.)"""
     sim = bngsim.Simulator(_net(tmp_path, SLOW_SADDLE), method="ode")
     out = sim.steady_state(sensitivity_params=["e", "kd"])
     assert np.all(np.asarray(out.sensitivity) == 0.0)
@@ -2732,26 +2732,19 @@ end reactions
 """
 
 
-def test_a_species_the_model_does_not_have_is_not_asked_what_its_arrival_would_do(tmp_path):
-    """Control. With N at nothing the resident rests at b/c, and that is where
-    every run of this model ends: dR*/db = 1/c, dR*/dc = -b/c², and nothing
-    for g. The Jacobian has an eigenvalue of g - d·R = 1 there, which is what
-    N would do if it arrived. A species that is absent and that nothing
-    present makes is left out of the eigenvalues, as the run that is taken on
-    leaves it where it is; with it in, this was refused as a state the system
-    does not rest at (and 10 of 354 random networks with it)."""
+def test_a_state_that_a_species_the_model_does_not_have_would_invade_is_refused(tmp_path):
+    """With N at nothing the resident rests at b/c, and that is where every
+    run of this model ends: dR*/db = 1/c, dR*/dc = -b/c², and nothing for g,
+    which is what main returns. The Jacobian has an eigenvalue of g - d·R = 1
+    there, which is what N would do if there were any, and the columns are
+    refused for it: a right answer that is refused. Leaving N out of the
+    eigenvalues takes knowing that nothing asked for would make it, and a
+    rule that did was wrong three ways in turn (the tests below); issue #961
+    has it. The state itself is returned."""
     sim = bngsim.Simulator(_net(tmp_path, BESIDE_AN_INVADER.format(n0="0")), method="ode")
-    out = sim.steady_state(sensitivity_params=["b", "c", "g"])
-    np.testing.assert_allclose(out.concentrations, [1.0, 0.0], atol=1e-9)
-    np.testing.assert_allclose(out.sensitivity, [[1.0, -1.0, 0.0], [0.0, 0.0, 0.0]], atol=1e-7)
-
-
-def test_the_eigenvalues_are_those_of_the_species_the_model_has(tmp_path):
-    """The same result's growth rate is the resident's own, -b, and not the
-    invader's 1."""
-    sim = bngsim.Simulator(_net(tmp_path, BESIDE_AN_INVADER.format(n0="0")), method="ode")
-    out = sim.steady_state(sensitivity_params=["b", "c", "g"])
-    assert out.sens_root_growth_rate == pytest.approx(-1.0, rel=1e-6)
+    np.testing.assert_allclose(sim.steady_state().concentrations, [1.0, 0.0], atol=1e-9)
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+        sim.steady_state(sensitivity_params=["b", "c", "g"])
 
 
 def test_an_invader_that_is_there_takes_the_system_where_it_goes(tmp_path):
@@ -2768,10 +2761,9 @@ def test_a_species_that_is_not_there_yet_and_is_being_made_is_asked(tmp_path, me
     """The resident, started at its capacity, makes the invader at 1e-12: N
     starts at nothing, the residual is under ``tol`` there, and the solve
     stops beside the start (on it, by Newton, with N at exactly nothing),
-    which N leaves at g - d·R = 1 for where the two coexist. N is at nothing,
-    and it is not absent: its row of the Jacobian has an entry in R's column.
-    It is in the eigenvalues, and they say that the system does not rest
-    here."""
+    which N leaves at g - d·R = 1 for where the two coexist. N is at nothing
+    and it is in the eigenvalues, as every unknown is, and they say that the
+    system does not rest here."""
     made = (
         BESIDE_AN_INVADER.format(n0="0")
         .replace("    4 d   1.0\n", "    4 d   1.0\n    5 eps 1e-12\n")
@@ -2784,29 +2776,20 @@ def test_a_species_that_is_not_there_yet_and_is_being_made_is_asked(tmp_path, me
         sim.steady_state(sensitivity_params=["b", "c", "g"], method=method)
 
 
-def test_biomd908_rests_where_it_is_without_the_species_it_does_not_start_with():
-    """S is at nothing from the start and nothing makes it; the Jacobian has
-    an eigenvalue of 0.277 that is S's own. The run that is taken on stays,
-    the columns agree with differences of runs, and they were refused for a
-    state the system does not rest at."""
-    sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000908")), method="ode")
-    out = sim.steady_state(sensitivity_params=["d", "l", "s"])
-    at = dict(zip(out.species_names, np.asarray(out.concentrations), strict=True))
-    assert at["S"] == 0.0
-    assert out.sens_root_growth_rate < 0.0
-    assert np.all(np.isfinite(np.asarray(out.sensitivity)))
-
-
-def test_biomd908_is_refused_for_the_parameter_that_would_make_that_species():
-    """S' = vs + 0.277·S, with vs = 0. Any vs above nothing makes S, and S
-    then grows without end: 4e15 by t = 200 for vs = 1e-9. No steady state
-    beside this one is there for vs to move, and dS*/dvs = -3.61 came back,
-    with dT*/dvs = 1.6e13."""
+@pytest.mark.parametrize("asked", [["vs"], ["d", "l", "s"]])
+def test_biomd908_is_refused_for_what_its_absent_species_would_do(asked):
+    """S' = vs + 0.277·S, with vs = 0 and S at nothing from the start. Asked
+    for vs: any vs above nothing makes S, which then grows without end (4e15
+    by t = 200 for vs = 1e-9), no steady state beside this one is there for
+    vs to move, and dS*/dvs = -3.61 came back, with dT*/dvs = 1.6e13. Asked
+    for d, l and s, nothing makes S, a run stays, and the columns main
+    returns agree with differences of runs: a right answer that is refused,
+    for the same eigenvalue (issue #961)."""
     sim = bngsim.Simulator(bngsim.Model.from_sbml(_biomodel("BIOMD0000000908")), method="ode")
     with pytest.raises(
         bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 0\.277 "
     ):
-        sim.steady_state(sensitivity_params=["vs"])
+        sim.steady_state(sensitivity_params=asked)
 
 
 def test_model1607210000_says_that_the_run_stayed_and_the_columns_did_not():
@@ -2861,7 +2844,7 @@ def _into_a_fast_exchange(tmp_path, fast, **simulator):
     return bngsim.Simulator(model, method="ode", **simulator), relative, np.array([x, a, b])
 
 
-@pytest.mark.parametrize("fast", [1e8, 1e9])
+@pytest.mark.parametrize("fast", [2e6, 1e7, 1e8, 1e9])
 def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, fast):
     """With ``jacobian="fd"`` the entry dA'/dX = 0.28 is under what a
     difference quotient resolves beside the fluxes of A's row, F·A, and reads
@@ -2869,7 +2852,9 @@ def test_a_differenced_jacobian_is_held_to_what_a_difference_knows(tmp_path, fas
     dB*/dkx = 0 for -0.033 at F = 1e9 and 20% off at 1e8, with every measure
     clean, the measures being taken on the same matrix. The pivot share, 6e-9
     and 6e-10, is far above what rounding leaves and under what a difference
-    does, and that is the limit such a Jacobian is held to."""
+    does, and that is the limit such a Jacobian is held to. At F = 1e7 the
+    column is 4.6% off with a share of 6e-8, and at 2e6 the share is 3e-7:
+    the limit is 1e-6 and not a tenth or a hundredth of it."""
     sim, _, _ = _into_a_fast_exchange(tmp_path, fast, jacobian="fd")
     with pytest.raises(
         bngsim.SimulationError,
@@ -2934,14 +2919,14 @@ end reactions
 
 
 @pytest.mark.parametrize("text", [MADE_FROM_NOTHING, MADE_BY_WHAT_A_LAW_GIVES], ids=["0", "law"])
-def test_a_species_at_nothing_that_is_being_made_is_not_absent(tmp_path, text):
+def test_a_species_at_nothing_that_is_being_made_is_asked(tmp_path, text):
     """N is at exactly nothing where a Newton solve stops, the residual being
     1e-12, and it is made: from nothing, or by D, which the conservation law
     gives and which has no column of its own among the unknowns. Its row has
-    no entry in a present species' column either way, and it was taken for a
-    species the model does not have: N came back at -1e-12 with dN*/dg =
-    1e-12, where a run ends at 1 and at 1/2. A species is absent where its
-    rate is nothing too."""
+    no entry in another species' column either way, and a rule that left out
+    of the eigenvalues a species at nothing took it for one the model does
+    not have: N came back at -1e-12 with dN*/dg = 1e-12, where a run ends at
+    1 and at 1/2."""
     sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
     with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at"):
         sim.steady_state(sensitivity_params=["g"], method="newton")
@@ -2989,27 +2974,17 @@ end reactions
 
 @pytest.mark.parametrize("method", ["integration", "newton"])
 @pytest.mark.parametrize("asked", [["eps"], ["N0"], ["b", "eps"]])
-def test_an_absent_species_is_asked_where_the_parameter_asked_for_would_make_it(
-    tmp_path, asked, method
-):
+def test_a_species_at_nothing_that_the_parameter_asked_for_would_make(tmp_path, asked, method):
     """N is at nothing and its rate is nothing: with eps = 0 and N0 = 0 it is
     a species the model does not have. But any eps above nothing, or any N0,
     makes some, and N then leaves nothing at g - d·R = 1 for where the two
     coexist: a run ends at N = 1 for eps = 1e-9. The steady state jumps
     there, and -J⁻¹·∂f/∂eps = -1 is the slope of the branch the system
-    leaves. Left out of the eigenvalues, N came back with that."""
+    leaves, which is what main returns. (So did a rule that left a species
+    out of the eigenvalues where it was at nothing with no rate.)"""
     sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_A_PARAMETER_WOULD_MAKE), method="ode")
     with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
         sim.steady_state(sensitivity_params=asked, method=method)
-
-
-def test_the_same_asked_for_the_resident_alone_is_returned(tmp_path):
-    """Control. Asked for b alone, nothing that is asked makes N, and the
-    resident's column is that of where a run ends."""
-    sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_A_PARAMETER_WOULD_MAKE), method="ode")
-    out = sim.steady_state(sensitivity_params=["b"])
-    np.testing.assert_allclose(out.concentrations, [1.0, 0.0], atol=1e-9)
-    np.testing.assert_allclose(out.sensitivity, [[1.0], [0.0]], atol=1e-7)
 
 
 # The resident and the invader, and E, which makes the invader at k·E and is no
@@ -3058,16 +3033,15 @@ def _made_by_what_is_no_unknown(tmp_path, which, g):
 @pytest.mark.parametrize("method", ["integration", "newton"])
 @pytest.mark.parametrize("asked", [["E0"], ["b", "E0"]])
 @pytest.mark.parametrize("which", ["catalyst", "fixed"])
-def test_an_absent_species_is_asked_where_what_is_no_unknown_would_make_it(
-    tmp_path, which, asked, method
-):
+def test_a_species_at_nothing_that_what_is_no_unknown_would_make(tmp_path, which, asked, method):
     """N is made at k·E, and E is at E0 = 0 and is no unknown: the dependent
     of its own conservation law, or fixed. Neither ∂f/∂E0 nor the start of N
     reads E0, and N's row has no entry in an unknown's column; what makes N is
     the total, or the fixed species, that E0 moves. Any E0 above nothing makes
     some N, which leaves nothing at g - d·R = 1: a run ends at N = 1 for E0 =
     1e-9, and -1 came back for dN*/dE0, the slope of the branch the system
-    leaves."""
+    leaves (on main, and from the rule that left N out where the first
+    derivatives it looked at were nothing)."""
     sim = bngsim.Simulator(_made_by_what_is_no_unknown(tmp_path, which, 2.0), method="ode")
     with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
         sim.steady_state(sensitivity_params=asked, method=method)
@@ -3082,6 +3056,88 @@ def test_the_same_where_the_invader_dies_out_is_returned(tmp_path, which):
     names = [n.rstrip("()") for n in out.species_names]
     got = np.asarray(out.sensitivity)[[names.index(n) for n in ("R", "N", "E")], 0]
     np.testing.assert_allclose(got, [0.0, 2.0, 1.0], atol=1e-7)
+
+
+# What makes the invader at second order in a parameter that is at nothing:
+# every first derivative the request has is nothing there, of the rates, of the
+# start and of the totals.
+_SECOND_ORDER = {
+    "a rate of eps*eps": (
+        "    5 eps 0\n",
+        "begin functions\n    1 src() eps*eps\nend functions\n",
+        "",
+        "    6 0 2 src\n",
+        "0",
+        "eps",
+    ),
+    "a rate constant eps*eps": (
+        "    5 eps 0\n    6 e2 eps*eps\n",
+        "",
+        "",
+        "    6 0 2 e2\n",
+        "0",
+        "eps",
+    ),
+    "a Hill function of a dose": (
+        "    5 I 0\n    6 kq 1.0\n",
+        "begin functions\n    1 src() kq*I^2/(1+I^2)\nend functions\n",
+        "",
+        "    6 0 2 src\n",
+        "0",
+        "I",
+    ),
+    "a start of N0*N0": ("    5 N0 0\n", "", "", "", "N0*N0", "N0"),
+    "two of what the parameter makes": (
+        "    5 ex 0\n    6 dx 1.0\n    7 kq 1.0\n",
+        "",
+        "    3 X() 0\n",
+        "    6 0 3 ex\n    7 3 0 dx\n    8 3,3 3,3,2 kq\n",
+        "0",
+        "ex",
+    ),
+    "two of a catalyst the parameter sets": (
+        "    5 k 1.0\n    6 E0 0\n",
+        "",
+        "    3 E() E0\n",
+        "    6 3,3 3,3,2 k\n",
+        "0",
+        "E0",
+    ),
+}
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+@pytest.mark.parametrize("how", list(_SECOND_ORDER))
+def test_a_species_at_nothing_that_the_parameter_makes_at_second_order(tmp_path, how, method):
+    """The resident and the invader, with the invader made at the square of a
+    parameter that is at nothing, or of what that parameter makes. A run with
+    the parameter at 1e-6 ends at N = 1, and one at nothing stays: the steady
+    state jumps, and dN*/dp = 0 came back, on main and from a rule that left
+    N out of the eigenvalues where the first derivatives it looked at were
+    nothing."""
+    params, functions, species, reactions, n0, asked = _SECOND_ORDER[how]
+    text = (
+        "begin parameters\n    1 b   1.0\n    2 c   1.0\n    3 g   2.0\n    4 d   1.0\n"
+        f"{params}end parameters\n{functions}"
+        f"begin species\n    1 R() 1.0\n    2 N() {n0}\n{species}end species\n"
+        "begin reactions\n    1 1 1,1 b\n    2 1,1 1 c\n    3 2 2,2 g\n    4 1,2 1 d\n"
+        f"    5 2,2 2 d\n{reactions}end reactions\n"
+    )
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+        sim.steady_state(sensitivity_params=[asked], method=method)
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+def test_an_invader_a_catalyst_would_make_among_520_species(tmp_path, method):
+    """Above 512 unknowns the eigenvalues asked are those of the species the
+    state has at a zero, and N, at nothing beside the catalyst that would
+    make it, is one of them: -1 came back for dN*/dE0 from a rule that left it
+    out there."""
+    text = _among_many(AN_INVADER_MADE_BY_A_CATALYST.format(g=2.0))
+    sim = bngsim.Simulator(_net(tmp_path, text), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+        sim.steady_state(sensitivity_params=["E0"], method=method)
 
 
 # The invader is made at k·(R - 1): at nothing where the resident is at its
@@ -3114,11 +3170,11 @@ end groups
 """
 
 
-def test_a_species_made_by_a_rate_that_is_nothing_only_here_is_not_left_out(tmp_path):
+def test_a_species_made_by_a_rate_that_is_nothing_only_here_is_asked(tmp_path):
     """N is at nothing with a rate of exactly nothing, the resident being at
     exactly 1 where a Newton solve stops; but its row of the Jacobian has an
-    entry in R's column, and beside this state something makes it. Its block
-    is not one of its own, and it is in the eigenvalues."""
+    entry in R's column, and beside this state something makes it. It is in
+    the eigenvalues, as every unknown is."""
     sim = bngsim.Simulator(_net(tmp_path, AN_INVADER_MADE_ANYWHERE_BUT_HERE), method="ode")
     with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
         sim.steady_state(sensitivity_params=["b"], method="newton")

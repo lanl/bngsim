@@ -7161,10 +7161,13 @@ class Simulator:
     #: nearest is at -3.4e-6, an exponent of -3.4). 39 models have one: 34
     #: are refused before this is asked, one by the run, and 4 by this. One
     #: of the 4 is right by the oracle, and the run that is taken on stays
-    #: (BIOMD0000000546, at 6.2e-8). A species that is absent, and that
-    #: nothing present makes, is left out of the eigenvalues: what its arrival
-    #: would do is not asked, by them or by the run (BIOMD0000000908, which
-    #: was refused for it).
+    #: (BIOMD0000000546, at 6.2e-8). A species that is at nothing is among
+    #: the unknowns, with what it would do if there were any: a state it
+    #: would invade is refused also where nothing makes it and the run stays
+    #: (BIOMD0000000908 without its `vs`, right by the oracle). A rule that
+    #: left such a species out returned the slope of the branch the system
+    #: leaves wherever something asked for made it in a way the rule did not
+    #: look at, and lifted that one model of 791 (issue #961).
     _SS_ROOT_GROWTH_MAX = 0.01
 
     def _raise_if_not_an_isolated_root(
@@ -7407,8 +7410,10 @@ class Simulator:
                 )
                 + f" after max_time ({max_time:g}), where the limit is "
                 f"{self._SS_ROOT_GROWTH_MAX:.0%}. -J⁻¹·∂f/∂p there is how the root moves, "
-                "and not where a run ends. Solve from a state that is not on the root, or "
-                f"take the columns from {time_course}."
+                "and not where a run ends. (A species that is at nothing counts, with "
+                "what it would do if there were any, also where nothing in the model "
+                "makes it.) Solve from a state that is not on the root, or take the "
+                f"columns from {time_course}."
             )
         # A run that used up its steps before max_time was not seen to stay
         # either, whatever it had moved by then.
@@ -9290,7 +9295,7 @@ class SteadyStateResult:
     sens_root_hold_shift, sens_root_hold_drift : float
         A run is taken on for ``max_time`` from the state the solver stopped
         at, with every concentration moved by up to a millionth of itself (a
-        species that is absent is not moved). ``sens_root_hold_shift``
+        species that is at nothing is not moved). ``sens_root_hold_shift``
         is the largest move of a column when it is solved again where that
         run ends, measured as the column shift is, and ``steady_state`` raises
         above 0.01, or where the run could not be made (not a number): the
@@ -9308,9 +9313,9 @@ class SteadyStateResult:
         The largest real part among the eigenvalues of that system at the
         returned state, and the largest eigenvalue in size, for systems of up
         to 512 unknowns (above that, those of the species the state has at a
-        zero). A species that is absent and that nothing present makes is left
-        out: what its arrival would do is not asked. ``steady_state`` raises
-        where the first, times
+        zero). A species that is at nothing is among them, with what it would
+        do if there were any, also where nothing makes it. ``steady_state``
+        raises where the first, times
         ``max_time``, is above 0.01: a state beside this one is more than 1%
         further off after a run of that length. Not a number, and ``0.0``,
         where the eigenvalues were not taken and when no sensitivity was

@@ -648,12 +648,18 @@ exactly the state is on it: the middle root of a bistable switch, or the fixed
 point inside a limit cycle, which `method="newton"` finds and a model can be
 started on. `-J⁻¹·∂f/∂p` there is how the root moves, not where a run ends. The
 run starts a millionth beside the state because one started on such a root
-stays on it. A species that is absent is not moved: the run does not ask
+stays on it. A species that is at nothing is not moved: the run does not ask
 whether a state would last the arrival of something the model does not start
-with. (Nor do the eigenvalues below: a species that is absent, at exactly
-nothing with a rate of exactly nothing, that nothing the model has makes and
-that no parameter that is asked for would make, is left out of them. `ss.root_stability`, the certificate of a Newton root,
-does count it, and can read `"unstable"` beside columns that are returned.)
+with. The eigenvalues below do. A species at nothing is one of the unknowns,
+and a state it would grow from is refused, also where nothing in the model
+makes that species and a run from the model's start stays: a resident at its
+capacity beside an invader the model does not start with. Some of those
+columns are right. They are refused because telling them from the others takes
+knowing that nothing that is asked for would make the species, at any order: a
+rate constant or an initial amount of zero that is asked for does (the steady
+state jumps where it leaves zero, and `-J⁻¹·∂f/∂p` is the slope of the branch
+the system leaves), and so does the square of one, where every first
+derivative is zero.
 
 The run has `max_steps` steps. Where it uses them short of `max_time`, it was
 not seen to stay, and the columns are refused: an oscillation about the state

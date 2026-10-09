@@ -3134,9 +3134,6 @@ struct SsColumnSystem {
     // from.
     const NetworkModel *model = nullptr;
     const std::vector<double> *start = nullptr;
-    // How the state the solve started from moves with each column (issue #704),
-    // species by column: what an initial amount that is asked for seeds.
-    const std::vector<double> *start_moves = nullptr;
     // The state a run of `horizon` from the returned state ended at, where one
     // was made (an integration result), and whether its integrator gave up.
     const std::vector<double> *held = nullptr;
@@ -3196,96 +3193,32 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
     // With the certificate's own eigensolver and its own limit on the size
     // (issue #78), on the matrix the columns are solved with: at the returned
     // state here, and again at the state that is stepped to, where one is (6).
-    // The state as the solver left it, and the rates there.
+    // The state as the solver left it.
     const std::vector<double> returned(y_ss, y_ss + ns);
-    std::vector<double> rate_there(static_cast<size_t>(ns), 0.0);
-    rhs.eval(0.0, returned.data(), rate_there.data());
-    // A species is absent where it is exactly at nothing where the solver
-    // stopped and its rate there is exactly nothing too: one that something
-    // makes, from nothing at 1e-12 or by a species a law gives, is on its way
-    // and not absent. (A Newton solve leaves such a species at exactly
-    // nothing. It was taken for absent, and N' = eps + g·N - d·N² came back at
-    // N = -1e-12 where a run ends at 1.)
-    //
-    // Nor is it absent for a column that would make it: a rate constant of
-    // zero that is asked for (`0 -> N` at eps = 0, dN*/deps), or its own
-    // initial amount of zero. The steady state jumps where such a parameter
-    // leaves zero, and -J⁻¹·∂f/∂p there is the slope of the branch the system
-    // leaves (-1 came back for it). So its row of ∂f/∂p, and of how the start
-    // moves, has to be nothing in every column that is asked.
-    std::vector<double> dfdp_there;
-    sys.fill_dfdp(returned.data(), J, dfdp_there);
-    const auto absent = [&](int i) {
-        const size_t k = static_cast<size_t>(i);
-        if (!(returned[k] == 0.0 && rate_there[k] == 0.0)) {
-            return false;
-        }
-        for (int p = 0; p < np; ++p) {
-            if (dfdp_there[static_cast<size_t>(p) * ns + k] != 0.0) {
-                return false;
-            }
-            if (sys.start_moves != nullptr && (*sys.start_moves)[k * np + p] != 0.0) {
-                return false;
-            }
-        }
-        return true;
-    };
-    // The eigenvalues are those of the species the model has. One that is
-    // absent, and that nothing present makes at any state beside this one
-    // either (its row has no entry in a present species' column), has a block
-    // of its own, whose eigenvalues say what its arrival would do. That is
-    // not asked of a state, here or by the run that is taken on, which does
-    // not move it: a resident at its capacity beside an invader the model
-    // does not start with rests where it is, and its columns are those of
-    // where a run ends.
+    // The eigenvalues are those of every unknown, a species the model does
+    // not have included: one at nothing whose rate is nothing, and which
+    // would grow if there were any. A state it could invade is refused for
+    // that, also where nothing makes it and a run from the model's start
+    // stays (a resident at its capacity beside an invader the model does not
+    // start with: BIOMD0000000908 without its `vs`). Leaving such a species
+    // out takes knowing that nothing asked for would make it, at any order:
+    // not a rate constant of zero or its own initial amount (`0 -> N` at
+    // eps = 0, dN*/deps = -1, the slope of the branch the system leaves), a
+    // total or a fixed species that the parameter moves, or any of those
+    // squared, where every first derivative is nothing. A rule that left it
+    // out was wrong in each of those in turn, and lifted one model of 791.
+    // (Issue #961 has what a rule that does it has to see.)
     const auto read_spectrum = [&](const std::vector<double> &reduced) {
         result.sens_root_growth_rate = nan;
         result.sens_root_spectral_radius = 0.0;
-        if (n > kStabilitySpectrumMaxN) {
+        if (n > kStabilitySpectrumMaxN || n == 0) {
             return;
         }
-        std::vector<int> present;
-        for (int r = 0; r < n; ++r) {
-            if (!absent(unknown(r))) {
-                present.push_back(r);
-            }
-        }
-        bool apart = static_cast<int>(present.size()) < n;
-        for (int r = 0; r < n && apart; ++r) {
-            if (!absent(unknown(r))) {
-                continue;
-            }
-            for (const int c : present) {
-                // Column-major: the entry of row r in column c.
-                if (reduced[static_cast<size_t>(c) * n + r] != 0.0) {
-                    apart = false;
-                    break;
-                }
-            }
-            // Nor does a conserved total that a column moves make it.
-            for (int p = 0; p < np && apart; ++p) {
-                if (sys.forcing(J, r, p) != 0.0) {
-                    apart = false;
-                }
-            }
-        }
-        const int m = apart ? static_cast<int>(present.size()) : n;
-        if (m == 0) {
-            return;
-        }
-        std::vector<double> spectrum_of(static_cast<size_t>(m) * m), wr(static_cast<size_t>(m)),
-            wi(static_cast<size_t>(m));
-        for (int c = 0; c < m; ++c) {
-            for (int r = 0; r < m; ++r) {
-                const int from_c = apart ? present[static_cast<size_t>(c)] : c;
-                const int from_r = apart ? present[static_cast<size_t>(r)] : r;
-                spectrum_of[static_cast<size_t>(c) * m + r] =
-                    reduced[static_cast<size_t>(from_c) * n + from_r];
-            }
-        }
-        if (dense_eigenvalues(spectrum_of.data(), m, wr.data(), wi.data())) {
+        std::vector<double> spectrum_of(reduced), wr(static_cast<size_t>(n)),
+            wi(static_cast<size_t>(n));
+        if (dense_eigenvalues(spectrum_of.data(), n, wr.data(), wi.data())) {
             double max_re = -inf, radius = 0.0;
-            for (int i = 0; i < m; ++i) {
+            for (int i = 0; i < n; ++i) {
                 max_re = std::max(max_re, wr[static_cast<size_t>(i)]);
                 radius = std::max(
                     radius, std::hypot(wr[static_cast<size_t>(i)], wi[static_cast<size_t>(i)]));
@@ -3713,7 +3646,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         std::vector<int> zeros;
         for (const int i : sub.included) {
             const size_t k = static_cast<size_t>(i);
-            if (k < at_a_zero.size() && at_a_zero[k] && !absent(i)) {
+            if (k < at_a_zero.size() && at_a_zero[k]) {
                 zeros.push_back(i);
             }
         }
@@ -3992,7 +3925,6 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
     column_system.fill_dfdp = fill_dfdp;
     column_system.model = &model;
     column_system.start = &start_state;
-    column_system.start_moves = &dx0;
     column_system.held = held_state;
     column_system.hold_failed = hold_failed;
     column_system.horizon = horizon;
