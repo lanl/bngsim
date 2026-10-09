@@ -8647,10 +8647,7 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
     folded. Once :func:`_clock_guard_cells` has collapsed a year chain, the ratio
     at a real onset is a plain rational — 1 for every onset in the corpus — and a
     ``Piecewise`` left over is a guard the cells did not resolve, where the shift
-    could not cancel anyway.
-
-    Each shift is given in both of its spellings (:func:`_shift_spellings`),
-    since which of them ``cancel`` returns is not the model's to say."""
+    could not cancel anyway."""
     from bngsim._jacobian import _value_symbol_names
 
     out: dict[str, dict] = {}
@@ -8683,8 +8680,7 @@ def _comoving_coefficients(expr, clock_names: set[str], axes, sp) -> dict[str, d
                         if not {s.name for s in leaf.free_symbols} <= allowed:
                             continue
                         seen = out.setdefault(p_alias, {})
-                        for spelling in _shift_spellings(leaf, sp):
-                            seen[spelling] = seen.get(spelling, ()) + power
+                        seen[leaf] = seen.get(leaf, ()) + power
     return out
 
 
@@ -8692,19 +8688,21 @@ def _shift_spellings(shift, sp) -> list:
     """``shift`` as it is, and with the sign of its numerator and of its
     denominator both changed: ``1/(w - v)`` and ``-1/(v - w)``.
 
-    A shift removes a singular power where ``∂law/∂p + shift·∂law/∂clock``
-    loses the power as sympy adds the two up, and that takes the shift spelled
-    as the law spells it: an onset ``on/(w - v)`` has ``1/(w - v)`` in its
-    ``∂/∂on``, and ``-1/(v - w)`` beside it cancels nothing. ``cancel`` returns
-    one spelling or the other by the order it puts the symbols in. For
-    ``on/(wb - wa)`` that was the other one, in every process: the model got no
-    comoving case, and its column was the plain one, 0.37% off (issue #760's
-    error). For two names sympy's order ties on, ``w01`` and ``w1``, it was
-    either, by the hash seed: the same model with a case in one process and
-    none in the next (issue #550).
+    The two are one shift, and they do not do the same to a law. Where the law
+    has ``1/(w - v)`` and the shift is spelled ``-1/(v - w)``, what sympy adds
+    up along the shift keeps terms that are nothing times something, and it
+    does not always come back from the conditional at all: it rewrites a
+    comparison one way and then the other until the recursion limit. On main a
+    plan that met that was dropped whole, so a model with an onset
+    ``on/(wb - wa)`` had no comoving case in any process (``cancel`` returns
+    ``-1/(wa - wb)`` for its shift), and its columns were the plain ones, 0.4%
+    off (issue #760's error). For two names sympy's order of generators ties
+    on, ``w01`` and ``w1``, ``cancel`` returns either by the hash seed: the
+    same model with its cases in one process and without them in the next
+    (issue #550).
 
-    So both are candidates. The one that removes nothing is dropped where the
-    cases are derived, as any shift is that removes nothing.
+    So both are tried where the cases are derived, and the one that leaves
+    the least is taken.
     """
     numer, denom = shift.as_numer_denom()
     other = sp.Mul(-numer, sp.Pow(-denom, -1))
@@ -8743,6 +8741,22 @@ def _comoving_shifted_partial(
     ``c = 0`` is the plain column (derived parameters still follow ``p``), which is
     what the removed-exponent test compares against. The zero-base twin of issue
     #541 runs over ``ε`` as it runs over a parameter on the plain path.
+
+    Where that leaves a singular power, each such power is asked how its base
+    moves with ``ε`` (issue #550). For the power a shift is for, it does not:
+    ``c`` is ``-(∂base/∂p)/(∂base/∂clock)``, so ``d base/dε`` is nothing, and
+    with it the power's ``e·base^(e-1)·(d base/dε)``. Or it moves with itself,
+    ``d base/dε = q·base`` with no clock in ``q`` (the width of a window, in the
+    column of that width), and the power's derivative is ``e·q·base^e``, which
+    is no more singular than the power. It was left to sympy to see either, as
+    it added ``∂base/∂p`` and ``c·∂base/∂clock`` up, which it does where the
+    two are spelled alike and not otherwise: not for an onset ``on/(wb - wa)``
+    beside the shift ``-1/(wa - wb)`` that ``cancel`` returns for it, for
+    ``on/(wb - wa)^2`` beside ``1/(wa^2 - 2·wa·wb + wb^2)``, or for
+    ``on/(kk·(wb - wa))``. What was left then is a zero times a power that is
+    unbounded at the crossing. Here the rate of the base is put through
+    ``cancel``, and the base is carried as ``base·(1 + q·ε)``. A law that
+    sympy's own sum already clears is not touched, and has the text it had.
     """
     from bngsim._jacobian import _finish_zero_bases, _prepare_zero_bases
 
@@ -8754,9 +8768,42 @@ def _comoving_shifted_partial(
     sub[sp.Symbol(p_alias)] = sp.Symbol(p_alias) + eps
     for d_sym, d_rate in derived_shift.items():
         sub[d_sym] = d_sym + d_rate * eps
-    shifted = expr.subs(sub, simultaneous=True)
-    prepared = _prepare_zero_bases(shifted, {_COMOVING_EPS}, constants | {_COMOVING_EPS})
-    return _finish_zero_bases(sp.diff(prepared, eps)).subs(eps, 0)
+
+    def along(shifted):
+        prepared = _prepare_zero_bases(shifted, {_COMOVING_EPS}, constants | {_COMOVING_EPS})
+        return _finish_zero_bases(sp.diff(prepared, eps)).subs(eps, 0)
+
+    as_summed = along(expr.subs(sub, simultaneous=True))
+    if c == 0:
+        return as_summed
+    clock_names = set(clock_weights)
+    carried: dict = {}
+    seen: set = set()
+    for node in _pow_nodes_in_values(expr, sp):
+        base = node.base
+        if base in seen or not _singular_power(node, clock_names, sp):
+            continue
+        seen.add(base)
+        rate = sp.diff(base.subs(sub, simultaneous=True), eps).subs(eps, 0)
+        if rate == 0:
+            continue  # sympy's own sum has cleared it: nothing to carry
+        rate = sp.cancel(rate)
+        with_itself = sp.Integer(0) if rate == 0 else sp.cancel(rate / base)
+        if with_itself.has(sp.nan, sp.zoo, sp.oo, -sp.oo) or (
+            {symbol.name for symbol in with_itself.free_symbols} & clock_names
+        ):
+            continue  # it moves otherwise: a power of another crossing
+        carried[base] = (sp.Dummy(f"carried_{len(carried)}"), with_itself)
+    if not carried:
+        return as_summed
+    shifted = expr.xreplace({base: held for base, (held, _q) in carried.items()})
+    shifted = shifted.subs(sub, simultaneous=True)
+    shifted = shifted.xreplace({held: base * (1 + q * eps) for base, (held, q) in carried.items()})
+    as_carried = along(shifted)
+    left = _singular_clock_powers(as_summed, clock_names, sp)
+    if len(_singular_clock_powers(as_carried, clock_names, sp)) < len(left):
+        return as_carried
+    return as_summed
 
 
 def _comoving_derived_axes(names: set[str], upstream, inline_map, derived_aliases: dict, allowed):
@@ -9248,27 +9295,33 @@ def _functional_comoving_plan(
             rate = sp.diff(inlined, p_sym)
             if rate != 0:
                 derived_shift[d_sym] = rate
-        taken: list = []
-        for c in sorted(shifts, key=_term_order.srepr):
-            c_c = sympy_to_c(c, resolve_symbol)
-            if c_c is None:
+        for first in sorted(shifts, key=_term_order.srepr):
+            best = None
+            for spelling in sorted(_shift_spellings(first, sp), key=_term_order.srepr):
+                spelled_c = sympy_to_c(spelling, resolve_symbol)
+                if spelled_c is None:
+                    continue
+                try:
+                    eligible, spelled_law_c = removes_a_power(p_alias, spelling, derived_shift)
+                except RecursionError:
+                    # sympy did not come back from a conditional under this
+                    # spelling (see ``_shift_spellings``). It is no candidate.
+                    logger.debug("issue #550: a shift's spelling sympy cannot carry: %s", spelling)
+                    continue
+                if not eligible:
+                    continue
+                # What is left of the law along the shift, as it will be
+                # written out: nothing, for a parameter that only moves the
+                # window, where the spelling lets sympy see it. The other
+                # spelling leaves a zero times every factor, and a factor
+                # that is no number there (a split power under a negative
+                # scale) makes the column no number.
+                left = sum(len(text) for text in spelled_law_c.values() if text is not None)
+                if best is None or left < best[0]:
+                    best = (left, spelling, spelled_c, spelled_law_c)
+            if best is None:
                 continue
-            # A shift that has its case already, in its other spelling.
-            if any(sp.cancel(c - have) == 0 for have in taken):
-                continue
-            try:
-                eligible, law_c = removes_a_power(p_alias, c, derived_shift)
-            except RecursionError:
-                # sympy does not always come back from building a conditional
-                # whose condition it can write two ways (it rewrites one as
-                # the other and that one as the first), and which spelling of
-                # a shift does that to it is not known ahead. Such a spelling
-                # is no candidate; the other one is tried as any is.
-                logger.debug("issue #550: a shift's spelling that sympy cannot carry: %s", c)
-                continue
-            if not eligible:
-                continue
-            taken.append(c)
+            _left, c, c_c, law_c = best
             virtual = n_params + len(cases)
             cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
 
@@ -9296,7 +9349,7 @@ def _functional_comoving_plan(
             # fails, the plain column is right.
             tests, bounded, plain_fails = [], [], []
             opens = False
-            for way, exponent in shifts[c]:
+            for way, exponent in shifts[first]:
                 e_c = over_parameters(exponent)
                 singular = "1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)"
                 if way != "close":

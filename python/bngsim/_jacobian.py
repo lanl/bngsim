@@ -1876,7 +1876,7 @@ def _whole_power_offset(num_exp, term_exp, sp):
     A ratio is ``m`` to rounding, though, where the exponents have floats in
     them: ``3·(0.00105 - 0.35/q)/r`` over ``(0.00105 - 0.35/q)/r`` is 3 against
     ``r`` and 3.0000000000000004 against ``q``, where 3·0.35 was multiplied
-    out. A number within 1e-9 of a count is taken for that count
+    out. A number within a billionth of a count is taken for that count
     (:func:`_count_within_rounding`), and what settles it is the leftover, as
     for any count: with a count that is not the ratio, a symbol is left in it.
     """
@@ -1889,7 +1889,8 @@ def _whole_power_offset(num_exp, term_exp, sp):
 
 
 def _count_within_rounding(value) -> int | None:
-    """The count, 1 or more, that the number ``value`` is within 1e-9 of."""
+    """The count ``n``, 1 or more, that the number ``value`` is within
+    ``1e-9·n`` of."""
     if not getattr(value, "is_number", False):
         return None
     try:

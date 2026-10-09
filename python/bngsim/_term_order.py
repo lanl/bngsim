@@ -323,7 +323,9 @@ def _factors_for_a_printer(self, order=None):
     ``Expr.sort_key`` builds a product's key from, and sympy keeps its keys:
     one computed from this module's order would be served to sympy afterwards,
     for the rest of the process. Nor is another thread's printing, or an
-    ``order`` that was asked for by name, this module's to answer.
+    ``order`` that was asked for by name, this module's to answer. (One of
+    sympy's own printers that is called from inside one of this module's, on
+    its thread, is answered as this module's is. None is.)
     """
     if (
         order is None
@@ -340,8 +342,11 @@ def _answer_for_products() -> None:
     from sympy import Mul
 
     with _swap:
-        if not _theirs:
-            _theirs.append(Mul.as_ordered_factors)
+        # Asked of the class and not of ``_theirs``, so that an interrupt
+        # between the two steps is made good by the next printer.
+        if Mul.as_ordered_factors is not _factors_for_a_printer:
+            if not _theirs:
+                _theirs.append(Mul.as_ordered_factors)
             Mul.as_ordered_factors = _factors_for_a_printer  # type: ignore[method-assign]
 
 

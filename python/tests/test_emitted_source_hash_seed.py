@@ -809,17 +809,19 @@ def test_another_threads_printing_is_not_answered(monkeypatch):
 
 
 def test_a_nest_as_deep_as_main_prints_is_printed():
-    """Control. A product of a sum of a product, 190 deep, which main prints
-    (it stops at 197). The version of this change that wrapped ``_print_Mul``
-    stopped at 165: a frame more for each product on the way down."""
+    """Control. A product of a sum of a product, 175 deep, which main prints:
+    from a script it stops at 197, and under pytest, which is some frames
+    down already, at 190. The version of this change that wrapped
+    ``_print_Mul`` stopped at 165 from a script: a frame more for each product
+    on the way down."""
     from bngsim._jacobian import sympy_to_c
 
     x, a = sp.symbols("x a")
     expr = x
-    for i in range(190):
+    for i in range(175):
         expr = sp.Symbol(f"k{i % 7}") * (expr + a)
     text = sympy_to_c(expr, lambda name: name)
-    assert text is not None and text.count("(") >= 190
+    assert text is not None and text.count("(") >= 175
 
 
 # ── A count that rounding left beside itself ─────────────────────────────────
@@ -917,9 +919,10 @@ def test_a_model_has_its_comoving_case_under_every_hash_seed(tmp_path):
     """A window whose onset is ``on/(w01 - w1)``. The shift of its crossings
     in ``on`` is ``1/(w01 - w1)``, which ``cancel`` returned as that or as
     ``-1/(-w01 + w1)`` by the seed, sympy's order of the two names being a
-    tie; only the first removes the singular power, so the model had its two
-    comoving cases under seeds 6 and 7 and none under 0 to 5, where dX/dD was
-    the plain column, 0.37% off."""
+    tie. Under the second sympy does not come back from the law's conditional
+    and the plan was dropped, so the model had its two comoving cases under
+    seeds 6 and 7 and none under 0 to 5, where dX/dD was the plain column,
+    0.37% off."""
     path = tmp_path / "model.net"
     path.write_text(_COMOVING)
     emitted = {}
@@ -973,6 +976,10 @@ def test_no_emitter_sorts_by_a_key_of_sympys_that_can_follow_the_seed():
         # Guards that are one clock against one number: no sum to tie.
         "bngsim._switch_sensitivity:" + found[0].split(":")[1] + ": sp.srepr"
     ], found
+    # And what they are sorted by: nothing else of sympy's (``str`` and
+    # ``sort_key`` follow the seed as ``srepr`` does).
+    assert inspect.getsource(_codegen).count("key=_term_order.srepr") == 4
+    assert inspect.getsource(_switch_sensitivity).count("_term_order.in_order(by_count[n])") == 1
 
 
 def test_the_cache_does_not_serve_a_source_built_before_the_orders_changed():
