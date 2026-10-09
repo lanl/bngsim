@@ -5275,7 +5275,8 @@ void CvodeSimulator::Impl::comoving_refuse_without_a_case(const SensitivityState
             << name << "' has none: either the rate at which the edge's time changes with '" << name
             << "' is not a number that holds along the run (the parameter is in the "
                "denominator or the scale of the edge's time, or the power's base is not linear "
-               "in the time), or the frames of this model were not worked out. The plain "
+               "in the time or reads a species), or the frames of this model were not worked "
+               "out. The plain "
                "column has a forcing that is unbounded at the edge: it comes back up to 12% "
                "off, or ends in a solver error (issue #1003). Drop '"
             << name << "' from sensitivity_params, or difference plain runs.";
@@ -5594,7 +5595,6 @@ int CvodeSimulator::Impl::comoving_enter(SensitivityState &sens, int ns, double 
                                          const std::vector<double> &f_instant,
                                          const std::vector<double> &dtstar_dp, double rel_tol) {
     ComovingFrames &frames = sens.comoving;
-    comoving_refuse_without_a_case(sens, t, dtstar_dp); // issue #1003
     if (!frames.enabled) {
         if (frames.off_for_events) {
             comoving_refuse_without_a_frame(sens, t, dtstar_dp, rel_tol);
@@ -8050,6 +8050,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         comoving_leave(sens, ns, sens_cols.data(),
                        t_evt == sens.comoving.t_entry ? sens.comoving.f_entry_after : sw_f_minus);
     }
+    comoving_refuse_without_a_case(sens, t_evt, dtstar_p); // issue #1003
     comoving_enter(sens, ns, sens_cols.data(), t_evt, sw_f_jump, sw_f_plus, f_instant, dtstar_p,
                    1e-9);
     // Issue #949: a crossing that shares its instant with another is read by
@@ -10959,7 +10960,12 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // never asked, and it must not turn a run that works into one that
         // does not: the columns stay plain. A run whose frames are off for its
         // events asks too, to refuse the column that needed one (issue #958).
-        if (sens.comoving.enabled || sens.comoving.off_for_events) {
+        // Issue #1003: a column with no case for an edge it moves is asked
+        // here too, in a model that has no case at all and so no frames.
+        const bool frames_on = sens.comoving.enabled || sens.comoving.off_for_events;
+        const bool edges_listed = codegen_edge_without_case_fn != nullptr &&
+                                  sens.comoving.edge_param_values != nullptr && sens.n_p > 0;
+        if (frames_on || edges_listed) {
             sync(x, t_evt);
             std::vector<double> tau_enter;
             try {
@@ -10971,11 +10977,23 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 tau_enter.clear();
             }
             if (tau_enter.size() >= static_cast<std::size_t>(sens.n_p)) {
-                comoving_enter(sens, ns, comoving_cols.data(), t_evt, f_minus, f_minus, f_minus,
-                               tau_enter, kComovingStateSwitchRelTol);
+                comoving_refuse_without_a_case(sens, t_evt, tau_enter);
+                if (frames_on) {
+                    comoving_enter(sens, ns, comoving_cols.data(), t_evt, f_minus, f_minus, f_minus,
+                                   tau_enter, kComovingStateSwitchRelTol);
+                }
+            } else if (edges_listed) {
+                // How this crossing moves is not to be had: every column is
+                // taken to move it.
+                comoving_refuse_without_a_case(
+                    sens, t_evt,
+                    std::vector<double>(static_cast<std::size_t>(sens.n_p),
+                                        std::numeric_limits<double>::quiet_NaN()));
             }
             // Issue #760: and the stops of the stretch this crossing begins.
-            comoving_ask(sens, t_evt);
+            if (frames_on) {
+                comoving_ask(sens, t_evt);
+            }
         }
         restart_past_surface();
         return;
@@ -11249,6 +11267,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     // Issue #545: a column this crossing moves at an emitted c enters V = S⁻ + c·f⁻,
     // which does not jump, before the others take theirs. With the frames off
     // for the run's events, a column that needed one is refused (issue #958).
+    comoving_refuse_without_a_case(sens, t_evt, tau); // issue #1003
     if (sens.comoving.enabled || sens.comoving.off_for_events) {
         comoving_enter(sens, ns, comoving_cols.data(), t_evt, f_minus, f_plus, f_plus, tau,
                        kComovingStateSwitchRelTol);

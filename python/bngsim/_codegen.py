@@ -4231,15 +4231,23 @@ def _emit_sens_rhs_body(
         _emit("   comoving case that removes that power from its column, and the crossing at")
         _emit("   the time t is that edge, where the power's base is written in the time and")
         _emit("   the parameters and can be asked: 1, or 0. The plain column's forcing is")
-        _emit("   unbounded at such an edge. (Issue #1003) */")
+        _emit("   unbounded at such an edge. Any parameter moves an edge whose base reads a")
+        _emit("   state. (Issue #1003) */")
         _emit("BNGSIM_EXPORT int bngsim_codegen_edge_without_case(int iP, double t,")
         _emit("                            const double* p) {")
         _emit("    (void)t;")
         _emit("    (void)p;")
+        # Under -1: the powers whose base reads a state, which any parameter
+        # can move the zero of.
+        every = [
+            test for param_idx, tests in edges_without_case if param_idx < 0 for test in tests
+        ]
         _emit("    switch (iP) {")
         for param_idx, tests in edges_without_case:
-            _emit(f"    case {int(param_idx)}: return ({' || '.join(tests)}) ? 1 : 0;")
-        _emit("    default: return 0;")
+            if param_idx >= 0:
+                both = " || ".join(dict.fromkeys((*tests, *every)))
+                _emit(f"    case {int(param_idx)}: return ({both}) ? 1 : 0;")
+        _emit(f"    default: return ({' || '.join(every) or '0'}) ? 1 : 0;")
         _emit("    }")
         _emit("}")
 
@@ -8699,12 +8707,11 @@ def _comoving_coefficients(
     ``Piecewise`` left over is a guard the cells did not resolve, where the shift
     could not cancel anyway.
 
-    ``asked``, where given, is filled with what became of each power for each
-    parameter its numerator reads (issue #1003):
-    ``{param_alias: {power: [shift, ...]}}``, a shift that was kept, or
-    ``None`` for one that was dropped. A parameter that does not move the
-    power's zero has an empty list. A dropped shift is a column with no frame
-    to be carried in across that power's edge."""
+    ``asked``, where given, is filled with whether each parameter moves the
+    zero of each power whose numerator reads it (issue #1003):
+    ``{param_alias: {power: bool}}``. True for a shift that was kept and for
+    one that was dropped; False for a parameter that is in the base and does
+    not move its zero."""
     from bngsim._jacobian import _value_symbol_names
 
     out: dict[str, dict] = {}
@@ -8726,15 +8733,14 @@ def _comoving_coefficients(
                 if d_clock == 0:
                     continue
                 for p_alias in sorted(value_names & aliases):
-                    became: list = []
-                    if asked is not None:
-                        became = asked.setdefault(p_alias, {}).setdefault(node, [])
+                    moves = {} if asked is None else asked.setdefault(p_alias, {})
+                    moves.setdefault(node, False)
                     d_p = sp.diff(numerator, sp.Symbol(p_alias))
                     if d_p == 0:
                         continue
                     for leaf in _piecewise_value_leaves(-d_p / d_clock, sp):
                         if leaf.has(sp.Piecewise):
-                            became.append(None)
+                            moves[node] = True
                             continue
                         leaf = sp.cancel(leaf)
                         if leaf == 0:
@@ -8744,9 +8750,9 @@ def _comoving_coefficients(
                             or not {s.name for s in leaf.free_symbols} <= allowed
                         ):
                             if not _edge_is_not_moved(numerator, d_p, clock, d_clock, sp):
-                                became.append(None)
+                                moves[node] = True
                             continue
-                        became.append(leaf)
+                        moves[node] = True
                         seen = out.setdefault(p_alias, {})
                         seen[leaf] = seen.get(leaf, ()) + power
     return out
@@ -8797,6 +8803,35 @@ def _singular_clock_powers(expr, clock_names: set[str], sp) -> set[tuple[str, st
     }
 
 
+def _shift_substitution(p_alias: str, c, clock_weights: dict, derived_shift: dict, sp):
+    """``(ε, substitution)`` for the shift ``(clock + c·ε, p + ε,
+    p_d + (∂p_d/∂p)·ε)``: see :func:`_comoving_shifted_partial`."""
+    eps = sp.Symbol(_COMOVING_EPS)
+    sub = {}
+    if c != 0:
+        for name, weight in clock_weights.items():
+            sub[sp.Symbol(name)] = sp.Symbol(name) + (c if weight == 1 else weight * c) * eps
+    sub[sp.Symbol(p_alias)] = sp.Symbol(p_alias) + eps
+    for d_sym, d_rate in derived_shift.items():
+        sub[d_sym] = d_sym + d_rate * eps
+    return eps, sub
+
+
+def _base_stays(base, eps, sub: dict, written_out: dict | None, sp) -> bool | None:
+    """Whether *base* does not move along a shift: its rate ``d base/dε`` is
+    nothing. ``None`` where sympy's own sum of ``∂base/∂p`` and
+    ``c·∂base/∂clock`` is 0, True where it takes each derived parameter
+    written out (``written_out``) and ``cancel`` to see it, False where the
+    base moves. A power of a base that moves keeps its singular term in the
+    column along that shift."""
+    rate = sp.diff(base.subs(sub, simultaneous=True), eps).subs(eps, 0)
+    if rate == 0:
+        return None
+    if written_out:
+        rate = rate.xreplace(written_out)
+    return sp.cancel(rate) == 0
+
+
 def _comoving_shifted_partial(
     expr,
     p_alias: str,
@@ -8834,14 +8869,7 @@ def _comoving_shifted_partial(
     """
     from bngsim._jacobian import _finish_zero_bases, _prepare_zero_bases
 
-    eps = sp.Symbol(_COMOVING_EPS)
-    sub = {}
-    if c != 0:
-        for name, weight in clock_weights.items():
-            sub[sp.Symbol(name)] = sp.Symbol(name) + (c if weight == 1 else weight * c) * eps
-    sub[sp.Symbol(p_alias)] = sp.Symbol(p_alias) + eps
-    for d_sym, d_rate in derived_shift.items():
-        sub[d_sym] = d_sym + d_rate * eps
+    eps, sub = _shift_substitution(p_alias, c, clock_weights, derived_shift, sp)
     still: dict = {}
     if c != 0:
         clock_names = set(clock_weights)
@@ -8851,12 +8879,8 @@ def _comoving_shifted_partial(
             if base in seen or not _singular_power(node, clock_names, sp):
                 continue
             seen.add(base)
-            rate = sp.diff(base.subs(sub, simultaneous=True), eps).subs(eps, 0)
-            if rate == 0:
-                continue  # sympy's own sum has cleared it
-            if written_out:
-                rate = rate.xreplace(written_out)
-            if sp.cancel(rate) == 0:
+            # None where sympy's own sum has cleared it.
+            if _base_stays(base, eps, sub, written_out, sp) is True:
                 still[base] = sp.Dummy(f"still_{len(still)}")
     shifted = (expr.xreplace(still) if still else expr).subs(sub, simultaneous=True)
     if still:
@@ -8955,20 +8979,34 @@ def _base_is_zero_at(base, time_and_parameters, sp) -> str:
     crossing a parameter of its base moves. ``(Ca/S)^m`` with
     ``Ca = if(t < t0, Ca0, Ca0 - Ca1·(1 - exp(-alpha·(t - t0))))`` reads
     ``t0``, and at ``t = t0`` its base is ``Ca0/S``, nowhere near 0
-    (BIOMD0000000276): the plain column of ``t0`` is right there."""
+    (BIOMD0000000276): the plain column of ``t0`` is right there.
+
+    A numerator that holds a condition is taken each way round, and asked
+    against the largest of the sums: against itself alone it would be asked
+    whether it is exactly 0, which what rounding leaves of a difference is
+    not. One with a single term has no sum to be asked against. A product of
+    parameters and the time is 0 only where one of them is, exactly; any
+    other single term, ``cos(pi·s/2)``, is not asked."""
     try:
         numerator = sp.numer(sp.together(base))
-        if numerator.has(sp.Piecewise):
-            terms: tuple = (numerator,)
-        else:
-            terms = sp.Add.make_args(sp.expand(numerator))
         whole = time_and_parameters(numerator)
-        written = [time_and_parameters(term) for term in terms]
+        each = _exponent_branches(numerator, sp)
+        if whole is None or each is None:
+            return "1"
+        scales: list[str] = []
+        for value in each:
+            terms = sp.Add.make_args(sp.expand(value))
+            if len(terms) == 1 and (terms[0].has(sp.Add) or terms[0].atoms(sp.Function)):
+                return "1"
+            written = [time_and_parameters(term) for term in terms]
+            if None in written:
+                return "1"
+            scales.append(" + ".join(f"fabs({term})" for term in written))
     except Exception:  # noqa: BLE001 - not worked out
         return "1"
-    if whole is None or None in written:
-        return "1"
-    scale = " + ".join(f"fabs({term})" for term in written)
+    scale = ""
+    for one in dict.fromkeys(scales):
+        scale = one if not scale else f"fmax({scale}, {one})"
     # Written so that a numerator that is no number counts as 0.
     return f"(!(fabs({whole}) > 1e-9 * ({scale})))"
 
@@ -9376,11 +9414,11 @@ def _functional_comoving_plan(
         for text in rxns_of_law
     }
 
-    # Issue #1003: what became of each singular power for each parameter its
-    # numerator reads (see ``_comoving_coefficients``), and the shifts that were
-    # made cases.
+    # Issue #1003: whether each parameter moves the zero of each singular power
+    # whose numerator reads it (see ``_comoving_coefficients``), and the cases
+    # that were made: each parameter's shifts, with what each was taken along.
     asked: dict[str, dict] = {}
-    made: dict[str, set] = {}
+    made: dict[str, list[tuple]] = {}
 
     def shifts_of(axes) -> dict[str, dict]:
         found: dict[str, dict] = {}
@@ -9487,7 +9525,7 @@ def _functional_comoving_plan(
             _left, c, c_c, law_c = best
             virtual = n_params + len(cases)
             cases.append((virtual, scope.param_idx_by_name[p_name], c_c))
-            made.setdefault(p_alias, set()).add(first)
+            made.setdefault(p_alias, []).append((c, derived_shift, inline))
 
             # Whether a power is singular is asked of its exponent when the
             # run asks, at the parameter values of that run. An exponent
@@ -9557,11 +9595,14 @@ def _functional_comoving_plan(
         logger.debug("issue #750: the derived comoving axes ran out of derivation budget")
 
     # Issue #1003: every parameter that a singular power's numerator reads, by
-    # name, through the derived parameters too. One is left without a case
-    # unless the above has asked it of that power and found a case for each
-    # shift, or found that it does not move the power's zero. So a parameter
+    # name, through the derived parameters too. One is left without a case for
+    # that power unless the above found that it does not move the power's
+    # zero, or one of its cases holds the power's base still along its shift:
+    # a case made for another power does not remove this one. So a parameter
     # the above did not reach (the budget ran out among the derived axes, or a
-    # derived parameter was not written out) is left without one.
+    # derived parameter was not written out) is left without one. A numerator
+    # that reads a species or an observable has a zero that any parameter can
+    # move, through the state, and is listed for every parameter (-1).
     def primaries_of(name: str) -> set[str]:
         found: set[str] = set()
         for one in {name} | above(name):
@@ -9572,6 +9613,14 @@ def _functional_comoving_plan(
                     found.add(read)
         return found
 
+    def has_its_case(base, alias: str) -> bool:
+        for shift, moved_with, written_out in made.get(alias, ()):
+            eps, along = _shift_substitution(alias, shift, clock_weights, moved_with, sp)
+            if _base_stays(base, eps, along, written_out, sp) is not False:
+                return True
+        return False
+
+    not_state = set(clock_weights) | param_aliases | set(_MATH_CONSTANT_C)
     edges: dict[int, list[str]] = {}
     for text in sorted(rxns_of_law):
         for on_cell, _cond in laws[text]:
@@ -9586,6 +9635,8 @@ def _functional_comoving_plan(
                 if at_zero != "1":
                     test = at_zero if test == "1" else f"(({test}) && {at_zero})"
                 in_base = _value_symbol_names(sp.numer(sp.together(node.base)), sp)
+                if in_base - not_state:
+                    edges.setdefault(-1, []).append(test)
                 named: set[str] = set()
                 for alias in in_base & param_aliases:
                     name = scope.param_of_alias[alias]
@@ -9593,11 +9644,10 @@ def _functional_comoving_plan(
                     if name in derived_names:
                         named |= above(name) | primaries_of(name)
                 for name in sorted(named):
-                    became = asked.get(alias_of_name.get(name, ""), {}).get(node)
-                    # A dropped shift is None, which is no case.
-                    if became is not None and all(
-                        shift in made.get(alias_of_name[name], ()) for shift in became
-                    ):
+                    alias = alias_of_name.get(name, "")
+                    if asked.get(alias, {}).get(node) is False:
+                        continue  # in the base, and its zero is where it was
+                    if has_its_case(node.base, alias):
                         continue
                     edges.setdefault(scope.param_idx_by_name[name], []).append(test)
     if edges_out is not None:
@@ -9627,8 +9677,8 @@ def _edge_parameters_by_name(
     zero is listed, and a power is taken to be at its edge at every crossing.
 
     It does not give up either. A law that cannot be read is taken to hold
-    such a power for every parameter: what the solver refuses by this is a
-    wrong number."""
+    such a power for every parameter (listed under -1, as a power whose base
+    reads a state is): what the solver refuses by this is a wrong number."""
     import sympy as sp
 
     from bngsim._jacobian import (
@@ -9689,13 +9739,16 @@ def _edge_parameters_by_name(
                     continue
                 test = " || ".join(under_one)
                 reads = _value_symbol_names(sp.numer(sp.together(node.base)), sp)
+                if reads - clocks - set(scope.param_of_alias) - set(_MATH_CONSTANT_C):
+                    found.append((None, test))  # a state: every parameter
                 for alias in sorted(reads & set(scope.param_of_alias)):
                     for name in sorted(reach(scope.param_of_alias[alias])):
                         found.append((name, test))
         except Exception:  # noqa: BLE001 - a law that is not read
-            found = [(name, "1") for name in sorted(scope.param_idx_by_name)]
+            found = [(None, "1")]
         for name, test in found:
-            tests.setdefault(scope.param_idx_by_name[name], []).append(test)
+            idx = -1 if name is None else scope.param_idx_by_name[name]
+            tests.setdefault(idx, []).append(test)
     return tuple((idx, tuple(dict.fromkeys(tests[idx]))) for idx in sorted(tests))
 
 
@@ -9997,14 +10050,14 @@ def _functional_dfdp_terms(
         ) -> _ComovingPlan | None:
             # Issue #948: the counters' powers first, and whatever becomes of
             # the plan after them.
-            found = _counter_powers(reactions, frxn_by_idx, scope, counter_species)
-            if found is not None:
-                counter_powers_out.append(found)
             # Issue #1003: the parameters left without a case, from the plan
             # where it worked them out and by name where it did not, whatever
-            # ended it.
+            # ended it or the counters' powers before it.
             worked_out: list = []
             try:
+                found = _counter_powers(reactions, frxn_by_idx, scope, counter_species)
+                if found is not None:
+                    counter_powers_out.append(found)
                 return _functional_comoving_plan(
                     reactions,
                     frxn_by_idx,
