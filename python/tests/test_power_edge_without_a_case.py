@@ -132,7 +132,8 @@ def _column(model, param, times=T, **kw):
 def _differences(tmp_path, window, a, param, times=T, h=1e-4):
     """dX/dparam at every sample time, from plain runs of models built with
     the parameter moved."""
-    start = (dict(START) | dict(WINDOWS[window][3]))[param]
+    added = WINDOWS[window][3] if isinstance(window, str) else window[3]
+    start = (dict(START) | dict(added))[param]
 
     def x(value):
         model = _model(tmp_path, window, a, **{param: value})
@@ -349,6 +350,71 @@ def test_refused_through_sbml(shape, param):
     _refused_in_sbml(_antimony(1.1, shape=shape), param)
 
 
+@pytest.mark.parametrize("rtol", [1e-4, 1e-10, 1e-12])
+def test_refused_before_the_run_is_taken(rtol):
+    """Refused where the run starts, for the switch times it has. Asked only
+    at the crossing, the plain column is first carried up to the closing
+    edge, where at a tight tolerance the run ends in a solver error."""
+    sim = bngsim.Simulator(_antimony(1.1), method="ode", sensitivity_params=["wb"])
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #1003\)"):
+        sim.run(sample_times=T, rtol=rtol, atol=rtol * 1e-2, timeout=120)
+
+
+def test_the_base_is_asked_to_rounding():
+    """The edge's time ``on/(wb - wa) + D`` is no round number here, and the
+    base's numerator there is what rounding leaves of 0, not 0."""
+    model = bngsim.Model.from_antimony_string(
+        "species X; X = 0; k0 = 0.1; k1 = 2; a = 1.1; on = 3.1; D = 4.3; kdeg = 0.3; "
+        "wb = 2.3; wa = 0.7\n"
+        "J1: -> X; k0 + piecewise(piecewise(k1*((time - on/(wb - wa))/D)"
+        "*(1 - (time - on/(wb - wa))/D)^(a - 1), time <= on/(wb - wa) + D, 0), "
+        "time >= on/(wb - wa), 0)\n"
+        "J2: X -> ; kdeg*X\n"
+    )
+    _refused_in_sbml(model, "wb")
+
+
+def _only_a_root(a, wb=2.0):
+    """The window opens where a state crosses, and never closes: its edge is
+    no switch time the run has before it starts."""
+    return bngsim.Model.from_antimony_string(
+        f"species X, Z; X = 1; Z = 0; k0 = 0.1; k1 = 1; a = {a}; on = 10; D = 20; "
+        f"wb = {wb!r}; wa = 1\n"
+        "J0: -> X; (k0 + k1*piecewise(((time - on/(wb - wa))/D)^(a - 1), "
+        "time - Z >= on/(wb - wa), 0))*X\n"
+    )
+
+
+@pytest.mark.parametrize("a", [1.9, 1.999])
+def test_an_edge_that_is_only_found_as_a_root_is_refused_at_the_root(a):
+    """Nothing is known of this edge before the run, so the column is refused
+    where the root is found. (At a = 1.5 the plain column does not get that
+    far: the run ends short of the root in CVODE's no-progress error, as it
+    did.)"""
+    sim = bngsim.Simulator(_only_a_root(a), method="ode", sensitivity_params=["wb"])
+    with pytest.raises(bngsim.SimulationError, match=r"singular.*\(issue #1003\)"):
+        sim.run(sample_times=[0.0, 5.0, 12.0, 18.0], rtol=1e-8, atol=1e-10, timeout=120)
+
+
+def test_an_edge_that_is_only_found_as_a_root_where_nothing_is_singular():
+    """Control."""
+    times = [0.0, 5.0, 12.0, 18.0]
+
+    def x(wb):
+        run = bngsim.Simulator(_only_a_root(3.0, wb), method="ode").run(
+            sample_times=times, rtol=1e-12, atol=1e-14, timeout=120
+        )
+        return np.asarray(run.species)[:, list(run.species_names).index("X")]
+
+    h = 1e-4
+    coarse = (x(2 + h) - x(2 - h)) / (2 * h)
+    fine = (x(2 + h / 2) - x(2 - h / 2)) / h
+    sim = bngsim.Simulator(_only_a_root(3.0), method="ode", sensitivity_params=["wb"])
+    run = sim.run(sample_times=times, rtol=1e-8, atol=1e-10, timeout=120)
+    got = np.asarray(run.sensitivities)[:, list(run.species_names).index("X"), 0]
+    assert _worst(got, (4 * fine - coarse) / 3) < 1e-5
+
+
 def test_on_the_literal_time_a_crossing_that_is_not_the_edge_is_let_by():
     """Control. The run ends at 5, inside the window. ``wb`` moves the opening
     at 3, where the base ``1 - s`` of the closing power is 1: that crossing is
@@ -370,6 +436,50 @@ def _never_zero(t0=3.3):
         "J1: -> X; (A - B)/(1 + (Ca/S)^m) + B\n"
         "J2: X -> ; kdeg*X\n"
     )
+
+
+def _switched_on(ca0, t0=3.3):
+    """``(Ca/S)^m`` with ``Ca`` at ``Ca0`` up to ``t0`` and rising from it.
+    With ``Ca0 = 0`` the base is 0 at ``t0``, the power's opening edge. The
+    shift of ``t0`` holds the condition and is dropped: ``t0`` has no case."""
+    return bngsim.Model.from_antimony_string(
+        f"species X; X = 0; Ca0 = {ca0!r}; Ca1 = 0.18; t0 = {t0!r}; alpha = 0.4; S = 1.1; "
+        "m = 0.5; A = 2; kdeg = 0.3\n"
+        "Ca := piecewise(Ca0, time < t0, Ca0 + Ca1*(1 - exp(-alpha*(time - t0))))\n"
+        "J1: -> X; A*(Ca/S)^m\n"
+        "J2: X -> ; kdeg*X\n"
+    )
+
+
+def test_a_base_that_is_zero_where_its_parameter_switches_it_on():
+    model = _switched_on(0.0)
+    assert "t0" in _without_a_case(model)
+    _refused_in_sbml(model, "t0")
+
+
+def test_the_base_is_asked_at_the_runs_values():
+    """Built where the base is 0.5 at ``t0`` and set to where it is 0."""
+    model = _switched_on(0.5)
+    model.set_param("Ca0", 0.0)
+    _refused_in_sbml(model, "t0")
+
+
+def test_a_base_that_is_not_zero_where_its_parameter_switches_it_on():
+    """Control. The other way round: built at 0 and set to 0.5, where the
+    crossing at ``t0`` is no edge of the power. No sample is on ``t0``."""
+
+    def x(t0):
+        run = bngsim.Simulator(_switched_on(0.5, t0), method="ode").run(
+            sample_times=T, rtol=1e-12, atol=1e-14, timeout=120
+        )
+        return np.asarray(run.species)[:, 0]
+
+    h = 1e-4
+    coarse = (x(3.3 + h) - x(3.3 - h)) / (2 * h)
+    fine = (x(3.3 + h / 2) - x(3.3 - h / 2)) / h
+    model = _switched_on(0.0)
+    model.set_param("Ca0", 0.5)
+    assert _worst(_column(model, "t0"), (4 * fine - coarse) / 3) < 5e-6
 
 
 def test_a_power_whose_base_is_never_zero_is_listed_with_its_base():
@@ -430,7 +540,7 @@ def test_through_sbml_a_power_that_is_not_singular_keeps_its_column():
 )
 def test_the_parameters_the_source_lists(tmp_path, window, listed, cased):
     """Each parameter that moves the edge is listed or has a case, and none
-    is both. The test is the one a case's own power is asked (issue #958)."""
+    is both."""
     model = _model(tmp_path, window, 1.1)
     assert _without_a_case(model) == dict.fromkeys(listed, SINGULAR)
     assert _with_a_case(model) == cased
@@ -480,6 +590,58 @@ def test_an_exponent_chosen_by_a_condition_and_singular_on_no_branch(tmp_path):
     assert np.all(np.isfinite(_column(model, "wb")))
 
 
+def test_an_exponent_chosen_among_numbers_of_one_or_more_is_not_listed(tmp_path):
+    """Control. ``if(t<tsw, 2, 3) - 1`` is no number, so the power is singular
+    by its shape, and neither value is under 1: nothing to list."""
+    model = _model(tmp_path, CHOSEN, 3.0, shape="s()*((1-s())^(if(t<tsw,2,3)-1))")
+    assert _without_a_case(model) == {}
+    assert np.all(np.isfinite(_column(model, "wb")))
+
+
+SEASONS = ("closing", "if(t<tsw,on,on2)", "D", (("on2", 30.0), ("tsw", 20.0)))
+
+
+@pytest.mark.parametrize("a", [1.1, 1.5])
+def test_an_onset_chosen_by_a_condition_on_a_parameter(tmp_path, a):
+    """The onset is ``on`` up to ``tsw = 20`` and ``on2`` after it, as a
+    season's onset is chosen in a model of several years whose year ends are
+    parameters. A shift of 1 is read off for ``on``, and it does not remove
+    the power, whose base holds the condition: ``on`` has no case. Its run
+    ended in CVODE's no-progress error at a = 1.1 and returned at 1.5."""
+    model = _model(tmp_path, SEASONS, a)
+    assert _without_a_case(model) == {"on": SINGULAR, "on2": SINGULAR}
+    _refused(model, "on")
+
+
+def test_an_onset_chosen_by_a_condition_where_nothing_is_singular(tmp_path):
+    """Control."""
+    for param in ("on", "D"):
+        want = _differences(tmp_path, SEASONS, 3.0, param)
+        assert _worst(_column(_model(tmp_path, SEASONS, 3.0), param), want) < 5e-6
+
+
+def test_a_listed_parameter_that_moves_no_crossing_keeps_its_column(tmp_path):
+    """Control. ``kq`` is under the power, in ``(1 - s^kq)^(a-1)``, and the
+    zero of that base is at ``s = 1`` whatever ``kq`` is. The base is not
+    linear in the time, so that is not worked out and ``kq`` is listed; it
+    moves no crossing, and nothing asks."""
+    window = ("closing", "on", "D", (("kq", 2.0),))
+    shape = "s()*((1-s()^kq)^(a-1))"
+    model = _model(tmp_path, window, 1.1, shape=shape)
+    assert "kq" in (_without_a_case(model) or {"kq": ""})
+
+    def x(kq):
+        run = bngsim.Simulator(
+            _model(tmp_path, window, 1.1, shape=shape, kq=kq), method="ode"
+        ).run(sample_times=T, rtol=1e-12, atol=1e-14, timeout=120)
+        return np.asarray(run.species)[:, 0]
+
+    h = 1e-4
+    coarse = (x(2 + h) - x(2 - h)) / (2 * h)
+    fine = (x(2 + h / 2) - x(2 - h / 2)) / h
+    assert _worst(_column(model, "kq"), (4 * fine - coarse) / 3) < 5e-5
+
+
 def test_two_windows_and_a_case_for_one_of_them(tmp_path):
     """``D`` is the plain width of the first window and is under a square in
     the second. It has its case for the first and none for the second, and a
@@ -501,8 +663,6 @@ def test_two_windows_and_a_case_for_one_of_them(tmp_path):
 
 
 # ─── A plan that ends early ──────────────────────────────────────────────────
-
-UNDER_ONE = "((p[2] - 1.0) < 1.0)"
 
 
 def _ending_early(monkeypatch, error):
@@ -529,7 +689,7 @@ def test_a_plan_that_ends_early_lists_by_name(tmp_path, monkeypatch, window, bud
     source = _source(model)
     assert "bngsim_codegen_comoving_case" not in source
     in_base = {"on", "D"} | {name for name, _value in WINDOWS[window][3]}
-    assert _without_a_case(model, source) == dict.fromkeys(in_base, UNDER_ONE)
+    assert _without_a_case(model, source) == dict.fromkeys(in_base, SINGULAR)
 
 
 def test_by_name_a_derived_parameter_and_what_it_is_defined_from(tmp_path, monkeypatch):

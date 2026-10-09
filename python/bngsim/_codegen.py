@@ -8701,7 +8701,7 @@ def _comoving_coefficients(
 
     ``asked``, where given, is filled with what became of each power for each
     parameter its numerator reads (issue #1003):
-    ``{param_alias: {(power, way): [shift, ...]}}``, a shift that was kept, or
+    ``{param_alias: {power: [shift, ...]}}``, a shift that was kept, or
     ``None`` for one that was dropped. A parameter that does not move the
     power's zero has an empty list. A dropped shift is a column with no frame
     to be carried in across that power's edge."""
@@ -8728,7 +8728,7 @@ def _comoving_coefficients(
                 for p_alias in sorted(value_names & aliases):
                     became: list = []
                     if asked is not None:
-                        became = asked.setdefault(p_alias, {}).setdefault((node, way), [])
+                        became = asked.setdefault(p_alias, {}).setdefault(node, [])
                     d_p = sp.diff(numerator, sp.Symbol(p_alias))
                     if d_p == 0:
                         continue
@@ -8739,10 +8739,10 @@ def _comoving_coefficients(
                         leaf = sp.cancel(leaf)
                         if leaf == 0:
                             continue
-                        if leaf.has(sp.nan, sp.zoo, sp.oo, -sp.oo):
-                            became.append(None)
-                            continue
-                        if not {s.name for s in leaf.free_symbols} <= allowed:
+                        if (
+                            leaf.has(sp.nan, sp.zoo, sp.oo, -sp.oo)
+                            or not {s.name for s in leaf.free_symbols} <= allowed
+                        ):
                             if not _edge_is_not_moved(numerator, d_p, clock, d_clock, sp):
                                 became.append(None)
                             continue
@@ -8917,16 +8917,15 @@ def _exponent_branches(exponent, sp) -> list | None:
     return out
 
 
-def _exponent_under_one(exponent, closes: bool, over_parameters, sp) -> list[str]:
+def _exponent_under_one(exponent, over_parameters, sp) -> list[str]:
     """The C tests, any of which says the power is singular at the run's
-    values (issue #1003): its exponent is under 1, and for a power that closes
-    at its edge is not 0, where it is the constant 1 with nothing behind it.
-    The same test a comoving case's own powers are asked (issue #958).
+    values (issue #1003): its exponent is under 1 and is not 0, where the
+    power is the constant 1.
 
     An exponent chosen by a condition, ``if(t < t1, a_1, a_2)``, is asked
     branch by branch, whichever the run is on. ``"1"`` for one that cannot be
-    asked: it reads a species or the time, or is a number between 0 and 1.
-    Empty where no branch can be under 1."""
+    asked: it reads a species or the time, or is a number under 1. Empty
+    where no branch can be under 1."""
     whole = over_parameters(exponent)
     if whole is not None or exponent.is_number:
         each: list | None = [exponent]
@@ -8937,16 +8936,11 @@ def _exponent_under_one(exponent, closes: bool, over_parameters, sp) -> list[str
     tests: list[str] = []
     for one in each:
         if one.is_number:
-            if one.is_real is True and bool(one < 1) and (bool(one != 0) or not closes):
+            if one.is_real is True and bool(one < 1) and bool(one != 0):
                 tests.append("1")
             continue
         e_c = over_parameters(one)
-        if e_c is None:
-            tests.append("1")
-        elif closes:
-            tests.append(f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
-        else:
-            tests.append(f"(({e_c}) < 1.0)")
+        tests.append("1" if e_c is None else f"(({e_c}) < 1.0 && ({e_c}) != 0.0)")
     return ["1"] if "1" in tests else list(dict.fromkeys(tests))
 
 
@@ -9584,8 +9578,7 @@ def _functional_comoving_plan(
             for node in sorted(set(_pow_nodes_in_values(on_cell, sp)), key=_term_order.srepr):
                 if not _singular_power(node, clock_names, sp):
                     continue
-                way = "close" if _base_closes(node.base, clock_names, sp) else "open"
-                under_one = _exponent_under_one(node.exp, way == "close", over_parameters, sp)
+                under_one = _exponent_under_one(node.exp, over_parameters, sp)
                 if not under_one:
                     continue
                 test = " || ".join(under_one)
@@ -9600,7 +9593,7 @@ def _functional_comoving_plan(
                     if name in derived_names:
                         named |= above(name) | primaries_of(name)
                 for name in sorted(named):
-                    became = asked.get(alias_of_name.get(name, ""), {}).get((node, way))
+                    became = asked.get(alias_of_name.get(name, ""), {}).get(node)
                     if became is not None and all(
                         shift is not None and shift in made.get(alias_of_name[name], ())
                         for shift in became
@@ -9631,8 +9624,7 @@ def _edge_parameters_by_name(
     met a law it does not shift. The model then has no case at all, and every
     column that needed one is plain. By name, so wider than what the plan
     works out: a parameter that is in a power's base and does not move its
-    zero is listed, a closing power is listed at an exponent of exactly 0, and
-    a power is taken to be at its edge at every crossing.
+    zero is listed, and a power is taken to be at its edge at every crossing.
 
     It does not give up either. A law that cannot be read is taken to hold
     such a power for every parameter: what the solver refuses by this is a
@@ -9690,7 +9682,6 @@ def _edge_parameters_by_name(
                     continue
                 under_one = _exponent_under_one(
                     node.exp,
-                    False,
                     lambda e: _exponent_over_parameters(e, resolve_symbol, sympy_to_c),
                     sp,
                 )
