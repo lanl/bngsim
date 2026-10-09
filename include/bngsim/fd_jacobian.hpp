@@ -92,38 +92,53 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // `k·(2X + h)`: dX*/ds 7% off at a ratio of 1e7 and 44% at 1e8, and a species at
 // exactly 0 that dimerizes was given a decay rate it does not have.
 //
-// The floored quotient is kept wherever a second quotient at half the step
-// agrees with it to what rounding can do to the two, which is every entry the
-// species enters linearly, and those are bit for bit what they were. Where the
-// two differ by more than that, the first has a truncation error that can be
-// seen, and the entry is extrapolated to a step of zero from a ladder of
-// halved steps (Richardson's scheme, by Neville's tableau): the big steps keep
-// the noise down, and the extrapolation removes what they cost. For a
-// mass-action law, a polynomial in the species, three or four steps are exact.
-// A law with a scale of its own far below the first step, a Hill term whose
-// half-saturation is, is followed down the ladder until two estimates agree.
-// What cannot be seen is a term too small to move the first two quotients
-// apart: that entry is what it was.
+// For such a species a second quotient is taken at half the step. Where the
+// two agree to what the row's rounding can do to them, which is every entry
+// the species enters linearly, the entry is the first, bit for bit as it was.
+// Where they do not, the first has a truncation error that can be seen, and
+// the entry is extrapolated to a step of zero from a ladder of halved steps
+// (Richardson's scheme, by Neville's tableau): the big steps keep the noise
+// down, and the extrapolation removes what they cost. For a mass-action law, a
+// polynomial in the species, three or four steps are exact. A law with a scale
+// of its own far below the first step, a Hill term whose half-saturation is,
+// is followed down the ladder until two estimates agree.
+//
+// An entry changes only where the ladder settles: two successive estimates
+// agree to kFdRefineRtol of themselves, or to the rounding of the first two
+// quotients. Otherwise it is the first quotient, as it was: a law that is not
+// smooth at the species, or a row whose rounding overtakes the ladder before
+// it settles. What cannot be seen at all is a term too small to move the
+// first two quotients apart.
+//
+// A row's rounding is measured and not worked out. The sum of a row's terms
+// is not to be had from its value and its entries: `L·(r − δ − φ(L))` with
+// `φ → r − δ` is terms of 1e4 that cancel in the value and in every entry, and
+// a quotient of it at a step of 1e-8 is all rounding (BIOMD0000000884, where a
+// bound from the entries called that rounding a curvature). So the row is
+// evaluated at the state with every species moved by a few parts in 1e14,
+// three times, and what the entries do not account for of the change is its
+// rounding.
 
 // How many times its own step (√eps of itself) a species has to be stepped by
 // before its column is looked at again. Below this the floored step's
 // truncation error is under 64·√eps/2, 5e-7 of the entry.
 constexpr double kFdRefineRatio = 64.0;
-// Two estimates a row's rounding cannot tell apart are one. A quotient is good
-// to 2·eps of the sum of the row's terms over its step, an extrapolated one to
-// about eight times that, and two of them differ by twice as much; or they
-// agree to kFdRefineRtol of themselves.
+// Two estimates differ where they are further apart than this many times the
+// row's rounding over the step, and kFdRefineRtol of themselves.
 constexpr double kFdNoise = 32.0;
 constexpr double kFdRefineRtol = 1e-6;
+// The relative moves of the whole state a row's rounding is sampled at.
+constexpr double kFdNoiseProbes[] = {0x1p-44, -0x1p-44, 0x1.8p-43};
 // The ladder: at most this many halvings, a factor of 1e-12 in the step, and
 // not below the species' own step.
 constexpr int kFdMaxHalvings = 40;
 
 // Column-major D (n_out×ns, D[j*n_out + i] = ∂g_i/∂y_j) of any `eval(y, g)`
 // that fills n_out values from a state of ns species. One `eval` per column
-// plus one for the base point, and more for the column of a species far below
-// the state's scale where a row is not linear in it (see above). `excluded`
-// (0-based, ascending) names the species that must not set the probe scale.
+// plus one for the base point; for a state with a species far below its scale
+// three more, and more for the column of each such species (see above).
+// `excluded` (0-based, ascending) names the species that must not set the
+// probe scale.
 template <class Eval>
 inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                               const std::vector<int> &excluded, double *D) {
@@ -132,6 +147,7 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     std::vector<double> g0(um), g1(um), y_pert(un), h0(un);
     const double y_scale = state_probe_scale(y, ns, excluded);
     eval(y, g0.data());
+    bool any_small = false;
     for (int j = 0; j < ns; ++j) {
         const auto uj = static_cast<std::size_t>(j);
         std::memcpy(y_pert.data(), y, un * sizeof(double));
@@ -141,34 +157,49 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
         for (std::size_t i = 0; i < um; ++i) {
             col[i] = (g1[i] - g0[i]) / h0[uj];
         }
-    }
-    // What a row's values are assembled from: its own value and each entry
-    // times its species. Rounding in a row is eps of this.
-    std::vector<double> row_terms(um);
-    bool any_small = false;
-    for (std::size_t i = 0; i < um; ++i) {
-        row_terms[i] = std::abs(g0[i]);
-    }
-    for (int j = 0; j < ns; ++j) {
-        const auto uj = static_cast<std::size_t>(j);
-        const double yj = std::abs(y[j]);
-        any_small = any_small || h0[uj] > kFdRefineRatio * kFdEps * yj;
-        if (yj == 0.0) {
-            continue;
-        }
-        const double *col = D + uj * um;
-        for (std::size_t i = 0; i < um; ++i) {
-            row_terms[i] += std::abs(col[i]) * yj;
-        }
+        any_small = any_small || h0[uj] > kFdRefineRatio * kFdEps * std::abs(y[j]);
     }
     if (!any_small) {
         return;
     }
+    // Each row's rounding: eps of its own value and of each entry times its
+    // species at the least, and what three small moves of the whole state
+    // change in it beyond what the entries say they should.
     const double eps = std::numeric_limits<double>::epsilon();
+    std::vector<double> rounding(um), along(um, 0.0);
+    for (std::size_t i = 0; i < um; ++i) {
+        rounding[i] = std::abs(g0[i]);
+    }
+    for (int j = 0; j < ns; ++j) {
+        const double *col = D + static_cast<std::size_t>(j) * um;
+        for (std::size_t i = 0; i < um; ++i) {
+            const double term = col[i] * y[j];
+            if (std::isfinite(term)) {
+                along[i] += term;
+                rounding[i] += std::abs(term);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < um; ++i) {
+        rounding[i] *= eps;
+    }
+    for (const double move : kFdNoiseProbes) {
+        for (std::size_t k = 0; k < un; ++k) {
+            y_pert[k] = y[k] * (1.0 + move);
+        }
+        eval(y_pert.data(), g1.data());
+        for (std::size_t i = 0; i < um; ++i) {
+            const double beyond = std::abs(g1[i] - g0[i] - move * along[i]);
+            if (beyond > rounding[i]) {
+                rounding[i] = beyond;
+            }
+        }
+    }
     const auto width = static_cast<std::size_t>(kFdMaxHalvings) + 1;
     std::vector<double> steps(width);
-    std::vector<std::size_t> open; // rows whose entry is still being asked
-    std::vector<double> table;     // per open row: the last row of its tableau
+    std::vector<std::size_t> open;  // rows whose entry is still being asked
+    std::vector<double> table;      // per open row: the last row of its tableau
+    std::vector<double> first_size; // per open row: the size of its first quotient
     std::vector<double> cur(width);
     for (int j = 0; j < ns; ++j) {
         const auto uj = static_cast<std::size_t>(j);
@@ -183,11 +214,8 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
         for (int k = 1; k <= kFdMaxHalvings; ++k) {
             const auto uk = static_cast<std::size_t>(k);
             const double want = steps[uk - 1] / 2.0;
-            // Not below the species' own step: there the quotient is the
-            // plain relative one, which is where an entry that has not
-            // settled is left.
             if (k > 1 && want < kFdEps * yj) {
-                break;
+                break; // not below the species' own step
             }
             y_pert[uj] = y[j] + want;
             const double h = y_pert[uj] - y[j];
@@ -201,7 +229,7 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                     const double q0 = col[i];
                     const double q1 = (g1[i] - g0[i]) / h;
                     if (std::abs(q1 - q0) >
-                        kFdNoise * eps * row_terms[i] / h + kFdRefineRtol * std::abs(q0)) {
+                        kFdNoise * rounding[i] / h + kFdRefineRtol * std::abs(q0)) {
                         open.push_back(i);
                     }
                     // Otherwise one quotient to rounding, and the entry stays.
@@ -210,14 +238,16 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                     break;
                 }
                 table.assign(open.size() * width, 0.0);
+                first_size.assign(open.size(), 0.0);
                 for (std::size_t r = 0; r < open.size(); ++r) {
                     table[r * width] = col[open[r]];
+                    first_size[r] = std::abs(col[open[r]]);
                 }
             }
             bool any_open = false;
             for (std::size_t r = 0; r < open.size(); ++r) {
                 if (open[r] == um) {
-                    continue; // settled
+                    continue; // settled, or given up
                 }
                 const std::size_t i = open[r];
                 double *prev = table.data() + r * width;
@@ -227,19 +257,20 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                     const double far_step = steps[uk - m];
                     cur[m] = (cur[m - 1] * far_step - prev[m - 1] * h) / (far_step - h);
                 }
-                // Settled where one more step leaves the estimate where it
-                // was. Until then the entry is the plain quotient at the
-                // smallest step taken, which is what it is left as where the
-                // ladder ends first: a law that is not smooth at that scale.
-                const bool settled = k > 1 && std::abs(cur[uk] - prev[uk - 1]) <=
-                                                  kFdNoise * eps * row_terms[i] / h +
-                                                      kFdRefineRtol * std::abs(cur[uk]);
-                const double entry = settled ? cur[uk] : cur[0];
-                if (std::isfinite(entry)) {
-                    col[i] = entry;
-                }
-                if (settled) {
+                // What two estimates may differ by and be one: the rounding
+                // of the first two quotients, or a millionth of the estimate
+                // or of the first quotient, whichever is larger (an entry
+                // whose slope at the species is 0 has no size of its own).
+                const double first = first_size[r];
+                const double apart = kFdNoise * rounding[i] / steps[1];
+                if (k > 1 && std::isfinite(cur[uk]) &&
+                    std::abs(cur[uk] - prev[uk - 1]) <=
+                        apart + kFdRefineRtol * std::max(std::abs(cur[uk]), first)) {
+                    col[i] = cur[uk]; // settled
                     open[r] = um;
+                } else if (kFdNoise * rounding[i] / h >
+                           apart + kFdRefineRtol * std::max(std::abs(cur[0]), first)) {
+                    open[r] = um; // the row's rounding has overtaken the ladder
                 } else {
                     any_open = true;
                     std::memcpy(prev, cur.data(), (uk + 1) * sizeof(double));
@@ -249,7 +280,6 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                 break;
             }
         }
-        y_pert[uj] = y[j];
     }
 }
 

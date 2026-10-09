@@ -205,14 +205,6 @@ def _first_quotient(model, y, j):
     return (np.asarray(model.rhs(stepped, 0.0)) - np.asarray(model.rhs(y, 0.0))) / h
 
 
-def _quotient(model, y, j, h):
-    y = np.asarray(y, dtype=float)
-    stepped = y.copy()
-    stepped[j] = y[j] + h
-    h = stepped[j] - y[j]
-    return (np.asarray(model.rhs(stepped, 0.0)) - np.asarray(model.rhs(y, 0.0))) / h
-
-
 def test_an_entry_a_small_species_enters_linearly_is_bit_for_bit_what_it_was(tmp_path):
     """Control. G gains ``kw·X`` (reaction 7), 1e-4 a unit of X, beside
     fluxes of 1e8. The quotients at the step and at half of it differ by the
@@ -237,21 +229,51 @@ def test_a_row_with_a_large_term_no_species_is_in(tmp_path):
 
 
 @pytest.mark.parametrize("x", [0.0, 1e-3])
-def test_a_law_that_is_not_smooth_at_the_species_is_left_as_a_plain_quotient(tmp_path, x):
-    """``0 -> D`` at ``sqrt(abs(X - xc))`` with X on ``xc``: the quotient is
-    ``h^(-1/2)`` and no two estimates agree. The entry is the quotient at the
-    smallest step of the ladder, which ends at forty halvings for a species
-    at 0 and above the species' own step, √eps of itself, for one that is
-    not."""
+def test_a_law_that_is_not_smooth_at_the_species_is_what_it_was(tmp_path, x):
+    """Control. ``0 -> D`` at ``sqrt(abs(X - xc))`` with X on ``xc``: the
+    quotient is ``h^(-1/2)``, which has no limit, and no two estimates of
+    the ladder agree. An entry changes only where the ladder settles, so
+    this one is the first quotient."""
     model = _model(tmp_path, 1e8, more="    7 0 2 root\n", xc=x)
     y = _state(1e8, x=x)
-    h = SQRT_EPS * 1e8
-    halvings = 0
-    while halvings < 40 and (halvings < 1 or h / 2 >= SQRT_EPS * x):
-        h /= 2
-        halvings += 1
-    assert halvings == (40 if x == 0.0 else 36)
-    assert _fd(model, y)[1, 0] == _quotient(model, y, 0, h)[1]
+    assert _fd(model, y)[1, 0] == _first_quotient(model, y, 0)[1]
+
+
+def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
+    """Control. ``L·(r - phi)`` with ``phi = (r·L + g·U)/(L + U)``, the
+    logistic share of BIOMD0000000884: with U next to nothing, terms of 1e4
+    cancel in the row's value and in its entry for L, so neither says how
+    large the row's rounding is. A quotient of it at a small step is all
+    rounding (0.0056 at a step of 1e-2, 0.016 at 1e-8, 0 below 1e-9). The
+    rounding is measured, and the entry of U stays the first quotient."""
+    text = """begin parameters
+    1 r   0.01
+    2 g   0.0156
+end parameters
+begin functions
+    1 phi() (r*Lo+g*Uo)/(Lo+Uo)
+    2 grow() r-phi()
+end functions
+begin species
+    1 L() 1e6
+    2 U() 4e-9
+end species
+begin reactions
+    1 1 1,1 grow
+end reactions
+begin groups
+    1 Lo 1
+    2 Uo 2
+end groups
+"""
+    path = tmp_path / "share.net"
+    path.write_text(text)
+    model = bngsim.Model.from_net(path)
+    y = np.array([1e6, 4e-9])
+    jac = _fd(model, y)
+    assert jac[0, 1] == _first_quotient(model, y, 1)[0]
+    # ∂/∂U of L·(r - (r·L + g·U)/(L + U)) at U << L is r - g.
+    assert jac[0, 1] == pytest.approx(0.01 - 0.0156, rel=1e-4)
 
 
 def test_the_column_of_a_species_at_the_states_scale_is_what_it_was(tmp_path):
