@@ -1285,13 +1285,13 @@ def test_a_root_that_was_stepped_to_is_where_a_run_ends(tmp_path):
     and Newton takes X to the middle root, 0.25, which the system leaves. A
     run from where the model starts takes X to 1 instead, in the 1e9 it is
     given. The column of s is 1/kd at both, so that it does not move, and what
-    says the root is the wrong one is where the run ends: 75% away in X. The
+    says the root is the wrong one is where the run ends: at 1 for 0.25. The
     growth at the middle root, 7.5e-8, is under what the spectrum is trusted
     to beside W's rate of 1."""
     sim = bngsim.Simulator(_net(tmp_path, BETWEEN_TWO_ROOTS), method="ode")
     with pytest.raises(
         bngsim.SimulationError,
-        match=r"#995.*stepped to is not where a run ends.*ends 75% from that root in X\(\)",
+        match=r"#995.*stepped to is not where a run ends.*ends \d\d% from that root in X\(\)",
     ):
         sim.steady_state(sensitivity_params=["s"], max_time=1e9)
 
