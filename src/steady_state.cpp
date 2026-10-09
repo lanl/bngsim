@@ -2429,20 +2429,9 @@ static constexpr double kZeroShare = 0.5;
 // 1e5, and each step leaves them there.
 static constexpr double kRoundingShare = 1e-13;
 
-// A species that holds more than this of a conserved total it belongs to is not
-// at a zero (ss_species_scales): the product of a species that ran out holds
-// all of what the two shared, 1e-12 beside a catalyst at 1,000, and no rate
-// reads it.
-static constexpr double kPoolShare = 1e-3;
-
 // How far down the species that may be at a zero are put, of where they were
 // returned, to see whether one grows from there (ss_species_scales).
 static constexpr double kNextToNothing = 1e-6;
-
-// How many times the species that may be at a zero are gone over
-// (ss_species_scales). Each pass takes at least one out, and a chain of
-// species each made by the one before takes a pass a link.
-static constexpr int kZeroPasses = 64;
 
 // The most a column may move, of its largest entry, between two states a
 // Newton step apart for the columns to be those of the root, and the Newton
@@ -2885,8 +2874,7 @@ static double ss_pivot_share(const std::vector<double> &lu, int n, const std::ve
 // (kZeroShare) or takes it under what rounding leaves of a zero, 1e-13
 // (kRoundingShare) of what makes it, Σ|J_ij|·y_j over |J_ii|, and of a
 // conserved total it belongs to or, in no total, of the largest species the
-// Jacobian couples it to; and where it does not hold a share of such a total
-// (kPoolShare). Among those, it is one where its rate is zero
+// Jacobian couples it to. Among those, it is one where its rate is zero
 // at the corrected state with all of them set to zero: nothing that is left
 // makes it. A species with a rate there is made by something that stays, and
 // has a steady value, however small; it is taken out, and the rest are asked
@@ -2999,14 +2987,14 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
         const double returned = std::abs(y_ss[i]), corrected = std::abs(y_c[i]);
         const double beside = group[static_cast<size_t>(find(i))];
         // What rounding is of: the pool, for a species that is in one, and
-        // what stands beside it otherwise. A species that holds a share of a
-        // pool is not at a zero, whatever else is larger: nothing need make
-        // what a law keeps.
+        // what stands beside it otherwise. The product of a species that ran
+        // out holds all of what the two shared, 1e-12 beside a catalyst at
+        // 1,000, and no rate reads it: nothing need make what a law keeps, and
+        // it is not rounding of its own total.
         const bool pooled = std::isfinite(allowed[k]);
         const double around = std::max(fed, pooled ? allowed[k] : beside);
-        const bool holds_a_share = pooled && corrected > kPoolShare * allowed[k];
         const bool rounding = corrected <= kRoundingShare * around;
-        at_zero[k] = !holds_a_share && (corrected <= kZeroShare * returned || rounding);
+        at_zero[k] = corrected <= kZeroShare * returned || rounding;
         falling[k] = at_zero[k] && !rounding;
     }
     // Those that something left over makes are not at a zero, and neither is one
@@ -3021,7 +3009,8 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
     {
         std::vector<double> at(static_cast<size_t>(ns)), rate(static_cast<size_t>(ns));
         bool settled = false;
-        for (int pass = 0; pass < kZeroPasses && !settled; ++pass) {
+        // Each pass takes at least one species out, or is the last.
+        for (int pass = 0; pass <= 2 * ns && !settled; ++pass) {
             bool any = false, any_falling = false;
             for (int i = 0; i < ns; ++i) {
                 const size_t k = static_cast<size_t>(i);
@@ -3059,9 +3048,6 @@ static std::vector<double> ss_species_scales(SteadyStateRhs &rhs, const NetworkM
                     settled = false;
                 }
             }
-        }
-        if (!settled) {
-            std::fill(at_zero.begin(), at_zero.end(), 0);
         }
     }
     for (int i = 0; i < ns; ++i) {

@@ -1411,6 +1411,108 @@ def test_what_an_entry_for_each_species_is_small_against(tmp_path):
     assert sim.steady_state().sens_species_scale.size == 0
 
 
+# S1 is made by M, at 1e-15·M, and S2 by S1: each at 1e-12 beside M's 1,000.
+MADE_IN_A_CHAIN = """begin parameters
+    1 k0  1e-15
+    2 kd  1.0
+    3 k2  1.0
+    4 kx  1.0
+end parameters
+begin species
+    1 M()  1000
+    2 S1() 0
+    3 S2() 0
+    4 X()  5
+end species
+begin reactions
+    1 1 1,2 k0
+    2 2 0 kd
+    3 2 2,3 k2
+    4 3 0 kd
+    5 4 0 kx
+end reactions
+"""
+
+
+def test_a_species_made_by_one_that_is_made_is_not_at_a_zero_either(tmp_path):
+    """S1 and S2 are 1e-15 of M, which is what rounding leaves of a zero
+    beside it, and with both set to nothing the rate of S2 is nothing: only S1
+    makes it. S1 is made by M, though, and is not at a zero, and with S1 where
+    it is S2 is made too. The species are gone over until none is taken out.
+    X, which decays from 5, is at a zero, and is taken over the 5. dS1*/dk0 =
+    M/kd and dS2*/dk0 = k2·M/kd²."""
+    sim = bngsim.Simulator(_net(tmp_path, MADE_IN_A_CHAIN), method="ode")
+    out = sim.steady_state(sensitivity_params=["k0"])
+    np.testing.assert_allclose(out.sens_species_scale, [1000.0, 1e-12, 1e-12, 5.0], rtol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity)[:, 0], [0.0, 1000.0, 1000.0, 0.0], rtol=1e-6, atol=1e-12
+    )
+
+
+# B + B -> 0 at k/B: a flux of k·B, through a rate that has no value at B = 0.
+NO_VALUE_AT_NOTHING = """begin parameters
+    1 k   1.0
+end parameters
+begin functions
+    1 rate() k/Bobs
+end functions
+begin species
+    1 B() 1.0
+end species
+begin reactions
+    1 1,1 0 rate
+end reactions
+begin groups
+    1 Bobs 1
+end groups
+"""
+
+
+def test_a_species_that_runs_out_through_a_rate_with_no_value_at_nothing_is_refused(tmp_path):
+    """B runs out, and its column is what ``tol`` left of a zero, -7.7e-11.
+    It is a zero only for a species that is at one, and that is asked of its
+    rate with B at nothing, where k/B has no value: B keeps its own scale, on
+    which every Newton step moves all of its column. The columns are refused,
+    here with entries that are right: nothing says so."""
+    sim = bngsim.Simulator(_net(tmp_path, NO_VALUE_AT_NOTHING), method="ode")
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"#995.*no state near.*has columns that stay.*no value at nothing",
+    ):
+        sim.steady_state(sensitivity_params=["k"])
+
+
+# A' = s + k·Ec·A - k·E·A with E held: A* = s/(k·(E - Ec)), and E is 2e-5 above
+# Ec, so that A* moves 50,000 times as far as E does.
+HELD_AT_THE_EDGE = """begin parameters
+    1 s   2e-2
+    2 k   1e3
+    3 Ec  1.0
+    4 kEc k*Ec
+end parameters
+begin species
+    1 A() 1.0
+    2 $E() 1.00002
+end species
+begin reactions
+    1 0 1 s
+    2 1 1,1 kEc
+    3 1,2 2 k
+end reactions
+"""
+
+
+def test_a_species_that_is_held_is_not_moved_for_the_run(tmp_path):
+    """The run is taken on from a millionth beside the state, and a species
+    the model holds fixed, or the mask leaves out, is no part of the state: E
+    moved by its share, half a millionth, would put A* 2.6% from where it is,
+    and the columns with it. dA*/ds = 1/(k·(E - Ec)) = 50."""
+    sim = bngsim.Simulator(_net(tmp_path, HELD_AT_THE_EDGE), method="ode")
+    out = sim.steady_state(sensitivity_params=["s"], mask=["A()"], tol=1e-12)
+    assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(50.0, rel=1e-6)
+    assert out.sens_root_hold_shift < 1e-4
+
+
 # A is made at k0·G and removed at kd: A* = k0·G/kd = 1e-7 beside G at 1.
 OPEN_POOL = """begin parameters
     1 k0  {k0}
@@ -1497,6 +1599,30 @@ def test_a_species_stopped_above_a_steady_value_it_has_is_stepped_down_to_it(tmp
     assert out.sens_root_newton_steps == 2
 
 
+FROM_ABOVE_WITH_AN_OUTPUT = (
+    FROM_ABOVE.replace(
+        "begin species", "begin functions\n    1 sq() Sobs^2\nend functions\nbegin species"
+    )
+    + "begin groups\n    1 Sobs 1\nend groups\n"
+)
+
+
+def test_the_outputs_are_those_of_the_state_that_was_stepped_to(tmp_path):
+    """sq = S² beside the model above: d(sq)/dkd = 2·S·dS*/dkd, which is
+    -4e-10 at S* = 1e-6, and 10% more at the 1.1e-6 where the solver
+    stopped."""
+    sim = bngsim.Simulator(
+        _net(tmp_path, FROM_ABOVE_WITH_AN_OUTPUT.format(k0="5e-9")), method="ode"
+    )
+    out = sim.steady_state(sensitivity_params=["kd"])
+    assert out.sens_root_newton_steps == 2
+    assert list(out.expression_names) == ["sq"]
+    assert np.asarray(out.sensitivities_expressions)[0, 0] == pytest.approx(-4e-10, rel=1e-6)
+    assert np.asarray(out.output_sensitivities(["expression:sq"]))[0, 0] == pytest.approx(
+        -4e-10, rel=1e-6
+    )
+
+
 def test_the_same_removed_in_pairs_too_takes_a_step_more(tmp_path):
     """With S + S -> 0 at 3.5 beside it, one Newton step from 1.2e-7 lands at
     twice the steady value and the next on it: a species that one step takes
@@ -1508,6 +1634,10 @@ def test_the_same_removed_in_pairs_too_takes_a_step_more(tmp_path):
     assert np.asarray(out.concentrations)[0] == pytest.approx(1e-11, rel=1e-6)
     assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(-2e-9, rel=1e-6)
     assert out.sens_root_newton_steps >= 3
+    # The eigenvalue, -kd - 4·k2·S, is that of the state that is returned: at
+    # the 1.2e-7 where the solver stopped it is 3.4e-4 further from -kd.
+    stepped_to = float(np.asarray(out.concentrations)[0])
+    assert out.sens_root_growth_rate == pytest.approx(-5e-3 - 4 * 3.5 * stepped_to, rel=1e-7)
 
 
 # N' = r·N·S·(1 - (N/K)^0.2): N makes itself, on S, and is crowded out above K.

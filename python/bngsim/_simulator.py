@@ -7269,20 +7269,29 @@ class Simulator:
                 f"of the model holds. {continuum}{remedy}"
             )
         if not column <= self._SS_ROOT_COLUMN_SHIFT_MAX:
-            moved = (
-                f"{column:.1%}" if math.isfinite(column) and column < 10 else f"{column:.3g} times"
-            )
+            if result.sens_root_column_param is None:
+                moved = "the columns cannot be solved there: a rate has no value at that state"
+            else:
+                by = (
+                    f"{column:.1%}"
+                    if math.isfinite(column) and column < 10
+                    else f"{column:.3g} times"
+                )
+                moved = (
+                    f"the column of {result.sens_root_column_param} still moves by {by} of "
+                    "its largest entry, each species taken over its own concentration (the "
+                    f"limit is {self._SS_ROOT_COLUMN_SHIFT_MAX:.0%})"
+                )
             raise SimulationError(
                 f"{opening}no state near the one the solve returned has columns that stay "
                 "where they are. The columns are solved again a Newton step on, and where "
-                "they move the state is stepped again, up to six times: after the last, the "
-                f"column of {result.sens_root_column_param} still moves by {moved} of its "
-                "largest entry, each species taken over its own concentration (the limit "
-                f"is {self._SS_ROOT_COLUMN_SHIFT_MAX:.0%}). The returned state is far from "
-                "a root for the size of its rates (tol bounds the residual ||f(y)||/n and "
-                f"not the distance to the root: this solve stopped at {result.residual:.1e}, "
-                "and a smaller tol starts the steps nearer), or the steady state is not an "
-                f"isolated root, and the columns are those of {time_course}."
+                f"they move the state is stepped again, up to six times: after the last, "
+                f"{moved}. The returned state is far from a root for the size of its rates "
+                "(tol bounds the residual ||f(y)||/n and not the distance to the root: this "
+                f"solve stopped at {result.residual:.1e}, and a smaller tol starts the steps "
+                "nearer), or the steady state is not an isolated root, or a species runs "
+                "out through a rate that has no value at nothing, so that it cannot be "
+                f"shown to be at a zero. The columns are those of {time_course}."
             )
         growth = float(result.sens_root_growth_rate)
         radius = float(result.sens_root_spectral_radius)
