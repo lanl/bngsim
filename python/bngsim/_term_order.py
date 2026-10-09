@@ -44,6 +44,13 @@ taken from it:
 
 Where no key in an expression follows the seed, each is the order sympy
 gives, and the printed text is what it was.
+
+These are orders of printing. What sympy decides as it builds an expression
+is not one, and still follows the seed where it goes by the key of a tied
+sum: which side a comparison is written from, whether two conjuncts are one,
+and ``cos(u)`` or ``cos(-u)`` (``could_extract_minus_sign``). That takes the
+tie in the model's own text, in a condition or in the argument of such a
+function. The values are the same and the text is not.
 """
 
 from __future__ import annotations
