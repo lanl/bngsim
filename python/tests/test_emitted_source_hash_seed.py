@@ -789,6 +789,27 @@ def test_a_print_that_raises_leaves_no_printer_inside(monkeypatch):
         assert sp.srepr(product).startswith("Mul(")  # ordered_factors raises if it is asked
 
 
+def test_an_install_that_was_interrupted_is_made_good_by_the_next_printer(monkeypatch):
+    """The method is put in place in two steps, sympy's own kept and then
+    this module's assigned. Left between the two by an interrupt, with the
+    first done and the second not, the next printer finishes it: asking only
+    whether sympy's own had been kept left products in sympy's order for the
+    rest of the process."""
+    from bngsim import _term_order
+
+    a, b, c = sp.symbols("a b c")
+    product = a * (b + c) * (a + c)
+    _term_order.srepr(product)  # installed, if it was not
+    assert sp.Mul.as_ordered_factors is _term_order._factors_for_a_printer
+    monkeypatch.setattr(sp.Mul, "as_ordered_factors", _term_order._theirs[0])
+    monkeypatch.setattr(
+        _term_order, "ordered_factors", lambda expr: (_ for _ in ()).throw(_Asked())
+    )
+    with pytest.raises(_Asked):
+        _term_order.srepr(product)
+    assert sp.Mul.as_ordered_factors is _term_order._factors_for_a_printer
+
+
 def test_another_threads_printing_is_not_answered(monkeypatch):
     """While one thread is inside a printer of this module, sympy's own
     printer on another thread has sympy's factors."""
