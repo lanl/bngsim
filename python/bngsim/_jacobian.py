@@ -1850,26 +1850,38 @@ def _whole_power_offset(num_exp, term_exp, sp):
     ``exp(3)``), where the slope below has no symbol to differentiate against.
 
     Otherwise the count comes from the slope of one exponent against the other.
-    Any symbol of ``term_exp`` will do as the pivot — if the exponents are not
-    parallel, the leftover ``num_exp − m·term_exp`` keeps a symbol and the match
-    is refused, whichever symbol was picked.
+    Any symbol of ``term_exp`` will do as the pivot where the slopes' ratio comes
+    out a count — if the exponents are not parallel, the leftover
+    ``num_exp − m·term_exp`` keeps a symbol and the match is refused, whichever
+    symbol was picked.
+
+    The symbols are asked in the order of their names, and each in turn until
+    one gives a count (issue #550). They were asked in the order of the set
+    ``free_symbols`` returns, the first only, and that order follows the hash
+    seed: against one symbol the ratio of the slopes cancels to a count, and
+    against another, of an exponent with a condition in it, ``cancel`` leaves
+    an expression that is no count to :func:`_integer_at_least`. The same
+    model was rewritten in one process and not in the next
+    (MODEL1006230049).
     """
     ratio = num_exp / term_exp
     if ratio.is_number:
         m = _integer_at_least(ratio, 1)
         return None if m is None else (m, 0)
 
-    pivot = next((s for s in term_exp.free_symbols if sp.diff(term_exp, s) != 0), None)
-    if pivot is None:
-        return None
-    m = _integer_at_least(sp.cancel(sp.diff(num_exp, pivot) / sp.diff(term_exp, pivot)), 1)
-    if m is None:
-        return None
-    leftover = sp.expand(num_exp - m * term_exp)
-    if not leftover.is_number:
-        return None  # not parallel: e.g. x^(2n + p) beside x^n
-    offset = _integer_at_least(leftover, -1)
-    return None if offset is None or offset > 1 else (m, offset)
+    for pivot in sorted(term_exp.free_symbols, key=lambda s: (s.name, sp.srepr(s))):
+        slope = sp.diff(term_exp, pivot)
+        if slope == 0:
+            continue
+        m = _integer_at_least(sp.cancel(sp.diff(num_exp, pivot) / slope), 1)
+        if m is None:
+            continue
+        leftover = sp.expand(num_exp - m * term_exp)
+        if not leftover.is_number:
+            return None  # not parallel: e.g. x^(2n + p) beside x^n
+        offset = _integer_at_least(leftover, -1)
+        return None if offset is None or offset > 1 else (m, offset)
+    return None
 
 
 def _divided_through(f, m, offset, rest, sp):
