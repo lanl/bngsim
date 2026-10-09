@@ -1935,11 +1935,12 @@ def guard_rate_law_text(text: str) -> str | None:
 
     Memoized by the text (issue #979): every ``Model`` is guarded when it is
     made, a clone included, and a law with a logarithm that needs no guard was
-    parsed again for each one, 0.25 s a clone for 300 such functions. Only an
-    answer that was reached is kept. A text that did not parse, or could not
-    be written back, is asked again the next time: the parser gives up on any
-    exception, and one of those is running out of stack, which says nothing
-    about the text.
+    parsed again for each one, 0.25 s a clone for 300 such functions. (A clone
+    no longer asks at all; a model loaded again does.) Only an answer that was
+    reached is kept. A text that did not parse, or could not be written back,
+    is asked again the next time: the parser and the writer each give up on
+    any exception, and one of those is running out of stack, which says
+    nothing about the text.
 
     The single implementation of GH #333's rewrite, so the model path
     (:func:`guard_function_expressions`) and the ``.net`` codegen emitter, which

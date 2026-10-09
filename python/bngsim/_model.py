@@ -121,6 +121,7 @@ class Model:
         "_want_output_sens",
         "_output_sens_analysis",
         "_output_sens_family",
+        "_table_function_bindings",
         "_named_conc_states",
         "_named_sens_seeds",
         "_declared_ic_sens",
@@ -131,7 +132,9 @@ class Model:
         "_frozen_params",
     )
 
-    def __init__(self, _core: NetworkModel) -> None:
+    def __init__(
+        self, _core: NetworkModel, _guarded: list[tuple[str, str, str]] | None = None
+    ) -> None:
         self._core = _core
         self._codegen_so_path: str = ""
         # GH #198: whether codegen should emit the expression output-sensitivity
@@ -148,6 +151,10 @@ class Model:
         # of its clones have made them, for the next of them to take. One dict,
         # which ``clone`` hands on.
         self._output_sens_family: dict[tuple, dict] = {}
+        # Issue #979: ``(names, bindings)``, what each table function is read
+        # over, as ``codegen_data()`` last gave it for that list of names
+        # (``_codegen._table_function_bindings``).
+        self._table_function_bindings: tuple | None = None
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
@@ -329,7 +336,14 @@ class Model:
         # ``.net`` model is built entirely in C++, leaving no earlier seam. Gated
         # on a substring test for a logarithm, so a model without one — 97.9% of
         # the corpus — pays nothing and never touches sympy.
-        self._guarded_functions: list[tuple[str, str, str]] = _guard_function_expressions(_core)
+        # A clone is handed its parent's list (issue #979): the core it is made
+        # on has the parent's functions as the guard left them, and deciding
+        # again could decide otherwise (the parser gives up when it runs out of
+        # stack), which would leave two models of one family with different
+        # functions and one memo of their analysis.
+        self._guarded_functions: list[tuple[str, str, str]] = (
+            _guard_function_expressions(_core) if _guarded is None else list(_guarded)
+        )
         # Issue #523: the 0-based COO form of the stoichiometry, converted once.
         self._stoich_coo: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         # Issues #697, #743: (compartment size names, their values, the reported
@@ -1024,7 +1038,7 @@ class Model:
         Model
             An independent deep copy.
         """
-        m = Model(_core=self._core.clone())
+        m = Model(_core=self._core.clone(), _guarded=self._guarded_functions)
         m._net_path = self._net_path
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path
@@ -1061,6 +1075,7 @@ class Model:
         # clones made after, so that cloning a model that was never run does
         # not start each clone from nothing.
         m._output_sens_family = self._output_sens_family
+        m._table_function_bindings = self._table_function_bindings
         m._ssa_issues = list(self._ssa_issues)
         m._ar_report_map = dict(self._ar_report_map)
         m._varvol_conc_map = dict(self._varvol_conc_map)

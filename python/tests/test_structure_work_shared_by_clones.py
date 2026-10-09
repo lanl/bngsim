@@ -3,7 +3,7 @@ its clones (issue #979).
 
 A fitting loop clones one base model for every evaluation and builds a
 ``Simulator`` on the clone. Two things were then done again each time, both
-with sympy and neither reading anything a clone changes:
+with sympy, and both with the answer the last clone had:
 
 - the analysis behind the output sensitivities of the global functions
   (``_codegen._analyze_output_sens``, issue #198), which a sensitivity run
@@ -102,7 +102,7 @@ def test_a_sensitivity_run_on_each_clone_analyzes_once(tmp_path, monkeypatch):
         columns.append(np.asarray(result.sensitivities))
     assert len(made) == 1
     np.testing.assert_array_equal(columns[0], columns[1])
-    assert np.all(np.isfinite(columns[0])) and columns[0][-1, 0, 0] > 0.0
+    np.testing.assert_allclose(columns[0][-1, 0], [2.0, 0.0], atol=1e-9)
 
 
 def test_the_support_map_of_a_clone_is_that_of_the_model_loaded_again(tmp_path):
@@ -171,7 +171,8 @@ def test_a_models_own_analysis_outlasts_the_familys_memo(tmp_path, monkeypatch):
     assert len(made) == before
 
 
-# `drive` is a function, and `g` reads it.
+# `drive` is a function, and `g` reads it. (Two observables, for a table to be
+# read over either.)
 READS_A_FUNCTION = """begin parameters
     1 k   1.0
     2 a   0.5
@@ -189,6 +190,7 @@ begin reactions
 end reactions
 begin groups
     1 Xobs 1
+    2 Yobs 1
 end groups
 """
 
@@ -242,10 +244,44 @@ def test_a_table_function_on_one_clone_is_not_its_siblings(tmp_path):
         keyed(("one", "time")),
         keyed(("one", "a")),
         keyed(("one", "k")),
+        keyed(("one", "Xobs")),
+        keyed(("one", "Yobs")),
         keyed(("one", "time"), ("two", "time")),
         keyed(("two", "time"), ("one", "time")),
     ]
     assert len(set(keys)) == len(keys)
+
+
+def test_what_the_tables_are_read_over_is_asked_once_for_each_list_of_them(tmp_path):
+    """The key has what each table function is read over, which is in
+    ``codegen_data()``: the whole model, 0.1 s for one of 58,000 reactions,
+    and the key is asked for on every sensitivity run. It is kept on the
+    model for the list of table names it was read for, and a clone has it."""
+    from bngsim._codegen import _output_sens_analysis_key, _table_function_bindings
+
+    model = _model(tmp_path, READS_A_FUNCTION)
+    assert _table_function_bindings(model._core, model) == ()
+    assert model._table_function_bindings is None
+    model.add_table_function("one", times=[0.0, 1.0], values=[0.0, 1.0], index="k")
+    first = _table_function_bindings(model._core, model)
+    assert [binding[:2] for binding in first] == [("one", "parameter")]
+    assert _table_function_bindings(model._core, model) is first
+    clone = model.clone()
+    assert _table_function_bindings(clone._core, clone) is first
+    clone.add_table_function("two", times=[0.0, 1.0], values=[0.0, 1.0])
+    second = _table_function_bindings(clone._core, clone)
+    assert [binding[0] for binding in second] == ["one", "two"]
+    assert _table_function_bindings(model._core, model) is first
+    # Asked with no model to keep it on, it is the same answer.
+    assert _table_function_bindings(clone._core) == second
+    assert _output_sens_analysis_key(clone._core) == _output_sens_analysis_key(clone._core, clone)
+    # And the analysis asks with its model: a model that was only analyzed has it kept.
+    from bngsim._codegen import output_sens_support
+
+    other = _model(tmp_path, READS_A_FUNCTION, name="other.net")
+    other.add_table_function("one", times=[0.0, 1.0], values=[0.0, 1.0], index="k")
+    output_sens_support(other)
+    assert other._table_function_bindings == (("one",), first)
 
 
 def test_models_that_are_not_clones_share_nothing(tmp_path, monkeypatch):
@@ -273,7 +309,9 @@ def test_a_family_keeps_a_few_analyses_and_no_more(tmp_path, monkeypatch):
 
     base = _model(tmp_path)
     count = iter(range(100))
-    monkeypatch.setattr(_codegen, "_output_sens_analysis_key", lambda core: ("key", next(count)))
+    monkeypatch.setattr(
+        _codegen, "_output_sens_analysis_key", lambda core, model=None: ("key", next(count))
+    )
     monkeypatch.setattr(_codegen, "_compute_output_sens_analysis", lambda model, core: {})
     for _ in range(3 * _codegen._OUTPUT_SENS_ANALYSES_KEPT):
         _codegen._analyze_output_sens(base.clone())
@@ -301,13 +339,13 @@ def test_an_analysis_made_meanwhile_is_the_one_that_is_taken(tmp_path, monkeypat
     assert list(base._output_sens_family.values()) == [theirs]
 
 
-def test_clones_analyzed_at_once_are_given_one_analysis(tmp_path, monkeypatch):
-    """Clones in several threads, each asking for the analysis and for one
-    under a key of its own, with the family's memo full: the memo is changed
-    under a lock, and whoever asks under one key is given one analysis. (With
-    no lock, a thread dropping the oldest while another did raised
-    ``KeyError`` and ``dictionary changed size during iteration``, 19 times in
-    4,186 analyses at a switch interval of a microsecond.)"""
+def test_clones_analyzed_at_once_leave_the_memo_whole(tmp_path, monkeypatch):
+    """Clones in several threads, each asking for the analysis under a key
+    they share and under one of its own, with the family's memo full: the
+    memo is changed under a lock, nobody's asking fails, and it stays within
+    its limit. (With no lock, a thread dropping the oldest while another did
+    raised ``KeyError`` and ``dictionary changed size during iteration``, 19
+    times in 4,186 analyses at a switch interval of a microsecond.)"""
     import sys
     import threading
 
@@ -319,7 +357,9 @@ def test_clones_analyzed_at_once_are_given_one_analysis(tmp_path, monkeypatch):
     shared_key = ("shared",)
     local = threading.local()
     monkeypatch.setattr(
-        _codegen, "_output_sens_analysis_key", lambda core: getattr(local, "key", shared_key)
+        _codegen,
+        "_output_sens_analysis_key",
+        lambda core, model=None: getattr(local, "key", shared_key),
     )
     errors, given = [], []
 
@@ -405,22 +445,53 @@ def test_a_guard_read_from_the_memo_is_still_applied(tmp_path, fresh_guard_memo)
         assert np.all(np.isfinite(species)) and species[-1, 0] > 0.1
 
 
-def test_a_text_the_parser_gave_up_on_is_asked_again(monkeypatch, fresh_guard_memo):
-    """The parser returns nothing on any exception, and running out of stack
-    is one: a text first met deep in a call stack was not guarded, and with
-    the answer memoized it would not be for the rest of the process. Only an
-    answer that was reached is kept."""
+@pytest.mark.parametrize("step", ["_exprtk_to_sympy", "sympy_to_exprtk"])
+def test_a_text_that_could_not_be_decided_is_asked_again(monkeypatch, fresh_guard_memo, step):
+    """The parser and the writer each return nothing on any exception, and
+    running out of stack is one (it is the writer that does, in a deep call
+    stack): a text first met there was not guarded, and with that memoized it
+    would not be for the rest of the process. Only an answer that was reached
+    is kept."""
     from bngsim import _jacobian
 
     text = "vmax*Atot^n*ln(Atot)"
-    real = _jacobian._exprtk_to_sympy
-    monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", lambda expr: None)
+    real = getattr(_jacobian, step)
+    monkeypatch.setattr(_jacobian, step, lambda expr: None)
     assert _jacobian.guard_rate_law_text(text) is None
     assert text not in fresh_guard_memo
-    monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", real)
+    monkeypatch.setattr(_jacobian, step, real)
     guarded = _jacobian.guard_rate_law_text(text)
     assert guarded is not None and "if(" in guarded
     assert fresh_guard_memo[text] == guarded
+
+
+def test_a_clone_has_its_parents_guard_and_does_not_ask(tmp_path, monkeypatch, fresh_guard_memo):
+    """A clone's core has the parent's functions as the guard left them, and
+    the clone takes the parent's list of them: it does not decide again. A
+    parent whose guard could not be decided (loaded deep in a call stack) and
+    a clone made where it could be were two models of one family with
+    different functions, and one memo of their analysis between them."""
+    from bngsim import _jacobian
+
+    def functions(model):
+        return [f.get("eval_expression") for f in model._core.codegen_data()["functions"]]
+
+    real = _jacobian._exprtk_to_sympy
+    monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", lambda expr: None)
+    undecided = _model(tmp_path)
+    assert undecided._guarded_functions == []
+    monkeypatch.setattr(_jacobian, "_exprtk_to_sympy", real)
+    parsed = _parses(monkeypatch)
+    clone = undecided.clone()
+    assert clone._guarded_functions == [] and functions(clone) == functions(undecided)
+    decided = _model(tmp_path, name="again.net")
+    assert [name for name, _, _ in decided._guarded_functions] == ["g"]
+    assert len(parsed) == 3
+    twin = decided.clone()
+    assert twin._guarded_functions == decided._guarded_functions
+    assert twin._guarded_functions is not decided._guarded_functions
+    assert functions(twin) == functions(decided) != functions(undecided)
+    assert len(parsed) == 3
 
 
 def test_the_guards_memo_is_emptied_when_it_is_full(monkeypatch, fresh_guard_memo):

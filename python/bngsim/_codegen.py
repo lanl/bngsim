@@ -10379,12 +10379,15 @@ def _is_auto_rate_law(name: str) -> bool:
     return name.startswith("_rateLaw") and name[len("_rateLaw") :].isdigit()
 
 
-def _output_sens_analysis_key(core) -> tuple:
+def _output_sens_analysis_key(core, model=None) -> tuple:
     """Memo key for :func:`_analyze_output_sens` (GH #97).
 
     Cheap by construction — four counters off the built model, the attachment
-    vector, and the budget override — because avoiding ``codegen_data()`` and the
-    sympy behind it is the whole point. The counters are a structural guard, not a
+    vector, the table functions and the budget override — because avoiding
+    ``codegen_data()`` and the sympy behind it is the whole point. (A model with
+    table functions is asked for ``codegen_data()`` once for each set of them,
+    where ``model`` is given to keep the answer on: see
+    :func:`_table_function_bindings`.) The counters are a structural guard, not a
     content hash: the analysis is a pure function of the model's *shape* (function
     bodies, parameter expressions, and the species/parameter/observable ordering
     its emitted ``y[i]``/``p[k]`` references are indices into), and none of that
@@ -10412,13 +10415,13 @@ def _output_sens_analysis_key(core) -> tuple:
         core.n_parameters,
         core.n_observables,
         core.n_functions,
-        _table_function_bindings(core),
+        _table_function_bindings(core, model),
         tuple(bool(x) for x in core.param_is_expression),
         _sens_budget_cache_tag(),
     )
 
 
-def _table_function_bindings(core) -> tuple:
+def _table_function_bindings(core, model=None) -> tuple:
     """Each of the model's table functions with what it is read over, in the
     order the model has them, which is what the emitted code calls them by.
 
@@ -10428,11 +10431,20 @@ def _table_function_bindings(core) -> tuple:
     over. The key had the number of functions and no table in it, so a model
     given a table over one of its functions kept the analysis it had, and
     ``dg/dk`` came back for a ``g`` the code reads from the table (issue #979).
-    ``()`` for a model with none, without asking for ``codegen_data()``.
+
+    ``()`` for a model with none, without asking for ``codegen_data()``, which
+    is the whole model and 0.1 s on one of 58,000 reactions. For a model with
+    tables it is asked once for each list of their names and kept on ``model``:
+    a table function is added and never changed or taken away, so the same
+    names in the same order are the same tables.
     """
-    if not getattr(core, "n_table_functions", 0):
+    names = tuple(getattr(core, "table_function_names", ()))
+    if not names:
         return ()
-    return tuple(
+    kept = getattr(model, "_table_function_bindings", None)
+    if kept is not None and kept[0] == names:
+        return kept[1]
+    bindings = tuple(
         (
             spec["name"],
             spec.get("index_kind"),
@@ -10441,6 +10453,9 @@ def _table_function_bindings(core) -> tuple:
         )
         for spec in core.codegen_data().get("table_functions", ())
     )
+    if hasattr(model, "_table_function_bindings"):
+        model._table_function_bindings = (names, bindings)
+    return bindings
 
 
 #: How many analyses one family of clones keeps for clones to come
@@ -10492,11 +10507,20 @@ def _analyze_output_sens(model) -> dict:
     the analysis every time, 2.2 s for 300 functions and 20 s for 500, for a
     run of milliseconds. An analysis made on any of them is now there for the
     others, to take into their own slots. They have the same functions, and
-    what can differ between them is in the key. The shared memo keeps a few
-    and drops the oldest; a model whose analysis it has dropped still has it.
+    what can differ between them is in the key (a clone has its parent's
+    functions as the parent has them, the zero-base guard included: see
+    ``Model.clone``). The shared memo keeps a few and drops the oldest; a model
+    whose analysis it has dropped still has it.
+
+    An analysis that the budget cut is the family's as any other is. A clone
+    made after it raises the budget's reason for the functions it did not
+    reach, also where the compiled code that clone is handed has them; before,
+    only the model that was cut did, and where it was the code that was cut
+    and a later clone's analysis that was not, that clone returned NaN for
+    those functions with no reason.
     """
     core = model._core if hasattr(model, "_core") else model
-    key = _output_sens_analysis_key(core)
+    key = _output_sens_analysis_key(core, model if model is not core else None)
     own = getattr(model, "_output_sens_analysis", None)
     if own is not None and own[0] == key:
         return own[1]
