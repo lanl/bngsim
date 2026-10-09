@@ -529,6 +529,63 @@ BNGsim automatically builds a reduced Jacobian on the independent species
 subspace, solves the non-singular reduced system, and reconstructs the
 dependent species sensitivities from the conservation constraints.
 
+#### Where the columns are returned: an isolated root (issue #995)
+
+`-J⁻¹·∂f/∂p` is the derivative of the steady state only where the steady state
+is an isolated root. Where the steady states form a continuum, the one a run
+ends at depends on the path it took, and that dependence is not in the root
+equations. (A root of higher order, which a species nears as 1/t, has a
+singular Jacobian too, and no derivative with respect to a parameter that would
+move it off zero.) An epidemic that burns out is a continuum: `S + I -> 2 I`, `I -> R` ends at
+whatever S it left, every state with I = 0 being a steady state, and the solve
+returned dS*/dg = 26.25 where the final-size relation gives 66.05. An
+irreversible branch to two products is another, and so is a total that is
+conserved but not by a linear law.
+
+The solve checks, and raises `SimulationError` where a check fails. It takes
+one Newton step from the state it returned, factors its system again there, and
+reads four ratios. Each is of two quantities in the same units, so none
+depends on the units of a species or the size of a compartment.
+
+| On the result | What it is | Refused |
+| --- | --- | --- |
+| `sens_root_determinant_ratio` | The determinant of the system at the corrected state over the one at the returned state. 1, to the accuracy of the solve, at an isolated root; next to nothing where the Jacobian is singular at the steady state the solve was approaching; 1/2 at a root of higher order. | outside 0.6 to 1.67 |
+| `sens_root_condition` | The componentwise condition number of the system, the Perron root of `\|A⁻¹\|·\|A\|`: how many times a relative error in each entry of the Jacobian is magnified in the columns. 1e16 or more for a matrix that is singular whatever the state, as it is where a set of species exchange among themselves and are produced and never consumed. | above 1e12 |
+| `sens_root_column_shift` | The largest move of a column when it is solved again at the corrected state, as a fraction of its largest entry. | above 0.01 |
+| `sens_root_relaxation` | The most of a column that a run of `max_time` would leave unestablished, as a fraction of its largest entry. | above 0.01 |
+
+The first two say the steady state is not an isolated root. The columns of such
+a model come from a time course with forward sensitivities, run to the steady
+state:
+
+```python
+sim = bngsim.Simulator(model, sensitivity_params=["g", "I0"])
+result = sim.run(t_span=(0, 1e4), n_points=2)
+result.sensitivities[-1]          # (n_species, n_params) at the last time
+```
+
+The third says the state the solve returned is short of the steady state.
+`tol` bounds the residual `||f(y)||₂/n` and not the distance to the root, and a
+model whose concentrations are 1e-6 passes `tol=1e-9` a long way off:
+BIOMD0000000002 is accepted 0.02% from its steady state, where every column is
+5.9% from the derivative. Solve again with a smaller `tol`. A column whose
+every entry is below `1e-3·max|y|/|p|` is measured against that instead of its
+own largest entry: it is what `tol` left of a zero.
+
+The fourth says the column is that of a steady state the model does not reach
+in the time the solve was given. A species whose turnover is switched off at
+the steady state stays where it started, and the state is a root to the last
+bit; its column is the ratio of a production and a removal that are both next
+to nothing, 12,500 in MODEL1607210000 where no run moves the species at all.
+Raise `max_time` to ask about the state such a run does reach, or take the
+column from a time course over the times that matter.
+
+`sens_jacobian_rcond`, `min|U|/max|U|` of the LU, is still reported, and
+decides nothing. It depends on the units: for an isolated root it falls with
+the size ratio between two compartments, to 4e-16 at 1e8 where
+`sens_root_condition` stays at 6.2, and it reads 1.0 for the epidemic above
+with its sink masked out. The warning that was logged below 1e-8 is gone.
+
 #### Observable / expression output sensitivities
 
 `ss.sensitivity` is species-level. To read `∂(observable)/∂θ` or
@@ -588,7 +645,7 @@ contributes nothing, and neither does any species once `save_concentrations()`
 has made the state its own baseline. A fixed species that a parameter sets,
 `$A() A0`, moves what reads it by the same seed.
 
-Four requests are refused, with `SensitivityUnsupportedError`:
+Three requests are refused, with `SensitivityUnsupportedError`:
 
 - a parameter that sets the initial amount of a conserved species, on a state a
   `run()` has advanced. The total is still what the parameter made it, and the
@@ -598,28 +655,26 @@ Four requests are refused, with `SensitivityUnsupportedError`:
 - any parameter, where a law spans compartments of different size and an
   assignment rule sets the size of a compartment. The right-hand side divides
   by the size the model loaded at where the rule gives another (issue #745),
-  so the steady state is that of another system;
-- any parameter, where a law spans compartments of different size and the
-  Jacobian at the steady state is badly conditioned on the reduced subspace
-  (`min|U|/max|U|` below 1e-8, the ratio `ss.sens_jacobian_rcond` reports). A
-  model whose laws each lie within one size gets a warning there. With sizes
-  in a law, a steady state that is one of a continuum has a pivot that is
-  rounding where one size leaves an exact zero, and the columns that came back
-  were not a gradient (-329,603 for 0.0774). With unknowns in compartments of
-  both sizes the ratio also falls with the square of the size ratio, so an
-  isolated root there is refused from sizes about 1e5 apart.
+  so the steady state is that of another system.
 
 A law across compartments of different size is a total of amounts, and carries
 the sizes: `A + 2*B` for `A` in a compartment of size 1 exchanged with `B` in
-one of size 2 (issue #758). Outside the two cases above its columns are
-computed like any other law's.
+one of size 2 (issue #758). Outside the cases above its columns are computed
+like any other law's, where the steady state is an isolated root. (Such a
+model was refused wherever `min|U|/max|U|` was below 1e-8, which an isolated
+root reaches with compartments 1e5 apart in size. It is asked what every model
+is asked now.)
 
-With `mask=`, a conservation law that holds a masked-out species keeps its
-total fixed, as before, unless that species is the one the law is solved for.
-That is right where the masked sink drains the law (`A <-> B -> P`: A and B
-end at 0 whatever the total). It is not where a share of the total stays out
-of the sink, which no steady-state solve can know: `A <-> B -> P` beside
-`A -> C <-> D` returns 0 for every column of C and D, with the mask.
+With `mask=`, the columns are solved on the equations of the species the mask
+kept (issue #995). A conservation law that holds a masked-out species is not
+one of those, unless that species is the one the law is solved for: the
+species it was solved for is an unknown instead, with its own equation. Where
+the masked sink drains the law (`A <-> B -> P`: A and B end at 0 whatever the
+total) the columns are what they were. Where a share of the total stays out of
+the sink, which no steady-state solve can know, they are refused as those of a
+root that is not isolated: `A <-> B -> P` beside `A -> C <-> D` returned 0 for
+every column of C and D, with the mask, where C + D ends at the share of A
+that took the second branch.
 
 The initial-condition axis itself is not computed, and
 `output_sensitivities(..., axis="ic")` raises.

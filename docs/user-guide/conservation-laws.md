@@ -68,8 +68,9 @@ of whether the model has conservation laws.
 
 The same reduction carries the steady-state sensitivities: `dY_ss/dp` is solved
 on the independent subspace and the dependent species follow from differentiating
-the constraints. `ss.sens_jacobian_rcond` reports how close to singular that
-reduced Jacobian was — see [Steady state](steady-state.md).
+the constraints. The columns are returned where the steady state is an isolated
+root of that reduced system, and refused where it is one of a continuum — see
+[Steady state](steady-state.md).
 
 ## `parameter_scan` integration
 

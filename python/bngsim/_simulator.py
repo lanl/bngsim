@@ -1582,8 +1582,8 @@ class Simulator:
         give. (A law across compartments of different size was one while it
         was found as a total of concentrations, ``A + B`` for ``V1·A + V2·B``;
         it is found with the sizes in it since issue #758, and its columns
-        are computed where the reduced Jacobian is well conditioned:
-        :meth:`_raise_if_badly_conditioned_across_sizes`.)
+        are computed where the steady state is an isolated root:
+        :meth:`_raise_if_not_an_isolated_root`.)
 
         - **a compartment size**, in a model with a conservation law. What is
           conserved is an amount, which a size does not move, and what the solve
@@ -6987,8 +6987,8 @@ class Simulator:
         )
         self._note_ss_jacobian_retry(result)
         self._warn_about_pure_sinks(result)
-        self._raise_if_badly_conditioned_across_sizes(result)
         self._warn_about_ss_sensitivity(result)
+        self._raise_if_not_an_isolated_root(result, max_time)
         return result
 
     @staticmethod
@@ -7007,56 +7007,196 @@ class Simulator:
             if len({volumes[i] for i in members}) > 1
         ]
 
-    def _raise_if_badly_conditioned_across_sizes(self, result: SteadyStateResult) -> None:
-        """Refuse ``dY_ss/dp`` where a conservation law spans compartments of
-        different size and the reduced Jacobian is badly conditioned (issue
-        #758).
+    #: The least the determinant of the system ``dY_ss/dp`` is solved on may
+    #: keep of itself when the state is corrected by one Newton step, and the
+    #: reciprocal of the most it may gain; outside that the steady state is not
+    #: an isolated root and the columns are refused (issue #995).
+    #: ``ss_measure_root`` in ``steady_state.cpp`` says what is measured and why
+    #: the matrix at the returned state cannot be asked instead. A root of
+    #: order m keeps ((m-1)/m)^(m-1), which is 1/2 at most.
+    #:
+    #: Measured over the corpus (issue #995): the 585 ``ode_fullnet`` networks
+    #: and the 1,323 BioModels SBML files, with up to 40 parameters each. 791
+    #: return finite columns on main. Each column was held against the forward
+    #: sensitivities of a run to 1e5, and 1,741 of them against central
+    #: differences of plain runs to 1e5 and to 1e6 as well; a column is wrong
+    #: where it is more than 1% of its largest entry from that (a column whose
+    #: every entry is under 1e-3·max|y|/|p| is a zero). 743 models gave a
+    #: verdict: 670 right and 73 wrong, of which main returned 14 with nothing
+    #: logged and 57 beside the warning.
+    #:
+    #:   ==================  =======  ==========================  ==============
+    #:   ratio               limit    right and returned (652)    beyond it
+    #:   ==================  =======  ==========================  ==============
+    #:   determinant         0.6      0.74 to 1.0                 0.59 and under
+    #:   condition           1e12     1.3e9 at most               3.4e13 and up
+    #:   column shift        0.01     7.0e-3 at most              1.5e-2 and up
+    #:   relaxation          0.01     1.0e-3 at most              2.6e-2 and up
+    #:   ==================  =======  ==========================  ==============
+    #:
+    #: All 73 wrong models are refused, and so are 18 of the 670 right ones:
+    #: five FceRI networks whose ligand does not dissociate (the Jacobian is
+    #: singular once the free receptor is gone, and the columns that were asked
+    #: agree with a time course all the same), six whose state is a root of
+    #: higher order or sits where a rate law switches, and seven others. The
+    #: results that are returned are those of main to the last bit, in all 791.
+    #:
+    #: ``min|U|/max|U|``, which this replaces, has no cut that does better than
+    #: 10 right models refused and 20 wrong ones returned; at the 1e-8 it warned
+    #: at, 36 and 14. The same ratio after the matrix is equilibrated, and each
+    #: pivot against the norm of its column, do worse (67 either way), and the
+    #: rank at a state moved off the steady state shows none of the 73. All
+    #: three read the epidemic model of the issue as an ordinary system: at the
+    #: state the solve returns its Jacobian has full rank, with a determinant of
+    #: b·g·I, and is of order one in every entry after any scaling. What marks
+    #: it is that the determinant goes with what is left of the residual.
+    _SS_ROOT_DETERMINANT_RATIO_MIN = 0.6
 
-        Every column of such a model was refused while its law was found as a
-        total of concentrations (issue #704). The law is right now, and where
-        the reduced Jacobian is well conditioned so are the columns. Where it
-        is not, the model stays refused: a steady state that is one of a
-        continuum has a reduced Jacobian that is singular, and with sizes in
-        the laws the singular pivot comes out as rounding where one size
-        leaves an exact zero, which the solve reports as non-finite and
-        :meth:`_warn_about_ss_sensitivity` refuses. ``B -> P`` and ``B -> Q``
-        with each product exchanged across the compartments returned
-        dP*/dkp = -329,603 for 0.0774 at min|U|/max|U| = 1e-17, and over the
-        corpus two of the five such models had columns that were not the
-        derivative (BIOMD0000000328: 3.88 for -6.32, at 7e-18). A model whose
-        laws each lie within one size gets the warning there, as it did.
+    #: The largest the componentwise condition number of that system may be:
+    #: the Perron root of ``|A⁻¹|·|A|``, how many times a relative error in
+    #: each entry of the Jacobian is magnified in the columns. A matrix that is
+    #: singular at every state has a pivot that is only what rounding left of a
+    #: zero, and where the rows that cancel do not depend on the state a Newton
+    #: step does not move it; its condition number is 1e16 or more.
+    _SS_ROOT_CONDITION_MAX = 1e12
 
-        The ratio is not invariant to scale. With unknowns in compartments of
-        both sizes it falls with the square of the size ratio, 1.3e-10 at 1e5
-        for an isolated root, so such a model is refused though its columns
-        are right.
+    #: A column of ``dY_ss/dp`` may move by this fraction of its largest entry
+    #: when it is solved again at the state one Newton step on; beyond it the
+    #: returned state is not close enough to the steady state for the columns.
+    _SS_ROOT_COLUMN_SHIFT_MAX = 0.01
+
+    #: The most of a column that a run of ``max_time`` may leave unestablished.
+    #: Beyond it the column is that of a steady state no run of that length
+    #: reaches: a species whose turnover is switched off at the steady state
+    #: has a pivot that is a number, however small, and a column that is the
+    #: ratio of two such.
+    _SS_ROOT_RELAXATION_MAX = 0.01
+
+    def _raise_if_not_an_isolated_root(
+        self, result: SteadyStateResult, max_time: float = 1e6
+    ) -> None:
+        """Refuse ``dY_ss/dp`` where the steady state is not an isolated root
+        with a Jacobian of full rank, or the returned state is not on it (issue
+        #995).
+
+        ``-J⁻¹·(∂f/∂p)`` is the derivative of the steady state only where the
+        steady state is an isolated root and the Jacobian has full rank there.
+        Where the steady states form a continuum, which one a run ends at
+        depends on the path it took, and the derivative of that end point is
+        not in the root equations: ``S + I -> 2 I``, ``I -> R`` returned
+        dS*/dg = 26.25 where the final-size relation and differences of runs
+        give 66.05, with ``converged=True`` and one logged warning, and 0 with
+        no warning where the sink was masked out.
+
+        The solve takes one Newton step from the state it returned and factors
+        its system again there (``ss_measure_root``). Three ratios come of it,
+        each of two quantities in the same units, so that none depends on the
+        units of a species or the size of a compartment, as ``min|U|/max|U|``
+        (``sens_jacobian_rcond``) did: that ratio falls with the square of a
+        size ratio for an isolated root, and it reads 1.0 for the masked model
+        above. The warning it gated, and the refusal it gated for a law across
+        compartments of different size (issue #758), are both replaced by
+        this.
+
+        - what the determinant keeps of itself: next to nothing where the
+          Jacobian is singular at the steady state, a half at a root of higher
+          order, and all of it, to the accuracy of the solve, where the root
+          is isolated;
+        - the componentwise condition number, the Perron root of
+          ``|A⁻¹|·|A|``: what tells a matrix that is singular whatever the
+          state, whose zero pivot is rounding;
+        - how far a column moves: ``tol`` bounds the residual and not the
+          distance to the root, and a model with small concentrations is
+          accepted where its columns are several percent off;
+        - how much of a column a run of ``max_time`` would leave unestablished:
+          a state that is a root to the last bit, with a species in it that
+          nothing turns over, has a column no run reaches.
         """
-        rcond = result.sens_jacobian_rcond
-        if result.sensitivity is None or not 0.0 <= rcond < self._SS_SENS_RCOND_FLOOR:
+        if result.sensitivity is None:
             return
-        model = self._model
-        # Columns that are not finite are refused by _warn_about_ss_sensitivity,
-        # which says what it knows of the cause.
-        finite = np.all(np.isfinite(np.asarray(result.sensitivity)), axis=1)
-        finite[list(result.excluded_species)] = True
-        if not np.all(finite):
-            return
-        names = model.species_names
-        for members in self._laws_across_sizes(model):
-            if members:
-                raise SensitivityUnsupportedError(
-                    "steady_state(sensitivity_params=...) is not supported for this model "
-                    "at this steady state: a conservation law of it spans compartments of "
-                    f"different size ({', '.join(names[i] for i in members[:4])}"
-                    f"{', ...' if len(members) > 4 else ''}) and the Jacobian at the steady "
-                    f"state is badly conditioned on the reduced subspace (min|U|/max|U| = "
-                    f"{rcond:.2e} from its LU). If the steady state is one of a continuum "
-                    "the solve returns numbers that are not a gradient, and with "
-                    "compartment sizes in the laws nothing marks them: such a model "
-                    "returned -329,603 for 0.0774 (issue #758). Take the columns from a "
-                    "time course run to the steady state, or difference steady states "
-                    "solved again at p +/- h."
-                )
+        ratio = result.sens_root_determinant_ratio
+        condition = result.sens_root_condition
+        column = result.sens_root_column_shift
+        relaxation = result.sens_root_relaxation
+        continuum = (
+            "Where the steady states form a continuum, the one a run ends at depends on "
+            "the path it took (an epidemic that burns out, an irreversible branch to two "
+            "products, a total that is conserved but not by a law of the model), and "
+            "-J⁻¹·∂f/∂p is not the derivative of it: such a model returned 26.25 for "
+            "66.05."
+        )
+        if result.excluded_species:
+            continuum += (
+                " With mask=, the columns are solved on the equations of the species the "
+                "mask kept, and it is those that have no isolated root: a share of a "
+                "conserved total that stays out of the masked species is set by the path."
+            )
+        else:
+            continuum += (
+                " If Model.pure_sink_species() names species, "
+                "steady_state(mask=~model.is_pure_sink()) solves for the columns of the "
+                "others."
+            )
+        remedy = (
+            " Take the columns from a time course with forward sensitivities run to the "
+            "steady state, Simulator(model, sensitivity_params=[...]).run(...), reading "
+            "result.sensitivities at the last time point, or difference steady states "
+            "solved again at p +/- h."
+        )
+        opening = (
+            "steady_state(sensitivity_params=...) does not return dY_ss/dp for this model "
+            "at this steady state (issue #995): "
+        )
+        kept = self._SS_ROOT_DETERMINANT_RATIO_MIN
+        if not kept <= ratio <= 1.0 / kept:
+            raise SimulationError(
+                f"{opening}the steady state is not an isolated root of the equations the "
+                "columns are solved on. Corrected by one Newton step, the state gives "
+                f"those equations a determinant that is {ratio:.2g} of the one the "
+                f"returned state gives (the limits are {kept:g} and {1.0 / kept:.2g}; the "
+                f"pivot for {result.sens_root_determinant_species} moves furthest): the "
+                "Jacobian loses rank at the steady state the solve was approaching (it is "
+                "one of a continuum, or a root of higher order, which a species nears as "
+                "1/t), or a rate law is discontinuous between the two states. "
+                f"{continuum}{remedy}"
+            )
+        if not condition <= self._SS_ROOT_CONDITION_MAX:
+            raise SimulationError(
+                f"{opening}the steady state is not an isolated root of the equations the "
+                "columns are solved on. A relative error in the entries of the Jacobian is "
+                f"magnified {condition:.1e} times in the columns (the limit is "
+                f"{self._SS_ROOT_CONDITION_MAX:.0e}; the entry for "
+                f"{result.sens_root_condition_species} takes most of it), which at 1e16 "
+                "is a matrix whose smallest pivot is what rounding leaves of a zero: the "
+                "Jacobian is singular whatever the state, as it is where a set of species "
+                "is produced and never consumed, or a quantity is conserved that no law "
+                f"of the model holds. {continuum}{remedy}"
+            )
+        if not column <= self._SS_ROOT_COLUMN_SHIFT_MAX:
+            moved = (
+                f"{column:.1%}" if math.isfinite(column) and column < 10 else f"{column:.3g} times"
+            )
+            raise SimulationError(
+                f"{opening}the state the solve returned is not close enough to the steady "
+                f"state. Solved again one Newton step on, the column of "
+                f"{result.sens_root_column_param} moves by {moved} of its largest entry "
+                f"(the limit is {self._SS_ROOT_COLUMN_SHIFT_MAX:.0%}). tol bounds the "
+                "residual ||f(y)||/n and not the distance to the root, and a model whose "
+                "concentrations or rates are small passes it early (this solve stopped at "
+                f"a residual of {result.residual:.1e}). Solve again with a smaller tol."
+            )
+        if not relaxation <= self._SS_ROOT_RELAXATION_MAX:
+            raise SimulationError(
+                f"{opening}the column of {result.sens_root_relaxation_param} is that of a "
+                "steady state the model does not reach in the time the solve was given. A "
+                f"run of max_time ({max_time:g}) would leave "
+                f"{min(relaxation, 1.0):.0%} of the column unestablished (the limit is "
+                f"{self._SS_ROOT_RELAXATION_MAX:.0%}): the system has a mode that slow, as "
+                "it does where the turnover of a species is switched off at this state, "
+                "and such a run leaves the species where it was. Raise max_time to solve "
+                "for the state such a run does reach, or take the column from a time "
+                "course with forward sensitivities over the times that matter."
+            )
 
     def _raise_if_a_conservation_law_is_not_conserved(
         self, where: str, model: Model | None = None
@@ -7347,35 +7487,6 @@ class Simulator:
             shown,
         )
 
-    #: Below this ``min|U_jj| / max|U_jj|`` the steady-state sensitivity system is
-    #: reported as badly conditioned. It gates a WARNING and deliberately not a
-    #: refusal: the full 585-model ``ode_fullnet`` sweep says no threshold on this
-    #: ratio — or on ``1/κ₁``, or on ``σ_min/σ_max`` — can support one.
-    #:
-    #: Method: solve for ``dY_ss/dp`` the way ``compute_ss_sensitivity`` does, then
-    #: check it against a central difference of the steady state itself (re-solve
-    #: at ``p ± h`` from the same initial conditions), keeping only probes that
-    #: converge in the step size. Of 308 models where the reduced solve returns a
-    #: finite answer, 286 are right and 22 are wrong — and the two populations are
-    #: not separable:
-    #:
-    #:   * Correct gradients sit arbitrarily low. ``ode/simplifications_v1``
-    #:     measures 1.5e-42 here and is accurate to 7e-7; ``RBM_covid_v2`` (n=112)
-    #:     measures 1.1e-13 and is accurate to 1.2e-6. Six correct results fall
-    #:     below 1e-8.
-    #:   * Wrong gradients sit arbitrarily high. Six of the 22 have a *perfectly*
-    #:     conditioned reduced Jacobian — ``NativeTutorials/ABpapprox`` and
-    #:     ``ode/temp`` both measure exactly 1.0 and are wrong by more than 100%.
-    #:     Those are not conditioning failures and no conditioning number can see
-    #:     them.
-    #:
-    #: The best single cut on this ratio (4.3e-9) still misclassifies 10; the
-    #: shipped 1e-8 discards 6 correct results and lets 6 wrong ones through.
-    #: ``1/κ₁`` and ``σ_min/σ_max`` do no better (9 and 10 errors at their best
-    #: cuts). Refusal is instead gated on the one unambiguous signal — the solve
-    #: produced a non-finite gradient — which needs no threshold at all.
-    _SS_SENS_RCOND_FLOOR = 1e-8
-
     @classmethod
     def _warn_about_ss_sensitivity(cls, result: SteadyStateResult) -> None:
         """Surface the ways a dY_ss/dp can be less than it appears (issue #63).
@@ -7403,31 +7514,11 @@ class Simulator:
                 result.sens_jacobian_source,
             )
 
-        # 2. The Jacobian at the root is badly conditioned. The solve returned
-        #    finite numbers (case 0 above catches the ones that did not), but they
-        #    may still be meaningless.
-        #
-        #    This deliberately does NOT claim the steady state is a continuum, as
-        #    it used to. Measured on the corpus, roughly half the models this
-        #    fires on return a gradient that is in fact correct — one at
-        #    min|U|/max|U| = 1.5e-42 is accurate to 7e-7 — because the ratio is a
-        #    heuristic read off the LU diagonal, not a rank test. Say what was
-        #    measured and what to do about it, not what it implies.
-        rcond = result.sens_jacobian_rcond
-        if result.sensitivity is not None and 0.0 <= rcond < cls._SS_SENS_RCOND_FLOOR:
-            logger.warning(
-                "Steady-state dY_ss/dp may not be reliable for this model: the "
-                "Jacobian at the steady state is badly conditioned (min|U|/max|U| "
-                "= %.2e from its LU, versus ~1e-4 or better for a typical "
-                "well-posed system). The solve returned finite numbers, but if the "
-                "root is not isolated they are not a gradient. This ratio is a "
-                "heuristic, not a rank test, and it is wrong in both directions on "
-                "real models — verify against a finite difference of the steady "
-                "state (re-solve at p ± h and difference) before trusting or "
-                "discarding this result. Read ss.sens_jacobian_rcond to test it in "
-                "code.",
-                rcond,
-            )
+        # 2. (A badly conditioned Jacobian was warned about here, by the ratio
+        #    min|U|/max|U|. A warning beside a number that is not the derivative
+        #    is no refusal, and the ratio marked right answers and passed wrong
+        #    ones: see _raise_if_not_an_isolated_root, which replaces it, issue
+        #    #995.)
 
         # 3. The reduced solve failed outright: a zero pivot put NaN/inf in the
         #    result. SUNDIALS' dense LU has no least-squares fallback, so this is
@@ -7435,12 +7526,9 @@ class Simulator:
         #    and dY_ss/dp genuinely does not exist at this root. Refuse rather than
         #    return a NaN matrix a fitter will quietly turn into a non-update.
         #
-        #    This is the ONLY refusal the corpus supports, and it is deliberately
-        #    not a threshold: see _SS_SENS_RCOND_FLOOR for why no cut on the
-        #    conditioning can separate right answers from wrong ones. Checked last
-        #    so the diagnostics above are still emitted on the way out. Driving the
-        #    real entry point over the 585-model corpus: 395 return a gradient, 31
-        #    are refused, and no NaN reaches the caller.
+        #    It needs no threshold. A pivot that is small without being zero is
+        #    _raise_if_not_an_isolated_root's question (issue #995). Checked last
+        #    so the diagnostics above are still emitted on the way out.
         sens = result.sensitivity
         if sens is not None and not np.all(np.isfinite(sens)):
             arr = np.asarray(sens)
@@ -8839,7 +8927,41 @@ class SteadyStateResult:
         that is a *continuum* rather than an isolated point makes it
         rank-deficient, and the returned matrix is then meaningless. Well-posed
         corpus models measure 1e-4 to 1e-1; rank-deficient ones 1e-12 to 1e-9.
-        ``0.0`` when no sensitivity was requested.
+        ``0.0`` when no sensitivity was requested. It depends on the units of
+        the species and is not what decides whether the columns are returned:
+        the four ``sens_root_*`` ratios are.
+    sens_root_determinant_ratio : float
+        The determinant of the system ``dY_ss/dp`` is solved on at the state
+        one Newton step on, over the one at the returned state (issue #995). 1,
+        to the accuracy of the solve, at an isolated root; next to nothing
+        where the Jacobian is singular at the steady state, a continuum of
+        steady states; 1/2 at a root of higher order. ``steady_state`` raises
+        outside 0.6 to 1.67, so a result that carries sensitivities has it
+        within that. ``1.0`` when no sensitivity was requested.
+    sens_root_condition : float
+        The componentwise condition number of that system, the Perron root of
+        ``|A⁻¹|·|A|``: how many times a relative error in each entry of the
+        Jacobian is magnified in the columns. The same in any units; 1e16 or
+        more where the matrix is singular but for rounding. ``steady_state``
+        raises above 1e12. ``1.0`` when no sensitivity was requested.
+    sens_root_column_shift : float
+        The largest move of a column of ``dY_ss/dp`` when it is solved again at
+        the corrected state, as a fraction of the column's largest entry (or of
+        ``1e-3 * max|concentration| / |p|`` for a column smaller than that):
+        how far the columns are from those of the root. ``steady_state``
+        raises above 0.01. ``0.0`` when no sensitivity was requested.
+    sens_root_relaxation : float
+        The most of a column of ``dY_ss/dp`` that a run of ``max_time`` would
+        leave unestablished, as a fraction of the column's largest entry: the
+        bound ``A⁻¹·column / max_time`` where that is under 1e-3, and what
+        eight implicit steps of ``max_time/8`` leave of the column where it is
+        not. ``steady_state`` raises above 0.01. ``0.0`` when no sensitivity
+        was requested.
+    sens_root_determinant_species, sens_root_condition_species : str or None
+        The species the first two point at: for the determinant, the one whose
+        pivot moved furthest.
+    sens_root_column_param, sens_root_relaxation_param : str or None
+        The parameter whose column the last two are read at.
 
     Notes
     -----
@@ -8889,6 +9011,14 @@ class SteadyStateResult:
         "sens_dfdp_source",
         "sens_output_source",
         "sens_jacobian_rcond",
+        "sens_root_determinant_ratio",
+        "sens_root_condition",
+        "sens_root_column_shift",
+        "sens_root_relaxation",
+        "sens_root_determinant_species",
+        "sens_root_condition_species",
+        "sens_root_column_param",
+        "sens_root_relaxation_param",
         "_sensitivity",
         "_sens_param_names",
         "_observable_names",
@@ -8937,6 +9067,28 @@ class SteadyStateResult:
         # finite-difference fallback, or "mixed" when it took both.
         self.sens_output_source = getattr(core, "sens_output_source", "")
         self.sens_jacobian_rcond = getattr(core, "sens_jacobian_rcond", 0.0)
+        # Issue #995 — whether the steady state is an isolated root of the
+        # system the columns were solved on, and the returned state on it.
+        self.sens_root_determinant_ratio = getattr(core, "sens_root_determinant_ratio", 1.0)
+        self.sens_root_condition = getattr(core, "sens_root_condition", 1.0)
+        self.sens_root_column_shift = getattr(core, "sens_root_column_shift", 0.0)
+        self.sens_root_relaxation = getattr(core, "sens_root_relaxation", 0.0)
+
+        def _named(names: Sequence[str], index: int) -> str | None:
+            return names[index] if 0 <= index < len(names) else None
+
+        species = list(core.species_names)
+        self.sens_root_determinant_species = _named(
+            species, getattr(core, "sens_root_determinant_species", -1)
+        )
+        self.sens_root_condition_species = _named(
+            species, getattr(core, "sens_root_condition_species", -1)
+        )
+        columns = list(core.sens_param_names)
+        self.sens_root_column_param = _named(columns, getattr(core, "sens_root_column_param", -1))
+        self.sens_root_relaxation_param = _named(
+            columns, getattr(core, "sens_root_relaxation_param", -1)
+        )
 
         self._sensitivity: np.ndarray | None
         if core.n_sens_params > 0:
