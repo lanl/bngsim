@@ -1855,14 +1855,19 @@ def _whole_power_offset(num_exp, term_exp, sp):
     ``num_exp − m·term_exp`` keeps a symbol and the match is refused, whichever
     symbol was picked.
 
-    The symbols are asked in the order of their names, and each in turn until
-    one gives a count (issue #550). They were asked in the order of the set
-    ``free_symbols`` returns, the first only, and that order follows the hash
-    seed: against one symbol the ratio of the slopes cancels to a count, and
-    against another, of an exponent with a condition in it, ``cancel`` leaves
-    an expression that is no count to :func:`_integer_at_least`. The same
-    model was rewritten in one process and not in the next
-    (MODEL1006230049).
+    Each symbol is asked in turn until one gives a count (issue #550). The
+    first that ``free_symbols`` returned was asked, and no other, and a set's
+    first follows the hash seed: against one symbol the ratio of the slopes
+    cancels to a count, and against another, of an exponent with a condition
+    in it, ``cancel`` leaves an expression that is no count to
+    :func:`_integer_at_least`. The same model was rewritten in one process and
+    not in the next (MODEL1006230049).
+
+    Which symbol is asked first does not change the answer now: where the
+    exponents are parallel, ``num = m·term + c``, every symbol whose ratio
+    cancels gives that ``m``, and where they are not, none gives a count that
+    leaves a number. They are asked in the order of their names all the same,
+    so that every process does the same work.
     """
     ratio = num_exp / term_exp
     if ratio.is_number:

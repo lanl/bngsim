@@ -90,6 +90,55 @@ def test_the_combined_source_is_the_same_under_every_hash_seed(tmp_path):
     assert "pow(obs[0], 1.0)" in line and "obs[0]*p[1]" in line
 
 
+# A parameter that is an expression of others, kdd = pp·aa^2.0 + qq·aa^2. Its
+# partial in aa is printed by another path (sympy's C printer, for the chain
+# rule through a derived parameter), with the tied pair aa and aa**1.0 ahead of
+# pp and qq.
+DERIVED = """begin parameters
+    1 aa  0.7
+    2 pp  1.5
+    3 qq  0.5
+    4 kdd pp*aa^2.0+qq*aa^2
+end parameters
+begin species
+    1 A() 1
+    2 B() 0
+end species
+begin reactions
+    1 1 2 kdd
+    2 2 1 pp
+end reactions
+begin groups
+    1 Aobs  1
+end groups
+"""
+
+_EMIT_DERIVED = _EMIT.replace(
+    'if "/* made */" in l and "obs_sens_c" in l', 'if "pow(p[0], 1.0)" in l'
+)
+
+
+def test_the_partials_of_a_derived_parameter_are_the_same_under_every_hash_seed(tmp_path):
+    """On main, under CPython 3.12, seeds 0 and 1 print
+    ``2.0*pow(p[0], 1.0)*p[1] + 2*p[0]*p[2]`` and seeds 2 and 7 the two terms
+    the other way round."""
+    net = tmp_path / "derived.net"
+    net.write_text(DERIVED)
+    emitted = {}
+    for seed in (0, 1, 2, 7):
+        done = subprocess.run(
+            [sys.executable, "-c", _EMIT_DERIVED, str(net)],
+            env={**os.environ, "PYTHONHASHSEED": str(seed)},
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+        emitted[seed] = done.stdout.strip().splitlines()[-1]
+    assert len(set(emitted.values())) == 1, emitted
+    assert "2.0*pow(p[0], 1.0)*p[1] + 2*p[0]*p[2]" in emitted[0]
+
+
 def _tied_sum():
     """2.0*p*A**1.0 + 2*q*A. The generators sort as A and A**1.0, tied, then p
     and q, so the tied pair leads the monomials and decides the order."""
@@ -176,6 +225,35 @@ def test_a_tie_that_is_not_between_neighbours(monkeypatch):
     assert not k_tied < k_high and not k_high < k_tied
     seen = _from_every_set_order(expr, monkeypatch)
     assert len(seen) == 6
+    assert len({tuple(native) for _, native in seen}) > 1
+    assert len({tuple(ours) for ours, _ in seen}) == 1
+
+
+def test_the_order_of_two_keys():
+    """What the generators are sorted by: tuples compared entry by entry, as
+    ``<`` compares them where it can, a shorter one ahead of one it begins,
+    and two numbers of one value and two types in the order of the types'
+    names. Unlike ``<`` on the keys, it has no ties but between equals."""
+    from bngsim._term_order import _key_cmp
+
+    one, real = sp.Integer(1), sp.Float(1.0)
+    assert _key_cmp((1, "a"), (1, "b")) < 0 < _key_cmp((2, "a"), (1, "b"))
+    assert _key_cmp((1, "a"), (1, "a")) == 0
+    assert _key_cmp((1,), (1, "a")) < 0 < _key_cmp((1, "a"), (1,))
+    assert not one < real and not real < one and one != real
+    assert _key_cmp(real, one) < 0 < _key_cmp(one, real)
+    assert _key_cmp((real, "z"), (one, "a")) < 0 < _key_cmp((one, "a"), (real, "z"))
+    assert _key_cmp(sp.Float(0.5), one) < 0 < _key_cmp(sp.Float(1.5), one)
+
+
+def test_two_generators_with_one_key_are_told_apart_by_what_they_are(monkeypatch):
+    """A symbol and its namesake with an assumption are two expressions with
+    one sort key. Nothing bngsim builds has such a pair, and sympy's order of
+    them is the set's; here it is that of their ``srepr``."""
+    plain, positive, z = sp.Symbol("x"), sp.Symbol("x", positive=True), sp.Symbol("z")
+    assert plain != positive and sp.default_sort_key(plain) == sp.default_sort_key(positive)
+    expr = 2 * plain + 3 * z * positive
+    seen = _from_every_set_order(expr, monkeypatch)
     assert len({tuple(native) for _, native in seen}) > 1
     assert len({tuple(ours) for ours, _ in seen}) == 1
 
