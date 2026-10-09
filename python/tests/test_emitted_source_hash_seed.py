@@ -1041,7 +1041,9 @@ def test_no_emitter_sorts_by_a_key_of_sympys_that_can_follow_the_seed():
     # And what they are sorted by: nothing else of sympy's (``str`` and
     # ``sort_key`` follow the seed as ``srepr`` does).
     emitter = inspect.getsource(_codegen)
-    assert emitter.count("key=_term_order.srepr") == 3
+    # Three, and since issue #1003 the powers of a law in the two places that
+    # list the parameters without a comoving case.
+    assert emitter.count("key=_term_order.srepr") == 5
     assert emitter.count("key=lambda shift: _term_order.srepr(spelled(shift)[0])") == 1
     assert inspect.getsource(_switch_sensitivity).count("_term_order.in_order(by_count[n])") == 1
 
