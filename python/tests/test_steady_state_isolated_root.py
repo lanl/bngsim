@@ -2762,6 +2762,25 @@ def test_an_invader_that_is_there_takes_the_system_where_it_goes(tmp_path):
     np.testing.assert_allclose(out.sensitivity, [[1.0, 0.0], [-1.0, 1.0]], rtol=1e-5, atol=1e-7)
 
 
+def test_a_species_that_is_not_there_yet_and_is_being_made_is_asked(tmp_path):
+    """The resident, started at its capacity, makes the invader at 1e-12: N
+    starts at nothing, the residual is under ``tol`` there, and the solve
+    returns the start, which N leaves at g - d·R = 1 for where the two
+    coexist. N is at nothing, and it is not absent: its row of the Jacobian
+    has an entry in R's column. It is in the eigenvalues, and they say that
+    the system does not rest here."""
+    made = (
+        BESIDE_AN_INVADER.format(n0="0")
+        .replace("    4 d   1.0\n", "    4 d   1.0\n    5 eps 1e-12\n")
+        .replace("    5 2,2 2 d\n", "    5 2,2 2 d\n    6 1 1,2 eps\n")
+        .replace("    1 R() 0.5\n", "    1 R() 1.0\n")
+    )
+    assert made.count("eps") == 2 and "R() 1.0" in made
+    sim = bngsim.Simulator(_net(tmp_path, made), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#995.*does not rest at.*real part of 1 "):
+        sim.steady_state(sensitivity_params=["b", "c", "g"])
+
+
 def test_biomd908_rests_where_it_is_without_the_species_it_does_not_start_with():
     """S is at nothing from the start and nothing makes it; the Jacobian has
     an eigenvalue of 0.277 that is S's own. The run that is taken on stays,
