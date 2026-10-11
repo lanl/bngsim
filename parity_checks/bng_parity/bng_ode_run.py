@@ -114,12 +114,21 @@ def _resolve_bng_tools() -> tuple[str, str]:
 # live here so the matrix is the single adjudication home (GH #69). Keyed by the
 # BNGL stem; ``issue``/``reason`` annotate the row comment.
 KNOWN_DETERMINISTIC_ARTIFACTS = {
+    # max_abs here is the phase offset in disguise: about 96 times the gap between
+    # the two engines' division times, the largest difference sitting in V where
+    # it falls. The gap comes from rounding, not from the model. Re-measured
+    # 2026-10-11 over 3,362 pairs of default-tolerance runs (bngsim ExprTk and
+    # compiled against run_network, each at 41 rtol = atol from 0.9e-8 to
+    # 1.1e-8): max_abs 0.52 median, 1.73 at the 99th percentile, 2.38 worst, and
+    # above the old bound of 1.0 in 12% of pairs, which is how CI lost the tag
+    # after #996. A real error moves it further: +0.1% on the growth rate gives
+    # 5.8, +0.1% on Vmax 7.1, +1% on the decay rate 5.5.
     "proliferation": {
-        "max_abs_bound": 1.0,
-        "issue": "stiff-oscillator phase wander (verified 2026-05-17)",
+        "max_abs_bound": 4.0,
+        "issue": "stiff-oscillator phase wander (re-measured 2026-10-11)",
         "reason": "stiff relaxation-oscillator phase wander across sharp tanh() "
-        "switches (<=4e-3 time units over 9 cycles); period, amplitude and cycle "
-        "count match both sides. Observed max_abs 0.43.",
+        "switches (division times within 0.03 time units over 8 cycles of 11.57); "
+        "period, amplitude and cycle count match both sides.",
     },
     "ATG_model_v16": {
         "max_abs_bound": 100.0,
@@ -204,18 +213,30 @@ def annotate_known_artifact(res: dict, status: str, stem: str, max_abs: float) -
     If the divergence EXCEEDS the bound (or is non-finite) the model is NOT excused
     — a real regression would blow past it — and stays a scoring DIFF. A no-op for
     any non-DIFF status or uncatalogued model.
+
+    Either way the comment states this run's ``max_abs`` against the bound, near
+    its start, so the number survives the nightly's 200-character verdict note. A
+    catalogued model that stops being excused has to say by how much: the CI
+    nightlies after #996 dropped proliferation's tag and recorded no number.
     """
     if status != "diff":
         return res
     art = KNOWN_DETERMINISTIC_ARTIFACTS.get(stem)
     if art is None:
         return res
-    if not (max_abs is not None and np.isfinite(max_abs) and max_abs <= art["max_abs_bound"]):
+    bound = art["max_abs_bound"]
+    raw = res.get("comment", "")
+    observed = "not measured" if max_abs is None else f"{max_abs:.3g}"
+    if not (max_abs is not None and np.isfinite(max_abs) and max_abs <= bound):
+        res["comment"] = (
+            f"Catalogued known artifact, but max_abs {observed} is past its bound "
+            f"{bound:g}, so this DIFF scores. {raw}"
+        )
         return res
     res["subclass"] = "known_artifact"
     res["comment"] = (
-        f"Known comparison artifact, not a bngsim error: {art['reason']} Within its checked "
-        f"bound → non-scoring. (Raw: {res.get('comment', '')})"
+        f"Known comparison artifact, not a bngsim error (max_abs {observed}, within its "
+        f"bound {bound:g}): {art['reason']} → non-scoring. (Raw: {raw})"
     )
     return res
 
