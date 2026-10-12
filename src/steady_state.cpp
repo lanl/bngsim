@@ -4481,7 +4481,6 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
             model.evaluate_functions(0.0);
             const std::vector<double> f0(model.function_value_cache());
             std::vector<double> f1;
-            std::vector<double> y_pert(ns);
 
             // State-chain term: ∂func_m/∂x_i via one-sided FD (perturb one
             // species, re-evaluate observables + functions), folded into

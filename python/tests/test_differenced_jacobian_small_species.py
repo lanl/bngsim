@@ -23,6 +23,15 @@ two agree to what rounding can do to them, the entry is the first, bit for bit
 as it was. Where they do not, the entry is extrapolated to a step of zero from
 a ladder of halved steps, which for a mass-action law is exact in three.
 
+An entry changes only where the ladder shows what it is: two estimates agree
+to a millionth of themselves, the row's rounding is under 1e-4 of them, and
+every estimate after them stays there, down to the species' own step or to
+where the rounding takes over. A first cut asked the agreement to a millionth
+of the first quotient and stopped at it. Beside a species at 1e9, a
+dimerization and ``V·X/(K + X)`` with K at 1e-6 came back with 1.9e-5 for a
+slope of 40, where the first quotient had been 10.9. A slope that is 0 or under
+the row's rounding is not told from the other, and stays the first quotient.
+
 Every expected value is a closed form.
 """
 
@@ -113,9 +122,12 @@ def test_a_steady_state_column_beside_a_species_of_its_own_size(tmp_path, big):
     """Control. Within 64 times the largest concentration the floored step
     is at most 64·√eps of the species, and its column is not looked at
     again."""
-    sim = bngsim.Simulator(_model(tmp_path, big), method="ode", jacobian="fd")
+    model = _model(tmp_path, big)
+    sim = bngsim.Simulator(model, method="ode", jacobian="fd")
     out = sim.steady_state(sensitivity_params=["s"])
     assert np.asarray(out.sensitivity)[0, 0] == pytest.approx(DX_DS, rel=1e-6)
+    y = _state(big)
+    np.testing.assert_array_equal(_fd(model, y)[:, 0], _first_quotient(model, y, 0))
 
 
 @pytest.mark.parametrize("kw", [{}, {"jacobian": "fd"}], ids=["closed-form", "differenced"])
@@ -191,6 +203,166 @@ def test_the_closed_form_and_the_difference_agree(tmp_path):
     assert np.max(apart) < 1e-7
 
 
+# ─── A law with a scale of its own far below the first step ─────────────────
+
+LAWS = """begin parameters
+    1 s   1.3
+    2 k1  0.21
+    3 k2  0.73
+    4 kd  0.5
+    5 sg  {big!r}
+    6 dg  1.0
+    7 V   {v!r}
+    8 K   {k!r}
+end parameters
+begin functions
+    1 mm() V*Xo/(K+Xo)
+    2 hill2() V*Xo^2/(K^2+Xo^2)
+    3 grows() exp(Xo/0.05)
+    4 peaks() V*Xo*exp(-Xo/K)
+    5 slow() abs(Xo)^1.5
+    6 step() if(Xo>0.5,1,0)
+end functions
+begin species
+    1 X() 0
+    2 D() 0
+    3 G() {big!r}
+    4 E() 0
+end species
+begin reactions
+    1 0 1 s
+    2 1 0 k1
+    3 1,1 2 k2
+    4 2 0 kd
+    5 0 3 sg
+    6 3 0 dg
+{more}end reactions
+begin groups
+    1 Xo 1
+end groups
+"""
+
+
+def _laws(tmp_path, big, more, v=1.0, k=1.0):
+    """The model above with a law of X added: into X (``0 1``), D (``0 2``)
+    or E (``0 4``), which nothing else is in."""
+    path = tmp_path / "laws.net"
+    path.write_text(LAWS.format(big=float(big), more=more, v=v, k=k))
+    return bngsim.Model.from_net(path)
+
+
+@pytest.mark.parametrize("big, v", [(1e8, 4e-7), (1e9, 4e-5)])
+def test_a_saturating_law_under_a_dimerization(tmp_path, big, v):
+    """``0 -> D`` at ``V·X/(K + X)`` with K = 1e-6, beside the dimerization,
+    at X = 0: ∂f_D/∂X = V/K, 0.4 and 40. To every step above K the law is
+    flat, and the estimates agree on the dimerization's slope, 0. The first
+    quotient was 1.09 and 10.9; an entry taken where the estimates first
+    agreed, to a millionth of that quotient, was 1.9e-6 and 1.9e-5."""
+    model = _laws(tmp_path, big, "    7 0 2 mm\n", v=v, k=1e-6)
+    y = np.array([0.0, 0.0, big, 0.0])
+    assert _fd(model, y)[1, 0] == pytest.approx(v / 1e-6, rel=1e-6)
+
+
+def test_a_law_that_grows_as_an_exponential(tmp_path):
+    """``0 -> D`` at ``exp(X/0.05)`` at X = 0: the slope is 20, the first
+    quotient across a step of 1.5 is 5.9e12, and an entry taken where two
+    estimates were within a millionth of that was 315."""
+    model = _laws(tmp_path, 1e8, "    7 0 2 grows\n")
+    assert _fd(model, [0.0, 0.0, 1e8, 0.0])[1, 0] == pytest.approx(20.0, rel=1e-6)
+
+
+@pytest.mark.parametrize("big", [1e10, 1e12])
+def test_a_saturating_law_beside_a_very_large_species(tmp_path, big):
+    """X = 1e-3 with K = 1e-6 and steps of 150 and 15,000: the law's slope
+    at X, ``V·K/(K + X)²`` = 0.898, is seen 17 and 24 halvings down. It was
+    lost: 0.0015, the dimerization's alone."""
+    x, v, k = 1e-3, 0.9, 1e-6
+    model = _laws(tmp_path, big, "    7 0 2 mm\n", v=v, k=k)
+    want = 2 * K2 * x + v * k / (k + x) ** 2
+    assert _fd(model, [x, 0.0, big, 0.0])[1, 0] == pytest.approx(want, rel=1e-6)
+
+
+def test_a_law_that_peaks_under_the_first_step(tmp_path):
+    """``V·X·exp(-X/K)`` with K = 1e-3 is nothing at every step above 0.05,
+    and its slope at 0 is V."""
+    model = _laws(tmp_path, 1e8, "    7 0 2 peaks\n", v=1.5, k=1e-3)
+    assert _fd(model, [0.0, 0.0, 1e8, 0.0])[1, 0] == pytest.approx(1.5, rel=1e-6)
+
+
+@pytest.mark.parametrize("d", [0.0, 0.3])
+def test_a_slope_under_a_plateau(tmp_path, d):
+    """``0 -> X`` at ``V·X/(K + X)`` with V = 1e-7 and K = 1e-6, at X = 0:
+    ∂f_X/∂X = -k1 + V/K = -0.11. Down to steps of 0.1 the estimates are at
+    -0.21 to a millionth, where the law is flat, and they leave it below. An
+    entry is the estimate that every later one stays at."""
+    model = _laws(tmp_path, 1e8, "    7 0 1 mm\n", v=1e-7, k=1e-6)
+    assert _fd(model, [0.0, d, 1e8, 0.0])[0, 0] == pytest.approx(-K1 + 0.1, rel=1e-5)
+
+
+def test_a_hill_term_far_under_its_half_saturation(tmp_path):
+    """``0 -> E`` at ``V·X²/(K² + X²)`` with K = 2000 and X = 1e-9: the
+    slope is ``2·V·X/K²`` = 4.5e-16, in a row with nothing else in it. The
+    first quotient was 3.4e-7."""
+    model = _laws(tmp_path, 1e8, "    7 0 4 hill2\n", v=0.9, k=2000.0)
+    want = 2 * 0.9 * 1e-9 / 2000.0**2
+    assert _fd(model, [1e-9, 0.0, 1e8, 0.0])[3, 0] == pytest.approx(want, rel=1e-5)
+
+
+@pytest.mark.parametrize("x, d", [(1e-9, 0.2), (1e-9, 0.0), (1e-30, 0.0)])
+def test_a_species_next_to_zero_that_dimerizes(tmp_path, x, d):
+    """∂f_X/∂X = -(k1 + 4·k2·X), with X a billionth of a unit and next to
+    nothing: a ladder that goes all the way down."""
+    jac = _fd(_laws(tmp_path, 1e8, ""), [x, d, 1e8, 0.0])
+    assert jac[0, 0] == pytest.approx(-(K1 + 4 * K2 * x), rel=1e-9)
+
+
+def test_the_slope_of_a_dimerization_at_a_billionth(tmp_path):
+    """∂f_D/∂X = 2·k2·X = 1.46e-9, in a row that holds ``kd·D`` = 0.1 and so
+    has a rounding of its own. The first quotient was 1.09."""
+    jac = _fd(_laws(tmp_path, 1e8, ""), [1e-9, 0.2, 1e8, 0.0])
+    assert jac[1, 0] == pytest.approx(2 * K2 * 1e-9, rel=1e-5)
+
+
+def _first_or_right(model, y, row, want):
+    """An entry is what it was, or it is the slope."""
+    got, was = _fd(model, y)[row, 0], _first_quotient(model, y, 0)[row]
+    assert got == was or got == pytest.approx(want, rel=1e-3), (got, was, want)
+    return got == was
+
+
+def test_a_slope_of_zero_in_a_row_with_a_rounding_is_what_it_was(tmp_path):
+    """Control. The dimerization into D at X = 0 has a slope of exactly 0.
+    With D at 0.3 its row has a rounding, the estimates are 0 to that
+    rounding, and a slope of 1e-16 would read the same: the entry is not
+    changed. (With D at 0 the row has none, and the entry is 0: see
+    ``test_a_species_at_zero_that_dimerizes``.)"""
+    assert _first_or_right(_laws(tmp_path, 1e8, ""), [0.0, 0.3, 1e8, 0.0], 1, 0.0)
+
+
+def test_a_slope_under_the_rows_rounding_is_what_it_was(tmp_path):
+    """Control. ``0 -> X`` at ``V·X/(K + X)`` with V = 4e-9 and K = 1e-8:
+    the slope -k1 + 0.4 is seen at steps of 1e-10, where the rounding of the
+    row is 1e-4 of it. The estimates leave -0.21 and come to rest nowhere."""
+    model = _laws(tmp_path, 1e8, "    7 0 1 mm\n", v=4e-9, k=1e-8)
+    assert _first_or_right(model, [0.0, 0.0, 1e8, 0.0], 0, -K1 + 0.4)
+
+
+def test_a_power_of_three_halves_at_zero_is_what_it_was(tmp_path):
+    """Control. ``|X|^1.5`` has a slope of 0 at 0, and its quotient falls as
+    the square root of the step: 1e-6 of the first at the ladder's end, which
+    is no 0."""
+    model = _laws(tmp_path, 1e8, "    7 0 4 slow\n")
+    assert _first_or_right(model, [0.0, 0.0, 1e8, 0.0], 3, 0.0)
+
+
+def test_a_step_inside_the_first_step_is_what_it_was(tmp_path):
+    """Control. ``if(X > 0.5, 1, 0)`` with X at 1e-3 and a step of 1.5: the
+    first quotient is across the switch, and every step under 0.5 leaves the
+    row where it was, to the last bit."""
+    model = _laws(tmp_path, 1e8, "    7 0 4 step\n")
+    assert _first_or_right(model, [1e-3, 0.0, 1e8, 0.0], 3, 0.0)
+
+
 # ─── What is left as it was ──────────────────────────────────────────────────
 
 SQRT_EPS = 1.4901161193847656e-8
@@ -207,14 +379,23 @@ def _first_quotient(model, y, j):
 
 def test_an_entry_a_small_species_enters_linearly_is_bit_for_bit_what_it_was(tmp_path):
     """Control. G gains ``kw·X`` (reaction 7), 1e-4 a unit of X, beside
-    fluxes of 1e8. The quotients at the step and at half of it differ by the
-    rounding of those fluxes, 1e-4 of the entry, which is nothing the entry
-    was not known to already: it is the first quotient. Extrapolating it
-    would add the rounding of two more evaluations."""
+    fluxes of 1e8, with G at an eighth of where it settles and no round
+    number: its row is 8.8e7 and does not cancel. (At a round G the step,
+    2^-26 of it, moves the row by a whole number of its last bits, and the
+    quotients carry no rounding at all.) The quotients at the step and at
+    half of it differ by the rounding of that row, 8e-4 of the entry, which
+    is nothing the entry was not known to already: it is the first quotient."""
     model = _model(tmp_path, 1e8, more="    7 1 1,3 kw\n")
     y = _state(1e8)
+    y[2] = 12345678.9
     jac = _fd(model, y)
     first = _first_quotient(model, y, 0)
+    half = y.copy()
+    half[0] = y[0] + (SQRT_EPS * y[2]) / 2
+    second = (np.asarray(model.rhs(half, 0.0)) - np.asarray(model.rhs(y, 0.0)))[2] / (
+        half[0] - y[0]
+    )
+    assert abs(second - first[2]) > 1e-6 * abs(first[2])
     assert jac[2, 0] == first[2]
     assert jac[2, 0] == pytest.approx(1e-4, rel=1e-2)
 
@@ -275,10 +456,11 @@ def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
     to nothing, terms of 1e6 cancel in the row's value and in its entry for
     L, so neither says how large the row's rounding is: 1e-10. The entry of U
     is ``alpha·V - g + r - delta``, 0.0056, and a quotient of the row at a
-    small step is all rounding (0.016 at a step of 1e-8), then exactly 0.
-    With the rounding taken from the row's value and entries, the ladder met
-    those zeros and settled on one: 1e-11 for 0.0056. It is measured, and
-    the entry stays the first quotient. The state is the model's at t = 100."""
+    small step is all rounding (0.023 at a step of 1e-8), then exactly 0.
+    With the rounding taken from the row's value and entries, a first cut of
+    the ladder met those zeros and took one for the entry: 1e-11 for 0.0056.
+    It is measured, and the entry stays the first quotient. The state is the
+    model's at t = 100."""
     path = tmp_path / "share.net"
     path.write_text(SHARE)
     model = bngsim.Model.from_net(path)
@@ -291,7 +473,7 @@ def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
 def test_two_quotients_that_agree_to_a_millionth_are_one(tmp_path):
     """Control. Beside a species a hundred times its size, X is stepped by
     1.5e-6 of itself, and the two quotients of its dimerization differ by
-    4e-7 of the entry: under the millionth an entry is asked to, so it is
+    3.4e-7 of the entry: under the millionth an entry is asked to, so it is
     the first quotient, as it was."""
     big = 100 * X_SS
     model = _model(tmp_path, big)
