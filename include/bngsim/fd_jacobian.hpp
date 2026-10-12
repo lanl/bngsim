@@ -113,9 +113,10 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // - the thousandth beyond moves the row by a thousandth of what the step did,
 //   to a tenth: the row resolves the step, and the quotient is not a count of
 //   the row's own last bits. (`k·((A + X) − A)` with A at 1e8 moves in steps
-//   of 1.5e-8 whatever X does, a rounding inside one rate law that neither
-//   the row's terms nor a small move of the state shows. Its quotients at X's
-//   own step and at twice it are the same wrong number, 1.14 for 1.)
+//   of 1.5e-8 whatever X does, a rounding inside one rate law that the row's
+//   terms do not show. Its quotients at X's own step and at twice it are the
+//   same wrong number, 1.14 for 1, and with X at 257/256 so is the one at 64
+//   times the step, 0.9961.)
 // - it is further from the first quotient than twice what it is known to (its
 //   rounding, its differences from the quotients at twice and at
 //   kFdRefineRatio times the step, and kFdRefineRtol of itself for what a
@@ -138,17 +139,17 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // of a species at exactly 0, which has no step of its own: a dimerization's
 // entry there is still the secant.
 //
-// A row's rounding is eps of its value and of each entry times its species,
-// at the least, and what moves of the whole state show beyond that. The sum
-// of a row's terms is not to be had from its value and its entries:
+// A row's rounding is taken as eps of its value and of each entry times its
+// species. (The entry of a small species is taken at its own step here: the
+// first quotient, a secant, times the species is no term of the row, and
+// beside 1e12 it is a million times one.) That is a floor and not the sum of
+// the row's terms, which is not to be had from its value and its entries:
 // `L·(r − δ − φ(L))` with `φ → r − δ` is terms of 1e6 that cancel in the value
 // and in every entry, and a quotient of it at a step of 1e-8 is all rounding
-// (BIOMD0000000884). So the row is evaluated with every species moved by a
-// few parts in 1e14, up and the same down, in two patterns: the mean of the
-// two differs from the row at the state by its rounding and by nothing else
-// to first order. (The entry of a small species is taken at its own step
-// here: the first quotient, a secant, times the species is no term of the
-// row, and beside 1e12 it is a million times one.)
+// (BIOMD0000000884). What the floor misses is left to the other conditions: a
+// quotient that is rounding does not come back the same at one, two and
+// kFdRefineRatio times a step, and one that is a count of last bits does not
+// pass the thousandth beyond.
 
 // How many times its own step (√eps of itself) a species has to be stepped by
 // before its column is looked at again. Below this the floored step's
@@ -162,11 +163,6 @@ constexpr double kFdRefineRtol = 1e-6;
 // A quotient is known where the row's rounding over its step is under this
 // much of it, and two quotients agree where they are no further apart.
 constexpr double kFdSettled = 1e-4;
-// The relative move of the whole state a row's rounding is sampled at, in
-// kFdNoisePairs patterns: species by species up and down in turn, and the
-// other way round. (All one way scales a ratio of two sums by nothing.)
-constexpr double kFdNoiseMove = 0x1p-44;
-constexpr int kFdNoisePairs = 2;
 // How far beyond the own step the row is asked whether it resolves it, as a
 // part of the step, and how near what the quotient says its answer has to be.
 constexpr double kFdResolveStep = 0x1p-10;
@@ -174,8 +170,8 @@ constexpr double kFdResolveRtol = 0.1;
 
 // Column-major D (n_out×ns, D[j*n_out + i] = ∂g_i/∂y_j) of any `eval(y, g)`
 // that fills n_out values from a state of ns species. One `eval` per column
-// plus one for the base point; for a state with a species far below its scale
-// four more, and four for the column of each such species (see above).
+// plus one for the base point, and four more for the column of each species
+// far below the state's scale (see above).
 // `excluded` (0-based, ascending) names the species that must not set the
 // probe scale.
 template <class Eval>
@@ -204,8 +200,9 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     if (small.empty()) {
         return;
     }
-    // The quotients of each such species at its own step and at twice it, and
-    // what each step moved the row by.
+    // The quotients of each such species at its own step, at twice it and at
+    // kFdRefineRatio times it, whether the steps moved the row, and whether
+    // the row resolves the own step.
     const std::size_t n_small = small.size();
     std::vector<double> own(n_small * um), twice(n_small * um), wide(n_small * um);
     std::vector<double> step(n_small, 0.0);
@@ -253,10 +250,9 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
         }
     }
     // Each row's rounding: eps of its own value and of each entry times its
-    // species at the least (a small species' entry at its own step), and what
-    // moves of the whole state, up and the same down, show beyond that.
+    // species (a small species' entry at its own step).
     const double eps = std::numeric_limits<double>::epsilon();
-    std::vector<double> rounding(um), g_up(um), g_down(um);
+    std::vector<double> rounding(um);
     for (std::size_t i = 0; i < um; ++i) {
         rounding[i] = std::abs(g0[i]);
     }
@@ -280,25 +276,9 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     for (std::size_t i = 0; i < um; ++i) {
         rounding[i] *= eps;
     }
-    for (int pair = 0; pair < kFdNoisePairs; ++pair) {
-        for (int sign = 0; sign < 2; ++sign) {
-            for (int c = 0; c < ns; ++c) {
-                const bool up = ((c + pair) % 2 == 0) == (sign == 0);
-                y_pert[static_cast<std::size_t>(c)] =
-                    y[c] * (1.0 + (up ? kFdNoiseMove : -kFdNoiseMove));
-            }
-            eval(y_pert.data(), sign == 0 ? g_up.data() : g_down.data());
-        }
-        for (std::size_t i = 0; i < um; ++i) {
-            const double beyond = std::abs(0.5 * (g_up[i] + g_down[i]) - g0[i]);
-            if (beyond > rounding[i]) {
-                rounding[i] = beyond;
-            }
-        }
-    }
     // An entry is the quotient at the species' own step where that is known,
-    // agrees with the one at twice the step, and is further from the first
-    // quotient than it is known to.
+    // agrees with the ones at twice and at kFdRefineRatio times the step, and
+    // is further from the first quotient than it is known to.
     for (std::size_t s = 0; s < n_small; ++s) {
         if (!(step[s] > 0.0)) {
             continue;

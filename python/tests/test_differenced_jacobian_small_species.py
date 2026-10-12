@@ -346,15 +346,20 @@ def test_a_law_that_is_nearly_linear_is_what_it_was(tmp_path):
     assert got == pytest.approx(want, rel=2e-5)
 
 
-@pytest.mark.parametrize("x", [X_SS, 3.3])
+@pytest.mark.parametrize("x", [X_SS, 3.3, 257 / 256])
 def test_a_rounding_inside_one_rate_law_is_what_it_was(tmp_path, x):
     """Control. ``0 -> E`` at ``V·((K + X) − K)`` with K = 1e8 is X, in steps
-    of 1.5e-8, the last bit of 1e8, and its row is X: neither the row's
-    terms nor a small move of the state shows that rounding. The quotients
+    of 1.5e-8, the last bit of 1e8, and its row is X: the row's terms do
+    not show that rounding. The quotients
     at X's own step, 1.3e-8, and at twice it are the same wrong number, 1.14
     for 1. A thousandth beyond the step the row has not moved at all, so it
     does not resolve the step, and the entry stays the first quotient,
-    which is 1."""
+    which is 1.
+
+    At X = 257/256 the own step is 1.004 of those last bits, twice it 2.008
+    and 64 times it 64.25, which the row takes as 1, 2 and 64: the three
+    quotients are one number, 0.9961, and the thousandth beyond is all that
+    tells it from a slope."""
     model = _laws(tmp_path, 1e8, "    7 0 4 inside\n", v=1.0, k=1e8)
     y = [x, 0.0, 1e8, 0.0]
     _is_what_it_was(model, y, 3)
@@ -487,9 +492,9 @@ def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
     is ``alpha·V - g + r - delta``, 0.0056, and a quotient of the row at a
     small step is all rounding (0.023 at a step of 1e-8), then exactly 0.
     The entry of a species the floor steps by many times itself is taken
-    from its own step only where the row's rounding there is small: it is
-    measured, 1e-10, and the entry stays the first quotient. The state is
-    the model's at t = 100."""
+    from its own step only where that step moves the row: U's, 6e-17, and
+    64 times it do not, and the entry stays the first quotient. The state
+    is the model's at t = 100."""
     path = tmp_path / "share.net"
     path.write_text(SHARE)
     model = bngsim.Model.from_net(path)
