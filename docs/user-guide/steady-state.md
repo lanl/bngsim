@@ -591,11 +591,15 @@ nothing there, and no measure taken on that matrix sees what it lost. (The
 limits hold that loss. The difference's step is 1.5e-8 of the larger of the
 species and the largest concentration in the model, so a species far below
 that is stepped by many times itself; an entry that is not linear in such a
-species is extrapolated to a step of zero from a ladder of halved steps, and
-one that is linear in it is the one quotient it was (issue #1002). A term too
-small to move the first two quotients apart, a saturating law whose whole
-flux is under a millionth of its row's, is not seen: prefer the closed form
-for sensitivities.) (A determinant
+species is asked of a ladder of halved steps, extrapolated to a step of zero,
+and one that is linear in it is the one quotient it was (issue #1002). An
+entry changes only where the ladder's estimates agree to a millionth of
+themselves, stay there down to the species' own step or to the row's
+rounding, and are further from the first quotient than they are known to
+themselves. An entry whose slope is 0, or under the row's rounding over the
+steps, keeps the first quotient: a dimerization's entry at a species that is
+at exactly 0 is still the secant. So does one whose estimates do not come to
+rest. Prefer the closed form for sensitivities.) (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller

@@ -7418,7 +7418,9 @@ class Simulator:
     #: a species far below the largest concentration, which it was stepped
     #: by 1.5e-8 of (7% off beside an unrelated species at 1e7, with a pivot
     #: share of 1), is taken back where the matrix is made: such an entry is
-    #: extrapolated to a step of zero (issue #1002).
+    #: extrapolated to a step of zero where its estimates come to rest, and
+    #: is the first quotient where they do not or its slope is 0 (issue
+    #: #1002).
     _SS_ROOT_PIVOT_SHARE_MIN_DIFFERENCED = 1e-6
     _SS_ROOT_CONDITION_MAX_DIFFERENCED = 1e6
 
