@@ -347,8 +347,8 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                 const double moved = g1[i] - g0[i];
                 if (moved == 0.0) {
                     // The step does not move the row at all: nothing finer is
-                    // to be seen.
-                    take(r);
+                    // to be seen. (An estimate at rest is taken before this:
+                    // the rounding overtakes it at a step 1e5 times larger.)
                     open[r] = um;
                     continue;
                 }

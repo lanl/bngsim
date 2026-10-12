@@ -222,6 +222,7 @@ begin functions
     4 peaks() V*Xo*exp(-Xo/K)
     5 slow() abs(Xo)^1.5
     6 step() if(Xo>0.5,1,0)
+    7 spike() if(Xo=={k!r},1e308*10,0)
 end functions
 begin species
     1 X() 0
@@ -263,12 +264,15 @@ def test_a_saturating_law_under_a_dimerization(tmp_path, big, v):
     assert _fd(model, y)[1, 0] == pytest.approx(v / 1e-6, rel=1e-6)
 
 
-def test_a_law_that_grows_as_an_exponential(tmp_path):
+@pytest.mark.parametrize("big", [1e8, 1e9])
+def test_a_law_that_grows_as_an_exponential(tmp_path, big):
     """``0 -> D`` at ``exp(X/0.05)`` at X = 0: the slope is 20, the first
     quotient across a step of 1.5 is 5.9e12, and an entry taken where two
-    estimates were within a millionth of that was 315."""
-    model = _laws(tmp_path, 1e8, "    7 0 2 grows\n")
-    assert _fd(model, [0.0, 0.0, 1e8, 0.0])[1, 0] == pytest.approx(20.0, rel=1e-6)
+    estimates were within a millionth of that was 315. Beside 1e9 the first
+    halved step is 7.5, where the law is 1e65 and the row's rounding 1e49:
+    a step further down has that in proportion to the step."""
+    model = _laws(tmp_path, big, "    7 0 2 grows\n")
+    assert _fd(model, [0.0, 0.0, big, 0.0])[1, 0] == pytest.approx(20.0, rel=1e-6)
 
 
 @pytest.mark.parametrize("big", [1e10, 1e12])
@@ -367,6 +371,20 @@ def test_a_power_of_three_halves_at_zero_is_what_it_was(tmp_path):
     is no 0."""
     model = _laws(tmp_path, 1e8, "    7 0 4 slow\n")
     assert _first_or_right(model, [0.0, 0.0, 1e8, 0.0], 3, 0.0)
+
+
+def test_a_row_that_is_no_number_at_a_step_is_what_it_was(tmp_path):
+    """Control. X's own row with a term that is infinite at one value of X,
+    the fifth halved step from 0, and nothing anywhere else. The estimates
+    are at -k1 from the second step and stay there, and the row is no number
+    at the fifth: the law has something within that step of the species, and
+    estimates from further out than it are not taken."""
+    fifth = SQRT_EPS * 1e8 / 32
+    model = _laws(tmp_path, 1e8, "    7 0 1 spike\n", k=fifth)
+    y = [0.0, 0.0, 1e8, 0.0]
+    stepped = np.array([fifth, 0.0, 1e8, 0.0])
+    assert not np.isfinite(np.asarray(model.rhs(stepped, 0.0))[0])
+    assert _fd(model, y)[0, 0] == _first_quotient(model, y, 0)[0]
 
 
 def test_a_step_inside_the_first_step_is_what_it_was(tmp_path):
@@ -482,6 +500,49 @@ def test_a_row_that_cancels_in_its_value_and_in_its_entries(tmp_path):
     jac = _fd(model, y)
     assert jac[0, 1] == _first_quotient(model, y, 1)[0]
     assert jac[0, 1] == pytest.approx(1e-7 * y[2] - 1.0 + 0.99 - 0.0001, rel=1e-4)
+
+
+CANCEL = """begin parameters
+    1 k 500
+    2 c 1e-7
+end parameters
+begin species
+    1 X() 0
+    2 A() 0.7
+    3 B() 0.1
+    4 Y() 7.0
+end species
+begin reactions
+    1 1,2 1,2,4 k
+    2 1,3,4 1,3 k
+    3 1 1,4 c
+end reactions
+"""
+
+
+def test_a_row_whose_terms_cancel_in_proportion_to_the_stepped_species(tmp_path):
+    """Control. Y is made at ``k·X·A + c·X`` and lost at ``k·X·B·Y``, with
+    ``A = B·Y``: two terms of 350·X that cancel, and an entry for X of ``c``,
+    1e-7. At X = 3e-13 the row's rounding is that of 1e-10; at the stepped
+    state, X at 1e-7, it is a million times that, and the quotients scatter
+    by 2e-6 of the entry. With the rounding taken from the state alone the
+    scatter was read as curvature and two estimates that met were taken:
+    3e-6 off, where the first quotient is 6e-7 off (BIOMD0000000499, at
+    t = 100). It is measured at the stepped state, and the entry is the
+    first quotient."""
+    path = tmp_path / "cancel.net"
+    path.write_text(CANCEL)
+    model = bngsim.Model.from_net(path)
+    y = np.array([3e-13, 0.7, 0.1, 7.0])
+    first = _first_quotient(model, y, 0)
+    half = y.copy()
+    half[0] = y[0] + (SQRT_EPS * 7.0) / 2
+    second = (np.asarray(model.rhs(half, 0.0)) - np.asarray(model.rhs(y, 0.0)))[3] / (
+        half[0] - y[0]
+    )
+    assert abs(second - first[3]) > 1e-6 * abs(first[3])
+    assert _fd(model, y)[3, 0] == first[3]
+    assert first[3] == pytest.approx(1e-7, rel=1e-5)
 
 
 def test_two_quotients_that_agree_to_a_millionth_are_one(tmp_path):
