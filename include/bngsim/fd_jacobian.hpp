@@ -101,38 +101,38 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // noise down, and the extrapolation removes what they cost. For a mass-action
 // law, a polynomial in the species, three or four steps are exact.
 //
-// An entry changes only where the ladder shows what it is. That is one of two
-// things, and anything else leaves the first quotient, as it was.
+// An entry changes only where the ladder shows what it is, and anything else
+// leaves the first quotient, as it was. It has to show all of this:
 //
-// - Two successive estimates agree to kFdRefineRtol of themselves, the row's
-//   rounding over the step is under kFdSettled of them, and every estimate
-//   after them, all the way down the ladder, stays where they are. The ladder
-//   goes down to the species' own step, or to where the row's rounding over
-//   the step has grown past kFdSettled of the estimate and nothing finer can
-//   be told from it. It does not stop where the estimates first agree: a law
-//   with a scale of its own far below the first step, `V·X/(K + X)` with K
-//   at 1e-6 beside steps of 1, is flat to every step above K, and two
-//   estimates there agree on the slope of everything else in the row. The
-//   size the agreement is asked to is the estimate's own. Asked to the size
-//   of the first quotient, a secant that can be orders above the entry, an
-//   estimate that was still falling by a factor a step was taken for one
-//   that had settled.
-// - The species is at 0, the ladder has run all of its kFdMaxHalvings steps
-//   without the row's rounding overtaking it, and over them the row has moved
-//   in proportion to the square of the step: the quotient at the last step is
-//   under twice its share, `step/first step`, of the first. The slope at the
-//   species is then under 2e-12 of the first quotient, which is what a law of
-//   second or higher order in a species at 0 has, and the entry is the
-//   extrapolated value. A slope that is not 0 is told from this by the first
-//   rule, down to 1e-12 of the first quotient.
+// - Two successive estimates agree to kFdRefineRtol of themselves, with the
+//   row's rounding over the step under kFdSettled of them. The size the
+//   agreement is asked to is the estimate's own. Asked to the size of the
+//   first quotient, a secant that can be orders above the entry, an estimate
+//   that was still falling by a factor a step was taken for one that had
+//   settled.
+// - Every estimate after them stays where they are, all the way down the
+//   ladder, and at least kFdHeld of them do while the rounding is still under
+//   kFdSettled. The ladder goes down to the species' own step, or to where
+//   the row's rounding over the step has grown past kFdSettled of the
+//   estimate and nothing finer can be told from it. It does not stop where the
+//   estimates first agree: a law with a scale of its own far below the first
+//   step, `V·X/(K + X)` with K at 1e-6 beside steps of 1, is flat to every
+//   step above K, and two estimates there agree on the slope of everything
+//   else in the row.
+// - The estimate is further from the first quotient than twice what it is
+//   itself known to. Otherwise the first quotient may be the nearer of the
+//   two, and it stays.
 //
 // So an entry that is under the row's rounding over the steps is not changed,
 // whether its slope is 0 or not: the two cannot be told apart there, and the
-// first quotient is at least what it was. Neither is one whose estimates do
-// not come to rest: a law that is not smooth at the species, or a row whose
-// rounding overtakes the ladder first. What cannot be seen at all is a term
-// too small to move the first two quotients apart, or a scale of the law's
-// own that lies below the row's rounding at every step.
+// first quotient is at least what it was. That is every entry whose slope is
+// exactly 0, a dimerization's at a species that is at 0 among them: an
+// estimate of 0 to rounding is what a slope of 1e-33 gives too. Neither is an
+// entry changed whose estimates do not come to rest: a law that is not smooth
+// at the species, or a row whose rounding overtakes the ladder first. What
+// cannot be seen at all is a term too small to move the first two quotients
+// apart, or a scale of the law's own that lies below the row's rounding at
+// every step.
 //
 // A row's rounding is measured and not worked out. The sum of a row's terms
 // is not to be had from its value and its entries: `L·(r − δ − φ(L))` with
@@ -141,10 +141,21 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // bound from the entries called that rounding a curvature). So the row is
 // evaluated at the state with every species moved by a few parts in 1e14,
 // three times and not all the same way, and what the entries do not account
-// for of the change is its rounding. To that is added, at each step, the
-// rounding of what the step itself moved the row by. A step that leaves a
-// row's value where it was, to the last bit, is under that row's rounding
-// whatever was measured, and ends its ladder.
+// for of the change is its rounding.
+//
+// That is its rounding at the state. At a stepped state it can be far more:
+// `k·X·A − k'·X·B`, two terms that cancel and are each in proportion to a
+// species at 1e-12, has 1e4 times the rounding where that species is stepped
+// to 1e-8 (BIOMD0000000499, where the estimates scattered by 1e-4 of
+// themselves under a rounding taken from the state, and two of them met). So
+// for a column whose ladder is entered, the rows are measured again at its
+// first halved step: there by two pairs of moves, each a few parts in 1e14 up
+// and the same down, whose mean differs from the row at the step by its
+// rounding and by nothing else to first order. A step further down has that
+// in proportion to the step, and the rounding at the state at the least; to
+// both is added the rounding of what the step itself moved the row by. A step
+// that leaves a row's value where it was, to the last bit, is under that
+// row's rounding whatever was measured, and ends its ladder.
 
 // How many times its own step (√eps of itself) a species has to be stepped by
 // before its column is looked at again. Below this the floored step's
@@ -160,6 +171,9 @@ constexpr double kFdRefineRtol = 1e-6;
 // itself of the slope, and within 3e-6 where the rounding is what was
 // measured.
 constexpr double kFdSettled = 1e-4;
+// How many estimates have to stay at the one the ladder came to rest at while
+// the rounding is still under kFdSettled of it.
+constexpr int kFdHeld = 2;
 // The relative move of the whole state a row's rounding is sampled at, three
 // times: species by species up and down in turn, the other way round, and all
 // up. (All one way alone scales a ratio of two sums by nothing at all.)
@@ -248,9 +262,9 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     std::vector<double> first;     // per open row: its first quotient
     std::vector<double> rest;      // per open row: the estimate the ladder came to rest at
     std::vector<double> rest_noise;
-    std::vector<char> at_rest;
-    std::vector<double> last; // per open row: the quotient at the last step taken
+    std::vector<int> held; // per open row: -1, or how many estimates have stayed at `rest`
     std::vector<double> cur(width);
+    std::vector<double> stepped(um), g_up(um), g_down(um), y_move(un);
     for (int j = 0; j < ns; ++j) {
         const auto uj = static_cast<std::size_t>(j);
         const double yj = std::abs(y[j]);
@@ -261,7 +275,14 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
         steps[0] = h0[uj];
         open.clear();
         std::memcpy(y_pert.data(), y, un * sizeof(double));
-        int taken = 0; // steps of the ladder below the first
+        // An estimate that came to rest and stayed there is the entry, where
+        // it is further from the first quotient than it is known to itself.
+        const auto take = [&](std::size_t r) {
+            const double known = kFdRefineRtol * std::abs(rest[r]) + rest_noise[r];
+            if (held[r] >= kFdHeld && std::abs(rest[r] - first[r]) > 2.0 * known) {
+                col[open[r]] = rest[r];
+            }
+        };
         for (int k = 1; k <= kFdMaxHalvings; ++k) {
             const auto uk = static_cast<std::size_t>(k);
             const double want = steps[uk - 1] / 2.0;
@@ -292,14 +313,31 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                 first.assign(open.size(), 0.0);
                 rest.assign(open.size(), 0.0);
                 rest_noise.assign(open.size(), 0.0);
-                at_rest.assign(open.size(), 0);
-                last.assign(open.size(), 0.0);
+                held.assign(open.size(), -1);
                 for (std::size_t r = 0; r < open.size(); ++r) {
                     table[r * width] = col[open[r]];
                     first[r] = col[open[r]];
                 }
+                // The rows' rounding at this stepped state: two pairs of
+                // moves of every species, up and the same down.
+                std::fill(stepped.begin(), stepped.end(), 0.0);
+                for (int pair = 0; pair < 2; ++pair) {
+                    for (int sign = 0; sign < 2; ++sign) {
+                        for (int c = 0; c < ns; ++c) {
+                            const auto uc = static_cast<std::size_t>(c);
+                            const bool up = ((c + pair) % 2 == 0) == (sign == 0);
+                            y_move[uc] = y_pert[uc] * (1.0 + (up ? kFdNoiseMove : -kFdNoiseMove));
+                        }
+                        eval(y_move.data(), sign == 0 ? g_up.data() : g_down.data());
+                    }
+                    for (std::size_t i = 0; i < um; ++i) {
+                        const double beyond = std::abs(0.5 * (g_up[i] + g_down[i]) - g1[i]);
+                        if (beyond > stepped[i]) {
+                            stepped[i] = beyond;
+                        }
+                    }
+                }
             }
-            taken = k;
             bool any_open = false;
             for (std::size_t r = 0; r < open.size(); ++r) {
                 if (open[r] == um) {
@@ -309,10 +347,8 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                 const double moved = g1[i] - g0[i];
                 if (moved == 0.0) {
                     // The step does not move the row at all: nothing finer is
-                    // to be seen. An estimate that held this far has held.
-                    if (at_rest[r] != 0) {
-                        col[i] = rest[r];
-                    }
+                    // to be seen.
+                    take(r);
                     open[r] = um;
                     continue;
                 }
@@ -329,24 +365,27 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                     continue;
                 }
                 // What rounding can do to a quotient at this step: the row's
-                // own, and that of what the step moved it by.
-                const double noise = kFdNoise * (rounding[i] + eps * std::abs(moved)) / h;
-                if (at_rest[r] != 0) {
+                // at the stepped state, and that of what the step moved it by.
+                const double at_step = std::max(rounding[i], stepped[i] * (h / steps[1]));
+                const double noise = kFdNoise * (at_step + eps * std::abs(moved)) / h;
+                if (held[r] >= 0) {
                     if (std::abs(est - rest[r]) >
                         kFdRefineRtol * std::abs(rest[r]) + noise + rest_noise[r]) {
-                        at_rest[r] = 0; // it did not hold: the law has a scale below here
+                        held[r] = -1; // it did not hold: the law has a scale below here
                     } else if (noise > kFdSettled * std::abs(rest[r])) {
-                        col[i] = rest[r]; // held down to the row's rounding
+                        take(r); // held down to the row's rounding
                         open[r] = um;
                         continue;
+                    } else {
+                        ++held[r];
                     }
                 }
-                if (at_rest[r] == 0) {
+                if (held[r] < 0) {
                     // (At the first halving the estimate before this one is
                     // the first quotient, which an opened row is not at.)
                     if (noise <= kFdSettled * std::abs(est) &&
                         std::abs(est - prev[uk - 1]) <= kFdRefineRtol * std::abs(est) + noise) {
-                        at_rest[r] = 1;
+                        held[r] = 0;
                         rest[r] = est;
                         rest_noise[r] = noise;
                     } else if (noise > kFdSettled * std::max(std::abs(cur[0]), std::abs(est))) {
@@ -354,7 +393,6 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                         continue;
                     }
                 }
-                last[r] = cur[0];
                 any_open = true;
                 std::memcpy(prev, cur.data(), (uk + 1) * sizeof(double));
             }
@@ -362,26 +400,10 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
                 break;
             }
         }
-        // The ladder is at its end. An estimate that held to it has held.
-        // For a species at 0, one that never came to rest is the slope where
-        // the row has moved as the square of the step all the way down.
+        // The ladder is at its end: an estimate that held to it has held.
         for (std::size_t r = 0; r < open.size(); ++r) {
-            if (open[r] == um) {
-                continue;
-            }
-            const std::size_t i = open[r];
-            if (at_rest[r] != 0) {
-                col[i] = rest[r];
-                continue;
-            }
-            if (y[j] != 0.0) {
-                continue;
-            }
-            const auto ut = static_cast<std::size_t>(taken);
-            const double est = table[r * width + ut];
-            const double share = 2.0 * std::abs(first[r]) * (steps[ut] / steps[0]);
-            if (std::abs(last[r]) <= share && std::abs(est) <= std::abs(last[r])) {
-                col[i] = est;
+            if (open[r] != um) {
+                take(r);
             }
         }
     }

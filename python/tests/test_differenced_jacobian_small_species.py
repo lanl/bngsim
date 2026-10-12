@@ -24,13 +24,14 @@ as it was. Where they do not, the entry is extrapolated to a step of zero from
 a ladder of halved steps, which for a mass-action law is exact in three.
 
 An entry changes only where the ladder shows what it is: two estimates agree
-to a millionth of themselves, the row's rounding is under 1e-4 of them, and
-every estimate after them stays there, down to the species' own step or to
-where the rounding takes over. A first cut asked the agreement to a millionth
-of the first quotient and stopped at it. Beside a species at 1e9, a
-dimerization and ``V·X/(K + X)`` with K at 1e-6 came back with 1.9e-5 for a
-slope of 40, where the first quotient had been 10.9. A slope that is 0 or under
-the row's rounding is not told from the other, and stays the first quotient.
+to a millionth of themselves, the row's rounding is under 1e-4 of them, every
+estimate after them stays there, down to the species' own step or to where
+the rounding takes over, and the estimate is further from the first quotient
+than it is known to itself. A first cut asked the agreement to a millionth of
+the first quotient and stopped at it. Beside a species at 1e9, a dimerization
+and ``V·X/(K + X)`` with K at 1e-6 came back with 1.9e-5 for a slope of 40,
+where the first quotient had been 10.9. A slope that is 0, or under the row's
+rounding, is not told from one that is not, and stays the first quotient.
 
 Every expected value is a closed form.
 """
@@ -171,7 +172,6 @@ def test_a_species_at_zero_that_dimerizes(tmp_path):
     from."""
     jac = _fd(_model(tmp_path, 1e8), _state(1e8, x=0.0))
     assert jac[0, 0] == pytest.approx(-K1, rel=1e-12)
-    assert jac[1, 0] == pytest.approx(0.0, abs=1e-12)
 
 
 def test_a_term_of_third_order(tmp_path):
@@ -182,7 +182,7 @@ def test_a_term_of_third_order(tmp_path):
     assert jac[0, 0] == pytest.approx(-(K1 + 4 * K2 * X_SS + 9 * 0.4 * X_SS**2), rel=1e-9)
 
 
-@pytest.mark.parametrize("x, kh", [(1e-3, 2e-3), (0.87, 0.5), (0.0, 1e-4)])
+@pytest.mark.parametrize("x, kh", [(1e-3, 2e-3), (0.87, 0.5)])
 def test_a_saturating_law_in_a_small_species(tmp_path, x, kh):
     """``0 -> D`` at ``VH·X⁴/(KH⁴ + X⁴)``, no polynomial in X: the ladder runs
     until the estimates settle. ∂f_D/∂X = 2·k2·X + 4·VH·KH⁴·X³/(KH⁴ + X⁴)²."""
@@ -330,13 +330,27 @@ def _first_or_right(model, y, row, want):
     return got == was
 
 
-def test_a_slope_of_zero_in_a_row_with_a_rounding_is_what_it_was(tmp_path):
-    """Control. The dimerization into D at X = 0 has a slope of exactly 0.
-    With D at 0.3 its row has a rounding, the estimates are 0 to that
-    rounding, and a slope of 1e-16 would read the same: the entry is not
-    changed. (With D at 0 the row has none, and the entry is 0: see
-    ``test_a_species_at_zero_that_dimerizes``.)"""
-    assert _first_or_right(_laws(tmp_path, 1e8, ""), [0.0, 0.3, 1e8, 0.0], 1, 0.0)
+@pytest.mark.parametrize("d", [0.3, 0.0])
+def test_a_slope_of_zero_is_what_it_was(tmp_path, d):
+    """Control. The dimerization into D at X = 0 has a slope of exactly 0,
+    and its estimates are 0 to the rounding of the quotients they are made
+    of. A slope of 1e-33, which a product with another species next to 0
+    gives, reads the same, so the entry is not changed: it is the secant,
+    1.09, as it was. With D at 0.3, where the row has a rounding of its own,
+    and with D at 0."""
+    model = _laws(tmp_path, 1e8, "")
+    y = [0.0, d, 1e8, 0.0]
+    assert _fd(model, y)[1, 0] == _first_quotient(model, y, 0)[1]
+    assert _fd(model, y)[1, 0] == pytest.approx(K2 * SQRT_EPS * 1e8, rel=1e-6)
+
+
+def test_a_hill_term_at_a_species_at_zero_is_what_it_was(tmp_path):
+    """Control. ``0 -> D`` at ``VH·X⁴/(KH⁴ + X⁴)`` with KH = 1e-4, at X = 0:
+    the slope is 0, and the estimates fall towards it without coming to
+    rest on a value."""
+    model = _model(tmp_path, 1e8, more="    7 0 2 hill\n", kh=1e-4)
+    y = _state(1e8, x=0.0)
+    assert _fd(model, y)[1, 0] == _first_quotient(model, y, 0)[1]
 
 
 def test_a_slope_under_the_rows_rounding_is_what_it_was(tmp_path):
