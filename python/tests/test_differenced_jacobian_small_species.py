@@ -225,6 +225,7 @@ begin functions
     9 ripple() V*sin(Xo/K)
    10 nearly() V*ln(1+Xo/K)
    11 inside() V*((K+Xo)-K)
+   12 mild() abs(Xo-K)^0.95
 end functions
 begin species
     1 X() 0
@@ -355,6 +356,17 @@ def test_a_rounding_inside_one_rate_law_is_what_it_was(tmp_path, x):
     y = [x, 0.0, 1e8, 0.0]
     _is_what_it_was(model, y, 3)
     assert _fd(model, y)[3, 0] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_a_law_with_no_slope_at_the_species_is_what_it_was(tmp_path):
+    """Control. ``0 -> E`` at ``|X − K|^0.95`` with X on K: the quotient is
+    ``h^(-0.05)``, which has no limit. A thousandth beyond the step the row
+    has moved by 0.95 of what the quotient says, which passes for resolved;
+    the quotient at twice the step is 3.4% under the one at the step, which
+    does not pass for the same slope."""
+    x = 1e-3
+    model = _laws(tmp_path, 1e8, "    7 0 4 mild\n", k=x)
+    _is_what_it_was(model, [x, 0.0, 1e8, 0.0], 3)
 
 
 def test_a_step_inside_the_first_step_is_what_it_was(tmp_path):

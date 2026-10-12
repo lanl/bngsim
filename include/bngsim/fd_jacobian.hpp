@@ -293,8 +293,10 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
             const double apart = std::abs(twice[s * um + i] - q);
             const double noise = kFdNoise * rounding[i] / step[s];
             const double size = std::abs(q);
-            if (moved[s * um + i] != 0 && resolved[s * um + i] != 0 && std::isfinite(q) &&
-                noise <= kFdSettled * size && apart <= kFdSettled * size &&
+            // (A quotient that is no number fails the last of these: nothing
+            // is further from anything than an infinity.)
+            if (moved[s * um + i] != 0 && resolved[s * um + i] != 0 && noise <= kFdSettled * size &&
+                apart <= kFdSettled * size &&
                 std::abs(q - col[i]) > 2.0 * (kFdRefineRtol * size + noise + apart)) {
                 col[i] = q;
             }
