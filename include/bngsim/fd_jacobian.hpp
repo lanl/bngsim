@@ -231,9 +231,8 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
             eval(y_pert.data(), g_fine.data());
             for (std::size_t i = 0; i < um; ++i) {
                 const double expect = own[s * um + i] * beyond;
-                resolved[s * um + i] =
-                    std::abs((g_fine[i] - g1[i]) - expect) <= kFdResolveRtol * std::abs(expect) ? 1
-                                                                                                : 0;
+                const double off = std::abs((g_fine[i] - g1[i]) - expect);
+                resolved[s * um + i] = off <= kFdResolveRtol * std::abs(expect) ? 1 : 0;
             }
         }
     }
