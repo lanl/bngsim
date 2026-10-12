@@ -379,6 +379,123 @@ steps of a coupling loop (`run_until`, `ReactionKernel.advance`) continue it, an
 an independent `run()` restarts it. `solver_stats["n_dense_blas_factorizations"]`
 counts the run's own BLAS factorizations.
 
+## Rate laws that switch on time
+
+A rate law that is flat on both sides of a window, `if(time() >= 100 &&
+time() <= 100.5, k, 0)`, gives an adaptive integrator no error to see, so a
+step can span the whole window and the run returns as if it were never open.
+bngsim finds the times at which a rate law changes branch on the clock before
+the run, stops the integration on each, and restarts there. That covers:
+
+- a comparison of the clock with constants, inside an `if()` or used as a
+  number (`k*((time()>=100)*(time()<=140))`);
+- `floor`, `ceil`, `trunc`, `round`, `rint`, `frac`, `sign` and `mod` of the
+  clock, compared or bare, and a repeating schedule written with them;
+- a window written with `abs`, `min`, `max`, a power, an exponential or a
+  sinusoid, and a pulse that only bends (`max(0, 1 - abs(time()-t0)/w)`);
+- the breakpoints of a table function over time;
+- the same conditions written on a unit-rate counter species.
+
+A condition is first read exactly where it has a shape bngsim knows (linear in
+time, a repeating schedule, a step of a linear argument, a sinusoid, a
+polynomial). Any other is evaluated over the run window with the model's own
+evaluator, and a stop is placed where its value changes. The evaluation is done
+on a grid and again on one twice as fine, until both find the same number of
+changes; what an exact reading placed is checked against the evaluator the same
+way.
+
+What this does not cover:
+
+- **A smooth pulse with no switch in it**, such as a narrow Gaussian
+  `exp(-((time()-t0)/s)^2)` feeding a model that is otherwise at rest. Nothing
+  changes branch, so there is nothing to stop at. Pass `max_step` no larger
+  than the pulse's width.
+- **A window narrower than 1/8,192 of the run that no sample has any sign
+  of**: one made by a smooth residual that is flat to the last bit outside the
+  window (`exp(-((time()-t0)/s)^2) > 0.5` with `s` a millionth of the run), or
+  by a discontinuity bngsim does not know the levels of (the `%` operator).
+  Windows made by the calls listed above, by a residual that leans toward its
+  turn, or at the edge of a `sqrt` or `ln` are found at any width.
+- **A condition whose changes cannot be counted.** `sin(1/(time()-t0)) > 0.5`
+  changes more often on every finer grid, up to two million cells. The run is
+  refused with an error that names it.
+- **A step call whose argument is within its own rounding of a level it
+  crosses.** `sign(time()^3 - 15*time()^2 + 75*time() - 125)`, the cube of
+  `time() - 5` written out term by term, reads -1 and 1 by turns on the doubles
+  around 5, for as long as the terms cancel to less than their own last places:
+  0.00004 time units either side of 5 for this cube, a twentieth of a time unit
+  for a seventh power. There is no time at which such a call changes, so no
+  stop can be placed for it, and the run is refused with an error that names
+  the call and the stretch. Write the argument so that it is not a small
+  difference of large terms (`(time() - 5)^3`). A `max_step` does not stand in
+  here as it does for a condition that cannot be counted: what the rate law's
+  other switches are is not known where a call of it flickers, so no bound can
+  be checked against them. A flicker shorter than a billionth of the run, which
+  any sum of terms can show around a crossing, is one instant of the run and is
+  stopped at as usual. The refusal is for the call, whatever reads it:
+  `ceil(p) > -7751` for a parabola `p` written out is refused for the flicker
+  of `ceil(p)` at its top, which the comparison does not read.
+
+  An argument that does not flicker can still be too close to a level for too
+  long. `floor(1e9 + 3e-7*sin(time()))` moves by two and a half last places of
+  1e9 in all, and `floor(tanh(u))` creeps onto 1 one last place at a time: each
+  is a staircase of its own last places, and nothing says the next step of such
+  a staircase is not back across the level. So the call is read, at every
+  quarter of an instant (a billionth of the run), for as far as its argument is
+  within eight of its last places of a level it crosses. Up to two million
+  readings that is done and every change has its stop. Past that the run is
+  refused in the same words, naming the call and the longest such stretch. A
+  run that is short against its clock (a leg of a few time units at t = 1e9) is
+  read whole. A staircase made by step calls and comparisons inside the
+  argument (`mod(floor(time()), 24)`) is none of this: where those jump is
+  known. Nor is an argument that is a line in time by its own spelling (the
+  clock, numbers and parameters that nothing writes during the run, `+`, `-`,
+  `*`, and `/` by one of those), however coarse: `ceil(t0 + time())` with
+  `t0 = 1e12` moves once in 500 instants of a run 240 long, but a sum or a
+  product with a constant never steps back, so it crosses each whole number
+  once and is read as any other. One thing of this kind is refused: a `mod`
+  or `frac` used as a number (not under a comparison) that takes off a whole
+  number beyond 2^48 (2.8e14), as `100*mod(1e12 + time(), 0.0015)` does. The
+  doubles of its argument are then a sixteenth of the modulus apart or more,
+  and what it returns is the argument's rounding, a few steps up to each
+  wrap, and not a sawtooth. Take the offset out of what the call divides. And
+  a `mod` or `frac` used as a number whose argument is coarser than the clock
+  (an offset more than about 64 times the time, as in `frac(1e6 + time())`)
+  gets no stop on its wraps from this reading: it is integrated as before,
+  with the error test finding each wrap, until a stop on a rate that is flat
+  where the run restarts is safe (issue #998).
+- **More than 1,000,000 switches in one run.** A repeating schedule or a
+  sinusoid that is the only thing in the model that switches is then integrated
+  under a step bound of half its shorter stretch. Anything else is refused with
+  an error that names the condition: run it in shorter legs with `run_until`, or pass
+  `max_step` no larger than half the shortest stretch between two switches of
+  the rate law, which then stands for the stops. A `max_step` wider than a
+  stretch bngsim knows of is tightened to half of it, and a bound that would
+  take more than 1e8 steps is refused rather than started.
+
+A condition that is read by evaluating it costs about 2 ms each time its run
+window or a parameter it reads changes (the answer is kept otherwise), which a
+loop of short `run_until` legs or a fit over such a parameter pays on every
+pass. A condition of a shape bngsim knows costs a few microseconds.
+
+Each stop is a restart of the integrator, and each restart spends about one
+unit of the local error tolerance. With tens of thousands of stops in a run
+that adds up: a quantity of order `n_stops × atol` is integrated to no better
+than that. `mod(time(), 0.0003)` over 10 time units (33,000 stops) accumulates
+1.5e-3, which the default `atol` of 1e-8 does not resolve and `atol=1e-14`
+does to 2e-8. Tighten `atol` where a run has many stops and small quantities.
+
+In a run with sensitivity columns the same stops are placed for a condition
+that reads none of the requested parameters, and for a pulse that only bends.
+A step call outside any condition whose step times move with a requested
+parameter (`floor((time()-w)/P)` with `w` or `P` requested) is refused by name:
+each step is a jump in that column, which is not computed.
+
+A condition that reads the model's state (`if(S > 5, ...)`) switches at a time
+nothing knows before the run. Its residual is a CVODE root instead; see
+[Events](events.md) and the sensitivities guide for what that does and does
+not resolve.
+
 ## When a solve fails on a rate law's domain
 
 bngsim evaluates a rate law literally. A logarithm, a `sqrt` or a fractional

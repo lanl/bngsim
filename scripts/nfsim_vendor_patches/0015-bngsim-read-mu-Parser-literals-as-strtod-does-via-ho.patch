@@ -1,0 +1,38 @@
+From 8876d77dd27ef9afea41193fae85857c5c83f590 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Mon, 12 Oct 2026 11:16:01 -0600
+Subject: [PATCH] bngsim: read mu::Parser literals as strtod does via host
+ expr_compat
+
+ExprTk's own number parser is not correctly rounded: it sums digits in
+a double and scales by a power of ten, so 7.77e-05 read as
+7.769999999999999e-05 and 0.49999999999999997 as 0.5, where muParser,
+strtod and the host evaluator's generated C read the correctly rounded
+double. Pass the remapped expression through the host single source
+bngsim::expr_compat::exact_literals, which respells only the literals
+ExprTk would misread, the same way the host evaluator now compiles.
+(bngsim issue #1013)
+---
+ src/NFfunction/nfsim_funcparser.h | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/NFfunction/nfsim_funcparser.h b/src/NFfunction/nfsim_funcparser.h
+index 85831f9..be019fb 100644
+--- a/src/NFfunction/nfsim_funcparser.h
++++ b/src/NFfunction/nfsim_funcparser.h
+@@ -294,8 +294,10 @@ private:
+ 
+     void compile() {
+         // Recompute the remapped expression from the original each time so that
+-        // any symbol registered before this (re)compile is reflected.
+-        expr_string_ = remapExpression(original_expr_string_);
++        // any symbol registered before this (re)compile is reflected. Then
++        // respell any literal ExprTk's own number parser would misread, so it
++        // reads as strtod (and the host evaluator) reads it.
++        expr_string_ = bngsim::expr_compat::exact_literals(remapExpression(original_expr_string_));
+ 
+         expression_ = exprtk::expression<double>();  // reset
+         expression_.register_symbol_table(symbol_table_);
+-- 
+2.50.1 (Apple Git-155)
+

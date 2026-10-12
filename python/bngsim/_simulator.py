@@ -68,6 +68,10 @@ from bngsim._ssa_validation import validate_for_ssa
 
 logger = logging.getLogger("bngsim")
 
+# The most steps a step bound taken automatically may ask of a run (issue #890):
+# past this the bound is not a way to finish, and the run is refused instead.
+_STEP_BOUND_CEILING = 1.0e8
+
 # An identifier in a parameter's expression.
 _NAME = re.compile(r"[A-Za-z_]\w*")
 
@@ -2070,7 +2074,9 @@ class Simulator:
             opts.set_ic_param_sens([t for t in triples if t[2] != 0.0] or [(-1, 0, 0.0)])
         return model.effective_ic_sensitivity(names)
 
-    def _apply_crossing_stops(self, opts, t_start, t_end, model=None) -> None:
+    def _apply_crossing_stops(
+        self, opts, t_start, t_end, model=None, sensitivities: bool | None = None
+    ) -> None:
         """Stop the integration step on every fixed time discontinuity (#305).
 
         A GH #72 discontinuity root is registered so the integrator cannot step
@@ -2109,13 +2115,32 @@ class Simulator:
         sensitivity paths run on a *clone* carrying that row's parameter point,
         and resolving against the parent's values would put the stop at the
         wrong time for exactly the rows a scan exists to explore.
+
+        ``sensitivities`` says whether the run carries sensitivity columns,
+        for a caller whose columns are not the Simulator's own (the chunked
+        path). Such a run reads every condition itself, so of the conditions
+        that only evaluating them places (issue #904) it is handed the stops
+        of those on literal time that read none of the Simulator's sensitivity
+        parameters: fixed times of the run, with no jump to make. Every chunk
+        is asked about the whole set, so every chunk stops at the same times.
         """
         model = model if model is not None else self._model
+        if sensitivities is None:
+            sensitivities = bool(self._sensitivity_params or self._sensitivity_ic)
         conditions = model.time_discontinuity_conditions()
-        if not conditions:
+        # A table function read on the clock breaks at its breakpoints whether
+        # or not any condition names it (issue #709).
+        table_breaks = model.table_function_breaks()
+        if not conditions and not table_breaks:
             return
-        from bngsim._switch_sensitivity import crossings_with_periodic, merge_crossing_stops
+        from bngsim._switch_sensitivity import (
+            TriggerEqualityNeverHolds,
+            crossings_with_periodic,
+            merge_crossing_stops,
+            table_function_stops,
+        )
 
+        over_budget: list = []
         try:
             crossings, periodic, periodic_at = crossings_with_periodic(
                 model._core,
@@ -2123,16 +2148,27 @@ class Simulator:
                 float(t_end),
                 conditions,
                 touches=getattr(model, "_event_disc_conditions", frozenset()),
+                over_budget=over_budget,
+                sensitivity_params=tuple(self._sensitivity_params) if sensitivities else None,
+            )
+            knots = (
+                table_function_stops(model._core, float(t_start), float(t_end), table_breaks)
+                if table_breaks
+                else []
             )
             # A crossing of a sinusoid or a polynomial in time is a stop too
             # (issue #714): a window narrower than a step lay wholly inside one,
             # unseen. The stop lands a little past the crossing; to the event
             # sensitivity jump the crossing is one more fixed one on its instant.
             stops = merge_crossing_stops(
-                sorted([*crossings, *periodic], key=lambda stop: stop.time)
+                sorted([*crossings, *periodic, *knots], key=lambda stop: stop.time)
             )
             if periodic_at:
                 crossings = sorted([*crossings, *periodic_at], key=lambda stop: stop.time)
+        except TriggerEqualityNeverHolds as e:
+            raise SimulationError(str(e)) from None
+        except SensitivityUnsupportedError:
+            raise
         except Exception as e:  # pragma: no cover - defensive
             # Resolution is best-effort: failing it leaves the pre-#305 stepping,
             # which is correct wherever it completes at all. Warn rather than
@@ -2149,7 +2185,8 @@ class Simulator:
                 ", ".join(f"{stop.time:.6g}" for stop in stops),
             )
             opts.set_crossing_stops(
-                [(stop.time, stop.clock_species_idx, stop.threshold) for stop in stops]
+                [(stop.time, stop.clock_species_idx, stop.threshold) for stop in stops],
+                [stop.restart for stop in stops],
             )
             # Where some instant has more than one crossing, the loop stops
             # there once and the event sensitivity jump asks each for its own
@@ -2160,6 +2197,217 @@ class Simulator:
             opts.set_crossing_probes(
                 list(probes) if len(probes) > len(stops) or periodic_at else []
             )
+        over_budget = self._switches_the_run(model, over_budget)
+        if over_budget:
+            # Whether the one condition past the budget is all that switches in
+            # this run: no other condition, no table, no rate law gated on the
+            # state, no event.
+            alone = (
+                len(conditions) == 1
+                and len(over_budget) == 1
+                and not table_breaks
+                and not model.state_switch_root_conditions()
+                and model._core.n_events == 0
+            )
+            self._bound_step_past_stop_budget(opts, over_budget, t_start, t_end, alone)
+
+    @staticmethod
+    def _switches_the_run(model, over_budget: list) -> list:
+        """Those of the conditions past the budget that the run switches on: one
+        an SBML loader registered, one an event's trigger reads, or one that
+        stands in a rate law or a function a rate law reaches. A condition in a
+        function that only reports (an output of ``mod(time(), 0.0001)``) is
+        none of these, and no reason to refuse the run."""
+        if not over_budget:
+            return over_budget
+        from bngsim._switch_sensitivity import conditions_a_rate_law_reads
+
+        registered = {
+            *(getattr(model, "_time_disc_conditions", None) or ()),
+            *(getattr(model, "_event_disc_conditions", None) or ()),
+        }
+        asked = [item.condition for item in over_budget if item.condition not in registered]
+        try:
+            read = conditions_a_rate_law_reads(model._core, asked)
+        except Exception as exc:  # pragma: no cover - defensive: then all of them count
+            logger.debug("which conditions a rate law reads: not read (%s)", exc)
+            read = frozenset(asked)
+        return [
+            item for item in over_budget if item.condition in registered or item.condition in read
+        ]
+
+    @staticmethod
+    def _flickers(item, t_start, t_end, stop: str) -> str:
+        """The rest of the refusal of a condition a step call of which flickers
+        (:class:`bngsim._clock_scan.Flickers`), from "switches on" on."""
+        call, begins, ends, unread = item.flicker
+        if unread == "coarse":
+            # A sawtooth with nothing left of its argument to be one.
+            return (
+                f"switches on {item.condition!r}, and where it does cannot be placed: the "
+                f"whole number {call!r} takes off its argument is beyond 2^48 (2.8e14) in "
+                "this run, where the doubles of that argument are a sixteenth of one wrap "
+                "apart or more. What the call returns is then the rounding of its "
+                "argument, a few steps up to each wrap, and a stop on each wrap would not "
+                f"be a stop on each step (issue #904). Left without {stop} the run would "
+                "step over them. A sawtooth needs an argument that is small against 2^48 "
+                "of its wraps: an offset inside it (`mod(1e12 + time(), P)`), or a clock "
+                "that far along, leaves it nothing to resolve."
+            )
+        lo, hi = sorted((float(t_start), float(t_end)))
+        begins, ends = min(max(begins, lo), hi), min(max(ends, lo), hi)
+        which = "longest" if unread else "first"
+        more = (
+            f" (the {which} of {item.changes} such stretches in the run)"
+            if item.changes > 1
+            else ""
+        )
+        # Either it changes side of the level time and again there, or it is
+        # a staircase of its own last places for longer than the call can be
+        # read over to find every step it takes across the level.
+        how = (
+            "which is more of the run than the call can be read over for every change "
+            "it makes there"
+            if unread
+            else "and reads on either side of that level by turns there"
+        )
+        advice = (
+            "it is not a small difference of large terms, and does not creep up on the "
+            "level as a saturating `exp` or `tanh` does"
+            if unread
+            else "it is not a small difference of large terms (a polynomial in its factored "
+            "form, for one)"
+        )
+        return (
+            f"switches on {item.condition!r}, and where it does cannot be placed: the "
+            f"argument of {call!r} is within its own rounding of a level it crosses "
+            f"between t={begins!r} and t={ends!r}{more}, {how}. Left without {stop} the "
+            "run would step over a window that opens or closes in that stretch (issue "
+            f"#904). Write the argument so that {advice}."
+        )
+
+    @staticmethod
+    def _bound_step_past_stop_budget(opts, over_budget, t_start, t_end, alone=False) -> None:
+        """Keep the step off a condition that changes more often than a run has
+        stops for (issue #890).
+
+        Such a condition gets none of its stops, and before this the run went
+        on with a warning in the log and stepped over its windows: X = 0.1
+        where the answer is 6000.
+
+        A step no longer than half the shortest stretch between two switches
+        of the rate law cannot span one, since an end of some step then falls
+        inside every stretch. That is a property of every switch in the run
+        taken together: a rate law that goes off on this condition and comes
+        back on at another condition's stop is the same at both ends of a step
+        across the two (a schedule of 0.2-wide pulses bounded at 0.1, beside a
+        second schedule that was stopped at, gained 0.05 at each instant they
+        met within 0.05: 81 for 78).
+
+        * *alone*, a repeating schedule is all that switches in the run, its
+          shortest stretch is known, and the step is bounded at half of it.
+          (``max_steps`` is a batch the core retries while the run advances,
+          so the bound needs no more of it.)
+        * Otherwise a ``max_step`` the caller passed stands for the stops. It
+          is tightened to half the shortest stretch that is known: between two
+          changes of the condition past the budget, and between any two
+          changes where its own were listed. A bound the caller chose wider
+          than a window would step over it as surely as no bound. Where no
+          stretch is known, a bound wider than half the mean stretch between
+          the changes that were counted is wider than half the shortest, and
+          is refused.
+        * With neither, the run is refused.
+
+        A condition a step call of which flickers
+        (:class:`bngsim._clock_scan.Flickers`) is refused whatever bound is
+        passed: what else the rate law switches on is not known there.
+
+        A bound bngsim sets is refused past :data:`_STEP_BOUND_CEILING` steps:
+        4e9 windows asked for nine minutes of one core and counting, with
+        nothing said.
+        """
+        span = abs(float(t_end) - float(t_start))
+
+        def refuse(item, why: str):
+            if item.unresolved:
+                return SimulationError(
+                    f"The rate law switches on {item.condition!r}, and bngsim could not "
+                    f"count its changes between t={t_start!r} and t={t_end!r}: evaluated "
+                    "on grids of up to two million cells, each finer grid found more of "
+                    "them. Left without a stop on each, the integrator would step over "
+                    f"its windows (issue #904). {why}"
+                )
+            return SimulationError(
+                f"The rate law switches on {item.condition!r}, which changes about "
+                f"{item.changes} times between t={t_start!r} and t={t_end!r}. With the "
+                "run's other switches that is more than the 1,000,000 stops bngsim "
+                "places in one run, and left without them the integrator would step "
+                f"over its windows (issue #890). {why}"
+            )
+
+        for item in over_budget:
+            if item.flicker is not None:
+                # Whatever step bound is passed. One no wider than half the
+                # shortest stretch between two switches would stand for the
+                # stop, and what the rate law's other switches are is not
+                # known where a call of it flickers: `max_step=1` was taken
+                # for `sign(p) > 0 && time() < 5.3`, p the cube of time() - 5
+                # written out, and the run returned 0 for 0.3.
+                raise SimulationError(
+                    "The rate law " + Simulator._flickers(item, t_start, t_end, "a stop")
+                )
+            gaps = [g for g in (item.min_gap, item.union_gap) if g is not None and g > 0.0]
+            need = 0.5 * float(min(gaps)) if gaps else None
+            passed = opts.max_step_size > 0.0
+            if need is not None and (alone or passed):
+                if not (passed and opts.max_step_size <= need):
+                    if span / need > _STEP_BOUND_CEILING:
+                        raise refuse(
+                            item,
+                            f"A step bound of {need:g}, half the shortest stretch between "
+                            f"two switches, would stand for the stops, at {span / need:.3g} "
+                            "steps or more. Run it in shorter legs (run_until), or pass "
+                            "max_step that small yourself if that is the run you want.",
+                        )
+                    opts.max_step_size = need
+                logger.info(
+                    "%r changes about %d times between t=%r and t=%r, more than the "
+                    "stops placed in one run; the step is bounded at %g instead "
+                    "(issue #890).",
+                    item.condition,
+                    item.changes,
+                    t_start,
+                    t_end,
+                    opts.max_step_size,
+                )
+            elif passed:
+                mean = span / max(int(item.changes), 1)
+                if opts.max_step_size > 0.5 * mean:
+                    raise refuse(
+                        item,
+                        f"max_step={opts.max_step_size:g} is more than half the mean "
+                        f"stretch between those changes ({mean:g}), so a step under it "
+                        "can still span a window. Pass max_step no larger than half the "
+                        "shortest stretch between two switches of the rate law, or run "
+                        "in shorter legs (run_until).",
+                    )
+                logger.info(
+                    "%r changes about %d times between t=%r and t=%r, more than the "
+                    "stops placed in one run; the step bound in force (%g) is what "
+                    "keeps the integrator off its windows (issue #890).",
+                    item.condition,
+                    item.changes,
+                    t_start,
+                    t_end,
+                    opts.max_step_size,
+                )
+            else:
+                raise refuse(
+                    item,
+                    "Run it in shorter legs (run_until), or pass max_step no larger than "
+                    "half the shortest stretch between two switches of the rate law, "
+                    "which then stands for the stops.",
+                )
 
     @staticmethod
     def _apply_ssa_breakpoints(sims, model, t_start, t_end) -> None:
@@ -2193,10 +2441,12 @@ class Simulator:
             conditions = model.time_discontinuity_conditions()
             if conditions:
                 from bngsim._switch_sensitivity import (
+                    TriggerEqualityNeverHolds,
                     crossings_with_periodic,
                     merge_crossing_stops,
                 )
 
+                over_budget: list = []
                 try:
                     crossings, periodic, _ = crossings_with_periodic(
                         model._core,
@@ -2204,17 +2454,48 @@ class Simulator:
                         float(t_end),
                         conditions,
                         touches=getattr(model, "_event_disc_conditions", frozenset()),
+                        over_budget=over_budget,
                     )
                     times = [float(stop.time) for stop in merge_crossing_stops(crossings)]
                     # ...and the crossings of a sinusoid or a polynomial in time,
                     # whose window a step can otherwise lie across unseen.
                     if periodic:
                         times = sorted(set(times) | {float(stop.time) for stop in periodic})
+                except TriggerEqualityNeverHolds as e:
+                    raise SimulationError(str(e)) from None
                 except Exception as e:  # pragma: no cover - defensive
                     logger.warning(
                         "Discontinuity crossing resolution failed (%s); the SSA "
                         "continuous loop will step without breakpoints (issue #719).",
                         e,
+                    )
+                over_budget = Simulator._switches_the_run(model, over_budget)
+                if over_budget:
+                    # The loop has no step bound to fall back on: a window
+                    # between two of its looks is not seen (issue #890).
+                    item = next(
+                        (item for item in over_budget if item.flicker is not None), over_budget[0]
+                    )
+                    if item.flicker is not None:
+                        raise SimulationError(
+                            "A rate or a trigger "
+                            + Simulator._flickers(item, t_start, t_end, "a breakpoint")
+                        )
+                    if item.unresolved:
+                        raise SimulationError(
+                            f"A rate or a trigger switches on {item.condition!r}, and bngsim "
+                            f"could not count its changes between t={t_start!r} and "
+                            f"t={t_end!r}: evaluated on grids of up to two million cells, "
+                            "each finer grid found more of them. Left without a breakpoint "
+                            "on each, the run would step over its windows (issue #904). "
+                            "Run it in shorter legs (run_until)."
+                        )
+                    raise SimulationError(
+                        f"A rate or a trigger switches on {item.condition!r}, which changes "
+                        f"about {item.changes} times between t={t_start!r} and t={t_end!r}: "
+                        "more than the 1,000,000 breakpoints bngsim hands a stochastic "
+                        "run. Left alone the run would step over its windows (issue "
+                        "#890). Run it in shorter legs (run_until)."
                     )
                 if times:
                     pc_names = Simulator._ssa_piecewise_constant(model, t_start, t_end, conditions)
@@ -6511,7 +6792,7 @@ class Simulator:
         # same crossing stops — a chunk that lost them would wedge where the
         # others did not, and issue #243 is the standing reminder that "which
         # chunk you are in" must not decide whether the solve succeeds.
-        self._apply_crossing_stops(opts, t_span[0], t_span[1], model=clone)
+        self._apply_crossing_stops(opts, t_span[0], t_span[1], model=clone, sensitivities=True)
         # Report this chunk's OWN subset of ∂x(0)/∂θ; the stitch takes the union
         # over chunks, which is the full requested set (issue #155).
         chunk_ic_seed = self._apply_ic_param_sens_seed(opts, clone, sens_params)

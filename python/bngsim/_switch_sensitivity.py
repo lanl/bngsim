@@ -635,6 +635,7 @@ def _parse_clock_expr(text: str):
         _preprocess_derived_expr,
         _substitute_symbols_once,
     )
+    from bngsim._jacobian import builtin_shadow_bindings
 
     s = _preprocess_derived_expr(text)
     calls: set[str] = set()
@@ -652,6 +653,8 @@ def _parse_clock_expr(text: str):
         s = _substitute_symbols_once(s, renamed)
 
     local_dict: dict = {c: getattr(sp, c) for c in _CLOCK_PARSE_CALLS}
+    # `round` would otherwise be Python's, which folds round(2.5) to 2 (#684).
+    local_dict.update(builtin_shadow_bindings(sp))
     local_dict.update({a: sp.Symbol(a) for a in alias.values()})
     expr = parse_expr(s, local_dict=local_dict, evaluate=True)
 
@@ -1931,6 +1934,71 @@ def _iter_condition_atoms(expr: str):
         yield from _split_logical_atoms(cond)
 
 
+def _iter_comparisons_anywhere(expr: str):
+    """Every comparison in *expr*, whether or not an ``if()`` holds it.
+
+    ExprTk reads a comparison as the number 1 or 0, so a window is also written
+    with no ``if()`` at all: ``k*((time()>=100)*(time()<=140))``. The rate law
+    jumps where such a comparison flips exactly as it does for a condition, and
+    :func:`_iter_condition_atoms` saw none of them (issue #904).
+
+    Each argument of each call and each parenthesized group is an expression of
+    its own, cut at its commas and logical operators, and a piece whose own
+    operator is a comparison is an atom. The groups inside an atom are read
+    too, for a comparison used as a number inside another's side.
+
+    One pass over the text with a stack of open groups, not a function that
+    calls itself: a sum a thousand parentheses deep overran the interpreter's
+    stack, the scan that calls this gave up on the whole model, and a window
+    in another function of it was stepped over.
+    """
+    # Per open group: where its current piece starts, and whether that piece
+    # has a comparison at the group's own depth.
+    starts = [0]
+    compared = [False]
+    out: list[str] = []
+
+    def close(end: int) -> None:
+        if compared[-1]:
+            atom = _strip_redundant_parens(expr[starts[-1] : end])
+            if atom:
+                out.append(atom)
+
+    i, n = 0, len(expr)
+    while i < n:
+        c = expr[i]
+        if c == "(":
+            starts.append(i + 1)
+            compared.append(False)
+        elif c == ")":
+            close(i)
+            if len(starts) > 1:
+                starts.pop()
+                compared.pop()
+        elif c == ",":
+            close(i)
+            starts[-1], compared[-1] = i + 1, False
+        elif c in "<>=!":
+            m = _RELATIONAL.match(expr, i)
+            if m is not None:
+                compared[-1] = True
+                i = m.end()
+                continue
+        elif c in "&|anox":
+            m = _LOGICAL.match(expr, i)
+            if m is not None:
+                close(i)
+                starts[-1], compared[-1] = m.end(), False
+                i = m.end()
+                continue
+        i += 1
+    while starts:
+        close(n)
+        starts.pop()
+        compared.pop()
+    yield from out
+
+
 # `time` written bare or as ExprTk's nullary call, as a whole word.
 _TIME_REF = re.compile(r"(?<![A-Za-z0-9_])time(?:\s*\(\s*\))?(?![A-Za-z0-9_(])")
 
@@ -2141,16 +2209,21 @@ def _switches_on_clock_alone(atom: str, scope: SwitchConditionScope) -> bool:
     with ``onset = t0 + delay`` is read as the comparison against ``t0 + delay``
     that it is.
 
-    Orderings only. An equality is excluded, which is what the SBML scan does
-    too — see the comment on the check.
+    Orderings, and an equality of things that hold their values. An equality
+    of things that move is excluded, which is what the SBML scan does too — see
+    the comment on the check.
     """
-    if is_equality_atom(atom):
+    if is_equality_atom(atom) and not (_STEP_CALL.search(atom) or _BEND_CALL.search(atom)):
         # `time() == T` is true for one instant of measure zero, so its branch
         # contributes nothing to the integral and there is nothing to miss.
         # Stopping there would be worse than not: the step that restarts AT the
         # crossing reads the rate law where the equality holds and carries that
         # value forward over a whole step. The SBML scan registers only
         # orderings for the same reason.
+        #
+        # `floor(time()/24) == 3` is true for a day: a window like any other,
+        # which a step call makes of an equality. So does a call that holds its
+        # value over a stretch: `max(abs(time()-120), 0.5) == 0.5`.
         return False
     flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
     return _reads_clock_and_run_constants(flat, scope)
@@ -2231,6 +2304,23 @@ def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -
 
     if core.n_functions == 0:
         return ()
+    # A table function read on the clock is a function of the time like any
+    # builtin: `abs(tfun_G() - 2) < 0.01` is a window on the clock, wherever the
+    # table passes 2. For the question of what a text reads, such a call is the
+    # clock.
+    time_tables = (
+        {table["name"] for table in core.table_function_tables if table["index_kind"] == "time"}
+        if core.n_table_functions and not steps_only
+        else set()
+    )
+
+    def as_clock(text: str) -> str:
+        if not time_tables:
+            return text
+        return _TABLE_CALL.sub(
+            lambda m: "time()" if m.group(1) in time_tables else m.group(0), text
+        )
+
     if ctx is None:
         # The raw texts first, which is the cheap half: a model with no
         # conditional rate law, and no clock for one to threshold, short-circuits
@@ -2253,9 +2343,19 @@ def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -
         # guarding, and the answer is reused by ``switch_condition_scope``
         # below.
         texts_raw = (*core.function_expressions, *core.param_expressions)
-        if not any(has_condition_construct(t) or _STEP_CALL.search(t) for t in texts_raw):
+        if not any(
+            has_condition_construct(t)
+            or _STEP_CALL.search(t)
+            or _RELATIONAL.search(t)
+            or _BEND_CALL.search(t)
+            for t in texts_raw
+        ):
             return ()
-        if not any(_TIME_REF.search(t) for t in texts_raw) and not _unit_rate_clock_indices(core):
+        if (
+            not any(_TIME_REF.search(t) for t in texts_raw)
+            and not time_tables
+            and not _unit_rate_clock_indices(core)
+        ):
             return ()
         ctx = core.functional_jacobian_context()
     func_map = dict(ctx["function_map"])
@@ -2265,7 +2365,11 @@ def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -
     ]
     conditional = [t for t in texts if has_condition_construct(t)]
     stepped = [t for t in texts if _STEP_CALL.search(t)]
-    if not conditional and not stepped:
+    # A comparison standing as a number, outside every if() (issue #904).
+    compared = [] if steps_only else [t for t in texts if _RELATIONAL.search(t)]
+    # ...and a call that bends where a step call jumps.
+    bent = [] if steps_only else [t for t in texts if _BEND_CALL.search(t)]
+    if not conditional and not stepped and not compared and not bent:
         return ()
     try:
         scope = switch_condition_scope(core, ctx)
@@ -2279,8 +2383,29 @@ def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -
     for text in conditional:
         flat = _inline_functions(text, func_map) or text
         for atom in _iter_condition_atoms(flat):
-            if atom not in found and _switches_on_clock_alone(atom, scope):
+            if atom not in found and _switches_on_clock_alone(as_clock(atom), scope):
                 found.append(atom)
+    # The comparisons standing as numbers that are conditions on the clock. A
+    # step or bending call inside one reaches the rate law through it alone,
+    # as one inside an if() condition does.
+    numbers: list[str] = []
+    for text in compared:
+        flat = _inline_functions(text, func_map) or text
+        for atom in _iter_comparisons_anywhere(flat):
+            if _switches_on_clock_alone(as_clock(atom), scope):
+                if atom not in numbers:
+                    numbers.append(atom)
+                if atom not in found:
+                    found.append(atom)
+
+    def inside_a_number(text: str) -> list[tuple[int, int]]:
+        spans = []
+        for atom in numbers:
+            start = text.find(atom)
+            while start >= 0:
+                spans.append((start, start + len(atom)))
+                start = text.find(atom, start + 1)
+        return spans
 
     # A step call outside every condition jumps the rate law itself (issue
     # #869): `floor((time()-t0)/P) - floor((time()-t0-w)/P)` is a unit pulse
@@ -2297,9 +2422,9 @@ def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -
     # on BIOMD0000000412). Only a call that cannot be admitted whole, because
     # it reads state, is looked inside, for the steps of time it holds.
     def admit(text: str) -> None:
-        for call, arg in _iter_step_calls(text, outermost=True):
+        for call, arg in _iter_step_calls(text, outermost=True, skip=inside_a_number(text)):
             inlined = _inline_derived_param_refs(call, scope.derived_exprs) or call
-            if _reads_clock_and_run_constants(inlined, scope):
+            if _reads_clock_and_run_constants(as_clock(inlined), scope):
                 if call not in found:
                     found.append(call)
             else:
@@ -2308,6 +2433,23 @@ def time_discontinuity_conditions(core, ctx=None, *, steps_only: bool = False) -
     n_conditions = len(found)
     for text in stepped:
         admit(_inline_functions(text, func_map) or text)
+
+    # A bending call of the clock outside every condition, by the same rule: the
+    # outermost that reads the clock and run constants alone, and inside one
+    # that reads state, the calls of time it holds.
+    def admit_bends(text: str) -> None:
+        for call, arg in _iter_step_calls(
+            text, outermost=True, pattern=_BEND_CALL, skip=inside_a_number(text)
+        ):
+            inlined = _inline_derived_param_refs(call, scope.derived_exprs) or call
+            if _reads_clock_and_run_constants(as_clock(inlined), scope):
+                if call not in found:
+                    found.append(call)
+            else:
+                admit_bends(arg)
+
+    for text in bent:
+        admit_bends(_inline_functions(text, func_map) or text)
     return tuple(found[n_conditions:] if steps_only else found)
 
 
@@ -2368,13 +2510,27 @@ def _schedule_stop_times(
     # rather than about the schedule. Done before the memo key is built, so two
     # spellings of one condition share a cache entry.
     atom = _strip_redundant_parens(cond.strip())
-    key = _stop_memo_key(atom, scope, t_start, t_end)
+    return _memoized_stops(
+        _stop_memo_key(atom, scope, t_start, t_end),
+        lambda: _resolve_schedule_stop_times(atom, scope, t_start, t_end),
+    )
+
+
+def _memoized_stops(key, resolve):
+    """*resolve*'s answer under *key* in :data:`_SCHEDULE_CACHE`. A condition
+    over the run's budget is remembered as that, and raises again."""
     if key in _SCHEDULE_CACHE:
-        return _SCHEDULE_CACHE[key]
-    answer = _resolve_schedule_stop_times(atom, scope, t_start, t_end)
-    if len(_SCHEDULE_CACHE) >= _SCHEDULE_CACHE_MAX:
-        _SCHEDULE_CACHE.clear()
-    _SCHEDULE_CACHE[key] = answer
+        answer = _SCHEDULE_CACHE[key]
+    else:
+        try:
+            answer = resolve()
+        except _OverStopBudget as over:
+            answer = over
+        if len(_SCHEDULE_CACHE) >= _SCHEDULE_CACHE_MAX:
+            _SCHEDULE_CACHE.clear()
+        _SCHEDULE_CACHE[key] = answer
+    if isinstance(answer, _OverStopBudget):
+        raise answer
     return answer
 
 
@@ -2412,23 +2568,15 @@ def _resolve_schedule_stop_times(
         d_duty={},
         crosses=True,
     )
-    edges = _schedule_edges(terms, t_start, t_end, _SCHEDULE_EDGE_BUDGET)
-    if edges is None:
-        # Over budget. A plain run has no gradient to be quietly wrong, but it
-        # does have a trajectory, and this is the one case where bngsim knows
-        # the schedule is there and cannot stop at it — so say so rather than
-        # leave the stepping to be discovered wrong later.
-        logger.warning(
-            "Periodic schedule %r has more than %d edges between t=%r and t=%r; the "
-            "integrator will step over them unclamped and may miss whole windows "
-            "(issue #440). Pass max_step to bound the step instead.",
-            atom,
-            _SCHEDULE_EDGE_BUDGET,
-            t_start,
-            t_end,
-        )
+    # Two edges a period. Past the run's budget of stops none is listed, and
+    # the caller bounds the step by half the shorter of the two stretches a
+    # period is cut into, which no step can then span (issue #890).
+    count = 2.0 * (t_end - t_start) / abs(period)
+    if not math.isfinite(count):
         return None
-    return [value for value, _partials in edges]
+    if count > _RUN_STOP_BUDGET:
+        raise _OverStopBudget(count, min(abs(duty), abs(period) - abs(duty)))
+    return _schedule_edge_times(terms, t_start, t_end)
 
 
 def _step_edge_stop_times(
@@ -2458,18 +2606,17 @@ def _step_edge_stop_times(
     :func:`_schedule_stop_times`.
     """
     atom = _strip_redundant_parens(cond.strip())
-    key = ("step-edges", *_stop_memo_key(atom, scope, t_start, t_end))
-    if key in _SCHEDULE_CACHE:
-        return _SCHEDULE_CACHE[key]
-    try:
-        answer = _resolve_step_edge_stop_times(atom, scope, t_start, t_end)
-    except Exception as exc:  # noqa: BLE001 - an unreadable atom is just declined
-        logger.debug("step-edge stops declined %r: %s", atom, exc)
-        answer = None
-    if len(_SCHEDULE_CACHE) >= _SCHEDULE_CACHE_MAX:
-        _SCHEDULE_CACHE.clear()
-    _SCHEDULE_CACHE[key] = answer
-    return answer
+
+    def resolve():
+        try:
+            return _resolve_step_edge_stop_times(atom, scope, t_start, t_end)
+        except _OverStopBudget:
+            raise
+        except Exception as exc:  # noqa: BLE001 - an unreadable atom is just declined
+            logger.debug("step-edge stops declined %r: %s", atom, exc)
+            return None
+
+    return _memoized_stops(("step-edges", *_stop_memo_key(atom, scope, t_start, t_end)), resolve)
 
 
 def _resolve_step_edge_stop_times(
@@ -2507,6 +2654,30 @@ def _resolve_step_edge_stop_times(
             values[sym] = float(_BUILTIN_CONSTANT_VALUES[name])
         else:
             return None  # reads something that moves during the run
+
+    # A mod of constants is a number, and C's fmod is what the evaluator
+    # computes it with. Left as `_bng_trunc(24/7)` below it never became one,
+    # and the atom was declined (issue #899). Folded before the values go in,
+    # so that a whole number stands in the expression as a literal `3` would,
+    # and sympy takes it out of the floor it sits in: added to a decimal first,
+    # it moved every edge read off that floor by the rounding of the sum.
+    while True:
+        constant = [
+            e
+            for e in expr.atoms(AppliedUndef)
+            if e.func.__name__ == "mod"
+            and len(e.args) == 2
+            and t not in e.free_symbols
+            and not any(x.func.__name__ == "mod" for x in e.atoms(AppliedUndef) - {e})
+        ]
+        if not constant:
+            break
+        for e in constant:
+            value = math.fmod(*(float(arg.subs(values)) for arg in e.args))
+            expr = expr.xreplace(
+                {e: sp.Integer(int(value)) if value == int(value) else sp.Float(value)}
+            )
+    expr = expr.replace(lambda e: isinstance(e, sp.floor), lambda e: sp.floor(*e.args))
     expr = expr.subs(values)
 
     # One step function per kind of jump. `rint` is BNG's floor(x + 0.5) and
@@ -2591,8 +2762,27 @@ def _resolve_step_edge_stop_times(
         args.append((affine(alpha), affine(beta)))
     is_trunc = [e.func is trunc for e in steps]
 
-    def held_at(x: float) -> list[float]:
-        """Every step's value at *x*, which is never on an edge."""
+    def held_at(x: float, settled: int) -> list[float]:
+        """Every step's value at *x*, the middle of a piece, which is on no
+        edge. *settled* is how many of the steps have their edges listed where
+        the piece is between two of those, and 0 where one of its ends is an
+        end of the run.
+
+        Where one of the settled steps is within a few last places of this
+        arithmetic of a whole number at the middle of a piece between two
+        edges all the same, the two are closer than it can tell apart, and the
+        atom is declined: at `1e12 + time()` an argument is read to 5e-4 of a
+        level, `floor(mod(1e12 + time(), 0.3)/0.3 + 0.0005)` is one for 1.5e-4
+        before each wrap, and the middle of that pulse read as past the wrap,
+        for 79 of 800 pulses found in a run of 240.
+
+        Not asked of the piece at either end of the run. A run that begins a
+        few doubles before an edge (the next leg of a run made in legs) has
+        its first piece that short for no fault of the arithmetic:
+        `floor(time() - 1e9)` from eight doubles before a whole number was
+        declined, the scan takes a change that close to the start for the
+        start, and the run died for want of the stop.
+        """
         held = [0.0] * len(steps)
         for i, (slope, intercept) in enumerate(args):
             a = read(slope, held, to_integer=False)
@@ -2602,6 +2792,10 @@ def _resolve_step_edge_stop_times(
                 v = read(intercept, held, to_integer=True)
             else:
                 v = a * x + float(intercept[0](*held))
+                if i < settled and abs(v - round(v)) <= 4.0 * _EPS * (
+                    abs(a * x) + float(intercept[1](*held))
+                ):
+                    raise ValueError(f"two edges within the rounding of {steps[i]} about t={x!r}")
             held[i] = float(math.trunc(v) if is_trunc[i] else math.floor(v))
         return held
 
@@ -2612,27 +2806,22 @@ def _resolve_step_edge_stop_times(
     for i, (slope, intercept) in enumerate(args):
         bounds = [t_start, t_end] if i < n_leaves else [t_start, *edges, t_end]
         jumps: list[float] = []
-        for lo, hi in zip(bounds, bounds[1:], strict=False):
+        for k, (lo, hi) in enumerate(zip(bounds, bounds[1:], strict=False)):
             if hi <= lo:
                 continue
-            held = held_at(0.5 * (lo + hi))
+            between_edges = i >= n_leaves and 0 < k < len(bounds) - 2
+            held = held_at(0.5 * (lo + hi), i if between_edges else 0)
             a = read(slope, held, to_integer=False)
             if a == 0.0:
                 continue  # flat here: it can only jump where an inner step does
             b = float(intercept[0](*held))
             u0, u1 = a * lo + b, a * hi + b
             n_lo, n_hi = math.ceil(min(u0, u1)), math.floor(max(u0, u1))
-            if n_hi - n_lo + 1 > _SCHEDULE_EDGE_BUDGET - len(edges) - len(jumps):
-                logger.warning(
-                    "%r jumps more than %d times between t=%r and t=%r; the integrator "
-                    "will step over them unclamped and may miss whole pulses (issue "
-                    "#869). Pass max_step to bound the step instead.",
-                    atom,
-                    _SCHEDULE_EDGE_BUDGET,
-                    t_start,
-                    t_end,
-                )
-                return None
+            if n_hi - n_lo + 1 > _RUN_STOP_BUDGET - len(edges) - len(jumps):
+                # Past the run's budget of stops (issue #890). The count is of
+                # the edges this argument could make, which for a step inside
+                # another is more than the jumps the outer one keeps.
+                raise _OverStopBudget(len(edges) + len(jumps) + n_hi - n_lo + 1)
             for n in range(n_lo, n_hi + 1):
                 if is_trunc[i] and n == 0:
                     continue
@@ -2656,10 +2845,10 @@ def _resolve_step_edge_stop_times(
         return None
     residual_slope, residual_intercept = affine(slope), affine(intercept)
 
-    def piece(lo: float, hi: float) -> tuple[float, float, float]:
+    def piece(lo: float, hi: float, between_edges: bool) -> tuple[float, float, float]:
         """The residual's slope and intercept on the piece, and the size of the
         intercept's terms."""
-        held = held_at(0.5 * (lo + hi))
+        held = held_at(0.5 * (lo + hi), len(steps) if between_edges else 0)
         a = read(residual_slope, held, to_integer=False)
         if a == 0.0:
             return 0.0, read(residual_intercept, held, to_integer=False), 0.0
@@ -2677,13 +2866,14 @@ def _resolve_step_edge_stop_times(
     bounds = [t_start, *edges]
     if edges[-1:] != [t_end]:
         bounds.append(t_end)
+    edge_set = set(edges)
     out: list[float] = []
     before: float | None = None  # the limit just before the current edge
     for i in range(len(bounds) - 1):
         lo, hi = bounds[i], bounds[i + 1]
         if hi <= lo:
             continue
-        a, b, size = piece(lo, hi)
+        a, b, size = piece(lo, hi, i > 0 and bounds[i + 1] in edge_set)
         at_lo, at_hi = at(a, b, size, lo), at(a, b, size, hi)
         if not (math.isfinite(at_lo) and math.isfinite(at_hi)):
             return None
@@ -2787,6 +2977,10 @@ class CrossingStop(NamedTuple):
     # A stop ON a touch of the threshold (issue #714): the condition is true at
     # that one double alone, so the stop is never merged into another.
     touch: bool = False
+    # Whether the integrator restarts here. Not where the right-hand side only
+    # bends, at a breakpoint of a `linear` table function (issue #709): there
+    # the step is made to end on the stop and the run keeps its history.
+    restart: bool = True
 
 
 def _rewrite_counter_clock(
@@ -2898,29 +3092,119 @@ def all_fixed_crossings(core, t_start: float, t_end: float, conditions=()) -> li
 
 
 def crossings_with_periodic(
-    core, t_start: float, t_end: float, conditions=(), touches=frozenset()
+    core,
+    t_start: float,
+    t_end: float,
+    conditions=(),
+    touches=frozenset(),
+    over_budget=None,
+    sensitivity_params=None,
 ) -> tuple[list[CrossingStop], list[CrossingStop], list[CrossingStop]]:
-    """:func:`all_fixed_crossings`, and for the conditions it leaves out whose
-    residual is a sinusoid or a polynomial in time or in a counter
-    (:func:`_periodic_stop_times`), their stops and their crossings, from one
-    pass over the conditions.
+    """:func:`all_fixed_crossings`, and for the conditions it leaves out, their
+    stops and their crossings, from one pass over the conditions.
 
-    Such a condition is not monotone in time, so none of the fixed resolvers
-    places it, and a window narrower than one integrator step, or than one
-    panel of the SSA's continuous loop, can lie wholly between two of their
-    nodes and be stepped over without a trace (issue #714). Its crossings are
-    constants of the run all the same. A stop lands a little past its crossing
-    (see :func:`_periodic_stop_times`); the crossing itself is what the event
-    sensitivity jump asks about an instant.
+    A condition whose residual is a sinusoid or a polynomial in time or in a
+    counter (:func:`_periodic_stop_times`) is not monotone in time, so none of
+    the fixed resolvers places it, and a window narrower than one integrator
+    step, or than one panel of the SSA's continuous loop, can lie wholly
+    between two of their nodes and be stepped over without a trace (issue
+    #714). Its crossings are constants of the run all the same. A stop lands a
+    little past its crossing (see :func:`_periodic_stop_times`); the crossing
+    itself is what the event sensitivity jump asks about an instant.
+
+    A condition of any other shape that reads the clock and run constants alone
+    is evaluated over the window with the model's own evaluator, and stopped at
+    wherever its value changes (:func:`_engine_scan_stop_times`, issue #904).
+    What a fixed resolver placed is checked against the evaluator the same way.
 
     *touches* are the conditions an event trigger reads; a touch of the
-    threshold without a crossing is a stop for these alone.
+    threshold without a crossing is a stop for these alone, and so is the one
+    instant an equality holds at.
+
+    *over_budget*, a list, receives a :class:`StopsOverBudget` for each
+    condition that changes more often than the run's budget of stops allows
+    (issue #890). None of that condition's stops is placed, and the caller
+    bounds the step or refuses the run.
+
+    *sensitivity_params* is ``None`` for a run with no sensitivity columns, and
+    otherwise the parameters the run differentiates (empty for initial
+    conditions alone). Such a run classifies every condition itself: as a
+    switch time it has a derivative for, a root with a jump, or a refusal. A
+    condition on a counter that no resolver reads (``exp(t) >= 20``) is one of
+    its roots, and a stop on the same instant would be a second reading of that
+    switch. So there the evaluator is asked only about a condition on literal
+    time that reads none of those parameters: its changes are fixed times of
+    the run, with no jump to make, and without the stop the columns were those
+    of the stepped-over trajectory.
     """
-    return _resolve_crossings(core, t_start, t_end, conditions, periodic=True, touches=touches)
+    return _resolve_crossings(
+        core,
+        t_start,
+        t_end,
+        conditions,
+        periodic=True,
+        touches=touches,
+        over_budget=over_budget,
+        sensitivity_params=sensitivity_params,
+    )
+
+
+class StopsOverBudget(NamedTuple):
+    """A condition that changes value more often in a run than stops are placed
+    for (issue #890)."""
+
+    condition: str
+    # How many changes were counted before the count was given up.
+    changes: int
+    # The shortest time between two consecutive changes of this condition,
+    # where it is known. A step no longer than half of it cannot span a
+    # stretch between two of them. That is the whole of what keeps a step off
+    # the rate law's windows only where nothing else in the run switches: a
+    # stretch that ends at another condition's stop can be shorter than any of
+    # this condition's own.
+    min_gap: float | None
+    # The shortest time between two consecutive changes of any condition,
+    # this one's and every one that was stopped at, where this one's changes
+    # were listed (it did not fit beside the others'). ``None`` where they were
+    # only counted.
+    union_gap: float | None = None
+    # The changes could not be counted: each finer grid the condition was
+    # evaluated on found more of them (:class:`bngsim._clock_scan.Unresolved`).
+    unresolved: bool = False
+    # The call, and the stretch of the run, where a step call's argument is
+    # within its own rounding of a level it crosses: so that the call reads on
+    # either side of it by turns and where it changes is not a time, or (the
+    # last entry true) for more of the run than the call can be read over
+    # (:class:`bngsim._clock_scan.Flickers`). Such a condition is `unresolved`.
+    flicker: tuple[str, float, float, bool] | None = None
+
+
+class _OverStopBudget(Exception):
+    """Raised by a resolver whose condition is past :data:`_RUN_STOP_BUDGET`."""
+
+    def __init__(
+        self,
+        count: float,
+        min_gap: float | None = None,
+        unresolved: bool = False,
+        flicker: tuple[str, float, float, bool] | None = None,
+    ):
+        super().__init__(count)
+        self.count = int(min(count, 2**62))
+        self.min_gap = min_gap
+        self.unresolved = unresolved
+        self.flicker = flicker
 
 
 def _resolve_crossings(
-    core, t_start: float, t_end: float, conditions, periodic: bool, touches=frozenset()
+    core,
+    t_start: float,
+    t_end: float,
+    conditions,
+    periodic: bool,
+    touches=frozenset(),
+    over_budget=None,
+    sensitivity_params=None,
 ) -> tuple[list[CrossingStop], list[CrossingStop], list[CrossingStop]]:
     if not conditions:
         return [], [], []
@@ -2930,45 +3214,224 @@ def _resolve_crossings(
     found: list[CrossingStop] = []
     stops: list[CrossingStop] = []
     crossings: list[CrossingStop] = []
+    # The changes of each condition that did not fit, where they were listed.
+    unplaced: dict[int, list[float]] = {}
+    whole_triggers: set[str] | None = None
+
+    def over(cond, count, min_gap, listed=None, unresolved=False, flicker=None) -> None:
+        if over_budget is None:
+            _warn_over_budget(cond, count, t_start, t_end)
+        else:
+            if listed is not None:
+                unplaced[len(over_budget)] = listed
+            over_budget.append(
+                StopsOverBudget(cond, int(count), min_gap, unresolved=unresolved, flicker=flicker)
+            )
+
+    def requested_in(asked: _EngineCondition) -> list[str]:
+        """The requested sensitivity parameters the condition reads."""
+        flat = _inline_derived_param_refs(asked.inlined, scope.derived_exprs) or asked.inlined
+        return sorted(
+            {m.group(0) for m in _IDENTIFIER.finditer(flat)} & set(sensitivity_params or ())
+        )
+
+    def asks_evaluator(engine, clock_idx: int, trigger: bool = False) -> bool:
+        """Whether the evaluator's reading of this condition places stops.
+        *engine* gives the condition as the evaluator is asked about it."""
+        if not periodic:
+            return False
+        asked = engine()
+        if asked is None:
+            return False
+        if sensitivity_params is None:
+            return True
+        if asked.kind == "bend":
+            # The rate law is continuous across a bend, so there is no jump
+            # to make whatever moves it: the stop is all the columns need.
+            return True
+        if asked.kind == "value":
+            # A step call outside every condition is no root of the run's: its
+            # stops are the whole of how it is read, as they are for one a
+            # resolver lists (issue #944), on a counter as on the clock. One a
+            # requested parameter moves was refused above.
+            return True
+        # An event's trigger is located as a root, where the event's jump in
+        # the columns is made; a stop on its rise would hand the run a fire
+        # with no located crossing (issue #910).
+        return clock_idx < 0 and not trigger and not requested_in(asked)
+
     for cond in conditions:
         rewrite = _rewrite_counter_clock(core, cond, scope, t_start)
         if rewrite is None:
             continue
         text, clock_idx, offset = rewrite
-        t_star = _crossing_time_of_condition(text, scope, t_start, t_end, bodies)
-        times: list[float] | None = None
-        if t_star is not None:
-            times = [t_star]
-        else:
-            times = _schedule_stop_times(text, scope, t_start, t_end)
-            if times is None:
-                times = _step_edge_stop_times(text, scope, t_start, t_end)
-            if times is None:
-                times = _inner_step_stop_times(text, scope, t_start, t_end)
-        if times is None and periodic:
-            pairs = _periodic_stop_times(
-                text, scope, t_start, t_end, bodies, touches=cond in touches
-            )
-            # One budget for the run, not one per condition: each stop costs a
-            # restart, and a few conditions near it took a gigabyte.
-            if len(stops) + len(pairs) > _PERIODIC_STOP_BUDGET:
-                _warn_over_budget(cond, len(pairs), t_start, t_end)
-                pairs = []
-            for t_cross, t_stop in pairs:
-                crossings.append(
-                    CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
+        # The condition as the evaluator is asked about it, made when something
+        # asks: a condition an exact resolver places, in a run that has made
+        # this pass before, never does.
+        made: list[_EngineCondition | None] = []
+
+        def engine(cond=cond, rewrite=rewrite, made=made) -> _EngineCondition | None:
+            if not made:
+                made.append(_engine_condition(core, cond, rewrite, scope, bodies))
+            return made[0]
+
+        asked = engine() if sensitivity_params else None
+        if asked is not None and asked.kind in ("value", "value?"):
+            moved = requested_in(asked)
+            if moved:
+                # The sensitivity detector reads a step call outside every
+                # condition as a jump no parameter moves (issue #944). One
+                # that a requested parameter does move has a jump in the
+                # column at each step, which nothing computes, and CVODES'
+                # difference quotient across the step ground the run to a
+                # halt instead: minutes at t = 23.9999 for a pulse of floors.
+                raise SensitivityUnsupportedError(
+                    "Forward sensitivity is not supported for this model: the rate law "
+                    f"steps at {_strip_redundant_parens(cond.strip())!r}, a step call "
+                    "outside any condition, and the times it steps at move with the "
+                    f"requested parameter{'s' if len(moved) > 1 else ''} "
+                    f"{', '.join(moved)}. The jump each step makes in those columns is "
+                    "not computed. Drop "
+                    f"{'them' if len(moved) > 1 else 'it'} from sensitivity_params, or "
+                    "difference plain runs."
                 )
-                stops.append(
-                    CrossingStop(
-                        t_stop,
-                        clock_idx,
-                        t_stop + offset if clock_idx >= 0 else 0.0,
-                        touch=t_stop == t_cross,
-                    )
-                )
-        for t_cross in times or ():
-            if not (t_start < t_cross <= t_end):
+        # (The search first: it answers for every ordering at a tenth of the
+        # cost of reading the atom's own operator.)
+        equality = _EQUALITY_OP.search(text) is not None and is_equality_atom(
+            _strip_redundant_parens(text.strip())
+        )
+        # An equality of two things that move smoothly holds at an instant. Of
+        # two that hold their values (`floor(time()/0.5) == 240`) it holds for
+        # a stretch, and is a window like any other.
+        instant = equality and not (_STEP_CALL.search(text) or _BEND_CALL.search(text))
+        if equality:
+            # Measure zero to a rate law (see :func:`_switches_on_clock_alone`);
+            # the one double an event's trigger is true at.
+            # In a run with sensitivity columns too, where the instant reads
+            # no requested parameter: no root ever located it.
+            #
+            # An equality over a call that holds its value is asked the same
+            # way before it is read as a window: `abs(time - 5) == 0.3` holds
+            # at two instants or, where no double meets it, at none, and that
+            # trigger is refused like any other that cannot fire.
+            asked = engine() if cond in touches and clock_idx < 0 and periodic else None
+            if asked is not None and not (sensitivity_params is not None and requested_in(asked)):
+                if whole_triggers is None:
+                    whole_triggers = {
+                        _strip_redundant_parens(src).replace(" ", "")
+                        for src in core.event_trigger_sources()
+                    }
+                alone = _strip_redundant_parens(cond).replace(" ", "") in whole_triggers
+                for at in _equality_stops(
+                    core, cond, text, asked, scope, bodies, t_start, t_end, alone
+                ):
+                    stops.append(CrossingStop(at, clock_idx, 0.0, True))
+                    crossings.append(CrossingStop(at, clock_idx, 0.0))
+            if instant:
                 continue
+        times: list[float] | None = None
+        pairs: list[tuple[float, float]] = []
+        # (time, the counter's value there, on a touch) for a scanned condition.
+        scanned: list[tuple[float, float, bool]] | None = None
+        try:
+            try:
+                t_star = (
+                    None
+                    if equality
+                    else _crossing_time_of_condition(text, scope, t_start, t_end, bodies)
+                )
+                if t_star is not None:
+                    times = [t_star]
+                else:
+                    times = _schedule_stop_times(text, scope, t_start, t_end)
+                    if times is None and not equality:
+                        times = _step_edge_stop_times(text, scope, t_start, t_end)
+                if times is not None and t_star is not None and _reads_time_once(text, scope):
+                    # The linear resolver's answer for a comparison that reads
+                    # the clock once, through arithmetic alone, is the whole of
+                    # what that comparison does: there is nothing to check.
+                    pass
+                elif times is not None:
+                    # What a resolver read is not always what the evaluator
+                    # computes: where the two disagree about a change, the
+                    # evaluator is the one the rate law follows. A plain run
+                    # that has asked before is answered from the memo, without
+                    # the condition being made for the evaluator at all.
+                    asks = (
+                        periodic
+                        if sensitivity_params is None
+                        else asks_evaluator(engine, clock_idx, cond in touches)
+                    )
+                    if asks and not _agrees_with_evaluator(
+                        core, engine, text, scope, bodies, t_start, t_end, times
+                    ):
+                        logger.debug("stops for %r disagree with the evaluator; scanning", cond)
+                        times = None
+                        scanned = _engine_scan_stop_times(
+                            core, cond, engine(), offset, scope, t_start, t_end, cond in touches
+                        )
+                elif periodic:
+                    shaped: list[bool] = []
+                    if not equality:
+                        pairs = _periodic_stop_times(
+                            text,
+                            scope,
+                            t_start,
+                            t_end,
+                            bodies,
+                            touches=cond in touches,
+                            shaped=shaped,
+                        )
+                    if not shaped and asks_evaluator(engine, clock_idx, cond in touches):
+                        scanned = _engine_scan_stop_times(
+                            core, cond, engine(), offset, scope, t_start, t_end, cond in touches
+                        )
+                if times is None and not pairs and scanned is None and not equality:
+                    times = _inner_step_stop_times(text, scope, t_start, t_end)
+            except _OverStopBudget as exc:
+                # Many jumps are not many changes: `floor(time()/0.0001) < 5000`
+                # holds 2.4 million of the first and one of the second. (Not
+                # where the changes were found and could not be counted: the
+                # sampling that reads the first kind sees nothing of a pulse
+                # between two of its points, and `if(sign(q) > 0, 1, 0)` with
+                # a q that flickers came back as never changing.)
+                few = (
+                    _few_changes(core, engine(), offset, scope, t_start, t_end)
+                    if not exc.unresolved and asks_evaluator(engine, clock_idx, cond in touches)
+                    else None
+                )
+                if few is None:
+                    raise
+                times, pairs, scanned = None, [], few
+        except _OverStopBudget as exc:
+            over(cond, exc.count, exc.min_gap, unresolved=exc.unresolved, flicker=exc.flicker)
+            continue
+        inside = [t for t in times or () if t_start < t <= t_end]
+        # One budget for the run, not one per condition: each stop costs a
+        # restart, and a few conditions near it took a gigabyte.
+        mine = len(inside) + len(pairs) + len(scanned or ())
+        if len(found) + len(stops) + mine > _RUN_STOP_BUDGET:
+            every = sorted([*inside, *(ts for _, ts in pairs), *(t for t, _, _ in scanned or ())])
+            over(cond, mine, _shortest_stretch(every), every)
+            continue
+        for t_cross, t_stop in pairs:
+            crossings.append(
+                CrossingStop(t_cross, clock_idx, t_cross + offset if clock_idx >= 0 else 0.0)
+            )
+            stops.append(
+                CrossingStop(
+                    t_stop,
+                    clock_idx,
+                    t_stop + offset if clock_idx >= 0 else 0.0,
+                    touch=t_stop == t_cross,
+                )
+            )
+        for t_cross, value, touch in scanned or ():
+            crossings.append(CrossingStop(t_cross, clock_idx, value if clock_idx >= 0 else 0.0))
+            stops.append(
+                CrossingStop(t_cross, clock_idx, value if clock_idx >= 0 else 0.0, touch=touch)
+            )
+        for t_cross in inside:
             # The counter's exact value at the crossing. Reading it back off the
             # rewrite rather than off the recognized threshold text is what keeps
             # the two in step whichever resolver placed the stop, and for a
@@ -2980,12 +3443,911 @@ def _resolve_crossings(
     found.sort(key=lambda stop: stop.time)
     stops.sort(key=lambda stop: stop.time)
     crossings.sort(key=lambda stop: stop.time)
+    if unplaced and over_budget is not None:
+        # A window of the rate law can open on one condition and close on
+        # another, so what a step must not span is a stretch between two
+        # changes of any of them.
+        placed = [stop.time for stop in found] + [stop.time for stop in stops]
+        every = sorted([*placed, *(t for times in unplaced.values() for t in times)])
+        shortest = _shortest_stretch(every)
+        for i in unplaced:
+            over_budget[i] = over_budget[i]._replace(union_gap=shortest)
     return found, stops, crossings
 
 
+# For a condition's text: whether it reads ``time()`` once and calls nothing
+# else, and the names it reads. Asked of every condition on every run, so kept.
+_READS_TIME_ONCE: dict[str, tuple[bool, tuple[str, ...]]] = {}
+_ANY_CALL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*\(")
+
+
+def _reads_time_once(text: str, scope: SwitchConditionScope) -> bool:
+    """True for a comparison whose text reads ``time()`` once, holds no other
+    call, no power and no modulo, and reads nothing else but run constants:
+    ``time() >= t_on + delay``.
+
+    Such a residual is a ratio of two expressions of first degree in time at
+    most, which is monotone on each side of its pole. Where the linear
+    resolver's three probes accept it, its one crossing is the comparison's
+    only change, so the evaluator has nothing to add (and is not asked: this
+    is the path nearly every model with a clock condition takes, on every
+    run). A step call, a sinusoid or a product of two reads of time can pass
+    those probes at one of several changes, and is checked.
+
+    Run constants only, because a name can hide a second read of the clock:
+    an SBML assignment rule ``g := (time - 100)*(time - 100.5)`` makes
+    ``(time - 256)*g > 0`` read time once by its text and three times by what
+    it computes.
+    """
+    known = _READS_TIME_ONCE.get(text)
+    if known is None:
+        calls = [m.group(0).rstrip("( \t") for m in _ANY_CALL.finditer(text)]
+        plain = "^" not in text and "%" not in text and calls == ["time"]
+        names = tuple(
+            dict.fromkeys(
+                m.group(0)
+                for m in _IDENTIFIER.finditer(text)
+                if m.group(0) != "time" and m.group(0) not in _BUILTIN_CONSTANT_VALUES
+            )
+        )
+        if len(_READS_TIME_ONCE) >= 4096:
+            _READS_TIME_ONCE.clear()
+        known = _READS_TIME_ONCE[text] = (plain, names)
+    plain, names = known
+    return plain and all(name in scope.run_constants for name in names)
+
+
+def conditions_a_rate_law_reads(core, conditions: Sequence[str]) -> frozenset[str]:
+    """Those of *conditions* that stand in a rate law or in a function a rate
+    law reaches.
+
+    :func:`time_discontinuity_conditions` reads every function of the model,
+    and one that no rate law reaches changes an output and not the trajectory.
+    A stop on its conditions is a restart for nothing, which is cheap. A
+    refusal over them is not: a run whose only fault was an output function
+    with more changes than a run has stops for (``mod(time(), 0.0001)``,
+    plotted) was refused as if the rate law switched on it.
+    """
+    from bngsim._jacobian import _IDENT_RE, _inline_functions
+
+    if not conditions:
+        return frozenset()
+    ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    rate_laws = dict.fromkeys(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"])
+    reached: dict[str, None] = {}
+    pending = [n for text in rate_laws for n in _IDENT_RE.findall(text) if n in func_map]
+    while pending:
+        name = pending.pop()
+        if name not in reached:
+            reached[name] = None
+            pending.extend(n for n in _IDENT_RE.findall(func_map[name]) if n in func_map)
+    memo: dict[str, str] = {}
+    flats = [
+        _inline_functions(text, func_map, memo=memo) or text
+        for text in (*rate_laws, *(func_map[name] for name in reached))
+    ]
+    return frozenset(cond for cond in conditions if any(cond in flat for flat in flats))
+
+
+def _shortest_stretch(times: Sequence[float]) -> float | None:
+    """The shortest time between two consecutive instants of *times* (sorted),
+    two within a few doubles of each other being one instant."""
+    import numpy as np
+
+    at = np.asarray(times, dtype=float)
+    if at.size < 2:
+        return None
+    gap = np.diff(at)
+    apart = gap > _INSTANT_ULPS * np.spacing(np.abs(at[:-1]))
+    return float(gap[apart].min()) if apart.any() else None
+
+
+def _engine_text(text: str) -> str:
+    """*text* as the evaluator compiles it: the clock as its nullary call."""
+    return _TIME_REF.sub("time()", text)
+
+
+def _evaluate_over(core, text: str, times, shift: float = 0.0):
+    import numpy as np
+
+    return core.evaluate_over_times(text, np.ascontiguousarray(times, dtype=float), shift)
+
+
+# The evaluator's variable for a counter's offset from the clock, set at each
+# call of ``evaluate_over_times``. A condition that reads a counter and literal
+# time together is written over it, so its text is one for every run.
+_SHIFT = "bngsim_scan_shift_"
+_TABLE_CALL = re.compile(r"(?<![A-Za-z0-9_])tfun_([A-Za-z0-9_]+)\s*\(\s*\)")
+
+
+class _EngineCondition(NamedTuple):
+    """A condition as the model's evaluator can be asked about it at a time."""
+
+    text: str  # what the evaluator compiles, the clock as `time()`
+    inlined: str  # the same before the clock is respelled, for the memo key
+    kind: str  # "comparison", "truth", "value" or "bend" (see _clock_scan)
+    sides: tuple[str, str] | None  # a comparison's two sides
+    # What is added to a time to get the value the text is evaluated at: the
+    # counter's offset for a condition on a counter alone, which is read with
+    # the counter written as the clock, and 0 otherwise.
+    shift: float
+    # The offset of a counter a condition reads beside literal time, which the
+    # evaluator holds in a variable (:data:`_SHIFT`); 0 otherwise.
+    offset: float
+    knots: tuple[float, ...]  # breakpoints of the tables read, in those values
+    tables: tuple  # their contents, for the memo key
+
+    def evaluate(self, core, text: str, times):
+        return _evaluate_over(core, text, times, self.offset)
+
+
+def _engine_condition(
+    core, cond: str, rewrite, scope: SwitchConditionScope, bodies
+) -> _EngineCondition | None:
+    """*cond* as the evaluator can be asked about it, or ``None`` where it reads
+    anything but the clock, run constants and builtins: then its value at a
+    time is not a function of the time alone.
+
+    A condition on a counter is read with the counter written as the clock,
+    and its times carried back by the counter's offset: no offset is written
+    into the text, so one text serves every run. One that reads a counter and
+    literal time together has the counter written as the clock plus a variable
+    the evaluator is handed the offset in.
+
+    A table function read on the clock is a function of the time like any
+    builtin. One indexed by anything else is not.
+    """
+    from bngsim import _clock_scan
+
+    _, clock_idx, offset = rewrite
+    text = cond
+    shift = held = 0.0
+    if clock_idx >= 0:
+        alone = _clock_free(cond, _TIME_SYMBOLS)
+        for sym in sorted(scope.clocks, key=len, reverse=True):
+            text = _clock_symbol_sub(text, sym, "time()" if alone else f"(time()+{_SHIFT})")
+        if alone:
+            shift = offset
+        else:
+            held = offset
+    atom = _strip_redundant_parens(text.strip())
+    inlined = _inline_function_slots(atom, bodies)
+    flat = _inline_derived_param_refs(inlined, scope.derived_exprs) or inlined
+    if not _clock_free(flat, frozenset(scope.clocks)):
+        return None
+    knots: list[float] = []
+    # What the tables read hold, for the memo: it outlives a model, and two
+    # models can call a table of one name and different contents.
+    read_tables: list[tuple] = []
+    gate = flat.replace(_SHIFT, "0")
+    named = {m.group(1) for m in _TABLE_CALL.finditer(flat)}
+    if named:
+        tables = {t["name"]: t for t in core.table_function_tables}
+        for name in sorted(named):
+            table = tables.get(name)
+            if table is None or table["index_kind"] != "time":
+                return None
+            knots.extend(float(x) + shift for x in table["xs"])
+            read_tables.append((name, table["method"], tuple(table["xs"]), tuple(table["ys"])))
+        gate = _TABLE_CALL.sub("time()", gate)
+    if not _reads_clock_and_run_constants(gate, scope):
+        return None
+    engine = _engine_text(inlined)
+    split = _relational_split_op(engine)
+    sides = None
+    if split is not None:
+        kind, sides = "comparison", (split[0], split[2])
+    else:
+        kind = "truth"
+        for pattern, whole_kind in ((_STEP_CALL, "value"), (_BEND_CALL, "bend")):
+            m = pattern.match(engine)
+            if m is not None and _find_close_paren_strict(engine, m.end() - 1) == len(engine) - 1:
+                kind = whole_kind
+        if kind == "value" and not _clock_scan.knows_steps_of(engine):
+            kind = "value?"  # a step call whose jumps the scan does not know the levels of
+    return _EngineCondition(
+        engine, inlined, kind, sides, shift, held, tuple(knots), tuple(read_tables)
+    )
+
+
+def _sawtooth_of_a_line(asked: _EngineCondition, scope: SwitchConditionScope):
+    """The phase of *asked* where it is a sawtooth (``mod``, ``frac``) of a
+    line in time standing as a number, and ``None`` otherwise."""
+    from bngsim import _clock_scan
+
+    if asked.kind != "value":
+        return None
+    for phase in _clock_scan.phases(asked.text):
+        if phase.call == asked.text and phase.call.partition("(")[0].strip() in ("mod", "frac"):
+            return phase if _clock_scan._a_line_in_time(phase, scope.run_constants) else None
+    return None
+
+
+def _coarse_sawtooth(core, asked: _EngineCondition, phase, lo: float, hi: float) -> bool:
+    """Whether the argument of the sawtooth *asked* is coarser than the clock
+    of the run from *lo* to *hi*: it holds each of its doubles for more than
+    a few tens of the clock's (:data:`_clock_scan.TOUCH_ULPS` of them), with
+    a quotient the scan reads (one it does not, it refuses by name).
+
+    A run that restarts on each wrap of such a sawtooth restarts where the
+    rate is flat, for as long as the argument holds its value, and where a
+    period is a whole number of doubles of the argument the rate is the same
+    on every wrap too. The integrator can then take a period in one step and
+    add nothing for it (issue #998): with a stop on every wrap of
+    `100*mod(1.1e12 + time(), 0.0048828125)` over (0, 20.2), each on its
+    wrap, X was 0.0826 for 4.685, where main, with no stop, has it right. Two
+    stops to the wrap held for X(0) = 0 and not for X(0) = 1e4. So the scan's
+    stops are not placed for it, and it is left as on main, until that is
+    fixed in the run.
+
+    How long a flat stretch it takes depends on the rate and the tolerances,
+    not on the run: at a clock of 1e6, `frac((3e9 + time())/0.0009765625)`
+    holds a double for one instant of a run of 1 (4,096 doubles of the clock)
+    and lost all but a five-hundredth of X to it. No step of the integrator
+    is shorter than a hundred doubles of the clock, which is what the line
+    here is drawn under: an argument as fine as that is no flat stretch to a
+    step.
+    """
+    import numpy as np
+
+    from bngsim import _clock_scan
+
+    # (By the size of a double of the argument against how far the argument
+    # moves in the run, and not by reading it at points along the run: 65
+    # evenly spaced points fall on one place in the argument's tread wherever
+    # the run is a whole number of its doubles long, and a law that was left
+    # alone over (1e6, 1e6 + 1) had its stops, and 0.001 of its X, over
+    # (1000000.023, 1000001.023).)
+    argument = _clock_scan._split_commas(phase.call.partition("(")[2][:-1])[0].strip()
+    ends = np.array([lo, hi], dtype=float)
+    try:
+        x = asked.evaluate(core, f"({argument})", ends)
+        size = np.abs(asked.evaluate(core, phase.phase, ends))
+    except Exception:  # noqa: BLE001 - the scan is asked, and says what it finds
+        return False
+    if not np.all(np.isfinite(x)) or np.any(
+        size[np.isfinite(size)] >= _clock_scan._SAWTOOTH_AT_MOST
+    ):
+        return False
+    double_of_the_argument = float(np.spacing(np.max(np.abs(x))))
+    double_of_the_clock = float(np.spacing(max(abs(lo), abs(hi))))
+    moved = abs(float(x[1] - x[0]))
+    # One double of the argument lasts `double_of_the_argument/moved` of the run.
+    return (
+        double_of_the_argument * (hi - lo)
+        > 0.5 * _clock_scan.TOUCH_ULPS * double_of_the_clock * moved
+    )
+
+
+def _engine_scan_stop_times(
+    core,
+    cond: str,
+    asked: _EngineCondition | None,
+    offset: float,
+    scope: SwitchConditionScope,
+    t_start,
+    t_end,
+    touches: bool,
+) -> list[tuple[float, float, bool]] | None:
+    """``(time, counter value, touch)`` for each change of *cond* in
+    ``(t_start, t_end]``, found by evaluating it (:mod:`bngsim._clock_scan`),
+    or ``None`` for a condition the evaluator cannot be asked about.
+
+    The last resolver asked, for a condition no other reads (issue #904). The
+    time is the first double at which the model's evaluator reads the new
+    value. *touch* marks a stop on a window a few doubles wide, kept for an
+    event trigger alone.
+    """
+    import numpy as np
+
+    from bngsim import _clock_scan
+
+    if asked is None or asked.kind == "value?":
+        return None
+    shift = asked.shift
+    lo, hi = float(t_start) + shift, float(t_end) + shift
+    sawtooth = _sawtooth_of_a_line(asked, scope)
+    if sawtooth is not None and _coarse_sawtooth(core, asked, sawtooth, lo, hi):
+        logger.debug("%r: a sawtooth of a line coarser than the clock gets no stops (#998)", cond)
+        return None
+
+    class Unreadable(Exception):
+        pass
+
+    def evaluate(text, at):
+        try:
+            return asked.evaluate(core, text, at)
+        except Exception as exc:  # noqa: BLE001 - whatever the evaluator raises
+            raise Unreadable(str(exc)) from None
+
+    def resolve():
+        try:
+            edges = _clock_scan.scan_changes(
+                evaluate,
+                asked.text,
+                lo,
+                hi,
+                kind=asked.kind,
+                sides=asked.sides,
+                knots=asked.knots,
+                budget=_RUN_STOP_BUDGET,
+                touches=touches,
+                constants=scope.run_constants,
+            )
+        except _clock_scan.Flickers as exc:
+            raise _OverStopBudget(
+                exc.count,
+                unresolved=True,
+                flicker=(
+                    exc.call,
+                    exc.lo - shift,
+                    exc.hi - shift,
+                    "coarse" if exc.coarse else exc.unread,
+                ),
+            ) from None
+        except _clock_scan.Unresolved as exc:
+            raise _OverStopBudget(exc.count, unresolved=True) from None
+        except _clock_scan.OverBudget as exc:
+            raise _OverStopBudget(exc.count) from None
+        except Unreadable as exc:
+            # A text the evaluator cannot be asked about is declined, and has
+            # the stops it had before there was a scan: none.
+            logger.debug("engine scan declined %r: %s", cond, exc)
+            return None
+        except Exception as exc:  # noqa: BLE001 - said, where it was declined with the rest
+            # Anything else that goes wrong in the scan is a defect of it. The
+            # condition is left without stops, as every failure to place them
+            # leaves a run (`Simulator._apply_crossing_stops`), and said so
+            # as that is: declined in silence, an IndexError in here was a
+            # window stepped over with no word.
+            logger.warning(
+                "The scan of the time condition %r failed (%s: %s). No stop is placed for "
+                "it, and a rate law that switches on it may be stepped over: bound the "
+                "step with max_step. This is a defect in bngsim; please report it.",
+                cond,
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        return edges
+
+    key = (
+        "scan",
+        asked.kind,
+        touches,
+        asked.offset,
+        asked.tables,
+        *_stop_memo_key(asked.inlined, scope, lo, hi),
+    )
+    edges = _memoized_stops(key, resolve)
+    if edges is None:
+        return None
+    at = np.asarray(edges, dtype=float)
+    touch = np.zeros(at.size, dtype=bool)
+    if touches and at.size > 1:
+        narrow = np.diff(at) <= _clock_scan.TOUCH_ULPS * np.spacing(np.abs(at[:-1]))
+        touch[:-1] |= narrow
+    return [
+        (float(c - shift), float(c), bool(k)) if shift else (float(c), float(c) + offset, bool(k))
+        for c, k in zip(at, touch, strict=True)
+    ]
+
+
+def _few_changes(
+    core, asked: _EngineCondition | None, offset: float, scope, t_start, t_end
+) -> list[tuple[float, float, bool]] | None:
+    """The changes of a comparison whose step calls jump more often than the
+    run has stops for, where it can be seen not to follow them
+    (:func:`bngsim._clock_scan.few_changes`), or ``None``."""
+    from bngsim import _clock_scan
+
+    if asked is None or asked.kind != "comparison" or asked.sides is None:
+        return None
+    shift = asked.shift
+    lo, hi = float(t_start) + shift, float(t_end) + shift
+
+    def resolve():
+        try:
+            return _clock_scan.few_changes(
+                lambda t, at: asked.evaluate(core, t, at),
+                asked.text,
+                lo,
+                hi,
+                asked.sides,
+                budget=_RUN_STOP_BUDGET,
+            )
+        except _clock_scan.Flickers as exc:
+            # (Named, and not folded into the budget's refusal, which a
+            # `max_step` can answer.)
+            raise _OverStopBudget(
+                exc.count,
+                unresolved=True,
+                flicker=(
+                    exc.call,
+                    exc.lo - shift,
+                    exc.hi - shift,
+                    "coarse" if exc.coarse else exc.unread,
+                ),
+            ) from None
+        except Exception as exc:  # noqa: BLE001 - not read: the caller reports the budget
+            logger.debug("few-changes reading declined %r: %s", asked.text, exc)
+            return None
+
+    key = ("few", asked.offset, asked.tables, *_stop_memo_key(asked.inlined, scope, lo, hi))
+    edges = _memoized_stops(key, resolve)
+    if edges is None:
+        return None
+    return [(c - shift, c, False) if shift else (c, c + offset, False) for c in edges]
+
+
+# Grid cells the evaluator is asked on when a resolver's stops are checked.
+_AGREEMENT_CELLS = 1 << 12
+
+
+def _agrees_with_evaluator(
+    core, engine, text: str, scope, bodies, t_start, t_end, times: Sequence[float]
+) -> bool:
+    """Whether every change of the condition the evaluator shows on a grid over
+    the window has one of *times* in its cell.
+
+    A resolver reads a text's shape, and a shape can be misread: a staircase
+    passes the linear resolver's two probes (``floor(time()/0.7) >= 3`` was
+    stopped at 2.104 for 2.1), and the step resolver reported no edge at all
+    for ``mod(rint(time()-0.01), 0.1) > floor(time())``. The evaluator is what
+    the rate law follows, so a change it shows between two grid points with no
+    stop there means the stops are not this condition's.
+
+    *text* is the condition with its counter written as time. With the bodies
+    of the function slots it names written in, the window and the values it
+    reads, that is everything the answer depends on, and what it is remembered
+    under: two SBML models can both spell a trigger ``g > 0`` over an
+    assignment rule ``g`` that is a line in one and a cubic in the other.
+    *engine* makes the condition for the evaluator, and is called only where
+    the answer is not remembered.
+
+    A condition is checked by its truth. A step call standing as a number is
+    checked by its value where that holds between jumps (``sign``, ``floor``):
+    ``sign(min((time()-0.3)/0.0003, ln(time()-8.4)))`` was stopped at 0.3 and
+    9.4 and not at 8.4, where the logarithm starts being a number. A call
+    whose value moves in most cells (a sawtooth) says nothing this way and is
+    not checked. True where the evaluator cannot be asked.
+    """
+    import numpy as np
+
+    slack_ulps = float(_INSTANT_ULPS)
+
+    def resolve():
+        asked = engine()
+        if asked is None or asked.kind not in ("comparison", "truth", "value"):
+            return [1.0]
+        if _sawtooth_of_a_line(asked, scope) is not None:
+            # Two values of a sawtooth a cell apart are no jump in the cell,
+            # in however few cells they differ: where its argument is coarse
+            # against the run (a leg under a thousand doubles of
+            # `1.1e12 + time()`, a window of 4,096 periods to the cell), few
+            # do, a resolver's "no change" was held against them, and the
+            # scan was asked for a law main leaves alone and has right.
+            return [1.0]
+        shift = asked.shift
+        lo, hi = float(t_start) + shift, float(t_end) + shift
+        nodes = np.linspace(lo, hi, _AGREEMENT_CELLS + 1)
+        # A change on the run's first or last instant is no stop of the run's:
+        # a resolver lists neither, and where it puts one a few doubles from
+        # where the evaluator does (issue #891), either may fall just outside.
+        # (Doubles of the window's scale: at lo = 0 a few of its own are
+        # subnormal, and `time()/1000` underflows on the first of them.)
+        edge = 2.0 * slack_ulps * float(np.spacing(max(abs(lo), abs(hi))))
+        nodes[0] = lo + edge
+        nodes[-1] = hi - edge
+        nodes = np.unique(nodes)
+        if nodes.size < 2:
+            return [1.0]
+        try:
+            values = asked.evaluate(core, asked.text, nodes)
+        except Exception as exc:  # noqa: BLE001 - nothing to check against
+            logger.debug("agreement check: %r not evaluated (%s)", asked.text, exc)
+            return [1.0]
+        if asked.kind == "value":
+            # Not a number is a value of its own, equal to itself.
+            held = np.where(np.isnan(values), np.inf, values)
+            changed = np.nonzero(held[:-1] != held[1:])[0]
+            if changed.size > nodes.size // 4:
+                return [1.0]
+        else:
+            if asked.kind == "comparison" and asked.sides is not None:
+                # A comparison is read between the grid points as well, where
+                # the difference of its sides turns: `(time()-5)^4 < 1e-10`
+                # holds for 0.006 around 5, inside one cell of a run 600
+                # long, and the polynomial resolver, which samples the window
+                # too, had no stop for it there and nothing here said so.
+                from bngsim import _clock_scan
+
+                try:
+                    residual = _clock_scan._residual(
+                        lambda text, at: asked.evaluate(core, text, at),
+                        asked.sides[0],
+                        asked.sides[1],
+                        lo,
+                    )
+                    turns = _clock_scan._extrema(residual, nodes, residual(nodes))
+                    turns = turns[(turns > nodes[0]) & (turns < nodes[-1])]
+                    if turns.size:
+                        nodes = np.union1d(nodes, turns)
+                        values = asked.evaluate(core, asked.text, nodes)
+                except Exception as exc:  # noqa: BLE001 - the grid alone, as before
+                    logger.debug("agreement check: %r not read between (%s)", asked.text, exc)
+            truth = np.where(np.isnan(values), 2.0, (values != 0.0).astype(float))
+            changed = np.nonzero(truth[:-1] != truth[1:])[0]
+        if changed.size == 0:
+            return [1.0]
+        at = np.sort(np.asarray(times, dtype=float) + shift)
+        # A stop on the cell's own edge counts for the cell on either side.
+        slack = slack_ulps * np.spacing(np.abs(nodes))
+        first = np.searchsorted(at, nodes[changed] - slack[changed], side="left")
+        last = np.searchsorted(at, nodes[changed + 1] + slack[changed + 1], side="right")
+        return [1.0 if bool(np.all(last > first)) else 0.0]
+
+    key = (
+        "agrees",
+        tuple(times) if len(times) <= 64 else (len(times), times[0], times[-1]),
+        *_stop_memo_key(
+            _inline_function_slots(text, bodies) if bodies else text, scope, t_start, t_end
+        ),
+    )
+    return bool(_memoized_stops(key, resolve)[0])
+
+
+# Doubles on each side of a solved instant on which an equality is read.
+_EQUALITY_REACH = 8
+# How many times a near miss is looked four times further on each side for
+# where the difference of the sides next moves: out to 2^22 doubles, a
+# billionth of the time. Further, the next move found is a staircase's next
+# step as often as a coarse side's next rounding: at t = 1e7, 2^32 doubles is
+# eight time units, and `floor(time/2)*2` stepping past a value it takes two
+# units later was refused as never equal to it.
+_NEAR_MISS_REACH = 8
+
+
+class TriggerEqualityNeverHolds(Exception):
+    """An event's trigger is an equality on the clock that no double satisfies
+    inside the run, so the event could never fire."""
+
+
+def _equality_stops(
+    core, cond: str, text: str, asked: _EngineCondition, scope, bodies, t_start, t_end, alone: bool
+) -> list[float]:
+    """The doubles in ``(t_start, t_end]`` at which the equality *cond* holds
+    (or, for ``!=``, fails): the first of each run of them.
+
+    ``time == tau/7`` is true where the clock equals the evaluator's own
+    rounding of ``tau/7``, so the evaluator is asked: its two sides are read
+    for where they pass each other (:func:`bngsim._clock_scan.scan_changes`
+    with a trigger's touches kept), which finds ``time == pi`` and
+    ``time^2 == 4`` as well as a parameter.
+
+    Raises :class:`TriggerEqualityNeverHolds` for a ``==`` that is the whole of
+    an event's trigger (*alone*) and whose sides pass each other between two
+    adjacent doubles without being equal on either: ``time - 1 == 1.3`` has no
+    solution in doubles, since 2.3 - 1 rounds to 1.2999999999999998 and the
+    next double gives 1.3000000000000003. Inside a larger trigger the event
+    can still fire through the rest of it, and a ``!=`` that never fails is
+    simply true.
+    """
+    import numpy as np
+
+    from bngsim import _clock_scan
+
+    if asked.sides is None:
+        return []
+    shift = asked.shift
+    lo, hi = float(t_start) + shift, float(t_end) + shift
+    lhs, rhs = asked.sides
+    is_ne = "!=" in asked.text[len(lhs) : len(asked.text) - len(rhs)]
+
+    def resolve():
+        def ev(text, at):
+            return asked.evaluate(core, text, at)
+
+        # `time == 12`: the instant is solved, and the double the evaluator
+        # holds the equality at is one of the few around it. Searching the
+        # whole window for it took a model with 62 such triggers from 3 ms to
+        # most of a second.
+        if _reads_time_once(text, scope):
+            solved = _crossing_time_of_condition(text, scope, t_start, t_end, bodies)
+            if solved is not None:
+                if not (lo - 1.0 < solved + shift <= hi + 1.0):
+                    return [[], 0.0]
+                near = np.full(2 * _EQUALITY_REACH + 1, solved + shift)
+                for k in range(_EQUALITY_REACH):
+                    near[: _EQUALITY_REACH - k] = np.nextafter(
+                        near[: _EQUALITY_REACH - k], -np.inf
+                    )
+                    near[_EQUALITY_REACH + 1 + k :] = np.nextafter(
+                        near[_EQUALITY_REACH + 1 + k :], np.inf
+                    )
+                try:
+                    holds = ev(asked.text, near) != 0.0
+                except Exception as exc:  # noqa: BLE001 - searched for below instead
+                    logger.debug("equality stop: %r not evaluated (%s)", cond, exc)
+                    holds = None
+                if holds is not None:
+                    met = ~holds if is_ne else holds
+                    if met.any() and not met.all():
+                        # The first double of the run of them.
+                        first = int(np.argmax(met))
+                        return [[float(near[first])], 0.0]
+
+        try:
+            # Where the equality's truth changes, a window a double wide kept.
+            edges = _clock_scan.scan_changes(
+                ev,
+                asked.text,
+                lo,
+                hi,
+                kind="comparison",
+                sides=asked.sides,
+                knots=asked.knots,
+                budget=_RUN_STOP_BUDGET,
+                touches=True,
+            )
+            # Where the sides pass each other with no double between: the
+            # ordering of the same two sides changes there, and the equality
+            # does not.
+            passes = _clock_scan.scan_changes(
+                ev,
+                f"({lhs})>({rhs})",
+                lo,
+                hi,
+                kind="comparison",
+                sides=asked.sides,
+                knots=asked.knots,
+                budget=_RUN_STOP_BUDGET,
+                touches=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - not read: no stop, as before
+            logger.debug("equality stop: %r not evaluated (%s)", cond, exc)
+            return [[], 0.0]
+        at = np.asarray(edges, dtype=float)
+        held = ev(asked.text, at) != 0.0 if at.size else np.zeros(0, dtype=bool)
+        # The first double of each run the equality holds on (or `!=` fails on).
+        starts = at[~held if is_ne else held]
+        missed = 0.0
+        for t in passes:
+            near = np.abs(at - t) <= 4.0 * _INSTANT_ULPS * np.spacing(abs(t)) if at.size else []
+            if np.any(near):
+                continue
+            # A near miss is the two sides passing each other as they move.
+            # Where one of them jumps across the other (the wrap of
+            # `rem(time, 3)` past 1, three times in ten time units) nothing was
+            # nearly equal, and the trigger holds elsewhere or not at all.
+            #
+            # A jump is told by the difference of the sides changing more
+            # across the two doubles of the pass than it does where it next
+            # moves on either side of them. (Not by how close the sides are in
+            # doubles of their own size: `time - 100 == 0.3` misses by a
+            # rounding of 100.3, which is many doubles of 0.3, and went
+            # unrefused; and `1e15 + rem(time, 3)` wraps by 24 doubles of
+            # itself past `1e15 + 1`, which it does equal a second later, and
+            # was refused.) Where it next moves, and not a fixed few doubles
+            # on: a side coarser than the clock, `(time + 1024)*1.9`, holds
+            # one value for four thousand doubles, and read over 64 it had
+            # not moved at all beside a pass of one of its own last places.
+            beside = np.array([np.nextafter(t, -np.inf), t])
+            d = ev(f"({lhs})", beside) - ev(f"({rhs})", beside)
+            across = abs(d[1] - d[0])
+
+            # (A pass beside a double the sides are equal on is the end of a
+            # stretch on which the equality held, and no miss.)
+            drift = 0.0
+            for k in (0, 1):
+                step = (1.0 if k else -1.0) * _INSTANT_ULPS * float(np.spacing(abs(t)))
+                for _ in range(_NEAR_MISS_REACH):
+                    probe = np.array([beside[k] + step])
+                    moved = abs(float((ev(f"({lhs})", probe) - ev(f"({rhs})", probe))[0]) - d[k])
+                    if moved != 0.0:  # a move, or not a number
+                        drift = max(drift, moved)
+                        break
+                    step *= 4.0
+            if bool(np.all(np.isfinite(d))) and bool(np.all(d != 0.0)) and across <= 2.0 * drift:
+                missed = float(t)
+                break
+        return [[float(x) for x in starts], missed]
+
+    key = ("equality", asked.offset, asked.tables, *_stop_memo_key(asked.inlined, scope, lo, hi))
+    starts, missed = _memoized_stops(key, resolve)
+    if missed and alone and not is_ne:
+        raise TriggerEqualityNeverHolds(
+            f"The event trigger {_strip_redundant_parens(cond.strip())!r} is an equality "
+            f"whose two sides are never equal in double arithmetic near t={missed - shift!r}: "
+            "where they pass each other there, they differ by a rounding on every double, "
+            "so the trigger does not turn true and the event does not fire. Write the "
+            "instant itself on one side (time == 2.3 rather than time - 1 == 1.3), or use "
+            "an ordering (>=)."
+        )
+    return [t - shift for t in starts if t_start < t - shift <= t_end]
+
+
+# Which breakpoints of a table function are stops (issue #709).
+#
+# A stop exists for a feature a step could span unseen: one that leaves and
+# comes back, so that the table is the same at both ends of the step. Such a
+# feature has breaks that differ: a pulse is a jump up and a jump down, a
+# triangle a turn one way, twice that the other way, and the first again. A
+# break that its two neighbours account for (it is their mean, to within a
+# quarter of the largest of the three) is in the middle of a stretch where the
+# table only goes on rising or falling, or bending the one way, or passes
+# smoothly from bending one way to the other. A step across that sees it, at
+# its end.
+#
+# So a breakpoint is a stop where its neighbours do not account for its break,
+# or where the breakpoint before it or after it has no break to speak of, under
+# a quarter of its own (the foot of a feature on a flat or straight stretch,
+# and the ends of the table), or, in a step table, where the jump beside it
+# goes the other way. Within a stretch of breaks that do account for each
+# other, there is one each time they have added up to this fraction of the
+# range of the table's values.
+#
+# That keeps the stops of a table of many samples of a smooth signal to its
+# ends and a few along it: a stop on each of 100,000 samples took a run from
+# 0.3 ms to 300. It does not judge a break by its size beside the table's
+# largest: maintenance doses of 5 after a loading dose of 1000 are half a
+# percent of the range, every one a pulse.
+_TABLE_RUN = 0.05
+# How far a break may be from the mean of its neighbours and be accounted for
+# by them, as a fraction of the largest of the three.
+_TABLE_UNLIKE = 0.25
+# A break below this many ulps of the table's largest value is the rounding of
+# a slope, on a stretch that is straight.
+_TABLE_STRAIGHT_ULPS = 64.0
+
+
+def table_function_breaks(core) -> list[tuple[str, int, object, object]]:
+    """``(index kind, observable index, restarts, ends)`` for each table
+    function of the model that breaks anywhere: the breakpoints, as two
+    arrays, at which the run is stopped, and restarted or not.
+
+    A ``step`` table breaks where its value jumps, by the jump. A ``linear``
+    one breaks where its slope turns, by the turn over the shorter segment
+    beside it. Which breaks are stops is the rule above :data:`_TABLE_RUN`.
+
+    The integrator restarts at every stop of a ``step`` table, where the rate
+    law jumps, and at every bend of a ``linear`` table that its neighbours do
+    not account for. On one segment of such a table the rate law is straight,
+    which the integrator follows exactly, so its step grows to the length of
+    the segment, and at the bend that step is too long by however steep the
+    table turns. Left to its error test there, it either gave up (seven
+    failures did not bring the step down from a flat stretch of 100 to a ramp
+    of slope 10), or, in a run that ended inside the ramp, stepped past the end
+    of the feature and read the table as flat. Only at a stop along a stretch
+    of small, like bends (a dense table of a smooth signal) does it end a step
+    and go on.
+
+    Read from the tables alone, so a model's is the same for every run:
+    :meth:`bngsim.Model.table_function_breaks` keeps it.
+    """
+    import numpy as np
+
+    out: list[tuple[str, int, object, object]] = []
+    for table in core.table_function_tables:
+        xs = np.asarray(table["xs"], dtype=float)
+        ys = np.asarray(table["ys"], dtype=float)
+        if xs.size < 2:
+            continue
+        bends = table["method"] != "step"
+        width = np.diff(xs)
+        if bends:
+            # Held at its end values outside the table, so the ends bend too.
+            slope = np.concatenate(([0.0], np.diff(ys) / width, [0.0]))
+            reach = np.minimum(
+                np.concatenate(([width[0]], width)), np.concatenate((width, [width[-1]]))
+            )
+            size = np.diff(slope) * reach
+            knots = xs
+        else:
+            size = np.diff(ys)
+            knots = xs[1:]
+        size = np.where(
+            np.abs(size) <= _TABLE_STRAIGHT_ULPS * np.spacing(float(np.abs(ys).max())), 0.0, size
+        )
+        real = size != 0.0
+        if not real.any():
+            continue
+        before = np.concatenate(([0.0], size[:-1]))
+        after = np.concatenate((size[1:], [0.0]))
+        # A neighbour under a quarter of the break is none: asked for an exact
+        # zero, a baseline that wiggles by a millionth (data rounded to six
+        # digits) was a neighbour, the foot of a rise beside it was accounted
+        # for, and a run that ended inside the rise read the table as flat.
+        beside_none = (np.abs(before) < _TABLE_UNLIKE * np.abs(size)) | (
+            np.abs(after) < _TABLE_UNLIKE * np.abs(size)
+        )
+        largest = np.maximum(np.abs(size), np.maximum(np.abs(before), np.abs(after)))
+        unlike = np.abs(size - 0.5 * (before + after)) > _TABLE_UNLIKE * largest
+        feature = real & (beside_none | unlike)
+        if not bends:
+            # A step table turns where a jump up meets a jump down: the top of
+            # a sampled hump, whose two jumps are each the mean of what is
+            # beside them and between them are a pulse.
+            feature |= real & ((before * size < 0.0) | (after * size < 0.0))
+        # Within a stretch of breaks that account for each other: what they
+        # have added up to since the last stop, in steps of the fraction of
+        # the range.
+        total = np.cumsum(np.abs(size))
+        since = total - np.maximum.accumulate(np.where(feature, total, 0.0))
+        level = np.floor(since / (_TABLE_RUN * float(np.ptp(ys))))
+        along = real & ~feature & (level > np.concatenate(([0.0], level[:-1])))
+        hard = feature if bends else feature | along
+        soft = along & ~hard
+        out.append((table["index_kind"], int(table["index_obs_idx"]), knots[hard], knots[soft]))
+    return out
+
+
+def table_function_stops(core, t_start: float, t_end: float, breaks=None) -> list[CrossingStop]:
+    """A stop in ``(t_start, t_end]`` on each breakpoint of a table function
+    that is read on the clock, where the table breaks (issue #709).
+
+    A ``tfun`` over time is constant (``step``) or straight (``linear``)
+    between its breakpoints, so over a segment that starts and ends at the same
+    value the integrator's error estimate sees nothing, and a step can span the
+    whole of a dosing pulse: ``tfun([0,10,12,50], [0,5,0,0], time)`` left A + B
+    at 3 where the answer is 13. A stop on each such breakpoint puts every
+    segment in a step of its own.
+
+    Which breakpoints, and at which of them the integrator restarts, is
+    :func:`table_function_breaks`'s answer (*breaks*, or read from *core*). A
+    table indexed by an observable that is a unit-rate counter is placed too,
+    at the time the counter reaches each breakpoint, as a counter's stop. One
+    indexed by anything else moves with the state and gets none.
+    """
+    if breaks is None:
+        breaks = table_function_breaks(core)
+    out: list[CrossingStop] = []
+    clocks: dict[int, tuple[int, float]] | None = None
+    for kind, obs_idx, restarts, ends in breaks:
+        if kind == "time":
+            for at, restart in ((restarts, True), (ends, False)):
+                inside = at[(at > t_start) & (at <= t_end)]
+                out.extend(CrossingStop(x, -1, 0.0, restart=restart) for x in inside.tolist())
+        elif kind == "observable":
+            if clocks is None:
+                clocks = _counter_observables(core, t_start)
+            counter = clocks.get(obs_idx)
+            if counter is None:
+                continue
+            idx, offset = counter
+            # The counter is put on the breakpoint at the stop, which moves the
+            # state, so the run restarts there whichever kind of stop it is.
+            for x in sorted([*restarts.tolist(), *ends.tolist()]):
+                when = x - offset
+                if t_start < when <= t_end:
+                    out.append(CrossingStop(when, idx, x))
+    out.sort(key=lambda stop: stop.time)
+    return out
+
+
+def _counter_observables(core, t_start: float) -> dict[int, tuple[int, float]]:
+    """Observable index → ``(species index, value − time)`` for each observable
+    that is a unit-rate counter."""
+    scope = switch_condition_scope(core)
+    names = list(core.observable_names)
+    out: dict[int, tuple[int, float]] = {}
+    for sym, idx in scope.clocks.items():
+        if sym in names:
+            offset = float(core.get_concentration(core.species_names[idx])) - t_start
+            if math.isfinite(offset):
+                out[names.index(sym)] = (idx, offset)
+    return out
+
+
+# One budget of stops for a run, over every condition and every kind of
+# resolver (issue #890). Each stop is a restart of the integrator, about 13 µs
+# on a small model, and a record on both sides of the binding. A condition past
+# it has none of its stops placed, and the run is step-bounded or refused.
+_RUN_STOP_BUDGET = 1_000_000
 # How many crossings of the periodic conditions are placed in a run; past this a
 # condition is left to the integrator as before, with a warning.
-_PERIODIC_STOP_BUDGET = 1_000_000
+_PERIODIC_STOP_BUDGET = _RUN_STOP_BUDGET
 _POLY_MAX_DEGREE = 16
 # The evaluator's named constants, as the loaders spell them (SBML <pi/> is
 # `_pi`), read as numbers when no parameter has the name.
@@ -3043,7 +4405,7 @@ def _warn_over_budget(cond, n, t_start, t_end) -> None:
 
 
 def _periodic_stop_times(
-    cond, scope, t_start, t_end, bodies, touches: bool = False
+    cond, scope, t_start, t_end, bodies, touches: bool = False, shaped: list | None = None
 ) -> list[tuple[float, float]]:
     """``(crossing, stop)`` for each crossing in ``(t_start, t_end]`` of one
     condition whose residual is a sum of sinusoids of one frequency
@@ -3103,6 +4465,9 @@ def _periodic_stop_times(
         _PERIODIC_SHAPES[key] = shape
     if shape is None:
         return []
+    if shaped is not None:
+        # Read, whether or not it crosses in this window: nothing else is asked.
+        shaped.append(True)
     return _shape_stop_times(shape, cond, float(t_start), float(t_end), touches)
 
 
@@ -3394,9 +4759,12 @@ def _trig_stop_times(
         k0, k1 = math.floor(ends[0]), math.ceil(ends[1])
         spans.append((th, k0, k1))
         total += k1 - k0 - 1
-    if total > _PERIODIC_STOP_BUDGET:
-        _warn_over_budget(cond, total, lo, hi)
-        return []
+    if total > _RUN_STOP_BUDGET:
+        # The two stretches a level cuts a period into; the shorter is what a
+        # step must not span. (This warned and returned no stops, and the run
+        # stepped over every window: 2e-5 for 80 with sin(1e5*time()) > 0.5.)
+        up = (math.pi - 2.0 * math.asin(v)) / abs(w)
+        raise _OverStopBudget(total, min(up, two_pi / abs(w) - up) or two_pi / abs(w))
     times = np.sort(
         np.concatenate(
             [(th + two_pi * np.arange(k0, k1 + 1, dtype=float) - ph) / w for th, k0, k1 in spans]
@@ -3430,13 +4798,20 @@ def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
     In time order each needs only the last one kept: comparing each against
     every one kept was quadratic, and a step of time can put thousands of stops
     in a window (issue #869). On one instant a touch of a threshold wins, then a
-    counter's stop, then the later of two on literal time.
+    counter's stop, then the later of two on literal time. The merged stop
+    restarts the integrator if any of them does.
     """
     out: list[CrossingStop] = []
     for stop in found:
         if not out or not _same_instant(stop.time, out[-1].time):
             out.append(stop)
-        elif stop.touch or out[-1].touch:
+            continue
+        # A restart that any stop on the instant asks for is kept.
+        if out[-1].restart and not stop.restart:
+            stop = stop._replace(restart=True)
+        elif stop.restart and not out[-1].restart:
+            out[-1] = out[-1]._replace(restart=True)
+        if stop.touch or out[-1].touch:
             # A touch of a threshold is true at one double alone: the stop on it
             # is never merged away (issue #714).
             if stop.touch and not out[-1].touch:
@@ -3664,7 +5039,18 @@ _STEP_CALL = re.compile(
 )
 
 
-def _iter_step_calls(expr: str, outermost: bool = False):
+# Calls that bend rather than jump: continuous, with a slope that is not. A
+# pulse written with them alone, `max(0, 1 - abs(time()-t0)/w)`, is flat on
+# both sides of itself, and a step spans it as it would a window (issue #904).
+_BEND_CALL = re.compile(r"(?<![A-Za-z0-9_.])(?:abs|min|max|clamp)\s*\(")
+
+
+def _iter_step_calls(
+    expr: str,
+    outermost: bool = False,
+    pattern: re.Pattern | None = None,
+    skip: Sequence[tuple[int, int]] = (),
+):
     """``(call, argument)`` for every :data:`_STEP_CALL` outside an ``if()`` condition.
 
     One inside a condition is that condition's business: its atom is scanned
@@ -3672,10 +5058,14 @@ def _iter_step_calls(expr: str, outermost: bool = False):
 
     With *outermost*, a call inside another call's argument is not reported
     either: it is part of that argument, which the caller has in hand.
+
+    *pattern* reads another family of calls the same way (:data:`_BEND_CALL`).
+    *skip* are further spans of *expr* whose calls are not reported: the
+    comparisons outside every ``if()`` that are conditions in their own right.
     """
-    spans = _condition_spans(expr)
+    spans = [*_condition_spans(expr), *skip]
     covered = -1  # the close paren of the last call reported, under *outermost*
-    for m in _STEP_CALL.finditer(expr):
+    for m in (pattern or _STEP_CALL).finditer(expr):
         if m.start() < covered:
             continue
         if any(lo <= m.start() < hi for lo, hi in spans):
@@ -5868,6 +7258,26 @@ def _schedule_index_window(
     return math.floor(lo) - 1, math.ceil(hi) + 1
 
 
+def _schedule_edge_times(terms: ScheduleTerms, v_lo: float, v_hi: float) -> list[float] | None:
+    """The times :func:`_schedule_edges` lists, to the bit, without the partials
+    a stop has no use for: a million of them were a second of dictionaries
+    (issue #890). ``None`` where the window does not resolve to a finite range.
+    """
+    import numpy as np
+
+    if not terms.crosses:
+        return []
+    out = []
+    for base in (terms.offset + terms.duty, terms.offset):
+        window = _schedule_index_window(base, terms.period, v_lo, v_hi)
+        if window is None:
+            return None
+        k = np.arange(window[0], window[1] + 1, dtype=np.int64).astype(float)
+        value = base + k * terms.period
+        out.append(value[(value > v_lo) & (value <= v_hi)])
+    return np.concatenate(out).tolist()
+
+
 def _schedule_edges(
     terms: ScheduleTerms, v_lo: float, v_hi: float, limit: int
 ) -> list[tuple[float, dict[str, float]]] | None:
@@ -6105,9 +7515,15 @@ def state_switch_root_conditions(core, covered: Sequence[str] = (), ctx=None) ->
     if core.n_functions == 0:
         return ()
     # The raw texts gate first, as in time_discontinuity_conditions: inlining
-    # cannot introduce an `if(` that none of them spells, and the context this
-    # skips runs to tens of thousands of entries on a genome-scale model.
-    if not any(_IF_CALL.search(t) for t in (*core.function_expressions, *core.param_expressions)):
+    # cannot introduce an `if(` or a comparison that none of them spells, and
+    # the context this skips runs to tens of thousands of entries on a
+    # genome-scale model. A comparison is read wherever it stands: one used as
+    # a number, `k*((time()>=onset())*(time()<onset()+w))`, is the same window
+    # as the `if()` spelling and was not rooted (issue #904).
+    if not any(
+        _IF_CALL.search(t) or _RELATIONAL.search(t)
+        for t in (*core.function_expressions, *core.param_expressions)
+    ):
         return ()
     if ctx is None:
         ctx = core.functional_jacobian_context()
@@ -6141,9 +7557,12 @@ def state_switch_root_conditions(core, covered: Sequence[str] = (), ctx=None) ->
 
     conditions: list[str] = []
     for text in (*rate_laws, *(func_map[name] for name in reached)):
-        if not _IF_CALL.search(text):
+        if not (_IF_CALL.search(text) or _RELATIONAL.search(text)):
             continue
-        for written in _iter_condition_atoms(text):
+        # The conditions of each if(), then every comparison standing anywhere
+        # else. The second pass meets the first's atoms again, and the surface
+        # key below keeps one of each.
+        for written in (*_iter_condition_atoms(text), *_iter_comparisons_anywhere(text)):
             # Inlining can expose more logic than the text spelled — a condition
             # `flag` over `flag() = (A>1)||(B<2)` — so the atoms are split again.
             for atom in _split_logical_atoms(inline(written)):

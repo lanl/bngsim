@@ -305,6 +305,24 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-shim-exact-literals",
+        "kind": "local",
+        "status": (
+            "Pass the NFsim ExprTk mu::Parser shim's remapped expression through the "
+            "host single source bngsim::expr_compat::exact_literals "
+            "(nfsim_funcparser.h), so a numeric literal reads as strtod reads it. "
+            "ExprTk's own number parser is not correctly rounded (7.77e-05 read as "
+            "7.769999999999999e-05, 0.49999999999999997 as 0.5), where muParser and "
+            "the host evaluator read the correctly rounded double."
+        ),
+        "commits": [
+            {
+                "commit": "8876d77dd27ef9afea41193fae85857c5c83f590",
+                "summary": "bngsim: read mu::Parser literals as strtod does via host expr_compat",
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

@@ -42,6 +42,15 @@ double mratio(double a, double b, double z);
 // so such an argument (0.49999999999999994 -> 1) gives what run_network gives.
 double rint(double x);
 
+// `expr` with every numeric literal ExprTk would misread respelled so that it
+// reads as the double strtod gives — what a C compiler gives the generated
+// code. ExprTk's own number parser is not correctly rounded: it sums digits in
+// a double and scales by powers of ten, so 7.77e-05 came back
+// 7.769999999999999e-05 and 0.49999999999999997 came back 0.5, against
+// codegen's 7.77e-05 and 0.49999999999999994. A literal ExprTk reads right is
+// left as written, and so is anything that is not a literal.
+std::string exact_literals(const std::string &expr);
+
 // Unconditional leading-underscore remap: "_X" → "u_X" (ExprTk rejects an
 // identifier starting with '_'). Identity for any name not starting with '_'.
 // No ExprTk built-in starts with '_', so this rewrite is always safe to apply

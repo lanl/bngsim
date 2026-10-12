@@ -304,18 +304,30 @@ def test_a_degree_twelve_polynomial_is_solved_quickly():
     np.testing.assert_allclose(t, [(k + 0.7) / 0.3 for k in range(1, 13)], atol=1e-2)
 
 
-def test_too_many_crossings_are_declined_loudly_and_cheaply(caplog):
+def test_too_many_crossings_are_declined_loudly_and_cheaply():
     """sin(1e6*time) over 1e4 has 3e9 crossings: they are counted, not built
-    (that took 2 GB at 3e4)."""
+    (that took 2 GB at 3e4). Counted past the run's budget of stops, the
+    condition is reported with the shorter of the two stretches its level
+    cuts a period into, and the run is refused: a step bound of half that
+    stretch would be 1e10 steps. (It warned in the log and returned no stops,
+    and the run stepped over every window, issue #890.)"""
+    import math
     import time
+
+    import bngsim._switch_sensitivity as ss
+
+    t0 = time.perf_counter()
+    with pytest.raises(ss._OverStopBudget) as err:
+        _crossings("species X = 0;", "sin(1e6*time())>0.5", 0.0, 1e4)
+    assert time.perf_counter() - t0 < 2
+    assert err.value.count == pytest.approx(1e10 / math.pi, rel=1e-6)
+    assert err.value.min_gap == pytest.approx((2.0 * math.pi / 3.0) / 1e6, rel=1e-9)
 
     m = _ant("species X = 0; J0: => X; piecewise(1, sin(1e6*time) > 0.5, 0);")
     t0 = time.perf_counter()
-    with caplog.at_level("WARNING"):
-        assert _crossings("species X = 0;", "sin(1e6*time())>0.5", 0.0, 1e4) == []
+    with pytest.raises(bngsim.SimulationError, match="#890"):
+        bngsim.Simulator(m).run(t_span=(0, 1e4), n_points=2)
     assert time.perf_counter() - t0 < 2
-    assert "past the" in caplog.text
-    assert m is not None
 
 
 def test_a_linear_condition_is_not_parsed_again(monkeypatch):

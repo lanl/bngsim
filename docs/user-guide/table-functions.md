@@ -90,6 +90,57 @@ to `tfun()` chooses something else:
 The index is evaluated at each step, and the table function returns the
 interpolated value there.
 
+### Breakpoints and the integrator
+
+A table over time is constant (`step`) or straight (`linear`) between its
+breakpoints, so over a segment that begins and ends at the same value an
+adaptive integrator sees nothing to resolve and can step across it. bngsim
+stops the ODE integration on the breakpoints a step could span unseen. A table
+breaks at a breakpoint where a `step` table's value jumps or a `linear` table's
+slope turns. A feature that leaves and comes back has breaks that differ: a
+pulse is a jump up and a jump down. So a breakpoint is a stop where its two
+neighbours do not account for its break (it is not about their mean), or where
+the breakpoint before or after it has no break to speak of (under a quarter of
+its own): the foot of a feature on a flat or straight stretch, and the ends of
+the table. In a `step` table a jump next to one of the other sign is a stop
+too. Along a stretch of
+breaks that do account for each other, where the table only goes on rising,
+falling or bending smoothly, there is a stop each time they have added up to a
+twentieth of the range of the table's values. The integrator restarts at a
+jump of a `step` table and at a bend of a `linear` table that is such a
+feature; at a stop along a smooth stretch of a `linear` table it only ends a
+step. So a dosing pulse such as
+
+```
+F() tfun([0,10,12,50], [0,5,0,0], time, method=>"step")
+```
+
+is integrated whatever its width, whatever the output grid, and however small
+it is beside the largest value in the table (maintenance doses of 5 after a
+loading dose of 1000 are each stopped at). A table of many samples of a smooth
+signal breaks a little at every breakpoint, each break the mean of its
+neighbours, and is stopped at its ends, where it changes curvature, and a few
+times along the way: its bends are the curvature of what was sampled, which
+the integrator's error control follows. The number of stops does not grow with
+the number of samples (a few dozen for five periods of a sinusoid; 0.5 ms a
+run at 10,000 points or 100,000, where it was 0.3).
+A table of noisy data breaks unlike its neighbours at every breakpoint and is
+stopped, with a restart, at each.
+
+A rate law that switches on a table over time, `if(abs(G - 2) < 0.01, k, 0)`
+with `G` such a table, is a condition on the clock, and is stopped at where it
+changes like any other (see "Rate laws that switch on time" in the
+[solver guide](solvers.md)).
+
+A table indexed
+by an observable that is a unit-rate counter (the way a BNGL model often spells
+time) is stopped at where the counter reaches each breakpoint. A table indexed
+by anything else that moves with the state gets no stops: its breakpoints are
+crossed at times nothing knows before the run. If such a table has a narrow
+segment, pass `max_step` no larger than half the time the index takes to cross
+it. The stochastic engines end a step on each breakpoint of a table over time
+as well.
+
 ## Header and index canonicalization
 
 The column-1 header, the column-2 header, and the index name passed to `tfun()`

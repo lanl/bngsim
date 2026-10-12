@@ -124,6 +124,10 @@ class ExprTkEvaluator : public ExpressionEvaluator {
     // Must be called after construction, before compiling time-dependent expressions.
     void set_time_ptr(double *time_addr);
 
+    // Stop (or resume) reporting a builtin's non-finite value on stderr. Set
+    // around evaluations at times the caller chose rather than the run reached.
+    void set_nonfinite_warnings_muted(bool muted);
+
     // ─── Clone support ───────────────────────────────────────────────────
     //
     // clone_empty() creates a new evaluator that shares NOTHING with this one:

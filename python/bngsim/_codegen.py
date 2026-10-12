@@ -2590,7 +2590,7 @@ def _prepare_derived_expr(
     import sympy as sp
     from sympy.parsing.sympy_parser import parse_expr
 
-    from bngsim._jacobian import engine_sympy_bindings
+    from bngsim._jacobian import builtin_shadow_bindings, engine_sympy_bindings
 
     # Pass 1: ExprTk → sympy surface syntax (if→Piecewise, ^→**, logicals →
     # And/Or call form). Applied to the raw string so whole-word matching of
@@ -2634,6 +2634,8 @@ def _prepare_derived_expr(
     # ever hold it. None can — the engine reserves all seven — but the ordering
     # says which way the tie goes without anyone having to go and check.
     local_dict: dict = builtin_constant_bindings(sp)
+    # Before sym_map, so a parameter named `round` stays a parameter (#684).
+    local_dict.update(builtin_shadow_bindings(sp))
     local_dict.update(sym_map)
     local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not, Eq=sp.Eq, Ne=sp.Ne)
     # The engine's own functions, which sympy has no counterpart for (issue

@@ -155,6 +155,21 @@
         </ListOfReferences>
         <Expression> rint(-0.3) </Expression>
       </Function>
+      <Function id="lit_sci">
+        <ListOfReferences>
+        </ListOfReferences>
+        <Expression> 4.82e-06 </Expression>
+      </Function>
+      <Function id="lit_long">
+        <ListOfReferences>
+        </ListOfReferences>
+        <Expression> 2.71828182845904523536 </Expression>
+      </Function>
+      <Function id="lit_below_half">
+        <ListOfReferences>
+        </ListOfReferences>
+        <Expression> if(0.49999999999999997 &lt; 0.5, 1, 0) </Expression>
+      </Function>
       <Function id="reserved_frac">
         <ListOfReferences>
           <Reference name="frac" type="Observable"/>

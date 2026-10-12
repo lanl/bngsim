@@ -1018,6 +1018,7 @@ def _collect_relational_edge_conditions(
     *,
     keep: Callable[[libsbml.ASTNode, libsbml.ASTNode], bool] | None = None,
     local_params: dict[str, str] | None = None,
+    equalities: list | None = None,
 ) -> None:
     """Append one root condition for each relational sub-expression in *node*.
 
@@ -1036,6 +1037,11 @@ def _collect_relational_edge_conditions(
     formal-parameter → call-site-expression binding when *node* is a function
     definition's body (see :func:`_iter_funcdef_scan_frames`). ``None`` — the
     event-trigger and top-level cases — is model scope.
+
+    ``equalities``, a list, receives each two-sided ``==`` and ``!=`` the same
+    way. Not a root: an equality on the clock holds (or fails) at one double,
+    which no root finder brackets. The event-trigger scan asks for them so the
+    run can stop on that double (``at (time == 2)``).
     """
     global _INEQ_RELATIONAL_OPS
     if node is None:
@@ -1059,6 +1065,15 @@ def _collect_relational_edge_conditions(
                 lhs = _ast_to_exprtk_with_funcdefs(a, func_defs, local_params)
                 rhs = _ast_to_exprtk_with_funcdefs(b, func_defs, local_params)
                 out.append(f"({lhs}{op}{rhs})")
+        elif (
+            equalities is not None
+            and nc == 2
+            and t in (libsbml.AST_RELATIONAL_EQ, libsbml.AST_RELATIONAL_NEQ)
+        ):
+            lhs = _ast_to_exprtk_with_funcdefs(n.getChild(0), func_defs, local_params)
+            rhs = _ast_to_exprtk_with_funcdefs(n.getChild(1), func_defs, local_params)
+            op = "==" if t == libsbml.AST_RELATIONAL_EQ else "!="
+            equalities.append(f"({lhs}{op}{rhs})")
 
 
 def _iter_funcdef_scan_frames(
@@ -8599,12 +8614,21 @@ def _build_model_from_sbml_doc(doc):
     # threshold (`sin(time) >= 1`) still fires there, and the stop on the touch
     # that makes it fire would only hurt a rate law (issue #714).
     event_disc: set[str] = set()
+    # An equality in a trigger, `at (time == 2)`, is true at one double. It is
+    # no root (the boolean does not change sign across a step that passes it)
+    # and no ordering, so nothing made the run land there, and the event fired
+    # only where an output sample happened to. The run stops on the instant
+    # instead, where the equality reads the clock and constants alone; the
+    # resolver declines any other.
+    trigger_equalities: list[str] = []
     for i in range(sbml_model.getNumEvents()):
         event = sbml_model.getEvent(i)
         trigger = event.getTrigger()
         if trigger is not None and trigger.getMath() is not None:
             _from_trigger: list[str] = []
-            _collect_relational_edge_conditions(trigger.getMath(), func_defs, _from_trigger)
+            _collect_relational_edge_conditions(
+                trigger.getMath(), func_defs, _from_trigger, equalities=trigger_equalities
+            )
             disc_conditions.extend(_from_trigger)
             event_disc.update(_from_trigger)
 
@@ -8959,8 +8983,9 @@ def _build_model_from_sbml_doc(doc):
     # (_switch_sensitivity.fixed_time_crossings). Handing over the registered
     # set itself, rather than re-deriving one from the rule text, is what keeps
     # the stops a subset of the roots.
-    model._time_disc_conditions = tuple(sorted(seen_disc))
-    model._event_disc_conditions = frozenset(event_disc & seen_disc)
+    # ...and, beside the roots, the trigger equalities, which are stops alone.
+    model._time_disc_conditions = tuple(sorted(seen_disc | set(trigger_equalities)))
+    model._event_disc_conditions = frozenset((event_disc & seen_disc) | set(trigger_equalities))
 
     # AR-target species report map. An AssignmentRule target species is
     # emitted ``fixed`` (its ODE derivative is zeroed), so the integrator

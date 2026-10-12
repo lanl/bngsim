@@ -56,7 +56,6 @@ What this locks:
      over it, on the forward-sensitivity path as well as this one.
 """
 
-import logging
 import os
 import subprocess
 import sys
@@ -354,22 +353,21 @@ def test_a_model_with_no_condition_gets_no_stops(tmp_path):
     assert stops == []
 
 
-def test_a_schedule_with_too_many_edges_says_so(tmp_path, caplog):
-    """A schedule can ask for an unbounded number of stops, since the count is
-    the run window divided by the period rather than a property of the model.
+def test_a_schedule_with_many_edges_is_stopped_at_every_one(tmp_path):
+    """A schedule can ask for any number of stops, since the count is the run
+    window divided by the period rather than a property of the model.
 
-    Past the budget bngsim places none of them and says so. Saying so is the
-    point: this is the one case where it knows the schedule is there and cannot
-    stop at it, and the alternative is a trajectory that is quietly wrong in
-    exactly the way this issue is about.
+    Past 8,192 edges none was placed, with a warning in the log, and the run
+    stepped over the windows (issue #890). They are all placed now: a hundredth
+    of a time unit over 240 of them is 48,000 edges, on for half of each.
     """
-    # A hundredth of a time unit over 240 of them is 48,000 edges.
     path = _net(tmp_path, "if(time()-0.01*floor(time()/0.01)>=0.005,k,0)")
-    with caplog.at_level(logging.WARNING, logger="bngsim"):
-        conds, stops = _conditions_and_stops(path)
+    conds, stops = _conditions_and_stops(path)
     assert conds
-    assert stops == []
-    assert any("more than 8192 edges" in r.getMessage() for r in caplog.records)
+    assert len(stops) == 48000
+    # To 1e-3 at the default tolerances: a stop computed from the period can
+    # sit an ulp before the double the condition flips at (issue #891).
+    assert _final_A(path) == pytest.approx(0.1 * 120.0, rel=1e-3)
 
 
 def test_a_schedule_that_never_turns_over_places_no_stop(tmp_path):

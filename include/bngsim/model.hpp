@@ -37,6 +37,10 @@ struct TableFunctionSpec {
     /// The table is read as a step (method=>"step"), not interpolated: its
     /// value jumps at each breakpoint of its index.
     bool step = false;
+    // The table itself (issue #709): "linear" or "step", and the knots.
+    std::string method;
+    std::vector<double> xs;
+    std::vector<double> ys;
 };
 
 class NetworkModel {
@@ -808,6 +812,24 @@ class NetworkModel {
     /// The knots of every time-indexed table function, sorted and unique: the
     /// times at which such a function's value (step) or slope (linear) breaks.
     std::vector<double> time_table_knots() const;
+
+    /// The value of *expression* at each of *times*, with the model's clock set
+    /// to that time and everything else left as it stands (issue #891). For an
+    /// expression that reads the clock, parameters and builtins only: this is
+    /// the evaluator's own arithmetic for a rate law's condition, which is what
+    /// decides the double at which the condition flips. A function slot, an
+    /// observable or a species is read at its present value, not at the time
+    /// asked. Compiled once per text; the clock is put back before returning.
+    ///
+    /// *shift* is the value of the variable `bngsim_scan_shift_` while the
+    /// expression is evaluated. A condition on a counter that started at 7 is
+    /// asked about as a text over `time() + bngsim_scan_shift_`, so the text,
+    /// and with it the compiled expression, is one for every run whatever the
+    /// counter started at.
+    /// @throws std::runtime_error if the expression does not compile.
+    std::vector<double> evaluate_over_times(const std::string &expression,
+                                            const std::vector<double> &times,
+                                            double shift = 0.0) const;
 
     // ─── Expression evaluator access ─────────────────────────────────────────
     ExpressionEvaluator &evaluator();

@@ -23,9 +23,11 @@
 #include "bngsim/expression.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <initializer_list>
@@ -311,6 +313,164 @@ static bool mratio_asymptotic(double a, double b, double z, double *out) {
 
 double expr_compat::rint(double x) { return std::floor(x + 0.5); }
 
+// ─── Numeric literals, read as strtod reads them ─────────────────────────────
+//
+// ExprTk's string_to_real accumulates the digits in a double and then scales by
+// a power of ten, rounding at each step, where strtod — and so a C compiler,
+// and so codegen — rounds once. About a quarter of six-digit literals with a
+// negative exponent came out one ulp off, so the interpreter and the compiled
+// path disagreed silently, and at a threshold that is a whole step:
+// round(0.49999999999999997) was 1 interpreted and 0 compiled. The header is
+// vendored unmodified (test_exprtk_vendoring.py pins it), so the literal is
+// respelled before ExprTk sees it instead.
+
+namespace {
+
+bool exprtk_reads(const std::string &text, double &value) {
+    return exprtk::details::string_to_real(text, value);
+}
+
+// A spelling of the finite, non-negative double `v` that ExprTk reads as `v`.
+std::string exact_spelling(double v) {
+    // Its shortest decimal digits as an integer D and an exponent E. ExprTk
+    // reads an integer below 2^53 exactly and scales it by one exactly
+    // representable power of ten (up to 1e22) in one multiply or divide, which
+    // rounds once, to the double nearest D*10^E — strtod's answer, and v,
+    // since those digits round-trip. Checked rather than assumed, because a
+    // 16- or 17-digit D or a larger exponent falls outside that.
+    for (int digits = 1; digits <= 17; ++digits) {
+        char buf[40];
+        std::snprintf(buf, sizeof(buf), "%.*e", digits - 1, v);
+        if (std::strtod(buf, nullptr) != v) {
+            continue;
+        }
+        const char *e = std::strchr(buf, 'e');
+        std::string mantissa;
+        for (const char *c = buf; c != e; ++c) {
+            if (*c != '.') {
+                mantissa += *c;
+            }
+        }
+        int exponent = std::atoi(e + 1) - (digits - 1);
+        while (mantissa.size() > 1 && mantissa.back() == '0') {
+            mantissa.pop_back();
+            ++exponent;
+        }
+        const std::string candidate =
+            exponent == 0 ? mantissa : mantissa + "e" + std::to_string(exponent);
+        double read = 0.0;
+        if (exprtk_reads(candidate, read) && read == v) {
+            return candidate;
+        }
+        break;
+    }
+    // Exactly: v is M*2^e with M an odd integer below 2^53. Every factor is an
+    // integer ExprTk reads exactly, and a multiply or divide by a power of two
+    // is exact (each partial result lies between M and v), so the constant
+    // ExprTk folds is v itself.
+    int exp2 = 0;
+    const double frac = std::frexp(v, &exp2);
+    auto mant = static_cast<long long>(std::ldexp(frac, 53));
+    int scale = exp2 - 53;
+    while (mant != 0 && mant % 2 == 0) {
+        mant /= 2;
+        ++scale;
+    }
+    std::string out = "(" + std::to_string(mant);
+    for (int left = std::abs(scale); left > 0;) {
+        const int step = std::min(left, 52);
+        out += (scale < 0 ? '/' : '*') + std::to_string(1LL << step);
+        left -= step;
+    }
+    return out + ")";
+}
+
+// End of the number token ExprTk's lexer would scan from `i` (scan_number),
+// or npos where it would report a malformed number.
+std::size_t number_token_end(const std::string &expr, std::size_t i) {
+    bool dot = false, exp = false, exp_sign = false, exp_digit = false;
+    const auto digit = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
+    while (i < expr.size()) {
+        const char c = expr[i];
+        if (c == '.') {
+            if (dot) {
+                return std::string::npos;
+            }
+            dot = true;
+        } else if (c == 'e' || c == 'E') {
+            if (i + 1 >= expr.size() ||
+                (expr[i + 1] != '+' && expr[i + 1] != '-' && !digit(expr[i + 1]))) {
+                return std::string::npos;
+            }
+            exp = true;
+        } else if (exp && (c == '+' || c == '-') && !exp_digit) {
+            if (exp_sign) {
+                return std::string::npos;
+            }
+            exp_sign = true;
+        } else if (exp && digit(c)) {
+            exp_digit = true;
+        } else if (!digit(c)) {
+            break;
+        }
+        ++i;
+    }
+    return i;
+}
+
+} // namespace
+
+std::string expr_compat::exact_literals(const std::string &expr) {
+    const auto letter = [](char c) { return std::isalpha(static_cast<unsigned char>(c)) != 0; };
+    const auto word = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+    };
+    const auto digit = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
+    std::string out;
+    out.reserve(expr.size());
+    std::size_t i = 0;
+    while (i < expr.size()) {
+        const char c = expr[i];
+        if (letter(c) || c == '_') {
+            // A symbol, copied whole so its digits are never read as a number.
+            // ExprTk's scan_symbol: word characters, and a '.' that another
+            // word character follows.
+            std::size_t j = i + 1;
+            while (j < expr.size() && (word(expr[j]) || (expr[j] == '.' && j + 1 < expr.size() &&
+                                                         word(expr[j + 1])))) {
+                ++j;
+            }
+            out.append(expr, i, j - i);
+            i = j;
+            continue;
+        }
+        if (digit(c) || (c == '.' && i + 1 < expr.size() && digit(expr[i + 1]))) {
+            const std::size_t j = number_token_end(expr, i);
+            if (j == std::string::npos) {
+                out.append(expr, i, std::string::npos); // ExprTk reports it
+                break;
+            }
+            const std::string token = expr.substr(i, j - i);
+            char *end = nullptr;
+            const double v = std::strtod(token.c_str(), &end);
+            double read = 0.0;
+            // Below the normal range ExprTk reads nothing at all (it refuses
+            // the exponent), where strtod and the C compiler give the subnormal.
+            if (end == token.c_str() + token.size() && std::isfinite(v) &&
+                !(exprtk_reads(token, read) && read == v)) {
+                out += exact_spelling(v);
+            } else {
+                out += token;
+            }
+            i = j;
+            continue;
+        }
+        out += c;
+        ++i;
+    }
+    return out;
+}
+
 double expr_compat::mratio(double a, double b, double z) {
     if (!mratio_cf_is_trustworthy(a, b, z)) {
         double asymptotic = 0.0;
@@ -427,7 +587,7 @@ double expr_compat::mratio(double a, double b, double z) {
 class NonFiniteWarningSet {
   public:
     void warn_if_nonfinite(const char *fname, std::initializer_list<double> args, double result) {
-        if (std::isfinite(result)) {
+        if (muted || std::isfinite(result)) {
             return;
         }
         std::string key(fname);
@@ -453,6 +613,11 @@ class NonFiniteWarningSet {
                      "arguments will be silent."
                   << std::endl;
     }
+
+    // Set while an expression is probed at times of the caller's choosing
+    // (evaluate_over_times): a value that is not finite there is not one the
+    // run computed, and is neither reported nor remembered as reported.
+    bool muted = false;
 
   private:
     std::unordered_set<std::string> seen_;
@@ -1170,6 +1335,10 @@ int ExprTkEvaluator::compile(const std::string &expr) {
     // did before.
     std::string preprocessed = replace_logical_operators(remapped);
 
+    // Then respell any literal ExprTk would read off by an ulp, so the
+    // interpreter computes with the same numbers codegen does.
+    preprocessed = expr_compat::exact_literals(preprocessed);
+
     // Delegate to compile_preprocessed (which also caches the string)
     return compile_preprocessed(preprocessed);
 }
@@ -1263,6 +1432,10 @@ double ExprTkEvaluator::evaluate(int expr_id) {
 }
 
 void ExprTkEvaluator::set_time_ptr(double *time_addr) { impl_->set_time_ptr(time_addr); }
+
+void ExprTkEvaluator::set_nonfinite_warnings_muted(bool muted) {
+    impl_->nonfinite_warner.muted = muted;
+}
 
 // ─── Clone support ───────────────────────────────────────────────────────────
 

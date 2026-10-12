@@ -442,6 +442,16 @@ struct NetworkModel::Impl {
     std::unordered_map<std::string, std::pair<NetworkModel::StateSwitch, std::string>>
         state_switch_cache;
 
+    // Memo for NetworkModel::evaluate_over_times(), keyed by the expression's
+    // source text. Holds an evaluator expression id, so clone() leaves it empty,
+    // as it does state_switch_cache.
+    std::unordered_map<std::string, int> clock_expression_cache;
+    // The variable `bngsim_scan_shift_` those expressions may read, defined in
+    // the evaluator at the first call. A clone's evaluator is its own, so the
+    // flag is not copied.
+    double scan_shift = 0.0;
+    bool scan_shift_defined = false;
+
     // Discontinuity triggers (GH #72)
     // ExprTk expression-table indices for time-dependent inequality
     // conditions found in piecewise expressions that feed the ODE RHS

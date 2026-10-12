@@ -117,6 +117,7 @@ class Model:
         "_derived_time_disc_conditions",
         "_state_switch_root_conditions",
         "_ssa_reads_clock",
+        "_table_breaks",
         "_ssa_clock_functions",
         "_want_output_sens",
         "_output_sens_analysis",
@@ -296,6 +297,9 @@ class Model:
         self._state_switch_root_conditions: tuple[str, ...] | None = None
         # Issue #719: whether an SSA run needs breakpoints; structural, so once.
         self._ssa_reads_clock: bool | None = None
+        # Issue #709: where the model's tables break, with how many tables it
+        # held when that was read. See table_function_breaks().
+        self._table_breaks: tuple[int, list] | None = None
         self._ssa_clock_functions: list[tuple[str, str]] | None = None
         # Issue #11: named saved concentration states. Maps a user label to a
         # snapshot of the full live species-concentration vector (a copy of
@@ -861,27 +865,43 @@ class Model:
         ``.net``/BNGL model is built entirely in C++, so its loader has no seam
         to register a root at and there is nothing to read back; the conditions
         are recovered from the built model's own function bodies instead, once,
-        and cached. The recovery is the expensive half, so it runs only for a
-        model that registered nothing, and only when something asks.
+        and cached, and only when something asks.
 
         A recovered entry is not always a condition. Since issue #869 it can
         also be a bare step call of a clock, such as ``floor((time()-t0)/P)``,
-        with no comparison in it. Such a call jumps the rate law itself, and
-        every jump is a stop.
+        with no comparison in it, and since issue #904 a call that bends
+        (``max(0, 1 - abs(time()-t0)/w)``). Such a call jumps or turns the rate
+        law itself, and each jump and turn is a stop.
+
+        The recovery runs for a model that registered conditions too, and what
+        it finds beside them is added. The loader registers comparisons, so a
+        ``floor`` pulse or a ``max`` pulse standing beside a ``piecewise`` in
+        an SBML model had no entry at all, and was stepped over where the same
+        pulse alone was not.
         """
-        if self._time_disc_conditions:
-            return self._time_disc_conditions
         if self._derived_time_disc_conditions is None:
             try:
-                from bngsim._switch_sensitivity import time_discontinuity_conditions
+                from bngsim._switch_sensitivity import (
+                    _strip_redundant_parens,
+                    time_discontinuity_conditions,
+                )
 
-                self._derived_time_disc_conditions = time_discontinuity_conditions(self._core)
+                registered = {
+                    _strip_redundant_parens(c).replace(" ", "") for c in self._time_disc_conditions
+                }
+                self._derived_time_disc_conditions = tuple(
+                    c
+                    for c in time_discontinuity_conditions(self._core)
+                    if _strip_redundant_parens(c).replace(" ", "") not in registered
+                )
             except Exception as e:  # pragma: no cover - defensive
                 # Recovery is best-effort: without it a model keeps the stepping
                 # it had before this existed, which is correct wherever it does
                 # not step over a switch.
                 logger.debug("Time-discontinuity scan unavailable (%s)", e)
                 self._derived_time_disc_conditions = ()
+        if self._time_disc_conditions:
+            return (*self._time_disc_conditions, *self._derived_time_disc_conditions)
         return self._derived_time_disc_conditions
 
     def state_switch_root_conditions(self) -> tuple[str, ...]:
@@ -918,6 +938,29 @@ class Model:
                 )
                 self._state_switch_root_conditions = ()
         return self._state_switch_root_conditions
+
+    def table_function_breaks(self) -> list:
+        """Where the model's table functions break (issue #709): for each table
+        with any, its index kind, the observable it is indexed by, the
+        breakpoints at which a run restarts, and those at which it only ends a
+        step.
+
+        :meth:`Simulator.run` stops the integration on each one a table over
+        time, or over a unit-rate counter, reaches in the run. Which
+        breakpoints count is :func:`bngsim._switch_sensitivity.table_function_breaks`'s
+        rule: a table of many samples of a smooth signal has none.
+
+        Read from the tables alone, so it is kept until a table is added, and
+        a clone inherits it. A model with no table pays one attribute read.
+        """
+        n = self._core.n_table_functions
+        if n == 0:
+            return []
+        if self._table_breaks is None or self._table_breaks[0] != n:
+            from bngsim._switch_sensitivity import table_function_breaks
+
+            self._table_breaks = (n, table_function_breaks(self._core))
+        return self._table_breaks[1]
 
     # ─── Lazy analytical Jacobian (GH #145) ───────────────────────────────
 
@@ -1096,6 +1139,7 @@ class Model:
         m._derived_time_disc_conditions = self._derived_time_disc_conditions
         m._state_switch_root_conditions = self._state_switch_root_conditions
         m._ssa_reads_clock = self._ssa_reads_clock
+        m._table_breaks = self._table_breaks
         m._ssa_clock_functions = self._ssa_clock_functions
         # Keyed on the sizes it was read at, so a clone that writes one reads it
         # again (issue #743).

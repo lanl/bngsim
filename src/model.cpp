@@ -4374,6 +4374,42 @@ std::vector<double> NetworkModel::time_table_knots() const {
     return out;
 }
 
+std::vector<double> NetworkModel::evaluate_over_times(const std::string &expression,
+                                                      const std::vector<double> &times,
+                                                      double shift) const {
+    if (!impl_->scan_shift_defined) {
+        impl_->evaluator->define_variable("bngsim_scan_shift_", &impl_->scan_shift);
+        impl_->scan_shift_defined = true;
+    }
+    impl_->scan_shift = shift;
+    auto it = impl_->clock_expression_cache.find(expression);
+    if (it == impl_->clock_expression_cache.end()) {
+        it =
+            impl_->clock_expression_cache.emplace(expression, impl_->evaluator->compile(expression))
+                .first;
+    }
+    // The clock is the model's own, which the evaluator's time() and every
+    // time-indexed table read through a pointer, so it is put back whatever
+    // happens below. A builtin's non-finite value at a time of the caller's
+    // choosing is not the run's, so it is not reported either.
+    struct Restore {
+        double *clock;
+        double saved;
+        ExprTkEvaluator *evaluator;
+        ~Restore() {
+            *clock = saved;
+            evaluator->set_nonfinite_warnings_muted(false);
+        }
+    } restore{&impl_->current_time, impl_->current_time, impl_->evaluator.get()};
+    impl_->evaluator->set_nonfinite_warnings_muted(true);
+    std::vector<double> out(times.size());
+    for (size_t i = 0; i < times.size(); ++i) {
+        impl_->current_time = times[i];
+        out[i] = impl_->evaluator->evaluate(it->second);
+    }
+    return out;
+}
+
 std::vector<TableFunctionSpec> NetworkModel::table_function_specs() const {
     std::vector<TableFunctionSpec> specs;
     specs.reserve(impl_->table_functions.size());
@@ -4399,6 +4435,9 @@ std::vector<TableFunctionSpec> NetworkModel::table_function_specs() const {
             // can be called the binding has already passed that gate.
             spec.index_kind = "unknown";
         }
+        spec.method = tf->method() == InterpolationMethod::Step ? "step" : "linear";
+        spec.xs = tf->xs();
+        spec.ys = tf->ys();
         specs.push_back(std::move(spec));
     }
     return specs;

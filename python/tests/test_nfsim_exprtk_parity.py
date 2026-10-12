@@ -9,7 +9,8 @@ The shim needs these BNG-compatibility features:
     ``M(a+1, b+1, z) / M(a, b, z)``; and
   * a reserved-symbol remap, so a model symbol named like an ExprTk built-in
     (e.g. ``frac``) resolves to the model quantity instead of the built-in.
-  * the ``rint(x)`` built-in, BNG's ``floor(x + 0.5)`` (issue #771).
+  * the ``rint(x)`` built-in, BNG's ``floor(x + 0.5)`` (issue #771); and
+  * numeric literals read as strtod reads them, not as ExprTk's own parser does.
 
 Per issue #49 the shim no longer carries a hand-ported copy of this logic: it
 **forwards** each feature to the host single source ``bngsim::expr_compat``
@@ -104,8 +105,7 @@ def test_nfsim_shim_mratio_matches_scipy(parity_sim_cols, col, abz):
 # floor(x + 0.5), the definition BNG2.pl's run_network evaluates (issue #771).
 # The negative halves are the discriminating cases: std::round, which the shim
 # used, gives -3, -2 and -1 for the first three. (The 0.49999999999999994 edge is
-# pinned in test_rint_bng_semantics.py through a parameter value: written as a
-# literal in the expression, ExprTk's number parser reads it as 0.5.)
+# pinned in test_rint_bng_semantics.py through a parameter value.)
 _RINT_CASES = {
     "rint_m2p5": -2.0,
     "rint_m1p5": -1.0,
@@ -121,6 +121,25 @@ def test_nfsim_shim_rint_is_bng_floor_half(parity_sim_cols, col, want):
     """NFsim shim's ``rint(x)`` is BNG's ``floor(x + 0.5)``, evaluated inside
     NFsim through the forwarding adapter (issue #771). Oracle: the literal
     values of floor(x + 0.5), written out above."""
+    _, cols = parity_sim_cols
+    assert col in cols, f"{col} did not compile/appear as an NFsim function column"
+    np.testing.assert_array_equal(cols[col], want)
+
+
+# Literal columns in exprtk_shim_parity.xml. ExprTk's own number parser read
+# 4.82e-06 and 2.71828182845904523536 one ulp off and 0.49999999999999997 as 0.5
+# (issue #1013);
+# the shim now passes its expression through the host's exact_literals, so each
+# reads as strtod (Python's float()) reads it.
+_LITERAL_CASES = {
+    "lit_sci": float("4.82e-06"),
+    "lit_long": float("2.71828182845904523536"),
+    "lit_below_half": 1.0,  # 0.49999999999999997 < 0.5 only when read right
+}
+
+
+@pytest.mark.parametrize("col, want", list(_LITERAL_CASES.items()))
+def test_nfsim_shim_reads_a_literal_as_strtod(parity_sim_cols, col, want):
     _, cols = parity_sim_cols
     assert col in cols, f"{col} did not compile/appear as an NFsim function column"
     np.testing.assert_array_equal(cols[col], want)

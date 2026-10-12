@@ -142,6 +142,80 @@ _EXPRTK_TO_SYMPY_FUNC = {
     "ceil": "ceiling",
 }
 
+# ExprTk calls that share a name with a Python builtin. ``parse_expr`` puts
+# Python's builtin functions in its global namespace, so a call left unbound
+# runs Python's: ExprTk ``round`` became Python's round(), which rounds a half to
+# EVEN — round(2.5) folded to 2, where the engine computes C's round, 3 (issue
+# #684) — so a derived parameter ``round(2.5)*k`` got a sensitivity off by a
+# third, and a clock threshold ``round(2.5)`` was placed at t = 2. ``abs`` and
+# ``pow`` share names too and mean the same in Python; ``min`` and ``max`` agree
+# on numbers and raise on a symbol, and ``sum`` raises, both of which decline.
+#
+# The replacement folds a number exactly as C's round does, a half away from
+# zero, through the exact rational of the double it stands for, so the largest
+# double below 0.5 goes to 0 as it does in C. Anything else stays a call that
+# prints back as C's round — ``round(...)`` in C and in ExprTk, and an exact
+# spelling for lambdify's numpy namespace, which would make it numpy.round —
+# and has no derivative, so a model differentiating through one declines.
+_builtin_shadow_cache: dict = {}
+
+
+def builtin_shadow_bindings(sp) -> dict:
+    """``{name: sympy function}`` for the ExprTk calls that would otherwise
+    resolve to a Python builtin, for a ``parse_expr`` ``local_dict``. Bind it
+    before the model's symbols, so a parameter literally named ``round`` wins.
+
+    Built once, for the reason :func:`engine_sympy_bindings` gives."""
+    bindings = _builtin_shadow_cache.get("bindings")
+    if bindings is None:
+
+        def _eval(cls, x):
+            if not (x.is_Number and x.is_finite):
+                return None
+            if x.is_Float:
+                # The double the engine reads. parse_expr keeps a literal of 16
+                # or more digits at 56+ bits, so 2.4999999999999999 sits below
+                # the 2.5 that strtod and ExprTk make of the same text — and
+                # float() of that is no cure, since rounding twice can land on a
+                # tie (8192.499999999999 went to 8192.5). Its own digits, which
+                # str() gives back, are the literal; strtod reads them once. A
+                # wide Float that arithmetic made is no literal, and its digits
+                # may not give it back, so it is read as itself.
+                text = str(x)
+                literal = x._prec > 53 and sp.Float(text, precision=x._prec) == x
+                double = float(text) if literal else float(x)
+                if not math.isfinite(double):
+                    return None  # past the doubles: C's is inf, not a number here
+                exact = sp.Rational(double)
+            else:
+                exact = sp.Rational(x)
+            value = sp.sign(exact) * sp.floor(abs(exact) + sp.Rational(1, 2))
+            return sp.Float(value) if x.is_Float else value
+
+        def _ccode(self, printer):
+            return "round(" + printer._print(self.args[0]) + ")"
+
+        def _numpycode(self, printer):
+            # lambdify(modules="numpy") would otherwise print round(x) into a
+            # namespace where it is numpy.round, a half to EVEN. x - trunc(x) is
+            # exact, so this is C's round at every double (as _jax_round is).
+            x = "(" + printer._print(self.args[0]) + ")"
+            trunc = printer._module_format("numpy.trunc") + "(" + x + ")"
+            away = printer._module_format("numpy.sign") + "(" + x + ")"
+            fabs = printer._module_format("numpy.abs")
+            return f"({trunc} + {away}*({fabs}({x} - {trunc}) >= 0.5))"
+
+        attrs = {
+            "nargs": 1,
+            "eval": classmethod(_eval),
+            "_ccode": _ccode,
+            "_numpycode": _numpycode,
+        }
+        bindings = {"round": type("round", (sp.Function,), attrs)}
+        _builtin_shadow_cache["bindings"] = bindings
+    return bindings
+
+
 # ─── The engine's own functions, as sympy (issue #457) ──────────────────────
 #
 # ``mratio(a, b, z)`` is the ratio of contiguous Kummer functions,
@@ -375,6 +449,8 @@ def _build_local_dict(preprocessed: str, sp):
     # plain Symbols.
     local: dict = {
         **builtin_constant_bindings(sp),
+        # Rebound to a Symbol by the loop below where the name is a variable.
+        **builtin_shadow_bindings(sp),
         # The engine's own functions, which sympy has no counterpart for
         # (issue #457). Bound unconditionally, like the constants above: no
         # model may name a parameter after one, so there is nothing to lose a

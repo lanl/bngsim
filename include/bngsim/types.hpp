@@ -1548,6 +1548,12 @@ struct CrossingStop {
     int clock_species_idx0 = -1;
     // What the counter reads at t_star. Unused when clock_species_idx0 < 0.
     double threshold = 0.0;
+    // Whether the integrator is restarted here. It is where the right-hand
+    // side jumps: the history behind the stop belongs to the branch that ended.
+    // Where it only bends (a breakpoint of a `linear` table function, issue
+    // #709) the step is made to end on the stop and the run goes on from its
+    // history, which costs a step where a restart costs half a dozen.
+    bool restart = true;
 };
 
 // ─── Solver options ──────────────────────────────────────────────────────────

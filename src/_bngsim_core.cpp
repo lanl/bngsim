@@ -385,14 +385,22 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(
             "set_crossing_stops",
             [](bngsim::SolverOptions &self,
-               const std::vector<std::tuple<double, int, double>> &stops) {
+               const std::vector<std::tuple<double, int, double>> &stops,
+               const std::vector<bool> &restarts) {
+                if (!restarts.empty() && restarts.size() != stops.size()) {
+                    throw std::invalid_argument("set_crossing_stops: restarts has " +
+                                                std::to_string(restarts.size()) + " entries for " +
+                                                std::to_string(stops.size()) + " stops");
+                }
                 std::vector<bngsim::CrossingStop> out;
                 out.reserve(stops.size());
-                for (const auto &s : stops) {
+                for (size_t i = 0; i < stops.size(); ++i) {
+                    const auto &s = stops[i];
                     bngsim::CrossingStop c;
                     c.t_star = std::get<0>(s);
                     c.clock_species_idx0 = std::get<1>(s);
                     c.threshold = std::get<2>(s);
+                    c.restart = restarts.empty() || restarts[i];
                     out.push_back(c);
                 }
                 std::sort(
@@ -405,7 +413,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 // these has none.
                 self.crossing_probes.clear();
             },
-            py::arg("stops"),
+            py::arg("stops"), py::arg("restarts") = std::vector<bool>{},
             "Set the model times a fixed time-dependent `piecewise`/`if()` "
             "branch flips at, so the integrator lands ON each crossing instead "
             "of trying to step over it (issue #305). A GH #72 discontinuity "
@@ -417,7 +425,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "the clock index is -1 for a condition on literal simulation time, "
             "and otherwise names the counter species the condition thresholds, "
             "which run() lands on `threshold` at the stop so the restart reads "
-            "the after-branch (issue #443). Resolved by bngsim."
+            "the after-branch (issue #443). `restarts`, one bool per stop when "
+            "given, says whether the integrator is restarted there (the default) "
+            "or only made to end a step on it, for a time the right-hand side "
+            "bends at without jumping (issue #709). Resolved by bngsim."
             "_switch_sensitivity.fixed_crossing_stops; empty (the default) "
             "leaves the integration loop untouched.")
         .def(
@@ -2188,6 +2199,50 @@ PYBIND11_MODULE(_bngsim_core, m) {
 
         .def_property_readonly("n_table_functions", &bngsim::NetworkModel::n_table_functions)
         .def_property_readonly("table_function_names", &bngsim::NetworkModel::table_function_names)
+        .def_property_readonly(
+            "table_function_tables",
+            [](const bngsim::NetworkModel &m) {
+                py::list out;
+                for (const auto &spec : m.table_function_specs()) {
+                    py::dict td;
+                    td["name"] = spec.name;
+                    td["index_kind"] = spec.index_kind;
+                    td["index_param_idx"] = spec.index_param_idx;
+                    td["index_obs_idx"] = spec.index_obs_idx;
+                    td["method"] = spec.method;
+                    td["xs"] = spec.xs;
+                    td["ys"] = spec.ys;
+                    out.append(td);
+                }
+                return out;
+            },
+            "Every table function with its table: [{name, index_kind ('time', 'parameter' or "
+            "'observable'), index_param_idx, index_obs_idx, method ('linear' or 'step'), xs, "
+            "ys}], in dispatch-id order. The knots of a table read on the clock are where its "
+            "value (step) or slope (linear) breaks, and Simulator.run stops the integration on "
+            "each (issue #709).")
+        .def(
+            "evaluate_over_times",
+            [](const bngsim::NetworkModel &m, const std::string &expression,
+               const py::array_t<double, py::array::c_style | py::array::forcecast> &times,
+               double shift) {
+                const auto t = times.unchecked<1>();
+                std::vector<double> at(static_cast<size_t>(t.shape(0)));
+                for (py::ssize_t i = 0; i < t.shape(0); ++i) {
+                    at[static_cast<size_t>(i)] = t(i);
+                }
+                const std::vector<double> values = m.evaluate_over_times(expression, at, shift);
+                return py::array_t<double>(static_cast<py::ssize_t>(values.size()), values.data());
+            },
+            py::arg("expression"), py::arg("times"), py::arg("shift") = 0.0,
+            "The value of an expression at each of `times`, with the clock set to that time "
+            "and everything else as it stands, in the evaluator's own arithmetic. For a text "
+            "that reads the clock, parameters and builtins only (a rate law's condition on "
+            "time): a function slot, an observable or a species is read at its present value, "
+            "not at the time asked. The clock is put back before returning. `shift` is the "
+            "value of the variable `bngsim_scan_shift_` meanwhile, for a text written over a "
+            "counter as `time() + bngsim_scan_shift_`. Raises if the expression does not "
+            "compile.")
 
         // Conservation laws
         .def_property_readonly(

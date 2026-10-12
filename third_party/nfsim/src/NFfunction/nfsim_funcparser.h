@@ -294,8 +294,10 @@ private:
 
     void compile() {
         // Recompute the remapped expression from the original each time so that
-        // any symbol registered before this (re)compile is reflected.
-        expr_string_ = remapExpression(original_expr_string_);
+        // any symbol registered before this (re)compile is reflected. Then
+        // respell any literal ExprTk's own number parser would misread, so it
+        // reads as strtod (and the host evaluator) reads it.
+        expr_string_ = bngsim::expr_compat::exact_literals(remapExpression(original_expr_string_));
 
         expression_ = exprtk::expression<double>();  // reset
         expression_.register_symbol_table(symbol_table_);

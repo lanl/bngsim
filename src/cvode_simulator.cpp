@@ -13761,6 +13761,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             cross_f_before);
                     }
                 }
+                // Whether any stop on this instant asks for a restart. One where
+                // the right-hand side only bends does not (issue #709): the
+                // step has ended on it, which is all it was placed for.
+                bool restart_here = false;
                 while (next_crossing < crossing_stops.size() &&
                        (crossing_stops[next_crossing].t_star <= static_cast<double>(t_ret) ||
                         same_instant(crossing_stops[next_crossing].t_star,
@@ -13773,6 +13777,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // that ulp of state would step over a registered root, which
                     // `land_clock_on_threshold` checks for and takes back.
                     const CrossingStop &reached = crossing_stops[next_crossing];
+                    restart_here = restart_here || reached.restart;
                     if (reached.clock_species_idx0 >= 0) {
                         land_clock_on_threshold(y_data, ns, reached.clock_species_idx0,
                                                 reached.threshold, static_cast<double>(t_ret), y,
@@ -13780,7 +13785,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     }
                     ++next_crossing;
                 }
-                if (flag != CV_ROOT_RETURN) {
+                if (flag != CV_ROOT_RETURN && restart_here) {
                     std::vector<std::vector<double>> cross_s_minus;
                     if (sens.n_total > 0) {
                         cross_s_minus = impl_->capture_event_sens(cvode_mem, ns,

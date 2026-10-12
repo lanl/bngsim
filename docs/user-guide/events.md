@@ -43,6 +43,30 @@ BNGsim's event implementation uses CVODE rootfinding (`CVodeRootInit`) for
 precise event detection — the integrator finds the exact time point where the
 trigger crosses zero, applies the assignments, and restarts.
 
+#### A trigger that holds at one instant
+
+`at (time == 2)` is true at a single time. No root finder brackets it, since
+the trigger reads false on both sides of any step across it, so the run stops
+on the instant instead and the event fires there, on any output grid, in the
+ODE and stochastic engines alike. The instant is the time at which the model's
+evaluator reads the equality as true: for `time == tau/7` that is the
+evaluator's own rounding of `tau/7`, and `time == pi` or `time^2 == 4` is found
+the same way. An equality of things that hold their values, such as
+`floor(time/24) == 3`, is true for a stretch and is an ordinary window.
+
+Two cases are outside this:
+
+- An equality that no time satisfies in double arithmetic, such as
+  `time - 1 == 1.3` (2.3 − 1 rounds to 1.2999999999999998, and the next
+  double gives 1.3000000000000003). Where that equality is the whole trigger
+  the event could never fire, and the run is refused with an error that names
+  it. Write the instant on one side (`time == 2.3`), or use `>=`. Inside a
+  larger trigger (`time - 1 == 1.3 || time >= 4`) the event can fire through
+  the rest, and nothing is refused.
+- An equality on a model variable rather than on `time` (`at (x == 2)` with a
+  rate rule `x' = 1`, or on a species). The variable is integrated and does not
+  land on the value exactly; use an ordering.
+
 #### Triggers that start on their threshold
 
 A trigger reading false whose *residual* is exactly zero at the start time is

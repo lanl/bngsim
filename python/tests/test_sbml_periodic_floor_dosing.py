@@ -342,19 +342,23 @@ def test_clone_preserves_step_bound():
     assert clone._periodic_disc_max_step == model._periodic_disc_max_step
 
 
-def test_equality_gated_pulse_still_needs_the_bound():
-    """GH #274's necessity witness — and why the bound is narrowed, not retired.
+def test_equality_gated_pulse_is_resolved_with_the_bound_and_without_it():
+    """GH #274's witness that a rooted model can still have an unrooted pulse.
 
     The pulse edge is ``sub - 20*cyc == 0``. An equality on a step function is
-    not something the root scan emits, so nothing brackets this edge, and the
-    step bound is the only thing standing between the integrator and a 0.05-wide
-    window. The model nevertheless HAS a root (the unrelated ``time < 5``
-    threshold driving ``z``), which is exactly the shape a root-count predicate
-    gets wrong.
+    not something the root scan emits, so no root brackets this edge. The model
+    nevertheless HAS a root (the unrelated ``time < 5`` threshold driving
+    ``z``), which is exactly the shape a root-count predicate gets wrong, and
+    the step bound is still derived for it.
 
-    Disabling the bound does not degrade the answer, it destroys it: 182.2
-    against an exact 36.8, identically at rtol 1e-9 and 1e-11. Tol-stably wrong
-    is the signature of a pulse that is never sampled at all.
+    With the bound disabled the answer used to be destroyed, not degraded:
+    182.2 against an exact 36.8, identically at rtol 1e-9 and 1e-11, the
+    signature of a pulse that is never sampled at all. The loader registers
+    orderings, and neither the gate nor the ``floor`` calls it is built from
+    had an entry beside the registered root. An equality of step calls holds
+    for a stretch, so the gate is a condition like any other now, and the
+    calls are recovered with it (issue #904). Every change is a stop, so the
+    pulse is integrated either way and the bound is a second line of defence.
     """
     model = bngsim.Model.from_sbml_string(_EQ_GATED_PULSE)
     assert model._core.n_discontinuity_triggers >= 1, "the unrelated time<5 root"
@@ -362,34 +366,29 @@ def test_equality_gated_pulse_still_needs_the_bound():
         "a rooted model can still have an unrooted pulse — this is the case a "
         "root-count predicate would drop the bound on"
     )
+    assert model.time_discontinuity_conditions() == (
+        "(time()<5.0)",
+        "((floor((time()*20.0)))-(20.0*(floor(time()))))==0.0",
+        "floor(time())",
+        "floor((time()*20.0))",
+    )
 
     exact = _eq_gated_oracle(10)
     for rtol in (1e-9, 1e-11):
-        r = bngsim.Simulator(bngsim.Model.from_sbml_string(_EQ_GATED_PULSE), method="ode").run(
-            t_span=(0.0, 10.0),
-            n_points=11,
-            rtol=rtol,
-            atol=1e-12,
-            max_steps=10_000_000,
-            timeout=120,
-        )
-        got = _y(r)[-1]
-        assert got == pytest.approx(exact, rel=1e-3), f"bound on, rtol={rtol}: {got}"
-
-        off = bngsim.Simulator(bngsim.Model.from_sbml_string(_EQ_GATED_PULSE), method="ode").run(
-            t_span=(0.0, 10.0),
-            n_points=11,
-            rtol=rtol,
-            atol=1e-12,
-            max_steps=10_000_000,
-            max_step=-1,
-            timeout=120,
-        )
-        stepped_over = _y(off)[-1]
-        assert stepped_over > 3.0 * exact, (
-            f"rtol={rtol}: expected the unbounded arm to jump the pulses "
-            f"(~{Y0 * math.exp(10 * GVAL):.1f}), got {stepped_over}"
-        )
+        for bound in ({}, {"max_step": -1}):
+            r = bngsim.Simulator(bngsim.Model.from_sbml_string(_EQ_GATED_PULSE), method="ode").run(
+                t_span=(0.0, 10.0),
+                n_points=11,
+                rtol=rtol,
+                atol=1e-12,
+                max_steps=10_000_000,
+                timeout=120,
+                **bound,
+            )
+            got = _y(r)[-1]
+            assert got == pytest.approx(exact, rel=1e-3), (
+                f"{bound or 'bound on'}, rtol={rtol}: {got}"
+            )
 
 
 @pytest.mark.parametrize("jac", ["analytical", "fd"])

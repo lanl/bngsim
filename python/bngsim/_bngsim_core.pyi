@@ -187,6 +187,10 @@ class NetworkModel:
         """
         For each conservation law, the 0-based indices of the species it holds: those whose coefficient, over the species' volume, is not rounding beside the law's largest. Issue #758.
         """
+    def evaluate_over_times(self, expression: str, times: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], shift: typing.SupportsFloat = 0.0) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        The value of an expression at each of `times`, with the clock set to that time and everything else as it stands, in the evaluator's own arithmetic. For a text that reads the clock, parameters and builtins only (a rate law's condition on time): a function slot, an observable or a species is read at its present value, not at the time asked. The clock is put back before returning. `shift` is the value of the variable `bngsim_scan_shift_` meanwhile, for a text written over a counter as `time() + bngsim_scan_shift_`. Raises if the expression does not compile.
+        """
     def event_carry(self) -> typing.Any:
         """
         The event state the last run left for a run that continues it (issue #693): None, or (t, trigger truth per event, [(event index, apply time, frozen values)] for the delayed executions not yet applied). A run starting at t continues it; any other run is a fresh start.
@@ -489,6 +493,11 @@ class NetworkModel:
     @property
     def table_function_names(self) -> list[str]:
         ...
+    @property
+    def table_function_tables(self) -> list[dict]:
+        """
+        Every table function with its table: [{name, index_kind ('time', 'parameter' or 'observable'), index_param_idx, index_obs_idx, method ('linear' or 'step'), xs, ys}], in dispatch-id order. The knots of a table read on the clock are where its value (step) or slope (linear) breaks, and Simulator.run stops the integration on each (issue #709).
+        """
     @property
     def uses_rateof(self) -> bool:
         """
@@ -847,9 +856,9 @@ class SolverOptions:
         """
         Set every fixed crossing of the run, one entry per (time, clock_species_index, threshold), without the merge that leaves set_crossing_stops one stop per instant. Stepping does not read it. The event sensitivity jump asks each fixed switch on an event's instant for its own jump (issue #767), and two conditions that cross together are two switches. Resolved by bngsim._switch_sensitivity.all_fixed_crossings.
         """
-    def set_crossing_stops(self, stops: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
+    def set_crossing_stops(self, stops: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]], restarts: collections.abc.Sequence[bool] = []) -> None:
         """
-        Set the model times a fixed time-dependent `piecewise`/`if()` branch flips at, so the integrator lands ON each crossing instead of trying to step over it (issue #305). A GH #72 discontinuity root cannot do this by itself: CVODE tests for a root only on a step it ACCEPTS, and where the jump is large enough that the error test rejects every step containing the crossing, t creeps to the last double below it and wedges at t + h == t without the root ever firing. Each entry is (time, clock_species_index, threshold); the clock index is -1 for a condition on literal simulation time, and otherwise names the counter species the condition thresholds, which run() lands on `threshold` at the stop so the restart reads the after-branch (issue #443). Resolved by bngsim._switch_sensitivity.fixed_crossing_stops; empty (the default) leaves the integration loop untouched.
+        Set the model times a fixed time-dependent `piecewise`/`if()` branch flips at, so the integrator lands ON each crossing instead of trying to step over it (issue #305). A GH #72 discontinuity root cannot do this by itself: CVODE tests for a root only on a step it ACCEPTS, and where the jump is large enough that the error test rejects every step containing the crossing, t creeps to the last double below it and wedges at t + h == t without the root ever firing. Each entry is (time, clock_species_index, threshold); the clock index is -1 for a condition on literal simulation time, and otherwise names the counter species the condition thresholds, which run() lands on `threshold` at the stop so the restart reads the after-branch (issue #443). `restarts`, one bool per stop when given, says whether the integrator is restarted there (the default) or only made to end a step on it, for a time the right-hand side bends at without jumping (issue #709). Resolved by bngsim._switch_sensitivity.fixed_crossing_stops; empty (the default) leaves the integration loop untouched.
         """
     def set_event_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
         """
