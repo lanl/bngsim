@@ -348,7 +348,7 @@ that is *approached* through such a power, the closing edge of a window
 `s*(1-s)^(a-1)`, needs the column in `V` before it: the solver switches at a
 stop it takes shortly before that crossing, and switches a column in `V` back
 to `S` shortly before any crossing that is not the column's own (issue #760).
-Four cases are refused:
+Five cases are refused:
 
 - a restart within about 7e-10 of the time of such an edge, where no stop can
   stand off from it;
@@ -369,10 +369,34 @@ Four cases are refused:
   own. It is asked of the powers themselves, so a window written in numbers,
   `(t - 4)/4`, is refused as one written in parameters is, and it is asked
   where the run starts: a seed's column has a row of the counter there, and a
-  rate constant's is known by the rate at which its row leaves 0.
+  rate constant's is known by the rate at which its row leaves 0;
+- a column whose parameter moves such an edge at a rate that is not a number
+  over the parameters (issue #1003): a parameter in the denominator or the
+  scale of the edge's time, `wb` in an onset `on/(wb - wa)` or `r` in
+  `s = (t - on)*r`, or the width under a power whose base is not linear in the
+  time, `(1 - s^2)^(a-1)`. `β` is emitted for a shift `c` that holds along the
+  run, and these have none, so the column stayed in `S`: dX/d(wb) was 12% off
+  at `a = 1.1`, and under an opening power the run ended in a solver error.
+  The column is refused at a crossing its parameter moves where the power's
+  base is 0, ahead of the run for the switch times it has. The exponent is
+  asked at the run's parameter values; one that reads a species, the time or
+  a quantity an event assigns cannot be, and is taken to be under 1. Where
+  the base reads a counter or a state it cannot be asked at the crossing's
+  time, and the column is refused at any crossing its parameter moves. A base that
+  reads a species has a zero that any parameter can move through the state,
+  so there the column of every parameter is asked, whether or not the base
+  is written in it, and so is the column of an initial value
+  (`sensitivity_ic`). A parameter that is in the base and does not move its
+  zero, `kk` in `(kk*(1 - s))^(a-1)`, keeps its column. A `β` made for one
+  power does not stand for another: `on` with a plain onset in one window
+  and an onset chosen by a condition in a second has its `V` for the first
+  and is refused for the second. A column that needed its `V` is refused too
+  in a model whose `β` were not worked out: the derivation budget ran out, or
+  the model is one that is given none, and then at a root as at a switch
+  time.
 
 Whether a power is singular is asked at the run's own parameter values, for
-the last two: with `a = 3` nothing is unbounded there, every column is right in
+the last three: with `a = 3` nothing is unbounded there, every column is right in
 `S`, and neither is refused. For a counter's own columns an exponent counts
 between 0 and 1, written as a number or in parameters. One under 0 counts where
 the power's base is 0 at a condition the same rate law has on that counter:
@@ -432,11 +456,11 @@ plain column meets the singular forcing as before. Where the RHS goes
 non-finite at the onset the failure names the sensitivity column and `∂f/∂on`,
 or the restart where the step gave out. A closing power whose base is not
 linear in the time, `(1 - s^2)^(a-1)`, has no shift for the window's length at
-all, and that column comes back a few parts in a thousand off with nothing
-said. An exponent of
+all, and that column is refused (issue #1003, above). An exponent of
 2 or more (`a >= 2`) keeps the derivative finite, and leaving the onset
 parameter out of `sensitivity_params` avoids it. `BNGSIM_SENS_COMOVING=0` keeps
-every column plain, for comparison.
+every column plain, for comparison; a column that is refused because it has
+no `β` is refused with the switch too.
 
 ### What is declined
 
