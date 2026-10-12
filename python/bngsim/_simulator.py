@@ -897,6 +897,15 @@ class Simulator:
                     "BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1."
                 )
 
+            # A ring of rates written in terms of each other (`X' =
+            # rateOf(Y); Y' = rateOf(X)`) is an algebraic loop, and has no
+            # right-hand side to integrate (lanl/bngsim#991).
+            # (Asked of a core that can say. The C++ simulator refuses the
+            # model too, for a caller that comes by another way.)
+            ring = getattr(model._core, "rateof_ring_refusal", None)
+            if ring is not None and ring():
+                raise ModelError(ring())
+
             self._sim = CvodeSimulator(model._core)
         elif dispatch in ("ssa", "psa"):
             # SBML-loaded models carry a list of SsaIssue records (populated
@@ -2134,6 +2143,7 @@ class Simulator:
         if not conditions and not table_breaks:
             return
         from bngsim._switch_sensitivity import (
+            _PLAIN_INSTANT_FLOOR,
             TriggerEqualityNeverHolds,
             crossings_with_periodic,
             merge_crossing_stops,
@@ -2161,7 +2171,8 @@ class Simulator:
             # unseen. The stop lands a little past the crossing; to the event
             # sensitivity jump the crossing is one more fixed one on its instant.
             stops = merge_crossing_stops(
-                sorted([*crossings, *periodic, *knots], key=lambda stop: stop.time)
+                sorted([*crossings, *periodic, *knots], key=lambda stop: stop.time),
+                floor=1.0 if sensitivities else _PLAIN_INSTANT_FLOOR,
             )
             if periodic_at:
                 crossings = sorted([*crossings, *periodic_at], key=lambda stop: stop.time)

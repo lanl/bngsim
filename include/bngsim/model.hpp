@@ -232,6 +232,53 @@ class NetworkModel {
     // Empty when event_trigger_residual_expr() is -1.
     const std::vector<int> &event_trigger_residual_species(int event_idx0) const;
 
+    // What that residual reads, with a rateOf accessor kept apart from the
+    // species it names: `species_out` the species named (directly, through an
+    // observable, or through the function or expression behind a parameter),
+    // `rateof_out` the species whose rateOf is read. Where
+    // event_trigger_residual_species() answers "every species" for a rateOf
+    // accessor, this says which one. False when the residual reads something
+    // that is none of these, or when event_trigger_residual_expr() is -1: the
+    // caller must then assume every species.
+    bool event_trigger_residual_reads(int event_idx0, std::vector<int> &species_out,
+                                      std::vector<int> &rateof_out) const;
+
+    // For each species, the species whose rateOf its derivative reads, through
+    // the rate laws of the reactions that change it (a rate rule is one). The
+    // Jacobian's pattern has no entry for these: `S' = rateOf(A); A' = B` has
+    // none for S against B. Null when that cannot be said of some rate law, or
+    // of something else the model evaluates, and the caller must assume that
+    // any derivative reads any rateOf. Empty lists throughout in a model with
+    // no rateOf.
+    const std::vector<std::vector<int>> *derivative_rateof_reads() const;
+
+    // How deep rateOf is nested, over the species whose rateOf is read at
+    // all: 0 where none of their derivatives reads a rateOf, 1 for
+    // `S' = rateOf(A)` with a rateOf(S) somewhere, and so on (a few where it
+    // cannot be said). One refresh of the rateOf buffer is exact at depth 0,
+    // and each level takes one more. `Y' = rateOf(X)` with no rateOf(Y)
+    // anywhere is depth 0: what is read is rateOf(X).
+    int rateof_nesting() const;
+
+    // The same over the species whose rateOf a derivative reads, which is
+    // what the right-hand side needs before it is evaluated:
+    // `S' = rateOf(A); T' = k*rateOf(S)` is 1, and with one probe T' read
+    // rateOf(S) as the call before left it (T(1) = 0.44 for 0.216 at the
+    // default tolerances, lanl/bngsim#991).
+    int rateof_flow_nesting() const;
+
+    // Why this model's right-hand side cannot be evaluated, where the reason is
+    // a ring of derivatives that read each other's rateOf (`X' = rateOf(Y);
+    // Y' = rateOf(X)`, or `X' = k*rateOf(X)`): each rate is defined by the
+    // others at the same instant, and nothing here solves that. The text
+    // names the species and lanl/bngsim#991. Empty for every other model.
+    //
+    // Whoever is about to use the right-hand side asks first (CvodeSimulator
+    // and SteadyStateSolver throw it; the bindings raise it). compute_derivs()
+    // of such a model fills its output with NaN, so that a caller who did
+    // not ask is stopped by the solver and not answered.
+    std::string rateof_ring_refusal() const;
+
     // Does this event's trigger read live state (a species concentration, an
     // observable total, or a rateOf accessor), directly or through a parameter
     // an assignment rule or expression writes (issue #775)? Decided by
@@ -567,8 +614,9 @@ class NetworkModel {
     // derivative *probe* (compute the RHS into a scratch buffer and publish it
     // to the live current_derivs the rate_of__<species> accessors read), then
     // computes the real RHS with rateOf evaluating to the just-published dx/dt.
-    // One probe is exact because every corpus rateOf argument is a species whose
-    // derivative is independent of the rateOf consumers (no algebraic loop).
+    // One probe is exact where every rateOf argument is a species whose
+    // derivative reads no rateOf; each level a derivative reads a nested one
+    // at takes a probe more (rateof_flow_nesting()).
     // Byte-identical to the single-pass body for models without rateOf.
     void compute_derivs(double t, const double *conc, double *derivs);
 
@@ -605,6 +653,10 @@ class NetworkModel {
     // Refresh the live rateOf derivative buffer (current_derivs) from a probe at
     // (t, conc) without returning the RHS. No-op when !uses_rateof(). Used by the
     // CVODE root function before evaluating event triggers that read rateOf.
+    // One probe is exact for a rateOf whose species' derivative reads no
+    // rateOf itself; each level of nesting (rateof_nesting()) takes one more,
+    // and this makes them: a trigger on `rateOf(S)` with S' = rateOf(A) read a
+    // probe behind, and was never seen to rise.
     void refresh_rateof_derivs(double t, const double *conc);
 
     // Compute propensity for a single reaction (for SSA).
@@ -847,13 +899,38 @@ class NetworkModel {
                                 const std::vector<char> *pc_functions = nullptr) const;
     RateDeps reaction_rate_dependencies_(int rxn_idx0,
                                          const std::vector<char> *pc_functions = nullptr) const;
+    // One probe of the right-hand side into the rateOf buffer:
+    // compute_derivs() makes 1 + rateof_flow_nesting() of them before its own
+    // pass, and refresh_rateof_derivs() 1 + rateof_nesting(). On a probe a
+    // species its reaction does not change takes nothing of the rate
+    // (compute_derivs_core).
+    void refresh_rateof_derivs_once_(double t, const double *conc);
+    // Fills, once and under a mutex, what derivative_rateof_reads(),
+    // rateof_nesting() and rateof_flow_nesting() answer from.
+    void ensure_rateof_reads_() const;
+    // What the expressions `groups[k]` read between them, for each k: the
+    // species named and the species whose rateOf is read. `known[k]` false
+    // where something else is read.
+    void expression_reads_(const std::vector<std::vector<int>> &groups,
+                           std::vector<std::vector<int>> &species_out,
+                           std::vector<std::vector<int>> &rateof_out,
+                           std::vector<char> &known) const;
     void set_load_warnings_(std::vector<std::string> warnings);
 
     /// The single-pass RHS body (GH #106). compute_derivs() and
     /// refresh_rateof_derivs() wrap this: the rateOf probe and the real pass are
     /// both `compute_derivs_core` calls, differing only in which buffer they read
     /// (current_derivs, via the rate_of__<species> accessors) and write.
-    void compute_derivs_core(double t, const double *conc, double *derivs);
+    ///
+    /// `probe` true for a pass into the rateOf buffer. A species its reaction
+    /// does not change takes zero times the rate (Reaction::net_loss), which
+    /// is nothing unless the rate is not finite; and on a probe a rate law
+    /// reads rateOfs that are not filled yet, or are the call before's, so
+    /// `1/rateOf(A)` is infinite there with nothing wrong with the model. A
+    /// probe leaves those species alone, and what they are told of a rate
+    /// that is not finite they are told by compute_derivs()'s own pass, where
+    /// the rate is the model's.
+    void compute_derivs_core(double t, const double *conc, double *derivs, bool probe = false);
 
     /// Solve one strongly-connected group of functions — `var_param_bindings`
     /// entries [lo, hi) — instead of sweeping it once (issue #621). See

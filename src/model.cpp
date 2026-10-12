@@ -192,6 +192,18 @@ NetworkModel NetworkModel::clone() const {
     // a function that names `time` directly.)
     copy.impl_->functions_use_time = impl_->functions_use_time;
     if (copy.impl_->uses_rateof) {
+        // What reads which rateOf is the model's structure, and a clone's is
+        // this one's: asked here once and copied, where each clone asked for
+        // itself (every rate law parsed again, 80 us a reaction, on the first
+        // run of each of a batch's entries).
+        ensure_rateof_reads_();
+        copy.impl_->derivative_rateof_reads = impl_->derivative_rateof_reads;
+        copy.impl_->derivative_rateof_reads_state = impl_->derivative_rateof_reads_state;
+        copy.impl_->rateof_read_elsewhere = impl_->rateof_read_elsewhere;
+        copy.impl_->rateof_nesting = impl_->rateof_nesting;
+        copy.impl_->rateof_flow_nesting = impl_->rateof_flow_nesting;
+        copy.impl_->rateof_ring = impl_->rateof_ring;
+        copy.impl_->rateof_reads_ready.store(true, std::memory_order_release);
         copy.impl_->current_derivs.assign(copy.impl_->species.size(), 0.0);
         copy.impl_->rateof_scratch.assign(copy.impl_->species.size(), 0.0);
         register_rateof_accessors(*copy.impl_->evaluator, copy.impl_->species,
@@ -285,6 +297,11 @@ NetworkModel NetworkModel::clone() const {
     // cache is left empty for the identical reason — it is keyed by condition
     // text, so the clone re-resolves the same conditions into its own evaluator.
     copy.impl_->events = impl_->events;
+    {
+        std::lock_guard<std::mutex> lock(impl_->rateof_reads_mutex);
+        copy.impl_->event_trigger_residual_reads = impl_->event_trigger_residual_reads;
+        copy.impl_->event_trigger_residual_reads_done = impl_->event_trigger_residual_reads_done;
+    }
     for (auto &ev : copy.impl_->events) {
         if (ev.trigger_expr_idx >= 0) {
             const auto &cached = impl_->evaluator->preprocessed_expr(ev.trigger_expr_idx);
@@ -1183,6 +1200,12 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
         cache.assign(events.size(), -2);
         impl_->event_trigger_residual_species.assign(events.size(), {});
         impl_->event_trigger_residual_reason.assign(events.size(), std::string());
+        // (What each residual reads is indices, and a clone comes with its
+        // original's: kept where it is for as many events as there are.)
+        if (impl_->event_trigger_residual_reads.size() != events.size()) {
+            impl_->event_trigger_residual_reads.clear();
+            impl_->event_trigger_residual_reads_done = false;
+        }
     }
     if (cache[event_idx0] == -2) {
         cache[event_idx0] = -1;
@@ -1344,6 +1367,605 @@ const std::vector<int> &NetworkModel::event_trigger_residual_species(int event_i
 // parameter, so it widens both supports to everything (issue #764 — it used to
 // widen only the species, and every parameter column of an event assignment
 // reading rateOf was skipped as unsupported).
+void NetworkModel::expression_reads_(const std::vector<std::vector<int>> &groups,
+                                     std::vector<std::vector<int>> &species_out,
+                                     std::vector<std::vector<int>> &rateof_out,
+                                     std::vector<char> &known) const {
+    const std::size_t n_groups = groups.size();
+    species_out.assign(n_groups, {});
+    rateof_out.assign(n_groups, {});
+    known.assign(n_groups, 1);
+    const auto &species = impl_->species;
+    const int ns = static_cast<int>(species.size());
+    // A table function's index is not among the addresses its call reads.
+    // One indexed by the clock reads nothing of the state. Any other is read
+    // by the expressions that call it (the name `tfun_<name>` in their text,
+    // whatever stands after it or before: ExprTk compiles `tfun_kf ()`, a
+    // bare `tfun_kf` and `2tfun_kf()` as the same call), with
+    // what its index reads: a parameter, or the species behind an
+    // observable. (Not by every expression, and not "nothing is known": one
+    // table over a constant, read by nothing, then made every write feed
+    // every trigger; one over a rule on a rateOf made every derivative read
+    // that rateOf, its own species' among them, a ring.)
+    struct Table {
+        std::string call;
+        int param = -1;
+        std::vector<int> species;
+    };
+    std::vector<Table> tables;
+    for (const auto &tf : impl_->table_functions) {
+        if (is_time_index(tf->index_name())) {
+            continue;
+        }
+        Table table;
+        table.call = "tfun_" + tf->name();
+        const std::string key = strip_paren_suffix(tf->index_name());
+        const auto &sd = *impl_->shared;
+        if (auto pit = sd.param_name_to_idx.find(key); pit != sd.param_name_to_idx.end()) {
+            table.param = pit->second;
+        } else if (auto oit = sd.observable_name_to_idx.find(key);
+                   oit != sd.observable_name_to_idx.end() && oit->second >= 0 &&
+                   oit->second < static_cast<int>(impl_->observables.size())) {
+            for (const auto &entry : impl_->observables[oit->second].entries) {
+                const int idx0 = entry.species_index - 1;
+                if (idx0 >= 0 && idx0 < ns) {
+                    table.species.push_back(idx0);
+                }
+            }
+        } else {
+            known.assign(n_groups, 0);
+            return;
+        }
+        tables.push_back(std::move(table));
+    }
+    std::unordered_map<std::string, int> table_of;
+    for (std::size_t k = 0; k < tables.size(); ++k) {
+        table_of.emplace(tables[k].call, static_cast<int>(k));
+    }
+    // The identifiers of a text, a numeric literal stepped over whole (as
+    // ModelBuilder's for_each_identifier reads them).
+    const auto identifiers = [](const std::string &text) {
+        std::vector<std::string> out;
+        const std::size_t n = text.size();
+        const auto digit = [&](std::size_t k) {
+            return k < n && std::isdigit(static_cast<unsigned char>(text[k])) != 0;
+        };
+        std::size_t i = 0;
+        while (i < n) {
+            const auto c = static_cast<unsigned char>(text[i]);
+            if (std::isdigit(c) != 0 || (text[i] == '.' && digit(i + 1))) {
+                while (i < n && (digit(i) || text[i] == '.')) {
+                    ++i;
+                }
+                if (i < n && (text[i] == 'e' || text[i] == 'E')) {
+                    std::size_t j = i + 1;
+                    if (j < n && (text[j] == '+' || text[j] == '-')) {
+                        ++j;
+                    }
+                    if (digit(j)) {
+                        i = j;
+                        while (digit(i)) {
+                            ++i;
+                        }
+                    }
+                }
+            } else if (std::isalpha(c) != 0 || text[i] == '_') {
+                // (A dot inside a name is part of it, as ExprTk reads it: a
+                // table named `k.f` is called as `tfun_k.f`.)
+                const auto part = [&](std::size_t k) {
+                    return k < n && (std::isalnum(static_cast<unsigned char>(text[k])) != 0 ||
+                                     text[k] == '_');
+                };
+                const std::size_t start = i;
+                while (part(i) || (i < n && text[i] == '.' && part(i + 1))) {
+                    ++i;
+                }
+                out.push_back(text.substr(start, i - start));
+            } else {
+                ++i;
+            }
+        }
+        return out;
+    };
+    std::unordered_map<const double *, int> species_of;
+    species_of.reserve(species.size());
+    for (int i = 0; i < ns; ++i) {
+        species_of.emplace(&species[i].concentration, i);
+    }
+    std::unordered_map<const double *, const Observable *> obs_of;
+    obs_of.reserve(impl_->observables.size());
+    for (const Observable &obs : impl_->observables) {
+        obs_of.emplace(&obs.total, &obs);
+    }
+    std::unordered_map<const double *, int> param_of;
+    param_of.reserve(impl_->parameters.size());
+    for (int i = 0; i < static_cast<int>(impl_->parameters.size()); ++i) {
+        param_of.emplace(&impl_->parameters[i].value, i);
+    }
+    std::unordered_map<const double *, int> rateof_of;
+    for (int i = 0; i < static_cast<int>(impl_->current_derivs.size()); ++i) {
+        rateof_of.emplace(&impl_->current_derivs[static_cast<std::size_t>(i)], i);
+    }
+    std::unordered_map<int, int> written_by_function;
+    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings) {
+        written_by_function.emplace(param_idx, func_idx);
+    }
+
+    for (std::size_t g = 0; g < n_groups; ++g) {
+        std::unordered_set<int> named;
+        std::unordered_set<int> rated;
+        bool all = true;
+        std::unordered_set<int> visited; // expression ids, so a cycle terminates
+        std::function<void(int)> visit = [&](int eid) {
+            if (eid < 0 || !visited.insert(eid).second) {
+                return;
+            }
+            if (!tables.empty()) {
+                // (By the names in the text, each looked up among the
+                // tables: every table asked of every expression, 2,000 of
+                // each took a quarter longer to read.)
+                std::unordered_set<int> called;
+                for (const std::string &name :
+                     identifiers(impl_->evaluator->preprocessed_expr(eid))) {
+                    if (auto it = table_of.find(name); it != table_of.end()) {
+                        called.insert(it->second);
+                    }
+                }
+                for (int which : called) {
+                    const Table &table = tables[static_cast<std::size_t>(which)];
+                    named.insert(table.species.begin(), table.species.end());
+                    const int pidx = table.param;
+                    if (pidx < 0 || pidx >= static_cast<int>(impl_->parameters.size())) {
+                        continue;
+                    }
+                    if (auto fn = written_by_function.find(pidx); fn != written_by_function.end()) {
+                        visit(impl_->functions[fn->second].evaluator_id);
+                    } else if (impl_->parameters[pidx].is_expression) {
+                        visit(impl_->parameters[pidx].evaluator_id);
+                    }
+                }
+            }
+            for (const double *addr : impl_->evaluator->referenced_variable_addresses(eid)) {
+                if (auto sp = species_of.find(addr); sp != species_of.end()) {
+                    named.insert(sp->second);
+                } else if (auto ob = obs_of.find(addr); ob != obs_of.end()) {
+                    for (const auto &entry : ob->second->entries) {
+                        const int idx0 = entry.species_index - 1;
+                        if (idx0 >= 0 && idx0 < ns) {
+                            named.insert(idx0);
+                        }
+                    }
+                } else if (auto ra = rateof_of.find(addr); ra != rateof_of.end()) {
+                    rated.insert(ra->second);
+                } else if (auto pa = param_of.find(addr); pa != param_of.end()) {
+                    const int pidx = pa->second;
+                    if (auto fn = written_by_function.find(pidx); fn != written_by_function.end()) {
+                        visit(impl_->functions[fn->second].evaluator_id);
+                    } else if (impl_->parameters[pidx].is_expression) {
+                        visit(impl_->parameters[pidx].evaluator_id);
+                    }
+                } else {
+                    all = false; // something unmodelled
+                }
+            }
+        };
+        for (int eid : groups[g]) {
+            visit(eid);
+        }
+        known[g] = all ? 1 : 0;
+        species_out[g].assign(named.begin(), named.end());
+        std::sort(species_out[g].begin(), species_out[g].end());
+        rateof_out[g].assign(rated.begin(), rated.end());
+        std::sort(rateof_out[g].begin(), rateof_out[g].end());
+    }
+}
+
+bool NetworkModel::event_trigger_residual_reads(int event_idx0, std::vector<int> &species_out,
+                                                std::vector<int> &rateof_out) const {
+    species_out.clear();
+    rateof_out.clear();
+    const int n_events = static_cast<int>(impl_->events.size());
+    if (event_idx0 < 0 || event_idx0 >= n_events) {
+        return false;
+    }
+    // Every event's at the first ask: what the walk sets up is the size of
+    // the model, and a run asks for each resting trigger in turn.
+    std::lock_guard<std::mutex> lock(impl_->rateof_reads_mutex);
+    std::vector<int> residual(static_cast<std::size_t>(n_events), -1);
+    for (int ei = 0; ei < n_events; ++ei) {
+        residual[static_cast<std::size_t>(ei)] = event_trigger_residual_expr(ei);
+    }
+    auto &memo = impl_->event_trigger_residual_reads;
+    if (!impl_->event_trigger_residual_reads_done || memo.size() != impl_->events.size()) {
+        std::vector<std::vector<int>> groups(static_cast<std::size_t>(n_events));
+        for (int ei = 0; ei < n_events; ++ei) {
+            if (residual[static_cast<std::size_t>(ei)] >= 0) {
+                groups[static_cast<std::size_t>(ei)].push_back(
+                    residual[static_cast<std::size_t>(ei)]);
+            }
+        }
+        std::vector<std::vector<int>> named;
+        std::vector<std::vector<int>> rated;
+        std::vector<char> known;
+        expression_reads_(groups, named, rated, known);
+        memo.assign(static_cast<std::size_t>(n_events), {});
+        for (int ei = 0; ei < n_events; ++ei) {
+            const auto u = static_cast<std::size_t>(ei);
+            memo[u].known = residual[u] >= 0 && known[u] != 0;
+            memo[u].species = std::move(named[u]);
+            memo[u].rateof = std::move(rated[u]);
+        }
+        impl_->event_trigger_residual_reads_done = true;
+    }
+    const auto &reads = memo[static_cast<std::size_t>(event_idx0)];
+    if (!reads.known) {
+        return false;
+    }
+    species_out = reads.species;
+    rateof_out = reads.rateof;
+    return true;
+}
+
+const std::vector<std::vector<int>> *NetworkModel::derivative_rateof_reads() const {
+    ensure_rateof_reads_();
+    return impl_->derivative_rateof_reads_state == 1 ? &impl_->derivative_rateof_reads : nullptr;
+}
+
+int NetworkModel::rateof_flow_nesting() const {
+    ensure_rateof_reads_();
+    return impl_->rateof_flow_nesting;
+}
+
+std::string NetworkModel::rateof_ring_refusal() const {
+    if (!impl_->uses_rateof) {
+        return {};
+    }
+    ensure_rateof_reads_();
+    const auto &ring = impl_->rateof_ring;
+    if (ring.empty()) {
+        return {};
+    }
+    const auto name = [&](int si) { return impl_->species[static_cast<std::size_t>(si)].name; };
+    // A ring of rate rules is named whole up to six, and by its first six
+    // beyond that.
+    const std::size_t shown = std::min<std::size_t>(ring.size(), 6);
+    std::string who;
+    std::string how;
+    for (std::size_t i = 0; i < shown; ++i) {
+        who += (i == 0 ? "" : i + 1 == ring.size() ? " and " : ", ") + name(ring[i]);
+        // What it reads of the ring: the next named where it reads that one,
+        // and the first of the ring it does read otherwise.
+        int read = -1;
+        const auto &reads = impl_->derivative_rateof_reads[static_cast<std::size_t>(ring[i])];
+        const int next = ring[(i + 1) % ring.size()];
+        if (std::find(reads.begin(), reads.end(), next) != reads.end()) {
+            read = next;
+        } else {
+            for (int x : reads) {
+                if (std::find(ring.begin(), ring.end(), x) != ring.end()) {
+                    read = x;
+                    break;
+                }
+            }
+        }
+        if (read >= 0) {
+            how += (how.empty() ? "" : ", ") +
+                   ("d(" + name(ring[i]) + ")/dt reads rateOf(" + name(read) + ")");
+        }
+    }
+    if (ring.size() > shown) {
+        who += " and " + std::to_string(ring.size() - shown) + " more";
+        how += ", ...";
+    }
+    if (ring.size() == 1) {
+        return "The rate of change of " + who + " is written in terms of itself (" + how +
+               "). That is an algebraic loop: the rate is defined by its own value at the same "
+               "instant, and bngsim does not solve one (lanl/bngsim#991; libRoadRunner, Antimony "
+               "and libSBML refuse such a model too). Write the rate without its own rateOf.";
+    }
+    return "The rates of change of " + who + " are written in terms of each other (" + how +
+           "). That is an algebraic loop: each rate is defined by the others at the same "
+           "instant, and bngsim does not solve one (lanl/bngsim#991; libRoadRunner, Antimony and "
+           "libSBML refuse such a model too). Write the rates so that none reads, through any "
+           "chain of rateOf, its own.";
+}
+
+int NetworkModel::rateof_nesting() const {
+    ensure_rateof_reads_();
+    return impl_->rateof_nesting;
+}
+
+void NetworkModel::ensure_rateof_reads_() const {
+    if (impl_->rateof_reads_ready.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(impl_->rateof_reads_mutex);
+    if (impl_->rateof_reads_ready.load(std::memory_order_relaxed)) {
+        return;
+    }
+    {
+        const auto &sd = *impl_->shared;
+        const std::size_t ns = impl_->species.size();
+        const int np = static_cast<int>(impl_->parameters.size());
+        impl_->derivative_rateof_reads.assign(ns, {});
+        impl_->rateof_read_elsewhere.clear();
+        impl_->derivative_rateof_reads_state = 1;
+        if (uses_rateof()) {
+            std::unordered_map<int, int> written_by_function;
+            for (const auto &[func_idx, param_idx] : sd.var_param_bindings) {
+                written_by_function.emplace(param_idx, func_idx);
+            }
+            // A reaction's rate law, as the expressions behind its rate
+            // parameters (a plain parameter has none, and reads no rateOf).
+            std::vector<std::vector<int>> groups(sd.reactions.size());
+            for (std::size_t r = 0; r < sd.reactions.size(); ++r) {
+                const Reaction &rxn = sd.reactions[r];
+                std::vector<int> params{rxn.rate_param_idx0, rxn.ssa_volume_param_idx0};
+                for (int pi : rxn.rate_law_param_indices) {
+                    params.push_back(pi - 1);
+                }
+                for (int p : params) {
+                    if (p < 0 || p >= np) {
+                        continue;
+                    }
+                    if (auto fn = written_by_function.find(p); fn != written_by_function.end()) {
+                        groups[r].push_back(impl_->functions[fn->second].evaluator_id);
+                    } else if (impl_->parameters[p].is_expression) {
+                        groups[r].push_back(impl_->parameters[p].evaluator_id);
+                    }
+                }
+            }
+            // One group more for everything else that is evaluated: each
+            // event's expressions, and the functions and expression
+            // parameters that are no reaction's rate law (an output, an
+            // assignment rule). What those reach is followed from them.
+            std::unordered_set<int> rate_laws;
+            for (const auto &group : groups) {
+                rate_laws.insert(group.begin(), group.end());
+            }
+            std::vector<int> elsewhere;
+            const auto also = [&](int eid) {
+                if (eid >= 0 && rate_laws.count(eid) == 0) {
+                    elsewhere.push_back(eid);
+                }
+            };
+            for (const Event &ev : impl_->events) {
+                also(ev.trigger_expr_idx);
+                also(ev.delay_expr_idx);
+                also(ev.priority_expr_idx);
+                for (const auto &assignment : ev.assignments) {
+                    also(assignment.second);
+                }
+                for (int eid : ev.assignment_rescale_size_expr) {
+                    also(eid);
+                }
+            }
+            for (const auto &fn : impl_->functions) {
+                also(fn.evaluator_id);
+            }
+            for (const auto &param : impl_->parameters) {
+                if (param.is_expression) {
+                    also(param.evaluator_id);
+                }
+            }
+            groups.push_back(std::move(elsewhere));
+            std::vector<std::vector<int>> named;
+            std::vector<std::vector<int>> rated;
+            std::vector<char> known;
+            expression_reads_(groups, named, rated, known);
+            if (known.back() == 0) {
+                impl_->derivative_rateof_reads_state = 2;
+            }
+            impl_->rateof_read_elsewhere = rated.back();
+            for (std::size_t r = 0; r < sd.reactions.size(); ++r) {
+                if (known[r] == 0) {
+                    impl_->derivative_rateof_reads_state = 2;
+                    break;
+                }
+                if (rated[r].empty()) {
+                    continue;
+                }
+                // Every species the reaction changes. One that stands on
+                // both sides as often (a catalyst) has nothing of the rate in
+                // its derivative: the right-hand side takes zero times the
+                // rate off it, and on a probe not that (compute_derivs_core).
+                // While the two sides were applied one after the other it
+                // had, `(1 - 1e17) + 1e17` being 0, and was given the rate
+                // law's reads; which let a catalyst close a ring of rate
+                // rules that is none.
+                //
+                // Nor has a species that is held fixed, whose derivative is
+                // zero whatever is added to it: given the reads, `$X` made
+                // by a reaction at `rateOf(Y)` beside `Y' = rateOf(X)` was a
+                // ring, and refused, where Y' is a number.
+                //
+                // A reaction that changes no species has its rate law read by
+                // no derivative, and the law is still a column of the result.
+                const Reaction &rxn = sd.reactions[r];
+                bool read = false;
+                for (const auto *changed : {&rxn.net_loss, &rxn.net_gain}) {
+                    for (const auto &[si, m] : *changed) {
+                        if (m != 0.0 && si >= 0 && static_cast<std::size_t>(si) < ns &&
+                            !impl_->species[static_cast<std::size_t>(si)].fixed) {
+                            auto &reads = impl_->derivative_rateof_reads[si];
+                            reads.insert(reads.end(), rated[r].begin(), rated[r].end());
+                            read = true;
+                        }
+                    }
+                }
+                if (!read) {
+                    auto &elsewhere = impl_->rateof_read_elsewhere;
+                    elsewhere.insert(elsewhere.end(), rated[r].begin(), rated[r].end());
+                }
+            }
+            for (auto &reads : impl_->derivative_rateof_reads) {
+                std::sort(reads.begin(), reads.end());
+                reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
+            }
+            {
+                auto &elsewhere = impl_->rateof_read_elsewhere;
+                std::sort(elsewhere.begin(), elsewhere.end());
+                elsewhere.erase(std::unique(elsewhere.begin(), elsewhere.end()), elsewhere.end());
+            }
+        }
+    }
+    // How deep rateOf is nested, from the lists just filled.
+    impl_->rateof_nesting = 0;
+    impl_->rateof_flow_nesting = 0;
+    impl_->rateof_ring.clear();
+    if (impl_->derivative_rateof_reads_state != 1) {
+        // (The right-hand side keeps its one probe where nothing can be said:
+        // three more on every call would be four times the run.)
+        impl_->rateof_nesting = 3;
+    } else {
+        const auto &reads = impl_->derivative_rateof_reads;
+        const std::size_t ns = reads.size();
+        // The longest chain of derivatives each reading the next one's
+        // rateOf, however long: ten rate rules each on the rateOf of the one
+        // before take nine probes more than one, and counted to eight (the
+        // cap was on every chain) the tenth came out 0.087 for 0.562.
+        //
+        // Only a ring of them has no last link: `X' = rateOf(Y)` with
+        // `Y' = rateOf(X)` defines each rate by the other at the same instant,
+        // an algebraic loop that no number of probes reads (taken as eight
+        // deep, such a model was integrated with rates a probe late, 0.1% to
+        // 12% off). The model is refused for it by name
+        // (rateof_ring_refusal), as libRoadRunner, Antimony and libSBML
+        // refuse it. The rings are found as wholes (Tarjan's strongly
+        // connected components, which come out with each one after
+        // everything it reads), and the depth of everything else is counted
+        // over them.
+        //
+        // (With a stack of its own. One call for each link, a chain of
+        // 120,000 rate rules ended the process; 7,000 did on a thread with
+        // half a megabyte.)
+        std::vector<int> depth(ns, 0);
+        {
+            std::vector<int> order(ns, -1);
+            std::vector<int> low(ns, 0);
+            std::vector<int> component(ns, -1);
+            std::vector<char> on_stack(ns, 0);
+            std::vector<std::size_t> stack;
+            std::vector<std::pair<std::size_t, std::size_t>> walk; // node, next read
+            std::vector<std::size_t> members;
+            int visited = 0;
+            int components = 0;
+            for (std::size_t root = 0; root < ns; ++root) {
+                if (order[root] >= 0) {
+                    continue;
+                }
+                walk.emplace_back(root, 0);
+                while (!walk.empty()) {
+                    const std::size_t v = walk.back().first;
+                    if (walk.back().second == 0) {
+                        order[v] = low[v] = visited++;
+                        stack.push_back(v);
+                        on_stack[v] = 1;
+                    }
+                    if (walk.back().second < reads[v].size()) {
+                        const int x = reads[v][walk.back().second++];
+                        if (x < 0 || static_cast<std::size_t>(x) >= ns) {
+                            continue;
+                        }
+                        const auto w = static_cast<std::size_t>(x);
+                        if (order[w] < 0) {
+                            walk.emplace_back(w, 0);
+                        } else if (on_stack[w] != 0) {
+                            low[v] = std::min(low[v], order[w]);
+                        }
+                        continue;
+                    }
+                    if (low[v] == order[v]) {
+                        members.clear();
+                        for (;;) {
+                            const std::size_t w = stack.back();
+                            stack.pop_back();
+                            on_stack[w] = 0;
+                            component[w] = components;
+                            members.push_back(w);
+                            if (w == v) {
+                                break;
+                            }
+                        }
+                        bool reads_any = false;
+                        bool ring = members.size() > 1;
+                        int below = 0;
+                        for (std::size_t m : members) {
+                            for (int x : reads[m]) {
+                                if (x < 0 || static_cast<std::size_t>(x) >= ns) {
+                                    continue;
+                                }
+                                reads_any = true;
+                                if (component[static_cast<std::size_t>(x)] == components) {
+                                    ring = true;
+                                } else {
+                                    below = std::max(below, depth[static_cast<std::size_t>(x)]);
+                                }
+                            }
+                        }
+                        if (ring && impl_->rateof_ring.empty()) {
+                            // In the order each reads the next: from the
+                            // first declared, to a member it reads that has
+                            // not been named, until none is left to name.
+                            std::vector<std::size_t> todo(members);
+                            std::sort(todo.begin(), todo.end());
+                            std::size_t at = todo.front();
+                            while (true) {
+                                impl_->rateof_ring.push_back(static_cast<int>(at));
+                                todo.erase(std::find(todo.begin(), todo.end(), at));
+                                if (todo.empty()) {
+                                    break;
+                                }
+                                std::size_t next = todo.front();
+                                for (int x : reads[at]) {
+                                    if (x >= 0 &&
+                                        std::find(todo.begin(), todo.end(),
+                                                  static_cast<std::size_t>(x)) != todo.end()) {
+                                        next = static_cast<std::size_t>(x);
+                                        break;
+                                    }
+                                }
+                                at = next;
+                            }
+                        }
+                        const int own = reads_any ? 1 : 0;
+                        for (std::size_t m : members) {
+                            depth[m] = own + below;
+                        }
+                        ++components;
+                    }
+                    walk.pop_back();
+                    if (!walk.empty()) {
+                        low[walk.back().first] = std::min(low[walk.back().first], low[v]);
+                    }
+                }
+            }
+        }
+        const auto of = [&](int x) {
+            return x >= 0 && static_cast<std::size_t>(x) < ns ? depth[static_cast<std::size_t>(x)]
+                                                              : 0;
+        };
+        // Over the species whose rateOf is read: by a derivative, which is
+        // what the right-hand side waits on, and by anything else. (Not over
+        // every derivative that reads one. `Y' = rateOf(X)` with no rateOf(Y)
+        // anywhere is one probe, and counted as two it made every row, stop
+        // and event of such a model a third dearer.)
+        int flow = 0;
+        for (std::size_t i = 0; i < ns; ++i) {
+            for (int x : reads[i]) {
+                flow = std::max(flow, of(x));
+            }
+        }
+        int nesting = flow;
+        for (int x : impl_->rateof_read_elsewhere) {
+            nesting = std::max(nesting, of(x));
+        }
+        impl_->rateof_flow_nesting = flow;
+        impl_->rateof_nesting = nesting;
+    }
+    impl_->rateof_reads_ready.store(true, std::memory_order_release);
+}
+
 void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_out,
                                       std::vector<int> *params_out) const {
     {
@@ -3836,8 +4458,23 @@ void NetworkModel::compute_derivs(double t, const double *conc, double *derivs) 
     // GH #106: refresh the live rateOf buffer before the real RHS so any
     // rate_of__<species> accessor (in a rate-rule / assignment-rule function)
     // reads dx/dt at this (t, conc). One probe is exact — see the header note
-    // and dev/notes/gh106_rateof_kickoff.md. No-op when !uses_rateof.
-    refresh_rateof_derivs(t, conc);
+    // and dev/notes/gh106_rateof_kickoff.md — unless a derivative reads the
+    // rateOf of a species whose own derivative reads one: each such level
+    // takes a probe more (rateof_flow_nesting()). No-op when !uses_rateof.
+    if (impl_->uses_rateof) {
+        const int probes = rateof_flow_nesting();
+        if (!impl_->rateof_ring.empty()) {
+            // A ring of derivatives on each other's rateOf has no value to
+            // read (rateof_ring_refusal, which whoever runs the model raises
+            // first). Not a number, so that a caller who did not ask is
+            // stopped by its solver and not answered.
+            std::fill(derivs, derivs + n_species(), std::numeric_limits<double>::quiet_NaN());
+            return;
+        }
+        for (int pass = probes; pass >= 0; --pass) {
+            refresh_rateof_derivs_once_(t, conc);
+        }
+    }
     compute_derivs_core(t, conc, derivs);
 }
 
@@ -3849,13 +4486,33 @@ void NetworkModel::refresh_rateof_derivs(double t, const double *conc) {
     if (!impl_->uses_rateof) {
         return;
     }
+    // A probe reads the buffer the probe before it left, so a rateOf whose
+    // species' derivative reads another rateOf is exact one probe later.
+    for (int pass = rateof_nesting(); pass >= 0; --pass) {
+        refresh_rateof_derivs_once_(t, conc);
+    }
+}
+
+void NetworkModel::refresh_rateof_derivs_once_(double t, const double *conc) {
+    if (!impl_->uses_rateof) {
+        return;
+    }
     // Probe into a separate scratch so compute_derivs_core never reads the
     // accessor source (current_derivs) mid-accumulation, then publish the whole
     // vector atomically. The probe itself reads whatever current_derivs holds
-    // (stale), which is harmless: a rateOf argument is a species whose
-    // derivative is independent of every rateOf consumer, so the argument
-    // entries it produces are exact regardless of the stale reads.
-    compute_derivs_core(t, conc, impl_->rateof_scratch.data());
+    // (stale). Where a rateOf argument is a species whose derivative reads no
+    // rateOf, the entries the probe produces for it are exact regardless; a
+    // derivative that does read one is exact a probe later, which is why the
+    // callers make one more for each level of nesting.
+    // (As a probe, the last of them too. Its rate laws read what the probe
+    // before it left, and for a species nothing is counted a probe deep for,
+    // that is the call before: zeros in a model first asked, the rates of
+    // before an event after one. A catalyst is such a species. Given zero
+    // times a law that is infinite for that alone, the rate of change a row
+    // or a trigger read of it was not a number, and `at (rateOf(E) < -0.1)`
+    // fired on the instant of another event. A rate that is not finite at
+    // the model's own values fails the run in compute_derivs.)
+    compute_derivs_core(t, conc, impl_->rateof_scratch.data(), true);
     // GH #231 (sub-cluster 3 / 01463): rateof_scratch[i] is d(stored)/dt, and the
     // stored value is amount/V_static regardless of live volume (the integrator
     // works in static-concentration units; the Simulator rescales to live volume
@@ -3874,7 +4531,7 @@ void NetworkModel::refresh_rateof_derivs(double t, const double *conc) {
     impl_->current_derivs = impl_->rateof_scratch;
 }
 
-void NetworkModel::compute_derivs_core(double t, const double *conc, double *derivs) {
+void NetworkModel::compute_derivs_core(double t, const double *conc, double *derivs, bool probe) {
     const int ns = n_species();
     const int nr = n_reactions();
 
@@ -3945,7 +4602,7 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
             // the rate is not finite). For a species on one side alone it is
             // the statement it was, bit for bit.
             for (const auto &[si, m] : rxn.net_loss) {
-                if (si < ns) {
+                if (si < ns && (m != 0.0 || !probe)) {
                     const double term = rate / species_divisor(si);
                     derivs[si] -= m == 1.0 ? term : m * term;
                 }
@@ -3968,9 +4625,15 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
         // rate of 1e15. Zero times a finite rate is nothing; times a rate that
         // is not finite it is NaN, which fails the run as it did. For a species
         // on one side alone this is the statement it was, bit for bit.
+        // (On a probe a net of zero is left alone: the rate law reads rateOfs
+        // the probes have not filled yet, and may be infinite for that alone.)
         for (const auto &[si, m] : rxn.net_loss) {
             if (si < ns) {
-                derivs[si] -= m == 1.0 ? rate : m * rate;
+                if (m == 1.0) {
+                    derivs[si] -= rate;
+                } else if (m != 0.0 || !probe) {
+                    derivs[si] -= m * rate;
+                }
             }
         }
         for (const auto &[si, m] : rxn.net_gain) {

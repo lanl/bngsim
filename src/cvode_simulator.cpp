@@ -2106,6 +2106,10 @@ struct ExecutedEventFire {
 // treat them as one instant (issue #737). The Python detector groups crossings
 // by the same reach (`_switch_sensitivity._same_instant`).
 constexpr double kSwitchInstantUlps = 64.0;
+// The least time scale a plain run's instants are measured on (see
+// `reached_stop` in CvodeSimulator::run; `_PLAIN_INSTANT_FLOOR` in
+// _switch_sensitivity.py is the same number).
+constexpr double kPlainInstantFloor = 1e-125;
 // How far short of the next crossing, as a part of the stretch from the last
 // restart to it, the run stops for its comoving columns (issue #760): a frame
 // entered at a crossing is left there, and a column that enters ahead of its
@@ -11226,7 +11230,14 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
 
 // ─── Public interface ────────────────────────────────────────────────────────
 
-CvodeSimulator::CvodeSimulator(NetworkModel &model) : impl_(std::make_unique<Impl>(model)) {}
+CvodeSimulator::CvodeSimulator(NetworkModel &model) : impl_(std::make_unique<Impl>(model)) {
+    // A ring of derivatives on each other's rateOf has no right-hand side to
+    // integrate (lanl/bngsim#991): refused here, by name, before anything
+    // evaluates it.
+    if (std::string why = model.rateof_ring_refusal(); !why.empty()) {
+        throw std::runtime_error(why);
+    }
+}
 
 CvodeSimulator::~CvodeSimulator() = default;
 
@@ -11543,6 +11554,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // g_i(t, y) = trigger_i(t, y) - 0.5  (zero-crossing detects false→true)
     const int n_events = model.n_events();
     std::vector<bool> trigger_was_true(n_events, false);
+    // The time of the read at which each entry of `trigger_was_true` last
+    // changed. Triggers are read in the order of time but for one case: a row
+    // behind a stop or a root that CVODE returned past it is read at its own,
+    // earlier time. A read earlier than a trigger's last change says nothing
+    // about it. Taken at its word, an event that had fired on rising read
+    // false there, was written down as fallen, and fired again at the next
+    // read; and one that had fallen read true there and fired on a rise it
+    // never made.
+    std::vector<double> trigger_changed_at(n_events, -std::numeric_limits<double>::infinity());
 
     // ─── Triggers sitting exactly on their threshold at t_start (issue #340) ──
     // Set for an event whose trigger reads false at t_start while its residual
@@ -11726,6 +11746,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         std::vector<double> frozen_values; // size = n_assignments when frozen
     };
     std::vector<PendingEvent> pending_events;
+    // The earliest time anything in `pending_events` waits for (+inf with
+    // nothing waiting), read once after each change to the queue. Asked for
+    // several times at every stop, it was a pass over the queue each time,
+    // and with eight thousand executions waiting those passes were the run.
+    // EVERY write to `pending_events` sets `pending_changed`.
+    bool pending_changed = true;
+    double pending_earliest_read = std::numeric_limits<double>::infinity();
+    auto earliest_pending = [&]() -> double {
+        if (pending_changed) {
+            pending_earliest_read = std::numeric_limits<double>::infinity();
+            for (const auto &pe : pending_events) {
+                pending_earliest_read = std::min(pending_earliest_read, pe.apply_time);
+            }
+            pending_changed = false;
+        }
+        return pending_earliest_read;
+    };
     // The immediate fires of the batch being drained, in execution order, for
     // the sensitivity jump (issue #722). Cleared by the caller that owns the
     // batch; filled only in a sensitivity run.
@@ -11781,6 +11818,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         std::vector<double> snapshot_vals; // UVFTT frozen RHS (empty if !UVFTT)
         double delay;
         bool done = false;
+        // A delayed execution that has come due, taken from pending_events
+        // (issue #752). It was triggered, and its values frozen, at an earlier
+        // time; here it only waits its turn among what executes at this one.
+        bool from_delay = false;
     };
 
     // Guard against a same-instant algebraic loop (mutually-arming events).
@@ -11834,8 +11875,122 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     };
 
+    // Issue #752: the delayed executions that have come due at t_now join the
+    // batch. SBML L3 orders what executes at one instant by priority, read when
+    // each executes, whether an event was triggered just now or a delay ago.
+    // Before this the due ones ran after the whole batch, in the order they
+    // were queued, with no priority read at all: `at 2 after (time >= 0),
+    // priority = 1: x = 1` and `at 1 after (time >= 1), priority = 10: x = 2`
+    // left x = 2, and a delayed event of priority 10 ran after an immediate
+    // one of priority 1 on the same instant.
+    // A non-persistent event's executions still waiting on their delay are
+    // cancelled when its trigger is false (SBML §4.11.3). Wherever a trigger is
+    // read false, not only where a batch sees it fall: the root pass and the
+    // read at a stop both move the baseline a batch compares against, and a
+    // trigger that a clock dropped and an event of the same instant raised
+    // again was true before the batch and after it, with the execution it had
+    // lost still waiting.
+    // Set by a batch that queues an execution already due at the batch's own
+    // time (a delay that rounds to nothing): whoever has just read the queue
+    // as settled has to read it again.
+    bool queued_already_due = false;
+    auto drop_pending_of = [&](int ei) {
+        pending_changed = true;
+        pending_events.erase(
+            std::remove_if(pending_events.begin(), pending_events.end(),
+                           [ei](const PendingEvent &pe) { return pe.event_idx == ei; }),
+            pending_events.end());
+    };
+
+    // The stretch after the start of a run in which a root, or a read at a
+    // stop, of a trigger that rests on its threshold there says nothing about
+    // when it left (issue #340): 100 ulps of the run's own time scale, inside
+    // which CVODE cannot place a root any more precisely than t_start itself.
+    const double start_window = 100.0 * std::numeric_limits<double>::epsilon() *
+                                std::max(std::fabs(times.t_start), t_out.back() - times.t_start);
+
+    // Which species feed the residual of an event's trigger: the ones it
+    // names and, to any depth, the ones their derivatives read (the Jacobian's
+    // pattern, which follows a rate law through the functions it calls). What
+    // a write to any other species does cannot move the trigger. Built for an
+    // event the first time a write is made while it is marked as resting on
+    // its threshold at the start (issue #340), which is seldom.
+    //
+    // A rateOf(X) is X's derivative, and reads what that reads: for a residual
+    // that reads one, and for a derivative that does (`S' = rateOf(A); A' = B`,
+    // for which the pattern has no entry for S against B), the closure goes on
+    // from what feeds dX/dt. Not from X itself: a write to S moves no
+    // `rateOf(S)` where S' = A.
+    std::vector<std::vector<int>> read_by_derivative_of; // species i -> the j its dx_i/dt reads
+    std::vector<std::vector<char>> feeds_residual_of(static_cast<std::size_t>(n_events));
+    auto feeds_residual = [&](int ei) -> const std::vector<char> & {
+        auto &reach = feeds_residual_of[static_cast<std::size_t>(ei)];
+        if (!reach.empty()) {
+            return reach;
+        }
+        const auto n = static_cast<std::size_t>(ns);
+        const auto &pattern = model.jacobian_sparsity();
+        const std::vector<std::vector<int>> *through_rateof = model.derivative_rateof_reads();
+        std::vector<int> named;
+        std::vector<int> rated;
+        if (pattern.n != ns || pattern.col_ptrs.size() != n + 1 || through_rateof == nullptr ||
+            through_rateof->size() != n || !model.event_trigger_residual_reads(ei, named, rated)) {
+            reach.assign(n, 1); // nothing to follow: anything may feed it
+            return reach;
+        }
+        if (read_by_derivative_of.empty()) {
+            read_by_derivative_of.assign(n, {});
+            for (std::size_t j = 0; j < n; ++j) {
+                for (int64_t at = pattern.col_ptrs[j]; at < pattern.col_ptrs[j + 1]; ++at) {
+                    const auto i =
+                        static_cast<std::size_t>(pattern.row_indices[static_cast<std::size_t>(at)]);
+                    if (i < n) {
+                        read_by_derivative_of[i].push_back(static_cast<int>(j));
+                    }
+                }
+            }
+        }
+        reach.assign(n, 0);
+        std::vector<int> todo;
+        const auto take = [&](int j) {
+            if (j >= 0 && j < ns && reach[static_cast<std::size_t>(j)] == 0) {
+                reach[static_cast<std::size_t>(j)] = 1;
+                todo.push_back(j);
+            }
+        };
+        // What dx_i/dt reads: its species, and what the derivatives whose
+        // rateOf it reads read in turn.
+        std::vector<char> opened(n, 0);
+        std::function<void(int)> open = [&](int i) {
+            if (i < 0 || i >= ns || opened[static_cast<std::size_t>(i)] != 0) {
+                return;
+            }
+            opened[static_cast<std::size_t>(i)] = 1;
+            for (int j : read_by_derivative_of[static_cast<std::size_t>(i)]) {
+                take(j);
+            }
+            for (int x : (*through_rateof)[static_cast<std::size_t>(i)]) {
+                open(x);
+            }
+        };
+        for (int j : named) {
+            take(j);
+        }
+        for (int x : rated) {
+            open(x);
+        }
+        while (!todo.empty()) {
+            const int i = todo.back();
+            todo.pop_back();
+            open(i);
+        }
+        return reach;
+    };
+    std::vector<double> y_before_write;
+
     auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
-        if (firing_in.empty())
+        const bool any_due = t_now >= earliest_pending();
+        if (firing_in.empty() && !any_due)
             return false;
 
         // Capture an event's UVFTT snapshot + resolved delay AT THE CURRENT
@@ -11886,6 +12041,31 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         queue.reserve(firing_in.size());
         for (int ei : firing_in) {
             queue.push_back(make_instance(ei));
+        }
+        if (any_due) {
+            // In the order they were queued, which among equal priorities is
+            // the order the tie-break gave them when they were triggered.
+            // What still waits closes up in place, from the first one taken
+            // on: with thousands waiting, a copy of the queue for each batch
+            // was most of what a batch cost.
+            pending_changed = true;
+            auto keep = pending_events.begin();
+            for (auto it = pending_events.begin(); it != pending_events.end(); ++it) {
+                if (!(t_now >= it->apply_time)) {
+                    if (keep != it) {
+                        *keep = std::move(*it);
+                    }
+                    ++keep;
+                    continue;
+                }
+                ExecInstance inst;
+                inst.event_idx = it->event_idx;
+                inst.snapshot_vals = std::move(it->frozen_values);
+                inst.delay = 0.0;
+                inst.from_delay = true;
+                queue.push_back(std::move(inst));
+            }
+            pending_events.erase(keep, pending_events.end());
         }
 
         bool any_immediate = false;
@@ -11938,7 +12118,31 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
             // Random tie-break among equal-max-priority instances (GH #242).
             // A single candidate consumes no randomness (byte-identical to the
-            // old deterministic drain for tie-free models).
+            // old deterministic drain for tie-free models). Delayed executions
+            // at one priority keep the order they were queued in, the one the
+            // tie-break gave them at their trigger, so only the first of them
+            // stands in the draw.
+            //
+            // Where none of the tied events has a priority at all, an immediate
+            // one goes before a delayed one, as it always did: SBML leaves that
+            // order open, and drawing it would change what every model without
+            // priorities returns for a seed.
+            const bool unprioritised = std::all_of(ties.begin(), ties.end(), [&](size_t idx) {
+                const auto &ev = events_outer[queue[idx].event_idx];
+                return ev.priority_expr_idx < 0 && ev.priority == 0;
+            });
+            const bool immediate_tied = std::any_of(
+                ties.begin(), ties.end(), [&](size_t idx) { return !queue[idx].from_delay; });
+            bool delayed_in_draw = unprioritised && immediate_tied;
+            ties.erase(std::remove_if(ties.begin(), ties.end(),
+                                      [&](size_t idx) {
+                                          if (!queue[idx].from_delay)
+                                              return false;
+                                          const bool drop = delayed_in_draw;
+                                          delayed_in_draw = true;
+                                          return drop;
+                                      }),
+                       ties.end());
             size_t k;
             if (ties.size() == 1) {
                 k = ties[0];
@@ -11956,6 +12160,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
             const auto &ev = events_outer[queue[k].event_idx];
             double delay_now = queue[k].delay;
+
+            // A non-persistent event whose trigger has lapsed since it was
+            // triggered does not execute (SBML §4.11.3). A fall during this
+            // batch cancels it below; one during the delay is read here.
+            if (queue[k].from_delay && !ev.persistent &&
+                eval_ref_outer.evaluate(ev.trigger_expr_idx) <= 0.5) {
+                continue;
+            }
 
             if (delay_now > 0.0) {
                 if (n_sens > 0) {
@@ -11984,6 +12196,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 if (ev.use_values_from_trigger_time) {
                     pe.frozen_values = queue[k].snapshot_vals;
                 }
+                queued_already_due = queued_already_due || !(pe.apply_time > t_now);
+                pending_changed = true;
                 pending_events.push_back(std::move(pe));
                 continue;
             }
@@ -11992,15 +12206,63 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // otherwise evaluate now against the (possibly mutated) state.
             const auto &assigns = ev.assignments;
             std::vector<double> nv(assigns.size());
-            if (ev.use_values_from_trigger_time) {
+            if (queue[k].from_delay) {
+                // Frozen at the trigger where the event asks for that, read
+                // now otherwise. The injected compartment-resize rescale
+                // (ode_only, GH #74) conserves each contained species' amount
+                // across the resize, which happens at execution, so it reads
+                // the state here, never the snapshot (GH #248: a species a
+                // reaction produced between trigger and execution, suite case
+                // 01000's S2, was rescaled from its stale trigger-time amount).
+                // A rescale the loader marked is formed from the sizes before
+                // and after instead, by write_event_values (issue #936).
+                const bool use_frozen = !queue[k].snapshot_vals.empty();
+                for (size_t a = 0; a < assigns.size(); ++a) {
+                    const bool ode_only =
+                        a < ev.assignment_ode_only.size() && ev.assignment_ode_only[a];
+                    nv[a] = (use_frozen && !ode_only) ? queue[k].snapshot_vals[a]
+                                                      : eval_ref_outer.evaluate(assigns[a].second);
+                }
+            } else if (ev.use_values_from_trigger_time) {
                 nv = queue[k].snapshot_vals;
             } else {
                 for (size_t a = 0; a < assigns.size(); ++a) {
                     nv[a] = eval_ref_outer.evaluate(assigns[a].second);
                 }
             }
+            // (Inside the start window only, where the mark is read.)
+            const bool any_resting =
+                t_now - times.t_start <= start_window &&
+                std::find(on_threshold_at_start.begin(), on_threshold_at_start.end(), 1) !=
+                    on_threshold_at_start.end();
+            if (any_resting) {
+                y_before_write.assign(y_data, y_data + ns);
+            }
             write_event_values(ev, nv, t_now);
             any_immediate = true;
+            // An event has written the state. A trigger marked as resting on
+            // its threshold at the start (issue #340) no longer rests as the
+            // run found it if the write changed anything that feeds it: kept
+            // through such a write, the mark refused a trigger that the write
+            // itself opened. A write to something else leaves it where it
+            // was. With every mark dropped at any write, BIOMD0000000285
+            // beside one event on `time >= 1e-300` that sets a parameter
+            // nothing reads lost its cell at t = 6e-27.
+            if (any_resting) {
+                for (int ei = 0; ei < n_events; ++ei) {
+                    if (on_threshold_at_start[ei] == 0) {
+                        continue;
+                    }
+                    const std::vector<char> &feeds = feeds_residual(ei);
+                    for (int j = 0; j < ns; ++j) {
+                        const auto uj = static_cast<std::size_t>(j);
+                        if (feeds[uj] != 0 && y_data[j] != y_before_write[uj]) {
+                            on_threshold_at_start[ei] = 0;
+                            break;
+                        }
+                    }
+                }
+            }
             if (sens.n_total > 0) {
                 ExecutedEventFire fire;
                 fire.event_idx = queue[k].event_idx;
@@ -12022,6 +12284,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // same-instant cascade fire (enqueue a fresh instance); a falling
             // edge cancels the not-done non-persistent instances of that event.
             for (int ei = 0; ei < n_events; ++ei) {
+                if (t_now < trigger_changed_at[ei]) {
+                    continue; // read behind its last change
+                }
                 double tv = eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx);
                 bool now_true = (tv > 0.5);
                 bool was = prev[ei];
@@ -12063,6 +12328,12 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 inst.done = true;
                             }
                         }
+                        // ...and its executions still waiting on their delay.
+                        // The trigger fell, whatever a later assignment of this
+                        // batch does to it: read only once the batch was over,
+                        // a trigger that one event dropped and the next raised
+                        // again kept the execution it had lost (SBML §4.11.3).
+                        drop_pending_of(ei);
                     }
                 }
                 prev[ei] = now_true;
@@ -12074,6 +12345,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // (this drain already handled every same-instant rise) and CVODE's next
         // root pass measures crossings from the correct baseline.
         for (int ei = 0; ei < n_events; ++ei) {
+            if (trigger_was_true[ei] != prev[ei]) {
+                trigger_changed_at[ei] = t_now;
+            }
             trigger_was_true[ei] = prev[ei];
         }
 
@@ -12121,7 +12395,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // then process_firing_batch re-settles it across the cascade. A falling edge
     // therefore re-arms; a persistent delayed event that re-satisfies its own or
     // a sibling's trigger schedules the next round (01754/01758/01759 chains).
-    auto cascade_triggered_events = [&](double t_now) {
+    auto cascade_triggered_events = [&](double t_now, bool on_stop = false) -> bool {
         model.update_observables(y_data);
         model.evaluate_functions(t_now);
         if (model.uses_rateof()) {
@@ -12129,9 +12403,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             model.evaluate_functions(t_now);
         }
         std::vector<int> risers;
+        bool lapsed = false; // a non-persistent event reads false
         for (int ei = 0; ei < n_events; ++ei) {
             double v = eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx);
             bool now_true = (v > 0.5);
+            if (t_now < trigger_changed_at[ei]) {
+                continue; // read behind its last change
+            }
+            lapsed = lapsed || (!now_true && !events_outer[ei].persistent);
             // A chatter-dormant event (GH #95) is being stepped over: root_fn
             // suppresses its continuous root, so it must ALSO be excluded from
             // the same-instant cascade. Otherwise it re-fires here on every root
@@ -12140,10 +12419,49 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // which reintroduced BIOMD711's Zeno clamp chatter. Its trigger
             // baseline is still advanced so re-arm resumes from a consistent
             // state.
-            if (now_true && !trigger_was_true[ei] && !event_dormant[ei]) {
+            //
+            // Nor is a trigger that rests on its threshold at the start, read
+            // at a stop inside the start window, a rise (issue #340): as at a
+            // root there, it is the start read again. Without this a delayed
+            // execution due a few doubles into a leg, which is read as a stop
+            // is, fired an event that the same leg without it never fires.
+            // (Which of the two a trigger that leaves its threshold at higher
+            // order should do is issue #934; this keeps the one rule. The
+            // mark is gone once an event has written something that feeds
+            // the trigger.)
+            const bool resting =
+                on_stop && on_threshold_at_start[ei] != 0 && t_now - times.t_start <= start_window;
+            if (now_true && !trigger_was_true[ei] && !event_dormant[ei] && !resting) {
                 risers.push_back(ei);
             }
+            if (trigger_was_true[ei] != now_true) {
+                trigger_changed_at[ei] = t_now;
+            }
             trigger_was_true[ei] = now_true;
+        }
+        // The waiting executions of every non-persistent event read false
+        // here, in one pass over what waits: asked event by event, a model
+        // with a thousand idle non-persistent events paid a thousand passes
+        // at every read. And no pass where no such event reads false: with
+        // eight thousand executions waiting, a pass at every stop was most of
+        // what the run cost.
+        if (lapsed && !pending_events.empty()) {
+            pending_changed = true;
+            pending_events.erase(std::remove_if(pending_events.begin(), pending_events.end(),
+                                                [&](const PendingEvent &pe) {
+                                                    return !trigger_was_true[pe.event_idx] &&
+                                                           !events_outer[pe.event_idx].persistent;
+                                                }),
+                                 pending_events.end());
+        }
+        // At a stop, or a row taken from a double short of it, what executes on
+        // this instant is one batch: the triggers that have risen and the
+        // delayed executions that have come due, by priority (issue #752). Read
+        // apart, a delayed execution due on the time of a row reached from
+        // short was left out of the row, and one due on a stop ran before an
+        // event of higher priority that rose there.
+        if (on_stop && risers.empty() && t_now >= earliest_pending()) {
+            return process_firing_batch(t_now, risers);
         }
         if (!risers.empty()) {
             // process_firing_batch's own drain subsumes every *immediate*
@@ -12154,6 +12472,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // jump and leave every column it moves stale, with no word of it
             // (issue #910 reached this through a trigger the root pass read one
             // rateOf probe behind). Refuse rather than fire it.
+            if (sens.n_total > 0 && on_stop) {
+                // Issue #950: the rise lies between an output point and a stop
+                // within roundoff after it, a stretch CVODE does not search.
+                throw std::runtime_error(
+                    "Forward sensitivity: event '" + events_outer[risers.front()].id +
+                    "' triggers at t=" + diag_number(t_now) +
+                    ", within roundoff after an output point (100 ulps of the time), where "
+                    "the integrator returns the stop without locating the trigger's "
+                    "crossing. bngsim has no sensitivity jump for a fire it did not locate, "
+                    "so it refuses rather than return columns for a trajectory without the "
+                    "event (issue #950). Move the output point or the event time apart, or "
+                    "drop sensitivities for this run.");
+            }
             if (sens.n_total > 0) {
                 throw std::runtime_error(
                     "Forward sensitivity: event '" + events_outer[risers.front()].id +
@@ -12163,8 +12494,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     "columns it moves would be silently stale (GH #205, issue #910). Please "
                     "report this model; dropping sensitivities for this run avoids it.");
             }
-            process_firing_batch(t_now, risers);
+            return process_firing_batch(t_now, risers);
         }
+        return false;
     };
 
     // ─── Switch-time crossings to jump across (issue #48) ────────────────────
@@ -12207,6 +12539,25 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     auto same_instant = [](double a, double b) {
         return std::fabs(a - b) <= kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
                                        std::max({std::fabs(a), std::fabs(b), 1.0});
+    };
+    // Whether a return at *t* has reached the fixed stop at *at*. In a plain
+    // run that is 64 doubles of the time itself. `same_instant` measures times
+    // under 1 by the doubles of 1, which is right for the bracket a
+    // sensitivity jump is read from and is thousands of doubles of a time
+    // near zero: a delayed execution at 0.3 took a stop 150 doubles later as
+    // reached, the event on that stop was left to the root search of the next
+    // step, and that search returned it past an execution due three doubles
+    // after the stop, with which it was then ordered by priority.
+    //
+    // (Or of 1e-125 where the time is nearer zero than that: the integrator
+    // does not step over less. Two events at 0 and 7e-322 were two instants,
+    // the step to the second underflowed, and the second never fired.)
+    auto reached_stop = [&](double t, double at) {
+        if (sens.n_total > 0) {
+            return same_instant(t, at);
+        }
+        return std::fabs(t - at) <= kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+                                        std::max({std::fabs(t), std::fabs(at), kPlainInstantFloor});
     };
     SwitchJumpScratch sw_scratch;
     if (!switch_list.empty()) {
@@ -12334,6 +12685,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 for (const auto &ce : carry->pending) {
                     if (ce.event_idx < 0 || ce.event_idx >= n_events)
                         continue;
+                    pending_changed = true;
                     pending_events.push_back(
                         PendingEvent{ce.event_idx, ce.apply_time, ce.frozen_values});
                 }
@@ -12351,6 +12703,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // A carried execution of a non-persistent event whose trigger is
             // false here (an intervention between the legs made it so) is
             // cancelled, as it would have been the moment the trigger fell.
+            pending_changed = true;
             if (carry != nullptr)
                 pending_events.erase(std::remove_if(pending_events.begin(), pending_events.end(),
                                                     [&](const PendingEvent &pe) {
@@ -12410,6 +12763,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // non-persistent trigger false, which cancels its pending execution
             // now, as after any batch the run fires later (the next stop's check
             // comes too late when the trigger has risen again by then).
+            pending_changed = true;
             if (t0_immediate_fired)
                 pending_events.erase(std::remove_if(pending_events.begin(), pending_events.end(),
                                                     [&](const PendingEvent &pe) {
@@ -12804,6 +13158,109 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     };
 
+    // ─── A trigger that rises on a stop (issue #950) ─────────────────────────
+    //
+    // CVODE reports an event only as a root: a change of sign of a trigger
+    // between two times it reads it at. A stop on the instant a trigger rises
+    // is one of those times as a rule, and the rise is a root on the stop. It
+    // is not where an output point lies within the stop's roundoff before it
+    // (100 ulps of the time, CVODE's own measure). The step that reaches the
+    // stop is searched for roots only as far as the output, where the trigger
+    // is still false, and the next call returns the stop itself without
+    // searching the stretch between the two. The run then restarts on the
+    // stop, CVODE reads the trigger there as the state it starts from, and
+    // the rise is never seen: `at (time >= tau)` with tau = 0.1 + 0.2 on a
+    // grid that has 0.3 did not fire at all.
+    //
+    // So every trigger is read at a stop the run restarts on, and one that
+    // has risen there fires. Where the stop lies past the output point the
+    // run is integrating to, the row is recorded first: it belongs to a time
+    // before the event.
+    // How near an output point counts as reached, from either side of the
+    // loop: CVODE's own measure of a distance it will not integrate over
+    // ("tout too close to t0": less than 2 ulp-scale of the time). Nothing
+    // wider. The 1e-12 this replaced is thousands of doubles at t = 1 and the
+    // whole of a run whose time scale is a picosecond: read before a step is
+    // asked for, it recorded every row of `X -> ; 1e13*X` over (0, 1e-12) at
+    // t = 0, and passed over an event 5e-13 after a sample.
+    //
+    // And nothing narrower than the least distance two instants of a plain
+    // run are told apart by (`reached_stop`): from t = 0 the integrator's
+    // first step to a stop at 1e-310 underflows, it reports the output as
+    // reached with no step taken, and two events came back never fired with
+    // no error.
+    auto near_output = [](sunrealtype t, double out) {
+        return std::max(2.0 * std::numeric_limits<double>::epsilon() *
+                            std::max(std::fabs(static_cast<double>(t)), std::fabs(out)),
+                        kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+                            kPlainInstantFloor);
+    };
+    // The comparison is CVODE's own, the difference taken first: written as
+    // `t > out - near`, the subtraction rounded a sample two doubles ahead onto
+    // the time the run stood at, the test failed by a tie, and CVODE refused
+    // the distance.
+    //
+    // A run with sensitivity columns keeps the tests it had (reached exactly
+    // before a step, within 1e-12 after one). Its row is read from CVODES'
+    // history at the time the run stands at, and before the first step after
+    // a restart there is none to read: a row taken as reached there came back
+    // as a row of zeros, where CVODE's refusal of the distance had been loud.
+    auto reached_output = [&](sunrealtype t, double out, bool after_step) {
+        const double now = static_cast<double>(t);
+        if (sens.n_total > 0) {
+            return now >= out - (after_step ? 1e-12 : 0.0);
+        }
+        return now >= out || out - now < near_output(t, out);
+    };
+
+    bool rise_on_stop_due = false;
+    // The time at which the last read of a stop left nothing waiting that was
+    // due by it. The check for due executions further down the same pass has
+    // nothing to do there, and with thousands waiting its passes over them
+    // were most of what a stop cost.
+    double pending_settled_at = std::numeric_limits<double>::quiet_NaN();
+    // Whether an event wrote the state, and the run was restarted at *t*.
+    //
+    // What executes up to *t* is read in the order of time. CVODE returns a
+    // stop in place of anything within its roundoff before it, a hundred
+    // doubles or so, and a delayed execution due in that stretch is still
+    // waiting when the stop is read. It executes first, at its own time, with
+    // the triggers read at that time; then what rises or is due on *t*. Taken
+    // as one batch with the stop's, `at 0.1 after (time >= 0.7)` (due on
+    // 0.7999999999999999) ran after an event on 0.8, which no priority asked
+    // for and no model without priorities had done before.
+    //
+    // The run restarts at *restart_at*: *t*, or where it stands when that is
+    // past *t* (a row read behind a stop CVODE returned in its place).
+    auto fire_rises_on_stop = [&](double t, double restart_at) -> bool {
+        for (int si = 0; si < ns; ++si) {
+            sp_vec_outer[si].concentration = y_data[si];
+        }
+        bool wrote = false;
+        // (A chain that re-arms itself inside the stretch takes a pass for
+        // each link, so more passes than what waits now.)
+        size_t guard = pending_events.size() + 64;
+        for (; guard > 0 && earliest_pending() < t; --guard) {
+            wrote = cascade_triggered_events(earliest_pending(), /*on_stop=*/true) || wrote;
+        }
+        // (Where the passes ran out, something earlier is still waiting.)
+        const bool all_earlier_ran = guard > 0;
+        queued_already_due = false;
+        wrote = cascade_triggered_events(t, /*on_stop=*/true) || wrote;
+        pending_settled_at =
+            (all_earlier_ran && !queued_already_due) ? t : std::numeric_limits<double>::quiet_NaN();
+        if (wrote) {
+            // An event wrote the state: the run goes on from what it left.
+            std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(), 0.0);
+            const int rf = impl_->reinit_cvode(cvode_mem, static_cast<sunrealtype>(restart_at), y);
+            if (rf != CV_SUCCESS) {
+                throw std::runtime_error("CVodeReInit after an event on a stop failed: " +
+                                         std::to_string(rf));
+            }
+        }
+        return wrote;
+    };
+
     for (int i = 1; i < n_out; ++i) {
         // Loop until we've reached t_out[i] (within numerical tolerance).
         while (true) {
@@ -12813,6 +13270,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (budget.active())
                 budget.check();
 
+            // A stop the run reached past the last output point, whose
+            // triggers were left until that row was recorded (issue #950).
+            // An output still behind the stop is recorded first as well.
+            if (rise_on_stop_due && static_cast<double>(t_now) <= t_out[i]) {
+                rise_on_stop_due = false;
+                fire_rises_on_stop(static_cast<double>(t_now), static_cast<double>(t_now));
+            }
+
             // An output the run already stands past. CVODE returns a stop time
             // in place of an output within its own roundoff of it, so a stop a
             // few ulp after t_out[i-1] can leave t_now past t_out[i] as well.
@@ -12820,8 +13285,36 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // asking CVODE to step backwards, which it refuses while a later
             // stop time is armed (issue #737: two outputs 200 and 59 ulp before
             // a switch, and a second switch 141 ulp after it).
-            if (static_cast<double>(t_now) >= t_out[i]) {
-                break;
+            //
+            // Or one it stands a double or two short of, after a restart there:
+            // CVODE does not integrate over less than 2 ulp-scale of the time
+            // ("tout too close to t0"), so the output is taken as reached. An
+            // event fired on a sample, with the next sample a double later,
+            // ended the run in that error.
+            // (Not while a fixed stop still lies before the output: it is taken
+            // first, where the run stands, so that a trigger that rises on it
+            // is read at its own time and not at the output's a double later.)
+            // (Asked only where the output is reached: asked on every pass, it
+            // read every stop left in the run at every output point, and a
+            // million output points over ten thousand stops took 17 times as
+            // long.)
+            if (reached_output(t_now, t_out[i], /*after_step=*/false)) {
+                // The stops are in the order of time, so the first one past
+                // where the run stands is the only one to ask. (Asked of all
+                // of them, a grid that names each time twice walked every stop
+                // left at every second row.)
+                bool stop_before_output = false;
+                if (sens.n_total == 0) {
+                    for (size_t k = next_crossing; k < crossing_stops.size(); ++k) {
+                        if (crossing_stops[k].t_star > static_cast<double>(t_now)) {
+                            stop_before_output = crossing_stops[k].t_star <= t_out[i];
+                            break;
+                        }
+                    }
+                }
+                if (!stop_before_output) {
+                    break;
+                }
             }
 
             // Pick the next stop: the earliest pending apply_time inside
@@ -12834,15 +13327,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             double t_target = t_out[i];
             bool target_is_event = false;
             if (n_events > 0) {
-                const double t_min = static_cast<double>(t_now) +
-                                     8.0 * std::numeric_limits<double>::epsilon() *
-                                         std::max(1.0, std::fabs(static_cast<double>(t_now)));
-                for (const auto &pe : pending_events) {
-                    const double ta = std::max(pe.apply_time, t_min);
-                    if (ta < t_target) {
-                        t_target = ta;
-                        target_is_event = true;
-                    }
+                // (Doubles of the time, or of a thousandth of the run where the
+                // time is nearer zero than that: not an absolute 1.8e-15 for
+                // every run, which is longer than a run on a picosecond scale.
+                // And never more than that: on the scale of a run a million
+                // long it was 1.8e-12, and an execution due 1e-12 after the
+                // event that set what it reads ran 1.8e-12 after it.)
+                const double t_min =
+                    static_cast<double>(t_now) +
+                    8.0 * std::numeric_limits<double>::epsilon() *
+                        std::max(std::fabs(static_cast<double>(t_now)),
+                                 std::min(1.0, 1e-3 * (t_out.back() - t_out.front())));
+                // (The earliest of them: what is due later is stopped for
+                // later.)
+                const double ta = std::max(earliest_pending(), t_min);
+                if (ta < t_target) {
+                    t_target = ta;
+                    target_is_event = true;
                 }
             }
             // …and the next issue #177 floor-refresh time. NOT as an extra
@@ -13094,7 +13595,29 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             if (watch) {
                 CVodeGetNumSteps(cvode_mem, &steps_at_call);
             }
-            flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
+            // A fixed stop closer ahead than CVODE integrates over: a run, or a
+            // leg, that starts a double or two before `at (time >= tau)`. CVODE
+            // measures its first step against the stop and refuses the call
+            // ("tout too close to t0"), and the run ended there. The state does
+            // not move over that distance, so the stop is taken as reached
+            // where the run stands, and handled below like any other. Not in a
+            // run with sensitivity columns, whose handling of a stop reads
+            // CVODE's own history at it.
+            const bool stop_where_it_stands =
+                stop_at_crossing && sens.n_total == 0 &&
+                t_crossing - static_cast<double>(t_now) < near_output(t_now, t_crossing);
+            if (stop_where_it_stands) {
+                t_ret = static_cast<sunrealtype>(t_crossing);
+                flag = CV_TSTOP_RETURN;
+                const int cf = CVodeClearStopTime(cvode_mem);
+                if (cf != CV_SUCCESS) {
+                    throw std::runtime_error(
+                        "CVodeClearStopTime at a stop the run stands on failed: " +
+                        std::to_string(cf));
+                }
+            } else {
+                flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
+            }
 
             // Issue #928: a whole batch of steps spent pinned on a state-switch
             // surface. The state is put across and the run goes on from there;
@@ -13266,6 +13789,33 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     model.evaluate_functions(static_cast<double>(t_ret));
                 }
 
+                // What was due before this root executes first, at its own
+                // time, as before a stop (issue #752). A leg that starts a few
+                // doubles before a delayed execution's time is stopped for a
+                // little past it, and an event rooted in between returned here
+                // with that execution still waiting: taken into the root's
+                // batch, it ran after the event where no priority asked for it.
+                bool settled_before_root = false;
+                bool read_earlier = false;
+                if (sens.n_total == 0 && !pending_events.empty()) {
+                    for (size_t guard = pending_events.size() + 64;
+                         guard > 0 && earliest_pending() < static_cast<double>(t_ret); --guard) {
+                        settled_before_root =
+                            cascade_triggered_events(earliest_pending(), /*on_stop=*/true) ||
+                            settled_before_root;
+                        read_earlier = true;
+                    }
+                    if (read_earlier) {
+                        // Back to the root's own time for what follows.
+                        model.update_observables(y_data);
+                        model.evaluate_functions(static_cast<double>(t_ret));
+                        if (model.uses_rateof()) {
+                            model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                            model.evaluate_functions(static_cast<double>(t_ret));
+                        }
+                    }
+                }
+
                 // ─── First pass: identify rising-edge events ─────────────────
                 // A rising-edge fire is a root-detected event whose trigger now
                 // reads true and was previously false. Trigger states are also
@@ -13281,24 +13831,42 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // The mark is one-shot, and the window keeps a genuine later
                 // crossing (a residual that dips to the false side and comes
                 // back) firing normally even before the mark is cleared.
-                const double t0_root_window =
-                    100.0 * std::numeric_limits<double>::epsilon() *
-                    std::max(std::fabs(times.t_start), t_out.back() - times.t_start);
+                const double t0_root_window = start_window;
                 std::vector<int> firing; // event indices that just fired
                 firing.reserve(n_events);
                 for (int ei = 0; ei < n_events; ++ei) {
-                    if (root_info[ei] == 0)
+                    // Every trigger where an earlier execution has just run:
+                    // what it wrote can have opened a trigger that the step
+                    // did not see change sign (`time >= T && g > 0.5`, with g
+                    // set by the execution three doubles before T). Left to
+                    // the batch's own re-check, that event ran after one of
+                    // lower priority due on the same double.
+                    const bool flagged = root_info[ei] != 0;
+                    if (!flagged && !read_earlier)
                         continue;
                     double trigger_val = eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx);
                     bool trigger_now = (trigger_val > 0.5);
+                    // (The mark is about a root at the start, and is read
+                    // and spent on a root: a trigger that rises here by what
+                    // an execution wrote, with no root of its own, is no
+                    // re-reading of where it started. Put through the mark
+                    // it was refused, and never fired.)
                     const bool at_start =
-                        on_threshold_at_start[ei] != 0 &&
+                        flagged && on_threshold_at_start[ei] != 0 &&
                         static_cast<double>(t_ret) - times.t_start <= t0_root_window;
                     if (trigger_now && !trigger_was_true[ei] && !at_start) {
                         firing.push_back(ei);
                     }
+                    if (!trigger_now && !events_outer[ei].persistent) {
+                        drop_pending_of(ei);
+                    }
+                    if (trigger_was_true[ei] != trigger_now) {
+                        trigger_changed_at[ei] = static_cast<double>(t_ret);
+                    }
                     trigger_was_true[ei] = trigger_now;
-                    on_threshold_at_start[ei] = 0;
+                    if (flagged) {
+                        on_threshold_at_start[ei] = 0;
+                    }
                 }
 
                 // Snapshot state before firing so the chatter guard (GH #95)
@@ -13402,7 +13970,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
 
                 executed_fires.clear();
-                bool any_event_fired = process_firing_batch(static_cast<double>(t_ret), firing);
+                bool any_event_fired =
+                    process_firing_batch(static_cast<double>(t_ret), firing) || settled_before_root;
 
                 // ─── Chatter guard: detect Zeno re-firing (GH #95) ───────────
                 // A fire that BOTH advances simulated time negligibly since this
@@ -13710,6 +14279,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     switches_applied_t = static_cast<double>(t_ret);
                     ++next_switch;
                 }
+                // The same loss as at a fixed stop (issue #950): a trigger that
+                // rises on this switch time, with an output point within the
+                // stop's roundoff before it, was never searched for. Such a
+                // rise has no located crossing, and so no sensitivity jump:
+                // the read refuses it, where before the event was dropped and
+                // the columns came back for a trajectory without it.
+                if (n_events > 0 && flag != CV_ROOT_RETURN) {
+                    if (static_cast<double>(t_ret) > t_out[i]) {
+                        rise_on_stop_due = true;
+                    } else {
+                        fire_rises_on_stop(static_cast<double>(t_ret), static_cast<double>(t_ret));
+                    }
+                }
             }
 
             // ─── Fixed crossing reached: restart on the after-branch (#305) ──
@@ -13726,7 +14308,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // issue #146), so this runs only when none fired: an unconditional
             // second reinit would be harmless but wasteful, while skipping the
             // s⁻ capture/resume on the path where no root fires would not be.
-            if (stop_at_crossing && same_instant(static_cast<double>(t_ret), t_crossing)) {
+            if (stop_at_crossing && reached_stop(static_cast<double>(t_ret), t_crossing)) {
                 // Issue #545: a comoving column leaves at every restart, against f
                 // on the branch it was integrated with — read before the clock is
                 // landed on the after side below.
@@ -13767,8 +14349,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 bool restart_here = false;
                 while (next_crossing < crossing_stops.size() &&
                        (crossing_stops[next_crossing].t_star <= static_cast<double>(t_ret) ||
-                        same_instant(crossing_stops[next_crossing].t_star,
-                                     static_cast<double>(t_ret)))) {
+                        reached_stop(static_cast<double>(t_ret),
+                                     crossing_stops[next_crossing].t_star))) {
                     // A condition on a counter species reads a clock that is
                     // integrated, so at the stop it sits a couple of parts in
                     // 1e14 short of the threshold and still reads the branch
@@ -13784,6 +14366,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                 root_watch);
                     }
                     ++next_crossing;
+                }
+                // A trigger that has risen on this stop fires here (issue
+                // #950), with the counters on their thresholds. Before the
+                // restart below, which then starts from what the event left.
+                // Past the output point being integrated to, it waits for the
+                // row.
+                if (n_events > 0) {
+                    if (static_cast<double>(t_ret) > t_out[i]) {
+                        rise_on_stop_due = true;
+                    } else {
+                        fire_rises_on_stop(static_cast<double>(t_ret), static_cast<double>(t_ret));
+                    }
                 }
                 if (flag != CV_ROOT_RETURN && restart_here) {
                     std::vector<std::vector<double>> cross_s_minus;
@@ -13841,7 +14435,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // ─── Pending delayed events ──────────────────────────────────────
             // Check if any pending delayed events should fire at current time.
             // Also cancel non-persistent events whose trigger reverted to false.
-            if (!pending_events.empty()) {
+            //
+            // Where the run stands past the output point it was integrating to
+            // (a stop returned in its place), what is due here waits for the
+            // row, like a rise on the stop does, and is read with it as one
+            // batch. Executed here, a delayed event due on the stop ran before
+            // an immediate one of higher priority that rose there, and both
+            // were in the row of a time before either.
+            const bool past_the_row = static_cast<double>(t_ret) > t_out[i];
+            if (pending_settled_at == static_cast<double>(t_ret)) {
+                // The read of the stop on this instant has executed what was
+                // due and cancelled what had lapsed.
+            } else if (past_the_row && sens.n_total == 0 &&
+                       static_cast<double>(t_ret) >= earliest_pending()) {
+                rise_on_stop_due = true;
+            } else if (!pending_events.empty()) {
                 const auto &events = model.events();
                 auto &eval_ref = model.evaluator();
                 auto &sp_vec = const_cast<std::vector<Species> &>(model.species());
@@ -13864,6 +14472,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // delayed applies below (SBML §4.11.3): a competing delayed event
                 // that another just disabled must not still fire.
                 auto cancel_lapsed_nonpersistent = [&]() {
+                    pending_changed = true;
                     pending_events.erase(
                         std::remove_if(pending_events.begin(), pending_events.end(),
                                        [&](const PendingEvent &pe) {
@@ -13878,68 +14487,37 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 };
                 cancel_lapsed_nonpersistent();
 
-                // Apply events whose delay has expired, ONE AT A TIME in queue
-                // order (which preserves the §4.11.6 random pick made at trigger
-                // time). Between applies we (a) re-cancel any non-persistent
-                // pending event this assignment just disabled — so competing
-                // delayed events like 01590's Qinc/Rinc mutually exclude, exactly
-                // one incrementing per round instead of both — and (b) run the
-                // cascade so a same-instant delay-0 event the assignment triggers
-                // (01590's maxcheck; a persistent chain link 01754/58/59) fires.
-                // When the event was queued under useValuesFromTriggerTime=true,
-                // pe.frozen_values holds the trigger-time RHS values applied
-                // verbatim; otherwise the RHS is evaluated against current state.
+                // Execute the events whose delay has expired, as one batch with
+                // whatever else this instant holds: highest priority first, the
+                // priority read as each executes (issue #752). Between two of
+                // them the batch cancels a non-persistent one the last
+                // assignment just disabled, so competing delayed events like
+                // 01590's Qinc/Rinc mutually exclude, and fires a same-instant
+                // delay-0 event an assignment triggers (01590's maxcheck; a
+                // persistent chain link 01754/58/59).
+                //
+                // One batch for each time something is due at, in the order of
+                // those times. The run can stand a few doubles past more than
+                // one of them (an execution due within roundoff of where it
+                // stands is stopped for a little ahead), and two executions due
+                // a double apart, taken as one batch, ran in the order of their
+                // priorities where the earlier is first whatever they are.
                 bool delayed_applied = false;
-                while (true) {
-                    int due = -1;
-                    for (size_t j = 0; j < pending_events.size(); ++j) {
-                        if (static_cast<double>(t_ret) >= pending_events[j].apply_time) {
-                            due = static_cast<int>(j);
-                            break;
-                        }
-                    }
-                    if (due < 0) {
+                for (size_t guard = pending_events.size() + 1; guard > 0; --guard) {
+                    const double first = earliest_pending();
+                    if (!(static_cast<double>(t_ret) >= first)) {
                         break;
                     }
-                    PendingEvent pe = std::move(pending_events[static_cast<size_t>(due)]);
-                    pending_events.erase(pending_events.begin() + due);
-
-                    const auto &ev_pe = events[pe.event_idx];
-                    const auto &assigns = ev_pe.assignments;
-                    const bool use_frozen = !pe.frozen_values.empty();
-                    std::vector<double> pe_nv(assigns.size());
-                    for (size_t a = 0; a < assigns.size(); ++a) {
-                        // The injected compartment-resize concentration rescale
-                        // (ode_only, GH #74) conserves each contained species'
-                        // *amount* across the resize, which physically happens at
-                        // the event's execution (apply) time — so it must read
-                        // pre-fire state HERE, never the trigger-time snapshot a
-                        // useValuesFromTriggerTime=true event freezes for its user
-                        // assignments. GH #248: for such a delayed UVFTT event a
-                        // species produced by a reaction between trigger and apply
-                        // time (case 01000's S2) was otherwise rescaled from its
-                        // stale trigger-time amount, corrupting it by V_old/V_new
-                        // at the wrong volume. Evaluating the rescale fresh here
-                        // reproduces the (correct) UVFTT=false apply path exactly.
-                        // (A rescale the loader marked is formed from the sizes
-                        // before and after instead, by write_event_values: issue
-                        // #936.)
-                        const bool ode_only =
-                            a < ev_pe.assignment_ode_only.size() && ev_pe.assignment_ode_only[a];
-                        pe_nv[a] = (use_frozen && !ode_only) ? pe.frozen_values[a]
-                                                             : eval_ref.evaluate(assigns[a].second);
-                    }
-                    write_event_values(ev_pe, pe_nv, static_cast<double>(t_ret));
-                    delayed_applied = true;
-
-                    model.update_observables(y_data);
-                    model.evaluate_functions(static_cast<double>(t_ret));
-                    if (model.uses_rateof()) {
-                        model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                    if (process_firing_batch(first, {})) {
+                        delayed_applied = true;
+                        model.update_observables(y_data);
                         model.evaluate_functions(static_cast<double>(t_ret));
+                        if (model.uses_rateof()) {
+                            model.refresh_rateof_derivs(static_cast<double>(t_ret), y_data);
+                            model.evaluate_functions(static_cast<double>(t_ret));
+                        }
+                        cancel_lapsed_nonpersistent();
                     }
-                    cancel_lapsed_nonpersistent();
-                    cascade_triggered_events(static_cast<double>(t_ret));
                 }
 
                 if (delayed_applied) {
@@ -13960,11 +14538,48 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
             }
 
-            // Inner-while exit: reached t_out[i] within numerical tolerance.
-            if (t_now >= static_cast<sunrealtype>(t_out[i]) - static_cast<sunrealtype>(1e-12)) {
+            // Inner-while exit: reached t_out[i], or stands closer to it than
+            // CVODE integrates over. That distance grows with the time: at
+            // t = 3e6 it is 1.3e-9, and a delayed event executed one double
+            // before an output point there left the run a distance it could
+            // neither cover nor, by the absolute 1e-12 this was, call covered,
+            // and the run failed.
+            if (reached_output(t_now, t_out[i], /*after_step=*/true)) {
                 break;
             }
         } // end while (true) — inner integration loop
+
+        // An output taken as reached from a double or two short of it. A
+        // trigger that turns true in between (`time > 0.7`, stopped at on 0.7,
+        // with the sample on the next double) is true at the time the row is
+        // recorded for, so the triggers are read at that time and what has
+        // risen fires before the row is taken. Not in a run with sensitivity
+        // columns: a rise read this way has no located crossing for a jump
+        // (issue #950), and there the root search of the next step finds it,
+        // as it always did, one row later.
+        //
+        // The same where the run stands past the output, on a stop CVODE
+        // returned in its place, with that stop's instant waiting for this
+        // row: what belongs to the row's own time or before it (a delayed
+        // execution due on it, a trigger already true there) executes before
+        // the row is taken, and what belongs to the stop still waits. The run
+        // then goes on from the stop it stands on, with what the row's events
+        // left, and that stop's own instant is read there, at its own time.
+        // Restarted on the row's time instead, the run had the stop behind
+        // it, already taken: an event on it was left to the root search of
+        // the next step, which returned it with a delayed execution due a
+        // few doubles later and ordered the two by priority, and a rate law
+        // that switched on it was a discontinuity a double after a restart,
+        // which at t = 3e6 the integrator made no progress across.
+        if (n_events > 0 && sens.n_total == 0 &&
+            (static_cast<double>(t_now) < t_out[i] ||
+             (rise_on_stop_due && static_cast<double>(t_now) > t_out[i]))) {
+            const bool past = static_cast<double>(t_now) > t_out[i];
+            if (fire_rises_on_stop(t_out[i], past ? static_cast<double>(t_now) : t_out[i]) &&
+                !past) {
+                t_now = static_cast<sunrealtype>(t_out[i]);
+            }
+        }
 
         sunrealtype t_ret = t_now; // for downstream code (recording, sensitivities)
 
@@ -14016,11 +14631,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // this exact (t_ret, y_data) first so a rate_of__<species> accessor in a
         // recorded assignment-rule function reads dx/dt here, not the last
         // internal integration step's value (GH #106/#231). No-op otherwise.
+        //
+        // What reads the clock is read at the time of the row. The run stands
+        // a few doubles from it, and a function that switches in between
+        // (`piecewise(5, time >= tau, 0)` with the row a double before tau,
+        // returned from the stop on tau) would hold the value of the other
+        // side, in a row whose events have not executed.
+        const double t_row = sens.n_total > 0 ? static_cast<double>(t_ret) : t_out[i];
         if (model.uses_rateof()) {
-            model.refresh_rateof_derivs(t_ret, y_data);
+            model.refresh_rateof_derivs(static_cast<sunrealtype>(t_row), y_data);
         }
         model.update_observables(y_data);
-        model.evaluate_functions(t_ret);
+        model.evaluate_functions(t_row);
 
         // Copy function values back to species array for assignment-rule
         // species. When an SBML assignment rule targets a species, the
@@ -14042,7 +14664,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             obs_buf[j] = model.observables()[j].total;
         }
 
-        result.record(i, static_cast<double>(t_ret), y_data, obs_buf.data());
+        // The row carries the time that was asked for. The run stands within
+        // a few doubles of it on either side: short of it by less than CVODE
+        // integrates over, or past it on a stop CVODE returned in its place.
+        // Recorded at where the run stood, a leg one double long handed the
+        // next one a time no event carry was published for, and a delayed
+        // execution waiting in it was dropped; and three samples before a stop
+        // all came back labelled with the stop. (A run with sensitivity
+        // columns keeps the time it stands at: its columns are read there,
+        // and may hold a switch's jump the time asked for is still before.)
+        result.record(i, t_row, y_data, obs_buf.data());
 
         // Record function values
         if (n_func > 0) {

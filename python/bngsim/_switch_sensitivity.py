@@ -4792,7 +4792,7 @@ def _trig_stop_times(
     ]
 
 
-def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
+def merge_crossing_stops(found: Sequence[CrossingStop], floor: float = 1.0) -> list[CrossingStop]:
     """Merge the time-ordered stops that land on one instant.
 
     In time order each needs only the last one kept: comparing each against
@@ -4800,10 +4800,15 @@ def merge_crossing_stops(found: Sequence[CrossingStop]) -> list[CrossingStop]:
     in a window (issue #869). On one instant a touch of a threshold wins, then a
     counter's stop, then the later of two on literal time. The merged stop
     restarts the integrator if any of them does.
+
+    *floor* as for :func:`_same_instant`. With 1 under a plain run, an event
+    at t = 0.013 lost its stop to another's 1,065 doubles later, which the
+    loop does not take for the same instant; the event was left to the root
+    search and ran after a delayed execution due 65 doubles after it.
     """
     out: list[CrossingStop] = []
     for stop in found:
-        if not out or not _same_instant(stop.time, out[-1].time):
+        if not out or not _same_instant(stop.time, out[-1].time, floor):
             out.append(stop)
             continue
         # A restart that any stop on the instant asks for is kept.
@@ -8463,7 +8468,12 @@ def _clocks_moved(
 _INSTANT_ULPS = 64.0
 
 
-def _same_instant(a: float, b: float) -> bool:
+# The least time scale the instants of a run with no sensitivity columns are
+# measured on (``kPlainInstantFloor`` in cvode_simulator.cpp).
+_PLAIN_INSTANT_FLOOR = 1e-125
+
+
+def _same_instant(a: float, b: float, floor: float = 1.0) -> bool:
     """Whether the core's clock nudge about ``a`` can reach ``b`` (issue #737).
 
     The core's reach and a few ulp, so that a crossing time this module and the
@@ -8471,8 +8481,12 @@ def _same_instant(a: float, b: float) -> bool:
     more: a pair grouped here has to be isolated, and two thresholds that share
     their only parameter cannot be, so every pair grouped beyond the nudge's
     reach is a run refused for nothing.
+
+    *floor* is the least scale the reach is measured on: 1 for the nudge, and
+    :data:`_PLAIN_INSTANT_FLOOR` for a run with no sensitivity columns, whose
+    loop takes a stop as reached within doubles of the time itself.
     """
-    return abs(a - b) <= (_INSTANT_ULPS + 4.0) * _EPS * max(abs(a), abs(b), 1.0)
+    return abs(a - b) <= (_INSTANT_ULPS + 4.0) * _EPS * max(abs(a), abs(b), floor)
 
 
 def _instant_groups(found: Sequence[_Crossing]) -> list[list[_Crossing]]:

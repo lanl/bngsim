@@ -146,7 +146,7 @@ _compile_counter = itertools.count()
 # the same per-reaction amount_factor. Output is byte-identical outside the
 # hOSU-V≠1 set, but the generator logic changed, so invalidate v9 cached .so.
 # v12: GH #106 rateOf csymbol. The RHS emitter declares current_derivs[] and
-# runs a two-pass probe (compute ydot, publish to current_derivs, recompute)
+# runs a probe in passes (compute ydot, publish to current_derivs, recompute)
 # for models that reference rate_of__<species>; rate_of__ tokens resolve to
 # current_derivs[idx]. Byte-identical for non-rateOf models, but the generator
 # gained a branch — invalidate v11 cached .so.
@@ -287,7 +287,11 @@ _compile_counter = itertools.count()
 # v39: sums, products and the arguments of min, max, and, or are printed in an
 # order that does not follow the hash seed (issue #550). A cached v38 .so is one
 # of the two or three sources a model with a tied sum had. Invalidate v38.
-_CODEGEN_VERSION = "39"
+# v40: lanl/bngsim #991 — the RHS makes one rateOf pass more for each level a
+# derivative reads a nested rateOf at (`T' = k*rateOf(S)` with
+# `S' = rateOf(A)`). A cached v39 .so makes two passes whatever the model, and
+# integrates such a T as zero. Invalidate v39.
+_CODEGEN_VERSION = "40"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -5298,7 +5302,7 @@ def _build_ident_lookup_model(
         lookup[name] = (rep, True)
     # rateOf accessors (GH #106): rate_of__<species> → current_derivs[idx], a
     # plain variable read (not a call). The RHS emitter declares and fills
-    # current_derivs via the two-pass probe; non-rateOf models pass nothing.
+    # current_derivs via the RHS's probe passes; non-rateOf models pass nothing.
     if rateof_map:
         for name, rep in rateof_map.items():
             lookup[name] = (rep, True)
@@ -6011,6 +6015,10 @@ def generate_rhs_from_model(model) -> str:
     # Get the core C++ model
     core = model._core if hasattr(model, "_core") else model
     data = core.codegen_data()
+    # A ring of rates written in terms of each other has no right-hand side to
+    # emit (lanl/bngsim#991). The simulator refuses the model by the same text.
+    if data.get("rateof_ring_refusal"):
+        raise CodegenDeclined(data["rateof_ring_refusal"])
 
     params = data["parameters"]
     species = data["species"]
@@ -6053,7 +6061,7 @@ def generate_rhs_from_model(model) -> str:
     _func_idx_by_name: dict[str, int] = {name: i for i, name in enumerate(func_names)}
 
     # GH #106: rateOf support. A function body that references a
-    # rate_of__<species> token needs the live dx/dt — emit the two-pass probe
+    # rate_of__<species> token needs the live dx/dt — emit the probe passes
     # and a current_derivs[] buffer, and resolve each token to current_derivs[i].
     # rateOf reaches the RHS only via functions (rate-rule / assignment-rule
     # bodies); event triggers are not in the codegen RHS. Empty map ⇒ byte-
@@ -6064,6 +6072,17 @@ def generate_rhs_from_model(model) -> str:
     # engine's refresh_rateof_derivs scaling so codegen and interpreted agree.
     # Flagged set is empty for .net / V=1 / hOSU=false ⇒ byte-identical.
     uses_rateof = any(_RATEOF_PREFIX in f["expression"] for f in functions)
+
+    def _unchanged(net: int) -> str:
+        # A species its reaction does not change takes zero times the rate,
+        # which is nothing unless the rate is not finite. In a model that reads
+        # rateOf the right-hand side is made in passes, and on every pass but
+        # the last a rate law reads rateOfs that are not filled yet: `1/rateOf(A)`
+        # is infinite on the first with nothing wrong with the model. Only the
+        # last pass tells such a species of a rate that is not finite (as
+        # NetworkModel::compute_derivs_core does on a probe).
+        return "if (_rateof_last) " if uses_rateof and net == 0 else ""
+
     _rateof_map = None
     if uses_rateof:
         _rateof_map = {}
@@ -6242,11 +6261,11 @@ def generate_rhs_from_model(model) -> str:
 
             for si, c in _net_multiplicity(reactants, products):
                 term = _times_multiplicity(abs(c), _psvs_divide(si))
-                g(f"    ydot[{si}] {'-=' if c <= 0 else '+='} {term};")
+                g(f"    {_unchanged(c)}ydot[{si}] {'-=' if c <= 0 else '+='} {term};")
         else:
             for si, c in _net_multiplicity(reactants, products):
                 term = _times_multiplicity(abs(c), "rate")
-                g(f"    ydot[{si}] {'-=' if c <= 0 else '+='} {term};")
+                g(f"    {_unchanged(c)}ydot[{si}] {'-=' if c <= 0 else '+='} {term};")
         g("")
         rxn_groups.append(grp)
 
@@ -6290,6 +6309,10 @@ def generate_rhs_from_model(model) -> str:
     else:
         _rxn_sig = "const double* y, const double* p, double* ydot"
         _rxn_args = "y, p, ydot"
+    # ...and which pass this is, where a block has a statement of the last alone.
+    if any("_rateof_last" in ln for grp in rxn_groups for ln in grp):
+        _rxn_sig += ", int _rateof_last"
+        _rxn_args += ", _rateof_last"
     rxn_block_defs: list[str] = []
     rxn_call_lines: list[str] = []
     rxn_block_protos: list[str] = []
@@ -6305,7 +6328,7 @@ def generate_rhs_from_model(model) -> str:
 
     # Shard the obs[]/func[] computation off the serial driver too (GH #165) —
     # except for rateOf models, whose func bodies read the function-local
-    # current_derivs[] buffer from the two-pass probe, which a file-scope block
+    # current_derivs[] buffer from the probe passes, which a file-scope block
     # cannot see (rateOf models are small, so the flat inline emit is fine).
     chunk_obsfunc = chunk and not uses_rateof
     _rhs_obs_lines = (
@@ -6410,15 +6433,22 @@ def generate_rhs_from_model(model) -> str:
 
     if uses_rateof:
         # GH #106: live instantaneous dx/dt for rate_of__<species> reads. One
-        # probe is exact — every rateOf argument is a species whose derivative is
-        # independent of the rateOf consumers (no algebraic loop), so pass 0
-        # (current_derivs all zero) computes the argument species exactly; we
-        # publish ydot→current_derivs and pass 1 recomputes with rateOf live.
+        # probe is exact where every rateOf argument is a species whose
+        # derivative reads no rateOf, so pass 0 (current_derivs all zero)
+        # computes the argument species exactly; we publish
+        # ydot→current_derivs and pass 1 recomputes with rateOf live. A
+        # derivative that reads the rateOf of a species whose own derivative
+        # reads one takes a pass more for each such level: with two passes
+        # `T' = k*rateOf(S)`, `S' = rateOf(A)`, read rateOf(S) as pass 0 left
+        # it, zero, and T never moved (lanl/bngsim#991).
         # Mirrors NetworkModel::compute_derivs (src/model.cpp).
-        _emit("    /* rateOf (GH #106): live dx/dt buffer + two-pass probe */")
+        passes = 2 + int(data.get("rateof_flow_nesting", 0))
+        _emit("    /* rateOf (GH #106): live dx/dt buffer, probed pass by pass */")
         _emit("    double current_derivs[N_SPECIES];")
         _emit("    memset(current_derivs, 0, N_SPECIES * sizeof(double));")
-        _emit("    for (int _rateof_pass = 0; _rateof_pass < 2; ++_rateof_pass) {")
+        _emit(f"    for (int _rateof_pass = 0; _rateof_pass < {passes}; ++_rateof_pass) {{")
+        _emit(f"    const int _rateof_last = _rateof_pass == {passes - 1};")
+        _emit("    (void)_rateof_last;")
         _emit("")
 
     # Zero derivatives
@@ -6473,7 +6503,7 @@ def generate_rhs_from_model(model) -> str:
 
     if uses_rateof:
         # Publish this pass's RHS as the live derivative for the next pass; after
-        # pass 1, ydot already holds the correct RHS (the copy is harmless).
+        # the last pass, ydot already holds the correct RHS (the copy is harmless).
         _emit("    memcpy(current_derivs, ydot, N_SPECIES * sizeof(double));")
         _emit("    }  /* _rateof_pass */")
         _emit("")
@@ -10336,7 +10366,7 @@ def generate_outputs_from_model(model) -> str | None:
     Returns ``None`` (⇒ the simulator keeps the interpreted recording path) when
     there is nothing to compile (no observables and no functions) or when the
     model references ``rateOf`` — a rateOf function body needs the live dx/dt
-    (``current_derivs``), which only the RHS two-pass probe produces, so it
+    (``current_derivs``), which only the RHS's probe passes produce, so it
     cannot be evaluated standalone at an output point.
 
     Reuses the same emission helpers as ``generate_rhs_from_model`` so the
@@ -10683,7 +10713,7 @@ def _compute_output_sens_analysis(model, core) -> dict:
 
     if n_func == 0:
         return {"decline": "model has no global functions", "func_infos": [], **base}
-    # rateOf needs the live dx/dt buffer the RHS two-pass probe publishes; an
+    # rateOf needs the live dx/dt buffer the RHS's probe passes publish; an
     # output-point evaluation has none — the value codegen declines here too, so
     # the internal obs[]/func[] recomputation cannot be emitted standalone.
     if any(_RATEOF_PREFIX in f["expression"] for f in functions):

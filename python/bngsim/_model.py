@@ -2195,13 +2195,24 @@ class Model:
         ------
         ValueError
             If ``y`` is not 1-D or its length is not :attr:`n_species`.
+        ModelError
+            If rates of change are written in terms of each other's ``rateOf``
+            in a ring (an algebraic loop, which has no right-hand side).
 
         See Also
         --------
         jacobian : ``∂f/∂y`` at the same point.
         propensities : the SSA-convention reaction rates at ``y``.
         """
-        return self._core.compute_derivs(float(t), np.asarray(y, dtype=np.float64))
+        try:
+            return self._core.compute_derivs(float(t), np.asarray(y, dtype=np.float64))
+        except RuntimeError:
+            # (Asked on this path alone: the question costs a tenth of what
+            # the right-hand side of a small model does.)
+            ring = self._core.rateof_ring_refusal()
+            if ring:
+                raise ModelError(ring) from None
+            raise
 
     def jacobian(self, y, t: float = 0.0, *, sparse: bool = False):
         """``∂f/∂y`` at state ``y`` and time ``t`` — the ODE Jacobian.
@@ -2247,6 +2258,9 @@ class Model:
         ------
         ValueError
             If ``y`` is not 1-D or its length is not :attr:`n_species`.
+        ModelError
+            If rates of change are written in terms of each other's ``rateOf``
+            in a ring (an algebraic loop, which has no right-hand side).
         """
         from bngsim._evaluators import (
             ANALYTICAL,
@@ -2256,6 +2270,11 @@ class Model:
             gather_pattern,
         )
 
+        # (A difference quotient of a right-hand side that is not there came
+        # back as a matrix of NaN.)
+        ring = self._core.rateof_ring_refusal() if self._core.uses_rateof else ""
+        if ring:
+            raise ModelError(ring)
         analytical = self.prepare_analytical_jacobian()
         source = ANALYTICAL if analytical else FINITE_DIFFERENCE
         y_arr = np.asarray(y, dtype=np.float64)

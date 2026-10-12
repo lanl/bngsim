@@ -112,7 +112,7 @@ rise fires. Runs without sensitivities are unaffected.
 | `initialValue` attribute | ✅ | Events that can fire at t=0; a `run_until` leg continues the previous leg's trigger state instead (issue #693) |
 | Delay | ✅ | Constant delay (queued with cancellation) |
 | Parameter → species promotion | ✅ | Parameters targeted by events auto-promoted |
-| Priority ordering | ✅ | Real-valued priority; equal-priority ties broken by seed-keyed RNG (§4.11.6) |
+| Priority ordering | ✅ | Real-valued priority, read when each event executes; equal-priority ties broken by seed-keyed RNG (§4.11.6) |
 | Same-instant cascade | ✅ | Delay-0 events an assignment triggers join the batch (§4.11.6) |
 | `useValuesFromTriggerTime` | ✅ | SBML L3 default (`True`): assignment RHS frozen at trigger time. `False` evaluates at firing time |
 | SSA / PSA events | ✅ | Non-delayed events only — see limitations below |
@@ -122,6 +122,13 @@ rise fires. Runs without sensitivities are unaffected.
 Events with a delay queue their assignments and apply them after the delay
 period has elapsed. Non-persistent events whose trigger reverts to false
 before the delay expires are cancelled.
+
+Everything that executes at one instant is one batch, whether it was triggered
+just then or a delay ago: the event of highest priority executes next, and the
+priorities are read again after each execution, so a priority that changed
+during a delay counts at its value when the event executes. Two events are on
+one instant when their execution times are the same number. Delayed events of
+equal priority execute in the order they were triggered in.
 
 ```python
 # Antimony delayed event example

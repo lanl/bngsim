@@ -4593,6 +4593,11 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     if (ns == 0) {
         throw std::runtime_error("Cannot find steady state: model has no species");
     }
+    // A ring of derivatives on each other's rateOf has no right-hand side to
+    // find a root of (lanl/bngsim#991).
+    if (std::string why = model.rateof_ring_refusal(); !why.empty()) {
+        throw std::runtime_error("Cannot find steady state: " + why);
+    }
 
     // Issue #710 — both solvers look for a root of f(y) with the right-hand
     // side read at t = 0, and fire no event. A model that reads the time has no

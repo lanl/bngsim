@@ -33,7 +33,7 @@ class ModelBuilder:
         """
     def add_event(self, id: str, trigger_expr: str, assignments: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, str]], delay: typing.SupportsFloat | typing.SupportsIndex = 0.0, priority: typing.SupportsInt | typing.SupportsIndex = 0, persistent: bool = True, initial_value: bool = True, use_values_from_trigger_time: bool = True, delay_expr: str = '', priority_expr: str = '', assignment_ode_only: collections.abc.Sequence[bool] = []) -> None:
         """
-        Add a discrete event. assignments = [(sp_idx_0based, value_expr_str), ...]. delay_expr/priority_expr (when non-empty) are evaluated at trigger time and override the constant delay/priority. assignment_ode_only (GH #81) is a parallel bool list; true entries apply under ODE only and are skipped under SSA (the compartment-resize concentration rescale that must not perturb counts).
+        Add a discrete event. assignments = [(sp_idx_0based, value_expr_str), ...]. delay_expr/priority_expr (when non-empty) override the constant delay/priority: the delay is evaluated when the event is triggered, the priority when it executes (issue #752). assignment_ode_only (GH #81) is a parallel bool list; true entries apply under ODE only and are skipped under SSA (the compartment-resize concentration rescale that must not perturb counts).
         """
     def add_function(self, name: str, expression: str) -> int:
         """
@@ -254,6 +254,10 @@ class NetworkModel:
     def pure_sink_species(self) -> list[int]:
         """
         0-based indices of write-only accumulator (pure sink) species
+        """
+    def rateof_ring_refusal(self) -> str:
+        """
+        Why the model's right-hand side cannot be evaluated, where the reason is a ring of derivatives that read each other's rateOf (an algebraic loop, lanl/bngsim#991): the text names the species. Empty for every other model.
         """
     def reported_volume_factors(self) -> list[float]:
         """

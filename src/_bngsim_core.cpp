@@ -1132,6 +1132,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // runs the derivative-probe RHS path.
         .def_property_readonly("uses_rateof", &bngsim::NetworkModel::uses_rateof,
                                "Whether the model uses the SBML rateOf csymbol (GH #106).")
+        .def("rateof_ring_refusal", &bngsim::NetworkModel::rateof_ring_refusal,
+             "Why the model's right-hand side cannot be evaluated, where the reason is a ring "
+             "of derivatives that read each other's rateOf (an algebraic loop, lanl/bngsim#991): "
+             "the text names the species. Empty for every other model.")
 
         // Issue #654: the SSA's piecewise-constant sub-stepping gate. Decided
         // syntactically (does a function name `time`, or read a time-indexed
@@ -1704,6 +1708,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 for (std::size_t i = 0; i < sp.size(); ++i)
                     y_model[i] = sp[i].concentration;
                 const double t_model = self.current_time();
+                // (A ring of rates on each other's rateOf has no right-hand
+                // side, lanl/bngsim#991: said here, where the solvers say it.)
+                if (std::string why = self.rateof_ring_refusal(); !why.empty()) {
+                    throw std::runtime_error(why);
+                }
                 self.compute_derivs(t, y.data(), dydt.data());
                 self.set_current_time(t_model);
                 self.update_observables(y_model.data());
@@ -1743,6 +1752,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
                py::array_t<double, py::array::c_style | py::array::forcecast> conc) {
                 const double *y = state_arg(self, conc, "compute_derivs");
                 const auto ns = static_cast<py::ssize_t>(self.n_species());
+                // (A ring of rates on each other's rateOf has no right-hand
+                // side, lanl/bngsim#991: said here, where the solvers say it.)
+                if (std::string why = self.rateof_ring_refusal(); !why.empty()) {
+                    throw std::runtime_error(why);
+                }
                 py::array_t<double> out(ns);
                 if (ns > 0) {
                     double *o = static_cast<double *>(out.request().ptr);
@@ -2362,6 +2376,16 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     func_list.append(fd);
                 }
                 d["functions"] = func_list;
+                // How many probes more than one the right-hand side makes for
+                // a derivative that reads a nested rateOf, which the emitted
+                // one has to make as well (lanl/bngsim#991); and how many more
+                // a refresh of the rateOf buffer makes at a row, a stop or an
+                // event, which counts what anything reads.
+                d["rateof_flow_nesting"] = m.rateof_flow_nesting();
+                d["rateof_nesting"] = m.rateof_nesting();
+                // ...and why there is no right-hand side to emit at all, where
+                // derivatives read each other's rateOf in a ring.
+                d["rateof_ring_refusal"] = m.rateof_ring_refusal();
 
                 // Reactions: [(type, function_name, stat_factor, reactants_0based,
                 // products_0based), ...]
@@ -3029,8 +3053,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::arg("use_values_from_trigger_time") = true, py::arg("delay_expr") = "",
             py::arg("priority_expr") = "", py::arg("assignment_ode_only") = std::vector<bool>{},
             "Add a discrete event. assignments = [(sp_idx_0based, value_expr_str), ...]. "
-            "delay_expr/priority_expr (when non-empty) are evaluated at trigger time and "
-            "override the constant delay/priority. assignment_ode_only (GH #81) is a "
+            "delay_expr/priority_expr (when non-empty) override the constant "
+            "delay/priority: the delay is evaluated when the event is triggered, the "
+            "priority when it executes (issue #752). assignment_ode_only (GH #81) is a "
             "parallel bool list; true entries apply under ODE only and are skipped under "
             "SSA (the compartment-resize concentration rescale that must not perturb counts).")
         .def("set_last_event_assignment_rescale",
