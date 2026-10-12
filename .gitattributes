@@ -37,3 +37,12 @@ third_party/** -text
 # change, assembled at release, so two PRs never touch the same file at all —
 # issue #668.
 CHANGELOG.md merge=union
+
+# The test-count guards (issue #584) run ci/check_test_count.sh under Git Bash on
+# the Windows legs, and a windows-latest checkout rewrites LF to CRLF (the
+# core.autocrlf behaviour f562ae3 records). Bash does not strip the \r, so
+# `set -euo pipefail\r` kills the script before it reads a count, and both
+# Windows legs go red at the guard step. The bounds file it reads is pinned too;
+# the helper tolerates a CRLF one, and this keeps it from having to.
+ci/*.sh text eol=lf
+ci/*.env text eol=lf

@@ -259,29 +259,27 @@ jobs:
           # collection, a rename orphans a file, a bad conftest deselects. None of
           # those is a failure — the run stays green with a smaller denominator,
           # which is the #28/#36 shape native-tests.yml guards with its own
-          # floors. Two denominators here, for the same reason it needs two:
+          # floors. Two counts here, because there are two ways to shrink:
           #
-          #   1. COLLECTED (passed + skipped + xfailed + xpassed). This is the
-          #      structural one, and it is nearly environment-INDEPENDENT: 3490 on
-          #      ubuntu-latest, on macos-14, and on a developer's macOS box, all at
-          #      the commit that added this job. Every skip in this suite is
-          #      function- or class-level, so a corpus being absent moves tests
-          #      between the columns without changing the total. A drop here means
-          #      tests stopped being collected. Floor sits ~10 below.
-          #   2. PASSED. This one IS environment-sensitive (3415 on macOS, 3411 on
-          #      Linux — the difference is lanl/bngsim#176's xfails, four when this
-          #      was written and three since the steady-state one was fixed), so its
-          #      floor is looser. It exists to catch the case COLLECTED cannot: a
-          #      whole group converting to skips for a *declared* reason, e.g. an
-          #      extra silently failing to install and taking the 13 roadrunner
-          #      tests with it. Floor sits ~30 below, so it trips on a group and
-          #      not on one test.
+          #   1. COLLECTED (passed + skipped + xfailed + xpassed) has a floor. A
+          #      drop means tests stopped being collected. Every leg reports the
+          #      same number, because a CI checkout has no gitignored corpora (a
+          #      developer checkout that has them collects more; see
+          #      ci/test_floors.env).
+          #   2. SKIPPED has a ceiling. Crossing it means a group of tests turned
+          #      into skips for a *declared* reason that BNGSIM_SKIP_AUDIT=strict
+          #      accepts, e.g. an extra silently failing to install, provided
+          #      the group is larger than the ceiling's headroom on that leg
+          #      (30 to 56 tests; see ci/test_floors.env). This used to be a
+          #      floor on PASSED, which had to keep moving as the suite grew; a
+          #      skip count does not move when tests are added.
           #
-          # Both floors only rise as tests are added; additions never break them,
-          # only silent removals do.
-          COLLECTED_FLOOR=3480
-          PASS_FLOOR=3380
-
+          # The bounds live in ci/test_floors.env and ci/check_test_count.sh
+          # holds each count to its own (issue #584). The check fails in both
+          # directions: past the bound, and so far inside it that the bound has
+          # gone stale. The second is what used to be missing. These floors had
+          # sat untouched at 3480 and 3380 while the suite grew past 11000, so
+          # two thirds of it could have vanished and this step stayed green.
           LOG="python-tests-${{ matrix.label }}.log"
           summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$LOG" | tail -1 || true)"
           if [ -z "$summary" ]; then
@@ -293,17 +291,11 @@ jobs:
           # "3 xpassed" cannot match "[0-9]+ passed", so the categories stay disjoint.
           count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
           passed="$(count passed)"
-          collected=$(( passed + $(count skipped) + $(count xfailed) + $(count xpassed) ))
+          skipped="$(count skipped)"
+          collected=$(( passed + skipped + $(count xfailed) + $(count xpassed) ))
 
-          echo "collected $collected (floor $COLLECTED_FLOOR); passed $passed (floor $PASS_FLOOR)."
-          if [ "$collected" -lt "$COLLECTED_FLOOR" ]; then
-            echo "::error::Only $collected tests collected, expected >= $COLLECTED_FLOOR — tests stopped being collected rather than failing."
-            exit 1
-          fi
-          if [ "$passed" -lt "$PASS_FLOOR" ]; then
-            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — a group of tests turned into skips."
-            exit 1
-          fi
+          bash ci/check_test_count.sh PYTEST_COLLECTED "$collected" "tests stopped being collected rather than failing"
+          bash ci/check_test_count.sh PYTEST_SKIPPED "$skipped" "a group of tests turned into skips"
 
       # The parity harness's own unit tests (issue #316). Nothing ran these until
       # now, which is a false green over the code that decides every parity
@@ -340,16 +332,12 @@ jobs:
         if: ${{ !github.event.inputs.pytest_args }}
         run: |
           set -euo pipefail
-          # Same two-denominator reasoning as the guard above, and the same
-          # reason it needs two. COLLECTED is environment-independent here for
-          # the same structural reason: every skip in this suite is function- or
+          # Same two counts as the guard above, for the same two reasons, with
+          # bounds in the same file. COLLECTED is environment-independent here
+          # for a structural reason: every skip in this suite is function- or
           # class-level, so a missing engine moves tests between columns without
           # changing the total — 443 both fully provisioned and with amici,
-          # roadrunner and BNG2.pl all absent. PASSED is environment-sensitive
-          # (426 provisioned, 420 bare), so its floor is looser.
-          COLLECTED_FLOOR=433
-          PASS_FLOOR=390
-
+          # roadrunner and BNG2.pl all absent, when this guard was added.
           LOG="parity-tests-${{ matrix.label }}.log"
           summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$LOG" | tail -1 || true)"
           if [ -z "$summary" ]; then
@@ -360,17 +348,11 @@ jobs:
 
           count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
           passed="$(count passed)"
-          collected=$(( passed + $(count skipped) + $(count xfailed) + $(count xpassed) ))
+          skipped="$(count skipped)"
+          collected=$(( passed + skipped + $(count xfailed) + $(count xpassed) ))
 
-          echo "collected $collected (floor $COLLECTED_FLOOR); passed $passed (floor $PASS_FLOOR)."
-          if [ "$collected" -lt "$COLLECTED_FLOOR" ]; then
-            echo "::error::Only $collected parity tests collected, expected >= $COLLECTED_FLOOR — tests stopped being collected rather than failing."
-            exit 1
-          fi
-          if [ "$passed" -lt "$PASS_FLOOR" ]; then
-            echo "::error::Only $passed parity tests passed, expected >= $PASS_FLOOR — a group of tests turned into skips."
-            exit 1
-          fi
+          bash ci/check_test_count.sh PARITY_COLLECTED "$collected" "parity tests stopped being collected rather than failing"
+          bash ci/check_test_count.sh PARITY_SKIPPED "$skipped" "a group of parity tests turned into skips"
 
       # Conditioned on the pytest step having been reached, not just on always():
       # if the build fails there is no log to upload, and if-no-files-found=error

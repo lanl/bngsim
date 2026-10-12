@@ -47,7 +47,9 @@ these sweeps actually read.
 from __future__ import annotations
 
 import math
+import os
 import re
+import sys
 from pathlib import Path
 
 import bngsim
@@ -55,23 +57,20 @@ import numpy as np
 import pytest
 from bngsim._bngsim_core import ModelBuilder
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import _net_corpus  # noqa: E402
+
 _SIR = Path(__file__).resolve().parents[2] / "benchmarks" / "models" / "net" / "ode" / "SIR.net"
-_NET_TREE = Path(__file__).resolve().parents[2]
+_NET_TREE = _net_corpus.ROOT
 #: The #266 shape, in the format these sweeps read. See the module docstring for
 #: why a tracked fixture was needed: the defect lives in SBML `<assignmentRule>`
 #: models (107 of 327 tracked), and zero tracked `.net` files carried it.
 _SHADOWED = _NET_TREE / "tests" / "data" / "shadowed_function_param.net"
-#: The roots holding committed ``.net`` fixtures, named rather than reached by
-#: rglob-ing the repo root. Two reasons, both issue #590: a whole-tree rglob also
-#: swept up ``.pytest_cache``, so "every .net in the tree" was partly a claim
-#: about the developer's own cache; and ``Path.rglob`` does not descend into
-#: symlinked directories, so under ``run_tests.sh`` -- whose stand-in repo is a
-#: link farm -- it matched nothing and these tests skipped themselves. A symlink
-#: AT the root of the walk *is* followed, so naming the roots works either way.
-_NET_ROOTS = ("benchmarks", "parity_checks", "tests")
-_NETS = sorted(
-    p for root in _NET_ROOTS for p in (_NET_TREE / root).rglob("*.net") if "build" not in p.parts
-)
+#: Every tracked ``.net`` file, then every untracked one on this machine. The
+#: second half is what made #266 red on one developer's pre-push hook and green
+#: in CI; _net_corpus.py says why the two are kept apart.
+_NETS = _net_corpus.TRACKED + _net_corpus.LOCAL
 
 
 # ── A self-contained model carrying one of each kind ────────────────────────
@@ -354,15 +353,14 @@ def test_no_net_model_in_the_tree_leaks_a_function_name():
     assert with_functions > 20, (
         f"only {with_functions} function-carrying models reached under {_NET_TREE}"
     )
-    # `_NETS` is an rglob of the repo root, so the corpus is whatever `.net`
-    # files this machine happens to have — 140 in a clean checkout, 677+ on a box
-    # that has run the benchmark suites. That is what made #266 red on one
-    # developer's pre-push hook and green in CI, so name the one file the sweep
-    # must always have found: without it, a green run here means only that
-    # nothing on *this* machine carries the shape.
-    assert _SHADOWED in _NETS, (
-        f"{_SHADOWED.name} is missing from the {len(_NETS)} .net files found under "
-        f"{_NET_TREE} — this sweep cannot see the #266 shape without it"
+    # `_NETS` is whatever `.net` files this machine has: 140 tracked in a clean
+    # checkout, 1800+ on a box that has run the benchmark and parity suites. That
+    # is what made #266 red on one developer's pre-push hook and green in CI, so
+    # name the one TRACKED file the sweep must always have found: without it, a
+    # green run here means only that nothing on *this* machine carries the shape.
+    assert _SHADOWED in _net_corpus.TRACKED, (
+        f"{_SHADOWED.name} is missing from the {len(_net_corpus.TRACKED)} tracked .net "
+        f"files under {_NET_TREE} — this sweep cannot see the #266 shape without it"
     )
 
 

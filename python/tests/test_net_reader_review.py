@@ -14,7 +14,9 @@ Tests that fail without a marker are defects in the change under review. The
 from __future__ import annotations
 
 import math
+import os
 import shutil
+import sys
 import textwrap
 import warnings
 from pathlib import Path
@@ -24,6 +26,10 @@ import numpy as np
 import pytest
 from bngsim import build_model_from_parsed, parse_net_file
 from bngsim._exceptions import ModelError
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import _net_corpus  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[2]
 _ODE_NETS = _REPO / "benchmarks" / "models" / "net" / "ode"
@@ -263,19 +269,9 @@ def test_an_edited_literal_reaches_the_parameters_derived_from_it(tmp_path: Path
     np.testing.assert_allclose(_ode(model, 1.0, 5)[:, 0], 100.0 * np.exp(-2.0 * t), rtol=1e-7)
 
 
-_COMMITTED = sorted(
-    p
-    for root in ("benchmarks", "parity_checks", "tests")
-    for p in (_REPO / root).rglob("*.net")
-    if "build" not in p.parts and ".pytest_cache" not in p.parts
-)
-
-
-@pytest.mark.parametrize(
-    "net",
-    _COMMITTED or [pytest.param(None, marks=pytest.mark.skip(reason="no .net files"))],
-    ids=lambda p: str(p.relative_to(_REPO)) if isinstance(p, Path) else "none",
-)
+# Every tracked .net file, then every untracked one on this machine as `local:`
+# cases. See _net_corpus.py for why both, and why they are kept apart.
+@pytest.mark.parametrize("net", _net_corpus.sweep_params())
 def test_the_dicts_numbers_are_the_ones_from_net_uses(net: Path) -> None:
     """The round-trip test compares the *built* model, which re-evaluates every
     expression; this compares the numbers the dict itself reports."""

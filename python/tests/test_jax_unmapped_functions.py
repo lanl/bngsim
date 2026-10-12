@@ -260,10 +260,23 @@ def _jax_and_engine_rhs(tmp_path, body, h):
 @pytest.mark.parametrize("fn", ["round", "rint"])
 @pytest.mark.parametrize(
     "h",
-    # the halves, where jnp.round (half to even) disagreed and where ExprTk's
-    # round (away from zero below 0) and BNG's rint (floor(x + 0.5), #771) part;
-    # then the edges where the addition in floor(x + 0.5) itself rounds
-    [2.5, -2.5, 0.5, -0.5, 1.5, 2.4, -0.3, 0.49999999999999994, 4503599627370497.0],
+    # the halves, where jnp.round (half to even) disagreed and where C's round
+    # (away from zero below 0) and BNG's rint (floor(x + 0.5), #771) part;
+    # then the edges where the addition in floor(x + 0.5) itself rounds, which
+    # rint keeps and round must not (#684)
+    [
+        2.5,
+        -2.5,
+        0.5,
+        -0.5,
+        1.5,
+        2.4,
+        -0.3,
+        0.49999999999999994,
+        -0.49999999999999994,
+        4503599627370497.0,
+        -4503599627370497.0,
+    ],
 )
 def test_the_roundings_match_the_engine_exactly(tmp_path, fn, h):
     """`round` and `rint` must mean what the engine means. Mapped onto

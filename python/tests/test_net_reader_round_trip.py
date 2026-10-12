@@ -19,6 +19,8 @@ with the loader by hand, and #554, #597, #600 and #606 are the times it was not.
 from __future__ import annotations
 
 import math
+import os
+import sys
 import warnings
 from pathlib import Path
 
@@ -27,17 +29,10 @@ import numpy as np
 import pytest
 from bngsim import build_model_from_parsed, parse_net_file
 
-_NET_TREE = Path(__file__).resolve().parents[2]
-#: The roots holding committed ``.net`` fixtures, named rather than reached by
-#: rglob-ing the repo root (issue #590: a whole-tree rglob sweeps up caches, and
-#: ``Path.rglob`` does not descend into a symlinked directory below the root).
-_NET_ROOTS = ("benchmarks", "parity_checks", "tests")
-_NETS = sorted(
-    p
-    for root in _NET_ROOTS
-    for p in (_NET_TREE / root).rglob("*.net")
-    if "build" not in p.parts and ".pytest_cache" not in p.parts
-)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import _net_corpus  # noqa: E402
+
 #: The constructs where the two phases could part ways, each in a fixture the
 #: sweep must reach, or a green run proves nothing about them: the Sat/Hill
 #: rewrite, table functions, Michaelis-Menten, a clamped species (bare and inside
@@ -55,7 +50,6 @@ _MUST_REACH = {
     "expr_param_species.net",
     "homodimer_ssa.net",
 }
-_ABSENT = f".net models not present under {_NET_TREE}"
 
 
 def _differences(a, b, path="codegen_data"):
@@ -77,11 +71,9 @@ def _differences(a, b, path="codegen_data"):
     return [] if a == b else [f"{path}: {a!r} vs {b!r}"]
 
 
-@pytest.mark.parametrize(
-    "net",
-    _NETS or [pytest.param(None, marks=pytest.mark.skip(reason=_ABSENT))],
-    ids=lambda p: str(p.relative_to(_NET_TREE)) if isinstance(p, Path) else "none",
-)
+# Every tracked .net file, then every untracked one on this machine as `local:`
+# cases. See _net_corpus.py for why both, and why they are kept apart.
+@pytest.mark.parametrize("net", _net_corpus.sweep_params())
 def test_the_dict_builds_the_model_from_net_loads(net: Path) -> None:
     with warnings.catch_warnings():
         # The Sat/Hill rewrite warns on both doors; that it does is pinned in
@@ -108,11 +100,14 @@ def test_the_dict_builds_the_model_from_net_loads(net: Path) -> None:
     np.testing.assert_array_equal(loaded.rhs(y, 0.37), built.rhs(y, 0.37))
 
 
-@pytest.mark.skipif(not _NETS, reason=_ABSENT)
+@pytest.mark.skipif(not _net_corpus.TRACKED, reason=_net_corpus.ABSENT)
 def test_the_sweep_reaches_every_construct_that_could_diverge() -> None:
-    missing = _MUST_REACH - {p.name for p in _NETS}
+    """Against the tracked files alone. Those are all CI has, and a must-reach
+    fixture that exists only on one machine is reached nowhere else."""
+    tracked = _net_corpus.TRACKED
+    missing = _MUST_REACH - {p.name for p in tracked}
     assert not missing, f"the round-trip sweep cannot see {sorted(missing)}"
-    assert len(_NETS) > 100, f"only {len(_NETS)} .net files found under {_NET_TREE}"
+    assert len(tracked) > 100, f"only {len(tracked)} tracked .net files under {_net_corpus.ROOT}"
 
 
 #: Two inline tables, whose data and interpolation method codegen_data() does not

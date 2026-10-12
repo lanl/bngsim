@@ -276,14 +276,19 @@ def _jax_inv_hill_power(x: Any, n: Any) -> Any:
 # round(2.5) came out 2 here and 3 in the engine. They are not each other
 # either. `rint` is BNG's floor(x + 0.5) (expr_compat::rint in
 # src/expression.cpp, issue #771), so a half always rounds up: rint(-2.5) is -2.
-# `round` is ExprTk's floor(x + 0.5), or ceil(x - 0.5) below zero, so a
-# negative half rounds away from zero: round(-2.5) is -3. They agree at and
-# above zero. The RHS namespace binds them as helpers.
+# `round` is C's round (RoundFunction in src/expression.cpp, issue #684): a
+# half rounds away from zero, round(-2.5) is -3. They agree at and above zero,
+# except where rint's x + 0.5 itself rounds: rint(0.49999999999999994) is 1,
+# round of it 0. The RHS namespace binds them as helpers.
 def _jax_round(x: Any) -> Any:
-    """ExprTk's ``round``: ``floor(x + 0.5)``, or ``ceil(x - 0.5)`` below zero."""
+    """The engine's ``round``: C's ``round``, a half away from zero.
+
+    Not ``floor(x + 0.5)`` and its mirror below zero: that addition can round,
+    and ``x - trunc(x)`` cannot."""
     import jax.numpy as jnp
 
-    return jnp.where(x < 0, jnp.ceil(x - 0.5), jnp.floor(x + 0.5))
+    t = jnp.trunc(x)
+    return jnp.where(jnp.abs(x - t) >= 0.5, t + jnp.sign(x), t)
 
 
 def _jax_rint(x: Any) -> Any:

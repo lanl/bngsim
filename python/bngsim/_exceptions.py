@@ -45,10 +45,12 @@ class UnderSpecifiedModelError(ModelError):
 
     Raised at load when a ``<parameter>`` has no ``value`` attribute and no
     ``<initialAssignment>``, yet is referenced by a kineticLaw / rule / event /
-    initialAssignment expression. SBML leaves such a value undefined, so there is
-    nothing to integrate; bngsim refuses rather than default it to ``0.0``, which
-    would silently zero out every expression that consumes it and return a
-    wrong-but-plausible trajectory. RoadRunner refuses the same models.
+    initialAssignment expression, or when a kineticLaw's local parameter has no
+    ``value`` and the law reads it (issue #580). SBML leaves such a value
+    undefined, so there is nothing to integrate; bngsim refuses rather than
+    default it to ``0.0``, which would silently zero out every expression that
+    consumes it and return a wrong-but-plausible trajectory. RoadRunner refuses
+    the global case too (it runs a Level 2 local one at 0).
 
     That failure mode is not hypothetical. `MODEL1006230032` under
     ``BNGSIM_ALLOW_UNSET_PARAMS=1`` integrates to **all five species identically
@@ -59,9 +61,10 @@ class UnderSpecifiedModelError(ModelError):
     Typed (issue #323) so a caller can tell "this model is under-specified" from
     the other things :class:`ModelError` covers — a ``.net`` parse failure, an
     invalid model state. Parity suites bucket it ``UNSUPPORTED``: a clean,
-    documented refusal, not an actionable bngsim bug. Set the parameter's value,
-    add an ``<initialAssignment>``, or opt into the legacy lenient behavior with
-    ``BNGSIM_ALLOW_UNSET_PARAMS=1`` (which downgrades this to a warning).
+    documented refusal, not an actionable bngsim bug. Set the parameter's value
+    (a global one can take an ``<initialAssignment>`` instead), or opt into the
+    legacy lenient behavior with ``BNGSIM_ALLOW_UNSET_PARAMS=1`` (which
+    downgrades this to a warning).
     """
 
 

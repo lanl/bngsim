@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import bngsim
@@ -226,6 +227,72 @@ class TestSetParamPropagation:
 
 
 # ─── Issue #29: pre-init set_param re-evaluates seed-species concentrations ──
+
+
+class TestXmlParamTableValue:
+    """A `<Parameter>` with no `expr=` takes its value from `value=` (issue #580).
+
+    The override path re-evaluates the parameter table and bakes it into the XML
+    NFsim reads, so an unreadable `value=` used to become 0.0 there (and so did
+    an overflowing one, through std::stod's ERANGE throw). Every BNG2.pl
+    `<Parameter>` carries an `expr=`, which is re-evaluated, so this is reached
+    only by a hand-written or older XML.
+    """
+
+    _KOFF = '<Parameter id="koff" type="Constant" value="5" expr="5"/>'
+
+    def _xml(self, src: Path, tmp_path: Path, koff_line: str) -> Path:
+        text = src.read_text()
+        assert self._KOFF in text
+        out = tmp_path / "koff.xml"
+        out.write_text(text.replace(self._KOFF, koff_line))
+        return out
+
+    @pytest.mark.parametrize(
+        ("koff_line", "said"),
+        [
+            ('<Parameter id="koff" type="Constant" value="abc"/>', "('abc') is not a number"),
+            ('<Parameter id="koff" type="Constant" value="5abc"/>', "('5abc') is not a number"),
+            ('<Parameter id="koff" type="Constant"/>', "no value="),
+        ],
+        ids=["garbage", "trailing-garbage", "missing"],
+    )
+    def test_unreadable_value_without_expr_refuses(
+        self, nfsim_param_prop_xml, tmp_path, koff_line, said
+    ):
+        xml = self._xml(nfsim_param_prop_xml, tmp_path, koff_line)
+        with (
+            bngsim.NfsimSession(str(xml)) as nf,
+            pytest.raises(bngsim.ParameterError, match="parameter 'koff' has no expr="),
+        ):
+            nf.evaluate("koff")
+        with bngsim.NfsimSession(str(xml)) as nf:
+            nf.set_param("kon_scale", 2.0)
+            with pytest.raises(bngsim.SimulationError, match=re.escape(said)):
+                nf.initialize(seed=1)
+
+    def test_overflowing_value_reads_as_inf(self, nfsim_param_prop_xml, tmp_path):
+        xml = self._xml(
+            nfsim_param_prop_xml, tmp_path, '<Parameter id="koff" type="Constant" value="1e400"/>'
+        )
+        with bngsim.NfsimSession(str(xml)) as nf:
+            assert nf.evaluate("koff") == float("inf")
+
+    @pytest.mark.parametrize(
+        "koff_line",
+        [
+            '<Parameter id="koff" type="Constant" value="5"/>',
+            '<Parameter id="koff" type="Constant" value="abc" expr="5"/>',
+        ],
+        ids=["readable-value", "expr-wins"],
+    )
+    def test_value_the_table_can_use_still_loads(self, nfsim_param_prop_xml, tmp_path, koff_line):
+        xml = self._xml(nfsim_param_prop_xml, tmp_path, koff_line)
+        with bngsim.NfsimSession(str(xml)) as nf:
+            nf.set_param("kon_scale", 2.0)
+            nf.initialize(seed=1)
+            assert nf.get_parameter("koff") == pytest.approx(5.0)
+            assert nf.evaluate("koff") == pytest.approx(5.0)
 
 
 class TestSetParamSeedConcentration:

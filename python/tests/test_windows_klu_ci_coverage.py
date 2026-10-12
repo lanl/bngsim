@@ -328,7 +328,9 @@ class TestTheLegCannotGoGreenHavingRunNothing:
         file stop being collected (#291).
         """
         body = _body()
-        assert "PASS_FLOOR" in body, (
+        # The bound itself lives in ci/test_floors.env, and
+        # test_ci_count_bounds.py holds the file and the helper to it (#584).
+        assert re.search(r"check_test_count\.sh\s+KLU_PASSED\s", body), (
             "windows-klu.yml no longer floors its passed count, so a file that stopped "
             "being collected would not fail the leg."
         )

@@ -162,7 +162,9 @@ class TestTheLegCannotGoGreenHavingRunNothing:
         conftest that deselects, an optional import that vanishes upstream.
         """
         body = _body()
-        assert "PASS_FLOOR" in body, (
+        # The bound itself lives in ci/test_floors.env, and
+        # test_ci_count_bounds.py holds the file and the helper to it (#584).
+        assert re.search(r"check_test_count\.sh\s+NFSIM_PASSED\s", body), (
             "windows-nfsim.yml no longer floors its passed count, so a file that "
             "stopped being collected would not fail the leg."
         )

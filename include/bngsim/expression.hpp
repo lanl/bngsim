@@ -65,7 +65,8 @@ class ExpressionEvaluator {
 // Registers built-in constants:
 //   _pi, _e, _kB, _NA, _R, _h, _F
 // Registers built-in functions:
-//   if(cond, true_val, false_val), mratio(a, b, z), time()
+//   if(cond, true_val, false_val), mratio(a, b, z), time(),
+//   round(x) as C's round in place of ExprTk's (issue #684)
 // Note: `t` is intentionally NOT registered (BNG2.pl uses time() only),
 // leaving `t` free as a model identifier.
 //

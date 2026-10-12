@@ -111,6 +111,11 @@ on:
       - "ci/build_suitesparse.ps1"
       - "python/tests/test_codegen_jacobian_sparse.py"
       - "python/tests/test_steady_state_linear_solver.py"
+      # The count guard reads its bound from ci/test_floors.env through
+      # ci/check_test_count.sh (issue #584). Moving the bound must run the leg
+      # whose count it bounds, or a wrong value lands unchecked.
+      - "ci/check_test_count.sh"
+      - "ci/test_floors.env"
       - ".github/workflows/windows-klu.yml"
   pull_request:
     paths: *klu_paths
@@ -228,10 +233,9 @@ jobs:
           # 0 skipped in 55.75 s (13 sparse-Jacobian + 7 steady-state routing),
           # the same 20/0 a KLU-on macOS build reports. The floor is close
           # because the cluster is small: losing either file costs 7 or 13, and
-          # the usual few-percent slack would not see that. It only rises as
-          # tests are added.
-          PASS_FLOOR=18
-
+          # the usual few-percent slack would not see that. It lives in
+          # ci/test_floors.env as KLU_PASSED, whose slack stays under 7 so the
+          # smaller file is always covered (issue #584).
           summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' klu-windows.log | tail -1 || true)"
           if [ -z "$summary" ]; then
             echo "::error::No pytest summary line — the cluster did not run to completion."
@@ -244,11 +248,8 @@ jobs:
           passed="$(count passed)"
           skipped="$(count skipped)"
 
-          echo "passed $passed (floor $PASS_FLOOR); skipped $skipped (must be 0)."
-          if [ "$passed" -lt "$PASS_FLOOR" ]; then
-            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — a file stopped being collected rather than failing."
-            exit 1
-          fi
+          echo "passed $passed; skipped $skipped (must be 0)."
+          bash ci/check_test_count.sh KLU_PASSED "$passed" "a file stopped being collected rather than failing"
           # Every skip reason reachable in this cluster is a false green: the KLU
           # gate means the build lost SuiteSparse, the cc gate means the runner
           # lost its compiler, and the corpus gate means benchmarks/models/net/ode

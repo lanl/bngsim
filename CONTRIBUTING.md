@@ -336,6 +336,37 @@ cache your edit just orphaned and `bngsim-cache prune --orphaned` can sweep exac
 that. Build every artifact path through that helper: a call site that spells the name
 itself is a silent cache miss, not an error.
 
+## When a value cannot be computed
+
+**Never substitute a number that could have been a real answer** (issue #580). A
+zero rate constant, a zero concentration and a zero output column are all
+ordinary values, so a `0.0` standing in for "could not compute this" runs to
+completion and returns a plausible, wrong result that nothing flags. In order of
+preference:
+
+1. **Raise.** For a model that reads a value it never defines, that is
+   `UnderSpecifiedModelError`, which names the symbol and the
+   `BNGSIM_ALLOW_UNSET_PARAMS=1` opt-out (SBML global and local parameters, internal#94,
+   #323, #580). The `.net` loader refuses an expression it cannot compile and an
+   initial concentration that names no parameter (#602, #571).
+2. **Return something the caller cannot mistake for a value:** `None`,
+   `std::optional`, or a placeholder paired with a flag that the reader of the
+   flag replaces, like the `.net` loader's `is_expression`.
+3. **Warn, at minimum**, and only when refusing would turn away models a
+   reference engine runs with the same default. That is why a non-finite
+   compartment size (#353), a species with no initial value and a compartment
+   with no size (#580) warn instead of refusing: RoadRunner runs all three, and
+   corpus models depend on it. Say what was substituted and for which names, in
+   one message per load rather than one per symbol, and only where the substitute
+   can reach a number.
+
+The shapes to look for in review are `except Exception: x = 0.0`,
+`d.get(name, 0.0)` for a name that ought to be there, `catch (...) { v = 0.0; }`,
+and `std::stod` inside a catch-all, which also turns an overflowing `1e400` into
+`0.0` rather than `inf`. Test both sides of each check: that the refusal or the
+warning fires, and that a value which *can* be computed still loads, so the check
+cannot drift into refusing good models.
+
 ## Fixes that need a capability key
 
 Most fixes need no announcement beyond the changelog. A few do, and the test is

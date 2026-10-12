@@ -55,6 +55,11 @@ on:
       # happened to change too, which is the trigger-completeness gap #167 fixed
       # for source files and #295 for the run list.
       - "tests/data/nfsim/**"
+      # The count guard reads its bound from ci/test_floors.env through
+      # ci/check_test_count.sh (issue #584). Moving the bound must run the leg
+      # whose count it bounds, or a wrong value lands unchecked.
+      - "ci/check_test_count.sh"
+      - "ci/test_floors.env"
       - ".github/workflows/windows-nfsim.yml"
   pull_request:
     paths: *nfsim_paths
@@ -137,9 +142,9 @@ jobs:
           # 178 passed / 0 skipped at the commit that opted the last three files
           # in (147 before it, on the six-file list). The floor sits far enough
           # below to survive a test being retired and close enough to trip when a
-          # whole file stops running. It only rises as tests are added.
-          PASS_FLOOR=170
-
+          # whole file stops running. It lives in ci/test_floors.env as
+          # NFSIM_PASSED, and the check also fails once the count has outgrown it
+          # (issue #584: it had sat at 170 while the leg reached 208).
           summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' nfsim-windows.log | tail -1 || true)"
           if [ -z "$summary" ]; then
             echo "::error::No pytest summary line — the cluster did not run to completion."
@@ -152,11 +157,8 @@ jobs:
           passed="$(count passed)"
           skipped="$(count skipped)"
 
-          echo "passed $passed (floor $PASS_FLOOR); skipped $skipped (must be 0)."
-          if [ "$passed" -lt "$PASS_FLOOR" ]; then
-            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — a file stopped being collected rather than failing."
-            exit 1
-          fi
+          echo "passed $passed; skipped $skipped (must be 0)."
+          bash ci/check_test_count.sh NFSIM_PASSED "$passed" "a file stopped being collected rather than failing"
           # Unlike python-tests.yml, which tolerates a declared-skip budget, this
           # leg measures zero skips and every skip reason reachable here is a
           # false green: "NFsim not compiled in" means the build lost NFsim, and

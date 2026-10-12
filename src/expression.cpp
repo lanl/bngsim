@@ -512,6 +512,16 @@ template <typename T> struct RintFunction : public exprtk::ifunction<T> {
     }
 };
 
+// round(x): std::round, a half away from zero — the C `round` codegen emits.
+// ExprTk's own round is floor(x + 0.5), or ceil(x - 0.5) below zero, and that
+// addition can itself round: it gave round(0.49999999999999994) = 1 and
+// round(2^52 + 1) = 2^52 + 2 while codegen gave 0 and 2^52 + 1 (issue #684).
+// configure_parser() disables the builtin so this one is the `round` parsed.
+template <typename T> struct RoundFunction : public exprtk::ifunction<T> {
+    RoundFunction() : exprtk::ifunction<T>(1) {}
+    T operator()(const T &x) override { return static_cast<T>(std::round(static_cast<double>(x))); }
+};
+
 template <typename T> struct SignFunction : public exprtk::ifunction<T> {
     NonFiniteWarningSet *warner = nullptr;
     SignFunction() : exprtk::ifunction<T>(1) {}
@@ -789,6 +799,7 @@ struct ExprTkEvaluator::Impl {
     MratioFunction<double> mratio_func;
     LnFunction<double> ln_func;
     RintFunction<double> rint_func;
+    RoundFunction<double> round_func;
     SignFunction<double> sign_func;
     TgammaFunction<double> tgamma_func;
     TimeFunction<double> time_func;
@@ -985,7 +996,8 @@ struct ExprTkEvaluator::Impl {
         add_remapped_constant("_F", 96485.33212331002);
 
         // Wire the non-finite-return diagnostic into every owned adapter.
-        // time_func is intentionally omitted (see TimeFunction comment).
+        // time_func is intentionally omitted (see TimeFunction comment), and
+        // round_func needs none: std::round of a finite value is finite.
         mratio_func.warner = &nonfinite_warner;
         ln_func.warner = &nonfinite_warner;
         rint_func.warner = &nonfinite_warner;
@@ -995,6 +1007,8 @@ struct ExprTkEvaluator::Impl {
         // Register backward-compatible aliases
         symbol_table.add_function("ln", ln_func);
         symbol_table.add_function("rint", rint_func);
+        // A reserved name: ExprTk's builtin is disabled in configure_parser().
+        symbol_table.add_reserved_function("round", round_func);
         symbol_table.add_function("sign", sign_func);
         symbol_table.add_function("tgamma", tgamma_func);
 
@@ -1032,6 +1046,8 @@ struct ExprTkEvaluator::Impl {
         // Increase max stack depth for deeply nested if() expressions.
         // ExprTk default is 400 (~200 nested if()), muParser handled 2000.
         p.settings().set_max_stack_depth(4096);
+        // `round` resolves to RoundFunction in the symbol table (issue #684).
+        p.settings().disable_base_function(Parser::settings_t::e_bf_round);
     }
 
     void set_time_ptr(double *ptr) { time_func.time_ptr = ptr; }

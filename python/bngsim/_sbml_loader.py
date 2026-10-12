@@ -370,7 +370,7 @@ def _model_uses_rateof(sbml_model, func_defs: dict, rateof_funcdef_names: set[st
 #   * ``fast="true"``   — a fast-equilibrium constraint; under ODE the kinetic
 #                         law integrated as an ordinary reaction.
 #
-# We refuse all three loud-by-default, mirroring the GH #94 unset-parameter
+# We refuse all three loud-by-default, mirroring the internal#94 unset-parameter
 # gate (hard ``ModelError`` + ``BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1`` opt-out
 # that restores the legacy silent-approximation behavior for deliberate triage,
 # e.g. bngsim↔RoadRunner comparison). ``delay`` and ``AlgebraicRule`` are
@@ -1291,8 +1291,15 @@ def _collect_state_discontinuity_conditions(
     base_ctx: dict,
     time_dependent_names: set[str],
     out: list[str],
+    local_params: dict[str, str] | None = None,
+    local_values: dict[str, float | None] | None = None,
 ) -> None:
-    """Append root conditions for bounded state-dependent floor/ceiling jumps."""
+    """Append root conditions for bounded state-dependent floor/ceiling jumps.
+
+    ``local_params`` / ``local_values`` are a kinetic law's local parameters (id ->
+    registered name, id -> value): the scope its names are written in. Without
+    them a local `k` read as a global `k`, or as nothing (issue #580).
+    """
     if node is None:
         return
     disc_funcs = {
@@ -1305,7 +1312,9 @@ def _collect_state_discontinuity_conditions(
     # BNG-roundtripped observables produce (one frame per operand, GH #111) — the
     # same reason every other AST scanner here is iterative. Each stack frame
     # carries the lexical scope threaded through user-defined-function inlining.
-    stack: list[tuple[libsbml.ASTNode, dict, dict, set, set]] = [(node, {}, {}, set(), set())]
+    stack: list[tuple[libsbml.ASTNode, dict, dict, set, set]] = [
+        (node, dict(local_params or {}), dict(local_values or {}), set(), set())
+    ]
     while stack:
         n, local_expr, local_values, local_time_dependent, seen_funcs = stack.pop()
         ntype = n.getType()
@@ -1315,7 +1324,7 @@ def _collect_state_discontinuity_conditions(
             names = _ast_name_set(arg)
             if names and not (
                 _ast_references_time(arg)
-                or bool(names & time_dependent_names)
+                or bool((names - local_expr.keys()) & time_dependent_names)
                 or bool(names & local_time_dependent)
             ):
                 ctx = dict(base_ctx)
@@ -1351,16 +1360,22 @@ def _collect_state_discontinuity_conditions(
                         child_names = _ast_name_set(child)
                         next_expr[pname] = _ast_to_exprtk_recursive(child, func_defs, local_expr)
                         val = _eval_ast_numeric(child, ctx, func_defs, time_value=None)
-                        if val is None:
-                            next_values.pop(pname, None)
-                        else:
-                            next_values[pname] = val
+                        # An argument with no load-time value binds the formal to
+                        # None: the evaluator reads that as unknown, so nothing that
+                        # reads the formal folds (NaN did, through a comparison in
+                        # a piecewise), and it still shadows the global of the
+                        # formal's name that dropping it let through (#580).
+                        next_values[pname] = val
                         if (
                             _ast_references_time(child)
-                            or bool(child_names & time_dependent_names)
+                            or bool((child_names - local_expr.keys()) & time_dependent_names)
                             or bool(child_names & local_time_dependent)
                         ):
                             next_td.add(pname)
+                        else:
+                            # Rebinding clears what an outer formal of this name
+                            # carried in.
+                            next_td.discard(pname)
                     stack.append((body, next_expr, next_values, next_td, seen_funcs | {fname}))
 
 
@@ -1879,14 +1894,8 @@ def _make_rateof_initial_resolver(sbml_model, func_defs):
             kl = rxn.getKineticLaw()
             if kl is None or not kl.isSetMath():
                 return None
-            law_ctx = ctx
-            n_lp = kl.getNumLocalParameters() if hasattr(kl, "getNumLocalParameters") else 0
-            if n_lp:
-                law_ctx = dict(ctx)
-                for k in range(n_lp):
-                    lp = kl.getLocalParameter(k)
-                    if lp.isSetValue():
-                        law_ctx[lp.getId()] = lp.getValue()
+            _lv = _kinetic_law_local_values(kl)
+            law_ctx = {**ctx, **_lv} if _lv else ctx
             v = _eval_ast_numeric(kl.getMath(), law_ctx, func_defs)
             if v is None:
                 return None
@@ -1999,7 +2008,9 @@ def _periodic_disc_escapes_roots(
 
     So this is value-position reachability from the ODE RHS, followed through
     the assignment rules and pruned at every rooted condition; ``True`` means
-    some periodic disc node survives that pruning.
+    some periodic disc node survives that pruning. ``rhs_maths`` holds
+    ``(math, local_map)`` pairs, ``local_map`` being a kinetic law's local
+    parameters (``{}`` for a rate rule).
 
     A note for anyone extending this: it is deliberately ONE pass that carries
     context down, rather than two passes compared afterwards. libsbml returns a
@@ -2014,33 +2025,42 @@ def _periodic_disc_escapes_roots(
         libsbml.AST_FUNCTION_REM,
     }
 
-    def _scan(node, names_out: list) -> bool:
-        """True as soon as an unrooted time-dependent disc node is reached."""
+    def _scan(node, names_out: list, local_map: dict | None = None) -> bool:
+        """True as soon as an unrooted time-dependent disc node is reached.
+
+        ``local_map`` is a kinetic law's local parameters (id -> registered
+        name): they shadow the globals, and a root on a condition that reads one
+        was registered under its registered name (#580)."""
+        local = local_map or {}
         stack = [node]
         while stack:
             n = stack.pop()
             ntype = n.getType()
-            if ntype in disc_types and (_ast_references_time(n) or (_ast_name_set(n) & td)):
+            if ntype in disc_types and (
+                _ast_references_time(n) or ((_ast_name_set(n) - local.keys()) & td)
+            ):
                 return True
             if ntype == libsbml.AST_FUNCTION_PIECEWISE:
                 conds, vals = _piecewise_branches(n)
                 stack.extend(vals)
                 for cond in conds:
                     emitted: list[str] = []
-                    _collect_time_discontinuity_conditions(cond, func_defs, emitted, None, td)
+                    _collect_time_discontinuity_conditions(
+                        cond, func_defs, emitted, local_map or None, td
+                    )
                     # Emitted AND registered ⇒ the integrator stops at this edge.
                     if emitted and all(e in registered_conditions for e in emitted):
                         continue
                     stack.append(cond)
                 continue
-            if ntype == libsbml.AST_NAME:
+            if ntype == libsbml.AST_NAME and n.getName() not in local:
                 names_out.append(n.getName())
             stack.extend(n.getChild(k) for k in range(n.getNumChildren()))
         return False
 
     pending: list[str] = []
-    for math in rhs_maths:
-        if _scan(math, pending):
+    for math, local_map in rhs_maths:
+        if _scan(math, pending, local_map):
             return True
     seen: set[str] = set()
     while pending:
@@ -2053,7 +2073,9 @@ def _periodic_disc_escapes_roots(
     return False
 
 
-def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_conditions=None):
+def _periodic_time_disc_max_step(
+    sbml_model, func_defs, base_ctx, registered_conditions=None, reaction_local_maps=None
+):
     """Recommend a ``max_step_size`` that resolves periodic floor/modulo dosing
     discontinuities in the ODE RHS, or ``None`` when the model has none.
 
@@ -2072,6 +2094,12 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
     :func:`_periodic_disc_escapes_roots`. Omitting it keeps the pre-#274
     behaviour: a caller that has not run the root scan has no basis for that
     judgement, and the safe default is to bound.
+
+    ``reaction_local_maps`` (reaction index -> {local id: registered name}) is
+    each kinetic law's local-parameter scope. A law's floor/modulo nodes are
+    evaluated with its locals over the globals they shadow; without them a local
+    `period` read the global `period`, or nothing, and the bound came out wrong
+    or not at all (#580).
     """
     global _DISC_FUNCS
     if _DISC_FUNCS is None:
@@ -2081,9 +2109,11 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
             libsbml.AST_FUNCTION_REM,
         }
 
-    # Assignment rules (var → math) and the maths that ARE the ODE RHS.
+    # Assignment rules (var → math) and the maths that ARE the ODE RHS, each RHS
+    # math with its local scope: (math, local id -> value, local id -> name).
     asg_math: dict[str, libsbml.ASTNode] = {}
     rhs_maths: list[libsbml.ASTNode] = []
+    rhs_scopes: list[tuple[dict, dict]] = []
     for i in range(sbml_model.getNumRules()):
         rule = sbml_model.getRule(i)
         m = rule.getMath()
@@ -2093,10 +2123,14 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
             asg_math[rule.getVariable()] = m
         elif rule.isRate():
             rhs_maths.append(m)
+            rhs_scopes.append(({}, {}))
     for i in range(sbml_model.getNumReactions()):
         kl = sbml_model.getReaction(i).getKineticLaw()
         if kl and kl.getMath():
             rhs_maths.append(kl.getMath())
+            rhs_scopes.append(
+                (_kinetic_law_local_values(kl), (reaction_local_maps or {}).get(i) or {})
+            )
     if not asg_math or not rhs_maths:
         return None
 
@@ -2116,7 +2150,11 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
 
     # Symbols feeding the ODE RHS, closed transitively through assignment rules.
     feed: set[str] = set()
-    work = [n for m in rhs_maths for n in _ast_name_set(m)]
+    work = [
+        n
+        for m, (lv, _) in zip(rhs_maths, rhs_scopes, strict=True)
+        for n in _ast_name_set(m) - lv.keys()
+    ]
     while work:
         name = work.pop()
         if name in feed:
@@ -2128,20 +2166,22 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
     # Periodic iff some floor/ceil/modulo with a time-dependent argument actually
     # feeds the RHS. Plain `time < const` schedules (BIOMD879) have no such node
     # and fall through to None — their monotonic roots already resolve them.
-    relevant = list(rhs_maths) + [asg_math[v] for v in feed if v in asg_math]
-    disc_nodes: list[tuple[int, libsbml.ASTNode]] = []  # (kind, node)
-    piecewise_nodes: list[libsbml.ASTNode] = []
+    relevant = [(m, lv) for m, (lv, _) in zip(rhs_maths, rhs_scopes, strict=True)] + [
+        (asg_math[v], {}) for v in feed if v in asg_math
+    ]
+    disc_nodes: list[tuple[int, libsbml.ASTNode, dict]] = []  # (kind, node, locals)
+    piecewise_nodes: list[tuple[libsbml.ASTNode, dict]] = []
     has_periodic = False
-    for m in relevant:
+    for m, lv in relevant:
         for n in _iter_ast_subtree(m):
             ntype = n.getType()
             if ntype in _DISC_FUNCS:
-                arg_td = _ast_references_time(n) or bool(_ast_name_set(n) & td)
-                disc_nodes.append((ntype, n))
+                arg_td = _ast_references_time(n) or bool((_ast_name_set(n) - lv.keys()) & td)
+                disc_nodes.append((ntype, n, lv))
                 if arg_td:
                     has_periodic = True
             elif ntype == libsbml.AST_FUNCTION_PIECEWISE:
-                piecewise_nodes.append(n)
+                piecewise_nodes.append((n, lv))
     if not has_periodic:
         return None
 
@@ -2152,7 +2192,11 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
     # None. ``registered_conditions=None`` means the caller did not run the root
     # scan and cannot make this judgement, so the bound stands.
     if registered_conditions is not None and not _periodic_disc_escapes_roots(
-        rhs_maths, asg_math, td, func_defs, registered_conditions
+        [(m, lm) for m, (_, lm) in zip(rhs_maths, rhs_scopes, strict=True)],
+        asg_math,
+        td,
+        func_defs,
+        registered_conditions,
     ):
         return None
 
@@ -2181,22 +2225,24 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
             if val is not None:
                 ctx[v] = val
         sig = []
-        for kind, n in disc_nodes:
+        for kind, n, lv in disc_nodes:
+            nctx = {**ctx, **lv} if lv else ctx
             if kind == libsbml.AST_FUNCTION_REM:
-                a = _eval_ast_numeric(n.getChild(0), ctx, func_defs, time_value=t)
-                b = _eval_ast_numeric(n.getChild(1), ctx, func_defs, time_value=t)
+                a = _eval_ast_numeric(n.getChild(0), nctx, func_defs, time_value=t)
+                b = _eval_ast_numeric(n.getChild(1), nctx, func_defs, time_value=t)
                 sig.append(None if (a is None or b is None or b == 0) else _math.floor(a / b))
             else:
-                a = _eval_ast_numeric(n.getChild(0), ctx, func_defs, time_value=t)
+                a = _eval_ast_numeric(n.getChild(0), nctx, func_defs, time_value=t)
                 fn = _math.floor if kind == libsbml.AST_FUNCTION_FLOOR else _math.ceil
                 sig.append(None if a is None else fn(a))
-        for n in piecewise_nodes:
+        for n, lv in piecewise_nodes:
+            nctx = {**ctx, **lv} if lv else ctx
             nc = n.getNumChildren()
             branch = nc  # default: "otherwise"
             i = 0
             idx = 0
             while i < nc - 1:
-                cond = _eval_ast_numeric(n.getChild(i + 1), ctx, func_defs, time_value=t)
+                cond = _eval_ast_numeric(n.getChild(i + 1), nctx, func_defs, time_value=t)
                 if cond is not None and cond != 0:
                     branch = idx
                     break
@@ -2208,11 +2254,11 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
     # Median |d(arg)/dt| over a short probe — robust to the sawtooth jumps a
     # nested modulo argument takes, so it reads the underlying ramp rate (how
     # fast the floor argument climbs toward its next integer crossing).
-    def _slope(arg_node) -> float:
+    def _slope(arg_node, lv: dict) -> float:
         pts: list[tuple[float, float]] = []
         for k in range(1, 9):
             tt = 0.05 * k
-            v = _eval_ast_numeric(arg_node, dict(base_ctx), func_defs, time_value=tt)
+            v = _eval_ast_numeric(arg_node, {**base_ctx, **lv}, func_defs, time_value=tt)
             if v is not None:
                 pts.append((tt, v))
         diffs = sorted(
@@ -2226,14 +2272,14 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_con
     # every branch phase; the FASTEST (smallest period) sets how fine the grid
     # must be to resolve the narrowest dose pulse within it.
     periods = []
-    for kind, n in disc_nodes:
+    for kind, n, lv in disc_nodes:
         if kind == libsbml.AST_FUNCTION_REM:
             # rem(a,b) jumps when a/b crosses an integer; slope ≈ |a'|/|b|.
-            a_s = _slope(n.getChild(0))
-            b = _eval_ast_numeric(n.getChild(1), dict(base_ctx), func_defs, time_value=0.0)
+            a_s = _slope(n.getChild(0), lv)
+            b = _eval_ast_numeric(n.getChild(1), {**base_ctx, **lv}, func_defs, time_value=0.0)
             s = a_s / abs(b) if b else 0.0
         else:
-            s = _slope(n.getChild(0))
+            s = _slope(n.getChild(0), lv)
         if s > 0.0:
             periods.append(1.0 / s)
     longest = max(periods) if periods else 1.0
@@ -3929,12 +3975,125 @@ def _classify_mass_action_ast(
     )
 
 
-def _collect_local_params(kl, rid, builder):
-    """Collect local parameters from a KineticLaw, handling both L2 and L3.
+def _capped_names(names: list[str], cap: int = 10) -> str:
+    """``'a', 'b', ... (N more)``: a load warning that names a genome-scale
+    model's symbols one by one would run to thousands of entries."""
+    shown = ", ".join(repr(s) for s in names[:cap])
+    if len(names) > cap:
+        shown += f", ... ({len(names) - cap} more)"
+    return shown
 
-    SBML L2 stores local parameters under kl.getParameter(j) (accessed
-    via getNumParameters()), while L3 uses kl.getLocalParameter(j)
-    (accessed via getNumLocalParameters()).  963/978 BioModels are L2.
+
+def _kinetic_law_local_params(kl) -> list:
+    """A kinetic law's local parameters, on either SBML level.
+
+    L3 lists them under ``getLocalParameter``. libsbml lists an L2 law's under
+    ``getParameter`` only: its ``getNumLocalParameters()`` is 0, so a reader that
+    asks just that sees no local parameter on 963/978 BioModels and resolves the
+    law's names to any global of the same id instead (issue #580).
+    """
+    n = kl.getNumLocalParameters()
+    if n > 0:
+        return [kl.getLocalParameter(j) for j in range(n)]
+    return [kl.getParameter(j) for j in range(kl.getNumParameters())]
+
+
+def _local_param_value(lp) -> float:
+    """A local parameter's value. An unset one has none: NaN, so nothing passes
+    it off as a number, or the 0.0 ``BNGSIM_ALLOW_UNSET_PARAMS=1`` asks for. A law
+    that reads an unset one is refused without that (C2b, issue #580)."""
+    if lp.isSetValue():
+        return lp.getValue()
+    import os
+
+    return 0.0 if os.environ.get("BNGSIM_ALLOW_UNSET_PARAMS") == "1" else float("nan")
+
+
+def _kinetic_law_local_values(kl) -> dict[str, float]:
+    """id → value of a kinetic law's local parameters, unset ones included so
+    that each shadows a global of the same id, as SBML scoping requires."""
+    return {lp.getId(): _local_param_value(lp) for lp in _kinetic_law_local_params(kl)}
+
+
+def _unsized_compartments_read(sbml_model, ar_targets) -> list[str]:
+    """Compartments whose size SBML leaves undefined and something can read, in
+    declaration order (issue #580).
+
+    Undefined: Level 2 or 3, no ``size``, more than zero dimensions, and no
+    initialAssignment, assignmentRule or algebraic rule that could define it.
+    A comp model is checked after flattening, which resolves a placeholder
+    compartment ``replacedBy`` a sized one to that size.
+    Read: it holds any species (bngsim reports every species as amount over its
+    compartment's size, whatever ``hasOnlySubstanceUnits`` says, so this can warn
+    where the size happens to cancel, e.g. a constant species given as a
+    concentration); a rate rule or event sets it (it becomes a state that starts
+    at the size); or a rule, initialAssignment, event, stoichiometryMath or kinetic
+    law names it (a law's own local of that id shadows it).
+    """
+    if sbml_model.getLevel() < 2:
+        return []
+    defined = set(ar_targets)
+    for j in range(sbml_model.getNumInitialAssignments()):
+        ia = sbml_model.getInitialAssignment(j)
+        if ia.getMath() is not None:
+            defined.add(ia.getSymbol())
+    maths: list = []
+    for j in range(sbml_model.getNumRules()):
+        rule = sbml_model.getRule(j)
+        if rule.getMath() is None:
+            continue
+        if rule.isAlgebraic():
+            # An algebraic rule may be what determines the size. Which name it
+            # determines is not recorded, so every name it mentions counts; that
+            # can silence one it only reads, but bngsim refuses algebraic rules
+            # unless BNGSIM_ALLOW_UNSUPPORTED_CONSTRUCTS=1 drops them.
+            defined |= _ast_name_set(rule.getMath())
+        maths.append(rule.getMath())
+    cands = []
+    for j in range(sbml_model.getNumCompartments()):
+        c = sbml_model.getCompartment(j)
+        if c.isSetSize() or c.getSpatialDimensionsAsDouble() == 0 or c.getId() in defined:
+            continue
+        cands.append(c.getId())
+    if not cands:
+        return []
+    targets = set(cands)
+    read: set[str] = set()
+    for j in range(sbml_model.getNumSpecies()):
+        if sbml_model.getSpecies(j).getCompartment() in targets:
+            read.add(sbml_model.getSpecies(j).getCompartment())
+    for j in range(sbml_model.getNumRules()):
+        rule = sbml_model.getRule(j)
+        if rule.isRate() and rule.getVariable() in targets:
+            read.add(rule.getVariable())
+    for j in range(sbml_model.getNumInitialAssignments()):
+        maths.append(sbml_model.getInitialAssignment(j).getMath())
+    for j in range(sbml_model.getNumEvents()):
+        ev = sbml_model.getEvent(j)
+        for part in (ev.getTrigger(), ev.getDelay(), ev.getPriority()):
+            if part is not None:
+                maths.append(part.getMath())
+        for k in range(ev.getNumEventAssignments()):
+            ea = ev.getEventAssignment(k)
+            maths.append(ea.getMath())
+            if ea.getVariable() in targets:
+                read.add(ea.getVariable())
+    for sr in _iter_species_references(sbml_model):
+        if hasattr(sr, "isSetStoichiometryMath") and sr.isSetStoichiometryMath():
+            maths.append(sr.getStoichiometryMath().getMath())
+    for j in range(sbml_model.getNumReactions()):
+        kl = sbml_model.getReaction(j).getKineticLaw()
+        if kl is not None and kl.getMath() is not None:
+            shadow = {lp.getId() for lp in _kinetic_law_local_params(kl)}
+            _walk_name_refs(kl.getMath(), targets - shadow - read, read)
+    for m in maths:
+        if m is not None:
+            _walk_name_refs(m, targets - read, read)
+    return [cid for cid in cands if cid in read]
+
+
+def _collect_local_params(kl, rid, builder):
+    """Register a KineticLaw's local parameters, on either SBML level.
 
     Returns ``(local_param_map, local_param_values)`` — the first maps
     original_id → mangled_id for expression rewriting, the second maps
@@ -3942,30 +4101,24 @@ def _collect_local_params(kl, rid, builder):
     a kinetic-law local parameter participates in a synthesized derived
     rate constant).
     """
+    import os
+
+    hatch = os.environ.get("BNGSIM_ALLOW_UNSET_PARAMS") == "1"
     local_param_map = {}
     local_param_values: dict[str, float] = {}
-    n_lp_l3 = kl.getNumLocalParameters()
-    if n_lp_l3 > 0:
-        # SBML L3 path (or libsbml's L2 backwards-compat wrapper)
-        for j in range(n_lp_l3):
-            lp = kl.getLocalParameter(j)
-            orig_id = lp.getId()
-            lpid = f"_lp_{rid}_{orig_id}"
-            val = lp.getValue()
-            builder.add_parameter(lpid, val)
-            local_param_map[orig_id] = lpid
-            local_param_values[lpid] = val
-    else:
-        # SBML L2 path: local params stored under KineticLaw directly
-        n_lp_l2 = kl.getNumParameters()
-        for j in range(n_lp_l2):
-            lp = kl.getParameter(j)
-            orig_id = lp.getId()
-            lpid = f"_lp_{rid}_{orig_id}"
-            val = lp.getValue() if lp.isSetValue() else 0.0
-            builder.add_parameter(lpid, val)
-            local_param_map[orig_id] = lpid
-            local_param_values[lpid] = val
+    for lp in _kinetic_law_local_params(kl):
+        if not lp.isSetValue() and not hatch:
+            # C2b refused it if the law (or a function body the law calls) names
+            # it, so nothing can read it, and registering its NaN would put one
+            # into every writer's output. An explicit value="NaN" is the model's
+            # own and stays.
+            continue
+        orig_id = lp.getId()
+        val = _local_param_value(lp)
+        lpid = f"_lp_{rid}_{orig_id}"
+        builder.add_parameter(lpid, val)
+        local_param_map[orig_id] = lpid
+        local_param_values[lpid] = val
     return local_param_map, local_param_values
 
 
@@ -4231,12 +4384,7 @@ def _build_model_from_sbml_doc(doc):
         _kl = _rxn.getKineticLaw()
         if _kl is None or not _kl.isSetMath():
             continue
-        _lps: dict[str, float] = {}
-        _n_lp = _kl.getNumLocalParameters() if hasattr(_kl, "getNumLocalParameters") else 0
-        for k in range(_n_lp):
-            _lp = _kl.getLocalParameter(k)
-            if _lp.isSetValue():
-                _lps[_lp.getId()] = _lp.getValue()
+        _lps = _kinetic_law_local_values(_kl)
         _rid_laws.append((_rid, _kl.getMath(), _lps))
         _rv = _eval_ast_numeric(_kl.getMath(), {**eval_ctx, **_lps}, func_defs)
         if _rv is not None and _math.isfinite(_rv):
@@ -4385,7 +4533,7 @@ def _build_model_from_sbml_doc(doc):
             if not changed:
                 break
 
-    # ── C2: reject missing-value parameters that are actually consumed (#94) ──
+    # ── C2: reject missing-value parameters that are actually consumed (internal#94) ──
     # SBML allows <parameter id="X"/> with no `value=` attribute. Defaulting it
     # to 0.0 is harmless when X is never consumed (extension-package
     # placeholders, doc-only params) but silently produces wrong dynamics when X
@@ -4434,8 +4582,11 @@ def _build_model_from_sbml_doc(doc):
             _scan(sbml_model.getRule(j).getMath())
         for j in range(sbml_model.getNumReactions()):
             kl = sbml_model.getReaction(j).getKineticLaw()
-            if kl is not None:
-                _scan(kl.getMath())
+            if kl is not None and kl.getMath() is not None:
+                # A law's own local parameter shadows a global of the same id, so
+                # the law does not read that global (#580).
+                _shadow = {lp.getId() for lp in _kinetic_law_local_params(kl)}
+                _walk_name_refs(kl.getMath(), _unset_param_ids - _shadow, _consumed)
         for j in range(sbml_model.getNumEvents()):
             ev = sbml_model.getEvent(j)
             if ev.isSetTrigger():
@@ -4489,6 +4640,84 @@ def _build_model_from_sbml_doc(doc):
                     "initialAssignment. To restore the legacy lenient "
                     "default-to-0 behavior, set BNGSIM_ALLOW_UNSET_PARAMS=1."
                 )
+
+    # ── C2b: a kineticLaw's valueless LOCAL parameter (issue #580) ──
+    # C2 above walks only the model's global <parameter>s. A local one with no
+    # `value=` used to load as 0.0 on L2 (the reaction silently switched off) and
+    # as libsbml's NaN on L3 (a CVODE failure blaming negative states). A local
+    # parameter is in scope only in its own law (and, through the translator, in
+    # the bodies of functions the law calls) and nothing can assign it, so "unset
+    # and named there" is the whole test. Like C2 it goes by what the
+    # math names, not what it uses, so `piecewise(k, false, 1)` or a function
+    # that ignores the argument still refuses; no corpus model has either. Same
+    # refusal and hatch as C2. RoadRunner is no stricter here (it runs the L2
+    # shape with the zero), but no model in the BioModels corpus or the SBML
+    # semantic suite has a valueless local parameter its law reads, so refusing
+    # costs nothing a reference engine runs.
+    _unset_local: list[tuple[str, str]] = []
+    for j in range(sbml_model.getNumReactions()):
+        _rx = sbml_model.getReaction(j)
+        _kl = _rx.getKineticLaw()
+        if _kl is None or not _kl.isSetMath():
+            continue
+        _lps = _kinetic_law_local_params(_kl)
+        _ids = [lp.getId() for lp in _lps]
+        _dup = sorted({i for i in _ids if _ids.count(i) > 1})
+        if _dup:
+            # Invalid SBML (libsbml consistency error 10303), and there is no right
+            # value to pick: the builder's duplicate-name check used to refuse it,
+            # and a name -> value map would keep one of the two without a word.
+            from bngsim._exceptions import ModelError
+
+            raise ModelError(
+                f"Reaction {_rx.getId()!r} declares local parameter "
+                f"{', '.join(repr(i) for i in _dup)} more than once; a kineticLaw's "
+                "local parameter ids must be unique."
+            )
+        _unset_ids = {lp.getId() for lp in _lps if not lp.isSetValue()}
+        if not _unset_ids:
+            continue
+        _read: set[str] = set()
+        # A name in a called function's body that is not a formal of it or of any
+        # function on the call path resolves to the law's local (the translator
+        # merges that scope in), so it is read as surely as one in the law itself.
+        for _body, _scope, _ in _iter_funcdef_scan_frames(
+            _kl.getMath(), func_defs, lambda *_: False
+        ):
+            _walk_name_refs(_body, _unset_ids - set(_scope or ()), _read)
+        _unset_local.extend((_rx.getId(), lpid) for lpid in sorted(_read))
+    if _unset_local:
+        import os
+
+        from bngsim._exceptions import UnderSpecifiedModelError
+
+        names = ", ".join(f"{lpid!r} (reaction {rid!r})" for rid, lpid in _unset_local)
+        if len(_unset_local) == 1:
+            lead = f"Local parameter {names} has no value attribute, but its kineticLaw reads it"
+        else:
+            lead = (
+                f"Local parameters {names} have no value attribute, but their "
+                "kineticLaws read them"
+            )
+        if os.environ.get("BNGSIM_ALLOW_UNSET_PARAMS") == "1":
+            one = len(_unset_local) == 1
+            logger.warning(
+                "%s. bngsim defaults %s to 0.0 (BNGSIM_ALLOW_UNSET_PARAMS=1), which "
+                "silently zeroes out what %s. Set the %s.",
+                lead,
+                "it" if one else "them",
+                "reads it" if one else "reads them",
+                "value" if one else "values",
+            )
+        else:
+            raise UnderSpecifiedModelError(
+                f"{lead}. "
+                "The model is under-specified: bngsim refuses to default the value "
+                "to 0.0, which would silently zero out the rate law and return a "
+                "wrong-but-plausible trajectory. Set the parameter value. To "
+                "restore the legacy lenient default-to-0 behavior, set "
+                "BNGSIM_ALLOW_UNSET_PARAMS=1."
+            )
 
     # Pre-scan rate-rule targets and event-assignment targets up front so
     # both step 1 (compartments) and step 2 (parameters) can skip IDs that
@@ -4721,6 +4950,24 @@ def _build_model_from_sbml_doc(doc):
         # not survive the next evaluation — refuse rather than appear to take.
         if cid in ar_comp_targets:
             compartment_write_refused.add(cid)
+
+    # (#580) A compartment with no size and nothing that defines one: SBML Level
+    # 2 and 3 leave its size undefined (Level 1 defaults it to 1.0). bngsim uses
+    # 1.0, as RoadRunner does, and refusing would turn away the 8 BioModels that
+    # have one, so warn rather than refuse, once per load, as for a species with
+    # no initial value. Only where the 1.0 can reach a number: a species in it,
+    # a rate rule or event that sets it, or math that names it. A size nothing
+    # reads stays silent, as an unread valueless parameter does (C2).
+    _unsized = _unsized_compartments_read(sbml_model, _ar_targets)
+    if _unsized:
+        logger.warning(
+            "%d %s no size, initialAssignment or assignmentRule, so SBML leaves the "
+            "size undefined; bngsim uses 1.0, as RoadRunner does: %s. Set the size "
+            "if 1 is not what the model means.",
+            len(_unsized),
+            "compartment has" if len(_unsized) == 1 else "compartments have",
+            _capped_names(_unsized),
+        )
 
     # (#170) The compartments whose size is a parameter that ONLY a `set_param`
     # can move. Everything downstream — the storage convention bound to each
@@ -5535,8 +5782,7 @@ def _build_model_from_sbml_doc(doc):
             _rx = sbml_model.getReaction(_j)
             _kl = _rx.getKineticLaw()
             if _rx.getId() in eval_ctx and _kl is not None and _kl.isSetMath():
-                _lps = [_kl.getLocalParameter(_k) for _k in range(_kl.getNumLocalParameters())]
-                _loc = {_lp.getId(): _lp.getValue() for _lp in _lps if _lp.isSetValue()}
+                _loc = _kinetic_law_local_values(_kl)
                 _folds.append(("reaction", _rx.getId(), _rx.getId(), _kl.getMath(), _loc or None))
     _grew = bool(_cause)
     while _grew:
@@ -5625,6 +5871,9 @@ def _build_model_from_sbml_doc(doc):
         for _sr in range(_rxn.getNumProducts()):
             reaction_species.add(_rxn.getProduct(_sr).getSpecies())
 
+    # (#580) Species the model never gives a starting value; see the warning
+    # after this loop.
+    unset_ic_species: list[str] = []
     for i in range(sbml_model.getNumSpecies()):
         sp = sbml_model.getSpecies(i)
         sid = sp.getId()
@@ -5662,6 +5911,11 @@ def _build_model_from_sbml_doc(doc):
             declared_amount = float(amt)
         else:
             ic = 0.0
+            # An assignment rule or a (not numerically folded) initialAssignment
+            # gives the value later; only a species with neither starts at a 0.0
+            # the model never wrote.
+            if sid not in assignment_targets and sid not in _ia_math:
+                unset_ic_species.append(sid)
 
         # Boundary species with rate rules should NOT be fixed —
         # the rate rule provides their dynamics via step 8.
@@ -5756,6 +6010,27 @@ def _build_model_from_sbml_doc(doc):
         # that carries a compound expression to issue #43's chain rule.
         _register_ic_param_ref(
             builder, idx, sid, ia_single_param_ref, ia_expr_param, _declared_param_ids
+        )
+
+    # (#580) SBML leaves such a species' initial value undefined, so the 0.0 above
+    # is bngsim's choice, not the model's, and it must not pass for a value the
+    # model wrote. Warn rather than refuse, as #353 does for a non-finite
+    # compartment size: RoadRunner starts these species at 0 too, and 7 of the 8
+    # BioModels that have one pass rr_parity with it (5 are genome-scale models
+    # with thousands each, hence one capped message rather than one per species).
+    # C2/C2b refuse a valueless parameter instead because a zero rate constant
+    # silently switches a reaction off, and RoadRunner refuses the global case.
+    if unset_ic_species:
+        shown = _capped_names(unset_ic_species)
+        logger.warning(
+            "%d species %s no initialAmount, initialConcentration, initialAssignment "
+            "or assignmentRule, so SBML leaves the initial value undefined; bngsim "
+            "starts %s at 0.0, as RoadRunner does: %s. Set the initial value if 0 is "
+            "not what the model means.",
+            len(unset_ic_species),
+            "has" if len(unset_ic_species) == 1 else "have",
+            "it" if len(unset_ic_species) == 1 else "them",
+            shown,
         )
 
     # ── 3b. Model / species conversionFactor (GH #232) ────────────────
@@ -8373,7 +8648,13 @@ def _build_model_from_sbml_doc(doc):
         kl = sbml_model.getReaction(i).getKineticLaw()
         if kl and kl.getMath():
             _collect_state_discontinuity_conditions(
-                kl.getMath(), func_defs, eval_ctx, time_dependent_names, disc_conditions
+                kl.getMath(),
+                func_defs,
+                eval_ctx,
+                time_dependent_names,
+                disc_conditions,
+                reaction_local_param_maps.get(i),
+                _kinetic_law_local_values(kl),
             )
 
     seen_disc: set[str] = set()
@@ -8390,7 +8671,7 @@ def _build_model_from_sbml_doc(doc):
     # already gated by one of the roots just registered — hence `seen_disc`,
     # which is what makes that judgement possible rather than a guess.
     periodic_disc_max_step = _periodic_time_disc_max_step(
-        sbml_model, func_defs, eval_ctx, seen_disc
+        sbml_model, func_defs, eval_ctx, seen_disc, reaction_local_param_maps
     )
 
     # ── 10.6. rateOf csymbol support (GH #106) ─────────────────────────
@@ -8493,9 +8774,7 @@ def _build_model_from_sbml_doc(doc):
         _rid_f = _rxn_f.getId()
         if not _rid_f or _kl_f is None or _rid_f not in _reads:
             continue
-        _own = {_kl_f.getLocalParameter(_j).getId() for _j in range(_kl_f.getNumLocalParameters())}
-        if not _own:
-            _own = {_kl_f.getParameter(_j).getId() for _j in range(_kl_f.getNumParameters())}
+        _own = {_lp.getId() for _lp in _kinetic_law_local_params(_kl_f)}
         if _own:
             _reads[_rid_f] = {f"_lp_{_rid_f}_{_n}" if _n in _own else _n for _n in _reads[_rid_f]}
     for _j in range(sbml_model.getNumSpecies()):

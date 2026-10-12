@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import textwrap
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import bngsim
@@ -115,14 +116,55 @@ def test_codegen_rewrites_nested_rint():
     assert _replace_engine_calls("rint(rint(x)/2)") == "floor((floor((x) + 0.5)/2) + 0.5)"
 
 
-def test_rint_differs_from_round_only_below_zero(tmp_path):
-    """`round` is ExprTk's (away from zero below 0) and is unchanged. The two
-    must now disagree at -2.5 and agree at 2.5. Below zero they also disagree
-    where x - 0.5 itself rounds, as the expression reference says: ExprTk's
-    round(-0.49999999999999994) is ceil(-1.0) = -1, BNG's rint of it is 0."""
+def test_rint_differs_from_round_at_negative_halves(tmp_path):
+    """`round` is C's (a half away from zero, issue #684). The two must
+    disagree at -2.5 and agree at 2.5. They also disagree where rint's x + 0.5
+    itself rounds, as the expression reference says: BNG's
+    rint(0.49999999999999994) is floor(1.0) = 1, round of it 0."""
     at_neg = _ode_rate(_net(tmp_path, -2.5, "rint(c) - round(c)"), codegen=False)
     at_pos = _ode_rate(_net(tmp_path, 2.5, "rint(c) - round(c) + 1"), codegen=False)
-    at_edge = _ode_rate(_net(tmp_path, -0.49999999999999994, "rint(c) - round(c)"), codegen=False)
+    edge = _net(tmp_path, 0.49999999999999994, "rint(c) - round(c) + 1")
+    at_edge = _ode_rate(edge, codegen=False)
     assert at_neg == pytest.approx(1.0)  # -2 - (-3)
     assert at_pos == pytest.approx(1.0)  # 3 - 3 + 1
-    assert at_edge == pytest.approx(1.0)  # 0 - (-1)
+    assert at_edge == pytest.approx(2.0)  # 1 - 0 + 1
+
+
+#: round(x) arguments where ExprTk's builtin, floor(x + 0.5) or ceil(x - 0.5)
+#: below zero, is off by one because that addition rounds (issue #684): the
+#: largest double below 0.5, and an odd integer in [2^52, 2^53). Then halves,
+#: which must not move.
+ROUND_CASES = [
+    0.49999999999999994,
+    -0.49999999999999994,
+    4503599627370497.0,
+    -4503599627370497.0,
+    2.5,
+    -2.5,
+    0.5,
+    -0.5,
+    -2.7,
+]
+
+
+def _c_round(x: float) -> float:
+    """C's round, exactly: a Decimal holds the double without error, and its
+    ROUND_HALF_UP is a half away from zero."""
+    return float(Decimal(x).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def _function_value(net: str, codegen: bool) -> float:
+    """The function `r` itself at t = 0, read off rather than integrated, so a
+    value near 2^52 is compared exactly."""
+    model = bngsim.Model.from_net(net)
+    res = bngsim.Simulator(model, method="ode", codegen=codegen).run(t_span=(0, 1e-9), n_points=2)
+    return float(res.expressions["r"][0])
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreter", "codegen"])
+@pytest.mark.parametrize("x", ROUND_CASES)
+def test_round_is_c_round_on_both_paths(tmp_path, codegen, x):
+    """The interpreter evaluated ExprTk's round and codegen C's, so one model
+    gave round(0.49999999999999994) = 1 or 0 depending on whether codegen ran
+    (issue #684). Both are C's round now."""
+    assert _function_value(_net(tmp_path, x, "round(c)"), codegen) == _c_round(x)

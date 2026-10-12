@@ -28,7 +28,7 @@ name: native-tests
 # registered suite through `ctest` rather than one named target, so any binary
 # added with add_test() in tests/CMakeLists.txt is picked up here without
 # editing this workflow: test_bngsim, test_validation, test_lapack_dense_linsol,
-# test_c_api, test_seed_count_rounding.
+# test_dense_eigenvalues, test_c_api, test_seed_count_rounding.
 #
 # Scope: Linux only, and deliberately lean. KLU, NFsim and RuleMonkey are all
 # OFF — the tests run here link none of them, and skipping the vendored builds
@@ -76,6 +76,11 @@ on:
       - "src/**"
       - "include/**"
       - "CMakeLists.txt"
+      # The count guard reads its bound from ci/test_floors.env through
+      # ci/check_test_count.sh (issue #584). Moving the bound must run the leg
+      # whose count it bounds, or a wrong value lands unchecked.
+      - "ci/check_test_count.sh"
+      - "ci/test_floors.env"
       - ".github/workflows/native-tests.yml"
   pull_request:
     paths: *native_paths
@@ -160,22 +165,18 @@ jobs:
           #      sees one passing binary — only that binary's own "N/N tests
           #      passed" line reveals it. This is the exact #28/#36 failure mode.
           #
-          # Both floors only rise as tests are added; additions never break them,
-          # only silent removals do.
-          CTEST_FLOOR=5
-          BNGSIM_FLOOR=50
-
+          # The floors live in ci/test_floors.env as CTEST_BINARIES and
+          # TEST_BNGSIM_CASES. The check also fails once a count has outgrown its
+          # floor (issue #584). CTEST_FLOOR had sat at 5 against 6 registered
+          # binaries, so one binary could go missing unnoticed, which is the
+          # case point 1 says it exists to catch.
           total="$(grep -oE 'tests failed out of [0-9]+' /tmp/ctest.log \
             | tail -1 | grep -oE '[0-9]+$' || true)"
           if [ -z "$total" ]; then
             echo "::error::No ctest summary line — the suite did not run to completion."
             exit 1
           fi
-          echo "ctest registered $total test binaries (floor $CTEST_FLOOR)."
-          if [ "$total" -lt "$CTEST_FLOOR" ]; then
-            echo "::error::Only $total ctest tests, expected >= $CTEST_FLOOR — a binary lost its add_test()."
-            exit 1
-          fi
+          bash ci/check_test_count.sh CTEST_BINARIES "$total" "a binary lost its add_test()"
 
           # ctest sees test_bngsim as a single passing binary and cannot see
           # cases disappear from within it. Re-run it alone (fast, no external
@@ -187,11 +188,7 @@ jobs:
             echo "::error::No 'N/N tests passed' summary from test_bngsim."
             exit 1
           fi
-          echo "test_bngsim ran $ran cases (floor $BNGSIM_FLOOR)."
-          if [ "$ran" -lt "$BNGSIM_FLOOR" ]; then
-            echo "::error::Only $ran test_bngsim cases, expected >= $BNGSIM_FLOOR — cases vanished rather than failed."
-            exit 1
-          fi
+          bash ci/check_test_count.sh TEST_BNGSIM_CASES "$ran" "test_bngsim cases vanished rather than failed"
 
       # Third denominator, and the one this matrix exists for (GH #269). The two
       # above cannot see it: test_lapack_dense_linsol is one green ctest binary
