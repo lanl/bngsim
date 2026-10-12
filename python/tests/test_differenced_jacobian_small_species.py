@@ -20,10 +20,12 @@ For such a species the row is now evaluated at the species' own step, √eps of
 itself, at 64 times that, and a thousandth beyond it. An entry becomes the
 quotient at the own step where the row's rounding there is under 1e-4 of it,
 the quotient at 64 times the step agrees with it, the row resolves the step,
-and it is further from the first quotient than it is known to. Elsewhere the
-entry is the first quotient, bit for bit as it was: where the row's rounding
-is too large for the species' own step (which is what the floor is for), and
-for a species at exactly 0, which has no step of its own.
+and it is further from the first quotient than it is known to. A column is
+taken whole or not at all: where an entry of it is not taken and its two
+quotients differ, the column is the first quotients, bit for bit as it was.
+So is one with a row whose rounding is too large for the species' own step
+(which is what the floor is for), and that of a species at exactly 0, which
+has no step of its own.
 
 Two earlier cuts took the entry from a ladder of halved steps below the
 floored one, extrapolated to a step of zero. A ladder shows what the row does
@@ -86,12 +88,20 @@ end groups
 """
 
 
-def _model(tmp_path, big, more="", kh=1.0, xc=0.0):
+def _model(tmp_path, big, more="", kh=1.0, xc=0.0, s=S):
     path = tmp_path / "small.net"
     path.write_text(
-        NET.format(s=S, k1=K1, k2=K2, kd=KD, big=float(big), more=more, kh=kh, xc=float(xc))
+        NET.format(s=s, k1=K1, k2=K2, kd=KD, big=float(big), more=more, kh=kh, xc=float(xc))
     )
     return bngsim.Model.from_net(path)
+
+
+def _s_that_holds(x):
+    """The ``s`` that X's own row, ``s - k1·X - 2·k2·X²``, is at rest with at
+    *x*. A column is taken whole (see the last section), and that row of
+    X's column is known at X's own step where its value is not many times
+    what X moves it by."""
+    return K1 * x + 2 * K2 * x * x
 
 
 def _state(big, x=X_SS):
@@ -183,8 +193,8 @@ def test_a_term_of_third_order(tmp_path):
 @pytest.mark.parametrize("x, kh", [(1e-3, 2e-3), (0.87, 0.5)])
 def test_a_saturating_law_in_a_small_species(tmp_path, x, kh):
     """``0 -> D`` at ``VH·X⁴/(KH⁴ + X⁴)``, no polynomial in X.
-    ∂f_D/∂X = 2·k2·X + 4·VH·KH⁴·X³/(KH⁴ + X⁴)²."""
-    model = _model(tmp_path, 1e8, more="    7 0 2 hill\n", kh=kh)
+    ∂f_D/∂X = 2·k2·X + 4·VH·KH⁴·X³/(KH⁴ + X⁴)². X's own row is at rest."""
+    model = _model(tmp_path, 1e8, more="    7 0 2 hill\n", kh=kh, s=_s_that_holds(x))
     jac = _fd(model, _state(1e8, x=x))
     want = 2 * K2 * x + 4 * 0.9 * kh**4 * x**3 / (kh**4 + x**4) ** 2
     assert jac[1, 0] == pytest.approx(want, rel=1e-6, abs=1e-9)
@@ -204,7 +214,7 @@ def test_the_closed_form_and_the_difference_agree(tmp_path):
 # ─── A law with a scale of its own far below the first step ─────────────────
 
 LAWS = """begin parameters
-    1 s   1.3
+    1 s   {s!r}
     2 k1  0.21
     3 k2  0.73
     4 kd  0.5
@@ -247,11 +257,11 @@ end groups
 """
 
 
-def _laws(tmp_path, big, more, v=1.0, k=1.0):
+def _laws(tmp_path, big, more, v=1.0, k=1.0, s=S):
     """The model above with a law of X added: into X (``0 1``), D (``0 2``)
     or E (``0 4``), which nothing else is in."""
     path = tmp_path / "laws.net"
-    path.write_text(LAWS.format(big=float(big), more=more, v=v, k=k))
+    path.write_text(LAWS.format(big=float(big), more=more, v=v, k=k, s=s))
     return bngsim.Model.from_net(path)
 
 
@@ -265,11 +275,48 @@ def test_a_kink_just_above_the_species(tmp_path, big):
     1.7e-5 of X and a thousand of its own steps: ∂f_D/∂X = 2·k2·X − V. The
     first quotient is 1.09 beside 1e8 and 10878 beside 1e12. A ladder of
     halved steps under it stopped above the kink and returned the slope
-    beyond it, 0.00374 for 0.0042060 in the reviewer's row."""
+    beyond it, 0.00374 for 0.0042060 in the reviewer's row. X's own row is
+    at rest."""
     x, v = 1.7e-3, 4.66e-4
-    model = _laws(tmp_path, big, "    7 0 2 kink\n", v=v, k=x + 2.96e-8)
+    model = _laws(tmp_path, big, "    7 0 2 kink\n", v=v, k=x + 2.96e-8, s=_s_that_holds(x))
     got = _fd(model, [x, 0.0, big, 0.0])[1, 0]
     assert got == pytest.approx(2 * K2 * x - v, rel=1e-6)
+
+
+def test_a_column_with_an_entry_that_is_not_known_is_what_it_was_whole(tmp_path):
+    """Control. The same kink with ``s`` at 1.3. X's own row is 1.3 where X's
+    own step moves it by 5e-12, so its quotient there is not known (its
+    rounding is taken as 1.7e-3 of it), and it differs from the first one,
+    -2.39 for -0.215. The entry in D's row is known, 0.002016 for a first
+    quotient of 1.09. It is not taken: a column is taken whole or not at
+    all, and this one is the first quotients, bit for bit.
+
+    The dimerization leaves X at twice the rate it makes D, whatever the
+    step: ``f_X + 2·f_D`` is linear in X but for the kink, and a column of
+    secants at one step sums to its slope, ``-k1 + 2·V`` across the kink
+    (the first step) and ``-k1 - 2·V`` under it (X's own). With D's entry
+    taken and X's left, the column summed to -2.39. In MODEL1911130007 a
+    column mixed like that took the sensitivities of the steady state from
+    0.4% of a column's largest off to 43%, every changed entry being nearer
+    the closed form."""
+    x, v = 1.7e-3, 4.66e-4
+    model = _laws(tmp_path, 1e8, "    7 0 2 kink\n", v=v, k=x + 2.96e-8)
+    y = [x, 0.0, 1e8, 0.0]
+    jac = _fd(model, y)
+    np.testing.assert_array_equal(jac[:, 0], _first_quotient(model, y, 0))
+    assert jac[0, 0] + 2 * jac[1, 0] == pytest.approx(-0.21 + 2 * v, rel=1e-6)
+
+
+def test_the_rows_of_a_changed_column_add_up(tmp_path):
+    """The same sum where the column is taken: both entries at X's own
+    step."""
+    x, v = 1.7e-3, 4.66e-4
+    model = _laws(tmp_path, 1e8, "    7 0 2 kink\n", v=v, k=x + 2.96e-8, s=_s_that_holds(x))
+    y = [x, 0.0, 1e8, 0.0]
+    jac, first = _fd(model, y), _first_quotient(model, y, 0)
+    assert jac[0, 0] != first[0] and jac[1, 0] != first[1]
+    assert jac[0, 0] == pytest.approx(-0.21 - 4 * K2 * x, rel=1e-6)
+    assert jac[0, 0] + 2 * jac[1, 0] == pytest.approx(-0.21 - 2 * v, rel=1e-6)
 
 
 def test_a_ripple_a_few_thousand_own_steps_wide_is_what_it_was(tmp_path):
@@ -287,8 +334,8 @@ def test_a_ripple_a_few_thousand_own_steps_wide_is_what_it_was(tmp_path):
 def test_a_hill_term_far_under_its_half_saturation(tmp_path):
     """``0 -> E`` at ``V·X²/(K² + X²)`` with K = 2000 and X = 1e-9: the
     slope is ``2·V·X/K²`` = 4.5e-16, in a row with nothing else in it. The
-    first quotient was 3.4e-7."""
-    model = _laws(tmp_path, 1e8, "    7 0 4 hill2\n", v=0.9, k=2000.0)
+    first quotient was 3.4e-7. X's own row is at rest."""
+    model = _laws(tmp_path, 1e8, "    7 0 4 hill2\n", v=0.9, k=2000.0, s=_s_that_holds(1e-9))
     want = 2 * 0.9 * 1e-9 / 2000.0**2
     assert _fd(model, [1e-9, 0.0, 1e8, 0.0])[3, 0] == pytest.approx(want, rel=1e-6)
 

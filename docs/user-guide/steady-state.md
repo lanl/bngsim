@@ -593,10 +593,12 @@ species and the largest concentration in the model, so a species far below
 that is stepped by many times itself, and a term of second order in it is read
 as a secant. For such a species the row is asked again at the species' own
 step, and an entry is taken from there where the row's rounding over that
-step is under 1e-4 of it, the row is smooth and resolved at that scale, and it
-is further from the first quotient than it is known to (issue #1002).
-Elsewhere the entry is the one quotient it was: where the row's rounding is
-too large for the species' own step, which is what the floor is for (a
+step is under 1e-4 of it, the row is one slope and resolved at that scale, and
+it is further from the first quotient than it is known to (issue #1002). A
+column is taken whole or not at all: its entries are at one step, so that
+rows which add up to nothing in the right-hand side still do in the matrix.
+Elsewhere the column is the quotients it was: where one of its rows has too
+much rounding for the species' own step, which is what the floor is for (a
 species at 1e-9 in a row whose terms are of order 1), and for a species at
 exactly 0, which has no step of its own, so a dimerization's entry there is
 still the secant. Prefer the closed form for sensitivities.) (A determinant

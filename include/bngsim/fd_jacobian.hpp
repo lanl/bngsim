@@ -119,6 +119,17 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 //   step, and kFdRefineRtol of itself for what a one-sided step leaves out).
 //   Otherwise the first quotient may be the nearer of the two.
 //
+// And a column is taken whole or not at all. Where an entry of it is not taken
+// and its two quotients are more than kFdRefineRtol apart, every entry of the
+// column stays the first quotient. A column of secants at one step keeps what
+// the right-hand side keeps: rows that add up to nothing (a conserved sum, a
+// term that leaves one species for another) add up to nothing in it. A column
+// with one entry at the species' own step and the same term's other entry at
+// the floored one does not, and a solve with the matrix answers for the
+// difference: in MODEL1911130007, where every changed entry was nearer the
+// closed form, the sensitivities of the steady state went from 0.4% of a
+// column's largest off to 43%.
+//
 // Nothing is extrapolated. An earlier cut of this change took the entry from a
 // ladder of halved steps below the floored one, extrapolated to a step of
 // zero. That shows what the row does down to the ladder's last step and no
@@ -267,23 +278,38 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     }
     // An entry is the quotient at the species' own step where that is known,
     // agrees with the one at kFdRefineRatio times the step, and is further
-    // from the first quotient than it is known to.
+    // from the first quotient than it is known to. And a column is taken
+    // whole: where any of its other entries differs between the two steps,
+    // nothing in it is changed.
+    std::vector<char> take(um);
     for (std::size_t s = 0; s < n_small; ++s) {
         if (!(step[s] > 0.0)) {
             continue;
         }
         double *col = D + static_cast<std::size_t>(small[s]) * um;
-        for (std::size_t i = 0; i < um; ++i) {
+        bool whole = true;
+        for (std::size_t i = 0; i < um && whole; ++i) {
             const double q = own[s * um + i];
+            take[i] = 0;
             const double apart = std::abs(wide[s * um + i] - q);
             const double noise = kFdNoise * rounding[i] / step[s];
             const double size = std::abs(q);
-            // (A quotient that is no number fails the last of these: nothing
-            // is further from anything than an infinity.)
+            const double gap = std::abs(q - col[i]);
             if (moved[s * um + i] != 0 && resolved[s * um + i] != 0 && noise <= kFdSettled * size &&
-                apart <= kFdSettled * size &&
-                std::abs(q - col[i]) > 2.0 * (kFdRefineRtol * size + noise + apart)) {
-                col[i] = q;
+                apart <= kFdSettled * size && gap > 2.0 * (kFdRefineRtol * size + noise + apart)) {
+                take[i] = 1;
+            } else if (!(gap <= kFdRefineRtol * size)) {
+                // (A quotient that is no number comes here: nothing is that
+                // near an infinity.)
+                whole = false;
+            }
+        }
+        if (!whole) {
+            continue;
+        }
+        for (std::size_t i = 0; i < um; ++i) {
+            if (take[i] != 0) {
+                col[i] = own[s * um + i];
             }
         }
     }
