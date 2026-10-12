@@ -17,10 +17,11 @@ is stepped by 1.5, and ``k·X²`` is read as a secant across twice the species,
   the default settings**, with the closed-form Jacobian.
 
 For such a species the row is now evaluated at the species' own step, √eps of
-itself, at twice that, and a thousandth beyond it. An entry becomes the
-quotient at the own step where the row's rounding there is under 1e-4 of it,
-the quotient at twice the step agrees with it, the row resolves the step, and
-it is further from the first quotient than it is known to. Elsewhere the
+itself, at twice and at 64 times that, and a thousandth beyond it. An entry
+becomes the quotient at the own step where the row's rounding there is under
+1e-4 of it, the quotients at twice and at 64 times the step agree with it,
+the row resolves the step, and it is further from the first quotient than it
+is known to. Elsewhere the
 entry is the first quotient, bit for bit as it was: where the row's rounding
 is too large for the species' own step (which is what the floor is for), and
 for a species at exactly 0, which has no step of its own.
@@ -272,14 +273,16 @@ def test_a_kink_just_above_the_species(tmp_path, big):
     assert got == pytest.approx(2 * K2 * x - v, rel=1e-6)
 
 
-def test_a_ripple_far_narrower_than_the_first_step(tmp_path):
-    """``0 -> E`` at ``V·sin(X/K)`` with K 1e-4 of X: the slope is
-    ``V/K·cos(X/K)``, 0.00505, the first quotient -1.3e-12, and a ladder
-    took the slope of the row without the ripple, with the wrong sign."""
+def test_a_ripple_a_few_thousand_own_steps_wide_is_what_it_was(tmp_path):
+    """Control. ``0 -> E`` at ``V·sin(X/K)`` with K 1e-4 of X: the slope is
+    ``V/K·cos(X/K)``, 0.00505, and the first quotient -1.3e-12. A ladder
+    took the slope of the row without the ripple, with the wrong sign. The
+    quotient at X's own step is right, and the one at 64 times that step is
+    6e-4 from it: the row is not one slope over two decades of step, and
+    the entry stays."""
     x, k, v = 1.7e-3, 1.74e-7, 9.05e-10
     model = _laws(tmp_path, 2.95e10, "    7 0 4 ripple\n", v=v, k=k)
-    got = _fd(model, [x, 0.0, 2.95e10, 0.0])[3, 0]
-    assert got == pytest.approx(v / k * math.cos(x / k), rel=1e-4)
+    _is_what_it_was(model, [x, 0.0, 2.95e10, 0.0], 3)
 
 
 def test_a_hill_term_far_under_its_half_saturation(tmp_path):

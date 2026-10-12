@@ -91,17 +91,25 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 // secant across twice the species. `k·X²` came back with a slope of
 // `k·(2X + h)`: dX*/ds 7% off at a ratio of 1e7 and 44% at 1e8.
 //
-// For such a species the row is evaluated three more times: at its own step
+// For such a species the row is evaluated four more times: at its own step
 // (√eps of itself, the step it would have were it alone in the state), at
-// twice that, and a thousandth beyond the own step. An entry becomes the
-// quotient at the own step where all of this holds, and is the first
-// quotient, bit for bit as it was, where any of it does not:
+// twice that, at kFdRefineRatio times it, and a thousandth beyond the own
+// step. An entry becomes the quotient at the own step where all of this
+// holds, and is the first quotient, bit for bit as it was, where any of it
+// does not:
 //
 // - the row's rounding over the own step is under kFdSettled of the quotient:
 //   it is known there;
 // - the quotient at twice the step agrees with it to kFdSettled of itself, and
 //   both steps moved the row: the row is as smooth as a difference needs at
 //   that scale;
+// - the quotient at kFdRefineRatio times the step agrees with it to
+//   kFdSettled too: the slope is the row's over two decades of step, and not
+//   one that only the smallest steps see. (In BIOMD0000000393 the quotients
+//   at a species' own step, at twice and at four times it agree to 4e-8 and
+//   are 9e-4 from the closed form, which the quotient at 64 times the step is
+//   within 1.4e-5 of: something in that right-hand side answers a move of
+//   1e-10 by a little more than its slope.)
 // - the thousandth beyond moves the row by a thousandth of what the step did,
 //   to a tenth: the row resolves the step, and the quotient is not a count of
 //   the row's own last bits. (`k·((A + X) − A)` with A at 1e8 moves in steps
@@ -109,9 +117,10 @@ inline double state_probe_scale(const double *y, int ns, const std::vector<int> 
 //   the row's terms nor a small move of the state shows. Its quotients at X's
 //   own step and at twice it are the same wrong number, 1.14 for 1.)
 // - it is further from the first quotient than twice what it is known to (its
-//   rounding, the difference from the quotient at twice the step, and
-//   kFdRefineRtol of itself for what a one-sided step leaves out). Otherwise
-//   the first quotient may be the nearer of the two.
+//   rounding, its differences from the quotients at twice and at
+//   kFdRefineRatio times the step, and kFdRefineRtol of itself for what a
+//   one-sided step leaves out). Otherwise the first quotient may be the
+//   nearer of the two.
 //
 // Nothing is extrapolated. An earlier cut of this change took the entry from a
 // ladder of halved steps below the floored one, extrapolated to a step of
@@ -166,7 +175,7 @@ constexpr double kFdResolveRtol = 0.1;
 // Column-major D (n_out×ns, D[j*n_out + i] = ∂g_i/∂y_j) of any `eval(y, g)`
 // that fills n_out values from a state of ns species. One `eval` per column
 // plus one for the base point; for a state with a species far below its scale
-// four more, and three for the column of each such species (see above).
+// four more, and four for the column of each such species (see above).
 // `excluded` (0-based, ascending) names the species that must not set the
 // probe scale.
 template <class Eval>
@@ -198,7 +207,8 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
     // The quotients of each such species at its own step and at twice it, and
     // what each step moved the row by.
     const std::size_t n_small = small.size();
-    std::vector<double> own(n_small * um), twice(n_small * um), step(n_small, 0.0);
+    std::vector<double> own(n_small * um), twice(n_small * um), wide(n_small * um);
+    std::vector<double> step(n_small, 0.0);
     std::vector<char> moved(n_small * um, 0), resolved(n_small * um, 0);
     for (std::size_t s = 0; s < n_small; ++s) {
         const auto uj = static_cast<std::size_t>(small[s]);
@@ -216,6 +226,12 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
         for (std::size_t i = 0; i < um; ++i) {
             twice[s * um + i] = (g1[i] - g0[i]) / h2;
             moved[s * um + i] = g1[i] != g0[i] ? 1 : 0;
+        }
+        y_pert[uj] = y[uj] + kFdRefineRatio * base;
+        const double h_wide = y_pert[uj] - y[uj];
+        eval(y_pert.data(), g1.data());
+        for (std::size_t i = 0; i < um; ++i) {
+            wide[s * um + i] = (g1[i] - g0[i]) / h_wide;
         }
         y_pert[uj] = y[uj] + base;
         eval(y_pert.data(), g1.data());
@@ -290,7 +306,8 @@ inline void fd_state_partials(Eval &&eval, const double *y, int ns, int n_out,
         double *col = D + static_cast<std::size_t>(small[s]) * um;
         for (std::size_t i = 0; i < um; ++i) {
             const double q = own[s * um + i];
-            const double apart = std::abs(twice[s * um + i] - q);
+            const double apart =
+                std::max(std::abs(twice[s * um + i] - q), std::abs(wide[s * um + i] - q));
             const double noise = kFdNoise * rounding[i] / step[s];
             const double size = std::abs(q);
             // (A quotient that is no number fails the last of these: nothing
