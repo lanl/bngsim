@@ -17,11 +17,10 @@ is stepped by 1.5, and ``k·X²`` is read as a secant across twice the species,
   the default settings**, with the closed-form Jacobian.
 
 For such a species the row is now evaluated at the species' own step, √eps of
-itself, at twice and at 64 times that, and a thousandth beyond it. An entry
-becomes the quotient at the own step where the row's rounding there is under
-1e-4 of it, the quotients at twice and at 64 times the step agree with it,
-the row resolves the step, and it is further from the first quotient than it
-is known to. Elsewhere the
+itself, at 64 times that, and a thousandth beyond it. An entry becomes the
+quotient at the own step where the row's rounding there is under 1e-4 of it,
+the quotient at 64 times the step agrees with it, the row resolves the step,
+and it is further from the first quotient than it is known to. Elsewhere the
 entry is the first quotient, bit for bit as it was: where the row's rounding
 is too large for the species' own step (which is what the floor is for), and
 for a species at exactly 0, which has no step of its own.
@@ -350,16 +349,15 @@ def test_a_law_that_is_nearly_linear_is_what_it_was(tmp_path):
 def test_a_rounding_inside_one_rate_law_is_what_it_was(tmp_path, x):
     """Control. ``0 -> E`` at ``V·((K + X) − K)`` with K = 1e8 is X, in steps
     of 1.5e-8, the last bit of 1e8, and its row is X: the row's terms do
-    not show that rounding. The quotients
-    at X's own step, 1.3e-8, and at twice it are the same wrong number, 1.14
+    not show that rounding. The quotient at X's own step, 1.3e-8, is 1.14
     for 1. A thousandth beyond the step the row has not moved at all, so it
     does not resolve the step, and the entry stays the first quotient,
     which is 1.
 
-    At X = 257/256 the own step is 1.004 of those last bits, twice it 2.008
-    and 64 times it 64.25, which the row takes as 1, 2 and 64: the three
-    quotients are one number, 0.9961, and the thousandth beyond is all that
-    tells it from a slope."""
+    At X = 257/256 the own step is 1.004 of those last bits and 64 times it
+    64.25, which the row takes as 1 and 64: the two quotients are one
+    number, 0.9961, and the thousandth beyond is all that tells it from a
+    slope."""
     model = _laws(tmp_path, 1e8, "    7 0 4 inside\n", v=1.0, k=1e8)
     y = [x, 0.0, 1e8, 0.0]
     _is_what_it_was(model, y, 3)
@@ -370,7 +368,7 @@ def test_a_law_with_no_slope_at_the_species_is_what_it_was(tmp_path):
     """Control. ``0 -> E`` at ``|X − K|^0.95`` with X on K: the quotient is
     ``h^(-0.05)``, which has no limit. A thousandth beyond the step the row
     has moved by 0.95 of what the quotient says, which passes for resolved;
-    the quotient at twice the step is 3.4% under the one at the step, which
+    the quotient at 64 times the step is 19% under the one at the step, which
     does not pass for the same slope."""
     x = 1e-3
     model = _laws(tmp_path, 1e8, "    7 0 4 mild\n", k=x)
@@ -446,8 +444,9 @@ def test_a_row_with_a_large_term_no_species_is_in(tmp_path):
 @pytest.mark.parametrize("x", [0.0, 1e-3])
 def test_a_law_that_is_not_smooth_at_the_species_is_what_it_was(tmp_path, x):
     """Control. ``0 -> D`` at ``sqrt(abs(X - xc))`` with X on ``xc``: the
-    quotient is ``h^(-1/2)``, which has no limit. At twice X's own step it
-    is 0.71 of what it is at the step, so the entry is the first quotient;
+    quotient is ``h^(-1/2)``, which has no limit. At 64 times X's own step
+    it is an eighth of what it is at the step, so the entry is the first
+    quotient;
     at X = 0 there is no own step to ask."""
     model = _model(tmp_path, 1e8, more="    7 0 2 root\n", xc=x)
     y = _state(1e8, x=x)
