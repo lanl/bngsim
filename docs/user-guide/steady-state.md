@@ -590,16 +590,16 @@ better than a thousandth. Where the Jacobian is a difference quotient
 nothing there, and no measure taken on that matrix sees what it lost. (The
 limits hold that loss. The difference's step is 1.5e-8 of the larger of the
 species and the largest concentration in the model, so a species far below
-that is stepped by many times itself; an entry that is not linear in such a
-species is asked of a ladder of halved steps, extrapolated to a step of zero,
-and one that is linear in it is the one quotient it was (issue #1002). An
-entry changes only where the ladder's estimates agree to a millionth of
-themselves, stay there down to the species' own step or to the row's
-rounding, and are further from the first quotient than they are known to
-themselves. An entry whose slope is 0, or under the row's rounding over the
-steps, keeps the first quotient: a dimerization's entry at a species that is
-at exactly 0 is still the secant. So does one whose estimates do not come to
-rest. Prefer the closed form for sensitivities.) (A determinant
+that is stepped by many times itself, and a term of second order in it is read
+as a secant. For such a species the row is asked again at the species' own
+step, and an entry is taken from there where the row's rounding over that
+step is under 1e-4 of it, the row is smooth and resolved at that scale, and it
+is further from the first quotient than it is known to (issue #1002).
+Elsewhere the entry is the one quotient it was: where the row's rounding is
+too large for the species' own step, which is what the floor is for (a
+species at 1e-9 in a row whose terms are of order 1), and for a species at
+exactly 0, which has no step of its own, so a dimerization's entry there is
+still the secant. Prefer the closed form for sensitivities.) (A determinant
 ratio that is negative, or above 1.67, is also what a state far from an
 isolated root gives, where the rates are so small that `tol` passes it, and
 what a rate law that is discontinuous between the two states gives; a smaller
