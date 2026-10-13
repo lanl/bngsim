@@ -337,6 +337,34 @@ def test_an_element_the_engine_ignores_changes_nothing(tmp_path, decoy):
     assert clock_profile(xml).readers == ("f",)
 
 
+def test_a_function_outside_the_list_does_not_stand_in_for_one_in_it(tmp_path):
+    """f = k*floor(g()) with g = 1 + time() is refused. A clock-free g outside
+    the engine's list must not make f look harmless."""
+    xml = _with(tmp_path, "k*floor(g())", more_functions=_function("g", "1+time()"))
+    assert clock_profile(xml).refusal is not None
+    text = xml.read_text(encoding="utf-8")
+    decoy = "<Extra>" + _function("g", "1").strip() + "</Extra>"
+    xml.write_text(text.replace("  </model>", f"    {decoy}\n  </model>"), encoding="utf-8")
+    refusal = clock_profile(xml).refusal
+    assert refusal is not None and "'floor'" in refusal
+
+
+def test_a_model_element_that_is_not_the_roots_is_not_the_model(tmp_path):
+    """The loader takes <model> directly under the root. One tucked inside
+    another element earlier in the file is not read."""
+    text = SWITCH.read_text(encoding="utf-8")
+    decoy = (
+        '<Extra><model id="decoy"><ListOfFunctions>'
+        + _function("f", "k").strip()
+        + "</ListOfFunctions></model></Extra>\n  "
+    )
+    assert text.count('<model id="') == 1
+    xml = tmp_path / "two_models.xml"
+    xml.write_text(text.replace('<model id="', decoy + '<model id="', 1), encoding="utf-8")
+    profile = clock_profile(xml)
+    assert profile.readers == ("f",) and profile.thresholds == (6.0,)
+
+
 def test_only_the_first_expression_of_a_function_is_read(tmp_path):
     xml = _with(tmp_path, "k*time()")
     text = xml.read_text(encoding="utf-8")
