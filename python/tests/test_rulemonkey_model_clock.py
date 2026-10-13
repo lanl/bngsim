@@ -333,6 +333,37 @@ def test_the_core_refuses_an_off_clock_segment_unless_told_it_is_safe():
     core.destroy_session()
 
 
+def test_a_start_a_rounding_error_off_the_clock_is_on_it():
+    """A segment's start is compared with the clock as RuleMonkey's own
+    simulate() compares it, to 1e-9 of the clock. A start that differs by
+    rounding continues on the clock; one that differs by more is another time."""
+    with bngsim.RuleMonkeySession(str(SWITCH)) as s:
+        s.initialize(seed=5, t_start=5.0)
+        r = s.simulate(5.0 + 1e-12, 7.0, 3)
+        assert s.current_time == 7.0
+        with pytest.raises(SimulationError, match=r"clock reads 7\.0"):
+            s.simulate(7.0 + 1e-6, 8.0, 2)
+        with pytest.raises(SimulationError, match=r"clock reads 7\.0"):
+            s.simulate(7.0 - 1e-6, 8.0, 2)
+    assert _a0(r)[0] == N
+    mean, sd = _binomial(np.exp(-K * 1.0))
+    _within(_a0(r)[2:], mean, sd)
+
+
+def test_the_last_row_carries_t_end_itself():
+    """RuleMonkey builds a uniform grid as t_start + i*dt, which over (0.3, 0.9)
+    in three steps ends at 0.9000000000000001. The rows carry the instants
+    asked for, on a one-shot run and on a session."""
+    assert 0.3 + 3 * ((0.9 - 0.3) / 3) != 0.9
+    _, t, _ = _run(PLAIN, t_span=(0.3, 0.9), n_points=4)
+    assert t[0] == 0.3 and t[-1] == 0.9
+    with bngsim.RuleMonkeySession(str(PLAIN)) as s:
+        s.initialize(seed=3, t_start=0.3)
+        r = s.simulate(0.3, 0.9, 4)
+        assert s.current_time == 0.9
+    assert r.time[0] == 0.3 and r.time[-1] == 0.9
+
+
 def test_initialize_refuses_a_start_that_is_not_a_time():
     with bngsim.RuleMonkeySession(str(PLAIN)) as s:
         with pytest.raises(SimulationError, match="t_start must be finite"):
