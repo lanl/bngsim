@@ -283,13 +283,14 @@ def test_a_table_function_indexed_by_time_counts_as_reading_the_clock():
             s.simulate(1.0, 2.0, 2)
 
 
-def test_a_segment_off_the_clock_still_runs_as_elapsed_time_without_a_clock():
+@pytest.mark.parametrize("times", [{"args": (5.0, 7.0, 3)}, {"sample_times": [5.0, 6.0, 7.0]}])
+def test_a_segment_off_the_clock_still_runs_as_elapsed_time_without_a_clock(times):
     """Control. A model that does not read the clock sees only elapsed time, so
     simulate(5, 7) on a session at 0 is the run from 0 to 2 under labels 5..7,
     as before, and a segment that restarts its labels continues the state."""
     with bngsim.RuleMonkeySession(str(PLAIN)) as s:
         s.initialize(seed=3)
-        shifted = s.simulate(5.0, 7.0, 3)
+        shifted = s.simulate(*times.get("args", ()), sample_times=times.get("sample_times"))
         assert s.current_time == 2.0
         again = s.simulate(sample_times=[0.0, 1.0])
         assert s.current_time == 3.0
