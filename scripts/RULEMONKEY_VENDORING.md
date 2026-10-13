@@ -14,8 +14,8 @@ land it upstream in RuleMonkey first and then re-run `vendor_rulemonkey.py`.
 
 - `bngsim/third_party/rulemonkey/VENDOR.json` currently records authoritative
   branch `main`, resolved source ref `origin/main`, and commit
-  `87628b39973ed6d4f0a1720ab5e9ff903cdec2a6` (RuleMonkey 3.10.1, the
-  `chore(release):` commit itself).
+  `f11c2514b11e1e9b27f680b49457e3ae011b8c6a` (RuleMonkey 3.11.0, the tag
+  `v3.11.0`: the merge of the release branch).
 - **Refreshing this pin can be a two-repo, ordered job.** The `EXPRTK_SYNC_FILES`
   guard compares RuleMonkey's standalone `third_party/bngsim_expr` copy against
   this tree's `expression.cpp` and friends, and it fails closed. So when
@@ -26,7 +26,9 @@ land it upstream in RuleMonkey first and then re-run `vendor_rulemonkey.py`.
   than a `chore(release):` one. It is only required when bngsim's expression
   layer has actually moved since RuleMonkey's copy was last synced — check the
   `ExprTk sync pin` line that `--summary` prints. The 3.10.0 → 3.10.1 refresh
-  needed no such step, because that pin already matched this tree.
+  needed no such step, because that pin already matched this tree. The 3.10.1 →
+  3.11.0 refresh did: RuleMonkey synced its copy to bngsim `6ce2276`
+  (richardposner/RuleMonkey#100) before the release.
 - Vendoring metadata records canonical upstream remote
   `https://github.com/richardposner/RuleMonkey.git`.
 - The preferred disposable checkout is `/tmp/rulemonkey-vendor-candidate`.

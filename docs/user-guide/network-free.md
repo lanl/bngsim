@@ -139,19 +139,47 @@ Arrhenius laws, and on local functions.
 
 ### Rate laws that read `time()`
 
-Neither backend can run a function that reads `time()` (or a bare `time`), so
-both refuse one when the simulator or session is built, naming the function
-(issue #862). RuleMonkey treats a total propensity of 0 as final: a rate such as
-`if(time()>=6, k, 0)`, which is 0 at the start, never fires, and the run would
-return the initial state on every row (richardposner/RuleMonkey#86). NFsim cannot
-prepare such a function at all. Simulate the generated network with
-`method="ode"` or `method="ssa"` instead, which read `time()` as the model time.
+**RuleMonkey runs them** (issue #1022). A rate that reads `time()`, directly,
+through another function, or as a table function indexed by time
+(`tfun(..., time)`), is integrated between events, so a rate such as
+`if(time()>=6, k, 0)`, which is 0 at the start, fires when it turns on.
+`method="rm"` runs on absolute model time, as `method="ode"` and `"ssa"` do:
+`run(t_span=(5, 7))` starts from the initial state with the clock at 5, and
+`time()` reads 5 to 7.
 
-A table function indexed by time (`tfun(..., time)`) falls into the same trap on
-RuleMonkey, which refuses it too. NFsim runs one, but refreshes its value only
-when a reaction fires. So a rate that is 0 at the start, or that changes while
-nothing fires, is not seen until something does, and until then the run is flat
-(issue #892).
+**NFsim does not.** It cannot prepare a function that reads `time()` (or a bare
+`time`), so `method="nf"` refuses one when the simulator or session is built,
+naming the function (issue #862). Use `method="rm"` on the same XML, or
+`method="ode"` or `"ssa"` on the generated network. NFsim runs a table function
+indexed by time, but refreshes its value only when a reaction fires. So a rate
+that is 0 at the start, or that changes while nothing fires, is not seen until
+something does, and until then the run is flat (issue #892).
+
+NFsim also keeps a different clock. A `method="nf"` run over `t_span=(5, 7)`
+starts from the initial state and runs for 2 time units with NFsim's clock going
+from 0 to 2, as BNG2.pl's `simulate_nf` does, and bngsim labels the rows 5 to 7.
+The difference from RuleMonkey shows only where NFsim reads the clock, which is
+through a time-indexed table function.
+
+### What RuleMonkey flags without refusing
+
+RuleMonkey refuses an XML it cannot honor. Some things it runs and flags
+instead, and bngsim raises each as a `bngsim.RuleMonkeyWarning` when the
+`method="rm"` simulator or the session is built:
+
+- a rule whose products can never be what it writes, such as
+  `A(s~0) + B(a) -> A(s~1).B(a)`, which puts A and B in one complex but bonds
+  nothing. BioNetGen generates no reaction for such a rule, and RuleMonkey never
+  fires it;
+- a keyword it ignores (a rule `priority`, `MoveConnected`);
+- a construct it reads differently from BioNetGen's network (`TotalRate`,
+  `reactant_N()` outside `TotalRate`, a Michaelis-Menten pattern that matches
+  several species).
+
+```python
+import warnings, bngsim
+warnings.simplefilter("error", bngsim.RuleMonkeyWarning)   # promote
+```
 
 ### Stateful network-free sessions
 
@@ -171,6 +199,29 @@ with RuleMonkeySession("model.xml") as rm:
     rm.initialize(seed=42)
     result = rm.simulate(0, 100, n_points=101)
 ```
+
+A RuleMonkey session runs on the model's clock. `initialize(seed, t_start=0.0)`
+puts the initial state at `t_start`, `current_time` reads the clock, and a
+segment that starts at `current_time` continues on it:
+
+```python
+with RuleMonkeySession("model.xml") as rm:
+    rm.initialize(seed=42, t_start=5.0)      # time() reads 5 here
+    first = rm.simulate(5, 7, n_points=3)
+    second = rm.simulate(7, 10, n_points=4)  # continues at 7
+```
+
+A segment that starts anywhere else, such as a second `simulate(0, 10, ...)` on
+a session already at 10, is run from the current state over the same span and
+labelled with the times asked for. That is exact for a model that does not read
+the clock, where only elapsed time matters. For a model that does, the rates
+would see times the rows do not carry, so the segment is refused with
+`SimulationError`.
+
+A session may be advanced in as many calls as needed: a run cut into short
+segments has the same statistics as one call. It does not spend the same random
+numbers, so the two are not identical row for row. `solver_stats["n_steps"]` on
+a session `Result` is the session's running event count, on both backends.
 
 **PyBNF integration**: When `bngsim` is installed, `method=>"nf"` / `"nfsim"`
 routes through the in-process NFsim backend, and `method=>"rm"` / `"rulemonkey"`

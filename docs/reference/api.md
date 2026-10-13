@@ -192,14 +192,20 @@ Constructor:
   Create a RuleMonkey session from a BNGL-generated NFsim XML file
 
 Session control:
-- **`initialize(seed)`** — Initialize the live RuleMonkey system
+- **`initialize(seed, t_start=0.0)`** — Initialize the live RuleMonkey system
+  with the initial state at `t_start` on the model's clock
 - **`simulate(t_start, t_end, *, n_points, timeout)`** → `Result` —
   `timeout` is a wall-clock budget in seconds (`None` disables, the
   default). Polled by upstream every ~1024 SSA events; on overrun raises
   `bngsim.SimulationTimeout` and the session must be destroyed before
-  reuse.
-- **`step_to(time, *, timeout)`** — Advance without recording output;
-  honors the same `timeout` semantics as `simulate(...)`.
+  reuse. A segment that starts at `current_time` runs on the model's clock.
+  One that starts elsewhere is run as elapsed time under the labels asked
+  for when the model does not read the clock, and refused with
+  `SimulationError` when it does.
+- **`step_to(time, *, timeout)`** — Advance to `time` on the session's clock
+  without recording output; honors the same `timeout` semantics as
+  `simulate(...)`.
+- **`current_time`** — The session's clock
 - **`destroy()`** — Release the live RuleMonkey session
 
 Parameters and counts:

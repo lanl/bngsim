@@ -23,7 +23,9 @@ class RuleMonkeySimulator {
     RuleMonkeySimulator(const RuleMonkeySimulator &) = delete;
     RuleMonkeySimulator &operator=(const RuleMonkeySimulator &) = delete;
 
-    // Stateless run from the parsed XML plus current configuration.
+    // Stateless run from the parsed XML plus current configuration. The seed
+    // state sits at `times.t_start` on the model's clock, so a rate law that
+    // reads time() reads absolute model time, as ode and ssa do (issue #1022).
     //
     // @param timeout_seconds  Wall-clock budget in seconds; `<= 0` disables
     //                         it. When the budget is exceeded between SSA
@@ -38,16 +40,32 @@ class RuleMonkeySimulator {
     // left at the last completed SSA event; subsequent state is undefined
     // for bngsim purposes, so callers should `destroy_session()` before
     // reusing the simulator.
-    void initialize(uint64_t seed = 42);
+    //
+    // A session runs on the model's clock (issue #1022). `initialize` puts the
+    // seed state at `t_start` there, `current_time()` reads it, and `step_to`
+    // takes a time on it.
+    void initialize(uint64_t seed = 42, double t_start = 0.0);
     void step_to(double time, double timeout_seconds = 0.0);
-    // `sample_times`, when non-empty, overrides the uniform t_start..t_end /
-    // n_points grid: the returned Result is labelled with exactly these times
-    // (sorted ascending, absolute in the caller's frame, sample_times[0] the
-    // segment start) and the live session advances by
-    // (sample_times.back() - sample_times.front()) from its current time
-    // (GH #184). An empty list is the uniform path, byte-identical to before.
+    // Whether a segment starting at `seg_start` starts at the session's clock,
+    // by the tolerance upstream's simulate() accepts.
+    bool starts_on_clock(double seg_start) const;
+    // One segment. `sample_times`, when non-empty, overrides the uniform
+    // t_start..t_end / n_points grid (GH #184): sorted ascending, with
+    // sample_times[0] the segment start. The Result is labelled with exactly
+    // the times asked for.
+    //
+    // A segment that starts at the session's clock runs on it, so a rate law
+    // that reads time() reads the times the rows carry. A segment that starts
+    // anywhere else is refused, unless `elapsed_ok`: then the session advances
+    // by the segment's span from its current time and the rows are labelled
+    // with the caller's times. That is exact only for a model whose rates do
+    // not read the clock, which the caller vouches for by passing it.
+    //
+    // `solver_stats().n_steps` on a session Result is the session's running
+    // event count since initialize(), not this segment's alone, as upstream
+    // reports it and as NfsimSimulator's session does.
     Result simulate(double t_start, double t_end, int n_points, double timeout_seconds = 0.0,
-                    const std::vector<double> &sample_times = {});
+                    const std::vector<double> &sample_times = {}, bool elapsed_ok = false);
     void add_molecules(const std::string &molecule_type_name, int count);
     int get_molecule_count(const std::string &molecule_type_name) const;
 
@@ -76,6 +94,12 @@ class RuleMonkeySimulator {
     std::vector<std::string> get_observable_names() const;
     std::vector<double> get_observable_values();
     double get_parameter(const std::string &name) const;
+    // What the engine flags in this XML without refusing it, one
+    // "element: description" string per item (upstream's Severity::Warn
+    // entries): a rule that can never fire as written, a keyword the engine
+    // ignores, a construct it reads differently from BioNetGen's network.
+    // Fixed at construction.
+    std::vector<std::string> warnings() const;
     bool has_session() const;
     double current_time() const;
     void destroy_session();

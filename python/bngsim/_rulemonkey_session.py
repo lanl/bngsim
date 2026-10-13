@@ -4,14 +4,27 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import warnings
 from pathlib import Path
 
-from bngsim._exceptions import ParameterError, SimulationError, SimulationTimeout
+from bngsim._exceptions import (
+    ParameterError,
+    RuleMonkeyWarning,
+    SimulationError,
+    SimulationTimeout,
+)
 from bngsim._result import Result
 from bngsim._rounding import round_half_up
 from bngsim._sample_times import normalize_sample_times
 
 logger = logging.getLogger("bngsim")
+
+
+def _warn_engine_flags(core, *, stacklevel: int) -> None:
+    """Emit a :class:`RuleMonkeyWarning` for each thing the engine flagged in
+    the XML *core* was built from without refusing it (issue #1022)."""
+    for item in core.warnings():
+        warnings.warn(f"RuleMonkey: {item}", RuleMonkeyWarning, stacklevel=stacklevel)
 
 
 class RuleMonkeySession:
@@ -20,6 +33,11 @@ class RuleMonkeySession:
     RuleMonkey reads BNG XML and implements the ``nf_exact`` network-free
     backend. Use this class for multi-action workflows that need to initialize,
     simulate, add molecules, and simulate again.
+
+    A session runs on the model's clock. :meth:`initialize` puts the seed state
+    at ``t_start`` on it (0 by default), :attr:`current_time` reads it, and a
+    rate law that reads ``time()`` reads it. See :meth:`simulate` for a segment
+    that does not start at it.
     """
 
     __slots__ = (
@@ -28,6 +46,7 @@ class RuleMonkeySession:
         "_initialized",
         "_destroyed",
         "_seed",
+        "_clock_readers",
     )
 
     def __init__(
@@ -54,10 +73,13 @@ class RuleMonkeySession:
         self._initialized = False
         self._destroyed = False
 
-        from bngsim._network_free_checks import refuse_time_dependent_rate_laws
+        from bngsim._network_free_checks import clock_reading_functions
 
-        refuse_time_dependent_rate_laws(self._xml_path, "rulemonkey")
         self._core = RuleMonkeySimulator(self._xml_path)
+        _warn_engine_flags(self._core, stacklevel=3)
+        # The functions through which this model reads the clock, or None when
+        # that cannot be told. Empty means only elapsed time matters to it.
+        self._clock_readers: list[str] | None = clock_reading_functions(self._xml_path)
         if molecule_limit is not None:
             self._core.set_molecule_limit(int(molecule_limit))
         self._core.set_block_same_complex_binding(bool(block_same_complex_binding))
@@ -90,7 +112,7 @@ class RuleMonkeySession:
         self._require_alive()
         self._core.clear_param_overrides()
 
-    def initialize(self, seed: int | None = None) -> None:
+    def initialize(self, seed: int | None = None, t_start: float = 0.0) -> None:
         """Initialize the RuleMonkey session.
 
         Parameters
@@ -100,18 +122,22 @@ class RuleMonkeySession:
             integer for reproducibility. The actual seed used is
             exposed via the :attr:`seed` property and stamped onto every
             ``Result`` returned by :meth:`simulate`.
+        t_start : float, optional
+            Where the seed state sits on the model's clock (issue #1022).
+            :attr:`current_time` reads it afterwards, and a rate law that
+            reads ``time()`` starts from its value there. Default 0.
         """
         from bngsim._seed import _resolve_seed
 
         self._require_alive()
         used_seed = _resolve_seed(seed)
         try:
-            self._core.initialize(used_seed)
+            self._core.initialize(used_seed, float(t_start))
         except RuntimeError as e:
             raise SimulationError(f"RuleMonkey initialization failed: {e}") from e
         self._initialized = True
         self._seed = used_seed
-        logger.info("RuleMonkeySession initialized (seed=%d)", used_seed)
+        logger.info("RuleMonkeySession initialized (seed=%d, t_start=%g)", used_seed, t_start)
 
     def destroy(self) -> None:
         """Destroy the session and release C++ resources."""
@@ -134,6 +160,24 @@ class RuleMonkeySession:
     ) -> Result:
         """Run a simulation segment and return a Result.
 
+        The segment continues from the session's current state. When it starts
+        at :attr:`current_time` it runs on the model's clock: a rate law that
+        reads ``time()`` reads the times the rows carry (issue #1022).
+
+        A segment that starts anywhere else, such as a second
+        ``simulate(0, 10, 11)`` on a session already at 10, is run from the
+        current state over the same span, and its rows carry the times asked
+        for. That is exact for a model that does not read the clock, where only
+        elapsed time matters. For a model that does (a function naming
+        ``time()`` or a bare ``t``, or a table function indexed by time), the
+        rates would see times the rows do not carry, so the segment is refused
+        with :class:`SimulationError`. Start it at :attr:`current_time`, or
+        start the session where the first segment does with
+        ``initialize(seed, t_start=...)``.
+
+        ``Result.solver_stats["n_steps"]`` is the session's running event count
+        since :meth:`initialize`, not this segment's alone.
+
         Parameters
         ----------
         t_start, t_end, n_points
@@ -143,11 +187,8 @@ class RuleMonkeySession:
             Explicit output instants (GH #184). When provided, overrides
             ``t_start`` / ``t_end`` / ``n_points``: the returned
             :attr:`Result.time` array equals these times exactly (sorted
-            ascending, treated as absolute), instead of a uniform grid. The
-            live session advances from its current time by the span of the
-            list, so this works mid-protocol (after a prior segment or
-            ``setConcentration``), continuing the same trajectory. Must
-            contain at least two finite points.
+            ascending), instead of a uniform grid, and the first of them is
+            the segment's start. Must contain at least two finite points.
         timeout : float, optional
             Wall-clock budget in seconds. ``None`` or ``0`` disables the
             budget. Positive values arm a check polled by upstream every
@@ -179,9 +220,35 @@ class RuleMonkeySession:
                 "t_start, t_end and n_points are required unless sample_times is given."
             )
 
+        # A model that does not read the clock sees only elapsed time, so a
+        # segment off the session's clock is exact under the caller's labels.
+        # One that reads it is not, and neither is one this cannot tell about.
+        elapsed_ok = self._clock_readers == []
+        if not elapsed_ok and not self._core.starts_on_clock(float(t_start)):
+            readers = self._clock_readers
+            what = (
+                "this model reads the clock (functions: "
+                + ", ".join(repr(n) for n in readers)
+                + ")"
+                if readers
+                else "whether this model reads the clock could not be read from its XML"
+            )
+            raise SimulationError(
+                f"RuleMonkeySession.simulate: the segment starts at t={float(t_start)!r} but "
+                f"the session's clock reads {self._core.current_time()!r}, and {what}, so its "
+                "rates would see times the rows do not carry. Start the segment at "
+                "session.current_time, or put the seed state where the first segment starts "
+                "with initialize(seed, t_start=...) (issue #1022)."
+            )
+
         try:
             core_result = self._core.simulate(
-                float(t_start), float(t_end), int(n_points), timeout_seconds, explicit_times
+                float(t_start),
+                float(t_end),
+                int(n_points),
+                timeout_seconds,
+                explicit_times,
+                elapsed_ok,
             )
         except SimulationTimeout:
             raise
@@ -197,7 +264,7 @@ class RuleMonkeySession:
         Parameters
         ----------
         time : float
-            Target time to advance to.
+            Target time on the session's clock (:attr:`current_time`).
         timeout : float, optional
             Wall-clock budget; see :meth:`simulate` for semantics.
         """

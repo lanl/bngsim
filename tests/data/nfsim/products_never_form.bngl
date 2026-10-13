@@ -1,0 +1,30 @@
+# A rule whose products can never be what it writes (issue #1022,
+# richardposner/RuleMonkey#105). `never_join` writes A and B into one complex,
+# but they start in two and the rule bonds nothing, so BioNetGen generates no
+# reaction for it and A1 stays at 0. `control` is an ordinary rule that fires.
+# The XML beside this file is BNG2.pl 2.9.3's writeXML() of it.
+begin model
+begin parameters
+  k 1.0
+end parameters
+begin molecule types
+  A(s~0~1)
+  B(a)
+  C(s~0~1)
+end molecule types
+begin seed species
+  A(s~0) 1000
+  B(a) 1000
+  C(s~0) 1000
+end seed species
+begin observables
+  Molecules A1 A(s~1)
+  Molecules C1 C(s~1)
+end observables
+begin reaction rules
+  never_join: A(s~0) + B(a) -> A(s~1).B(a) k
+  control: C(s~0) -> C(s~1) k
+end reaction rules
+end model
+writeXML()
+generate_network({overwrite=>1})

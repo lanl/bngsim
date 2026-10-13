@@ -2754,11 +2754,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // ── Session API (stateful, multi-action workflows) ──────────────
         .def(
             "initialize",
-            [](bngsim::RuleMonkeySimulator &self, uint64_t seed) {
+            [](bngsim::RuleMonkeySimulator &self, uint64_t seed, double t_start) {
                 py::gil_scoped_release release;
-                self.initialize(seed);
+                self.initialize(seed, t_start);
             },
-            py::arg("seed") = 42, "Initialize a simulation session")
+            py::arg("seed") = 42, py::arg("t_start") = 0.0,
+            "Initialize a simulation session with the seed state at t_start on the "
+            "model's clock")
         .def(
             "step_to",
             [](bngsim::RuleMonkeySimulator &self, double time, double timeout_seconds) {
@@ -2772,23 +2774,32 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(
             "simulate",
             [](bngsim::RuleMonkeySimulator &self, double t_start, double t_end, int n_points,
-               double timeout_seconds, const std::vector<double> &sample_times) {
+               double timeout_seconds, const std::vector<double> &sample_times, bool elapsed_ok) {
                 bngsim::Result result;
                 {
                     py::gil_scoped_release release;
-                    result = self.simulate(t_start, t_end, n_points, timeout_seconds, sample_times);
+                    result = self.simulate(t_start, t_end, n_points, timeout_seconds, sample_times,
+                                           elapsed_ok);
                 }
                 return result;
             },
             py::arg("t_start"), py::arg("t_end"), py::arg("n_points"),
             py::arg("timeout_seconds") = 0.0, py::arg("sample_times") = std::vector<double>{},
+            py::arg("elapsed_ok") = false,
             "Simulate from t_start to t_end, capturing n_points snapshots. "
             "timeout_seconds > 0 enables a wall-clock budget polled by upstream "
             "every ~1024 SSA events; on overrun, raises bngsim.SimulationTimeout "
             "and the session must be destroyed before reuse. "
             "sample_times (non-empty) overrides the uniform grid: the result is "
-            "labelled with exactly those sorted absolute times and the live "
-            "session advances by their span from the current session time.")
+            "labelled with exactly those sorted times. A segment that starts at "
+            "the session's clock runs on it. One that starts elsewhere is refused "
+            "unless elapsed_ok, which runs its span from the current session time "
+            "under the caller's labels and is exact only for a model whose rates do "
+            "not read the clock.")
+        .def("starts_on_clock", &bngsim::RuleMonkeySimulator::starts_on_clock, py::arg("seg_start"),
+             "Whether a segment starting at seg_start starts at the session's clock")
+        .def("warnings", &bngsim::RuleMonkeySimulator::warnings,
+             "What the engine flags in this XML without refusing it")
         .def("add_molecules", &bngsim::RuleMonkeySimulator::add_molecules,
              py::arg("molecule_type_name"), py::arg("count"),
              "Add count molecules of named type in default (unbound) state")

@@ -107,8 +107,9 @@ class TestSessionSampleTimes:
         assert np.array_equal(second.time, np.asarray([3.0, 4.0, 7.0, 10.0]))
 
     def test_mid_protocol_continues_same_trajectory(self, session_cls, nfsim_xml):
-        """A two-segment run and a single run sampled at the same instants
-        trace the same continuing trajectory (same seed, no re-seed)."""
+        """A two-segment run continues the state the first segment left (same
+        seed, no re-seed), and matches a single run sampled at the same
+        instants as far as the backend makes that exact."""
         # One continuous run sampled at 0,2,4,6.
         with session_cls(_xml(nfsim_xml)) as s:
             s.initialize(seed=123)
@@ -116,12 +117,22 @@ class TestSessionSampleTimes:
         # Split: segment to t=2, then continue sampling at 2,4,6.
         with session_cls(_xml(nfsim_xml)) as s:
             s.initialize(seed=123)
-            s.simulate(sample_times=[0.0, 2.0])
+            head = s.simulate(sample_times=[0.0, 2.0])
             tail = s.simulate(sample_times=[2.0, 4.0, 6.0])
-        # Rows for t=2,4,6 in the whole run are indices 1,2,3; in tail 0,1,2.
-        assert np.array_equal(
-            np.asarray(whole.observables)[[1, 2, 3], :], np.asarray(tail.observables)
-        )
+        whole_obs = np.asarray(whole.observables)
+        # Up to the cut the two are the same run, and the tail starts from the
+        # state the head ended in.
+        assert np.array_equal(whole_obs[[0, 1], :], np.asarray(head.observables))
+        assert np.array_equal(whole_obs[1, :], np.asarray(tail.observables)[0, :])
+        if session_cls is bngsim.NfsimSession:
+            # Rows for t=2,4,6 in the whole run are indices 1,2,3; in tail 0,1,2.
+            assert np.array_equal(whole_obs[[1, 2, 3], :], np.asarray(tail.observables))
+        # RuleMonkey's tail is the same process on a different random stream.
+        # Every call ends on a waiting time that outlasts it, and since 3.11.0
+        # that draw is spent, not replayed by the next call: replaying it made
+        # a session advanced in short calls stop firing
+        # (richardposner/RuleMonkey#89). The values a split run reaches are
+        # checked against a closed form in test_rulemonkey_model_clock.py.
 
     def test_rejects_fewer_than_two_points(self, session_cls, nfsim_xml):
         with session_cls(_xml(nfsim_xml)) as s:

@@ -317,6 +317,24 @@ class SsaRoundingWarning(UserWarning):
     """
 
 
+class RuleMonkeyWarning(UserWarning):
+    """RuleMonkey flagged something in a BNG XML it did not refuse (issue #1022).
+
+    Emitted when a ``method="rm"`` :class:`Simulator` or a
+    :class:`RuleMonkeySession` is built, once per item the engine reports: a
+    rule whose products can never be what it writes, which never fires, as
+    BioNetGen generates no reaction for it; a keyword the engine ignores (a rule
+    ``priority``, ``MoveConnected``); a construct it reads differently from
+    BioNetGen's network (``TotalRate``, ``reactant_N()`` outside ``TotalRate``,
+    a Michaelis-Menten pattern that matches several species). The model still
+    runs. Filter or escalate it like any ``UserWarning``::
+
+        import warnings, bngsim
+        warnings.simplefilter("error", bngsim.RuleMonkeyWarning)   # promote
+        warnings.simplefilter("ignore", bngsim.RuleMonkeyWarning)  # silence
+    """
+
+
 class DenseSolverFallbackWarning(UserWarning):
     """A large ODE model is running on the dense solver for lack of KLU (GH #209).
 

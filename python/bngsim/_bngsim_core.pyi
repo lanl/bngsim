@@ -792,9 +792,9 @@ class RuleMonkeySimulator:
         """
         Whether a session is currently active
         """
-    def initialize(self, seed: typing.SupportsInt | typing.SupportsIndex = 42) -> None:
+    def initialize(self, seed: typing.SupportsInt | typing.SupportsIndex = 42, t_start: typing.SupportsFloat | typing.SupportsIndex = 0.0) -> None:
         """
-        Initialize a simulation session
+        Initialize a simulation session with the seed state at t_start on the model's clock
         """
     def load_state(self, path: str) -> None:
         """
@@ -832,13 +832,21 @@ class RuleMonkeySimulator:
         """
         Set count for an exact BNGL species pattern (adds/removes the diff)
         """
-    def simulate(self, t_start: typing.SupportsFloat | typing.SupportsIndex, t_end: typing.SupportsFloat | typing.SupportsIndex, n_points: typing.SupportsInt | typing.SupportsIndex, timeout_seconds: typing.SupportsFloat | typing.SupportsIndex = 0.0, sample_times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex] = []) -> ResultCore:
+    def simulate(self, t_start: typing.SupportsFloat | typing.SupportsIndex, t_end: typing.SupportsFloat | typing.SupportsIndex, n_points: typing.SupportsInt | typing.SupportsIndex, timeout_seconds: typing.SupportsFloat | typing.SupportsIndex = 0.0, sample_times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex] = [], elapsed_ok: bool = False) -> ResultCore:
         """
-        Simulate from t_start to t_end, capturing n_points snapshots. timeout_seconds > 0 enables a wall-clock budget polled by upstream every ~1024 SSA events; on overrun, raises bngsim.SimulationTimeout and the session must be destroyed before reuse. sample_times (non-empty) overrides the uniform grid: the result is labelled with exactly those sorted absolute times and the live session advances by their span from the current session time.
+        Simulate from t_start to t_end, capturing n_points snapshots. timeout_seconds > 0 enables a wall-clock budget polled by upstream every ~1024 SSA events; on overrun, raises bngsim.SimulationTimeout and the session must be destroyed before reuse. sample_times (non-empty) overrides the uniform grid: the result is labelled with exactly those sorted times. A segment that starts at the session's clock runs on it. One that starts elsewhere is refused unless elapsed_ok, which runs its span from the current session time under the caller's labels and is exact only for a model whose rates do not read the clock.
+        """
+    def starts_on_clock(self, seg_start: typing.SupportsFloat | typing.SupportsIndex) -> bool:
+        """
+        Whether a segment starting at seg_start starts at the session's clock
         """
     def step_to(self, time: typing.SupportsFloat | typing.SupportsIndex, timeout_seconds: typing.SupportsFloat | typing.SupportsIndex = 0.0) -> None:
         """
         Advance simulation to target time without returning output. timeout_seconds > 0 enables a wall-clock budget; on overrun, raises bngsim.SimulationTimeout.
+        """
+    def warnings(self) -> list[str]:
+        """
+        What the engine flags in this XML without refusing it
         """
     @property
     def xml_path(self) -> str:

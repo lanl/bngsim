@@ -1030,10 +1030,10 @@ class Simulator:
                     f"method='{method}' requires xml_path=... pointing to a BNG XML file."
                 )
             from bngsim._bngsim_core import RuleMonkeySimulator
-            from bngsim._network_free_checks import refuse_time_dependent_rate_laws
+            from bngsim._rulemonkey_session import _warn_engine_flags
 
-            refuse_time_dependent_rate_laws(xml_path, "rulemonkey")
             self._sim = RuleMonkeySimulator(xml_path)
+            _warn_engine_flags(self._sim, stacklevel=3)
             if gml is not None:
                 self._sim.set_molecule_limit(int(gml))
             self._sim.set_block_same_complex_binding(bool(block_same_complex_binding))
