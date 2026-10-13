@@ -16,6 +16,8 @@ gives are in test_rulemonkey_model_clock.py.
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import bngsim
@@ -136,6 +138,18 @@ SHAPES = [
     ("k*time()/2", SMOOTH),
     ("k*time()/a*sin(b*time())", SMOOTH),
     ("k*tanh(time()-3)+cos(time())", SMOOTH),
+    # Something that does not move with the clock is a constant to it, whatever
+    # it is made of: a divisor in parentheses, ln of a number, a switch on state.
+    ("(k*time())/(60*24)", SMOOTH),
+    ("k*exp(-ln(2)*time()/a)", SMOOTH),
+    ("k*sqrt(a)*time()", SMOOTH),
+    ("k*time()/A0", SMOOTH),
+    ("if(A0>100,k,0)*time()", SMOOTH),
+    ("k*time()/max(a,b)", SMOOTH),
+    # A positive number to any power is an exponential.
+    ("k*2^time()", SMOOTH),
+    ("k*2^(-time()/a)", SMOOTH),
+    ("k*0.5^(time()^2)", SMOOTH),
     # A switch: the clock against a number or a parameter, nothing else.
     ("if(time()>=6,k,0)", (6.0,)),
     ("if((time()>1),k,0)", (1.0,)),
@@ -156,6 +170,9 @@ SHAPES = [
     ("k*abs(time()-6)", REFUSED),
     ("if(abs(time()-6)<a,k,0)", REFUSED),
     ("if(time()>=6+a,k,0)", REFUSED),
+    ("if(time()>=(6+a),k,0)", REFUSED),
+    ("k/(1+exp(-(time()-a)/b))", REFUSED),
+    ("if(time()>5,k,0)*exp(-(time()-5)/a)", REFUSED),
     ("if(time()>=6, if(time()<6+0.02, 50, 0), 0)", REFUSED),
     ("if(2*time()>=6,k,0)", REFUSED),
     ("if(time()>=A0,k,0)", REFUSED),
@@ -176,7 +193,9 @@ SHAPES = [
     ("k*sqrt(time())", REFUSED),
     ("k*ln(time()+1)", REFUSED),
     ("k*tan(time())", REFUSED),
-    ("k*2^time()", REFUSED),
+    ("k*0^time()", REFUSED),
+    ("k*3^2^time()", REFUSED),
+    ("k*a^time()", REFUSED),
     ("k*time()^0.5", REFUSED),
     ("k*time()^-1", REFUSED),
     ("k*time()^a", REFUSED),
@@ -199,6 +218,29 @@ def test_how_one_function_reads_the_clock(tmp_path, expression, expected):
     else:
         assert profile.refusal is None and profile.readers == ("f",)
         assert profile.thresholds == expected
+
+
+@pytest.mark.parametrize(
+    ("expression", "says"),
+    [
+        ("k/(1+exp(-(time()-a)/b))", "divides by something that moves with the clock"),
+        ("k*time()/(1+time())", "divides by something that moves with the clock"),
+        ("k*time()^0.5", "raises to a power that is not a whole number"),
+        ("k*sqrt(time())", "holds 'sqrt', which can make the value jump, bend or leave"),
+        ("k*floor(time()/5)", "holds 'floor', which can make the value jump"),
+        ("if(time()>=6+a,k,0)", "give a threshold that is a sum a parameter of its own"),
+        ("if(time()>=(6+a),k,0)", "time() has to stand alone on one side of <, <=, > or >="),
+        ("if(time()==6,k,0)", "time() has to stand alone on one side of <, <=, > or >="),
+        ("if(2*time()>=6,k,0)", "time() has to stand alone on one side of <, <=, > or >="),
+        ("if(abs(time()-6)<a,k,0)", "holds 'abs', which can make the value jump"),
+        ("if(A0>5,k*max(0,time()-6),0)", "holds 'max', which can make the value jump"),
+        ("if(time()>5,k,0)*exp(-(time()-5)/a)", "Write the switch and the smooth part as two"),
+        ("0.1*time()+if(time()>1,k,0)", "Write the switch and the smooth part as two"),
+    ],
+)
+def test_the_refusal_says_what_stands_in_the_way(tmp_path, expression, says):
+    refusal = clock_profile(_with(tmp_path, expression, parameters=[("a", 2), ("b", 3)])).refusal
+    assert refusal is not None and says in refusal, refusal
 
 
 def test_a_parameter_named_t_is_not_the_clock(tmp_path):
@@ -231,10 +273,132 @@ def test_a_comment_no_xml_parser_accepts_is_read_past(tmp_path):
     assert clock_profile(xml).thresholds == (6.0,)
 
 
-def test_a_file_that_cannot_be_read_has_no_profile(tmp_path):
+def test_a_file_that_cannot_be_parsed_and_may_read_the_clock_has_no_profile(tmp_path):
     """None, not "no clock": that would be a claim with nothing behind it."""
-    assert clock_profile(DATA / "malformed.xml") is None
     assert clock_profile(tmp_path / "missing.xml") is None
+    text = SWITCH.read_text(encoding="utf-8").replace("<sbml ", '<sbml note="a" note="b" ', 1)
+    for name, body in (
+        ("named", text),
+        ("glued", text.replace("if(time()>=6,k,0)", "k*2t")),
+        ("referenced", text.replace("if(time()>=6,k,0)", "k*&#116;ime()")),
+    ):
+        xml = tmp_path / f"{name}.xml"
+        xml.write_text(body, encoding="utf-8")
+        assert clock_profile(xml) is None, name
+
+
+def test_a_file_that_cannot_be_parsed_but_names_no_clock_reads_none(tmp_path):
+    """RuleMonkey's parser reads a repeated attribute and Python's does not.
+    With nothing in the text that could be the clock, the model cannot read it,
+    so a model that ran before still runs."""
+    text = PLAIN.read_text(encoding="utf-8").replace("<sbml ", '<sbml note="a" note="b" ', 1)
+    xml = tmp_path / "repeated_attribute.xml"
+    xml.write_text(text, encoding="utf-8")
+    profile = clock_profile(xml)
+    assert profile is not None and not profile.reads_clock and profile.refusal is None
+
+
+# ── Only what the engine reads ────────────────────────────────────────────
+#
+# RuleMonkey's loader takes the first ListOfParameters, ListOfObservables and
+# ListOfFunctions directly under <model>, and a function's first <Expression>.
+# An element anywhere else is not part of the model, and must not change what a
+# name means here: read as a model symbol, a decoy `t` would turn a clock into
+# a constant, and the run would go uncut on elapsed time.
+
+DECOYS = {
+    "a parameter named t outside the list": (
+        "k*t",
+        '<Extra><Parameter id="t" type="Constant" value="1"/></Extra>',
+    ),
+    "an observable named t outside the list": (
+        "k*t",
+        '<Extra><Observable id="O9" name="t" type="Molecules"/></Extra>',
+    ),
+    "a function of the same name outside the list": (
+        "k*time()",
+        '<Extra><Function id="f"><Expression> k </Expression></Function></Extra>',
+    ),
+    "a second list of functions": (
+        "k*time()",
+        '<ListOfFunctions><Function id="f"><Expression> k </Expression></Function>'
+        "</ListOfFunctions>",
+    ),
+}
+
+
+@pytest.mark.parametrize("decoy", list(DECOYS))
+def test_an_element_the_engine_ignores_changes_nothing(tmp_path, decoy):
+    expression, element = DECOYS[decoy]
+    xml = _with(tmp_path, expression)
+    text = xml.read_text(encoding="utf-8")
+    assert text.count("  </model>") == 1
+    xml.write_text(text.replace("  </model>", f"    {element}\n  </model>"), encoding="utf-8")
+    assert clock_profile(xml).readers == ("f",)
+
+
+def test_only_the_first_expression_of_a_function_is_read(tmp_path):
+    xml = _with(tmp_path, "k*time()")
+    text = xml.read_text(encoding="utf-8")
+    first = "<Expression> k*time() </Expression>"
+    assert text.count(first) == 1
+    xml.write_text(
+        text.replace(first, first + "<Expression> floor(time()) </Expression>"), "utf-8"
+    )
+    profile = clock_profile(xml)
+    assert profile.refusal is None and profile.readers == ("f",)
+
+
+def test_a_function_another_took_the_name_from_is_still_read(tmp_path):
+    """Both are in the engine's list, and both are evaluated."""
+    xml = _with(tmp_path, "k*floor(time())", more_functions=_function("f", "k"))
+    refusal = clock_profile(xml).refusal
+    assert refusal is not None and "'floor'" in refusal
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific: needs a symlinked directory")
+def test_a_table_file_is_looked_up_beside_the_path_as_given(tmp_path):
+    """RuleMonkey looks beside the path it was handed, not beside what a link
+    in it points to."""
+    real, link = tmp_path / "real", tmp_path / "link"
+    real.mkdir()
+    link.mkdir()
+    (real / "m.xml").write_text((TFUN / "valid_file_step_time.xml").read_text("utf-8"), "utf-8")
+    (real / "time_step.tfun").write_text("# time tfun_rate\n0 0\n6 50\n6.02 0\n", "utf-8")
+    (link / "time_step.tfun").write_text("# time tfun_rate\n0 0\n300 50\n300.02 0\n", "utf-8")
+    os.symlink(real / "m.xml", link / "m.xml")
+    assert clock_profile(real / "m.xml").thresholds == (0.0, 6.0, 6.02)
+    assert clock_profile(link / "m.xml").thresholds == (0.0, 300.0, 300.02)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific: needs a symlinked directory")
+def test_a_table_file_one_directory_up_is_found_by_the_text_of_the_path(tmp_path):
+    """RuleMonkey also looks one directory up, and works that out from the
+    path's text: above a linked directory is the link's parent, not its
+    target's."""
+    (tmp_path / "a" / "real").mkdir(parents=True)
+    (tmp_path / "b").mkdir()
+    text = (TFUN / "valid_file_step_time.xml").read_text("utf-8")
+    (tmp_path / "a" / "real" / "m.xml").write_text(text, "utf-8")
+    (tmp_path / "a" / "time_step.tfun").write_text("# time tfun_rate\n0 0\n6 50\n", "utf-8")
+    (tmp_path / "b" / "time_step.tfun").write_text("# time tfun_rate\n0 0\n300 50\n", "utf-8")
+    os.symlink(tmp_path / "a" / "real", tmp_path / "b" / "link", target_is_directory=True)
+    assert clock_profile(tmp_path / "a" / "real" / "m.xml").thresholds == (0.0, 6.0)
+    assert clock_profile(tmp_path / "b" / "link" / "m.xml").thresholds == (0.0, 300.0)
+
+
+def test_a_file_rewritten_in_place_is_read_again(tmp_path):
+    """Same length, same modification time, other thresholds: the reading is
+    kept by what the file says, not by its size and date."""
+    xml = _with(tmp_path, "if(time()>=6,k,0)")
+    assert clock_profile(xml).thresholds == (6.0,)
+    stat = xml.stat()
+    xml.write_text(
+        xml.read_text("utf-8").replace("if(time()>=6,k,0)", "if(time()>=8,k,0)"), "utf-8"
+    )
+    os.utime(xml, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert xml.stat().st_size == stat.st_size and xml.stat().st_mtime_ns == stat.st_mtime_ns
+    assert clock_profile(xml).thresholds == (8.0,)
 
 
 # ── Functions built from functions ────────────────────────────────────────
@@ -407,7 +571,8 @@ def test_a_model_the_reading_cannot_parse_is_refused_when_built(monkeypatch):
 
 @needs_rulemonkey
 def test_the_engines_own_error_comes_first_for_a_file_it_cannot_load():
-    """malformed.xml has no profile, but RuleMonkey's own message says more."""
+    """malformed.xml cannot be parsed here either, but RuleMonkey's own message
+    says more."""
     with pytest.raises(RuntimeError) as err:
         bngsim.RuleMonkeySession(str(DATA / "malformed.xml"))
     assert "could not be read to see" not in str(err.value)

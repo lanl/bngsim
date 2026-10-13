@@ -153,7 +153,8 @@ in one of these ways:
 
 - **smoothly**: sums, products and whole-number powers of `time()`, parameters
   and observables, through `exp`, `sin`, `cos`, `tanh`, `sinh`, `cosh`, `atan`,
-  `erf` and `erfc`, divided only by numbers and parameters;
+  `erf` and `erfc`, a positive number raised to any power (`2^(-time()/half)`),
+  and division by anything that does not read the clock (`time()/(60*24)`);
 - **as a switch**: `time()` compared with a number or a parameter, as in
   `time() >= 6` or `(time() < t_off)`, in an expression that reads the clock no
   other way;
@@ -164,14 +165,21 @@ Anything else that reads the clock is refused with `ModelError` when the
 simulator or session is built, naming the function: `floor(time()/5)`,
 `abs(time() - 6) < w`, a threshold that is an expression (`time() >= 6 + w`;
 give the sum a parameter of its own), a division by the clock, `sqrt(time())`,
-or a switch and a smooth term in one expression. bngsim cannot say where such a
-rate changes, so RuleMonkey could step over it. Use `method="ssa"` or `"ode"`
-on the generated network for those.
+or a switch and a smooth term in one expression (write them as two functions and
+multiply). bngsim cannot say where such a rate changes, so RuleMonkey could step
+over it. Use `method="ssa"` or `"ode"` on the generated network for those.
 
-Two limits remain, and `ssa` shares both. A smooth rate with a feature much
-narrower than a thousandth of the run, such as a Gaussian pulse 0.01 wide in a
-run of 1000, can be stepped over, because nothing marks where it is. And the
-clock is a double: at t = 1e12 it cannot resolve a wait shorter than 0.0001.
+Two limits remain. A smooth rate with a feature much narrower than a thousandth
+of the run can be stepped over, because nothing marks where it is: a Gaussian
+pulse 0.01 wide in a run of 1000 (`ssa` misses that one too), or a rate that
+dips below zero, which RuleMonkey reads as 0, and is positive only that
+briefly. And the clock is a double: at t = 1e12 it cannot resolve a wait
+shorter than 0.0001, under `ssa` as well.
+
+Each instant a rate changes at ends one engine call and starts another, which
+costs about a third of a millisecond, and RuleMonkey's steps shrink with the
+call. A table of 1,000 points adds about 0.3 s to a run that crosses all of
+them, and one of 10,000 points about 3.5 s.
 
 A model that does not read the clock sees only elapsed time, and is run on
 elapsed time whatever `t_span` it is given, exactly as before.
@@ -253,9 +261,10 @@ numbers, so the two are not identical row for row. `solver_stats["n_steps"]` on
 a session `Result` is the session's running event count, on both backends.
 
 `current_time` is the time of the last thing the engine did. It stops short of a
-segment's end where nothing more can fire, or the molecule limit is reached, and
-the next segment of a model that reads the clock starts there. `step_to(t)`
-takes a time on the session's clock and does not go back.
+segment's end where nothing more can fire, or the molecule limit is reached,
+after `simulate` and after `step_to` alike, and the next segment of a model that
+reads the clock starts there. `step_to(t)` takes a time on the session's clock
+and does not go back.
 
 **PyBNF integration**: When `bngsim` is installed, `method=>"nf"` / `"nfsim"`
 routes through the in-process NFsim backend, and `method=>"rm"` / `"rulemonkey"`

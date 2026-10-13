@@ -22,7 +22,8 @@ function reads the clock in one of three supported ways:
 
 * **smoothly**: sums, products and whole-number powers of the clock, parameters
   and observables, through ``exp``, ``sin``, ``cos``, ``tanh``, ``atan`` and
-  the like, divided only by numbers and parameters. Nothing to cut at;
+  the like, divided only by things that do not move with the clock. Nothing to
+  cut at;
 * **as a switch**: the clock compared with a number or a parameter
   (``time() >= 6``, ``(time()<t_off)``), in an expression that reads it no other
   way. The rate changes at each threshold;
@@ -34,11 +35,24 @@ reads the clock (``floor(time())``, ``abs(time() - 6) < w``, a threshold that is
 an expression, a division by the clock) is refused with :class:`ModelError`
 when the simulator or the session is built: bngsim cannot say where such a rate
 changes, so RuleMonkey could step over it.
+
+The reading follows RuleMonkey's loader, not the XML at large: the first
+``ListOfParameters``, ``ListOfObservables`` and ``ListOfFunctions`` under
+``<model>``, the first ``<Expression>`` of a function, a table file beside the
+path as given. An element the loader ignores must not change what a name means
+here.
+
+What the cuts do not cover is a smooth rate with a feature much shorter than a
+thousandth of a call: a Gaussian 0.01 wide in a call of 1000, or a rate that
+dips below zero, which RuleMonkey reads as 0, and is positive only that
+briefly. Nothing marks where such a feature is.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -67,23 +81,27 @@ _BACKENDS = {
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
 
 
-def _root(xml_path: str | Path) -> ET.Element | None:
-    """The parsed document, or ``None`` when the file cannot be parsed.
+def _parse(text: str) -> ET.Element | None:
+    """*text* as a document, or ``None`` when it cannot be parsed.
 
     A comment that holds ``--`` is not well-formed XML, but both backends read
-    past it, and hand-annotated files have them. So a file that does not parse
+    past it, and hand-annotated files have them. So a text that does not parse
     is tried again with its comments taken out.
     """
-    try:
-        text = Path(xml_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
     for candidate in (text, _COMMENT.sub("", text)):
         try:
             return ET.fromstring(candidate)
         except ET.ParseError:
             continue
     return None
+
+
+def _root(xml_path: str | Path) -> ET.Element | None:
+    """The parsed document, or ``None`` when the file cannot be read or parsed."""
+    try:
+        return _parse(Path(xml_path).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
 
 
 def _is_function(el: ET.Element) -> bool:
@@ -98,12 +116,28 @@ def _functions(xml_path: str | Path) -> list[ET.Element] | None:
     return None if root is None else [el for el in root.iter() if _is_function(el)]
 
 
+def _local(tag: object) -> str:
+    """An element's name without its namespace."""
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _child(parent: ET.Element, name: str) -> ET.Element | None:
+    """The first direct child called *name*, which is the one RuleMonkey's
+    loader takes."""
+    return next((el for el in parent if _local(el.tag) == name), None)
+
+
+def _listed(parent: ET.Element | None, list_name: str, item: str) -> list[ET.Element]:
+    """The *item* elements of the first *list_name* directly under *parent*."""
+    holder = None if parent is None else _child(parent, list_name)
+    return [] if holder is None else [el for el in holder if _local(el.tag) == item]
+
+
 def _expression(func: ET.Element) -> str:
-    """The text of the function's ``<Expression>``, with whatever markup it
-    holds read through, as the backends read it."""
-    return " ".join(
-        "".join(child.itertext()) for child in func if child.tag.endswith("Expression")
-    ).strip()
+    """The text of the function's first ``<Expression>``, with whatever markup
+    it holds read through, as the backends read it."""
+    expression = _child(func, "Expression")
+    return "" if expression is None else "".join(expression.itertext()).strip()
 
 
 def _reads_time(func: ET.Element) -> bool:
@@ -159,6 +193,7 @@ _TOKEN = re.compile(
 # Entire functions of one argument: no pole, no edge of a domain, no kink.
 _SMOOTH_CALLS = frozenset({"exp", "sin", "cos", "tanh", "sinh", "cosh", "atan", "erf", "erfc"})
 _ORDERINGS = frozenset({"<", "<=", ">", ">="})
+_COMPARISONS = _ORDERINGS | {"==", "!="}
 # What may stand on the outer side of a comparison for it to be a whole operand.
 _OPENERS = frozenset({"(", ",", "&&", "||"})
 _CLOSERS = frozenset({")", ",", "&&", "||"})
@@ -167,6 +202,8 @@ _CLOSERS = frozenset({")", ",", "&&", "||"})
 _TABLE_VALUE = frozenset({"__TFUN_VAL__", "__TFUN__VAL__"})
 
 _FREE, _SWITCH, _SMOOTH = "free", "switch", "smooth"
+# What an expression can hold that moves with the clock.
+_MOVING = frozenset({"clock", _SWITCH, _SMOOTH})
 
 
 class _Refused(Exception):
@@ -237,7 +274,10 @@ def _table_points(func: ET.Element, xml_dir: Path, files: list[Path]) -> list[fl
     try:
         if not file_attr:
             return [float(x) for x in (func.get("xData") or "").split(",")]
-        for candidate in (xml_dir / file_attr, xml_dir / ".." / file_attr):
+        # Normalised by its text, as the loader does: `link/..` is the link's
+        # parent, not its target's.
+        for joined in (xml_dir / file_attr, xml_dir / ".." / file_attr):
+            candidate = Path(os.path.normpath(joined))
             if candidate.exists():
                 files.append(candidate)
                 lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -253,16 +293,20 @@ class _Reader:
     def __init__(self, root: ET.Element, xml_dir: Path):
         self.xml_dir = xml_dir
         self.files: list[Path] = []  # the table files read along the way
-        self.functions = {f.get("id", "?"): f for f in root.iter() if _is_function(f)}
+        # What RuleMonkey's loader reads, and nothing else: <model> itself or
+        # directly under the root, and the first list of each kind under it.
+        model = root if _local(root.tag) == "model" else _child(root, "model")
+        self.function_list = _listed(model, "ListOfFunctions", "Function")
+        # A later function takes the name from an earlier one, as in the loader.
+        self.functions = {f.get("id", "?"): f for f in self.function_list}
         self.parameters = {
-            el.get("id") for el in root.iter() if el.tag.endswith("Parameter") and el.get("id")
+            p.get("id") for p in _listed(model, "ListOfParameters", "Parameter") if p.get("id")
         }
-        observables = {
-            el.get("name")
-            for el in root.iter()
-            if el.tag.endswith("Observable") and el.get("name")
+        self.observables = {
+            o.get("name")
+            for o in _listed(model, "ListOfObservables", "Observable")
+            if o.get("name")
         }
-        self.observables = {name for name in observables if name is not None}
         # A model symbol takes a bare `time` or `t` from the clock. The call
         # `time()` stays the clock whatever is named `time`.
         self.symbols = self.parameters | self.observables | set(self.functions)
@@ -287,9 +331,7 @@ class _Reader:
         return found
 
     def _function(self, func: ET.Element) -> _Shape:
-        arguments = {
-            el.get("id") for el in func.iter() if el.tag.endswith("Argument") and el.get("id")
-        }
+        arguments = {a.get("id") for a in _listed(func, "ListOfArguments", "Argument")}
         text = _expression(func)
         if (func.get("type") or "").lower() != "tfun":
             return self._read(text, arguments, None)
@@ -362,13 +404,15 @@ class _Reader:
             i += 1
 
         breakpoints: set = set().union(*(p.breakpoints for p in parts))
+        items = self._fold(items)
         whats = [what for what, _ in items]
-        if "clock" not in whats and _SMOOTH not in whats and _SWITCH not in whats:
+        if not _MOVING.intersection(whats):
             return _Shape()
-        culprit = self._not_smooth(items)
-        if culprit is None:
+        rough = self._not_smooth(items)
+        if not rough:
             moving = "clock" in whats or _SMOOTH in whats
             return _Shape(_SMOOTH if moving else _SWITCH, frozenset(breakpoints))
+        culprit = rough[0][1]
         # Not smooth, so it may hold anything: a step, a kink, a comparison.
         # Then the clock may enter only as a switch, which leaves the value
         # constant between the thresholds whatever else is done to it.
@@ -378,33 +422,112 @@ class _Reader:
                 f"it applies {culprit!r} where it also reads {smooth!r}, which moves "
                 "smoothly with the clock"
             )
-        for j, (what, _) in enumerate(items):
-            if what == "clock":
-                breakpoints.add(self._threshold(items, j, culprit))
-        return _Shape(_SWITCH, frozenset(breakpoints))
+        clocks = [j for j, (what, _) in enumerate(items) if what == "clock"]
+        thresholds = [self._threshold(items, j) for j in clocks]
+        if None not in thresholds:
+            return _Shape(_SWITCH, frozenset(breakpoints.union(thresholds)))
+        if any(x is not None for x in thresholds):
+            raise _Refused(
+                "it reads the clock both in a comparison with a number or a parameter and "
+                "outside one. Write the switch and the smooth part as two functions and "
+                "multiply them"
+            )
+        compared = any(
+            what == "op" and tok in _COMPARISONS
+            for j in clocks
+            for what, tok in (items[j - 1] if j else ("edge", ""), *items[j + 1 : j + 2])
+        )
+        # Name the rough thing nearest a reading of the clock, which is more
+        # likely the one applied to it than the first in the expression, and a
+        # function before an operator.
+        named = [found for found in rough if found[1][0].isalpha() or found[1][0] == "_"]
+        nearest = min(named or rough, key=lambda found: min(abs(found[0] - j) for j in clocks))[1]
+        raise _Refused(self._why_not_smooth("<" if compared else nearest))
 
     @staticmethod
-    def _not_smooth(items: list[tuple[str, str]]) -> str | None:
-        """The first thing in *items* that could make the value jump, bend, or
-        leave the numbers as the clock moves; ``None`` when nothing could."""
+    def _fold(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """*items* with every parenthesised group that holds nothing moving with
+        the clock, and the name it is an argument list of, made one constant:
+        ``ln(2)``, ``(60*24)``, ``if(A0>100,k,0)``."""
+        items = list(items)
+        folded = True
+        while folded:
+            folded = False
+            opened: list[int] = []
+            for j, (what, tok) in enumerate(items):
+                if (what, tok) == ("op", "("):
+                    opened.append(j)
+                elif (what, tok) == ("op", ")") and opened:
+                    start = opened.pop()
+                    inner = items[start + 1 : j]
+                    if _MOVING.intersection(w for w, _ in inner) or ("op", "(") in inner:
+                        continue  # a group left standing inside it holds something moving
+                    head = (
+                        start - 1 if start and items[start - 1][0] in ("other", "call") else start
+                    )
+                    items[head : j + 1] = [(_FREE, "(...)")]
+                    folded = True
+                    break
+        return items
+
+    @staticmethod
+    def _why_not_smooth(culprit: str) -> str:
+        """What stands between an expression and being smooth in the clock."""
+        if culprit == "/":
+            return (
+                "it divides by something that moves with the clock (a pole wherever that "
+                "passes 0), or by something that is not a number, a parameter or a "
+                "constant in parentheses"
+            )
+        if culprit == "^":
+            return (
+                "it raises to a power that is not a whole number written as a number, and "
+                "the base is not a positive number: the value can bend or leave the real "
+                "numbers as the clock moves"
+            )
+        if culprit in _COMPARISONS:
+            return (
+                "it has the clock in a comparison this cannot place: time() has to stand "
+                "alone on one side of <, <=, > or >=, with a number or a parameter alone on "
+                "the other (give a threshold that is a sum a parameter of its own)"
+            )
+        return (
+            f"it holds {culprit!r}, which can make the value jump, bend or leave the real "
+            "numbers as the clock moves, and that is not one of the smooth functions "
+            "bngsim knows (exp, sin, cos, tanh, sinh, cosh, atan, erf, erfc)"
+        )
+
+    @staticmethod
+    def _not_smooth(items: list[tuple[str, str]]) -> list[tuple[int, str]]:
+        """Where in *items* something could make the value jump, bend, or leave
+        the numbers as the clock moves, and what it is. Empty when nothing could."""
+        found: list[tuple[int, str]] = []
         for j, (what, tok) in enumerate(items):
-            after = items[j + 1] if j + 1 < len(items) else ("end", "")
-            beyond = items[j + 2] if j + 2 < len(items) else ("end", "")
+            before = items[j - 1] if j else ("edge", "")
+            after = items[j + 1] if j + 1 < len(items) else ("edge", "")
+            beyond = items[j + 2] if j + 2 < len(items) else ("edge", "")
             if what == "other":
-                return tok
+                found.append((j, tok))
+                continue
             if what != "op" or tok in "+-*()":
                 continue
-            if tok == "/" and after[0] in ("num", "parameter") and beyond[1] != "^":
+            # Divided by something that does not move with the clock.
+            if tok == "/" and after[0] in ("num", "parameter", _FREE) and beyond[1] != "^":
                 continue
+            # A whole power of anything, or any power of a positive number.
             if tok == "^" and after[0] == "num" and after[1].isdigit() and beyond[1] != "^":
                 continue
-            return tok
-        return None
+            base_is_exponent = j >= 2 and items[j - 2] == ("op", "^")
+            if tok == "^" and before[0] == "num" and float(before[1]) > 0 and not base_is_exponent:
+                continue
+            found.append((j, tok))
+        return found
 
     @staticmethod
-    def _threshold(items: list[tuple[str, str]], j: int, culprit: str) -> float | str:
-        """What the clock at *items[j]* is compared with: it has to be one whole
-        side of an ordering whose other side is a number or a parameter."""
+    def _threshold(items: list[tuple[str, str]], j: int) -> float | str | None:
+        """What the clock at *items[j]* is compared with, when it is one whole
+        side of an ordering whose other side is a number or a parameter;
+        ``None`` when it is not."""
 
         def at(k: int) -> tuple[str, str]:
             return items[k] if 0 <= k < len(items) else ("edge", "")
@@ -431,30 +554,31 @@ class _Reader:
             value = constant(j - 2, -1.0 if minus else 1.0)
             if value is not None and (minus or opens(j - 3)):
                 return value
-        raise _Refused(
-            f"it reads the clock outside a comparison with a number or a parameter "
-            f"(next to {culprit!r})"
-        )
-
-
-def _stamp(path: Path) -> tuple[int, int] | None:
-    try:
-        stat = path.stat()
-    except OSError:
         return None
-    return stat.st_mtime_ns, stat.st_size
 
 
-def _read_profile(path: Path) -> tuple[ClockProfile | None, list[Path]]:
-    root = _root(path)
+# A clock in text that could not be parsed: `time` or `t` standing as a name
+# (after a digit too, as in `2t`), or a character written as a reference, which
+# could spell either.
+_RAW_CLOCK = re.compile(r"(?<![A-Za-z_])(?:time|t)(?![A-Za-z0-9_])|&#|<!ENTITY")
+
+
+def _read_profile(path: Path, text: str) -> tuple[ClockProfile | None, list[Path]]:
+    root = _parse(text)
     if root is None:
-        return None, []
-    reader = _Reader(root, path.resolve().parent)
+        # RuleMonkey's own parser is more forgiving than this one (it reads a
+        # repeated attribute, for one), so the file may yet load. With no name
+        # in it that could be the clock, the model cannot read it.
+        return (None if _RAW_CLOCK.search(_COMMENT.sub("", text)) else ClockProfile()), []
+    reader = _Reader(root, path.parent)
     readers: list[str] = []
     thresholds: set = set()
-    for name in reader.functions:
+    for func in reader.function_list:
+        name = func.get("id", "?")
         try:
-            shape = reader.shape(name)
+            # A function a later one took the name from is still evaluated.
+            named = reader.functions.get(name) is func
+            shape = reader.shape(name) if named else reader._function(func)
         except _Refused as why:
             culprit = why.function or name
             return ClockProfile(
@@ -470,33 +594,52 @@ def _read_profile(path: Path) -> tuple[ClockProfile | None, list[Path]]:
                 ),
             ), reader.files
         if shape.kind != _FREE:
-            readers.append(name)
+            if name not in readers:
+                readers.append(name)
             thresholds |= shape.breakpoints
     numbers = sorted(x for x in thresholds if not isinstance(x, str))
     names = sorted(x for x in thresholds if isinstance(x, str))
     return ClockProfile(readers=tuple(readers), thresholds=(*numbers, *names)), reader.files
 
 
-# One reading per file, kept while the file and the table files it names are
-# unchanged: a fit builds a session from the same XML for every evaluation.
-_PROFILES: dict[str, tuple[tuple, ClockProfile | None]] = {}
+def _digest(data: bytes) -> str:
+    return hashlib.blake2b(data, digest_size=16).hexdigest()
+
+
+def _file_digest(path: Path) -> str | None:
+    try:
+        return _digest(path.read_bytes())
+    except OSError:
+        return None
+
+
+# One reading per file, kept while the bytes of the file and of the table files
+# it names are unchanged: a fit builds a session from the same XML for every
+# evaluation. Keyed on the bytes, not on a size and a time, which a rewrite can
+# leave as they were.
+_PROFILES: dict[str, tuple[str, tuple[tuple[Path, str | None], ...], ClockProfile | None]] = {}
 
 
 def clock_profile(xml_path: str | Path) -> ClockProfile | None:
     """How the model in *xml_path* reads the clock under RuleMonkey, or ``None``
-    when the file cannot be parsed here.
+    when the file cannot be read, or cannot be parsed here and may read it.
 
     Every function counts, not only the ones a rate law uses: a function that is
     only printed reads the clock into its output column all the same.
     """
     path = Path(xml_path)
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    digest = _digest(data)
     kept = _PROFILES.get(str(path))
-    if kept is not None and all(_stamp(Path(f)) == stamp for f, stamp in kept[0]):
-        return kept[1]
-    profile, files = _read_profile(path)
+    if kept is not None and kept[0] == digest and all(_file_digest(f) == d for f, d in kept[1]):
+        return kept[2]
+    profile, files = _read_profile(path, data.decode("utf-8", errors="replace"))
     if len(_PROFILES) >= 256:
         _PROFILES.clear()
-    _PROFILES[str(path)] = (tuple((str(f), _stamp(f)) for f in (path, *files)), profile)
+    _PROFILES[str(path)] = (digest, tuple((f, _file_digest(f)) for f in files), profile)
     return profile
 
 

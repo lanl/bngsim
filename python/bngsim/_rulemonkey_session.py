@@ -266,7 +266,9 @@ class RuleMonkeySession:
         ----------
         time : float
             Target time on the session's clock (:attr:`current_time`). A time
-            before the clock is refused: a session does not go back.
+            before the clock is refused: a session does not go back. Where
+            nothing more can fire, or the molecule limit is reached, the clock
+            stops short of *time*, as it does at the end of a segment.
         timeout : float, optional
             Wall-clock budget; see :meth:`simulate` for semantics.
         """

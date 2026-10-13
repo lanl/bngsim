@@ -535,6 +535,33 @@ def test_a_session_sees_the_pulse_however_it_is_cut(tmp_path, build, cut):
     _within(np.array([final]), *AFTER_PULSE)
 
 
+@pytest.mark.parametrize(
+    "decoy",
+    [
+        '<Extra><Parameter id="t" type="Constant" value="1"/></Extra>',
+        '<Extra><Observable id="O9" name="t" type="Molecules"/></Extra>',
+        '<Extra><Function id="f"><Expression> 0 </Expression></Function></Extra>',
+        '<ListOfFunctions><Function id="f"><Expression> 0 </Expression></Function>'
+        "</ListOfFunctions>",
+    ],
+)
+def test_an_element_the_engine_ignores_does_not_hide_the_pulse(tmp_path, decoy):
+    """The pulse written with a bare `t`, and an element RuleMonkey's loader
+    does not read that would make `t` a constant, or `f` another function, if
+    bngsim read it. The run then went uncut on elapsed time and read 20000."""
+    text = SWITCH.read_text(encoding="utf-8")
+    expression = _escaped("if(t>=6, if(t<6.02, 50, 0), 0)")
+    text = text.replace(" if(time()>=6,k,0) ", f" {expression} ")
+    assert text.count("  </model>") == 1
+    xml = tmp_path / "decoy.xml"
+    xml.write_text(text.replace("  </model>", f"    {decoy}\n  </model>"), encoding="utf-8")
+    for t_span in ((5.0, 7.0), (0.0, 1000.0)):
+        r = bngsim.Simulator(_model(), method="rm", xml_path=str(xml)).run(
+            t_span=t_span, n_points=3, seed=3
+        )
+        _within(np.asarray(r.observables["A0"])[-1:], *AFTER_PULSE)
+
+
 def test_a_parameter_threshold_follows_an_override(tmp_path):
     """The pulse moved to t = 20 by set_param is cut at 20: a threshold that
     names a parameter is read when the session starts, not when the XML is."""
