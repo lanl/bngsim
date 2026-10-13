@@ -236,6 +236,12 @@ def test_how_one_function_reads_the_clock(tmp_path, expression, expected):
         ("if(A0>5,k*max(0,time()-6),0)", "holds 'max', which can make the value jump"),
         ("if(time()>5,k,0)*exp(-(time()-5)/a)", "Write the switch and the smooth part as two"),
         ("0.1*time()+if(time()>1,k,0)", "Write the switch and the smooth part as two"),
+        # A good switch beside a threshold that is an expression: the remedy is
+        # a parameter for the sum, not two functions.
+        (
+            "if((time()>a),if((time()<(a+b)),k,0),0)",
+            "give a threshold that is a sum a parameter of its own",
+        ),
     ],
 )
 def test_the_refusal_says_what_stands_in_the_way(tmp_path, expression, says):
@@ -262,40 +268,29 @@ def test_markup_inside_an_expression_is_read_through(tmp_path):
     assert clock_profile(xml).readers == ("f",)
 
 
-def test_a_comment_no_xml_parser_accepts_is_read_past(tmp_path):
-    """`--` inside a comment is not well-formed XML, but RuleMonkey reads the
-    file, so this has to as well rather than refuse a model that runs."""
-    text = SWITCH.read_text(encoding="utf-8").replace(
-        "<sbml ", "<!-- a note -- with two dashes -->\n<sbml ", 1
-    )
-    xml = tmp_path / "dashes.xml"
-    xml.write_text(text, encoding="utf-8")
-    assert clock_profile(xml).thresholds == (6.0,)
+NOT_WELL_FORMED = {
+    "two dashes in a comment": ("<sbml ", "<!-- a note -- with two dashes -->\n<sbml "),
+    "an attribute given twice": ("<sbml ", '<sbml note="a" note="b" '),
+}
 
 
-def test_a_file_that_cannot_be_parsed_and_may_read_the_clock_has_no_profile(tmp_path):
-    """None, not "no clock": that would be a claim with nothing behind it."""
+@pytest.mark.parametrize("flaw", list(NOT_WELL_FORMED))
+@pytest.mark.parametrize("source", [SWITCH, PLAIN], ids=["reads the clock", "no clock"])
+def test_a_file_that_is_not_well_formed_xml_has_no_profile(tmp_path, flaw, source):
+    """RuleMonkey's own parser reads both of these. bngsim does not patch a file
+    up to parse, because the patched file is not the one RuleMonkey reads: taking
+    comments out by pattern, or looking for the clock in the raw text, could each
+    be led to call a model that reads the clock clock-free. None, then, whether
+    or not the model reads the clock."""
+    old, new = NOT_WELL_FORMED[flaw]
+    xml = tmp_path / "flawed.xml"
+    xml.write_text(source.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
+    assert clock_profile(xml) is None
+
+
+def test_a_file_that_is_missing_has_no_profile(tmp_path):
     assert clock_profile(tmp_path / "missing.xml") is None
-    text = SWITCH.read_text(encoding="utf-8").replace("<sbml ", '<sbml note="a" note="b" ', 1)
-    for name, body in (
-        ("named", text),
-        ("glued", text.replace("if(time()>=6,k,0)", "k*2t")),
-        ("referenced", text.replace("if(time()>=6,k,0)", "k*&#116;ime()")),
-    ):
-        xml = tmp_path / f"{name}.xml"
-        xml.write_text(body, encoding="utf-8")
-        assert clock_profile(xml) is None, name
-
-
-def test_a_file_that_cannot_be_parsed_but_names_no_clock_reads_none(tmp_path):
-    """RuleMonkey's parser reads a repeated attribute and Python's does not.
-    With nothing in the text that could be the clock, the model cannot read it,
-    so a model that ran before still runs."""
-    text = PLAIN.read_text(encoding="utf-8").replace("<sbml ", '<sbml note="a" note="b" ', 1)
-    xml = tmp_path / "repeated_attribute.xml"
-    xml.write_text(text, encoding="utf-8")
-    profile = clock_profile(xml)
-    assert profile is not None and not profile.reads_clock and profile.refusal is None
+    assert clock_profile(DATA / "malformed.xml") is None
 
 
 # ── Only what the engine reads ────────────────────────────────────────────
@@ -335,6 +330,58 @@ def test_an_element_the_engine_ignores_changes_nothing(tmp_path, decoy):
     assert text.count("  </model>") == 1
     xml.write_text(text.replace("  </model>", f"    {element}\n  </model>"), encoding="utf-8")
     assert clock_profile(xml).readers == ("f",)
+
+
+PREFIXED = {
+    "a prefixed list of functions ahead of the real one": (
+        "k*time()",
+        '<q:ListOfFunctions xmlns:q="urn:x"><Function id="f"><Expression> k </Expression>'
+        "</Function></q:ListOfFunctions>",
+    ),
+    "a prefixed list of parameters holding t": (
+        "k*t",
+        '<q:ListOfParameters xmlns:q="urn:x"><Parameter id="t" type="Constant" value="1"/>'
+        "</q:ListOfParameters>",
+    ),
+}
+
+
+@pytest.mark.parametrize("decoy", list(PREFIXED))
+def test_a_name_with_a_prefix_is_another_name(tmp_path, decoy):
+    """RuleMonkey's loader compares element names as they are written, so
+    `q:ListOfFunctions` is not the list of functions to it, wherever it stands."""
+    expression, element = PREFIXED[decoy]
+    xml = _with(tmp_path, expression)
+    text = xml.read_text(encoding="utf-8")
+    assert text.count("    <ListOfParameters>") == 1
+    xml.write_text(
+        text.replace("    <ListOfParameters>", f"    {element}\n    <ListOfParameters>"), "utf-8"
+    )
+    assert clock_profile(xml).readers == ("f",)
+
+
+def test_a_list_the_engine_does_not_see_holds_no_functions(tmp_path):
+    """The real list given a prefix: the engine then has no function f at all,
+    and neither has this."""
+    xml = _with(tmp_path, "k*time()")
+    text = xml.read_text(encoding="utf-8")
+    assert text.count("<ListOfFunctions>") == 1 and text.count("</ListOfFunctions>") == 1
+    text = text.replace("<ListOfFunctions>", '<q:ListOfFunctions xmlns:q="urn:x">')
+    xml.write_text(text.replace("</ListOfFunctions>", "</q:ListOfFunctions>"), encoding="utf-8")
+    profile = clock_profile(xml)
+    assert profile is not None and profile.readers == ()
+    # A first list that holds only prefixed functions is the list the loader
+    # takes, and it finds no function in it.
+    xml = _with(tmp_path, "k*time()", name="first_list_prefixed")
+    first = (
+        '<ListOfFunctions xmlns:q="urn:x"><q:Function id="f"><Expression> k*time() '
+        "</Expression></q:Function></ListOfFunctions>"
+    )
+    text = xml.read_text(encoding="utf-8")
+    xml.write_text(
+        text.replace("    <ListOfParameters>", f"    {first}\n    <ListOfParameters>"), "utf-8"
+    )
+    assert clock_profile(xml).readers == ()
 
 
 def test_a_function_outside_the_list_does_not_stand_in_for_one_in_it(tmp_path):
@@ -413,6 +460,19 @@ def test_a_table_file_one_directory_up_is_found_by_the_text_of_the_path(tmp_path
     os.symlink(tmp_path / "a" / "real", tmp_path / "b" / "link", target_is_directory=True)
     assert clock_profile(tmp_path / "a" / "real" / "m.xml").thresholds == (0.0, 6.0)
     assert clock_profile(tmp_path / "b" / "link" / "m.xml").thresholds == (0.0, 300.0)
+
+
+def test_a_table_file_that_turns_up_ahead_of_the_one_read_is_read(tmp_path):
+    """The table was found one directory up. One written beside the XML later
+    is the one RuleMonkey then loads, so the reading kept for the file has to
+    notice a place that was empty and no longer is."""
+    (tmp_path / "x").mkdir()
+    xml = tmp_path / "x" / "m.xml"
+    xml.write_text((TFUN / "valid_file_step_time.xml").read_text("utf-8"), "utf-8")
+    (tmp_path / "time_step.tfun").write_text("# time tfun_rate\n0 0\n6 50\n", "utf-8")
+    assert clock_profile(xml).thresholds == (0.0, 6.0)
+    (tmp_path / "x" / "time_step.tfun").write_text("# time tfun_rate\n0 0\n300 50\n", "utf-8")
+    assert clock_profile(xml).thresholds == (0.0, 300.0)
 
 
 def test_a_file_rewritten_in_place_is_read_again(tmp_path):
@@ -586,15 +646,19 @@ def test_a_model_rulemonkey_cannot_be_trusted_with_is_refused_when_built(tmp_pat
 
 
 @needs_rulemonkey
-def test_a_model_the_reading_cannot_parse_is_refused_when_built(monkeypatch):
-    """If the engine loads a file this cannot read, the run is refused rather
-    than made on the guess that the model has no clock."""
-    monkeypatch.setattr("bngsim._network_free_checks.clock_profile", lambda _path: None)
+@pytest.mark.parametrize("flaw", list(NOT_WELL_FORMED))
+def test_a_file_that_is_not_well_formed_xml_is_refused_when_built(tmp_path, flaw):
+    """The engine loads it, and the run is refused rather than made on a guess
+    at what the file holds. The message carries the XML parser's own reason."""
+    old, new = NOT_WELL_FORMED[flaw]
+    xml = tmp_path / "flawed.xml"
+    xml.write_text(PLAIN.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
     model = bngsim.Model.from_net(str(DATA.parent / "simple_decay.net"))
-    with pytest.raises(ModelError, match="could not be read to see how its rate laws read"):
-        bngsim.Simulator(model, method="rm", xml_path=str(PLAIN))
-    with pytest.raises(ModelError, match="could not be read to see how its rate laws read"):
-        bngsim.RuleMonkeySession(str(PLAIN))
+    match = r"could not be read to see how its rate laws read the clock \(.*line \d+, column \d+\)"
+    with pytest.raises(ModelError, match=match):
+        bngsim.Simulator(model, method="rm", xml_path=str(xml))
+    with pytest.raises(ModelError, match=match):
+        bngsim.RuleMonkeySession(str(xml))
 
 
 @needs_rulemonkey

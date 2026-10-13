@@ -38,9 +38,11 @@ changes, so RuleMonkey could step over it.
 
 The reading follows RuleMonkey's loader, not the XML at large: the first
 ``ListOfParameters``, ``ListOfObservables`` and ``ListOfFunctions`` under
-``<model>``, the first ``<Expression>`` of a function, a table file beside the
-path as given. An element the loader ignores must not change what a name means
-here.
+``<model>``, each named exactly so, the first ``<Expression>`` of a function, a
+table file beside the path as given. An element the loader ignores must not
+change what a name means here. A file that is not well-formed XML is refused,
+even where RuleMonkey's own parser would read it: bngsim cannot say what such a
+file holds.
 
 What the cuts do not cover is a smooth rate with a feature much shorter than a
 thousandth of a call: a Gaussian 0.01 wide in a call of 1000, or a rate that
@@ -58,6 +60,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from xml.parsers import expat
 
 from bngsim._exceptions import ModelError
 
@@ -78,28 +81,33 @@ _BACKENDS = {
 }
 
 
-_COMMENT = re.compile(r"<!--.*?-->", re.S)
+def _parse(data: bytes) -> tuple[ET.Element | None, str]:
+    """*data* as a document, every element named as it is written, prefix and
+    all; or ``None`` and the parser's reason when it is not well-formed XML.
 
-
-def _parse(text: str) -> ET.Element | None:
-    """*text* as a document, or ``None`` when it cannot be parsed.
-
-    A comment that holds ``--`` is not well-formed XML, but both backends read
-    past it, and hand-annotated files have them. So a text that does not parse
-    is tried again with its comments taken out.
+    Namespaces are not worked out: RuleMonkey's loader compares names as
+    written, so ``q:ListOfFunctions`` is not ``ListOfFunctions`` to it, and must
+    not be here. Nothing is repaired either. RuleMonkey's own parser reads some
+    files that are not well-formed (a comment holding ``--``, a repeated
+    attribute), but a file patched up to parse is not the file it reads.
     """
-    for candidate in (text, _COMMENT.sub("", text)):
-        try:
-            return ET.fromstring(candidate)
-        except ET.ParseError:
-            continue
-    return None
+    builder = ET.TreeBuilder()
+    parser = expat.ParserCreate()
+    parser.buffer_text = True
+    parser.StartElementHandler = builder.start
+    parser.EndElementHandler = builder.end
+    parser.CharacterDataHandler = builder.data
+    try:
+        parser.Parse(data, True)
+        return builder.close(), ""
+    except (expat.ExpatError, AssertionError, ValueError) as why:
+        return None, str(why)
 
 
 def _root(xml_path: str | Path) -> ET.Element | None:
     """The parsed document, or ``None`` when the file cannot be read or parsed."""
     try:
-        return _parse(Path(xml_path).read_text(encoding="utf-8", errors="replace"))
+        return _parse(Path(xml_path).read_bytes())[0]
     except OSError:
         return None
 
@@ -116,21 +124,16 @@ def _functions(xml_path: str | Path) -> list[ET.Element] | None:
     return None if root is None else [el for el in root.iter() if _is_function(el)]
 
 
-def _local(tag: object) -> str:
-    """An element's name without its namespace."""
-    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
-
-
 def _child(parent: ET.Element, name: str) -> ET.Element | None:
-    """The first direct child called *name*, which is the one RuleMonkey's
+    """The first direct child written as *name*, which is the one RuleMonkey's
     loader takes."""
-    return next((el for el in parent if _local(el.tag) == name), None)
+    return next((el for el in parent if el.tag == name), None)
 
 
 def _listed(parent: ET.Element | None, list_name: str, item: str) -> list[ET.Element]:
     """The *item* elements of the first *list_name* directly under *parent*."""
     holder = None if parent is None else _child(parent, list_name)
-    return [] if holder is None else [el for el in holder if _local(el.tag) == item]
+    return [] if holder is None else [el for el in holder if el.tag == item]
 
 
 def _expression(func: ET.Element) -> str:
@@ -268,8 +271,8 @@ def _tokens(text: str) -> list[tuple[str, str]]:
 
 def _table_points(func: ET.Element, xml_dir: Path, files: list[Path]) -> list[float]:
     """The x values of a table function, inline or from its file, searched for
-    where RuleMonkey searches: beside the XML, then one directory up. A file
-    that is read is added to *files*."""
+    where RuleMonkey searches: beside the XML, then one directory up. Every
+    place looked in is added to *files*."""
     file_attr = (func.get("file") or "").strip()
     try:
         if not file_attr:
@@ -278,8 +281,10 @@ def _table_points(func: ET.Element, xml_dir: Path, files: list[Path]) -> list[fl
         # parent, not its target's.
         for joined in (xml_dir / file_attr, xml_dir / ".." / file_attr):
             candidate = Path(os.path.normpath(joined))
+            # Kept whether or not it is there: a file that turns up at the
+            # first place later is the one the engine will then read.
+            files.append(candidate)
             if candidate.exists():
-                files.append(candidate)
                 lines = candidate.read_text(encoding="utf-8", errors="replace").splitlines()
                 return [float(s.split()[0]) for s in map(str.strip, lines) if s and s[0] != "#"]
     except (ValueError, IndexError, OSError):
@@ -295,7 +300,7 @@ class _Reader:
         self.files: list[Path] = []  # the table files read along the way
         # What RuleMonkey's loader reads, and nothing else: <model> itself or
         # directly under the root, and the first list of each kind under it.
-        model = root if _local(root.tag) == "model" else _child(root, "model")
+        model = root if root.tag == "model" else _child(root, "model")
         self.function_list = _listed(model, "ListOfFunctions", "Function")
         # A later function takes the name from an earlier one, as in the loader.
         self.functions = {f.get("id", "?"): f for f in self.function_list}
@@ -426,17 +431,20 @@ class _Reader:
         thresholds = [self._threshold(items, j) for j in clocks]
         if None not in thresholds:
             return _Shape(_SWITCH, frozenset(breakpoints.union(thresholds)))
-        if any(x is not None for x in thresholds):
+        # The readings that are not a whole side of a good comparison: are they
+        # in a comparison at all?
+        compared = any(
+            what == "op" and tok in _COMPARISONS
+            for j, found in zip(clocks, thresholds, strict=True)
+            if found is None
+            for what, tok in (items[j - 1] if j else ("edge", ""), *items[j + 1 : j + 2])
+        )
+        if any(x is not None for x in thresholds) and not compared:
             raise _Refused(
                 "it reads the clock both in a comparison with a number or a parameter and "
                 "outside one. Write the switch and the smooth part as two functions and "
                 "multiply them"
             )
-        compared = any(
-            what == "op" and tok in _COMPARISONS
-            for j in clocks
-            for what, tok in (items[j - 1] if j else ("edge", ""), *items[j + 1 : j + 2])
-        )
         # Name the rough thing nearest a reading of the clock, which is more
         # likely the one applied to it than the first in the expression, and a
         # function before an operator.
@@ -557,19 +565,10 @@ class _Reader:
         return None
 
 
-# A clock in text that could not be parsed: `time` or `t` standing as a name
-# (after a digit too, as in `2t`), or a character written as a reference, which
-# could spell either.
-_RAW_CLOCK = re.compile(r"(?<![A-Za-z_])(?:time|t)(?![A-Za-z0-9_])|&#|<!ENTITY")
-
-
-def _read_profile(path: Path, text: str) -> tuple[ClockProfile | None, list[Path]]:
-    root = _parse(text)
+def _read_profile(path: Path, data: bytes) -> tuple[ClockProfile | None, list[Path]]:
+    root = _parse(data)[0]
     if root is None:
-        # RuleMonkey's own parser is more forgiving than this one (it reads a
-        # repeated attribute, for one), so the file may yet load. With no name
-        # in it that could be the clock, the model cannot read it.
-        return (None if _RAW_CLOCK.search(_COMMENT.sub("", text)) else ClockProfile()), []
+        return None, []
     reader = _Reader(root, path.parent)
     readers: list[str] = []
     thresholds: set = set()
@@ -622,7 +621,7 @@ _PROFILES: dict[str, tuple[str, tuple[tuple[Path, str | None], ...], ClockProfil
 
 def clock_profile(xml_path: str | Path) -> ClockProfile | None:
     """How the model in *xml_path* reads the clock under RuleMonkey, or ``None``
-    when the file cannot be read, or cannot be parsed here and may read it.
+    when the file cannot be read or is not well-formed XML.
 
     Every function counts, not only the ones a rate law uses: a function that is
     only printed reads the clock into its output column all the same.
@@ -636,7 +635,7 @@ def clock_profile(xml_path: str | Path) -> ClockProfile | None:
     kept = _PROFILES.get(str(path))
     if kept is not None and kept[0] == digest and all(_file_digest(f) == d for f, d in kept[1]):
         return kept[2]
-    profile, files = _read_profile(path, data.decode("utf-8", errors="replace"))
+    profile, files = _read_profile(path, data)
     if len(_PROFILES) >= 256:
         _PROFILES.clear()
     _PROFILES[str(path)] = (digest, tuple((f, _file_digest(f)) for f in files), profile)
@@ -648,9 +647,16 @@ def rulemonkey_clock_profile(xml_path: str | Path) -> ClockProfile:
     cannot be trusted with, and for one this cannot read."""
     profile = clock_profile(xml_path)
     if profile is None:
+        try:
+            why = _parse(Path(xml_path).read_bytes())[1] or "no reason given"
+        except OSError as e:
+            why = str(e)
         raise ModelError(
             f"RuleMonkey (method='rm' / 'nf_exact'): {str(xml_path)!r} could not be read "
-            "to see how its rate laws read the clock, so it cannot be run (issue #1022)."
+            f"to see how its rate laws read the clock ({why}), so it cannot be run. bngsim "
+            "reads the file as XML and repairs nothing; RuleMonkey's own parser also reads "
+            "some files that are not well-formed, such as one with -- inside a comment or "
+            "an attribute given twice. Correct the file (issue #1022)."
         )
     if profile.refusal is not None:
         raise ModelError(

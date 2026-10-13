@@ -184,6 +184,11 @@ them, and one of 10,000 points about 3.5 s.
 A model that does not read the clock sees only elapsed time, and is run on
 elapsed time whatever `t_span` it is given, exactly as before.
 
+bngsim reads the XML itself to find all this out, as RuleMonkey's loader reads
+it and repairing nothing. A file that is not well-formed XML (`--` inside a
+comment, an attribute given twice) is refused with `ModelError` for
+`method="rm"`, even where RuleMonkey's own parser would load it.
+
 **NFsim does not run them.** It cannot prepare a function that reads `time()`
 (or a bare `time`), so `method="nf"` refuses one when the simulator or session
 is built, naming the function (issue #862). Use `method="rm"` on the same XML,
