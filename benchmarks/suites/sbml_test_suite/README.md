@@ -52,8 +52,10 @@ Suite is a large external repository; the runner reads it from
 export SBML_TEST_SUITE_DIR=~/Code/sbml-test-suite/cases/semantic
 ```
 
-Get a checkout from <https://github.com/sbmlteam/sbml-test-suite>. If the
-variable is unset the runner falls back to that default path.
+`harness/sbml_test_suite/fetch_semantic_suite.py --sparse` checks out the
+commit pinned in `harness/sbml_test_suite/SUITE_PIN.json`, which is the one the
+committed baseline (below) was recorded on. If the variable is unset the runner
+falls back to that default path.
 
 ## Engines / dependencies
 
@@ -90,4 +92,27 @@ spans the whole feature range: `low` = case number divisible by 20 (~5%),
 `medium` = divisible by 4 (~25%, a superset of `low`), `high` = all 1824 cases.
 
 Results are written to the git-ignored `results/`
-(`sbml_test_suite_results.json` + `.md`).
+(`sbml_test_suite_results.json` + `.md`), or to `--results-dir`.
+
+## A case the harness cannot score (GH #700)
+
+The bngsim adapter catches every failure to load or integrate a model as
+`load_fail` / `sim_fail`. Anything else that raises — a settings or results file
+that does not parse, an SBML file libSBML cannot classify, an exception in the
+grading — is the harness's, and the case is `harness_error` (for every engine,
+if it happened before any engine ran),
+with the traceback under `traceback` / `<eng>_traceback` and on stderr.
+`run_case` never raises, so one such case cannot stop a sweep, and a
+`harness_error` counts against the denominator like any other failure.
+
+## The per-PR gate
+
+`ci/sbml_suite_gate.py` runs this suite for bngsim on every leg of
+`python-tests.yml` and holds each case's outcome to
+`parity_checks/nightly/baselines/sbml_semantic.json`, the baseline the nightly
+also reads. Any change fails it. A regression, a refusal that became a wrong
+answer (`load_fail` / `sim_fail` to `value_mismatch`, say) or a `harness_error`
+is to be fixed; an improvement is to be recorded in the same pull request with
+`--update-baseline`. The recorded outcomes do not depend on the machine: the
+expected values are the suite's, the notes name each file without its path, and
+a macOS arm64 run reproduced the Linux CI baseline case for case.

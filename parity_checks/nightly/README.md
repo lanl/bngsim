@@ -42,7 +42,8 @@ A night alerts on:
 - **regressed**: a case that was good is anything else now, including missing from
   the run, TIMEOUT, SKIP or REFERENCE_FAILED. A model that silently stops being
   compared is how a regression hides.
-- **new crash**: a failing case now crashes (EXCEPTION / load_fail / sim_fail / error).
+- **new crash**: a failing case now crashes (EXCEPTION / load_fail / sim_fail /
+  harness_error / error).
 - **efficiency**: on a case good both times, bngsim's solver work (steps, RHS
   evaluations, Jacobian evaluations, from `Result.solver_stats`) grew past x1.25
   (with an absolute floor), or a counter's corpus total grew past x1.05, or bngsim's
@@ -102,6 +103,15 @@ cp /tmp/rr/verdicts.json parity_checks/nightly/baselines/rr_ode.json
 Open a PR with the new file. Its per-model diff is the review, one case per line.
 A baseline-only PR does not re-run the sweeps. Record baselines from a CI run, not a
 local one: timeouts and solver work are only comparable on the same runner class.
+
+**`sbml_semantic` is the exception.** Its verdicts carry outcomes only, no timing or
+work counters, and a local run reproduces CI's case for case. Since GH #700 the
+per-PR gate `ci/sbml_suite_gate.py` holds every pull request to this baseline exactly,
+so the pull request that changes an outcome records it, with
+`uv run --no-sync python ci/sbml_suite_gate.py --update-baseline`. An sbml_semantic
+change in a nightly then means two pull requests that each passed the gate changed
+an outcome together, or something reached `main` without the gate (a manual
+`python-tests` run with `pytest_args` skips it).
 
 ## Running it locally
 

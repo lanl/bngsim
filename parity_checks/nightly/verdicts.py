@@ -39,6 +39,12 @@ REPORT the verdict:
 ``summarize``
     several diff JSONs -> one Markdown body (the tracking-issue comment).
 
+``gate``
+    fresh verdicts vs a baseline, exactly: exit 1 on ANY change of a case's
+    outcome, in either direction. The per-pull-request SBML semantic-suite check
+    (GH #700, ``ci/sbml_suite_gate.py``) uses it on the same baseline the nightly
+    reads, so a pull request that changes an outcome records it in that baseline.
+
 Stdlib only, so the alerting job can run it without building bngsim.
 """
 
@@ -46,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -57,9 +64,12 @@ KINDS = ("core", "sbml-suite", "dsmts")
 GOOD = {"core": {"PASS"}, "sbml-suite": {"pass"}, "dsmts": {"pass"}}
 CRASH = {
     "core": {"EXCEPTION"},
-    "sbml-suite": {"load_fail", "sim_fail"},
+    "sbml-suite": {"load_fail", "sim_fail", "harness_error"},
     "dsmts": {"error"},
 }
+# Outcomes that are an answer, and a wrong one, as opposed to a refusal. A case
+# that moves from a refusal to one of these traded a loud failure for a silent one.
+WRONG_ANSWER = {"sbml-suite": {"value_mismatch", "var_missing", "shape_mismatch"}}
 
 # bngsim ``solver_stats`` counters kept per case. The first three are compared;
 # the rest are kept so a regression report can say *why* the work grew.
@@ -156,11 +166,20 @@ def extract_core(report: dict) -> dict[str, dict]:
     return cases
 
 
+# Where the runner found the suite, up to and including ``cases/semantic/``.
+_SUITE_PREFIX = re.compile(r"[^\s'\"]*?[/\\]cases[/\\]semantic[/\\]")
+
+
 def extract_sbml_suite(payload: dict) -> dict[str, dict]:
     """``benchmarks/suites/sbml_test_suite/run.py`` payload -> cases.
 
     Out-of-scope cases (``skipped``: non-TimeCourse, missing files) are dropped:
     they never ran on either side, so they carry no signal.
+
+    A message that names a case file by its absolute path differs per machine
+    (the runner's bngsim errors name the file alone since GH #700; an older
+    report's load failures and a harness_error's text do not), so the note keeps
+    only the part under ``cases/semantic``.
     """
     cases: dict[str, dict] = {}
     for row in payload.get("cases", []):
@@ -169,7 +188,7 @@ def extract_sbml_suite(payload: dict) -> dict[str, dict]:
             continue
         rec: dict = {"outcome": status, "subclass": None}
         if status not in GOOD["sbml-suite"]:
-            rec["note"] = _note(row.get("error"))
+            rec["note"] = _note(_SUITE_PREFIX.sub("", str(row.get("error") or "")))
         cases[str(row["case"])] = rec
     return cases
 
@@ -452,6 +471,123 @@ def diff(
 
 
 # --------------------------------------------------------------------------- #
+# gate
+# --------------------------------------------------------------------------- #
+# What a pull request must fix, then what it must record in the baseline.
+GATE_FIX = (
+    ("harness_error", "The harness could not score these cases"),
+    ("regressed", "Regressed: good in the baseline, not now"),
+    ("now_wrong", "Refused in the baseline, a wrong answer now"),
+)
+GATE_RECORD = (
+    ("improved", "Improved: failing in the baseline, good now"),
+    ("changed", "Changed between two failing outcomes"),
+    ("new", "New cases (not in the baseline)"),
+    ("dropped", "Failing cases no longer in the run"),
+)
+
+
+def gate(base: dict, fresh: dict) -> dict:
+    """Hold a fresh run to the baseline case for case (the per-PR gate, GH #700).
+
+    ``diff`` decides what a nightly should wake someone for, so it lets
+    improvements, churn between failing states and new cases through. A gate on
+    a pull request can be exact instead: the run is deterministic and takes
+    seconds, so ANY change of a case's outcome (or subclass) fails it. Each
+    change is classified by what the pull request has to do about it:
+
+    * fix it (``GATE_FIX``): a new ``harness_error``, a good case that is no
+      longer good (or missing), or a refusal that became a wrong answer;
+    * record it in the baseline in the same pull request (``GATE_RECORD``): an
+      improvement, a change between two failing outcomes, a new case, or a
+      failing case that left the run.
+
+    Notes (the failure text) are not compared, so rewording a refusal does not
+    fail the gate. A run with no cases fails it whatever the baseline holds.
+    """
+    if base["kind"] != fresh["kind"]:
+        raise ValueError(f"kind mismatch: baseline {base['kind']} vs fresh {fresh['kind']}")
+    kind = base["kind"]
+    good, wrong = GOOD[kind], WRONG_ANSWER.get(kind, set())
+    b, f = base["cases"], fresh["cases"]
+    out: dict[str, list] = {name: [] for name, _ in GATE_FIX + GATE_RECORD}
+    for cid in sorted(set(b) | set(f)):
+        br, fr = b.get(cid), f.get(cid)
+        item = {
+            "case": cid,
+            "before": _label(br),
+            "after": _label(fr),
+            "note": (fr or {}).get("note", ""),
+        }
+        if br is None:
+            # A case the harness cannot score is to fix even when it is new: a
+            # baseline that recorded it would match it on every later run.
+            out["harness_error" if fr["outcome"] == "harness_error" else "new"].append(item)
+            continue
+        if fr is None:
+            out["regressed" if br["outcome"] in good else "dropped"].append(item)
+            continue
+        bo, fo = br["outcome"], fr["outcome"]
+        if (bo, br.get("subclass")) == (fo, fr.get("subclass")):
+            continue
+        if fo == "harness_error":
+            out["harness_error"].append(item)
+        elif bo in good and fo not in good:
+            out["regressed"].append(item)
+        elif bo not in good and fo in good:
+            out["improved"].append(item)
+        elif fo in wrong and bo not in wrong:
+            out["now_wrong"].append(item)
+        else:
+            out["changed"].append(item)
+    n_fix = sum(len(out[name]) for name, _ in GATE_FIX)
+    n_record = sum(len(out[name]) for name, _ in GATE_RECORD)
+    return {
+        "suite": fresh.get("suite") or base.get("suite"),
+        "kind": kind,
+        "n_baseline": len(b),
+        "n_fresh": len(f),
+        "tally_baseline": base.get("tally") or tally(b),
+        "tally_fresh": fresh.get("tally") or tally(f),
+        "empty": not f,
+        "n_fix": n_fix,
+        "n_record": n_record,
+        "ok": bool(f) and n_fix == 0 and n_record == 0,
+        **out,
+    }
+
+
+def render_gate_md(result: dict, limit: int = 60) -> str:
+    """The gate's verdict as Markdown: the tallies, then every change by class."""
+    verdict = (
+        "matches the baseline"
+        if result["ok"]
+        else "**no cases ran**"
+        if result["empty"]
+        else f"**{result['n_fix']} to fix, {result['n_record']} to record**"
+    )
+    lines = [
+        f"### {result['suite']} — per-PR gate",
+        "",
+        f"{verdict} · {result['n_fresh']} cases run, {result['n_baseline']} in the baseline",
+        "",
+        "| outcome | baseline | this run |",
+        "|---|---|---|",
+    ]
+    for o in sorted(set(result["tally_baseline"]) | set(result["tally_fresh"])):
+        lines.append(
+            f"| {o} | {result['tally_baseline'].get(o, 0)} | {result['tally_fresh'].get(o, 0)} |"
+        )
+    lines.append("")
+    for name, title in GATE_FIX + GATE_RECORD:
+        rows = result[name]
+        if rows:
+            lines += [f"**{title}: {len(rows)}**", ""]
+            lines += _table(rows, ["case", "before", "after", "note"], limit) + [""]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+# --------------------------------------------------------------------------- #
 # markdown
 # --------------------------------------------------------------------------- #
 def _table(rows: list[dict], cols: list[str], limit: int) -> list[str]:
@@ -615,6 +751,17 @@ def _cmd_diff(args) -> int:
     return 1 if result["n_alerts"] else 0
 
 
+def _cmd_gate(args) -> int:
+    result = gate(load_verdicts(Path(args.baseline)), load_verdicts(Path(args.fresh)))
+    md = render_gate_md(result)
+    if args.json_out:
+        Path(args.json_out).write_text(json.dumps(result, indent=1))
+    if args.md_out:
+        Path(args.md_out).write_text(md)
+    print(md)
+    return 0 if result["ok"] else 1
+
+
 BODY_LIMIT = 60_000  # a GitHub issue comment caps at 65,536 characters
 
 
@@ -731,6 +878,13 @@ def main(argv=None) -> int:
     s.add_argument("--run-url", default="")
     s.add_argument("--sha", default="")
     s.set_defaults(fn=_cmd_summarize)
+
+    g = sub.add_parser("gate", help="fresh verdicts vs a baseline; exit 1 on any outcome change")
+    g.add_argument("--baseline", required=True)
+    g.add_argument("--fresh", required=True)
+    g.add_argument("--json-out", default="")
+    g.add_argument("--md-out", default="")
+    g.set_defaults(fn=_cmd_gate)
 
     args = ap.parse_args(argv)
     return args.fn(args)

@@ -170,7 +170,7 @@ def build_bngsim_series(sbml_path, settings):
     try:
         model = bngsim.Model.from_sbml(str(sbml_path))
     except Exception as e:
-        raise BngsimStageError("load_fail", str(e)) from e
+        raise BngsimStageError("load_fail", _without_path(e, sbml_path)) from e
 
     t_start = settings["start"]
     t_end = t_start + settings["duration"]
@@ -183,9 +183,17 @@ def build_bngsim_series(sbml_path, settings):
             atol=SOLVER_ATOL,
         )
     except Exception as e:
-        raise BngsimStageError("sim_fail", str(e)) from e
+        raise BngsimStageError("sim_fail", _without_path(e, sbml_path)) from e
 
     return _BngsimSeries(model, sim_result, n_points), n_points
+
+
+def _without_path(exc: Exception, sbml_path) -> str:
+    """*exc*'s message with the case file named by its file name alone. A load
+    error quotes the absolute path, which differs per machine, and the
+    200-character cut the report applies would then keep a different tail of
+    the message on each one (GH #700: the per-PR gate's baseline records it)."""
+    return str(exc).replace(str(sbml_path), Path(sbml_path).name)
 
 
 def run_bngsim(case_id, sbml_path, settings, exp_data, ent) -> dict:

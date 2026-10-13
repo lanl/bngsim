@@ -13,10 +13,17 @@ as the amount. It now grades through the shared kernel of
 
 Each test writes one synthetic case in the suite's file layout and scores it
 with ``run_single_case``, the function the harness runs per case.
+
+A case the harness cannot score at all (its files do not parse, or grading
+raises) is ``harness_error`` with its traceback (GH #700). Before, the first one
+raised out of ``main()`` and the run ended with no results written, and the
+kernel recorded a grading exception as a ``sim_fail``, an engine failure.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +31,17 @@ import pytest
 
 pytest.importorskip("libsbml")
 
-_HARNESS = Path(__file__).resolve().parents[2] / "harness" / "sbml_test_suite"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _source_root import bngsim_source_root  # noqa: E402
+
+_ROOT = bngsim_source_root()
+if _ROOT is None or not (_ROOT / "benchmarks" / "suites" / "sbml_test_suite" / "run.py").is_file():
+    # The harness scores through that kernel; a wheel/subtree checkout has neither.
+    pytest.skip(
+        "harness/sbml_test_suite and its kernel are not in this checkout",
+        allow_module_level=True,
+    )
+_HARNESS = _ROOT / "harness" / "sbml_test_suite"
 
 _MATH = 'xmlns="http://www.w3.org/1998/Math/MathML"'
 _TIME = (
@@ -74,8 +91,9 @@ def _assign(var: str, value: str) -> str:
     )
 
 
-def _case(tmp_path: Path, sbml: str, variables: list[str], rows: list[list[float]]) -> Path:
-    cid = "90001"
+def _case(
+    tmp_path: Path, sbml: str, variables: list[str], rows: list[list[float]], cid: str = "90001"
+) -> Path:
     d = tmp_path / cid
     d.mkdir()
     (d / f"{cid}-sbml-l3v2.xml").write_text(sbml)
@@ -96,13 +114,17 @@ def _case(tmp_path: Path, sbml: str, variables: list[str], rows: list[list[float
     return d
 
 
-def _score(case_dir: Path) -> dict:
+def _harness():
     sys.path.insert(0, str(_HARNESS))
     try:
         import run_sbml_test_suite as harness
     finally:
         sys.path.remove(str(_HARNESS))
-    return harness.run_single_case(case_dir, case_dir.name)
+    return harness
+
+
+def _score(case_dir: Path) -> dict:
+    return _harness().run_single_case(case_dir, case_dir.name)
 
 
 # S amount: 1 + t up to t = 0.75, then 1.75 + 3 (t - 0.75) once k1 = 3.
@@ -132,3 +154,87 @@ def test_an_amount_after_an_event_resizes_its_compartment_uses_the_live_volume(t
     )
     r = _score(case)
     assert r["status"] == "pass", r
+
+
+# ── A case the harness cannot score (GH #700) ────────────────────────────────
+
+
+def _good_case(tmp_path: Path, cid: str = "90001") -> Path:
+    return _case(
+        tmp_path,
+        _sbml(_assign("k1", "3")),
+        ["S", "k1"],
+        [[s, k] for s, k in zip(_S, [1, 1, 3, 3, 3], strict=True)],
+        cid=cid,
+    )
+
+
+def _unreadable_case(tmp_path: Path, cid: str = "90002") -> Path:
+    """A case whose settings do not parse: ``steps`` is not a number."""
+    d = _good_case(tmp_path, cid)
+    settings = d / f"{cid}-settings.txt"
+    settings.write_text(settings.read_text().replace("steps: 4", "steps: four"))
+    return d
+
+
+def test_a_case_whose_files_do_not_parse_is_a_harness_error(tmp_path):
+    r = _score(_unreadable_case(tmp_path))
+    assert r["status"] == "harness_error", r
+    assert r["error"].startswith("ValueError:"), r
+    assert "parse_settings" in r["traceback"], r
+
+
+def test_a_grading_exception_is_a_harness_error_not_a_sim_fail(tmp_path, monkeypatch):
+    """What escapes an adapter is the harness's grading, not the engine: each
+    adapter catches its own engine's load and integrate failures."""
+    kernel = _harness()._kernel()
+
+    def grading_bug(*args):
+        raise KeyError("a column the grader expected")
+
+    monkeypatch.setitem(kernel.ADAPTERS, "bngsim", grading_bug)
+    r = kernel.run_case(_good_case(tmp_path), "90001", ["bngsim"])
+    assert r["bngsim_status"] == r["status"] == "harness_error", r
+    assert "grading_bug" in r["bngsim_traceback"] and r["traceback"] == r["bngsim_traceback"]
+
+
+def test_the_harness_run_survives_a_case_it_cannot_score(tmp_path, monkeypatch):
+    """main() used to raise out of the first such case, writing nothing. 90003's
+    model description is not UTF-8, which this script reads itself as well as
+    through the kernel, so it reaches main()'s own per-case net."""
+    harness = _harness()
+    suite = tmp_path / "semantic"
+    suite.mkdir()
+    _good_case(suite, "90001")
+    _unreadable_case(suite, "90002")
+    (_good_case(suite, "90003") / "90003-model.m").write_bytes(b"testType: \xff\xfe\n")
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(harness, "SUITE_DIR", suite)
+    monkeypatch.setattr(sys, "argv", ["run_sbml_test_suite.py", "--output", str(out)])
+    harness.main()
+    payload = json.loads(out.read_text())
+    assert {c["case"]: c["status"] for c in payload["cases"]} == {
+        "90001": "pass",
+        "90002": "harness_error",
+        "90003": "harness_error",
+    }
+    assert "UnicodeDecodeError" in payload["cases"][2]["traceback"]
+    assert payload["summary"]["bngsim"]["harness_error"] == 2
+
+
+def test_the_suite_runner_counts_a_harness_error_against_the_denominator(tmp_path, monkeypatch):
+    kernel = _harness()._kernel()
+    suite = tmp_path / "semantic"
+    suite.mkdir()
+    _good_case(suite, "90001")
+    _unreadable_case(suite, "90002")
+    monkeypatch.setattr(kernel, "SUITE_DIR", suite)
+    monkeypatch.setattr(kernel, "RESULTS_DIR", tmp_path / "res")
+    monkeypatch.setattr(sys, "argv", ["run.py", "--mode", "correctness"])
+    kernel.main()
+    payload = json.loads((tmp_path / "res" / "sbml_test_suite_results.json").read_text())
+    s = payload["summary"]["bngsim"]
+    assert (s["tested"], s["pass"], s["harness_error"]) == (2, 1, 1), s
+    assert payload["n_in_scope"] == 2
+    # ... and in the per-feature view, where it is a case of that tag not passed.
+    assert payload["tags"]["Compartment"] == {"total": 2, "pass": 1, "fail": 1}

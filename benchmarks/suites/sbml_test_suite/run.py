@@ -41,8 +41,13 @@ Usage:
     python run.py --case 00001          # single case
     python run.py --tag-prefix Event    # SBML L3 event subset
 
-Output (git-ignored ``results/``):
+Output (git-ignored ``results/``, or ``--results-dir``):
     sbml_test_suite_results.json + sbml_test_suite_results.md
+
+A case the harness cannot score (its files do not parse, or grading raises) is
+``harness_error``, with the traceback, never a crash of the sweep (GH #700).
+``ci/sbml_suite_gate.py`` holds bngsim's per-case outcomes to a committed
+baseline on every pull request.
 """
 
 import argparse
@@ -51,6 +56,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -86,10 +92,29 @@ ENGINE_LABELS = {
 }
 ALL_ENGINES = ["bngsim", "rr", "amici", "copasi"]
 
+# A case the harness itself could not score (GH #700): an exception while reading
+# the case (model description, settings, expected CSV, SBML classification), or
+# one that escaped an adapter. The bngsim adapter catches every load and
+# integrate failure as load_fail / sim_fail, so what escapes it comes from the
+# grading. (The reference adapters leave a little of their engine setup outside
+# their own try, e.g. RoadRunner's selections, which lands here too.) Recording
+# a grading exception as a sim_fail would blame the engine for a harness bug, so
+# it gets a status of its own and carries the traceback.
+HARNESS_ERROR = "harness_error"
+
 # Per-engine failure statuses that count against an engine's denominator (a real
 # fail), versus "skipped" which means out-of-scope or engine-not-installed and is
-# excluded from every engine's denominator identically.
-FAIL_STATUSES = ("load_fail", "sim_fail", "value_mismatch", "var_missing", "shape_mismatch")
+# excluded from every engine's denominator identically. A harness_error counts
+# against it too: a case nobody could score is not a pass, and leaving it out
+# would shrink the denominator without saying so.
+FAIL_STATUSES = (
+    "load_fail",
+    "sim_fail",
+    "value_mismatch",
+    "var_missing",
+    "shape_mismatch",
+    HARNESS_ERROR,
+)
 
 
 def effort_tier(case_id: str) -> str:
@@ -145,8 +170,15 @@ def run_case(case_dir, case_id, engines) -> dict:
     Scope is decided ONCE here and applied to every engine: a case that is not a
     runnable ``TimeCourse`` is ``skipped`` for all engines and excluded from every
     denominator — the identical-denominator guarantee.
+
+    It does not raise. A case it cannot read, or whose grading raises, comes
+    back as ``harness_error`` with the traceback under ``traceback`` /
+    ``<eng>_traceback``, so one bad case cannot stop a sweep.
     """
-    desc = parse_model_desc(case_dir / f"{case_id}-model.m")
+    try:
+        desc = parse_model_desc(case_dir / f"{case_id}-model.m")
+    except Exception as e:
+        return harness_error_result(case_id, engines, e)
     result = {
         "case": case_id,
         "tags": desc["tag_list"],
@@ -181,31 +213,64 @@ def run_case(case_dir, case_id, engines) -> dict:
         result["error"] = skip_reason
         return result
 
-    settings = parse_settings(settings_path)
-    _, exp_data = parse_results_csv(csv_path, settings=settings)
-    ent = read_sbml_entities(sbml_path)  # one libSBML classification, shared by all engines
+    try:
+        settings = parse_settings(settings_path)
+        _, exp_data = parse_results_csv(csv_path, settings=settings)
+        ent = read_sbml_entities(sbml_path)  # one libSBML classification, shared by all engines
+    except Exception as e:
+        return harness_error_result(case_id, engines, e, desc)
 
     for eng in engines:
         t0 = time.perf_counter()
+        tb = None
         try:
             res = ADAPTERS[eng](case_id, sbml_path, settings, exp_data, ent)
         except Exception as e:  # crash isolation: one bad engine must not abort the case
-            res = {
-                "status": "sim_fail",
-                "error": f"uncaught {type(e).__name__}: {e}"[:200],
-                "max_err": 0.0,
-            }
+            error, tb = _describe(e)
+            res = {"status": HARNESS_ERROR, "error": error, "max_err": 0.0}
         wall = time.perf_counter() - t0
         result[f"{eng}_status"] = res["status"]
         result[f"{eng}_error"] = res.get("error", "")
         result[f"{eng}_max_err"] = res.get("max_err", 0.0)
         result[f"{eng}_wall_s"] = wall
+        if tb is not None:
+            result[f"{eng}_traceback"] = tb
 
     # Mirror bngsim to the bare keys for backward-compatible report consumers.
     if "bngsim" in engines:
         result["status"] = result["bngsim_status"]
         result["error"] = result["bngsim_error"]
         result["max_err"] = result["bngsim_max_err"]
+        if "bngsim_traceback" in result:
+            result["traceback"] = result["bngsim_traceback"]
+    return result
+
+
+def _describe(exc: BaseException) -> tuple[str, str]:
+    """``(one-line error, full traceback)`` for a harness_error record."""
+    error = f"{type(exc).__name__}: {exc}"[:200]
+    return error, "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def harness_error_result(case_id, engines, exc: BaseException, desc: dict | None = None) -> dict:
+    """The record of a case the harness could not score at all: ``harness_error``
+    for every engine, with the exception and its traceback."""
+    error, tb = _describe(exc)
+    result = {
+        "case": case_id,
+        "tags": desc["tag_list"] if desc else [],
+        "test_type": desc["testType"] if desc else "unknown",
+        "status": HARNESS_ERROR,
+        "error": error,
+        "traceback": tb,
+        "max_err": 0.0,
+    }
+    for eng in engines:
+        result[f"{eng}_status"] = HARNESS_ERROR
+        result[f"{eng}_error"] = error
+        result[f"{eng}_traceback"] = tb
+        result[f"{eng}_max_err"] = 0.0
+        result[f"{eng}_wall_s"] = 0.0
     return result
 
 
@@ -225,6 +290,7 @@ def summarize_engine(results, eng) -> dict:
         "value_mismatch": counts["value_mismatch"],
         "var_missing": counts["var_missing"],
         "shape_mismatch": counts["shape_mismatch"],
+        HARNESS_ERROR: counts[HARNESS_ERROR],
         "wall_s_passing": sum(
             float(r.get(f"{eng}_wall_s", 0.0)) for r in results if r.get(f"{eng}_status") == "pass"
         ),
@@ -245,6 +311,7 @@ def print_engine_summary(label, s):
     print(f"    Value mismatch: {s['value_mismatch']}")
     print(f"    Var missing:    {s['var_missing']}")
     print(f"    Shape mismatch: {s['shape_mismatch']}")
+    print(f"    Harness errors: {s[HARNESS_ERROR]}")
 
 
 def generate_markdown(payload: dict, outpath: Path) -> None:
@@ -262,8 +329,8 @@ def generate_markdown(payload: dict, outpath: Path) -> None:
         "tolerances, same variable resolution, same amount conversion, same",
         "denominator. Differences below are engine differences, not harness ones.",
         "",
-        "| Engine | tested | pass | pass % | load_fail | sim_fail | value_mismatch | var_missing | shape_mismatch |",
-        "|--------|--------|------|--------|-----------|----------|----------------|-------------|----------------|",
+        "| Engine | tested | pass | pass % | load_fail | sim_fail | value_mismatch | var_missing | shape_mismatch | harness_error |",
+        "|--------|--------|------|--------|-----------|----------|----------------|-------------|----------------|---------------|",
     ]
     for eng in payload["engines"]:
         s = payload["summary"].get(eng)
@@ -274,7 +341,7 @@ def generate_markdown(payload: dict, outpath: Path) -> None:
         lines.append(
             f"| {ENGINE_LABELS.get(eng, eng)} | {tested} | {s['pass']} | {pct} | "
             f"{s['load_fail']} | {s['sim_fail']} | {s['value_mismatch']} | "
-            f"{s['var_missing']} | {s['shape_mismatch']} |"
+            f"{s['var_missing']} | {s['shape_mismatch']} | {s[HARNESS_ERROR]} |"
         )
     lines += [
         "",
@@ -332,8 +399,15 @@ def main():
         default="",
         help="Comma-separated tag-prefix filter (e.g. 'Event' for the L3 event subset).",
     )
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=RESULTS_DIR,
+        help=f"Where to write the JSON + Markdown report (default: {RESULTS_DIR}).",
+    )
     add_effort_arg(parser)
     args = parser.parse_args()
+    results_dir = args.results_dir
 
     # Parse engines (preserve canonical report order; bngsim always first).
     if args.engines == "all":
@@ -390,21 +464,12 @@ def main():
         case_id = case_dir.name
         try:
             r = run_case(case_dir, case_id, engines)
-        except Exception as e:  # crash isolation: one bad case must not abort the sweep
-            import traceback as _tb
-
-            _tb.print_exc()
-            r = {
-                "case": case_id,
-                "tags": [],
-                "test_type": "TimeCourse",
-                "status": "sim_fail",
-                "error": f"uncaught {type(e).__name__}: {e}"[:200],
-                "max_err": 0.0,
-            }
-            for eng in engines:
-                r.setdefault(f"{eng}_status", "sim_fail")
+        except Exception as e:  # run_case records its own failures; this is the last net
+            r = harness_error_result(case_id, engines, e)
         results.append(r)
+        for tb in dict.fromkeys(r.get(f"{eng}_traceback") for eng in engines):
+            if tb:
+                print(f"  {case_id}: {HARNESS_ERROR}\n{tb}", file=sys.stderr)
 
         # Per-tag stats track the primary subject (bngsim) — the feature-gap view.
         for tag in r.get("tags", []):
@@ -422,9 +487,9 @@ def main():
                 f"  {i + 1}/{len(case_dirs)} done ({elapsed:.1f}s, pass={n_pass}, fail={n_fail})"
             )
             try:
-                RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-                _partial = RESULTS_DIR / "sbml_test_suite_results.json.partial"
-                _tmp = RESULTS_DIR / "sbml_test_suite_results.json.partial.tmp"
+                results_dir.mkdir(parents=True, exist_ok=True)
+                _partial = results_dir / "sbml_test_suite_results.json.partial"
+                _tmp = results_dir / "sbml_test_suite_results.json.partial.tmp"
                 _tmp.write_text(
                     json.dumps(
                         {"completed": i + 1, "total": len(case_dirs), "cases": results},
@@ -492,13 +557,13 @@ def main():
         },
         "cases": results,
     }
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    json_path = RESULTS_DIR / "sbml_test_suite_results.json"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    json_path = results_dir / "sbml_test_suite_results.json"
     json_path.write_text(json.dumps(payload, indent=2, default=str))
-    (RESULTS_DIR / "sbml_test_suite_results.json.partial").unlink(missing_ok=True)
-    generate_markdown(payload, RESULTS_DIR / "sbml_test_suite_results.md")
+    (results_dir / "sbml_test_suite_results.json.partial").unlink(missing_ok=True)
+    generate_markdown(payload, results_dir / "sbml_test_suite_results.md")
     print(f"\nResults: {json_path}")
-    print(f"Report:  {RESULTS_DIR / 'sbml_test_suite_results.md'}")
+    print(f"Report:  {results_dir / 'sbml_test_suite_results.md'}")
 
 
 if __name__ == "__main__":

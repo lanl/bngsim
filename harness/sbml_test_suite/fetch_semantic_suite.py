@@ -6,11 +6,14 @@ commit — so the harness reads it from ``$SBML_TEST_SUITE_DIR``. To make "repro
 our Table S8 numbers" deterministic, this clones sbmlteam/sbml-test-suite at the
 exact commit recorded in ``SUITE_PIN.json`` (the single source of truth for the
 suite version; ``git describe`` there is authoritative, the in-tree VERSION.txt
-lags). Point ``$SBML_TEST_SUITE_DIR`` at the result.
+lags). The semantic runners read ``$SBML_TEST_SUITE_DIR`` as the
+``cases/semantic`` directory, not the checkout:
 
     python fetch_semantic_suite.py --dest ~/Code/sbml-test-suite
-    export SBML_TEST_SUITE_DIR=~/Code/sbml-test-suite
+    export SBML_TEST_SUITE_DIR=~/Code/sbml-test-suite/cases/semantic
 
+``--sparse`` checks out ``cases/semantic`` alone, which is all the semantic
+runners and ``ci/sbml_suite_gate.py`` read (the CI gate fetches it this way).
 ``--upstream-latest`` clones ``develop`` instead (refresh/extend; unpinned).
 
 The 39 DSMTS-proper cases are already vendored + hashed (dsmts/dsmts_manifest.json)
@@ -43,6 +46,11 @@ def main() -> int:
     ap.add_argument("--dest", type=Path, default=Path.home() / "Code" / "sbml-test-suite")
     ap.add_argument(
         "--commit", default=pin["commit"], help=f"commit to pin (default {pin['commit'][:12]})"
+    )
+    ap.add_argument(
+        "--sparse",
+        action="store_true",
+        help="check out cases/semantic only (what the semantic runners read)",
     )
     ap.add_argument(
         "--upstream-latest",
@@ -79,10 +87,18 @@ def main() -> int:
             return 1
     else:
         print(f"Cloning {pin['source']} @ {args.commit[:12]} ({pin['describe']})...")
-        r = _run(["git", "clone", "--filter=blob:none", "--no-checkout", repo_url, str(args.dest)])
+        clone = ["git", "clone", "--filter=blob:none", "--no-checkout"]
+        if args.sparse:
+            clone.append("--sparse")
+        r = _run([*clone, repo_url, str(args.dest)])
         if r.returncode != 0:
             print(f"clone failed:\n{r.stderr}", file=sys.stderr)
             return 1
+        if args.sparse:
+            r = _run(["git", "-C", str(args.dest), "sparse-checkout", "set", "cases/semantic"])
+            if r.returncode != 0:
+                print(f"sparse-checkout failed:\n{r.stderr}", file=sys.stderr)
+                return 1
         r = _run(["git", "-C", str(args.dest), "checkout", args.commit])
         if r.returncode != 0:
             print(f"checkout of {args.commit} failed:\n{r.stderr}", file=sys.stderr)
@@ -92,7 +108,7 @@ def main() -> int:
     sem = args.dest / "cases" / "semantic"
     n = len([p for p in sem.iterdir() if p.is_dir()]) if sem.is_dir() else 0
     print(f"\n✓ checked out {head[:12]}  ({n} semantic case dirs at {sem})")
-    print(f"\nNext: export SBML_TEST_SUITE_DIR={args.dest}")
+    print(f"\nNext: export SBML_TEST_SUITE_DIR={sem}")
     return 0
 
 

@@ -556,3 +556,170 @@ def test_present_models_lists_only_models_on_disk(tmp_path):
     assert P.present(manifest, root=tmp_path, max_bytes=50) == (["M1"], 2)
     assert P.present(manifest, root=tmp_path, min_bytes=51) == (["M2"], 2)
     assert P.present(manifest, root=tmp_path, skip=frozenset({"M1"})) == (["M2"], 2)
+
+
+# --------------------------------------------------------------------------- #
+# sbml-suite specifics (GH #700)
+# --------------------------------------------------------------------------- #
+def sbml(cases: dict, suite="sbml_semantic") -> dict:
+    return {
+        "schema": V.SCHEMA,
+        "suite": suite,
+        "kind": "sbml-suite",
+        "source": {},
+        "n_cases": len(cases),
+        "tally": V.tally(cases),
+        "cases": cases,
+    }
+
+
+def srec(outcome, note=None):
+    r = {"outcome": outcome, "subclass": None}
+    if note is not None:
+        r["note"] = note
+    return r
+
+
+SBML_BASE = sbml(
+    {
+        "00001": srec("pass"),
+        "00002": srec("pass"),
+        "00003": srec("load_fail", "delay"),
+        "00004": srec("sim_fail", "fast"),
+        "00005": srec("value_mismatch", "max_err=0.02"),
+    }
+)
+
+
+def sbml_with(**changes) -> dict:
+    cases = {k: dict(v) for k, v in SBML_BASE["cases"].items()}
+    for key, value in changes.items():
+        cid = key.lstrip("c")
+        if value is None:
+            cases.pop(cid)
+        else:
+            cases[cid] = value
+    return sbml(cases)
+
+
+def test_extract_sbml_suite_drops_the_machine_specific_suite_path(tmp_path):
+    """A load failure names its file by absolute path; a baseline recorded on
+    another machine would otherwise rewrite every such note."""
+    err = (
+        "Failed to load SBML file /home/runner/work/_temp/sbml-test-suite/cases/semantic/"
+        "00039/00039-sbml-l3v2.xml: Model contains constructs bngsim cannot simulate"
+    )
+    path = tmp_path / "sbml.json"
+    path.write_text(
+        json.dumps({"cases": [{"case": "00039", "status": "load_fail", "error": err}]})
+    )
+    note = V.extract("sbml-suite", path, "sbml_semantic")["cases"]["00039"]["note"]
+    assert note == (
+        "Failed to load SBML file 00039/00039-sbml-l3v2.xml: "
+        "Model contains constructs bngsim cannot simulate"
+    )
+
+
+def test_a_failing_case_the_harness_can_no_longer_score_is_a_new_crash():
+    r = V.diff(SBML_BASE, sbml_with(c00003=srec("harness_error")))
+    assert [x["case"] for x in r["new_crash"]] == ["00003"]
+
+
+# --------------------------------------------------------------------------- #
+# gate: the per-PR check is exact (GH #700)
+# --------------------------------------------------------------------------- #
+def _gate_classes(r) -> dict:
+    names = [name for name, _ in V.GATE_FIX + V.GATE_RECORD]
+    return {name: [x["case"] for x in r[name]] for name in names if r[name]}
+
+
+def test_gate_passes_an_identical_run():
+    r = V.gate(SBML_BASE, SBML_BASE)
+    assert r["ok"] and r["n_fix"] == r["n_record"] == 0 and _gate_classes(r) == {}
+
+
+def test_gate_ignores_a_reworded_failure():
+    r = V.gate(SBML_BASE, sbml_with(c00003=srec("load_fail", "delay() is refused")))
+    assert r["ok"]
+
+
+@pytest.mark.parametrize(
+    "after, cls",
+    [
+        (srec("value_mismatch"), "regressed"),
+        (srec("load_fail"), "regressed"),
+        (None, "regressed"),
+        (srec("harness_error"), "harness_error"),
+    ],
+)
+def test_gate_fails_a_good_case_that_is_not_good_now(after, cls):
+    r = V.gate(SBML_BASE, sbml_with(c00001=after))
+    assert not r["ok"] and r["n_fix"] == 1
+    assert _gate_classes(r) == {cls: ["00001"]}
+
+
+def test_gate_fails_a_refusal_that_became_a_wrong_answer():
+    """The defect class a nightly ``diff`` lets through as churn between two
+    failing states: a loud refusal traded for a silent wrong answer."""
+    r = V.gate(SBML_BASE, sbml_with(c00003=srec("value_mismatch"), c00004=srec("var_missing")))
+    assert _gate_classes(r) == {"now_wrong": ["00003", "00004"]}
+    assert r["n_fix"] == 2
+    assert V.diff(SBML_BASE, sbml_with(c00003=srec("value_mismatch")))["n_alerts"] == 0
+
+
+def test_gate_fails_a_failing_case_the_harness_can_no_longer_score():
+    r = V.gate(SBML_BASE, sbml_with(c00005=srec("harness_error")))
+    assert _gate_classes(r) == {"harness_error": ["00005"]} and r["n_fix"] == 1
+
+
+@pytest.mark.parametrize(
+    "changes, cls",
+    [
+        ({"c00003": srec("pass")}, "improved"),
+        ({"c00005": srec("load_fail")}, "changed"),
+        ({"c00004": srec("load_fail")}, "changed"),
+        ({"c00006": srec("pass")}, "new"),
+        ({"c00003": None}, "dropped"),
+    ],
+)
+def test_gate_fails_a_change_the_baseline_has_not_recorded(changes, cls):
+    """Not a regression, but unrecorded: a later PR that undid it would pass."""
+    r = V.gate(SBML_BASE, sbml_with(**changes))
+    assert not r["ok"] and r["n_fix"] == 0 and r["n_record"] == 1
+    assert list(_gate_classes(r)) == [cls]
+
+
+def test_gate_fails_a_run_with_no_cases():
+    r = V.gate(sbml({}), sbml({}))
+    assert r["empty"] and not r["ok"]
+
+
+def test_gate_refuses_a_kind_mismatch():
+    with pytest.raises(ValueError, match="kind mismatch"):
+        V.gate(SBML_BASE, BASE)
+
+
+def test_gate_markdown_lists_every_change_by_class():
+    r = V.gate(SBML_BASE, sbml_with(c00001=srec("sim_fail"), c00003=srec("pass")))
+    md = V.render_gate_md(r)
+    assert "1 to fix, 1 to record" in md
+    assert "Regressed: good in the baseline, not now: 1" in md
+    assert "Improved: failing in the baseline, good now: 1" in md
+    assert "| 00001 | pass | sim_fail |" in md and "| 00003 | load_fail | pass |" in md
+
+
+def test_cli_gate_exit_codes(tmp_path):
+    b = _write(tmp_path, "b.json", SBML_BASE)
+    same = _write(tmp_path, "same.json", SBML_BASE)
+    better = _write(tmp_path, "better.json", sbml_with(c00003=srec("pass")))
+    assert V.main(["gate", "--baseline", b, "--fresh", same]) == 0
+    out = tmp_path / "g.json"
+    assert V.main(["gate", "--baseline", b, "--fresh", better, "--json-out", str(out)]) == 1
+    assert [x["case"] for x in json.loads(out.read_text())["improved"]] == ["00003"]
+
+
+def test_gate_fails_a_new_case_the_harness_cannot_score():
+    """A new case is normally only to record, but a harness_error recorded in a
+    baseline would match itself on every later run."""
+    r = V.gate(SBML_BASE, sbml_with(c00006=srec("harness_error")))
+    assert _gate_classes(r) == {"harness_error": ["00006"]} and r["n_fix"] == 1

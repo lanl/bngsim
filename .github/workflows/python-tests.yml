@@ -354,6 +354,58 @@ jobs:
           bash ci/check_test_count.sh PARITY_COLLECTED "$collected" "parity tests stopped being collected rather than failing"
           bash ci/check_test_count.sh PARITY_SKIPPED "$skipped" "a group of parity tests turned into skips"
 
+      # The SBML semantic test suite as a per-PR gate (issue #700). Before this
+      # it ran on no pull request: the nightly (#702) alerts on a regression but
+      # blocks nothing. The suite's expected values are its own, never bngsim's,
+      # so unlike a golden-trajectory baseline this one cannot end up defending a
+      # wrong answer bngsim once gave. Its 1,823 cases (1,789 scored) took about
+      # 5 s on an M-series Mac.
+      #
+      # ci/sbml_suite_gate.py holds bngsim's outcome on every case to
+      # parity_checks/nightly/baselines/sbml_semantic.json, the file the nightly
+      # reads, and fails on ANY change. A good case that is not, a refusal that
+      # became a wrong answer, or a case the harness could not score is for the
+      # pull request to fix. An improvement is for it to record: re-run the
+      # script with --update-baseline and commit the file, so a later pull
+      # request that undoes the fix fails here.
+      #
+      # Every leg, not one: the outcomes are deterministic and the passing case
+      # nearest its tolerance sat at 0.77 of it when this was added, so a leg
+      # that disagrees is a platform-dependent answer worth seeing. It runs
+      # whenever the pytest step ran, pass or fail, because an independent
+      # oracle's verdict matters most when something else is already red.
+      #
+      # The corpus is not vendored. It is a sparse checkout of cases/semantic at
+      # the commit in harness/sbml_test_suite/SUITE_PIN.json (~85 MB), and the
+      # gate refuses (exit 2) a checkout at any other commit. The cache key is
+      # the nightly's, so the ubuntu legs share its entry (the cache version
+      # also hashes the path, which differs on macOS). actions/cache saves only
+      # from a green job, so a red run re-fetches next time.
+      - name: Read the SBML Test Suite pin
+        id: sbml_pin
+        if: ${{ !cancelled() && steps.pytest.conclusion != 'skipped' && !github.event.inputs.pytest_args }}
+        run: |
+          commit=$(python3 -c 'import json; print(json.load(open("harness/sbml_test_suite/SUITE_PIN.json"))["commit"])')
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the pinned SBML semantic suite
+        id: sbml_cache
+        if: ${{ !cancelled() && steps.sbml_pin.outcome == 'success' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sbml-test-suite
+          key: sbml-test-suite-semantic-${{ steps.sbml_pin.outputs.commit }}
+
+      - name: Fetch the pinned SBML semantic suite (cache miss only)
+        id: sbml_fetch
+        if: ${{ !cancelled() && steps.sbml_pin.outcome == 'success' && steps.sbml_cache.outputs.cache-hit != 'true' }}
+        run: uv run --no-sync python harness/sbml_test_suite/fetch_semantic_suite.py --sparse --dest "$RUNNER_TEMP/sbml-test-suite"
+
+      - name: SBML semantic suite gate
+        id: sbml_gate
+        if: ${{ !cancelled() && steps.sbml_pin.outcome == 'success' && steps.sbml_fetch.outcome != 'failure' }}
+        run: uv run --no-sync python ci/sbml_suite_gate.py --suite "$RUNNER_TEMP/sbml-test-suite" --fresh-out "sbml-suite-verdicts-${{ matrix.label }}.json"
+
       # Conditioned on the pytest step having been reached, not just on always():
       # if the build fails there is no log to upload, and if-no-files-found=error
       # would then report a second, misleading failure on top of the real one.
@@ -374,3 +426,14 @@ jobs:
           name: parity-tests-log-${{ matrix.label }}
           path: parity-tests-${{ matrix.label }}.log
           if-no-files-found: error
+
+      # This run's per-case verdicts, when they do not match the baseline. It is
+      # the file --update-baseline would write, for a contributor without the
+      # suite checked out locally.
+      - name: Upload SBML suite verdicts
+        if: always() && steps.sbml_gate.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbml-suite-verdicts-${{ matrix.label }}
+          path: sbml-suite-verdicts-${{ matrix.label }}.json
+          if-no-files-found: warn

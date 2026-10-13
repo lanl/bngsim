@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -116,11 +117,50 @@ def _graded(case_dir, case_id, engines):
         "tags": parse_model_desc(case_dir / f"{case_id}-model.m"),
         "max_err": r["max_err"],
     }
+    if "traceback" in r:
+        out["traceback"] = r["traceback"]
     for eng in engines:
-        for key in ("status", "error", "max_err"):
+        for key in ("status", "error", "max_err", "traceback"):
             if f"{eng}_{key}" in r:
                 out[f"{eng}_{key}"] = r[f"{eng}_{key}"]
     return out
+
+
+def _harness_error(case_id, engines, exc):
+    """A case this script could not score, in its result shape. The kernel
+    records its own failures as ``harness_error``; this catches what is left
+    (reading the model description, loading the kernel), so one bad case
+    cannot stop the run before any result is written (GH #700)."""
+    error = f"{type(exc).__name__}: {exc}"[:200]
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    out = {
+        "case": case_id,
+        "status": "harness_error",
+        "error": error,
+        "traceback": tb,
+        "tags": {"componentTags": [], "testTags": [], "testType": "unknown"},
+        "max_err": 0.0,
+    }
+    for eng in engines:
+        out[f"{eng}_status"] = "harness_error"
+        out[f"{eng}_error"] = error
+        out[f"{eng}_traceback"] = tb
+        out[f"{eng}_max_err"] = 0.0
+    return out
+
+
+# What counts as a failure in the tag report and the progress line: the kernel's
+# FAIL_STATUSES. The tag report used to leave out shape_mismatch, which then
+# counted neither as passed nor as failed in a tag's denominator, and the
+# progress line var_missing as well.
+_FAIL_STATUSES = (
+    "load_fail",
+    "sim_fail",
+    "value_mismatch",
+    "var_missing",
+    "shape_mismatch",
+    "harness_error",
+)
 
 
 def run_single_case(case_dir, case_id):
@@ -148,6 +188,7 @@ def _print_engine_summary(engine_name, results, key_prefix):
     n_sim_fail = counts["sim_fail"]
     n_val_mismatch = counts["value_mismatch"]
     n_var_missing = counts["var_missing"]
+    n_harness = counts["harness_error"]
 
     print(f"\n  {engine_name}:")
     print(f"    Tested:         {n_tested}")
@@ -157,6 +198,7 @@ def _print_engine_summary(engine_name, results, key_prefix):
     print(f"    Sim failures:   {n_sim_fail}")
     print(f"    Value mismatch: {n_val_mismatch}")
     print(f"    Var missing:    {n_var_missing}")
+    print(f"    Harness errors: {n_harness}")
 
     return {
         "tested": n_tested,
@@ -165,6 +207,7 @@ def _print_engine_summary(engine_name, results, key_prefix):
         "sim_fail": n_sim_fail,
         "value_mismatch": n_val_mismatch,
         "var_missing": n_var_missing,
+        "harness_error": n_harness,
     }
 
 
@@ -250,10 +293,15 @@ def main():
     for i, case_dir in enumerate(case_dirs):
         case_id = case_dir.name
 
-        if extra_engines:
-            r = _run_multi_engine_case(case_dir, case_id, extra_engines)
-        else:
-            r = run_single_case(case_dir, case_id)
+        try:
+            if extra_engines:
+                r = _run_multi_engine_case(case_dir, case_id, extra_engines)
+            else:
+                r = run_single_case(case_dir, case_id)
+        except Exception as e:  # one bad case must not stop the run
+            r = _harness_error(case_id, sorted(extra_engines), e)
+        if r["status"] == "harness_error":
+            print(f"  {case_id}: harness_error\n{r.get('traceback', r['error'])}", file=sys.stderr)
 
         results.append(r)
         status_counts[r["status"]] += 1
@@ -264,16 +312,12 @@ def main():
             tag_total[tag] += 1
             if r["status"] == "pass":
                 tag_pass[tag] += 1
-            elif r["status"] in ("load_fail", "sim_fail", "value_mismatch", "var_missing"):
+            elif r["status"] in _FAIL_STATUSES:
                 tag_fail[tag] += 1
 
         if (i + 1) % 100 == 0:
             elapsed = time.time() - t0
-            n_fail = (
-                status_counts.get("load_fail", 0)
-                + status_counts.get("sim_fail", 0)
-                + status_counts.get("value_mismatch", 0)
-            )
+            n_fail = sum(status_counts[s] for s in _FAIL_STATUSES)
             print(
                 f"  {i + 1}/{len(case_dirs)} done "
                 f"({elapsed:.1f}s, "
@@ -292,6 +336,7 @@ def main():
     n_val_mismatch = status_counts["value_mismatch"]
     n_var_missing = status_counts["var_missing"]
     n_shape = status_counts["shape_mismatch"]
+    n_harness = status_counts["harness_error"]
 
     print(f"\n{'=' * 60}")
     print("SBML Test Suite Results")
@@ -308,6 +353,7 @@ def main():
     print(f"    Value mismatch: {n_val_mismatch}")
     print(f"    Var missing:    {n_var_missing}")
     print(f"    Shape mismatch: {n_shape}")
+    print(f"    Harness errors: {n_harness}")
 
     engine_summaries = {
         "bngsim": {
@@ -319,6 +365,8 @@ def main():
             "sim_fail": n_sim_fail,
             "value_mismatch": n_val_mismatch,
             "var_missing": n_var_missing,
+            "shape_mismatch": n_shape,
+            "harness_error": n_harness,
             "elapsed_s": elapsed,
         }
     }

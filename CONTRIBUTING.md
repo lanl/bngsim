@@ -276,7 +276,7 @@ moment it is written, and it must not be written where anything else will see it
 
 ## Checking performance and parity
 
-Two tools watch for regressions that unit tests cannot see.
+Three tools watch for regressions that unit tests cannot see.
 
 **`benchmarks/perf_ab.py`: did my change slow bngsim down?** A wall-clock A/B of
 two builds on your machine. It interleaves the committed ODE networks in
@@ -305,6 +305,21 @@ previous night, and opens or updates the issue *Nightly parity: regressions
 detected* when something regresses. It never blocks a PR. When a fix turns
 failing models good, re-baseline so that a later regression of the fix alerts:
 see [`parity_checks/nightly/README.md`](parity_checks/nightly/README.md).
+
+**`ci/sbml_suite_gate.py`: does bngsim still give the SBML Test Suite's
+answers?** This one does block a PR. Every leg of `python-tests.yml` runs the
+pinned suite's 1,823 semantic cases (about 5 s locally), whose expected values are the
+suite's own, and fails if any case's outcome differs from
+`parity_checks/nightly/baselines/sbml_semantic.json`. A case that regressed, a
+refusal that became a wrong answer, or a case the harness could not score
+(`harness_error`) is for the PR to fix. An improvement is for the PR to record,
+so that a later change that undoes it fails:
+
+```bash
+uv run --no-sync python harness/sbml_test_suite/fetch_semantic_suite.py --sparse --dest ~/Code/sbml-test-suite  # once
+uv run --no-sync python ci/sbml_suite_gate.py                    # what CI checks
+uv run --no-sync python ci/sbml_suite_gate.py --update-baseline  # record, then commit the file
+```
 
 ## Changing generated code
 

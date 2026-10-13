@@ -225,8 +225,9 @@ uv pip install amici             # Tables S1/S5/S8/S9, Figures S1–S2
 
 # SBML Test Suite (Table S8) — pinned in sbml_test_suite/SUITE_PIN.json
 # Repo: https://github.com/sbmlteam/sbml-test-suite  @ commit 473e119d (3.4.0-36-g473e119dd)
-# Check it out, then: export SBML_TEST_SUITE_DIR=<checkout>
-# (or run sbml_test_suite/fetch_semantic_suite.py to clone the pinned commit)
+# Check it out, then: export SBML_TEST_SUITE_DIR=<checkout>/cases/semantic
+# (or run sbml_test_suite/fetch_semantic_suite.py to clone the pinned commit;
+# the semantic runners read the cases directory, and find nothing in <checkout>)
 ```
 
 ## Anti-patterns
