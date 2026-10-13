@@ -204,7 +204,7 @@ Session control:
   `SimulationError` when it does.
 - **`step_to(time, *, timeout)`** — Advance to `time` on the session's clock
   without recording output; honors the same `timeout` semantics as
-  `simulate(...)`.
+  `simulate(...)`. A `time` before the clock is refused.
 - **`current_time`** — The session's clock
 - **`destroy()`** — Release the live RuleMonkey session
 

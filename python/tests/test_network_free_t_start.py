@@ -6,11 +6,12 @@ labelled the t = 0 state as t_start, and RuleMonkey's stateless run simulated
 t_start and never sees [0, t_start], as ode and ssa do and as BNG2.pl's
 simulate_nf does (it runs NFsim for t_end - t_start).
 
-The two backends keep different clocks under that (issue #1022). NFsim runs on
-elapsed time, its clock from 0 to t_end - t_start. RuleMonkey runs on absolute
-model time, its clock from t_start to t_end, as ode and ssa do. This model does
-not read the clock, so the two give the same answer here; a model that does is
-in test_rulemonkey_model_clock.py.
+The two backends keep different clocks for a model that reads the clock (issue
+#1022). NFsim runs on elapsed time, its clock from 0 to t_end - t_start.
+RuleMonkey runs such a model on absolute model time, its clock from t_start to
+t_end, as ode and ssa do. A model that does not read the clock, like this one,
+is run on elapsed time by both, where only elapsed time matters; one that does
+is in test_rulemonkey_model_clock.py.
 
 A(s~0) -> A(s~1) at k = 0.5 from 20000 copies, so A0 = 20000*exp(-0.5 (t - t0)).
 """
@@ -74,22 +75,12 @@ def test_a_late_start_begins_at_the_initial_state(method, times):
 
 @pytest.mark.parametrize("method", METHODS)
 def test_a_late_start_is_the_same_run_shifted(method):
-    """Same seed, same elapsed schedule: the counts are those of a run from
-    t = 0, only the labels move.
-
-    NFsim's clock is elapsed time in both runs, so its counts are identical.
-    RuleMonkey spends the same draws in both, but an event lands at 5 + S in
-    one and at S in the other, and rounding can put one of them on the other
-    side of a sample time. That moves a row by one molecule at most, as
-    RuleMonkey's own clock_origin_test allows.
-    """
+    """Same seed, same elapsed schedule: the counts are identical to a run
+    from t = 0, only the labels move."""
     _, a0 = _run(method, t_span=(0.0, 2.0), n_points=3)
     t5, a5 = _run(method, t_span=(5.0, 7.0), n_points=3)
     np.testing.assert_array_equal(t5, [5.0, 6.0, 7.0])
-    if method == "nf":
-        np.testing.assert_array_equal(a5, a0)
-    else:
-        assert np.abs(a5 - a0).max() <= 1.0
+    np.testing.assert_array_equal(a5, a0)
 
 
 TFUN = DATA / "nfsim" / "tfun_new_format" / "valid_inline_step_time.xml"

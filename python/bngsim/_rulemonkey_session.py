@@ -38,6 +38,12 @@ class RuleMonkeySession:
     at ``t_start`` on it (0 by default), :attr:`current_time` reads it, and a
     rate law that reads ``time()`` reads it. See :meth:`simulate` for a segment
     that does not start at it.
+
+    A model that reads the clock is run only where bngsim can say when its
+    rates change with it (smoothly, at a comparison with a number or a
+    parameter, or through a table); any other is refused with
+    :class:`ModelError` here, when the session is built. See
+    :mod:`bngsim._network_free_checks`.
     """
 
     __slots__ = (
@@ -46,7 +52,7 @@ class RuleMonkeySession:
         "_initialized",
         "_destroyed",
         "_seed",
-        "_clock_readers",
+        "_clock",
     )
 
     def __init__(
@@ -73,13 +79,14 @@ class RuleMonkeySession:
         self._initialized = False
         self._destroyed = False
 
-        from bngsim._network_free_checks import clock_reading_functions
+        from bngsim._network_free_checks import rulemonkey_clock_profile
 
         self._core = RuleMonkeySimulator(self._xml_path)
+        # How this model reads the clock, refused here if RuleMonkey cannot be
+        # trusted with it. The core is told at initialize(), once the
+        # parameters a threshold may name are settled.
+        self._clock = rulemonkey_clock_profile(self._xml_path)
         _warn_engine_flags(self._core, stacklevel=3)
-        # The functions through which this model reads the clock, or None when
-        # that cannot be told. Empty means only elapsed time matters to it.
-        self._clock_readers: list[str] | None = clock_reading_functions(self._xml_path)
         if molecule_limit is not None:
             self._core.set_molecule_limit(int(molecule_limit))
         self._core.set_block_same_complex_binding(bool(block_same_complex_binding))
@@ -131,6 +138,7 @@ class RuleMonkeySession:
 
         self._require_alive()
         used_seed = _resolve_seed(seed)
+        self._tell_core_the_clock()
         try:
             self._core.initialize(used_seed, float(t_start))
         except RuntimeError as e:
@@ -173,7 +181,9 @@ class RuleMonkeySession:
         rates would see times the rows do not carry, so the segment is refused
         with :class:`SimulationError`. Start it at :attr:`current_time`, or
         start the session where the first segment does with
-        ``initialize(seed, t_start=...)``.
+        ``initialize(seed, t_start=...)``. :attr:`current_time` stops short of
+        a segment's end where nothing more can fire or the molecule limit is
+        reached.
 
         ``Result.solver_stats["n_steps"]`` is the session's running event count
         since :meth:`initialize`, not this segment's alone.
@@ -222,33 +232,24 @@ class RuleMonkeySession:
 
         # A model that does not read the clock sees only elapsed time, so a
         # segment off the session's clock is exact under the caller's labels.
-        # One that reads it is not, and neither is one this cannot tell about.
-        elapsed_ok = self._clock_readers == []
-        if not elapsed_ok and not self._core.starts_on_clock(float(t_start)):
-            readers = self._clock_readers
-            what = (
-                "this model reads the clock (functions: "
-                + ", ".join(repr(n) for n in readers)
-                + ")"
-                if readers
-                else "whether this model reads the clock could not be read from its XML"
-            )
+        # One that reads it is not. The core refuses that too; this says which
+        # functions.
+        if self._clock.reads_clock and not self._core.starts_on_clock(float(t_start)):
+            readers = ", ".join(repr(n) for n in self._clock.readers)
             raise SimulationError(
                 f"RuleMonkeySession.simulate: the segment starts at t={float(t_start)!r} but "
-                f"the session's clock reads {self._core.current_time()!r}, and {what}, so its "
-                "rates would see times the rows do not carry. Start the segment at "
-                "session.current_time, or put the seed state where the first segment starts "
-                "with initialize(seed, t_start=...) (issue #1022)."
+                f"the session's clock reads {self._core.current_time()!r}, and this model "
+                f"reads the clock (functions: {readers}), so its rates would see times the "
+                "rows do not carry. Start the segment at session.current_time, or put the "
+                "seed state where the first segment starts with "
+                "initialize(seed, t_start=...). (The clock stops short of a segment's end "
+                "where nothing more can fire or the molecule limit is reached.) "
+                "(issue #1022)"
             )
 
         try:
             core_result = self._core.simulate(
-                float(t_start),
-                float(t_end),
-                int(n_points),
-                timeout_seconds,
-                explicit_times,
-                elapsed_ok,
+                float(t_start), float(t_end), int(n_points), timeout_seconds, explicit_times
             )
         except SimulationTimeout:
             raise
@@ -264,7 +265,8 @@ class RuleMonkeySession:
         Parameters
         ----------
         time : float
-            Target time on the session's clock (:attr:`current_time`).
+            Target time on the session's clock (:attr:`current_time`). A time
+            before the clock is refused: a session does not go back.
         timeout : float, optional
             Wall-clock budget; see :meth:`simulate` for semantics.
         """
@@ -542,6 +544,7 @@ class RuleMonkeySession:
             match this session's model.
         """
         self._require_alive()
+        self._tell_core_the_clock()
         try:
             self._core.load_state(str(path))
         except RuntimeError as e:
@@ -572,6 +575,15 @@ class RuleMonkeySession:
     def current_time(self) -> float:
         self._require_initialized()
         return self._core.current_time()
+
+    def _tell_core_the_clock(self) -> None:
+        """Hand the core how the model reads the clock, with each threshold
+        that names a parameter read at the value the session will run with."""
+        try:
+            breakpoints = self._clock.breakpoints(self._core.get_parameter)
+        except RuntimeError as e:
+            raise SimulationError(f"RuleMonkey could not read a clock threshold: {e}") from e
+        self._core.set_clock_profile(self._clock.reads_clock, breakpoints)
 
     def _require_alive(self) -> None:
         if self._destroyed:

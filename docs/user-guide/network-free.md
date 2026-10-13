@@ -139,21 +139,50 @@ Arrhenius laws, and on local functions.
 
 ### Rate laws that read `time()`
 
-**RuleMonkey runs them** (issue #1022). A rate that reads `time()`, directly,
-through another function, or as a table function indexed by time
-(`tfun(..., time)`), is integrated between events, so a rate such as
-`if(time()>=6, k, 0)`, which is 0 at the start, fires when it turns on.
-`method="rm"` runs on absolute model time, as `method="ode"` and `"ssa"` do:
+**RuleMonkey runs them**, on absolute model time (issue #1022).
 `run(t_span=(5, 7))` starts from the initial state with the clock at 5, and
-`time()` reads 5 to 7.
+`time()` reads 5 to 7, as under `method="ode"` and `"ssa"`. A rate such as
+`if(time()>=6, k, 0)`, which is 0 at the start, fires when it turns on.
 
-**NFsim does not.** It cannot prepare a function that reads `time()` (or a bare
-`time`), so `method="nf"` refuses one when the simulator or session is built,
-naming the function (issue #862). Use `method="rm"` on the same XML, or
-`method="ode"` or `"ssa"` on the generated network. NFsim runs a table function
-indexed by time, but refreshes its value only when a reaction fires. So a rate
-that is 0 at the start, or that changes while nothing fires, is not seen until
-something does, and until then the run is flat (issue #892).
+RuleMonkey integrates such a rate between events in steps of up to a thousandth
+of a call, and a step can lie across a short window in the rate and see none of
+it. So bngsim works out from the XML when the rates change with the clock and
+ends an engine call on each of those instants. A pulse is then seen however
+short it is and however long the run. For that, a function has to read the clock
+in one of these ways:
+
+- **smoothly**: sums, products and whole-number powers of `time()`, parameters
+  and observables, through `exp`, `sin`, `cos`, `tanh`, `sinh`, `cosh`, `atan`,
+  `erf` and `erfc`, divided only by numbers and parameters;
+- **as a switch**: `time()` compared with a number or a parameter, as in
+  `time() >= 6` or `(time() < t_off)`, in an expression that reads the clock no
+  other way;
+- **through a table** indexed by time (`tfun(..., time)`), step or linear;
+- or be built from functions of those kinds.
+
+Anything else that reads the clock is refused with `ModelError` when the
+simulator or session is built, naming the function: `floor(time()/5)`,
+`abs(time() - 6) < w`, a threshold that is an expression (`time() >= 6 + w`;
+give the sum a parameter of its own), a division by the clock, `sqrt(time())`,
+or a switch and a smooth term in one expression. bngsim cannot say where such a
+rate changes, so RuleMonkey could step over it. Use `method="ssa"` or `"ode"`
+on the generated network for those.
+
+Two limits remain, and `ssa` shares both. A smooth rate with a feature much
+narrower than a thousandth of the run, such as a Gaussian pulse 0.01 wide in a
+run of 1000, can be stepped over, because nothing marks where it is. And the
+clock is a double: at t = 1e12 it cannot resolve a wait shorter than 0.0001.
+
+A model that does not read the clock sees only elapsed time, and is run on
+elapsed time whatever `t_span` it is given, exactly as before.
+
+**NFsim does not run them.** It cannot prepare a function that reads `time()`
+(or a bare `time`), so `method="nf"` refuses one when the simulator or session
+is built, naming the function (issue #862). Use `method="rm"` on the same XML,
+or `method="ode"` or `"ssa"` on the generated network. NFsim runs a table
+function indexed by time, but refreshes its value only when a reaction fires. So
+a rate that is 0 at the start, or that changes while nothing fires, is not seen
+until something does, and until then the run is flat (issue #892).
 
 NFsim also keeps a different clock. A `method="nf"` run over `t_span=(5, 7)`
 starts from the initial state and runs for 2 time units with NFsim's clock going
@@ -165,7 +194,7 @@ through a time-indexed table function.
 
 RuleMonkey refuses an XML it cannot honor. Some things it runs and flags
 instead, and bngsim raises each as a `bngsim.RuleMonkeyWarning` when the
-`method="rm"` simulator or the session is built:
+`method="rm"` simulator or the session is built. Among them:
 
 - a rule whose products can never be what it writes, such as
   `A(s~0) + B(a) -> A(s~1).B(a)`, which puts A and B in one complex but bonds
@@ -222,6 +251,11 @@ A session may be advanced in as many calls as needed: a run cut into short
 segments has the same statistics as one call. It does not spend the same random
 numbers, so the two are not identical row for row. `solver_stats["n_steps"]` on
 a session `Result` is the session's running event count, on both backends.
+
+`current_time` is the time of the last thing the engine did. It stops short of a
+segment's end where nothing more can fire, or the molecule limit is reached, and
+the next segment of a model that reads the clock starts there. `step_to(t)`
+takes a time on the session's clock and does not go back.
 
 **PyBNF integration**: When `bngsim` is installed, `method=>"nf"` / `"nfsim"`
 routes through the in-process NFsim backend, and `method=>"rm"` / `"rulemonkey"`

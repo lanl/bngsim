@@ -2774,18 +2774,16 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(
             "simulate",
             [](bngsim::RuleMonkeySimulator &self, double t_start, double t_end, int n_points,
-               double timeout_seconds, const std::vector<double> &sample_times, bool elapsed_ok) {
+               double timeout_seconds, const std::vector<double> &sample_times) {
                 bngsim::Result result;
                 {
                     py::gil_scoped_release release;
-                    result = self.simulate(t_start, t_end, n_points, timeout_seconds, sample_times,
-                                           elapsed_ok);
+                    result = self.simulate(t_start, t_end, n_points, timeout_seconds, sample_times);
                 }
                 return result;
             },
             py::arg("t_start"), py::arg("t_end"), py::arg("n_points"),
             py::arg("timeout_seconds") = 0.0, py::arg("sample_times") = std::vector<double>{},
-            py::arg("elapsed_ok") = false,
             "Simulate from t_start to t_end, capturing n_points snapshots. "
             "timeout_seconds > 0 enables a wall-clock budget polled by upstream "
             "every ~1024 SSA events; on overrun, raises bngsim.SimulationTimeout "
@@ -2793,9 +2791,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "sample_times (non-empty) overrides the uniform grid: the result is "
             "labelled with exactly those sorted times. A segment that starts at "
             "the session's clock runs on it. One that starts elsewhere is refused "
-            "unless elapsed_ok, which runs its span from the current session time "
-            "under the caller's labels and is exact only for a model whose rates do "
-            "not read the clock.")
+            "for a model that reads the clock, and for one that does not it runs "
+            "its span from the current session time under the caller's labels.")
+        .def("set_clock_profile", &bngsim::RuleMonkeySimulator::set_clock_profile,
+             py::arg("reads_clock"), py::arg("breakpoints") = std::vector<double>{},
+             "Say how the model reads the clock: whether it does, and the instants at "
+             "which one of its rates changes with it, where every engine call is cut")
         .def("starts_on_clock", &bngsim::RuleMonkeySimulator::starts_on_clock, py::arg("seg_start"),
              "Whether a segment starting at seg_start starts at the session's clock")
         .def("warnings", &bngsim::RuleMonkeySimulator::warnings,

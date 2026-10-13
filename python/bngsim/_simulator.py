@@ -1030,9 +1030,16 @@ class Simulator:
                     f"method='{method}' requires xml_path=... pointing to a BNG XML file."
                 )
             from bngsim._bngsim_core import RuleMonkeySimulator
+            from bngsim._network_free_checks import rulemonkey_clock_profile
             from bngsim._rulemonkey_session import _warn_engine_flags
 
             self._sim = RuleMonkeySimulator(xml_path)
+            # How the model reads the clock, refused here if RuleMonkey cannot
+            # be trusted with it (issue #1022).
+            profile = rulemonkey_clock_profile(xml_path)
+            self._sim.set_clock_profile(
+                profile.reads_clock, profile.breakpoints(self._sim.get_parameter)
+            )
             _warn_engine_flags(self._sim, stacklevel=3)
             if gml is not None:
                 self._sim.set_molecule_limit(int(gml))

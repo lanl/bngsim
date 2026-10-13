@@ -23,9 +23,26 @@ class RuleMonkeySimulator {
     RuleMonkeySimulator(const RuleMonkeySimulator &) = delete;
     RuleMonkeySimulator &operator=(const RuleMonkeySimulator &) = delete;
 
-    // Stateless run from the parsed XML plus current configuration. The seed
-    // state sits at `times.t_start` on the model's clock, so a rate law that
-    // reads time() reads absolute model time, as ode and ssa do (issue #1022).
+    // How the model reads the clock, worked out by the caller from the XML
+    // (bngsim._network_free_checks.clock_profile). RuleMonkey integrates a rate
+    // that reads the clock in panels of up to a thousandth of a call and can
+    // step over a short window in it, so a clock-reading model is run with
+    // every engine call cut at `breakpoints`, the instants at which one of its
+    // rates changes with the clock. A model that does not read the clock sees
+    // only elapsed time and takes no breakpoints.
+    //
+    // Until this is called the model is taken to read the clock, with no
+    // breakpoints: correct only if its rates are smooth in time.
+    void set_clock_profile(bool reads_clock, std::vector<double> breakpoints = {});
+
+    // Stateless run from the parsed XML plus current configuration, from the
+    // seed state at `times.t_start` (issue #703).
+    //
+    // A model that reads the clock runs on absolute model time: the seed state
+    // sits at `times.t_start` on the model's clock, so a rate law that reads
+    // time() reads the times the rows carry, as ode and ssa do (issue #1022).
+    // A model that does not is run on elapsed time under the same row labels,
+    // which is the same answer on a clock that stays small.
     //
     // @param timeout_seconds  Wall-clock budget in seconds; `<= 0` disables
     //                         it. When the budget is exceeded between SSA
@@ -43,7 +60,7 @@ class RuleMonkeySimulator {
     //
     // A session runs on the model's clock (issue #1022). `initialize` puts the
     // seed state at `t_start` there, `current_time()` reads it, and `step_to`
-    // takes a time on it.
+    // takes a time on it, which may not lie before it.
     void initialize(uint64_t seed = 42, double t_start = 0.0);
     void step_to(double time, double timeout_seconds = 0.0);
     // Whether a segment starting at `seg_start` starts at the session's clock,
@@ -56,16 +73,15 @@ class RuleMonkeySimulator {
     //
     // A segment that starts at the session's clock runs on it, so a rate law
     // that reads time() reads the times the rows carry. A segment that starts
-    // anywhere else is refused, unless `elapsed_ok`: then the session advances
-    // by the segment's span from its current time and the rows are labelled
-    // with the caller's times. That is exact only for a model whose rates do
-    // not read the clock, which the caller vouches for by passing it.
+    // anywhere else is refused for a model that reads the clock. For one that
+    // does not, the session advances by the segment's span from its current
+    // time and the rows are labelled with the caller's times.
     //
     // `solver_stats().n_steps` on a session Result is the session's running
     // event count since initialize(), not this segment's alone, as upstream
     // reports it and as NfsimSimulator's session does.
     Result simulate(double t_start, double t_end, int n_points, double timeout_seconds = 0.0,
-                    const std::vector<double> &sample_times = {}, bool elapsed_ok = false);
+                    const std::vector<double> &sample_times = {});
     void add_molecules(const std::string &molecule_type_name, int count);
     int get_molecule_count(const std::string &molecule_type_name) const;
 

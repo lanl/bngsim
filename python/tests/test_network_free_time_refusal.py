@@ -8,9 +8,9 @@ correctly. A bare `time` is refused too.
 RuleMonkey was refused here as well until 3.11.0, because a total propensity of
 0 was final and A(s~0) -> A(s~1) at f() = if(time()>=6, k, 0) never fired
 (richardposner/RuleMonkey#86). It now runs both a function that reads time() and
-a table function indexed by time (issue #1022); the values are checked in
-test_rulemonkey_model_clock.py. What is left of the scan for RuleMonkey is the
-question a session asks: does this model read the clock at all.
+a table function indexed by time (issue #1022). The values are checked in
+test_rulemonkey_model_clock.py, and how bngsim reads a model's use of the clock
+in test_rulemonkey_clock_profile.py.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import bngsim
 import pytest
 from bngsim import ModelError
 from bngsim._network_free_checks import (
-    clock_reading_functions,
     time_indexed_table_functions,
     time_reading_functions,
 )
@@ -111,50 +110,3 @@ def test_nfsim_still_runs_a_time_indexed_table_function():
 
 def test_a_model_with_no_time_reads_is_not_refused():
     assert time_reading_functions(DATA / "nfsim" / "first_order_switch.xml") == []
-
-
-# ── Whether a model reads the clock at all (what a RuleMonkey session asks) ──
-
-
-def test_the_clock_scan_finds_a_function_that_reads_time():
-    assert clock_reading_functions(XML) == ["f"]
-
-
-def test_the_clock_scan_finds_a_table_function_indexed_by_time():
-    assert clock_reading_functions(TFUN) == ["tfun_rate"]
-
-
-def test_the_clock_scan_finds_nothing_in_a_model_without_a_clock():
-    assert clock_reading_functions(DATA / "nfsim" / "first_order_switch.xml") == []
-    # Table functions indexed by a parameter, an observable or a function.
-    for name in ("valid_inline_parameter.xml", "valid_inline_observable.xml"):
-        assert clock_reading_functions(TFUN.parent / name) == []
-
-
-@pytest.mark.parametrize(
-    ("expression", "reads"),
-    [
-        ("if(time()>=6,k,0)", True),
-        ("k*time", True),  # RuleMonkey's loader counts a bare `time`
-        ("k*t", True),  # and the bare alias `t`
-        ("k*t()", True),
-        ("2*(t+1)", True),
-        ("k*tau", False),
-        ("k*t_half", False),
-        ("k*rate_t", False),
-        ("k*lifetime()", False),
-        ("k*exp(-kt)", False),
-    ],
-)
-def test_the_clock_scan_reads_names_not_substrings(tmp_path, expression, reads):
-    xml = tmp_path / "expr.xml"
-    text = XML.read_text(encoding="utf-8")
-    assert " if(time()>=6,k,0) " in text
-    xml.write_text(text.replace(" if(time()>=6,k,0) ", f" {expression} "), encoding="utf-8")
-    assert clock_reading_functions(xml) == (["f"] if reads else [])
-
-
-def test_the_clock_scan_cannot_tell_for_a_file_it_cannot_parse(tmp_path):
-    """None, not an empty list: "no clock" is a claim, and this has no basis for it."""
-    assert clock_reading_functions(DATA / "nfsim" / "malformed.xml") is None
-    assert clock_reading_functions(tmp_path / "missing.xml") is None

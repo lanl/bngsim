@@ -5,8 +5,13 @@ at the start and turns on later never fired, and bngsim refused every model
 whose rate laws read ``time()`` or a table function indexed by time (issues
 #862 and #892). 3.11.0 integrates such a rate between events
 (richardposner/RuleMonkey#86) and puts the seed state at ``t_start`` on the
-model's clock (richardposner/RuleMonkey#98), so the refusals are gone and a run
-over ``(5, 7)`` reads ``time()`` from 5 to 7, as ode and ssa do.
+model's clock (richardposner/RuleMonkey#98), so a run over ``(5, 7)`` reads
+``time()`` from 5 to 7, as ode and ssa do.
+
+The engine integrates in steps of up to a thousandth of a call and can step
+over a short window in a rate, so bngsim cuts every engine call at the instants
+the rates change at (test_rulemonkey_clock_profile.py is how it finds them). A
+pulse is then seen however short it is and however long the run.
 
 Every expected value here is a closed form. A count is compared within five
 standard deviations of its own distribution, never to one machine's digits, and
@@ -81,6 +86,23 @@ def test_a_rate_that_turns_on_later_fires_when_it_does():
     assert a[-1] < 0.2 * N  # 2707 expected: the rate did turn on
     # The function column reads the clock at each row, not the last event's time.
     np.testing.assert_array_equal(np.asarray(r.expressions["f"]), np.where(t >= 6.0, K, 0.0))
+
+
+def test_the_switch_is_placed_where_it_is_written():
+    """The mean over 200 seeds, to a standard error of 5: a rate 0.5% off, or a
+    switch placed 0.01 late, would show at t = 7 and t = 8."""
+    sim = bngsim.Simulator(_model(), method="rm", xml_path=str(SWITCH))
+    seeds = range(1, 201)
+    runs = np.array(
+        [
+            np.asarray(sim.run(t_span=(5.0, 8.0), n_points=4, seed=s).observables["A0"])
+            for s in seeds
+        ]
+    )
+    t = np.array([5.0, 6.0, 7.0, 8.0])
+    mean, sd = _binomial(np.exp(-K * np.clip(t - 6.0, 0.0, None)))
+    np.testing.assert_array_equal(runs[:, :2], N)
+    _within(runs.mean(axis=0), mean, sd / np.sqrt(len(seeds)))
 
 
 @pytest.mark.parametrize(
@@ -305,19 +327,9 @@ def test_a_segment_off_the_clock_still_runs_as_elapsed_time_without_a_clock(time
     _within(_a0(again)[1:], mean, sd)
 
 
-def test_a_model_this_cannot_read_is_treated_as_reading_the_clock(monkeypatch):
-    """If the XML cannot be scanned here, an off-clock segment is refused rather
-    than run on the guess that the model has no clock."""
-    monkeypatch.setattr("bngsim._network_free_checks.clock_reading_functions", lambda _path: None)
-    with bngsim.RuleMonkeySession(str(PLAIN)) as s:
-        s.initialize(seed=3)
-        with pytest.raises(SimulationError, match="could not be read from its XML"):
-            s.simulate(5.0, 7.0, 3)
-        assert _a0(s.simulate(0.0, 1.0, 2))[0] == N
-
-
-def test_the_core_refuses_an_off_clock_segment_unless_told_it_is_safe():
-    """The C++ adapter does not take the guess either: elapsed time is opt-in."""
+def test_the_core_takes_a_model_to_read_the_clock_until_told_otherwise():
+    """The C++ adapter does not guess: elapsed time is for a model declared not
+    to read the clock."""
     from bngsim._bngsim_core import RuleMonkeySimulator
 
     core = RuleMonkeySimulator(str(PLAIN))
@@ -326,9 +338,13 @@ def test_the_core_refuses_an_off_clock_segment_unless_told_it_is_safe():
     with pytest.raises(RuntimeError, match=r"segment starts at t=5 .* clock reads 0"):
         core.simulate(5.0, 7.0, 3)
     with pytest.raises(RuntimeError, match="segment starts at t=5"):
-        core.simulate(0.0, 0.0, 0, 0.0, [5.0, 7.0])
+        core.simulate(0.0, 0.0, 2, 0.0, [5.0, 7.0])
     assert core.current_time() == 0.0
-    shifted = core.simulate(5.0, 7.0, 3, 0.0, [], True)
+    core.destroy_session()
+
+    core.set_clock_profile(False)
+    core.initialize(3)
+    shifted = core.simulate(5.0, 7.0, 3)
     assert core.current_time() == 2.0
     assert list(shifted.time) == [5.0, 6.0, 7.0]
     core.destroy_session()
@@ -379,8 +395,8 @@ def test_initialize_refuses_a_start_that_is_not_a_time():
 def test_a_session_advanced_in_short_calls_keeps_firing(advance):
     """A0(2) = 20000*exp(-1) = 7358 however the two time units are cut. 3.10.1
     rolled the generator back at the end of every call and spent the same draw
-    again, so 2000 calls of 0.001 read 15636 here, and 200000 calls stayed at
-    20000."""
+    again, so 2000 calls of 0.001 read about 15600 (the mean of 20 seeds; 17187
+    on this one), and 200000 calls stayed at 20000."""
     grid = np.linspace(0.0, 2.0, 2001)
     with bngsim.RuleMonkeySession(str(PLAIN)) as s:
         s.initialize(seed=7)
@@ -405,3 +421,290 @@ def test_a_session_result_counts_the_events_of_the_whole_session():
     assert first.solver_stats["n_steps"] == N - _a0(first)[-1]
     assert second.solver_stats["n_steps"] == N - _a0(second)[-1]
     assert second.solver_stats["n_steps"] > first.solver_stats["n_steps"] > 0
+
+
+# ── A window shorter than the engine's steps ──────────────────────────────
+#
+# A(s~0) -> A(s~1) at a rate that is 1/w for a stretch w starting at t = 6 and
+# 0 otherwise. The pulse has area 1 whatever w is, so A0 after it is 20000/e.
+# RuleMonkey integrates a clock-reading rate in panels of up to a thousandth of
+# a call and accepts a panel whose nodes all read 0, so without the cuts a pulse
+# 0.1 wide fired nothing in a call of 1000 and A0 stayed at 20000, with no error.
+
+PULSE_START = 6.0
+
+
+def _escaped(expression: str) -> str:
+    return expression.replace("&", "&amp;").replace("<", "&lt;")
+
+
+def _pulse_expression(tmp_path, width):
+    """The window written with numbers: if(time()>=6, if(time()<6+w, 1/w, 0), 0)."""
+    text = SWITCH.read_text(encoding="utf-8")
+    expression = f"if(time()>=6, if(time()<{PULSE_START + width!r}, {1.0 / width!r}, 0), 0)"
+    xml = tmp_path / f"pulse_expression_{width}.xml"
+    xml.write_text(text.replace(" if(time()>=6,k,0) ", f" {_escaped(expression)} "), "utf-8")
+    return xml
+
+
+def _pulse_parameters(tmp_path, width):
+    """The window written with parameters, in the parentheses BNG2.pl writes."""
+    text = SWITCH.read_text(encoding="utf-8")
+    declared = (
+        f'      <Parameter id="t_on" type="Constant" value="{PULSE_START!r}"/>\n'
+        f'      <Parameter id="t_off" type="Constant" value="{PULSE_START + width!r}"/>\n'
+        f'      <Parameter id="height" type="Constant" value="{1.0 / width!r}"/>\n'
+    )
+    text = text.replace("    </ListOfParameters>\n", declared + "    </ListOfParameters>\n")
+    expression = "if((time()>=t_on),if((time()<t_off),height,0),0)"
+    xml = tmp_path / f"pulse_parameters_{width}.xml"
+    xml.write_text(text.replace(" if(time()>=6,k,0) ", f" {_escaped(expression)} "), "utf-8")
+    return xml
+
+
+def _pulse_table(tmp_path, width):
+    """The window as a step table indexed by time: 0, then 1/w from 6, then 0."""
+    text = SWITCH.read_text(encoding="utf-8")
+    function = text[text.index('      <Function id="f">') : text.index("    </ListOfFunctions>")]
+    table = (
+        f'      <Function id="f" type="TFUN" mode="inline" ctrName="time" '
+        f'xData="0,{PULSE_START!r},{PULSE_START + width!r}" yData="0,{1.0 / width!r},0" '
+        'method="step">\n        <Expression>__TFUN_VAL__</Expression>\n      </Function>\n'
+    )
+    xml = tmp_path / f"pulse_table_{width}.xml"
+    xml.write_text(text.replace(function, table), encoding="utf-8")
+    return xml
+
+
+PULSES = [_pulse_expression, _pulse_parameters, _pulse_table]
+AFTER_PULSE = _binomial(np.exp(-1.0))
+
+
+@pytest.mark.parametrize("build", PULSES)
+@pytest.mark.parametrize("width", [0.5, 0.02, 1e-5])
+@pytest.mark.parametrize("t_end", [10.0, 1000.0, 1e5])
+def test_a_pulse_is_seen_however_short_and_however_long_the_run(tmp_path, build, width, t_end):
+    xml = build(tmp_path, width)
+    r = bngsim.Simulator(_model(), method="rm", xml_path=str(xml)).run(
+        t_span=(0.0, t_end), n_points=3, seed=3
+    )
+    a = np.asarray(r.observables["A0"])
+    assert a[0] == N
+    _within(a[-1:], *AFTER_PULSE)
+    # One event per molecule that left A(s~0), across every stretch of the run.
+    assert r.solver_stats["n_steps"] == N - a[-1]
+
+
+@pytest.mark.parametrize("build", PULSES)
+def test_rows_on_and_around_a_pulse(tmp_path, build):
+    """Output times on the instants the rate changes at, and inside the pulse.
+    Halfway through, half the hazard is spent: 20000*exp(-0.5) = 12131."""
+    xml = build(tmp_path, 0.02)
+    r = bngsim.Simulator(_model(), method="rm", xml_path=str(xml)).run(
+        sample_times=[0.0, 5.0, 6.0, 6.01, 6.02, 500.0], seed=9
+    )
+    np.testing.assert_array_equal(np.asarray(r.time), [0.0, 5.0, 6.0, 6.01, 6.02, 500.0])
+    a = np.asarray(r.observables["A0"])
+    np.testing.assert_array_equal(a[:3], N)
+    _within(a[3:4], *_binomial(np.exp(-0.5)))
+    _within(a[4:], *AFTER_PULSE)
+    assert a[4] == a[5]  # nothing fires after the pulse
+    # The function column reads the branch that starts at each row's instant.
+    np.testing.assert_allclose(np.asarray(r.expressions["f"]), [0, 0, 50, 50, 0, 0], rtol=1e-12)
+
+
+@pytest.mark.parametrize("build", PULSES)
+@pytest.mark.parametrize("cut", ["one call", "two calls", "step_to"])
+def test_a_session_sees_the_pulse_however_it_is_cut(tmp_path, build, cut):
+    """One simulate(0, 1000) read 20000; cut at 10 it read 7319. The answer no
+    longer depends on where the calls end."""
+    xml = build(tmp_path, 0.02)
+    with bngsim.RuleMonkeySession(str(xml)) as s:
+        s.initialize(seed=4)
+        if cut == "one call":
+            final = _a0(s.simulate(0.0, 1000.0, 3))[-1]
+        elif cut == "two calls":
+            s.simulate(0.0, 500.0, 2)
+            final = _a0(s.simulate(sample_times=[500.0, 1000.0]))[-1]
+        else:
+            s.step_to(1000.0)
+            final = dict(zip(s.get_observable_names(), s.get_observable_values(), strict=True))[
+                "A0"
+            ]
+        assert s.current_time == 1000.0
+    _within(np.array([final]), *AFTER_PULSE)
+
+
+def test_a_parameter_threshold_follows_an_override(tmp_path):
+    """The pulse moved to t = 20 by set_param is cut at 20: a threshold that
+    names a parameter is read when the session starts, not when the XML is."""
+    xml = _pulse_parameters(tmp_path, 0.02)
+    with bngsim.RuleMonkeySession(str(xml)) as s:
+        s.set_param("t_on", 20.0)
+        s.set_param("t_off", 20.02)
+        s.initialize(seed=4)
+        r = s.simulate(sample_times=[0.0, 19.0, 20.01, 1000.0])
+    a = _a0(r)
+    np.testing.assert_array_equal(a[:2], N)
+    _within(a[2:3], *_binomial(np.exp(-0.5)))
+    _within(a[3:], *AFTER_PULSE)
+
+
+def test_a_one_shot_run_across_a_switch_leaves_a_live_session_alone():
+    """Cutting a run at a threshold takes a session of the run's own. The core
+    refuses to take one over rather than end it."""
+    from bngsim._bngsim_core import RuleMonkeySimulator, TimeSpec
+
+    core = RuleMonkeySimulator(str(SWITCH))
+    core.set_clock_profile(True, [6.0])
+    ts = TimeSpec()
+    ts.t_start, ts.t_end, ts.n_points = 0.0, 10.0, 3
+    core.initialize(1)
+    with pytest.raises(RuntimeError, match="one is already active"):
+        core.run(ts, 1)
+    assert core.has_session() and core.current_time() == 0.0
+    core.destroy_session()
+    assert list(core.run(ts, 1).time) == [0.0, 5.0, 10.0]
+    assert not core.has_session()
+
+
+def test_a_timeout_inside_a_cut_run_is_a_timeout(tmp_path):
+    from bngsim import SimulationTimeout
+
+    xml = _pulse_expression(tmp_path, 0.02)
+    sim = bngsim.Simulator(_model(), method="rm", xml_path=str(xml))
+    with pytest.raises(SimulationTimeout):
+        sim.run(t_span=(0.0, 1000.0), n_points=3, seed=3, timeout=1e-9)
+    # And the simulator runs again afterwards.
+    _within(
+        np.asarray(sim.run(t_span=(0.0, 10.0), n_points=3, seed=3).observables["A0"])[-1:],
+        *AFTER_PULSE,
+    )
+
+
+# ── A model without a clock keeps a small clock ───────────────────────────
+
+
+@pytest.mark.parametrize("t0", [5.0, 1e9, 1e12, 1e13])
+def test_a_late_start_without_a_clock_is_the_run_from_zero(t0):
+    """Only elapsed time matters to this model, so it is run on elapsed time and
+    is the run from 0, count for count, however late it starts. On the engine's
+    absolute clock a start at 1e12 read 20000 at the second row (12131
+    expected): the clock there cannot resolve the waits between events."""
+    _, _, from_zero = _run(PLAIN, t_span=(0.0, 2.0), n_points=3)
+    _, t, late = _run(PLAIN, t_span=(t0, t0 + 2.0), n_points=3)
+    assert t[0] == t0 and t[-1] == t0 + 2.0
+    np.testing.assert_array_equal(late, from_zero)
+
+
+def test_output_times_closer_than_the_engine_tells_apart_are_still_read():
+    """A model that reads the clock runs on absolute time, and the engine takes
+    an output time within 1e-12 of t_end of a call's start for the start. At
+    t = 1e9 that is 0.001, in which this model fires 10 of its 20000: the row
+    read 20000. Each such row is now the first row of a call of its own."""
+    t = np.array([1e9, 1e9 + 1e-3, 1e9 + 2e-3])
+    mean, sd = _binomial(np.exp(-K * (t - 1e9)))  # the switch has been on since t = 6
+    seeds = range(1, 101)
+    sim = bngsim.Simulator(_model(), method="rm", xml_path=str(SWITCH))
+    runs = np.array(
+        [np.asarray(sim.run(sample_times=list(t), seed=s).observables["A0"]) for s in seeds]
+    )
+    np.testing.assert_array_equal(runs[:, 0], N)
+    _within(runs.mean(axis=0), mean, sd / np.sqrt(len(seeds)))
+    assert runs.mean(axis=0)[1] < N - 5.0  # 19990 expected, not the start state
+
+    with bngsim.RuleMonkeySession(str(SWITCH)) as s:
+        s.initialize(seed=1, t_start=1e9)
+        session = _a0(s.simulate(sample_times=list(t)))
+        assert s.current_time == t[-1]
+    np.testing.assert_array_equal(session, runs[0])
+
+
+# ── An engine that stops before the end of a call ─────────────────────────
+
+
+def _printed_switch(tmp_path):
+    """The plain decay at k, plus a function that is only printed and reads the
+    clock: g() = if(time()>=50, 1, 0). No rate reads the clock, so the engine
+    stops for good once every A(s~0) has gone, near t = 21."""
+    text = SWITCH.read_text(encoding="utf-8")
+    assert text.count(" if(time()>=6,k,0) ") == 1 and text.count("      </Function>\n") == 1
+    text = text.replace(" if(time()>=6,k,0) ", " k ")
+    printed = (
+        '      <Function id="g">\n        <Expression> if(time()>=50,1,0) </Expression>\n'
+        "      </Function>\n"
+    )
+    xml = tmp_path / "printed_switch.xml"
+    xml.write_text(text.replace("      </Function>\n", "      </Function>\n" + printed), "utf-8")
+    return xml
+
+
+def test_a_run_that_stops_firing_before_a_cut_still_returns_every_row(tmp_path):
+    """The run is cut at t = 50 for g, and the engine has nothing left to fire
+    long before. The rows after that hold the state it stopped in, and g reads
+    each row's own time."""
+    xml = _printed_switch(tmp_path)
+    times = [0.0, 1.0, 40.0, 50.0, 60.0, 100.0]
+    r = bngsim.Simulator(_model(), method="rm", xml_path=str(xml)).run(sample_times=times, seed=2)
+    np.testing.assert_array_equal(np.asarray(r.time), times)
+    a = np.asarray(r.observables["A0"])
+    _within(a[1:2], *_binomial(np.exp(-K * 1.0)))
+    np.testing.assert_array_equal(a[2:], 0.0)
+    np.testing.assert_array_equal(np.asarray(r.expressions["g"]), [0, 0, 0, 1, 1, 1])
+    assert r.solver_stats["n_steps"] == N
+
+
+def test_a_session_clock_stays_where_the_engine_stopped(tmp_path):
+    """As after any RuleMonkey call that runs out of things to fire: the clock
+    is the time of the last event, and the next segment starts there."""
+    xml = _printed_switch(tmp_path)
+    with bngsim.RuleMonkeySession(str(xml)) as s:
+        s.initialize(seed=2)
+        first = s.simulate(sample_times=[0.0, 40.0, 60.0, 100.0])
+        stopped = s.current_time
+        assert 5.0 < stopped < 40.0
+        with pytest.raises(SimulationError, match="clock stops short of a segment's end"):
+            s.simulate(100.0, 200.0, 3)
+        second = s.simulate(sample_times=[stopped, 150.0])
+    np.testing.assert_array_equal(_a0(first)[1:], 0.0)
+    np.testing.assert_array_equal(np.asarray(first.expressions["g"]), [0, 0, 1, 1])
+    np.testing.assert_array_equal(_a0(second), 0.0)
+    np.testing.assert_array_equal(np.asarray(second.expressions["g"]), [0, 1])
+
+
+# ── Calls that used to go wrong quietly ───────────────────────────────────
+
+
+def test_a_session_segment_of_one_point_is_refused_before_it_runs():
+    """It raised "mismatched time labels" after the session had advanced."""
+    with bngsim.RuleMonkeySession(str(PLAIN)) as s:
+        s.initialize(seed=1)
+        with pytest.raises(SimulationError, match="n_points must be at least 2"):
+            s.simulate(0.0, 1.0, 1)
+        assert s.current_time == 0.0
+        assert _a0(s.simulate(0.0, 1.0, 2))[0] == N
+
+
+def test_step_to_does_not_go_back():
+    """A target before the clock ran nothing and said nothing."""
+    with bngsim.RuleMonkeySession(str(PLAIN)) as s:
+        s.initialize(seed=1)
+        s.step_to(2.0)
+        with pytest.raises(SimulationError, match="earlier than the session's clock"):
+            s.step_to(1.0)
+        s.step_to(2.0)  # where it already is: nothing to do
+        assert s.current_time == 2.0
+
+
+@pytest.mark.parametrize(
+    "times",
+    [
+        {"t_span": (0.0, float("inf")), "n_points": 3},
+        {"t_span": (float("nan"), 1.0), "n_points": 3},
+    ],
+)
+def test_a_run_over_times_that_are_not_numbers_is_refused(times):
+    """t_span=(0, inf) returned rows at [nan, inf, inf] holding zeros."""
+    sim = bngsim.Simulator(_model(), method="rm", xml_path=str(PLAIN))
+    with pytest.raises((SimulationError, ValueError)):
+        sim.run(seed=1, **times)
