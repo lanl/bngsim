@@ -34,6 +34,10 @@ public:
 };
 
 struct TimeSpec {
+  // Where the seed state sits on the model's clock (issue #98).  run()
+  // records the seed state as its first row and spans `t_end - t_start`,
+  // and a rate law that reads time() reads that clock.  For a live session
+  // it is the segment's start, which must equal `current_time()`.
   double t_start = 0.0;
   double t_end = 0.0;
   int n_points = 0;
@@ -96,7 +100,11 @@ struct Result {
   std::vector<std::vector<double>> observable_data;
   std::vector<std::string> function_names;
   std::vector<std::vector<double>> function_data;
-  int64_t event_count = 0; // SSA events fired during this run.
+  // SSA events fired since the session began (at run() or initialize()),
+  // not in this call alone: a session advanced by several simulate() calls
+  // reports a running total, which save_state / load_state carry, so the
+  // events in one call are the difference of consecutive results.
+  int64_t event_count = 0;
 
   std::size_t n_times() const noexcept { return time.size(); }
   std::size_t n_observables() const noexcept { return observable_names.size(); }

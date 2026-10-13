@@ -43,6 +43,14 @@ public:
   // Executes a fresh simulation from the parsed model plus the current
   // instance-local parameter overrides and molecule limit.
   //
+  // The seed state sits at `ts.t_start` on the model's clock: the first row
+  // records it, and the run spans `ts.t_end - ts.t_start`.  A rate law that
+  // reads time() reads that clock, absolute model time, as BNG's network
+  // simulate does with a nonzero t_start (issue #98).  Before #98, a
+  // nonzero `t_start` started the clock at 0 and simulated [0, t_start]
+  // before the first row.  Throws std::runtime_error if `ts.t_end` is
+  // earlier than `ts.t_start`.
+  //
   // Each call seeds a new RNG from `seed`; repeated calls with the same XML,
   // method, TimeSpec, overrides, molecule limit, and seed are reproducible
   // within the same runtime build. Prior successful or failed runs do not
@@ -61,11 +69,12 @@ public:
   // RM equivalent of BNG's `parameter_scan` action.
   //
   // With `spec.reset_conc == true` (the default) every point is an
-  // independent run from the model's seed species — the dose-response case.
-  // With `reset_conc == false` each point continues from the previous
-  // point's final molecular state (BNG `reset_conc=>0`); the sweep is then
-  // one continuous-time trajectory, so time-dependent rate laws see a
-  // cumulative clock rather than a per-point reset.
+  // independent run from the model's seed species at `per_point.t_start` —
+  // the dose-response case.  With `reset_conc == false` each point
+  // continues from the previous point's final molecular state (BNG
+  // `reset_conc=>0`); the sweep is then one continuous-time trajectory from
+  // `per_point.t_start`, so time-dependent rate laws see a cumulative clock
+  // rather than a per-point reset.
   //
   // Every point uses the same `seed`: as in BNG, the seed is a run-level
   // setting, not per-point, so the points share a random stream and differ
@@ -91,8 +100,14 @@ public:
   BifurcateResult bifurcate(const ScanSpec& spec, std::uint64_t seed = 42);
 
   // Creates or resets a live session from the parsed model plus the current
-  // stored parameter overrides and molecule limit.
-  void initialize(std::uint64_t seed = 42);
+  // stored parameter overrides and molecule limit.  The seed state sits at
+  // `t_start` on the model's clock, so `current_time()` reads `t_start` and
+  // a rate law that reads time() starts from its value there (issue #98);
+  // the first `simulate()` then takes `t_start` as its segment start.
+  //
+  // Throws std::runtime_error if `t_start` is not finite.  A throw leaves no
+  // session active.
+  void initialize(std::uint64_t seed = 42, double t_start = 0.0);
 
   // Advances the active session to absolute logical time `time` and
   // discards the sampled trajectory.  Internally this still records

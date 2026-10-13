@@ -69,6 +69,29 @@ remaining unsupported shapes are a hard refusal rather than a warning.
 `--ignore-unsupported` runs the model anyway, with the rule still inert —
 useful only to confirm the rest of the model is unaffected.
 
+### "WARN: … Rule '…' writes molecules … RM never fires it"
+
+The rule's right-hand side can never be true, so it does nothing, in RM as
+in BioNetGen, which generates no reaction for it (issue #105). Two shapes:
+
+- **"writes molecules into one product pattern that nothing in the rule
+  brings into one complex"** — `A(s~0) + B(a) -> A(s~1).B(a)`. The `.`
+  says A and B end up in one complex, but they start in different ones and
+  the rule adds no bond between them. The same holds when the rule creates
+  one of them unbonded: `A(s~0) -> A(s~1).B(a)`. You almost certainly meant
+  a bond (`A(s~1,b!1).B(a!1)`) or a `+`.
+- **"writes molecules that start in one complex into different product
+  patterns"** — `A(s~0).B(t~0) -> A(s~1) + B(t~1)` on an A bonded to a B.
+  The `+` says they come apart, but the rule deletes nothing that could
+  part them. Write the bond and delete it (`A(s~0,b!1).B(t~0,a!1) ->
+  A(s~1,b) + B(t~1,a)`), or a `.`. With `-no-bscb` the `+` between product
+  patterns is not tested, and this rule fires.
+
+This is a warning, unlike the n-ary refusal above. There RM would silently
+do something BioNetGen does not; here it does exactly what BioNetGen does,
+and the model runs as BioNetGen runs it. The warning is there because the
+rule is almost surely a mistake.
+
 ### "Cannot resolve value '...'"
 
 The XML referenced a parameter or expression the loader couldn't

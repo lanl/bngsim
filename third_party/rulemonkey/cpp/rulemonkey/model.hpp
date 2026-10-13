@@ -99,6 +99,18 @@ struct Pattern {
       base += static_cast<int>(molecules[i].components.size());
     return base + comp_idx;
   }
+
+  // The molecule that holds flat component `flat`, or -1 if none does.
+  int mol_of_flat(int flat) const {
+    int base = 0;
+    for (int mi = 0; mi < static_cast<int>(molecules.size()); ++mi) {
+      int const nc = static_cast<int>(molecules[mi].components.size());
+      if (flat >= base && flat < base + nc)
+        return mi;
+      base += nc;
+    }
+    return -1;
+  }
 };
 
 // ---- Graph rewrite operations ----------------------------------------------
@@ -143,9 +155,29 @@ struct RuleOp {
   // enforces the `.` (same-complex) constraint on the product side.
   bool ensure_connected = false;
 
+  // For DeleteBond: true when the rule's map sends the bond's two molecules
+  // into different product patterns.  The `+` between them then requires
+  // the bond break to leave them in different complexes, once every
+  // operation of the rule applies (issue #102).  Set by load_model from
+  // reactant_to_product_map and product_pattern_starts.
+  bool separates_products = false;
+
   // For DeleteMolecule: which reactant-pattern molecule to delete
   int delete_pattern_mol_idx = -1;
-  bool delete_connected = false; // true = delete entire species; false = molecule-only
+  // True for a whole-species delete: BNG2 names the ReactantPattern, not a
+  // molecule, when the rule drops every molecule of the pattern without the
+  // DeleteMolecules keyword (`A() -> 0`), and the matched molecule's whole
+  // complex goes.  delete_pattern_mol_idx is then the pattern's first
+  // molecule, which only anchors the complex.
+  bool delete_connected = false;
+  // A molecule delete without the keyword (BNG2 writes DeleteMolecules="0"
+  // on a molecule id when the rule keeps the rest of the pattern,
+  // `C(x!1).D(x!1) -> D(x)`).  Only that molecule goes, and BNG2 lets the
+  // reaction happen only if what is left forms exactly the rule's product
+  // patterns.  The keyword allows extra pieces holding none of the
+  // molecules the rule names, but the `+` and `.` between the ones it does
+  // name still hold (issue #104).
+  bool delete_requires_product_count = false;
 };
 
 // ---- Rate law --------------------------------------------------------------
@@ -185,6 +217,16 @@ struct RateLaw {
   std::string function_name_b; // second factor's local function
   bool is_local_b = false;
   bool local_arg_is_molecule_b = false;
+
+  // Reactant-pattern molecule a per-molecule factor is evaluated at — the
+  // molecule the BNGL tag sits on (`A(b!1).B(a!1)%x`) — for the A-side and
+  // B-side factor respectively.  -1 when that factor is complex-wide, the
+  // DOR1 unity constant, or absent.  `local_arg_is_molecule` cannot answer
+  // this: the DOR1 normalization below sets it on the unity side too.  The
+  // engine seeds the tagged slot here, because it evaluates a per-molecule
+  // factor at the seed (issue #88).
+  int local_tag_mol = -1;
+  int local_tag_mol_b = -1;
 
   // NFsim's DOR1: a *bimolecular* rule carrying a single local function, with
   // only one of the two reactants tagged (`S(s~0) + E()%x -> ...  lf(x)`).
@@ -227,6 +269,16 @@ struct RateLaw {
   bool global_dep_time = false;
   bool global_dep_opaque = false;
 
+  // Set when the propensity can move with the clock alone, with no event in
+  // between (issue #86): the rate law's function chain reads `time` —
+  // directly, through another function, or as a TFUN counter — or reads
+  // something the walk could not name.  Resolved for every Function and
+  // FunctionProduct rate law, global or local, unlike the three fields
+  // above.  The engine integrates such a propensity over time to place the
+  // next event, where holding it at its value at the last event would be
+  // exact only for a rate that does not move between events.
+  bool rate_tracks_time = false;
+
   // Largest N for which this rate law's function chain reads the
   // `reactant_N()` placeholder described on GlobalFunction, and 0 when it
   // reads none — which is every rate law that does not use the construct.
@@ -268,20 +320,62 @@ struct Rule {
   // Reactant-to-product component map:
   // reactant flat comp index -> product flat comp index (-1 if deleted)
   std::vector<int> reactant_to_product_map;
+  // The same map for molecules: reactant-pattern molecule -> product-pattern
+  // molecule, -1 if the rule deletes it.
+  std::vector<int> reactant_mol_to_product_mol;
 
   // True if both reactant patterns bind the same molecule type on the same
   // component type (e.g., A(a) + A(a) → A(a!1).A(a!1)).
   bool same_components = false;
 
-  // Number of separate ProductPatterns in the XML.  If > 1 for a
-  // unimolecular rule, a DeleteBond in the rule body must actually
-  // separate the molecules into different complexes (the `+` between
-  // product patterns requires distinct products).  When this is the
-  // case and `model.block_same_complex_binding` is set, the engine
-  // runs a BFS check at fire time and rejects events that leave the
-  // molecules still connected (e.g., breaking one bond in a ring).
+  // Number of separate ProductPatterns in the XML.  A DeleteBond whose two
+  // molecules the map sends into different product patterns
+  // (RuleOp::separates_products) must actually separate them: the `+`
+  // between product patterns requires distinct products.  When
+  // `model.block_same_complex_binding` is set, the engine checks this at
+  // fire time, whatever the rule's molecularity, and rejects an event that
+  // leaves the molecules still connected (e.g., breaking one bond in a
+  // ring).  Shapes that bond-by-bond check cannot decide are listed under
+  // checks_product_split below.
   int n_product_patterns = 0;
   std::vector<int> product_pattern_starts; // analogous to reactant_pattern_starts
+
+  // The product pattern that product-pattern molecule `product_mol` is in.
+  int product_pattern_of_mol(int product_mol) const {
+    int pattern = -1;
+    if (product_mol < 0)
+      return pattern;
+    for (int pi = 0; pi < static_cast<int>(product_pattern_starts.size()); ++pi)
+      if (product_pattern_starts[pi] <= product_mol)
+        pattern = pi;
+    return pattern;
+  }
+
+  // What the `+` and `.` between product patterns can do to this rule,
+  // settled at load from the map and the operations (classify_product_split
+  // in simulator.cpp, issues #104 and #105).  BNG2 applies every operation,
+  // then splits the result into connected components and rejects the
+  // reaction if one component holds molecules of two product patterns (the
+  // `+`) or one product pattern lies in two components (the `.`).
+  //
+  // A product pattern whose molecules nothing can bring into one complex:
+  // they start in different reactant patterns, or the rule creates one,
+  // and no bond the rule adds joins them (`A(s~0) + B(a) -> A(s~1).B(a)`).
+  // BNG2 generates no reaction for it, and the rule never fires.
+  bool products_never_join = false;
+  // Molecules the rule writes into different product patterns that start
+  // in one complex, where the rule deletes no bond and no molecule that
+  // could part them (`A(s~0).B(t~0) -> A(s~1) + B(t~1)`).  BNG2 generates
+  // no reaction for it; RM never fires it while block_same_complex_binding,
+  // which enforces the `+`, is on.
+  bool products_never_split = false;
+  // The checks made bond by bond (RuleOp::separates_products and
+  // ensure_connected) cannot decide this rule's `+` and `.`, so the engine
+  // splits the post-reaction graph the way BNG2 does.  Set for a molecule
+  // deleted out of a complex, for a reactant pattern its own bonds do not
+  // hold together, and for one the rule's deleted bonds cut into three or
+  // more pieces, whenever a `+` or `.` could then fail.
+  bool checks_product_split = false;
 
   // exclude_reactants / include_reactants / exclude_products / include_products
   // Each constraint applies to one reactant or product pattern (by index).
@@ -321,12 +415,23 @@ struct Rule {
 // treat every pattern as transformed.
 struct ReactantTransforms {
   std::vector<char> transformed; // one entry per reactant pattern, 1 = touched
+  // One entry per reactant pattern, 1 = the rule deletes its whole species
+  // (RuleOp::delete_connected).  Such a pattern is transformed, but BNG2
+  // makes the SPECIES its reaction center (RxnRule::find_reaction_center), so
+  // every match of the pattern into one species is the same reaction: it is
+  // counted once per matching complex, like context, and like context it
+  // contributes 1 to the symmetry factor, all of its automorphisms fixing the
+  // species.
+  std::vector<char> species_deleted;
   bool resolvable = false;
 
   // Convenience for the two-slot callers.  Answers "transformed" for any
   // slot the derivation could not resolve or that does not exist.
   bool is_context(size_t slot) const {
     return resolvable && slot < transformed.size() && transformed[slot] == 0;
+  }
+  bool deletes_species(size_t slot) const {
+    return resolvable && slot < species_deleted.size() && species_deleted[slot] != 0;
   }
 };
 
@@ -337,6 +442,7 @@ inline ReactantTransforms reactant_pattern_transforms(const Rule& rule) {
   if (n_rp <= 0)
     return out;
   out.transformed.assign(static_cast<size_t>(n_rp), 0);
+  out.species_deleted.assign(static_cast<size_t>(n_rp), 0);
   out.resolvable = true;
 
   // pattern molecule index -> reactant pattern index
@@ -393,10 +499,13 @@ inline ReactantTransforms reactant_pattern_transforms(const Rule& rule) {
     case OpType::DeleteMolecule: {
       int const mi = op.delete_pattern_mol_idx;
       int const p = (mi >= 0) ? rp_of_mol(mi) : -1;
-      if (p < 0)
+      if (p < 0) {
         out.resolvable = false;
-      else
+      } else {
         out.transformed[static_cast<size_t>(p)] = 1;
+        if (op.delete_connected)
+          out.species_deleted[static_cast<size_t>(p)] = 1;
+      }
       break;
     }
     case OpType::AddMolecule:

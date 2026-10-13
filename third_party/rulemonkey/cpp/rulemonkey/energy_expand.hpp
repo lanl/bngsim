@@ -11,7 +11,9 @@
 // Key insight (Sekar Corollary 3.3-43): only energy-pattern embeddings
 // that overlap the reaction center contribute to ΔG, so each energy rule
 // expands into a *finite* set of conventional rules with pre-computed
-// Arrhenius rate constants — no runtime energy computation.  RuleMonkey
+// Arrhenius rate constants — no runtime energy computation.  The context
+// expansion is NFsim's; the rates are BioNetGen's (arrhenius_rate), which
+// apply no RT and give phi to the rule as written (issue #107).  RuleMonkey
 // already runs conventional rules with constant rates, so eBNGL is a pure
 // preprocessing step at model load; the SSA loop is untouched.
 //
@@ -70,49 +72,48 @@ struct EnergyContextConstraint {
   bool must_be_bound = false;
 };
 
-// One expanded rule variant: a distinct combination of context constraints,
-// its ΔG, and the pre-computed forward (binding) and reverse (unbinding)
-// Arrhenius rate constants.  The caller builds one binding rule (fwd_rate)
-// and one unbinding rule (rev_rate) per variant.
+// One expanded rule variant: a distinct combination of context constraints
+// and the ΔG of making the reaction-center bond under them.  The caller
+// builds one rule per variant, in the direction its XML rule writes, and
+// prices it with arrhenius_rate.
 struct EnergyExpandedVariant {
   std::vector<EnergyContextConstraint> constraints;
-  double delta_g = 0.0;
+  double delta_g = 0.0; // of the binding; breaking the bond is -delta_g
   // Symbolic ΔG: the sum of the active energy patterns' `energy_expr`s (or
   // "0"), so the caller can build a set_param-re-resolvable rate expression.
   std::string delta_g_expr = "0";
-  double fwd_rate = 0.0;
-  double rev_rate = 0.0;
 };
+
+// BioNetGen's Arrhenius rate for one rule (RateLaw.pm, evaluate_local):
+// exp(-(Ea0 + c*dG)), with dG the free-energy change of the reaction the rule
+// writes, c = phi for a rule as written and c = 1-phi for the reverse half of
+// a reversible rule.  There is no RT: energies are in units of RT, and a
+// model that works in kJ/mol divides by its own RT where it uses it, as
+// BioNetGen's Models2/energy_example1.bngl does (issue #107).
+inline double arrhenius_rate(double ea0, double phi, double dg, bool reverse_half) {
+  double const c = reverse_half ? 1.0 - phi : phi;
+  return std::exp(-(ea0 + (c * dg)));
+}
 
 // ---- Energy function -------------------------------------------------------
 
 class EnergyFunction {
 public:
-  explicit EnergyFunction(double rt) : rt_(rt) {}
-
   void add_pattern(EnergyPatternInfo ep) { patterns_.push_back(std::move(ep)); }
   int num_patterns() const { return static_cast<int>(patterns_.size()); }
   bool empty() const { return patterns_.empty(); }
-  double rt() const { return rt_; }
-
   // Expand a two-reactant binding energy rule.
   //
   //   molType1(site1) + molType2(site2) <-> molType1(site1!1).molType2(site2!1)
   //
-  // Returns one variant per context combination.  `Ea0` is the baseline
-  // activation energy; `phi` is the per-rule rate-distribution parameter
-  // (Arrhenius(phi, Ea0)); ΔG is summed from the energy patterns that
-  // overlap the reaction center.  Rates:
-  //   k_fwd = exp(-(Ea0 + phi·ΔG)      / RT)
-  //   k_rev = exp(-(Ea0 + (phi-1)·ΔG)  / RT)
+  // Returns one variant per context combination, with ΔG summed from the
+  // energy patterns that overlap the reaction center.
   std::vector<EnergyExpandedVariant> expand_binding(const std::string& mol_type1,
                                                     const std::string& site1,
                                                     const std::string& mol_type2,
-                                                    const std::string& site2, double ea0,
-                                                    double phi) const;
+                                                    const std::string& site2) const;
 
 private:
-  double rt_;
   std::vector<EnergyPatternInfo> patterns_;
 
   // Patterns containing the bond being formed/broken (molType1.site1 —
@@ -121,13 +122,6 @@ private:
   std::vector<int> find_relevant_for_binding(const std::string& mol_type1, const std::string& site1,
                                              const std::string& mol_type2,
                                              const std::string& site2) const;
-
-  double fwd_rate(double ea0, double delta_g, double phi) const {
-    return std::exp(-(ea0 + (phi * delta_g)) / rt_);
-  }
-  double rev_rate(double ea0, double delta_g, double phi) const {
-    return std::exp(-(ea0 + ((phi - 1.0) * delta_g)) / rt_);
-  }
 };
 
 } // namespace rulemonkey

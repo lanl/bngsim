@@ -193,6 +193,10 @@ Public entry: `Engine::run` (lines 7099–7103) → `Impl::run_ssa`
    Propensity is otherwise maintained by delta-updates from
    `incremental_update` to absorb floating-point drift over long runs.
 2. Sample a Δt via exponential draw on `total_propensity` (line 6605).
+   When a rate law reads `time` (`clock_rules` is non-empty, issue #86),
+   the same Exp(1) draw is spent against the hazard integrated over time
+   instead (`next_clocked_event_time`), since such a propensity moves
+   between events.
 3. Record observables for any sample times the step crosses (line 6609).
 4. Sample a rule index, weighted by per-rule propensity (lines 6625–6661).
 5. `select_reactants` — pick the actual molecules and embeddings to fire
@@ -217,15 +221,27 @@ bond constraints. Three layers:
   Deduplicates mappings that differ only in non-reacting components
   (`reacting_local` parameter), matching NFsim's convention so propensity
   is invariant under reordering of inert sites.
-- `count_multi_mol_fast` dispatcher (lines 2032–2059) — checks
-  `FastMatchSlot.enabled`. If on, dispatches to the 2-mol/1-bond fast
-  path; otherwise falls through to the generic body.
-- `count_multi_mol_fast_generic` (lines 1759+) — multi-molecule patterns.
+- `count_multi_mol_fast` dispatcher — checks `FastMatchSlot.enabled`.
+  If on, dispatches to the 2-mol/1-bond fast path; otherwise a slot with
+  a reaction center goes to `count_slot_instances` and a pure-context
+  slot to the generic body.
+- `count_slot_instances` / `collect_slot_instances` — multi-molecule
+  patterns with a reaction center (issue #88). `walk_slot_embeddings`
+  enumerates every whole match from the seed, walking the *pattern*
+  adjacency graph (`PatternAdj`) and branching over every partner
+  embedding consistent with the bond it walked; the matches are then
+  collapsed by `center_image`, the actual components and molecules the
+  rule's center (`SlotCenter`) lands on. The count is the number of
+  distinct images. The seed is chosen by `slot_seed` — in the center, or
+  on a per-molecule tag — and is generally not the slot's first molecule;
+  `RuleState::seed_pat_a/_b` and `NaryState::slot_seed` hold it, and
+  `slot_begin`/`slot_end` bound the slot.
+- `count_multi_mol_fast_generic` — pure-context multi-molecule patterns.
   Enumerates seed embeddings via `count_embeddings_single`, then BFS over
-  the *pattern* adjacency graph (`PatternAdj`, line 1761) — each pattern
-  bond contributes a partner-side `count_embeddings_single` call. The
-  recursion is over pattern molecules, not pool molecules; termination is
-  guaranteed because the pattern graph is finite and visited.
+  the pattern adjacency graph, committing to the first consistent partner
+  embedding. The recursion is over pattern molecules, not pool molecules;
+  termination is guaranteed because the pattern graph is finite and
+  visited.
 
 ### The 2-mol/1-bond fast path
 
@@ -342,11 +358,16 @@ Lines 4983–5350+. The paths are exclusive and labeled in
 - `kPathUniMultiFm` — unimolecular, multi-molecule pattern, fast-path
   active. Sample seed molecule, resolve partner via
   `select_2mol_1bond_fc_match` (no BFS).
-- `kPathUniMultiGen` — same shape, generic path. Sample seed, then BFS
-  via `select_multi_mol_unimolecular`.
+- `kPathUniMultiGen` — same shape, generic path. Sample seed, then
+  `select_multi_mol_unimolecular` draws one of the seed's reaction
+  instances (`collect_slot_instances`). Where a uniform draw over the
+  seed embeddings that reach a whole match is already uniform over the
+  instances (`SlotInstances::seed_draw_is_uniform`) it keeps the old
+  shuffle-and-take-first draw sequence, which `select_2mol_1bond_fc_match`
+  mirrors draw for draw.
 - `kPathBimol` — bimolecular. Sample two seed molecules weighted by
-  embedding counts; enumerate embeddings on each side; uniformly sample
-  one embedding pair. Same-components rules retry up to 64 times for
+  embedding counts; enumerate embeddings on each side (reaction instances
+  on a multi-molecule side with a center); uniformly sample one pair. Same-components rules retry up to 64 times for
   distinct seeds (the `homodimer_rate_test` is the regression gate on
   this loop).
 

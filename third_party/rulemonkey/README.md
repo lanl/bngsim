@@ -284,6 +284,10 @@ CMake snippets for both consumption modes).
   SSA loop, pattern matching layers, complex tracking, the
   2-mol/1-bond fast path, `fire_rule`'s OpType switch, and the five
   `select_reactants` paths.
+- [`RELEASING.md`](RELEASING.md) — how a release is cut: choosing the
+  version from what an embedder can observe, the four version anchors
+  that have to move together, the verification gates, and the handoff
+  to BNGsim's vendoring.
 
 ## Citation
 

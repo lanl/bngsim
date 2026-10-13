@@ -29,11 +29,11 @@ The runtime severity model is two-level:
   `Bound` (`x!+` or `x!?`), `BoundTo` (`x!1` shared label),
   `Wildcard` (component omitted).
 - Multi-molecule reactant patterns (`A(b!1).B(a!1)`), including
-  multi-bond rings. The pattern is seeded on its first molecule and the
-  rest are reached through its bonds; the sampler draws among the seed
-  embeddings that reach a whole match, and rejects a draw in which two
-  patterns (or two molecules of one pattern) land on the same molecule —
-  see "Multi-molecule reactant patterns" below.
+  multi-bond rings. A pattern counts one reaction per distinct placement
+  of its reaction center, whichever molecule it lists first; the sampler
+  draws among those, and rejects a draw in which two patterns (or two
+  molecules of one pattern) land on the same molecule — see
+  "Multi-molecule reactant patterns" below.
 - Three or more reactant patterns (`A + A + A -> P`,
   `A(s,d!1).D(d!1) + A(s) + A(s) -> P`) under an elementary rate law —
   see "N-ary reactant rules" below.
@@ -54,8 +54,33 @@ The runtime severity model is two-level:
 - `StateChange`, including state-increment / state-decrement (the BNGL
   `s~U~P~PP+` shorthand).
 - `AddMolecule` (synthesis from nothing or from existing reactants).
-- `DeleteMolecule`, both `DeleteMolecules="1"` (single-molecule) and
-  the default whole-species delete.
+- `DeleteMolecule`. What goes depends on what the rule drops, as in BNG2:
+  - **Every molecule of a reactant pattern, no `DeleteMolecules`**
+    (`A() -> 0`): the whole species the pattern matched. BNG2 makes that
+    species the rule's reaction center, so the rule fires **once per
+    matching species**, at `k`, however many of its molecules match and
+    however the pattern names it: `A() -> 0` on an `A.A` dimer is one
+    reaction, not two, and `A().B() -> 0` and `B().A() -> 0` agree on an
+    `A.B.A`. RM counts such a pattern once per matching complex, as it does
+    an untransformed one. NFsim attaches the delete to the pattern's first
+    molecule and counts one instance per match of it, which RM also did
+    until this was fixed; it makes the rate depend on the order the pattern
+    lists its molecules in, and NFsim's `-cb` / `-bscb` do not change it.
+  - **Some molecules of a pattern, no `DeleteMolecules`**
+    (`C(x!1).D(x!1) -> D(x)`): only those molecules. The reaction happens
+    only if what is left forms exactly the rule's product patterns: each
+    one a species of its own, and no other species. So this rule does not
+    fire on a C that also holds an E (deleting it would leave the D and the
+    E apart). RM used to delete the whole species here, taking the kept D
+    with it. NFsim refuses such a rule at load.
+  - **`DeleteMolecules`**: only the named molecules, and the remainder may
+    split into more species than the rule has product patterns, the extra
+    ones holding none of the molecules the rule names. The `+` and `.`
+    between the molecules it does name still hold (issue #104):
+    `A(b!1).B(a!1,c!2).C(b!2) -> A(b) + C(b) DeleteMolecules` does not fire
+    where A and C are also bonded to each other, and the same rule written
+    `-> A(b).C(b)` fires only there. RM used to skip the product check
+    altogether under the keyword.
 
 ### Rate laws
 
@@ -63,8 +88,12 @@ The runtime severity model is two-level:
   parameter map at run time (`set_param` overrides take effect, including
   through derived-parameter chains — see "Parameter overrides" below).
 - **`Function`** — arbitrary expression evaluated against a live
-  variable map. Supports parameters, observables, the special variables
-  `time` / `t`, and references to other functions. Local functions
+  variable map. Supports parameters, observables, the clock as `time()`
+  or a bare `t`, and references to other functions. A model symbol
+  named `time` or `t` is that symbol: BNG2 accepts an observable named
+  `time`, and a bare `time` then reads it while `time()` still reads the
+  clock; a parameter, observable or function named `t` takes `t` from
+  the clock (issue #87). Local functions
   (per-molecule or per-pattern arguments) are supported in both
   per-molecule and complex-wide scopes, on unimolecular and bimolecular
   rules alike.
@@ -89,6 +118,14 @@ The runtime severity model is two-level:
     local function (DOR), function product, MM" as the affected set.
     `ft_local_fcn_bimol_sym` is verdicted against BNG2's ODE for that
     reason.
+  - **A per-molecule tag on any molecule of a pattern.** The factor is
+    evaluated at the tagged molecule, so `R(l!1,s~0).L(r!1)%x` reads its
+    local observable on the L. Before issue #88 RM evaluated it at the
+    pattern's first molecule, the R here, where an observable of L reads
+    0 and the rule never fired. When the tag sits on untransformed
+    context, each tagged molecule prices its own instances: a center
+    reached through two tagged molecules counts once for each, which is
+    NFsim's reading too.
   - **A per-molecule tag on a reactant pattern the rule does not
     transform.** Such a pattern is *context*: every embedding of it yields
     the identical reaction, so BNG2's network expansion emits one instance
@@ -141,6 +178,27 @@ The runtime severity model is two-level:
     its initial slope matches the true bare-observable value and then the
     whole run proceeds at that t=0 value. `ft_local_fcn_mixed_scope` is
     verdicted against BNG2's ODE for that reason.
+  - **Rates that read the clock.** Between two events the pool is fixed,
+    but a rate that reads `time` still moves. So RM does not hold such a
+    rate at its value from the last event. It places the next event
+    where the hazard integrated over time reaches the Exp(1) draw. The
+    clock-driven part is sampled over error-controlled panels of at most
+    a thousandth of the run, and the rest is integrated exactly. A pulse
+    narrower than about a third of a panel can still fall between two
+    nodes and go unseen, so a model built on such pulses wants a run, or
+    a `simulate` segment, short enough that its panels resolve them. Holding
+    the rate is exact only for a rate that cannot move without an event.
+    A rate that is 0 at the start (`k*time()`) was taken as an absorbing
+    state and never fired, and one that was merely small when held
+    outlasted the run (issue #86). A rule takes this path when its
+    function chain reads `time` or `t`, directly, through another
+    function, or as a TFUN counter. A dependency RM cannot enumerate is
+    counted as reading it. Local rates are included. Each panel node
+    rescans such a rule in full, so a local rate over many instances
+    pays several rescans per event. A global function that reads `time`
+    is reported at each sample's own time. The clock is the model's: a
+    run from `t_start = 5` reads `time() = 5` on its first row (see
+    "Where a run starts" below).
   - **Global function of a local function is ill-defined.** A global
     (no-argument) function that references a *local* function has no
     molecule context at global scope, so its exposed value (`.gdat`
@@ -302,6 +360,48 @@ The runtime severity model is two-level:
   `A(x).B(y) -> A(x!1).B(y!1)` rule. Disable via
   `set_block_same_complex_binding(false)` or the CLI `-no-bscb` flag for
   parity with NFsim runs that omitted `-bscb`.
+- The same flag enforces the `+` between product patterns. Take a bond the
+  rule deletes between two molecules its map sends into different product
+  patterns. Once all of the rule's operations apply (every bond it breaks
+  or makes, every molecule it deletes), those two molecules must be in
+  different complexes. Otherwise the event is a null event: `A(b!1).B(a!1)
+  -> A(b) + B(a)` does not fire on a pair also joined by a second bond.
+  This is BNG2's rule (`SpeciesGraph::splitConnectedComponents`), and it
+  holds whatever the number of reactant patterns. A deleted bond whose two
+  molecules stay in one product pattern (`A(b!1,c!2).B(a!1,c!2) ->
+  A(b,c!2).B(a,c!2)`) is not a `+` and is not tested this way. The `.`
+  that keeps them together is the `ensureConnected` check, which runs
+  whatever the flag. Before issue #102 the test ran only for rules with
+  one reactant pattern. It checked one deleted bond at a time, and it
+  treated every deleted bond of a rule with several product patterns as a
+  `+`.
+- Testing the two ends of each deleted bond decides the `+` and `.` only
+  when each reactant pattern is held together by its own bonds, is cut by
+  them into at most two pieces, and loses no molecule out of its complex.
+  For every other shape RM splits the whole post-reaction graph, as BNG2
+  does: no complex may hold molecules of two product patterns, no product
+  pattern may lie in two complexes, and only `DeleteMolecules` allows a
+  complex holding none of the molecules the rule names (issue #104). The
+  shapes are a molecule deleted out of a complex
+  (`A(b!1).B(a!1,c!2).C(b!2) -> A(b) + C(b)`), a pattern cut into three
+  pieces (`Ta(b!1,c!2).Tb(a!1).Tc(a!2) -> Ta(b,c) + Tb(a) + Tc(a)` on a
+  Ta.Tb.Tc ring, which never fires), and a molecule joined to its pattern
+  only by `.`. The loader decides which rules need it; the `+` part of the
+  split follows this flag, except for a delete without `DeleteMolecules`,
+  which NFsim refuses and RM always tests in full.
+- A rule whose right-hand side can never be true never fires, as in BNG2,
+  which generates no reaction for it (issue #105). One kind writes two
+  molecules into one product pattern that nothing joins: they come from
+  different reactant patterns, which sit in different complexes, or the
+  rule creates one of them, and no bond it adds joins them
+  (`A(s~0) + B(a) -> A(s~1).B(a)`). That rule never fires under either
+  setting of the flag. The other kind writes two molecules of one complex
+  into different product patterns and deletes no bond or molecule that
+  could part them (`A(s~0).B(t~0) -> A(s~1) + B(t~1)`). That one never
+  fires under this flag; with it off, the `+` is not tested and the rule
+  fires, as a deleted bond's would. Either way the load reports the rule as
+  a warning, not an error: BNG2 runs the model, and the rule is almost
+  surely a mistake.
 
 ### Parameter overrides
 
@@ -388,6 +488,16 @@ The runtime severity model is two-level:
 - `save_state(path)` / `load_state(path)` — full pool, RNG, and
   bookkeeping snapshot. The XML used at `load_state` time must match
   the one used at `save_state` time.
+- A session advanced in several `simulate()` / `step_to()` calls, or
+  carried across `save_state` / `load_state`, continues exactly, but it
+  is not the same realization as one `run()` from the same seed. Each
+  call ends on a waiting-time draw that outlasts it. That draw is spent,
+  and the next call takes a fresh one from its own start, which is exact
+  because the waiting time has no memory. A continuation in process and
+  one from a saved state take the same numbers. Before issue #89 the
+  draw was rolled back and drawn again, which reused a value already
+  known to be long, and a session cut into calls shorter than its
+  waiting times all but stopped firing.
 
 ## Tier-0 refusals (Error severity)
 
@@ -431,15 +541,58 @@ These are emitted as `Severity::Warn` and the run proceeds.
 ## Multi-molecule reactant patterns
 
 A reactant pattern may be a `.`-joined complex — `A(b!1).B(a!1)` — on a
-unimolecular, bimolecular, or n-ary rule. The pattern is *seeded* on its
-first molecule, the rest are reached by walking its bonds out of that seed,
-and the per-molecule count `c(m)` that weights the draw is the number of
-embeddings whose seed lands on `m` and which reach a whole match.
+unimolecular, bimolecular, or n-ary rule.
 
-Two things follow, and both are enforced in the sampler:
+**What is counted is reactions, one per reaction center.** The reaction
+center is what the rule changes: every component whose state or bond it
+changes, and every molecule it deletes. BNG2 treats two matches of a
+pattern into one species that put the center in the same place as a single
+reaction, however they differ elsewhere (`filter_identical_by_rxn_center`
+in BNG2's `RxnRule.pm`), and RM counts the same way. So in
+
+```bngl
+L(r!1,r!2).R(l!1,s~0).R(l!2) -> L(r!1,r!2).R(l!1,s~1).R(l!2)  k
+```
+
+an R linked to two other R through two different L fires at `k`, not
+`2k`: the two matches differ only in which L, which the rule does not
+touch. A center that spans two molecules is counted per placement of the
+whole center: `La(r!1,r!2,s~0).Ra(l!1,t~0).Ra(l!2) -> ...`, which also
+changes the first R, fires at `2k` on an L between two R, because either R
+can be the first. The symmetry factor BNG2 writes into the XML covers what
+is left, the automorphisms that move the center itself, and RM applies it
+on top.
+
+How RM gets there: each pattern is *seeded* on one of its molecules, its
+matches are enumerated by walking the pattern's bonds out of the seed
+(branching wherever a symmetric component can be filled more than one
+way), and the per-molecule count `c(m)` that weights the draw is the number
+of distinct center placements among the whole matches whose seed lands on
+`m`. Summed over seed molecules, that is the reaction count only if no
+placement can be reached from two seeds — which holds when the seed is
+itself in the center. So the seed is the pattern's first molecule *in the
+reaction center*, not its first molecule (NFsim, too, heads each reactant
+pattern at a molecule the rule transforms). The exceptions: a pattern carrying a per-molecule
+local-function tag is seeded on the tagged molecule, where the factor is
+evaluated (see the local-function notes above), and a pattern the rule
+does not transform at all is pure context, counted once per complex (issue
+#33).
+
+Until issue #88 RM seeded every pattern on its first molecule and collapsed
+matches only on that molecule's own changed components. A rule that listed
+untransformed context first counted each center once per context molecule
+that reached it (2x above); a center on two molecules was collapsed to one
+(1x where BNG2 has 2x); and the collapse could keep a seed embedding that
+dead-ended and drop the one that reached a whole match, which made such a
+rule inert. A `.`-joined context molecule with two copies in the complex
+(`F().E(s~0)`), and a deleted molecule with symmetric components
+(`A(b) -> 0 DeleteMolecules` on an `A(b,b)`), were each counted twice.
+
+Two things follow for the sampler, and both are enforced:
 
 - **The embedding is drawn among the ones that reach a whole match**, not
-  among all embeddings of the seed molecule alone. A seed can offer an
+  among all embeddings of the seed molecule alone, and uniformly over
+  center placements, however many whole matches reach each. A seed can offer an
   embedding that goes nowhere: an `A(d,d)` bonded to a D on one `d` and an E
   on the other has two embeddings of `A(d!1)`, and only the one that lands
   on the D extends to `A(d!1).D(d!1)`. Treating the dead end as a null event
@@ -466,9 +619,10 @@ at Tier 0 rather than run (issues #24, #26).
 
 Such a rule takes a dedicated path in the engine, separate from the two-slot
 machinery that serves uni- and bimolecular rules. Reactant pattern `i` is
-*seeded* on its first molecule, and `c_i(m)` counts the embeddings of the
-whole pattern that place that seed on molecule `m` — for a single-molecule
-pattern, just its embeddings on `m`. The propensity is mass action over
+*seeded* on its first molecule in the reaction center, and `c_i(m)` counts
+the reaction-center placements of the whole pattern that put that seed on
+molecule `m` — for a single-molecule pattern, just its embeddings on `m`
+(see "Multi-molecule reactant patterns" above). The propensity is mass action over
 tuples of *distinct* seed molecules,
 
 ```
@@ -555,19 +709,36 @@ For a binding rule `mt1(s1) + mt2(s2) <-> mt1(s1!1).mt2(s2!1)`:
 - The rule expands into `2^n` context variants (n = number of distinct
   context conditions), each a conventional binding or unbinding rule whose
   reactant templates carry the context as extra bound/free component
-  constraints, and whose rate is
-  `k_fwd = exp(-(Ea0 + phi·ΔG)/RT)` (binding) or
-  `k_rev = exp(-(Ea0 + (phi-1)·ΔG)/RT)` (unbinding). Each direction is
-  taken from its own BNG2-emitted `ReactionRule` (forward = AddBond,
-  reverse = DeleteBond), so the forward and reverse halves are expanded
-  independently.
-- `RT` is read from the `RT` parameter (default 2.478); `phi`/`Ea0` are
-  the two `Arrhenius` rate constants. Energy-pattern values come from
-  the `<EnergyPattern expression="...">` attribute.
+  constraints. BNG2 writes a reversible rule as two `ReactionRule`s, the
+  second named `_reverse_` followed by the first's name, and each is
+  expanded in the direction it writes (AddBond: binding, DeleteBond:
+  unbinding). A unidirectional rule gives one direction.
+- Each expanded rule's rate is BNG2's (`RateLaw.pm`, `evaluate_local`):
+  `exp(-(Ea0 + phi·ΔG))`, with ΔG the free-energy change of the reaction
+  the rule writes, and `exp(-(Ea0 + (1-phi)·ΔG))` for the reverse half of
+  a reversible rule. The binding ΔG of a variant is negated for a rule
+  that breaks the bond. So a reversible binding rule binds with
+  `phi·ΔG` and unbinds with `(1-phi)·(-ΔG)`, which is the same number as
+  `(phi-1)·ΔG`. A rule written in the unbinding direction, reversible or
+  unidirectional, takes `phi` on the unbinding.
+- There is no `RT`. Energies are in units of RT, as in BNG2's network. A
+  model that works in kJ/mol defines its own `RT` and divides by it where
+  it uses it, as BNG2's `Models2/energy_example1.bngl` does:
+  `Arrhenius(phi, Ea0/RT)`, and an energy pattern worth `Gf/RT`. A
+  parameter named `RT` is an ordinary parameter. Until issue #107, RM
+  divided every exponent by a parameter named `RT`, or by 2.478 if the
+  model had none, so a model without one ran with every energy divided by
+  2.478 and a model in BNG2's style was divided twice. It also gave every
+  bond-breaking rule `(phi-1)` on the binding ΔG, which is wrong for a
+  rule written in the unbinding direction unless `phi = 0.5`.
+- `phi` and `Ea0` are the two `Arrhenius` rate constants, whatever the
+  model writes there. Energy-pattern values come from the
+  `<EnergyPattern expression="...">` attribute.
 
-Each expanded rate is stored as a symbolic expression of the energy
-parameters, so `set_param` on `Ea0`, `phi`, `RT`, or an energy-pattern
-`Gf` **does** re-resolve the baked rates on the next run (same path as
+Each expanded rate is stored as a symbolic expression of the model's
+parameters, so `set_param` on `Ea0`, `phi`, an energy-pattern `Gf`, or a
+parameter they are written in terms of, such as a model's own `RT`,
+**does** re-resolve the baked rates on the next run (same path as
 ordinary `Ele` rate constants).
 
 **Deferred** (refused at Tier 0, matching NFsim's binding-only coverage):
@@ -615,6 +786,26 @@ if (any_errors) {
 
 auto result = sim.run({0.0, t_end, n_points}, seed);
 ```
+
+### Where a run starts: `t_start`
+
+`TimeSpec::t_start` is where the seed state sits on the model's clock. The
+first row records the seed state, the run spans `t_end - t_start`, and a
+rate law that reads `time()` reads absolute model time from `t_start` on.
+That is BNG's network `simulate` with a nonzero `t_start` (`run_network -i`).
+BNG2.pl's `simulate_nf` instead starts NFsim's clock at 0 and reports time
+elapsed since `t_start`. For a model whose rates do not read the clock the
+two give the same trajectory, shifted by `t_start`.
+
+A session takes the same origin from `initialize(seed, t_start)`, which
+leaves `current_time()` at `t_start`. `parameter_scan` starts each fresh
+point there. A carry-over chain (`reset_conc = false`, and `bifurcate`)
+starts its first point there and continues on the same clock, so its point
+`k` covers `[t_start + k*d, t_start + (k+1)*d]` for `d = t_end - t_start`.
+
+Before issue #98, a nonzero `t_start` started the clock at 0 and simulated
+`[0, t_start]` before the first row. A run asked for `[5, 7]` ran 7 time
+units, and its first row was not the seed state.
 
 ### Recording at explicit output times
 

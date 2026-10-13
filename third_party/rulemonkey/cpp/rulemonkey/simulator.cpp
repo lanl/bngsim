@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -21,6 +20,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -591,13 +591,14 @@ void add_energy_context(const Model& model, int type_index, int reactant_idx,
   }
 }
 
-// Synthesize the forward (binding) conventional rule for one expanded
-// variant: molType1(site1) + molType2(site2) -> molType1(site1!1).molType2(site2!1)
-// with the variant's context constraints and pre-computed rate.
+// Synthesize the binding conventional rule for one expanded variant:
+// molType1(site1) + molType2(site2) -> molType1(site1!1).molType2(site2!1)
+// with the variant's context constraints and the given rate.
 Rule build_energy_binding_rule(const Model& model, const std::string& name,
                                const std::string& t1_name, const std::string& site1,
                                const std::string& t2_name, const std::string& site2,
-                               const EnergyExpandedVariant& v, const std::string& rate_expr) {
+                               const EnergyExpandedVariant& v, double rate,
+                               const std::string& rate_expr) {
   Rule r;
   r.name = name;
   r.id = name;
@@ -652,20 +653,22 @@ Rule build_energy_binding_rule(const Model& model, const std::string& name,
   r.reactant_to_product_map.assign(n, -1);
   for (int i = 0; i < n; ++i)
     r.reactant_to_product_map[i] = i;
+  r.reactant_mol_to_product_mol = {0, 1};
 
   r.same_components = (t1_name == t2_name && site1 == site2);
   r.rate_law.type = RateLawType::Ele;
-  r.rate_law.rate_value = v.fwd_rate;
+  r.rate_law.rate_value = rate;
   r.rate_law.rate_expr = rate_expr; // re-resolved on set_param of an energy param
   return r;
 }
 
-// Synthesize the reverse (unbinding) conventional rule for one expanded
-// variant: molType1(site1!1).molType2(site2!1) -> molType1(site1) + molType2(site2).
+// Synthesize the unbinding conventional rule for one expanded variant:
+// molType1(site1!1).molType2(site2!1) -> molType1(site1) + molType2(site2).
 Rule build_energy_unbinding_rule(const Model& model, const std::string& name,
                                  const std::string& t1_name, const std::string& site1,
                                  const std::string& t2_name, const std::string& site2,
-                                 const EnergyExpandedVariant& v, const std::string& rate_expr) {
+                                 const EnergyExpandedVariant& v, double rate,
+                                 const std::string& rate_expr) {
   Rule r;
   r.name = name;
   r.id = name;
@@ -719,10 +722,11 @@ Rule build_energy_unbinding_rule(const Model& model, const std::string& name,
   r.reactant_to_product_map.assign(n, -1);
   for (int i = 0; i < n; ++i)
     r.reactant_to_product_map[i] = i;
+  r.reactant_mol_to_product_mol = {0, 1};
 
   r.same_components = (t1_name == t2_name && site1 == site2);
   r.rate_law.type = RateLawType::Ele;
-  r.rate_law.rate_value = v.rev_rate;
+  r.rate_law.rate_value = rate;
   r.rate_law.rate_expr = rate_expr; // re-resolved on set_param of an energy param
   return r;
 }
@@ -731,12 +735,15 @@ Rule build_energy_unbinding_rule(const Model& model, const std::string& name,
 // Always returns true: the Arrhenius rule is consumed here so the caller
 // skips normal finalization.
 //
-// Each direction is processed independently — a forward (AddBond) rule emits
-// the binding rules with forward rates; a reverse (DeleteBond) rule emits the
-// unbinding rules with reverse rates.  For a reversible energy rule BNG2
-// emits both a forward and a reverse ReactionRule, so this reconstructs the
-// exact same rule set NFsim's "forward generates both" expansion does, while
-// also handling a standalone unbinding rule correctly.
+// Each XML rule is expanded in the direction it writes: an AddBond rule into
+// binding rules, a DeleteBond rule into unbinding rules.  BNG2 writes a
+// reversible rule as two ReactionRules, the second named `_reverse_` followed
+// by the first's name, so a reversible rule comes out as both directions and
+// a unidirectional one as one.  Each is priced as BNG2's network prices it
+// (arrhenius_rate, issue #107): phi on the dG of the reaction the XML rule
+// writes, 1-phi on it for a `_reverse_` rule, and no RT.  The name is the
+// only mark BNG2's XML puts on a reverse half: its rate law repeats the
+// forward rule's phi and Ea0.
 //
 // Shapes beyond Phase 1 (matching NFsim's binding-only coverage) are NOT
 // expanded: their id is appended to `unsupported_ids` so load_model raises a
@@ -845,27 +852,30 @@ bool try_expand_arrhenius(const Rule& base, const XmlNode& rl_node, const Energy
     }
   }
 
-  // RT is symbolic when the model declares it, so overriding RT re-resolves.
-  std::string const rt_expr =
-      (model.parameters.count("RT") != 0) ? std::string("RT") : std::to_string(efn.rt());
-
-  // fwd: exp(-(Ea0 + phi·ΔG)/RT);  rev: exp(-(Ea0 + (phi-1)·ΔG)/RT).
-  auto rate_expr = [&](bool forward, const std::string& dg) -> std::string {
-    std::string const coeff = forward ? ("(" + phi_expr + ")") : ("((" + phi_expr + ")-1)");
-    return "exp(-((" + ea0_expr + ")+(" + coeff + "*(" + dg + ")))/(" + rt_expr + "))";
+  // The rate, and the same rate as an expression of the model's parameters,
+  // so that set_param on phi, Ea0, an energy parameter or anything they are
+  // written in terms of re-resolves it.  dG is the reaction's this XML rule
+  // writes: the binding dG for an AddBond rule, its negative for a DeleteBond
+  // rule.
+  bool const reverse_half = base.name.rfind("_reverse_", 0) == 0;
+  std::string const coeff_expr = reverse_half ? ("(1-(" + phi_expr + "))") : ("(" + phi_expr + ")");
+  auto rate_expr = [&](const std::string& dg_bind) -> std::string {
+    std::string const dg = is_forward ? ("(" + dg_bind + ")") : ("(-(" + dg_bind + "))");
+    return "exp(-((" + ea0_expr + ")+(" + coeff_expr + "*" + dg + ")))";
   };
 
-  auto variants = efn.expand_binding(t1, s1, t2, s2, ea0, phi);
+  auto variants = efn.expand_binding(t1, s1, t2, s2);
   for (std::size_t i = 0; i < variants.size(); ++i) {
     std::string const nm = base.name + "_arr_v" + std::to_string(i);
+    double const dg = is_forward ? variants[i].delta_g : -variants[i].delta_g;
+    double const rate = arrhenius_rate(ea0, phi, dg, reverse_half);
+    std::string const expr = rate_expr(variants[i].delta_g_expr);
     if (is_forward)
-      model.rules.push_back(build_energy_binding_rule(model, nm + "_fwd", t1, s1, t2, s2,
-                                                      variants[i],
-                                                      rate_expr(true, variants[i].delta_g_expr)));
+      model.rules.push_back(
+          build_energy_binding_rule(model, nm + "_fwd", t1, s1, t2, s2, variants[i], rate, expr));
     else
       model.rules.push_back(
-          build_energy_unbinding_rule(model, nm + "_rev", t1, s1, t2, s2, variants[i],
-                                      rate_expr(false, variants[i].delta_g_expr)));
+          build_energy_unbinding_rule(model, nm + "_rev", t1, s1, t2, s2, variants[i], rate, expr));
   }
   return true;
 }
@@ -891,6 +901,227 @@ TfunMethod parse_tfun_method(const std::string& s) {
   if (lo == "step")
     return TfunMethod::Step;
   throw std::runtime_error("Unknown TFUN method '" + s + "'");
+}
+
+// The product pattern a reactant-pattern component lands in, through the
+// rule's map, or -1 when the map does not carry it there (its molecule is
+// deleted, or the XML has no Map).
+int product_pattern_of(const Rule& rule, int reactant_flat) {
+  if (reactant_flat < 0 || reactant_flat >= static_cast<int>(rule.reactant_to_product_map.size()))
+    return -1;
+  return rule.product_pattern_of_mol(
+      rule.product_pattern.mol_of_flat(rule.reactant_to_product_map[reactant_flat]));
+}
+
+// Settle Rule::products_never_join, products_never_split and
+// checks_product_split (issues #104, #105).  BNG2 applies all of a rule's
+// operations, then splits the result into connected components
+// (SpeciesGraph::splitConnectedComponents, RxnRule::apply_rule).  A
+// component may not hold molecules of two product patterns (the `+`), a
+// product pattern may not lie in two components (the `.`), and a component
+// holding none of the molecules the rule names is allowed only under
+// DeleteMolecules.
+//
+// Under -bscb each reactant pattern starts in a complex of its own, and only
+// a bond the rule adds joins two of them.  So the reactant patterns, and the
+// molecules the rule adds, fall into groups joined by the added bonds, and
+// each group ends up in one complex unless the rule deletes a bond or a
+// molecule in it.  A product pattern spread over two groups can never form.
+// A group the rule writes into two product patterns, and deletes nothing
+// in, can never come apart.  Everything else is decided per event.  The
+// bond-by-bond checks decide it exactly when every reactant pattern is held
+// together by its own bonds, its deleted bonds cut it into at most two
+// pieces, and the rule deletes no molecule out of a complex: each piece is
+// then one product pattern's, and testing the bonds between the two pieces
+// tests the pieces.  Otherwise the engine splits the whole post-reaction
+// graph.  A rule the Map does not fully resolve gets no static verdict.
+void classify_product_split(Rule& rule) {
+  // A molecule deleted without the keyword may leave a species the rule does
+  // not write, whatever the rest of the rule, so it always takes the split.
+  rule.checks_product_split =
+      std::any_of(rule.operations.begin(), rule.operations.end(), [](const RuleOp& op) {
+        return op.type == OpType::DeleteMolecule && op.delete_requires_product_count;
+      });
+  auto const& rp = rule.reactant_pattern;
+  auto const& pp = rule.product_pattern;
+  int const n_rp = static_cast<int>(rule.reactant_pattern_starts.size());
+  int const n_rmol = static_cast<int>(rp.molecules.size());
+  int const n_pmol = static_cast<int>(pp.molecules.size());
+  int const n_pp = rule.n_product_patterns;
+  if (static_cast<int>(rule.reactant_mol_to_product_mol.size()) != n_rmol ||
+      static_cast<int>(rule.product_pattern_starts.size()) != n_pp)
+    return;
+  auto rp_of = [&](int mi) {
+    int r = -1;
+    for (int i = 0; i < n_rp; ++i)
+      if (rule.reactant_pattern_starts[i] <= mi)
+        r = i;
+    return r;
+  };
+  auto find = [](std::vector<int>& parent, int x) {
+    while (parent[x] != x)
+      x = parent[x] = parent[parent[x]];
+    return x;
+  };
+  auto fresh = [](int n) {
+    std::vector<int> parent(n);
+    for (int i = 0; i < n; ++i)
+      parent[i] = i;
+    return parent;
+  };
+
+  // The molecules the rule deletes, and whether it deletes one out of a
+  // complex rather than the whole species.
+  std::vector<char> deleted(n_rmol, 0);
+  bool deletes_from_complex = false;
+  for (const auto& op : rule.operations) {
+    if (op.type != OpType::DeleteMolecule)
+      continue;
+    int const mi = op.delete_pattern_mol_idx;
+    if (mi < 0 || mi >= n_rmol)
+      return;
+    if (op.delete_connected) {
+      for (int m = 0; m < n_rmol; ++m)
+        if (rp_of(m) == rp_of(mi))
+          deleted[m] = 1;
+    } else {
+      deleted[mi] = 1;
+      deletes_from_complex = true;
+    }
+  }
+
+  // Group nodes: one per reactant pattern, then one per product molecule
+  // (used only for the ones the rule adds).
+  int const n_nodes = n_rp + n_pmol;
+  std::vector<int> node_of(n_pmol, -1);
+  for (int mi = 0; mi < n_rmol; ++mi) {
+    int const pm = rule.reactant_mol_to_product_mol[mi];
+    if (pm >= 0 && pm < n_pmol)
+      node_of[pm] = rp_of(mi);
+    else if (deleted[mi] == 0)
+      return; // the Map places this molecule nowhere
+  }
+  for (const auto& op : rule.operations)
+    if (op.type == OpType::AddMolecule && op.add_product_mol_idx >= 0 &&
+        op.add_product_mol_idx < n_pmol)
+      node_of[op.add_product_mol_idx] = n_rp + op.add_product_mol_idx;
+  for (int const node : node_of)
+    if (node < 0)
+      return; // a product molecule that comes from nowhere
+
+  std::vector<int> group = fresh(n_nodes);
+  auto end_node = [&](int flat, int product_mol) {
+    if (flat >= 0) {
+      int const mi = rp.mol_of_flat(flat);
+      return mi >= 0 ? rp_of(mi) : -1;
+    }
+    return (product_mol >= 0 && product_mol < n_pmol) ? node_of[product_mol] : -1;
+  };
+  for (const auto& op : rule.operations) {
+    if (op.type != OpType::AddBond)
+      continue;
+    int const a = end_node(op.comp_flat_a, op.product_mol_a);
+    int const b = end_node(op.comp_flat_b, op.product_mol_b);
+    if (a < 0 || b < 0)
+      return;
+    group[find(group, a)] = find(group, b);
+  }
+  std::vector<char> cut(n_nodes, 0); // by group root
+  for (const auto& op : rule.operations) {
+    if (op.type == OpType::DeleteBond) {
+      for (int const flat : {op.comp_flat_a, op.comp_flat_b}) {
+        int const mi = rp.mol_of_flat(flat);
+        if (mi >= 0)
+          cut[find(group, rp_of(mi))] = 1;
+      }
+    } else if (op.type == OpType::DeleteMolecule) {
+      cut[find(group, rp_of(op.delete_pattern_mol_idx))] = 1;
+    }
+  }
+
+  // Each product pattern's group, and each group's product pattern (-2 for
+  // two or more).
+  std::vector<int> group_of_pattern(n_pp, -1);
+  std::vector<int> pattern_of_group(n_nodes, -1);
+  bool never_join = false;
+  for (int pm = 0; pm < n_pmol; ++pm) {
+    int const p = rule.product_pattern_of_mol(pm);
+    if (p < 0)
+      return;
+    int const g = find(group, node_of[pm]);
+    if (group_of_pattern[p] < 0)
+      group_of_pattern[p] = g;
+    else if (group_of_pattern[p] != g)
+      never_join = true;
+    if (pattern_of_group[g] == -1)
+      pattern_of_group[g] = p;
+    else if (pattern_of_group[g] != p)
+      pattern_of_group[g] = -2;
+  }
+  bool never_split = false;
+  bool plus_open = false; // a `+` some event could break
+  for (int g = 0; g < n_nodes; ++g) {
+    if (pattern_of_group[g] != -2)
+      continue;
+    if (cut[g] != 0)
+      plus_open = true;
+    else
+      never_split = true;
+  }
+
+  // A `.` some event could break: a product pattern its own bonds do not
+  // hold together, in a group the rule cuts.
+  std::vector<int> held = fresh(n_pmol);
+  for (const auto& b : pp.bonds) {
+    int const a = pp.mol_of_flat(b.comp_flat_a);
+    int const c = pp.mol_of_flat(b.comp_flat_b);
+    if (a >= 0 && c >= 0)
+      held[find(held, a)] = find(held, c);
+  }
+  bool dot_open = false;
+  for (int pm = 0; pm < n_pmol; ++pm) {
+    int const p = rule.product_pattern_of_mol(pm);
+    int const first = rule.product_pattern_starts[p];
+    if (find(held, pm) != find(held, first) && cut[group_of_pattern[p]] != 0)
+      dot_open = true;
+  }
+
+  // Can the bond-by-bond checks decide the rule?  Each reactant pattern must
+  // be held together by its own bonds and cut by its deleted bonds into at
+  // most two pieces.
+  bool by_bond = !deletes_from_complex;
+  std::vector<int> whole = fresh(n_rmol);
+  std::vector<int> after = fresh(n_rmol);
+  for (const auto& b : rp.bonds) {
+    int const a = rp.mol_of_flat(b.comp_flat_a);
+    int const c = rp.mol_of_flat(b.comp_flat_b);
+    if (a < 0 || c < 0)
+      continue;
+    whole[find(whole, a)] = find(whole, c);
+    bool const broken =
+        std::any_of(rule.operations.begin(), rule.operations.end(), [&](const RuleOp& op) {
+          return op.type == OpType::DeleteBond &&
+                 ((op.comp_flat_a == b.comp_flat_a && op.comp_flat_b == b.comp_flat_b) ||
+                  (op.comp_flat_a == b.comp_flat_b && op.comp_flat_b == b.comp_flat_a));
+        });
+    if (!broken)
+      after[find(after, a)] = find(after, c);
+  }
+  for (int r = 0; r < n_rp && by_bond; ++r) {
+    std::set<int> wholes;
+    std::set<int> pieces;
+    for (int mi = 0; mi < n_rmol; ++mi) {
+      if (rp_of(mi) != r || deleted[mi] != 0)
+        continue;
+      wholes.insert(find(whole, mi));
+      pieces.insert(find(after, mi));
+    }
+    by_bond = wholes.size() <= 1 && pieces.size() <= 2;
+  }
+
+  rule.products_never_join = never_join;
+  rule.products_never_split = never_split;
+  rule.checks_product_split = rule.checks_product_split || ((plus_open || dot_open) && !by_bond);
 }
 
 // Resolve TFUN counter source
@@ -1463,10 +1694,7 @@ Model load_model(const std::string& xml_path,
   // Function-type rate laws (which inline the Boltzmann factors) needs no
   // expansion and is unaffected: the function is only consulted when a rule
   // declares RateLaw type="Arrhenius".
-  double energy_rt = 2.478; // NFsim default: R·T ≈ 2.478 kJ/mol at 298 K
-  if (auto rt_it = model.parameters.find("RT"); rt_it != model.parameters.end())
-    energy_rt = rt_it->second;
-  EnergyFunction energy_fn(energy_rt);
+  EnergyFunction energy_fn;
   // Arrhenius energy rules whose shape RM does not expand (see
   // try_expand_arrhenius); surfaced as Tier-0 errors below.
   std::vector<std::string> unsupported_arrhenius_ids;
@@ -1581,7 +1809,9 @@ Model load_model(const std::string& xml_path,
       // Map: reactant -> product component mapping
       auto* map_node = find_child(rrn, "Map");
       int const n_rcomp = rule.reactant_pattern.flat_comp_count();
+      int const n_rmol = static_cast<int>(rule.reactant_pattern.molecules.size());
       rule.reactant_to_product_map.assign(n_rcomp, -1);
+      rule.reactant_mol_to_product_mol.assign(n_rmol, -1);
       if (map_node) {
         for (auto& mi : map_node->children) {
           if (mi.name != "MapItem")
@@ -1600,9 +1830,19 @@ Model load_model(const std::string& xml_path,
                   rule.product_pattern.flat_index(tit->second.first, tit->second.second);
               if (src_flat >= 0 && src_flat < n_rcomp)
                 rule.reactant_to_product_map[src_flat] = tgt_flat;
+            } else if (sit->second.second < 0 && tit->second.second < 0 &&
+                       reactant_pattern_ids.count(src) == 0 && sit->second.first < n_rmol) {
+              rule.reactant_mol_to_product_mol[sit->second.first] = tit->second.first;
             }
           }
         }
+      }
+      // A Map that names only components still places their molecules.
+      for (int flat = 0; flat < n_rcomp; ++flat) {
+        int const mi = rule.reactant_pattern.mol_of_flat(flat);
+        int const pm = rule.product_pattern.mol_of_flat(rule.reactant_to_product_map[flat]);
+        if (mi >= 0 && pm >= 0 && rule.reactant_mol_to_product_mol[mi] < 0)
+          rule.reactant_mol_to_product_mol[mi] = pm;
       }
 
       // Operations
@@ -1714,10 +1954,18 @@ Model load_model(const std::string& xml_path,
             op.type = OpType::DeleteMolecule;
             auto del_id = need_attr(opn, "id");
             auto del_mols = opt_attr(opn, "DeleteMolecules");
-            // DeleteMolecules="1" means delete only the specified molecule(s),
-            // NOT the entire connected species.  Absence or "0" means delete
-            // the whole species.
-            op.delete_connected = (del_mols != "1");
+            // The id says what goes.  BNG2 names the ReactantPattern when the
+            // rule drops every molecule of it without the DeleteMolecules
+            // keyword, and then the whole species goes (RxnRule's MolDel gets
+            // the pattern).  Otherwise it names each dropped molecule, and
+            // only those go — with the keyword or without it, so a "0" on a
+            // molecule id is not a whole-species delete: `C(x!1).D(x!1) ->
+            // D(x)` keeps the D.  Reading every "0" as whole-species, as RM
+            // did, deleted the D too.  Without the keyword BNG2 further
+            // requires the remainder to form exactly the product patterns.
+            bool const names_pattern = reactant_pattern_ids.count(del_id) != 0;
+            op.delete_connected = names_pattern && del_mols != "1";
+            op.delete_requires_product_count = !names_pattern && del_mols != "1";
             auto dit = reactant_id_map.find(del_id);
             if (dit != reactant_id_map.end())
               op.delete_pattern_mol_idx = dit->second.first;
@@ -1832,6 +2080,7 @@ Model load_model(const std::string& xml_path,
                 if (rit != reactant_id_map.end() &&
                     reactant_pattern_ids.find(argval) == reactant_pattern_ids.end()) {
                   rule.rate_law.local_arg_is_molecule = true;
+                  rule.rate_law.local_tag_mol = rit->second.first;
                 } else if (rit == reactant_id_map.end()) {
                   std::fprintf(stderr,
                                "Warning: local function arg '%s' in "
@@ -1867,10 +2116,13 @@ Model load_model(const std::string& xml_path,
           rule.rate_law.type = RateLawType::FunctionProduct;
           rule.rate_law.is_dynamic = true;
 
-          // Resolve an Argument `value` to (reactant-pattern-index, per_mol).
-          auto resolve_factor = [&](const std::string& argval, int& out_rp_idx, bool& out_per_mol) {
+          // Resolve an Argument `value` to (reactant-pattern-index, per_mol,
+          // tagged pattern molecule).
+          auto resolve_factor = [&](const std::string& argval, int& out_rp_idx, bool& out_per_mol,
+                                    int& out_tag_mol) {
             out_rp_idx = -1;
             out_per_mol = false;
+            out_tag_mol = -1;
             // Direct ReactantPattern-id match -> complex-wide scope.
             for (int k = 0; k < static_cast<int>(rp_id_list.size()); ++k) {
               if (rp_id_list[k] == argval) {
@@ -1889,6 +2141,8 @@ Model load_model(const std::string& xml_path,
                   out_rp_idx = k;
               }
               out_per_mol = (reactant_pattern_ids.find(argval) == reactant_pattern_ids.end());
+              if (out_per_mol)
+                out_tag_mol = mol_off;
             }
           };
 
@@ -1907,14 +2161,15 @@ Model load_model(const std::string& xml_path,
             std::string fn;
             int rp_idx = -1;
             bool per_mol = false;
+            int tag_mol = -1;
           };
           std::array<Factor, 2> factors;
           factors[0].fn = opt_attr(*rl_node, "name1");
           factors[1].fn = opt_attr(*rl_node, "name2");
-          resolve_factor(first_arg_value("ListOfArguments1"), factors[0].rp_idx,
-                         factors[0].per_mol);
-          resolve_factor(first_arg_value("ListOfArguments2"), factors[1].rp_idx,
-                         factors[1].per_mol);
+          resolve_factor(first_arg_value("ListOfArguments1"), factors[0].rp_idx, factors[0].per_mol,
+                         factors[0].tag_mol);
+          resolve_factor(first_arg_value("ListOfArguments2"), factors[1].rp_idx, factors[1].per_mol,
+                         factors[1].tag_mol);
 
           // Assign the pattern-0 factor to the A-side and pattern-1 to the
           // B-side.  Default to declaration order if a reference can't be
@@ -1927,9 +2182,11 @@ Model load_model(const std::string& xml_path,
           rule.rate_law.function_name = factors[a_factor].fn;
           rule.rate_law.is_local = true;
           rule.rate_law.local_arg_is_molecule = factors[a_factor].per_mol;
+          rule.rate_law.local_tag_mol = factors[a_factor].tag_mol;
           rule.rate_law.function_name_b = factors[b_factor].fn;
           rule.rate_law.is_local_b = true;
           rule.rate_law.local_arg_is_molecule_b = factors[b_factor].per_mol;
+          rule.rate_law.local_tag_mol_b = factors[b_factor].tag_mol;
         } else if (rl_type == "MM") {
           rule.rate_law.type = RateLawType::MM;
           auto* rc_list = find_child(*rl_node, "ListOfRateConstants");
@@ -1975,6 +2232,8 @@ Model load_model(const std::string& xml_path,
             // Tag on reactant pattern 1 — move the factor to the B slot.
             rule.rate_law.function_name_b = rule.rate_law.function_name;
             rule.rate_law.local_arg_is_molecule_b = rule.rate_law.local_arg_is_molecule;
+            rule.rate_law.local_tag_mol_b = rule.rate_law.local_tag_mol;
+            rule.rate_law.local_tag_mol = -1;
             rule.rate_law.function_name.clear();
             rule.rate_law.unity_factor_a = true;
             // Per-molecule scope on the unity side skips the per-complex
@@ -2040,6 +2299,25 @@ Model load_model(const std::string& xml_path,
 
       model.rules.push_back(std::move(rule));
     }
+  }
+
+  // ---- DeleteBonds the `+` between product patterns separates (#102) ----
+  // BNG2 rejects a reaction that leaves connected two molecules the rule maps
+  // into different product patterns (SpeciesGraph::splitConnectedComponents,
+  // "Connected molecules mapped to different patterns"), whatever the rule's
+  // molecularity.  Mark each bond whose ends the map sends apart, so the
+  // engine checks those and only those.  The energy-expanded rules above
+  // carry an identity map and their own product_pattern_starts, so they are
+  // marked the same way.
+  // The rest of the `+` and `.` is settled per rule (#104, #105).
+  for (auto& rule : model.rules) {
+    for (auto& op : rule.operations)
+      if (op.type == OpType::DeleteBond) {
+        int const pa = product_pattern_of(rule, op.comp_flat_a);
+        int const pb = product_pattern_of(rule, op.comp_flat_b);
+        op.separates_products = pa >= 0 && pb >= 0 && pa != pb;
+      }
+    classify_product_split(rule);
   }
 
   // ---- Mark rate-dependent observables ----
@@ -2146,6 +2424,15 @@ Model load_model(const std::string& xml_path,
   // resolved values against the previous rescan's and skips when they
   // agree — which is why the list is collected here, where the walk
   // already visits exactly those tokens.
+  //
+  // The same walk answers a second question for every dynamic rate law,
+  // local or not (issue #86): can the propensity move with the clock
+  // alone?  One that reads `time` can change between two events, so the
+  // engine has to integrate it to place the next one rather than hold it
+  // at the value the last event left.  An unenumerable dependency is
+  // counted as reading the clock, as it is counted as moving above: the
+  // integration costs time, and leaving out a rate that does move costs
+  // the answer.
   {
     // What a function's evaluation consults that a reaction event can
     // move.  `obs` are observable slots read at system scope; `time`
@@ -2253,13 +2540,16 @@ Model load_model(const std::string& xml_path,
     // into the constant 1, so an empty name is exactly "no factor here".
     for (auto& rule : model.rules) {
       auto& rl = rule.rate_law;
-      if (!rl.is_local && rl.type != RateLawType::FunctionProduct)
+      if (!rl.is_dynamic)
         continue;
       GlobalDeps deps;
       if (!rl.function_name.empty())
         deps.merge(global_deps(rl.function_name, global_deps));
       if (!rl.function_name_b.empty())
         deps.merge(global_deps(rl.function_name_b, global_deps));
+      rl.rate_tracks_time = deps.time || deps.opaque;
+      if (!rl.is_local && rl.type != RateLawType::FunctionProduct)
+        continue;
       std::sort(deps.obs.begin(), deps.obs.end());
       deps.obs.erase(std::unique(deps.obs.begin(), deps.obs.end()), deps.obs.end());
 
@@ -2363,6 +2653,33 @@ Model load_model(const std::string& xml_path,
                "negative, and meaningless where it does not). Fix the parameter. Pass "
                "--ignore-unsupported to run anyway; the rule's propensity is clamped "
                "to zero, so it will not fire."});
+    }
+    // WARN-level: a rule whose products can never be what it writes (issue
+    // #105, and its mirror image; see classify_product_split).  BNG2 accepts
+    // the model and generates no reaction for the rule, so the model has a
+    // definite meaning, the rule contributing nothing, and RM runs it that
+    // way rather than refuse what BNG2 runs.  Such a rule is almost surely a
+    // mistake, so say so.
+    for (const auto& rule : model.rules) {
+      if (rule.products_never_join)
+        unsupported_out->push_back(
+            {Severity::Warn, "ReactionRule",
+             "Rule '" + rule.id + "' (" + rule.name +
+                 ") writes molecules into one product pattern that nothing in the rule "
+                 "brings into one complex: they come from different reactant patterns, "
+                 "or the rule creates one of them, and no bond the rule adds joins them. "
+                 "BioNetGen generates no reaction for such a rule, and RM never fires it. "
+                 "Bond the molecules, or write a + between them."});
+      if (rule.products_never_split)
+        unsupported_out->push_back(
+            {Severity::Warn, "ReactionRule",
+             "Rule '" + rule.id + "' (" + rule.name +
+                 ") writes molecules that start in one complex into different product "
+                 "patterns, and deletes no bond or molecule that could part them. "
+                 "BioNetGen generates no reaction for such a rule, and RM never fires it "
+                 "while block_same_complex_binding (the default) enforces the + between "
+                 "product patterns. Delete the bond that holds them together, or write a "
+                 ". between them."});
     }
 
     // The `TotalRate` keyword.  BNG2.pl does not implement it for network
@@ -2612,8 +2929,13 @@ Model load_model(const std::string& xml_path,
       // up to 2x off in saturation if the symmetry was the enzyme slot's.
       if (rule.symmetry_factor != 1.0) {
         ReactantTransforms const rt = reactant_pattern_transforms(rule);
+        // A whole species the rule deletes contributes 1 to the factor, as
+        // context does (see ReactantTransforms::species_deleted).
+        auto carries_symmetry = [&](size_t i) {
+          return rt.transformed[i] != 0 && rt.species_deleted[i] == 0;
+        };
         bool const both_transformed = rt.resolvable && rt.transformed.size() > 1 &&
-                                      rt.transformed[0] != 0 && rt.transformed[1] != 0;
+                                      carries_symmetry(0) && carries_symmetry(1);
         if (both_transformed)
           unsupported_out->push_back(
               {Severity::Warn, "ReactionRule@symmetry_factor",
@@ -3368,8 +3690,8 @@ struct RuleMonkeySimulator::Impl {
   // `reset_conc == true`: every point is an independent run() from the
   // model's seed species — the dose-response case.  `reset_conc == false`:
   // every point continues from the prior point's final molecular state,
-  // threaded through a temporary state file, so the sweep is one
-  // continuous-time trajectory sharing a single RNG stream.
+  // threaded through an in-memory copy of the state file, so the sweep is
+  // one continuous-time trajectory sharing a single RNG stream.
   //
   // The swept override is restored to its pre-call state on the way out
   // (including the exception path), leaving the simulator exactly as the
@@ -3389,14 +3711,14 @@ struct RuleMonkeySimulator::Impl {
       sync_parameters();
     };
 
-    // One state file per chain invocation; reused (overwritten) across the
-    // points of a carry-over chain, removed when the chain finishes.  A
-    // process-global counter keeps concurrent chains from colliding.
-    static std::atomic<unsigned long long> chain_counter{0};
-    const std::filesystem::path tmp =
-        std::filesystem::temp_directory_path() /
-        ("rm_scan_" + std::to_string(chain_counter.fetch_add(1)) + ".rmstate");
-    bool tmp_written = false;
+    // A carry-over point ends by saving the session, and the next point,
+    // whose Engine is built from the re-resolved parameters, loads it.  The
+    // state stays in memory (issue #92).  It used to go through
+    // rm_scan_<n>.rmstate in the temp directory, with n from a counter that
+    // restarted at 0 in every process, so two processes running chains at
+    // once wrote and read the same file: a failed load, a runaway one, or a
+    // silent continuation from the other process's pool, clock and RNG.
+    std::string carried_state;
     const double duration = per_point.t_end - per_point.t_start;
 
     ScanChainEndpoints out;
@@ -3411,26 +3733,30 @@ struct RuleMonkeySimulator::Impl {
 
         Result r;
         if (reset_conc) {
-          // Fresh, independent run from seed species.  Every point uses
-          // the same seed: as in BNG, the seed is run-level, not
-          // per-point, so points share a random stream.
+          // Fresh, independent run from seed species at per_point.t_start.
+          // Every point uses the same seed: as in BNG, the seed is
+          // run-level, not per-point, so points share a random stream.
           Engine engine(model, seed, molecule_limit);
           r = engine.run(TimeSpec{per_point.t_start, per_point.t_end, per_point.n_points, {}});
         } else {
-          // Carry-over chain: point 0 starts from seed species; every
-          // later point resumes the prior point's pool + RNG state.
+          // Carry-over chain: point 0 starts from seed species at
+          // per_point.t_start, as a fresh point does (issue #98); every
+          // later point resumes the prior point's pool + RNG state, and its
+          // clock.
           if (k == 0) {
             session = std::make_unique<Engine>(model, seed, molecule_limit);
-            session->initialize();
+            session->initialize(per_point.t_start);
           } else {
             session = std::make_unique<Engine>(model, 0, molecule_limit);
-            session->load_state(tmp.string());
+            std::istringstream is(carried_state);
+            session->load_state(is);
           }
           const double t0 = session->current_time();
           r = session->run(TimeSpec{t0, t0 + duration, per_point.n_points, {}});
           if (k + 1 < values.size()) {
-            session->save_state(tmp.string());
-            tmp_written = true;
+            std::ostringstream os;
+            session->save_state(os);
+            carried_state = os.str();
           }
           session.reset();
         }
@@ -3449,18 +3775,10 @@ struct RuleMonkeySimulator::Impl {
       }
     } catch (...) {
       session.reset();
-      if (tmp_written) {
-        std::error_code ec;
-        std::filesystem::remove(tmp, ec);
-      }
       restore_override();
       throw;
     }
 
-    if (tmp_written) {
-      std::error_code ec;
-      std::filesystem::remove(tmp, ec);
-    }
     restore_override();
     return out;
   }
@@ -3596,6 +3914,11 @@ void RuleMonkeySimulator::set_block_same_complex_binding(bool value) {
 
 Result RuleMonkeySimulator::run(const TimeSpec& ts, std::uint64_t seed,
                                 const CancelCallback& should_continue) {
+  // A reversed window runs nothing and labels the seed state with every
+  // sample time, as simulate() and parameter_scan already refuse to.
+  if (ts.t_end < ts.t_start)
+    throw std::runtime_error("run: t_end (" + std::to_string(ts.t_end) +
+                             ") is earlier than t_start (" + std::to_string(ts.t_start) + ")");
   impl_->apply_overrides();
   Engine engine(impl_->model, seed, impl_->molecule_limit);
   return engine.run(ts, should_continue);
@@ -3664,10 +3987,14 @@ BifurcateResult RuleMonkeySimulator::bifurcate(const ScanSpec& spec, std::uint64
 // Session API
 // ---------------------------------------------------------------------------
 
-void RuleMonkeySimulator::initialize(std::uint64_t seed) {
+void RuleMonkeySimulator::initialize(std::uint64_t seed, double t_start) {
   impl_->apply_overrides();
-  impl_->session = std::make_unique<Engine>(impl_->model, seed, impl_->molecule_limit);
-  impl_->session->initialize();
+  // Published only once initialized: an engine left behind by a throw here
+  // would initialize itself lazily at the next simulate()'s t_start.
+  impl_->session.reset();
+  auto session = std::make_unique<Engine>(impl_->model, seed, impl_->molecule_limit);
+  session->initialize(t_start);
+  impl_->session = std::move(session);
 }
 
 void RuleMonkeySimulator::step_to(double time, const CancelCallback& should_continue) {
@@ -3698,8 +4025,8 @@ Result RuleMonkeySimulator::simulate(double t_start, double t_end, int n_points,
     std::ostringstream msg;
     msg << "simulate(t_start=" << t_start << ", t_end=" << t_end
         << "): t_start disagrees with current session time " << session_t
-        << "; pass t_start = sim.current_time() (or call destroy_session/initialize"
-           " to restart at 0)";
+        << "; pass t_start = sim.current_time() (or call initialize(seed, t_start)"
+           " to restart there)";
     throw std::runtime_error(msg.str());
   }
   if (t_end < session_t)
@@ -3733,7 +4060,7 @@ Result RuleMonkeySimulator::simulate(const TimeSpec& ts, const CancelCallback& s
     msg << "simulate(TimeSpec): segment start " << seg_start
         << " disagrees with current session time " << session_t
         << "; pass the current session time as t_start / sample_times[0]"
-           " (or destroy_session/initialize to restart at 0)";
+           " (or initialize(seed, t_start) to restart there)";
     throw std::runtime_error(msg.str());
   }
   const double seg_end = ts.sample_times.empty() ? ts.t_end : ts.sample_times.back();

@@ -4,6 +4,7 @@
 #include "rulemonkey/types.hpp"
 
 #include <cstdint>
+#include <iosfwd>
 #include <memory>
 #include <random>
 #include <string>
@@ -27,10 +28,13 @@ public:
   Engine(Engine&&) = delete;
   Engine& operator=(Engine&&) = delete;
 
-  // Initialize agent pool from seed species; compute initial propensities.
-  void initialize();
+  // Initialize agent pool from seed species with the clock at `t_start`;
+  // compute initial propensities there.
+  void initialize(double t_start = 0.0);
 
   // Run SSA from current time, recording observable values at sample points.
+  // An engine not yet initialized is initialized at `ts.t_start` first, so
+  // the seed state sits there (issue #98).
   // `should_continue`, if non-empty, is polled inside the SSA loop; returning
   // false throws `rulemonkey::Cancelled` out of run() at a safe between-event
   // point (no partial event state is left exposed).
@@ -90,6 +94,10 @@ public:
   // Save full simulation state to file; load restores pool and derived state.
   void save_state(const std::string& path) const;
   void load_state(const std::string& path);
+  // The same state, as a stream: what parameter_scan's carry-over chain
+  // passes from one point to the next, without a file (issue #92).
+  void save_state(std::ostream& os) const;
+  void load_state(std::istream& is);
 
   // Enumerate the live species in the current pool: walk every complex,
   // canonicalize it, and group graph-isomorphic complexes into one row

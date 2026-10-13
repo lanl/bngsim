@@ -1,14 +1,14 @@
 # Test corpora
 
 RuleMonkey's correctness story rests on three independent test suites
-totalling 182 BNGL models. Every parity check compares the RM
+totalling 190 BNGL models. Every parity check compares the RM
 trajectory against a gold-standard reference (NFsim ensemble, BNG2
 ODE, or hand-rolled Gillespie SSA) using a per-model time-integrated
 z-score threshold.
 
 | Suite | Models | Reference | Driver | Wall time |
 |---|---:|---|---|---|
-| `feature_coverage` | 82 | NFsim 20-rep + BNG2 ODE | `harness/benchmark_feature_coverage.py` | ~3 min |
+| `feature_coverage` | 90 | NFsim 20-rep + BNG2 ODE | `harness/benchmark_feature_coverage.py` | ~3 min |
 | `corpus` | 71 | NFsim 100-rep ensemble (with 2 SSA exceptions) | `harness/benchmark_full.py` | smoke 2 min / guard 15 min / full 3 h |
 | `nfsim_basicmodels` | 29 | NFsim 100-rep ensemble | `harness/basicmodels.py` | ~5 min |
 
@@ -18,7 +18,7 @@ to `main`.
 
 ## `feature_coverage` — the BNGL feature matrix
 
-82 small, fast models (`tests/models/feature_coverage/*.bngl`),
+90 small, fast models (`tests/models/feature_coverage/*.bngl`),
 designed to exercise every BNGL feature and every feature
 interaction RM has historically been wrong about.  Each model is
 ≤ 600 molecules and runs in seconds.  Reference data is vendored
@@ -28,10 +28,10 @@ Models break down by family:
 
 | Prefix | Count | Purpose |
 |---|---:|---|
-| `ft_*` | 46 | One feature per model — the breadth coverage |
+| `ft_*` | 53 | One feature per model — the breadth coverage |
 | `edg_*` | 20 | "Edge cases designed to break RM" — stress probes added in 3.1.0 |
 | `combo_*` | 8 | Feature combinations that have caused past regressions |
-| `ss_*` | 4 | Steady-state / longer-time-scale variants |
+| `ss_*` | 5 | Steady-state / longer-time-scale variants |
 | `nf_*` | 4 | Network-free-only constructs (NFsim ref only) |
 
 Each model carries its own NFsim reference (or BNG2 ODE reference
@@ -40,8 +40,8 @@ cross-checks both).  Per-model rationale lives in `EDG_RATIONALE.md`
 inside the model directory.
 
 ```bash
-python3 harness/benchmark_feature_coverage.py            # all 82, ~3 min
-python3 harness/benchmark_feature_coverage.py --tier base   # 46 base ft_* models only
+python3 harness/benchmark_feature_coverage.py            # all 90, ~3 min
+python3 harness/benchmark_feature_coverage.py --tier base   # 53 base ft_* models only
 python3 harness/benchmark_feature_coverage.py ft_bond_wildcards combo_strict_product_plus
 ```
 
@@ -135,7 +135,7 @@ model-configuration surface:
 | `set_param_test` | Parameter overrides reach the engine for Ele / MM / initial-conc / eBNGL-energy paths; derived-parameter cascades work in declaration and reverse-dependency order; BNG2 `expr=` derivations re-derive seed amounts; clearing an override un-bakes a prior run; unknown names throw; mid-session add_molecules conserves mass |
 | `param_expr_gate_test` | Corpus-wide: a no-op `set_param` switches the cascade onto `<Parameter expr=>`, and no model's parameters may drift off their loaded `<Parameter value=>` when it does (issue #23) |
 | `initial_amount_test` | Seed-species introspection and pin/release; pins outrank parameter derivations, reach the engine, cover literal `concentration=` and `Fixed="1"` clamp targets, and un-bake on clear |
-| `save_load_test` | save/load round-trip preserves trajectory; XML mismatch is refused via the schema fingerprint; pre-V2 state files are refused |
+| `save_load_test` | A save/load continuation matches the same session continued in process, sample for sample; XML mismatch is refused via the schema fingerprint; pre-V2 state files are refused |
 
 ```bash
 ctest --preset release       # whole suite, ~20s
@@ -163,7 +163,7 @@ Both presets are wired into CI (`.github/workflows/ci.yml`).
 ```
 tests/
   models/
-    feature_coverage/{ft,edg,combo,ss,nf}_*.bngl    # 82 BNGL sources
+    feature_coverage/{ft,edg,combo,ss,nf}_*.bngl    # 90 BNGL sources
     corpus/*.bngl                                    # 71 BNGL sources
     nfsim_basicmodels/v*.bngl                        # 29 BNGL sources
   reference/

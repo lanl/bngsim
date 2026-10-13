@@ -52,8 +52,7 @@ std::vector<int> EnergyFunction::find_relevant_for_binding(const std::string& mo
 std::vector<EnergyExpandedVariant> EnergyFunction::expand_binding(const std::string& mol_type1,
                                                                   const std::string& site1,
                                                                   const std::string& mol_type2,
-                                                                  const std::string& site2,
-                                                                  double ea0, double phi) const {
+                                                                  const std::string& site2) const {
   std::vector<EnergyExpandedVariant> variants;
 
   // Step 1: relevant patterns (contain the reaction-center bond).
@@ -63,8 +62,6 @@ std::vector<EnergyExpandedVariant> EnergyFunction::expand_binding(const std::str
     // No energy patterns overlap the reaction center → ΔG = 0 everywhere.
     EnergyExpandedVariant v;
     v.delta_g = 0.0;
-    v.fwd_rate = fwd_rate(ea0, 0.0, phi);
-    v.rev_rate = rev_rate(ea0, 0.0, phi);
     variants.push_back(std::move(v));
     return variants;
   }
@@ -182,8 +179,6 @@ std::vector<EnergyExpandedVariant> EnergyFunction::expand_binding(const std::str
     EnergyExpandedVariant v;
     v.delta_g = base_g;
     v.delta_g_expr = build_dg_expr(always_patterns);
-    v.fwd_rate = fwd_rate(ea0, base_g, phi);
-    v.rev_rate = rev_rate(ea0, base_g, phi);
     variants.push_back(std::move(v));
     return variants;
   }
@@ -213,8 +208,6 @@ std::vector<EnergyExpandedVariant> EnergyFunction::expand_binding(const std::str
 
     v.delta_g = delta_g;
     v.delta_g_expr = build_dg_expr(active_patterns);
-    v.fwd_rate = fwd_rate(ea0, delta_g, phi);
-    v.rev_rate = rev_rate(ea0, delta_g, phi);
     variants.push_back(std::move(v));
   }
 

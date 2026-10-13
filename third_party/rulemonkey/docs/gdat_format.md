@@ -124,6 +124,13 @@ Two header-parsing notes:
 - **Absorbing state**: when the system reaches zero total propensity
   (no rule can fire), RM fills the remaining sample points by
   repeating the last computed state, so the row count is unchanged.
+  A model whose rate law reads `time()` has no absorbing state.
+  Its rate can rise again with no event in between, so RM keeps
+  integrating it to the end of the run (issue #86).
+- **Functions of time**: a global-function column is evaluated at the
+  row's own time. The pool it reads is the one the last event before
+  that time left, but `time()` is the sample time, so `clock() = time()`
+  reads back the time column.
 - **`n_steps == 0`**: not supported on the CLI (rejected with an
   actionable error; pass `n_steps >= 1`).  The in-process engine
   treats `n_points == 0` as a two-endpoint sampling — the

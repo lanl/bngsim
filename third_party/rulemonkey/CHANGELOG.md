@@ -7,6 +7,534 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.11.0] — 2026-10-13
+
+### Changed
+
+- **A run's seed state now sits at `t_start` (issue #98).** `run(ts)` with
+  `ts.t_start > 0` used to start the clock at 0, simulate `[0, t_start]`,
+  and record its first row at `t_start` from whatever that stretch left. A
+  run asked for `[5, 7]` ran 7 time units, and its first row was not the
+  seed state. This matched neither BNG's network `simulate`
+  (`run_network -i t_start`, absolute time from the current state) nor
+  `simulate_nf` (NFsim's clock from 0, elapsed time). Since #86 a rate
+  that reads `time()` is integrated, so where the clock starts decides the
+  answer. With `0 -> B() 100*time()` over `[5, 7]`, the mean of `B` over
+  100 seeds was 1254 at t = 5 and 2455 at t = 7. It is now 0 and 1203,
+  where the network's answer is 0 and 1200.
+
+  The seed state now sits at `t_start` on the model's clock, as in BNG's
+  network `simulate`. Sessions take the same origin from the new
+  `initialize(seed, t_start = 0)`, which they could not do before:
+  `initialize()` put the clock at 0, and `simulate()` refuses a `t_start`
+  that disagrees with the session. `parameter_scan` starts each fresh point
+  at `per_point.t_start`, and a carry-over chain (`reset_conc = false`,
+  `bifurcate`) starts its first point there. With `t_start > 0`, a fresh
+  point used to run `[0, t_end]` while a chain's first point ran
+  `[0, t_end - t_start]`. `rm_driver --t-start` now does the same with or
+  without `--save-state` / `--species`; its session path used to refuse a
+  nonzero value.
+
+  A run with `t_start = 0`, which is every corpus, reference and harness
+  run, is unchanged: `rm_driver --print-functions` output is
+  byte-identical to `main` on all 237 XMLs under `tests/`, two seeds
+  each. `clock_origin_test` pins the means, the seed state on the first
+  row, a session matching the one-shot run draw for draw, and both kinds
+  of scan.
+
+### Fixed
+
+- **Arrhenius rates divided by an `RT` that BioNetGen does not apply, and a
+  rule written in the unbinding direction took the wrong `phi` term (issue
+  #107).** BioNetGen's network gives a rule with `Arrhenius(phi, Ea0)` the
+  rate `exp(-(Ea0 + phi*dG))`, with `dG` the free-energy change of the
+  reaction the rule writes. It gives the reverse half of a reversible rule
+  `exp(-(Ea0 + (1-phi)*dG))`, with that half's own `dG`. There is no RT:
+  energies are in units of RT. A model that works in kJ/mol divides by its
+  own `RT` where it uses it, as BioNetGen's `Models2/energy_example1.bngl`
+  does. RuleMonkey went wrong in two ways:
+
+  - It divided every exponent by a parameter named `RT`, or by 2.478 if the
+    model had none. A model with no `RT` ran with every energy divided by
+    2.478, and a model written in BioNetGen's style was divided twice. Five
+    corpus models use a parameter named `RT` for the total receptor count;
+    none has an Arrhenius rule, but one that did would have divided its
+    energies by that count.
+  - It gave every rule that breaks a bond `(phi-1)` on the binding `dG`,
+    the term for the reverse half of a reversible binding rule. A rule
+    written in the unbinding direction, reversible or unidirectional, takes
+    `phi` on its own `dG` in BioNetGen, and its reverse half takes `1-phi`.
+    RuleMonkey swapped the two, which matters unless `phi = 0.5`.
+
+  Each rule's rate is now BioNetGen's (`arrhenius_rate`), both as the
+  number a run uses and as the expression `set_param` re-resolves, and a
+  parameter named `RT` is an ordinary parameter. **Results change for every
+  Arrhenius model that does not set `RT = 1`**, and for any rule written in
+  the unbinding direction with `phi` other than 0.5. On
+  `tests/bng_oracle/models/arrhenius_formula.bngl` (no `RT`, phi = 0.3)
+  and `arrhenius_rt.bngl` (energies in kJ/mol over the model's own
+  `RT = 2.5`), 1000 of each, mean of 24 seeds at t = 500 unless noted,
+  BNG2's network against RuleMonkey before and after:
+
+  | model | column | BNG2 | before | after |
+  |---|---|---|---|---|
+  | formula | `Rev_bound` | 715.7 | 922.2 | 716.6 |
+  | formula | `Revu_bound`, t = 250 | 975.8 | 949.4 | 976.1 |
+  | formula | `Bind_uni` | 333.3 | 999.8 | 334.0 |
+  | formula | `Break_uni` | 606.5 | 0 | 609.2 |
+  | formula | `Ctx_pair` | 368.6 | 494.6 | 368.4 |
+  | formula | `Ctx_bare` | 142.2 | 470.0 | 139.0 |
+  | rt | `Rev_bound` | 715.7 | 924.4 | 721.8 |
+  | rt | `Break_uni` | 606.5 | 0 | 606.7 |
+
+  `arrhenius_set_param_test` runs both models with a parameter overridden
+  to the value it already has, which sends every rate through its
+  expression, and scores them against the same references. The other 239
+  XMLs under `tests/` are byte-identical to `main` at two seeds each.
+  `product_split.bngl` drops the `RT = 1` it set to sidestep the old
+  division, and matches `main`'s run of the old model byte for byte. The
+  two feature-coverage Arrhenius models keep `RT = 1`, because NFsim, which
+  generates their references, still divides by it (RuleWorld/nfsim#102).
+
+- **With `DeleteMolecules`, a rule ignored the `+` and `.` between the
+  molecules it names (issue #104), and other shapes escaped them too.**
+  BNG2 applies all of a rule's operations, then splits the result into
+  complexes. No complex may hold molecules of two product patterns, no
+  product pattern may lie in two complexes, and only `DeleteMolecules`
+  allows a complex holding none of the molecules the rule names.
+  RuleMonkey tested the two ends of each deleted bond. That decides a rule
+  only when each reactant pattern is held together by its own bonds, cut by
+  them into at most two pieces, and loses no molecule out of its complex.
+  Outside those shapes:
+
+  - Under the keyword it tested nothing. `A(b!1).B(a!1,c!2).C(b!2) ->
+    A(b) + C(b)` fired on a ring that keeps A and C together, and the same
+    rule written `-> A(b).C(b)` fired on a chain that parts them.
+  - Without the keyword it counted species. `Xk(c!1).Ck(x!1,y!2).Yk(c!2)
+    -> Xk(c) + Yk(c)`, on a Ck that also holds an Ek where Xk and Yk are
+    also bonded, leaves two species, as many as the rule has product
+    patterns, but the wrong two. It fired.
+  - `Ta(b!1,c!2).Tb(a!1).Tc(a!2) -> Ta(b,c) + Tb(a) + Tc(a)` cuts its
+    pattern into three pieces. It fired where Tb and Tc stay bonded, and
+    `-> Ta(b,c) + Tb(a).Tc(a)` fired where they come apart.
+  - A molecule joined to its pattern only by `.` was not tested.
+
+  The loader now decides per rule whether the per-bond checks are exact
+  (`Rule::checks_product_split`). For the other rules the engine splits the
+  post-reaction graph as BNG2 does (`products_split_as_written`, which
+  replaces #97's species count). The `+` part follows `-bscb`, as for a
+  deleted bond, except in a delete without the keyword, which NFsim refuses
+  and which is tested in full, as before. On
+  `tests/bng_oracle/models/product_split_full.bngl` (1000 of each,
+  t = 500, mean of 24 seeds), BNG2's network against RuleMonkey before and
+  after:
+
+  | column | BNG2 | before | after |
+  |---|---|---|---|
+  | `Plus_ring` | 1000 | 606.3 | 1000 |
+  | `Dot_chain` | 1000 | 604.3 | 1000 |
+  | `Count_ring` | 1000 | 604.4 | 1000 |
+  | `Three_ring` | 1000 | 606.7 | 1000 |
+  | `Pair_chain` | 1000 | 607.0 | 1000 |
+  | `Dotted_onP` | 1000 | 607.0 | 1000 |
+  | `Dotted_held` | 1000 | 606.6 | 1000 |
+
+  The other seven columns, each the same rule on a species it may fire on,
+  agree before and after. Every corpus rule either took this path already
+  (the no-keyword deletes in `species_delete`) or is one the per-bond
+  checks decide. A build that ran both on every event of those rules found
+  no disagreement in 15.3 million events across the 240 XMLs under
+  `tests/`, 79,306 of them rejections. The other 238 XMLs are byte-identical
+  to `main` at two seeds each. `rm_tlbr_rings` and
+  `bench_blbr_rings_posner1995` run within 2% of `main` (17.71 s against
+  17.76 s, and 3.50 s against 3.56 s, best of 3).
+
+- **A rule fired although its right-hand side could never be true (issue
+  #105).** `A(s~0) + B(a) -> A(s~1).B(a)` writes A and B in one complex,
+  but they start in two and the rule bonds nothing. A molecule the rule
+  creates and bonds to nothing is the same case. BNG2 generates no reaction
+  for such a rule; RuleMonkey fired it. It fired the mirror image too,
+  `A(s~0).B(t~0) -> A(s~1) + B(t~1)`, which writes two molecules of one
+  complex apart and deletes nothing that could part them. The loader now
+  finds both shapes from the rule's map and operations
+  (`Rule::products_never_join`, `Rule::products_never_split`), and the
+  engine holds such a rule at zero propensity. The mirror case is inert
+  under `-bscb`, the default, which enforces the `+`; with `-no-bscb` it
+  fires, as a deleted bond's would.
+
+  The load reports each such rule as a warning, not an error. BNG2 accepts
+  the model, and the rule has a definite meaning there, doing nothing, so
+  RuleMonkey runs the model as BNG2 does instead of refusing what BNG2
+  runs. The rule is almost surely a mistake, which is why it is reported.
+  NFsim's fix for the same bug warns too. On
+  `tests/bng_oracle/models/products_never_form.bngl` (1000 of each,
+  t = 500, mean of 24 seeds):
+
+  | column | BNG2 | before | after |
+  |---|---|---|---|
+  | `Join_on` | 0 | 334.3 | 0 |
+  | `Bare_on` | 0 | 396.2 | 0 |
+  | `Lone_on` | 0 | 390.7 | 0 |
+  | `Apart_on` | 0 | 392.0 | 0 |
+
+  The two controls agree before and after. `products_never_form_test`
+  pins the warnings, their severity, and the `-no-bscb` case. No corpus
+  model has either shape.
+
+- **The `+` between product patterns was tested only for rules with one
+  reactant pattern, one deleted bond at a time, and on every deleted bond
+  (issue #102).** BNG2 applies all of a rule's operations, then rejects the
+  reaction if one complex holds molecules the rule maps into different
+  product patterns (`SpeciesGraph::splitConnectedComponents`), whatever
+  the rule's molecularity. RuleMonkey got three things wrong:
+
+  - It skipped the test for rules with two or more reactant patterns, so
+    `A(b!1).B(a!1) + C(s) -> A(b) + B(a) + C(s)` broke the A-B bond of a
+    pair also joined by a second bond.
+  - It searched for another path with only the one bond removed, so
+    `A(b!1,c!2).B(a!1,c!2) -> A(b,c) + B(a,c)`, which deletes both bonds
+    of a ring, never fired.
+  - It tested every deleted bond of a rule with several product patterns,
+    so `C(s!3).A(b!1,d!3).B(a!1) -> C(s) + A(b,d).B(a)` never fired on a
+    ring A.B. Its A-B bond keeps A and B in one product pattern.
+
+  The loader now marks each `DeleteBond` whose two molecules the rule's map
+  sends into different product patterns (`RuleOp::separates_products`).
+  The engine checks those bonds after every bond the rule breaks or makes
+  and every molecule it deletes. The cycle-free shortcut is kept, so a
+  tree complex needs no search. On `tests/bng_oracle/models/product_split.bngl`
+  (1000 of each, t = 500, mean of 24 seeds), BNG2's network against
+  RuleMonkey before and after:
+
+  | column | BNG2 | before | after |
+  |---|---|---|---|
+  | `Split2_ring` | 1000 | 608.5 | 1000 |
+  | `Both_ring` | 606.5 | 1000 | 607.7 |
+  | `Keep_ring` | 606.5 | 1000 | 607.9 |
+  | `Swap2_ring` | 1000 | 720.1 | 1000 |
+  | `Swap2_single` | 666.7 | 716.4 | 665.6 |
+
+  The other six columns are controls, and they agree before and after.
+  NFsim `-bscb` gets six of the eleven wrong, so the model is in the
+  BNG2-oracle suite. Every other model under `tests/` is byte-identical to
+  `main`, 237 XMLs at two seeds each. `rm_tlbr_rings`, the heaviest
+  ring-unbinding model, runs within 1% of `main`.
+
+- **`run()` accepted a window that ends before it starts.** `run({7, 5, n})`
+  ran nothing and labelled one state with every sample time.
+  `simulate()` and `parameter_scan` already refuse such a window, and
+  `run()` now refuses it too. A failed `initialize()` now leaves no
+  session active, rather than one that was never initialized.
+
+- **A whole-species delete fired once per matching molecule, not once per
+  species.** A rule that drops every molecule of a reactant pattern without
+  the DeleteMolecules keyword deletes the species the pattern matched, and
+  BNG2 makes that species the rule's reaction center
+  (`RxnRule::find_reaction_center`), so every match into one species is one
+  reaction. RM, like NFsim, anchored the delete at the pattern's first
+  molecule and counted one instance per match of it. On 2000 copies at
+  `k t = 0.5`, BNG2's network leaves 1213 of each of these; RM left about
+  736 of the first four:
+
+  | rule | species | RM before |
+  |---|---|---|
+  | `A() -> 0` | `A.A` | 2k |
+  | `A(b!1).A(b!1) -> 0` | `A.A` | 2k |
+  | `A() -> 0` | `A.B.A` | 2k |
+  | `A().B() -> 0` | `A.B.A` | 2k |
+  | `B().A() -> 0` | `A.B.A` | k |
+
+  The last two rows are the #88 defect again: the same graph, two rates.
+  NFsim gives the same wrong answers with or without `-cb` / `-bscb`. A
+  whole-species delete is now counted per complex, through the tally
+  context patterns use (issue #33), wherever its molecule type can share a
+  complex; a type that is a monomer for the whole run has one match per
+  complex already and keeps the cheaper per-molecule count, so the common
+  `X() -> 0` degradation rule pays nothing. `add_species`, which can put a
+  type into a complex the model never makes, refreshes that.
+
+- **A partial delete without the keyword deleted the whole species.**
+  BNG2 writes `DeleteMolecules="0"` on a molecule id when a rule drops some
+  molecules of a pattern and keeps the rest (`C(x!1).D(x!1) -> D(x)`); only
+  the dropped molecules go, and the reaction happens only if what is left
+  forms exactly as many species as the rule has product patterns. RM read
+  every `"0"` as "delete the whole species", so it took the D the rule
+  keeps, and it fired where BNG2 does not (a C that also holds an E, or a
+  bridge whose two ends are also bonded directly). Only the named molecules
+  go now, and a draw that would leave the wrong number of species is a null
+  event. NFsim refuses such a rule at load. No corpus model uses one.
+
+  `tests/bng_oracle/models/species_delete.bngl` pins both against BNG2's
+  network — NFsim cannot be the reference for either — and
+  `species_delete_api_test` pins the `add_species` path. 186 of 190 corpus
+  models are byte-identical; `r08`, `r24`, `r25` and `r26` delete molecules
+  that can bind, so their deletes moved onto the per-complex count with the
+  same counts (each complex holds one match) and a different draw stream.
+  All four pass against NFsim.
+
+- **A rule's rate depended on the order its reactant pattern listed
+  molecules in (issue #88).** BNG2 counts one reaction per distinct
+  placement of a rule's reaction center — the components whose state or
+  bond it changes and the molecules it deletes — however the matches
+  differ in untransformed context. RM seeded every reactant pattern on its
+  first molecule, summed over seeds, and collapsed matches only on the
+  seed's own changed components. So
+
+  ```bngl
+  L(r!1,r!2).R(l!1,s~0).R(l!2) -> L(r!1,r!2).R(l!1,s~1).R(l!2)  k
+  ```
+
+  fired at `2k` on an R linked through two L, once per L, while the same
+  graph written R first fired at `k`. The same per-seed count went wrong
+  in five more ways, all fixed here and all measured against BNG2's
+  generated network:
+
+  - a center spanning two molecules was collapsed on one of them, so an L
+    between two R whose rule also changes the first R fired at `k`, not
+    `2k`;
+  - the collapse kept the first seed embedding of each group whether or
+    not it reached a whole match, which left a rule written transformed
+    first inert on an R whose first `l` led to a dead end;
+  - the walk out of the seed committed to the first partner embedding,
+    which left a rule inert when a symmetric partner's first way of
+    filling the pattern dead-ended;
+  - a `.`-joined context molecule with two copies in the complex
+    (`F().E(s~0)`) and a deleted molecule with symmetric components
+    (`A(b) -> 0 DeleteMolecules` on an `A(b,b)`) each counted 2x;
+  - a per-molecule local function tagged on a molecule other than the
+    first was evaluated at the first, where `R(l!1,s~0).L(r!1)%x` read
+    its observable of L as 0 and never fired.
+
+  Each reactant pattern is now seeded on its first molecule in the
+  reaction center (on the tagged molecule when it carries a per-molecule
+  tag) — NFsim, too, heads each reactant at a molecule the rule transforms
+  — and its whole matches are collapsed on the whole center. The bimolecular and n-ary paths share
+  the change. A rule that already lists a center molecule first keeps its
+  seed, and its exact draw stream wherever the old count was right, except
+  where a seed embedding reaches several whole matches through a
+  `.`-joined molecule (the draw is now over center placements directly).
+
+  In the corpora, the change is visible on `ensemble`: its Ste5
+  dimerization, `Ste4(ste5!1).Ste5(ste5,ste4!1,loc~c) + Ste5(...).Ste4(...)`,
+  lists Ste4 first, so its homodimer correction never saw the shared Ste5
+  and the rule fired about 2x. Sixteen other corpus models list context
+  first in some rule and change their draw stream; on a shared mid-run
+  state their rule propensities are identical to main's. `rm_tlbr_rings`
+  changes stream through the `.`-joined case. The other 171 of the 189
+  corpus models are byte-identical. `tests/cpp/reaction_center_test`
+  pins every case above with an exact binomial expectation, and
+  `ft_reaction_center_seed` runs the issue's chemistry both ways round
+  against NFsim.
+
+- **An observable named `time` was never bound, so a bare `time` in a rate
+  law read the clock instead (issue #87).** BNG2 rejects a *parameter*
+  named `time` but accepts an observable of that name, and the bare word is
+  then the observable while the call form `time()` is still the clock. RM
+  entered the clock under `time`, let the observable overwrite that entry,
+  and then skipped the name when binding, so the expression evaluator fell
+  back to its built-in clock, silently. With `Molecules time A()` holding 5,
+  `0 -> B() k*(time+1)` gave B(2) near 400 (`k*(t+1)` integrated) instead of
+  1200. The observable is now bound like any other.
+
+  The vendored bngsim expression layer is refreshed to bngsim `5eb6e91`,
+  which carries lanl/bngsim#810: a model scalar named `time` is registered
+  under a mangled key and `time()` stays the clock. Without it, binding the
+  observable would have turned `time()` into the observable too. The
+  refresh also brings bngsim's `rint` as BNG's `floor(x + 0.5)` (#771),
+  `round` as C's `round` (#684), and `&&`/`||` rewritten after the symbol
+  remap (#770); no model in RM's corpus uses any of them, and an embedded
+  build already links the host bngsim's layer. Its dependency-collector
+  change (#779) is in a call RM does not make.
+
+  A parameter named `t` read the clock the same way. RM aliases a bare `t`
+  to the clock, and the alias overwrote the parameter's entry; an observable
+  or function named `t` already won. A model symbol named `t` now always
+  takes the name.
+
+- **A rate law that reads `time()` was held at its value from the last
+  event, so one that is 0 at the start of a run never fired (issue #86).**
+  The SSA drew each waiting time from the propensity at the last event and
+  held it until the next one. That is exact only for a rate that cannot
+  move without an event, and a rate that reads the clock can. At zero total
+  propensity the loop took the state as absorbing and recorded the rest of
+  the run unchanged:
+
+  ```bngl
+  begin functions
+    f() = k*time()
+  end functions
+  begin reaction rules
+    0 -> B() f()
+  end reaction rules
+  ```
+
+  With `k = 100` this returned `B = 0` at t = 2 in every seed, against
+  `k t²/2 = 200`. The zero was only the extreme case. A rate that is merely
+  small when it is held draws a waiting time from that small value and
+  outlasts the run, and a rate that passes through zero mid-run freezes near
+  zero once an event lands there.
+
+  RM now places the next event where the hazard integrated over time
+  reaches the Exp(1) draw (the time-change theorem), using the same draw as
+  before. The rest of the propensity is constant between events and is
+  integrated exactly. The part that moves with the clock is sampled over
+  error-controlled panels: five Gauss–Lobatto nodes, a quartic integral,
+  and a step controlled against Simpson's rule. No panel is longer than a
+  thousandth of the run. A rate that reads 0 at every node has no error to
+  measure, and the cap is what stops a step from growing over a pulse. It
+  bounds the miss rather than removing it. A pulse wider than about a third
+  of a panel always gets a node. A narrower one can still fall between
+  nodes, and then whether it is seen depends on the length of the run.
+  This is the scheme bngsim's network SSA uses for the same job. A rule takes this
+  path when its rate-law function chain reads `time`, directly, through
+  another function, or as a TFUN counter. Local rates are included.
+  Every other model runs the direct method exactly as before.
+
+  Mean count at t = 2 over 100 seeds, one zero-order rule per model, so the
+  count is Poisson with mean Λ(2):
+
+  | rate | Λ(2) | before | after |
+  |---|---:|---:|---:|
+  | `100*time()` | 200 | 0 | 200.6 |
+  | `100*time() + 0.1` | 200.2 | 30.6 | 200.7 |
+  | `300*(time()-1)^2` | 200 | 145.7 | 200.6 |
+  | `if(time()>1, 200, 0)` | 200 | 0 | 200.6 |
+  | 20000 on (1, 1.01) | 200 | 0 | 200.6 |
+  | TFUN over time, 0 → 200 | 200 | 0 | 200.6 |
+  | local `kl*time()*Aobs(x)`, 5 A | 200 | 0 | 198.0 |
+
+  Every shape with Λ(2) = 200 that draws the same random numbers reports
+  the same count in every seed. That is all of them except the local rate,
+  which also draws the instance. The count is then the number of partial
+  sums of the draws below 200, which shows the integration holding in each
+  realization, not just on average.
+
+  Blast radius: only models whose rates read the clock change. Output was
+  compared byte for byte against 3.10.1's engine on all 89
+  feature-coverage models and the 141 corpus, reference and fixture
+  models, two seeds each. The only differences were
+  `edg_time_dependent_rate` and the new fixtures. On
+  a 56 000-event binding model with a `sin(time())` forcing, wall time rose
+  10%. A *local* rate that reads `time()` costs much more, about 10x per
+  event on a 2 000-instance rule, because each node is a full rescan of the
+  rule, as the per-event refresh of such a rule already was. No corpus
+  model has that shape.
+
+  Two adjacent defects are fixed with it:
+
+  - A global function that reads `time()` now reports the sample's time in
+    the `.gdat` / `Result::function_data` row. It used to report the time
+    of the last event before the sample, so `clock() = time()` read 0 at
+    every sample of a run that had not fired yet. Under the new loop it
+    would have reported the *next* event's time, since the clock now
+    reaches that event before the samples it passes are recorded.
+  - Continuing a session in process and continuing it from `save_state` /
+    `load_state` now agree with each other for such a model. In process,
+    the next segment started from the rate the last event had left.
+    `load_state` re-evaluates every rate at the saved time. Neither then
+    reproduced an unsplit run when the calls were short against the
+    waiting time, for any model, because the overshoot rollback reused the
+    same draw. That was issue #89, fixed below.
+
+  The feature-coverage reference for `edg_time_dependent_rate` was wrong
+  as well, and is regenerated. BNG2 2.9.3's network ODE refreshes a
+  function of `time()` only at output steps. On the model's 100-step grid
+  that read A(50) = 6.2135, against the analytic 6.0278: 3% high, and
+  17.70 on a 10-step grid. The old RM carried an error of the same sign and
+  about the same size, so the two agreed. Against the corrected
+  reference, over 400 seeds, the integral of `A_total` sits at z = +3.13
+  before this change and −0.75 after. The harness now integrates that
+  model's ODE on a grid 100x finer and keeps every 100th row
+  (`ODE_OVERSAMPLE`), which reads 6.0319.
+
+- **A session advanced in calls short against its waiting times all but
+  stopped firing (issue #89).** Every `simulate()` / `step_to()` call ends
+  on a waiting-time draw that lands past its `t_end`. RM rolled the RNG
+  back to before that draw, so the next call drew the same Exp(1) value
+  again and spent it from its own start. A value that has outlasted one
+  call is already known to exceed the hazard over it, so spending it again
+  is not a fresh draw. With a constant propensity the result is worse than
+  a bias. Once the draw that straddles a boundary exceeds one call's worth
+  of hazard, nothing fires, the propensity does not move, and the same
+  value comes back at every later call, so the session stays frozen to the
+  end.
+
+  The draw is now spent, and the next call takes a fresh one. That is
+  exact: the pool and the clock at `t_end` are the whole state, and the
+  waiting time has no memory. It holds for a rate that reads `time()` as
+  well, since the next search integrates the hazard from `t_end`.
+  Continuing in process and continuing from `save_state` / `load_state`
+  still agree bit for bit. The RNG is left past the spent draw, which is
+  the state the file records, so both take the same next number.
+
+  Mean count over 100 seeds, one zero-order rule per model, so the count
+  is Poisson with a known mean however the run is cut:
+
+  | rate, how the session is advanced | expected | before | after |
+  |---|---:|---:|---:|
+  | 1, one call to t = 100 | 100 | 101.5 | 101.5 |
+  | 1, 100 `simulate()` calls of 1.0 | 100 | 1.82 | 101.1 |
+  | 1, 1000 `simulate()` calls of 0.1 | 100 | 0.16 | 100.7 |
+  | 1, 1000 `step_to()` calls of 0.1 | 100 | 0.16 | 100.7 |
+  | `100*time()`, one call to t = 2 | 200 | 200.6 | 200.6 |
+  | `100*time()`, 20 `simulate()` calls of 0.1 | 200 | 181.6 | 202.9 |
+  | `100*time()`, 40 `step_to()` calls of 0.05 | 200 | 151.8 | 201.4 |
+  | `100*time()`, 200 `simulate()` calls of 0.01 | 200 | 6.4 | 200.0 |
+
+  For rate 1 in calls of 1.0, the fraction of calls that fire nothing
+  should be e⁻¹ = 0.368. It was 0.988, and is now 0.364.
+
+  Blast radius: every split run's trajectory changes from its first
+  boundary on. That covers segmented `simulate()`, `step_to()`, a
+  continuation through `save_state` / `load_state`, and `parameter_scan`
+  with `reset_conc => 0` and `bifurcate`, which thread a chain through a
+  state file. A one-shot run is byte-identical. On all 232
+  feature-coverage, reference, oracle and fixture models, two seeds each,
+  the output of `rm_driver --print-functions` matches `main` (093c4ec)
+  byte for byte; 226 of them run, and the other 6 are refusal fixtures
+  that refuse the same way. A `parameter_scan` with `reset_conc => 1` (the
+  default) is byte-identical too. Where the calls are long against the
+  waiting times only the random stream changes. `ft_continue` split at t =
+  50, as its BNGL describes, reads AB(100) = 49.95 ± 0.26 before and 50.41
+  ± 0.28 after, against 49.99 ± 0.27 in one call (200 seeds), and its
+  first 50 time units and the join row are unchanged. `A_plus_A` chained
+  over 20 points of 0.5 ends at AA = 249.6 before and 249.9 after, against
+  250.0 in one call. A chain of short points was wrong before: over 100
+  points of 0.01 it ended at AA = 56.6, against 206.7 after and 205.1 in
+  one call.
+
+  `save_load_test` asserted that a split run's final value equals an
+  uninterrupted run's. That held only because the rollback kept the two
+  aligned on the same draws, and it now compares the save/load
+  continuation with the in-process one, sample for sample.
+
+  The comment on `Result::event_count` said it counts the events "during
+  this run". It counts the whole session, so a session advanced in several
+  calls reports a running total and the events in one call are the
+  difference of consecutive results. The comment now says so, and the new
+  test pins it.
+
+- **Carry-over scans running at the same time in separate processes
+  shared one temp file (issue #92).** `parameter_scan` with
+  `reset_conc => 0`, and every `bifurcate`, pass each point's final state
+  to the next point by saving and reloading the session. That went through
+  `rm_scan_<n>.rmstate` in the temp directory, and `n` came from a counter
+  that restarts at 0 in every process, so two processes running chains at
+  once wrote and read the same `rm_scan_0.rmstate`. Six concurrent
+  `rm_scan` chains on `A_plus_A`, 300 points each, three times over: 17 of
+  the 18 failed. Some read errors (`Cannot open state file`,
+  `Invalid state file header`, `missing END marker`, `vector`), and some
+  ran away; one was at 7.9 GB when killed. A load that does succeed can
+  continue from the other process's pool, clock and RNG without a word, so
+  even a clean exit proved nothing.
+
+  The state now stays in memory, and a chain no longer touches the temp
+  directory. The same 18 chains all finish and match an uncontended run
+  byte for byte. Output is otherwise unchanged. `rm_scan` sweeps with
+  `reset_conc` 0 and 1 and bifurcations on `A_plus_A`,
+  `ft_nested_functions` and `zero_order_birth_model`, 20 seeds each, are
+  byte-identical to before. So are the files `save_state` writes.
+
 ## [3.10.1] — 2026-08-25
 
 ### Fixed
@@ -2842,7 +3370,8 @@ The legacy implementation, RuleMonkey 2.0.25, was introduced in:
 > RG. *RuleMonkey: software for stochastic simulation of rule-based
 > models.* BMC Bioinformatics 11:404 (2010). PMID: 20673321.
 
-[Unreleased]: https://github.com/richardposner/RuleMonkey/compare/v3.10.1...HEAD
+[Unreleased]: https://github.com/richardposner/RuleMonkey/compare/v3.11.0...HEAD
+[3.11.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.11.0
 [3.10.1]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.10.1
 [3.10.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.10.0
 [3.9.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.9.0
