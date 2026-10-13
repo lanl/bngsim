@@ -137,10 +137,13 @@ def _listed(parent: ET.Element | None, list_name: str, item: str) -> list[ET.Ele
 
 
 def _expression(func: ET.Element) -> str:
-    """The text of the function's first ``<Expression>``, with whatever markup
-    it holds read through, as the backends read it."""
+    """The text of the function's first ``<Expression>`` as RuleMonkey's parser
+    gives it: the element's own text, before, between and after any elements
+    inside it, and none of the text those hold."""
     expression = _child(func, "Expression")
-    return "" if expression is None else "".join(expression.itertext()).strip()
+    if expression is None:
+        return ""
+    return "".join([expression.text or "", *(child.tail or "" for child in expression)]).strip()
 
 
 def _reads_time(func: ET.Element) -> bool:
@@ -655,8 +658,9 @@ def rulemonkey_clock_profile(xml_path: str | Path) -> ClockProfile:
             f"RuleMonkey (method='rm' / 'nf_exact'): {str(xml_path)!r} could not be read "
             f"to see how its rate laws read the clock ({why}), so it cannot be run. bngsim "
             "reads the file as XML and repairs nothing; RuleMonkey's own parser also reads "
-            "some files that are not well-formed, such as one with -- inside a comment or "
-            "an attribute given twice. Correct the file (issue #1022)."
+            "some files that are not well-formed, such as one with -- inside a comment, an "
+            "attribute given twice, or a character that is not valid in the encoding the "
+            "file declares. Correct the file (issue #1022)."
         )
     if profile.refusal is not None:
         raise ModelError(

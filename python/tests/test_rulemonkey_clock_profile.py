@@ -268,9 +268,38 @@ def test_markup_inside_an_expression_is_read_through(tmp_path):
     assert clock_profile(xml).readers == ("f",)
 
 
+@pytest.mark.parametrize(
+    ("written", "readers", "thresholds"),
+    [
+        # The engine reads time(), not timer().
+        ("k*time<x>r</x>()", ("f",), ()),
+        # It reads a bare t, not tau.
+        ("k*t<x>au</x>", ("f",), ()),
+        # It reads a threshold of 6, not 600.
+        ("if(time()>=6<x>00</x>,k,0)", ("f",), (6.0,)),
+        # And here it reads k alone.
+        ("k<x>*time()</x>", (), ()),
+    ],
+)
+def test_text_inside_an_element_in_an_expression_is_not_part_of_it(
+    tmp_path, written, readers, thresholds
+):
+    """RuleMonkey's parser gives <Expression> its own text, around any elements
+    inside it, and none of the text those hold."""
+    xml = _with(tmp_path, "k*MARK")
+    xml.write_text(xml.read_text(encoding="utf-8").replace("k*MARK", written), encoding="utf-8")
+    profile = clock_profile(xml)
+    assert profile.refusal is None
+    assert profile.readers == readers and profile.thresholds == thresholds
+
+
 NOT_WELL_FORMED = {
     "two dashes in a comment": ("<sbml ", "<!-- a note -- with two dashes -->\n<sbml "),
     "an attribute given twice": ("<sbml ", '<sbml note="a" note="b" '),
+    "a byte the declared encoding does not have": (
+        "<sbml ",
+        "<!-- caf\N{LATIN SMALL LETTER E WITH ACUTE} -->\n<sbml ",
+    ),
 }
 
 
@@ -284,7 +313,8 @@ def test_a_file_that_is_not_well_formed_xml_has_no_profile(tmp_path, flaw, sourc
     or not the model reads the clock."""
     old, new = NOT_WELL_FORMED[flaw]
     xml = tmp_path / "flawed.xml"
-    xml.write_text(source.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
+    # Latin-1 bytes under the file's UTF-8 declaration, which is the third flaw.
+    xml.write_bytes(source.read_text(encoding="utf-8").replace(old, new, 1).encode("latin-1"))
     assert clock_profile(xml) is None
 
 
@@ -652,7 +682,7 @@ def test_a_file_that_is_not_well_formed_xml_is_refused_when_built(tmp_path, flaw
     at what the file holds. The message carries the XML parser's own reason."""
     old, new = NOT_WELL_FORMED[flaw]
     xml = tmp_path / "flawed.xml"
-    xml.write_text(PLAIN.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
+    xml.write_bytes(PLAIN.read_text(encoding="utf-8").replace(old, new, 1).encode("latin-1"))
     model = bngsim.Model.from_net(str(DATA.parent / "simple_decay.net"))
     match = r"could not be read to see how its rate laws read the clock \(.*line \d+, column \d+\)"
     with pytest.raises(ModelError, match=match):
