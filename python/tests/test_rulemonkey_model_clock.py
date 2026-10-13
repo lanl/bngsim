@@ -680,10 +680,11 @@ def test_a_timeout_inside_a_cut_run_is_a_timeout(tmp_path):
 
 @pytest.mark.parametrize("t0", [5.0, 1e9, 1e12, 1e13])
 def test_a_late_start_without_a_clock_is_the_run_from_zero(t0):
-    """Only elapsed time matters to this model, so it is run on elapsed time and
-    is the run from 0, count for count, however late it starts. On the engine's
-    absolute clock a start at 1e12 read 20000 at the second row (12131
-    expected): the clock there cannot resolve the waits between events."""
+    """Control. Only elapsed time matters to this model, so it is run on elapsed
+    time and is the run from 0, count for count, however late it starts, as on
+    main. On the engine's absolute clock a start at 1e12 read 20000 at the
+    second row (12131 expected): the clock there cannot resolve the waits
+    between events."""
     _, _, from_zero = _run(PLAIN, t_span=(0.0, 2.0), n_points=3)
     _, t, late = _run(PLAIN, t_span=(t0, t0 + 2.0), n_points=3)
     assert t[0] == t0 and t[-1] == t0 + 2.0
