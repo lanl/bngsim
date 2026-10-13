@@ -568,6 +568,66 @@ def test_a_one_shot_run_across_a_switch_leaves_a_live_session_alone():
     assert not core.has_session()
 
 
+def test_a_saved_session_is_cut_where_the_rates_change_when_it_is_loaded(tmp_path):
+    """load_state starts a session without initialize(): it has to hand the
+    engine the thresholds too."""
+    xml = _pulse_parameters(tmp_path, 0.02)
+    snapshot = tmp_path / "before_the_pulse.state"
+    with bngsim.RuleMonkeySession(str(xml)) as s:
+        s.initialize(seed=4)
+        s.simulate(0.0, 5.0, 2)
+        s.save_state(snapshot)
+    with bngsim.RuleMonkeySession(str(xml)) as s:
+        s.load_state(snapshot)
+        assert s.current_time == 5.0
+        final = _a0(s.simulate(5.0, 1000.0, 2))[-1]
+    _within(np.array([final]), *AFTER_PULSE)
+
+
+def test_the_core_orders_the_instants_it_is_given():
+    from bngsim._bngsim_core import RuleMonkeySimulator, TimeSpec
+
+    ts = TimeSpec()
+    ts.t_start, ts.t_end, ts.n_points = 0.0, 1000.0, 3
+    core = RuleMonkeySimulator(str(PLAIN))
+    core.set_clock_profile(True, [6.0])
+    ordered = list(core.run(ts, 5).observable_data[-1])
+    core.set_clock_profile(True, [900.0, 6.0, 6.0, 30.0])
+    core.set_clock_profile(True, [6.0, 6.0])  # replaces the list, and one instant is one cut
+    assert list(core.run(ts, 5).observable_data[-1]) == ordered
+    with pytest.raises(RuntimeError, match="not a finite number"):
+        core.set_clock_profile(True, [6.0, float("nan")])
+
+
+def test_the_core_refuses_times_it_cannot_run():
+    from bngsim._bngsim_core import RuleMonkeySimulator, TimeSpec
+
+    def spec(t_start, t_end):
+        ts = TimeSpec()
+        ts.t_start, ts.t_end, ts.n_points = t_start, t_end, 3
+        return ts
+
+    for reads_clock in (True, False):
+        core = RuleMonkeySimulator(str(PLAIN))
+        core.set_clock_profile(reads_clock)
+        for bad in (spec(0.0, float("inf")), spec(float("nan"), 1.0)):
+            with pytest.raises(RuntimeError, match="not a finite number"):
+                core.run(bad, 1)
+        with pytest.raises(RuntimeError, match="earlier than"):
+            core.run(spec(5.0, 3.0), 1)
+        assert not core.has_session()
+        core.initialize(1, 5.0)
+        for bad in ((5.0, float("inf"), 3), (5.0, 3.0, 3)):
+            with pytest.raises(RuntimeError):
+                core.simulate(*bad)
+        with pytest.raises(RuntimeError, match="not a finite number"):
+            core.simulate(5.0, 6.0, 2, 0.0, [5.0, float("nan")])
+        with pytest.raises(RuntimeError, match="not a finite number"):
+            core.step_to(float("inf"))
+        assert core.current_time() == 5.0
+        core.destroy_session()
+
+
 def test_a_timeout_inside_a_cut_run_is_a_timeout(tmp_path):
     from bngsim import SimulationTimeout
 

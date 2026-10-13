@@ -306,6 +306,14 @@ def test_a_linear_table_may_only_be_wrapped_smoothly(tmp_path):
     assert clock_profile(xml).refusal is None
 
 
+def test_a_table_counts_even_where_its_wrapper_leaves_it_out(tmp_path):
+    """The engine counts a function with a time-indexed table as moving with
+    the clock whether or not its expression reads the table."""
+    xml = _table(tmp_path, "k_base*__TFUN_VAL__", "k_base")
+    profile = clock_profile(xml)
+    assert profile.readers == ("tfun_rate",) and profile.thresholds == (0.0, 1.0, 2.0)
+
+
 def test_a_table_indexed_by_a_function_of_the_clock_is_refused(tmp_path):
     """The table's value then changes where that function passes a table point,
     not at the table points."""

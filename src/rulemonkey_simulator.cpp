@@ -284,8 +284,7 @@ struct RuleMonkeySimulator::Impl {
             }
             rulemonkey::TimeSpec ts;
             ts.sample_times.push_back(a);
-            // A sample on `a` is the first row of this call, so that a function
-            // column reads the branch that starts there too.
+            // A sample on `a` is the first row of this call.
             std::vector<std::size_t> rows;
             while (next < samples.size() && samples[next] < b) {
                 if (samples[next] > a) {
