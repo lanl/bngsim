@@ -585,16 +585,22 @@ def test_a_saved_session_is_cut_where_the_rates_change_when_it_is_loaded(tmp_pat
 
 
 def test_the_core_orders_the_instants_it_is_given():
+    """A cut spends a draw, so where the cuts fall decides the random stream:
+    the same instants in another order, or twice, have to give the same run."""
     from bngsim._bngsim_core import RuleMonkeySimulator, TimeSpec
 
     ts = TimeSpec()
-    ts.t_start, ts.t_end, ts.n_points = 0.0, 1000.0, 3
+    ts.t_start, ts.t_end, ts.n_points = 0.0, 4.0, 5
     core = RuleMonkeySimulator(str(PLAIN))
-    core.set_clock_profile(True, [6.0])
-    ordered = list(core.run(ts, 5).observable_data[-1])
-    core.set_clock_profile(True, [900.0, 6.0, 6.0, 30.0])
-    core.set_clock_profile(True, [6.0, 6.0])  # replaces the list, and one instant is one cut
-    assert list(core.run(ts, 5).observable_data[-1]) == ordered
+
+    def run(breakpoints):
+        core.set_clock_profile(True, breakpoints)
+        return [list(column) for column in core.run(ts, 5).observable_data]
+
+    ordered = run([0.5, 1.5, 2.5])
+    assert run([2.5, 0.5, 1.5]) == ordered
+    assert run([1.5, 0.5, 0.5, 2.5, 2.5, 1.5]) == ordered
+    assert run([0.5, 1.5]) != ordered  # and a cut does move the stream
     with pytest.raises(RuntimeError, match="not a finite number"):
         core.set_clock_profile(True, [6.0, float("nan")])
 

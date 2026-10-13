@@ -248,6 +248,16 @@ def test_a_function_of_a_switch_is_a_switch_whatever_it_does_to_it(tmp_path):
     assert profile.readers == ("f", "g") and profile.thresholds == (4.0,)
 
 
+def test_a_function_that_only_scales_a_switch_is_still_a_switch(tmp_path):
+    """g2 = k*h() is written smoothly but moves only where h switches, so a
+    step may be applied to it."""
+    more = _function("g2", "k*h()") + _function("h", "if(time()>=4,1,0)")
+    xml = _with(tmp_path, "floor(2.5*g2())", more_functions=more)
+    profile = clock_profile(xml)
+    assert profile.refusal is None
+    assert profile.readers == ("f", "g2", "h") and profile.thresholds == (4.0,)
+
+
 def test_a_smooth_function_of_a_smooth_function_is_smooth(tmp_path):
     xml = _with(tmp_path, "k*g()*exp(-time())", more_functions=_function("g", "1+time()"))
     profile = clock_profile(xml)

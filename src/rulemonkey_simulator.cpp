@@ -350,7 +350,6 @@ void RuleMonkeySimulator::set_clock_profile(bool reads_clock, std::vector<double
         require_finite("RuleMonkeySimulator::set_clock_profile", x);
     }
     std::sort(breakpoints.begin(), breakpoints.end());
-    breakpoints.erase(std::unique(breakpoints.begin(), breakpoints.end()), breakpoints.end());
     impl_->reads_clock = reads_clock;
     impl_->breakpoints = std::move(breakpoints);
 }
