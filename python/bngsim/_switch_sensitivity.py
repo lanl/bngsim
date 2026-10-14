@@ -258,6 +258,66 @@ def _relational_split_op(atom: str) -> tuple[str, str, str] | None:
     return None
 
 
+def _turning_side(expr: str) -> tuple[str, str] | None:
+    """``("abs", u)`` for ``abs(u)``, ``("square", u)`` for ``(u)^2`` or ``u^2``
+    with ``u`` one name or one parenthesized group; ``None`` otherwise."""
+    text = _strip_redundant_parens(expr.strip())
+    m = re.fullmatch(r"abs\s*\((.*)\)", text, re.S)
+    if m is not None and _parens_balanced(m.group(1)):
+        return "abs", m.group(1).strip()
+    m = re.fullmatch(r"(\(.*\)|[A-Za-z_][A-Za-z0-9_]*)\s*\^\s*2(?:\.0*)?", text, re.S)
+    if m is not None and _parens_balanced(m.group(1)):
+        return "square", _strip_redundant_parens(m.group(1)).strip()
+    return None
+
+
+def _parens_balanced(text: str) -> bool:
+    depth = 0
+    for c in text:
+        depth += c == "("
+        depth -= c == ")"
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def _monotone_pieces(atom: str) -> list[str]:
+    """The comparisons whose crossings are this atom's, one per turn of its
+    residual, where the atom compares ``abs(u)`` or ``u^2`` with a bound.
+
+    ``abs(A - 5) < 0.01`` is a window: its residual ``abs(A-5) - 0.01`` falls
+    to zero and comes back up within one step as A passes 5, so a root on it
+    sees the same sign at both ends of the step and reports nothing, and the
+    window was stepped over (issue #904). Its edges are where ``A - 5`` crosses
+    ``0.01`` and ``-0.01``, and each of those residuals is monotone along a
+    flow that moves A one way. ``u^2`` against a bound is the same at
+    ``±sqrt(bound)``, taken only for a bound that is a number at least 0,
+    where the square root is one. ``[]`` for any other atom.
+    """
+    split = _relational_split_op(atom)
+    if split is None:
+        return []
+    lhs, _op, rhs = split
+    side = _turning_side(lhs)
+    bound = rhs
+    if side is None:
+        side = _turning_side(rhs)
+        bound = lhs
+    if side is None or _turning_side(bound) is not None:
+        return []
+    kind, inner = side
+    if kind == "abs":
+        return [f"({inner})<({bound})", f"({inner})>(-({bound}))"]
+    try:
+        value = float(_strip_redundant_parens(bound.strip()))
+    except ValueError:
+        return []
+    if not (value >= 0.0) or value == float("inf"):
+        return []
+    root = repr(value**0.5)
+    return [f"({inner})<({root})", f"({inner})>(-{root})"]
+
+
 def _relational_split(atom: str) -> tuple[str, str] | None:
     """``(lhs, rhs)`` of a relational atom, discarding the operator.
 
@@ -7398,15 +7458,23 @@ def state_switch_conditions(core, ctx=None) -> list[str]:
         # stop, reintroduced from the other side. Measured on the corpus: 3 of
         # 182 condition-carrying rr_parity models, invisible to every test.
         flat = _inline_functions(body, func_map) or body
-        for atom in _iter_condition_atoms(flat):
-            if clock_crossing_compensated(atom, scope):
+        for whole in _iter_condition_atoms(flat):
+            if clock_crossing_compensated(whole, scope):
                 continue  # issue #48's crossing; jumping it here would double it
-            if is_equality_atom(atom):
+            if is_equality_atom(whole):
                 continue  # measure-zero: rooting on it would MAKE the branch (below)
-            residual = state_switch_residual(core, atom)
-            if residual and residual not in seen_residual:
-                seen_residual.add(residual)
-                conditions.append(atom)
+            # A residual that turns within a step is rooted, and jumped, at
+            # each of its edges instead of on itself (issue #904): a root on
+            # `(A-5)^2 - 1e-4` saw one sign at both ends of the step that held
+            # the window, and the run returned Y = 0 and dY/dk = 0. The jump at
+            # each edge is read off the right-hand side either side of it, as
+            # at any crossing; with the whole atom rooted beside its edges, a
+            # step that found both at one instant would jump it twice.
+            for atom in _monotone_pieces(whole) or [whole]:
+                residual = state_switch_residual(core, atom)
+                if residual and residual not in seen_residual:
+                    seen_residual.add(residual)
+                    conditions.append(atom)
     return conditions
 
 
@@ -7469,8 +7537,11 @@ def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[li
             continue
         hit: set[int] = set()
         for written in _iter_condition_atoms(flat):
-            for atom in _split_logical_atoms(written):
-                hit.update(wanted.get(surface(atom) or "", ()))
+            for whole in _split_logical_atoms(written):
+                # The edges a turning residual is rooted at (issue #904) are
+                # read by the rate law that reads the whole atom.
+                for atom in (whole, *_monotone_pieces(whole)):
+                    hit.update(wanted.get(surface(atom) or "", ()))
         for i in hit:
             out[i].append(int(rxn["rxn_idx"]))
     return out
@@ -7570,16 +7641,19 @@ def state_switch_root_conditions(core, covered: Sequence[str] = (), ctx=None) ->
         for written in (*_iter_condition_atoms(text), *_iter_comparisons_anywhere(text)):
             # Inlining can expose more logic than the text spelled — a condition
             # `flag` over `flag() = (A>1)||(B<2)` — so the atoms are split again.
-            for atom in _split_logical_atoms(inline(written)):
-                if is_equality_atom(atom):
+            for whole in _split_logical_atoms(inline(written)):
+                if is_equality_atom(whole):
                     continue
-                residual = state_switch_residual(core, atom)
-                if not residual:
-                    continue
-                key = _surface_key(residual)
-                if key not in seen:
-                    seen.add(key)
-                    conditions.append(atom)
+                # A residual that turns within a step (`abs(A-5) < 0.01`) is
+                # rooted at each of its edges instead (issue #904).
+                for atom in _monotone_pieces(whole) or [whole]:
+                    residual = state_switch_residual(core, atom)
+                    if not residual:
+                        continue
+                    key = _surface_key(residual)
+                    if key not in seen:
+                        seen.add(key)
+                        conditions.append(atom)
     return tuple(conditions)
 
 
