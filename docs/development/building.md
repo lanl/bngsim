@@ -84,3 +84,20 @@ python scripts/local_ci.py wheel --python 3.12
 
 `scripts/local_ci_smoke.py` is the quicker variant, and
 `scripts/local_ci_linux_docker.sh` runs the Linux leg in a container.
+
+## Contributors
+
+bngsim is developed at Los Alamos National Laboratory by
+[William S. Hlavacek](https://github.com/wshlavacek), with contributions from
+
+- [Michael Mendy](https://github.com/Montana)
+- [Arpit Jain](https://github.com/arpitjain099)
+- [@happykawayigt](https://github.com/happykawayigt)
+
+This list is taken from the repository's history. GitHub's
+[contributors graph](https://github.com/lanl/bngsim/graphs/contributors) is
+always current. To contribute, open a pull request against `main`; the
+sections above cover the build, the test suite and the CI it has to pass.
+
+bngsim builds on the work behind the projects it vendors under
+`third_party/`: SUNDIALS, ExprTk, NFsim, RuleMonkey and MIR.
