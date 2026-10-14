@@ -1200,7 +1200,7 @@ class Model:
             value differs from the expression's, which is what makes an ordinary
             write round-trip (issue #188, see Notes). Use this only when the
             caller's contract is "this parameter is an independent input"; the
-            one such caller in bngsim is
+            one such caller in bngsim is the function
             :func:`bngsim.jax.differentiable_solve` with ``flat=True``. Has no
             effect on a parameter that has no defining expression.
 
@@ -1209,32 +1209,34 @@ class Model:
         ParameterError
             If the parameter name is not found.
         ValueError
-            If ``name`` is one of the few SBML compartment sizes this model
-            cannot resolve to a live volume, and ``value`` differs from the size
-            it was loaded at. A compartment's value is folded at load into
-            constants — per-species volume factors, amount-declared initial
-            conditions, mass-action rate constants, SSA propensity volumes, the
-            emitted RHS, and every ``<initialAssignment>`` that reads it. Issue
-            #170 put the volume back into each fold it can reach, so most sizes
-            are now ordinary writable parameters; the residue is refused by name
-            rather than half-honoured, because honoring only some folds leaves
-            the model internally inconsistent rather than moving the volume.
-            :attr:`unwritable_compartment_size_params` lists them; load at the
-            size you want instead (:meth:`from_sbml` accepts
-            ``compartment_sizes={...}``). Writing the value it already holds is
-            allowed, so round-tripping a full parameter vector still works.
-
-            Also raised, on the same unchanged-write rule, for a *synthesized
-            slot* — :attr:`param_is_internal`. One of those is a **function's**
-            name: the engine keeps the function's evaluated value in a parameter
-            slot and rewrites it from the function's own expression before every
-            derivative evaluation, so a write here is discarded at the next one.
-            It used to be accepted — :meth:`get_param` echoed the new value back
-            and the trajectory did not move (issue #227). Write the parameters
-            the function's expression reads instead.
+            If ``name`` is an SBML compartment size this model cannot resolve to
+            a live volume, or a synthesized slot, and ``value`` differs from the
+            value it holds. See Notes.
 
         Notes
         -----
+        A compartment's value is folded at load into constants — per-species
+        volume factors, amount-declared initial conditions, mass-action rate
+        constants, SSA propensity volumes, the emitted RHS, and every
+        ``<initialAssignment>`` that reads it. Issue #170 put the volume back
+        into each fold it can reach, so most sizes are now ordinary writable
+        parameters; the residue is refused by name rather than half-honoured,
+        because honoring only some folds leaves the model internally
+        inconsistent rather than moving the volume. They are listed in
+        :attr:`unwritable_compartment_size_params`; load at the size you want
+        instead (:meth:`from_sbml` accepts ``compartment_sizes={...}``). Writing
+        the value it already holds is allowed, so round-tripping a full
+        parameter vector still works.
+
+        A *synthesized slot* — :attr:`param_is_internal` — is refused on the
+        same unchanged-write rule. One of those is a **function's** name: the
+        engine keeps the function's evaluated value in a parameter slot and
+        rewrites it from the function's own expression before every derivative
+        evaluation, so a write here is discarded at the next one. It used to be
+        accepted — :meth:`get_param` echoed the new value back and the
+        trajectory did not move (issue #227). Write the parameters the
+        function's expression reads instead.
+
         Writing a parameter also re-derives every expression-valued parameter
         that reads it (BNG ``setParameter`` semantics), and — issue #79 — every
         **species initial condition that names one of them**. ``A() Stot`` in a
@@ -1260,8 +1262,8 @@ class Model:
         for an SBML ``initialAssignment`` too complex to be a single parameter
         reference (``2*init_X + offset``), which is evaluated once at load.
 
-        Writing a **derived** parameter — one of the
-        :attr:`param_is_expression` symbols, ``d`` in ``d = d__FREE`` or a
+        Writing a **derived** parameter — one of the symbols in
+        :attr:`param_is_expression`, ``d`` in ``d = d__FREE`` or a
         loader-synthesized ``_rateLaw{N}`` — *overrides* its expression rather
         than moving it: ``d`` stops tracking ``d__FREE``, which is BNG's
         ``setParameter`` semantics. The override is keyed on the value and so is
@@ -1609,6 +1611,12 @@ class Model:
 
         Implements BNG ``resetConcentrations()`` / ``resetConcentrations("name")``.
 
+        A snapshot saved with a forward-sensitivity seed (a pre-equilibrated
+        state — see :meth:`save_concentrations`) restores that ``dx/dθ`` along
+        with the concentrations, so a following
+        ``run(carry_sensitivities=True)`` measures from the right seed
+        (issue #81).
+
         Parameters
         ----------
         label : str, optional
@@ -1617,12 +1625,6 @@ class Model:
             conditions, or the last unlabeled :meth:`save_concentrations`). When a
             ``label`` is given, restores the named snapshot saved by
             ``save_concentrations(label)``.
-
-        A snapshot saved with a forward-sensitivity seed (a pre-equilibrated
-        state — see :meth:`save_concentrations`) restores that ``dx/dθ`` along
-        with the concentrations, so a following
-        ``run(carry_sensitivities=True)`` measures from the right seed
-        (issue #81).
 
         Raises
         ------

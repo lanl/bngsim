@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Union
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -165,14 +165,18 @@ class TrackingAtol:
 # vector; ``"auto"`` asks bngsim to derive one from the model; a
 # :class:`TrackingAtol` (or ``"tracking"``) re-evaluates that vector against the
 # trajectory instead of against the initial state.
-AtolLike = Union[
-    float,
-    Sequence[float],
-    "NDArray[np.float64]",
-    Literal["auto"],
-    Literal["tracking"],
-    TrackingAtol,
-]
+# Spelled with the objects rather than a forward reference: expanded into the
+# signatures of another module, the string "NDArray[np.float64]" was looked up
+# there, where NDArray is not defined, and the docs build could not render
+# them (issue #586).
+AtolLike = (
+    float
+    | Sequence[float]
+    | NDArray[np.float64]
+    | Literal["auto"]
+    | Literal["tracking"]
+    | TrackingAtol
+)
 
 __all__ = [
     "AUTO",

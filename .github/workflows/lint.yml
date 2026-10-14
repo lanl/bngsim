@@ -51,3 +51,28 @@ jobs:
       # .pre-commit-config.yaml. --show-diff-on-failure prints exactly what to reformat.
       - name: pre-commit run --all-files
         run: pre-commit run --all-files --show-diff-on-failure
+
+  # The docs build (issue #586): no other gate builds docs/, so a broken
+  # cross-reference, an autodoc directive naming a renamed API, or a malformed
+  # docstring landed on main and was found by a reader. -W makes a warning a
+  # failure; --keep-going reports every one in a single run. This builds
+  # against the pure-Python package with the compiled core mocked
+  # (docs/conf.py's fallback), which is what autodoc reads; Read the Docs
+  # builds the core and renders the same pages.
+  docs:
+    name: docs (sphinx -W)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install docs requirements
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r docs/requirements.txt numpy
+
+      - name: sphinx-build -W
+        run: python -m sphinx -W --keep-going -b html docs docs/_build/html
