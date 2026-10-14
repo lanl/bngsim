@@ -427,3 +427,72 @@ def test_two_species_that_move_under_one_threshold(tmp_path, cond, a0, b0, fa, f
     assert a == pytest.approx(a0 + fa * 10.0, rel=1e-11)
     assert b == pytest.approx(b0 + fb * 10.0, rel=1e-11)
     assert y == pytest.approx(KB * 5.0, abs=0.1 * KB * 1e-10 * max(a0, b0) / 1e-8)
+
+
+# ── A residual that is not 0 on its own surface (issue #963) ─────────────────
+
+SPELLED = """begin parameters
+    1 eps 1e-8
+    2 thr {thr!r}
+    3 kb 3
+end parameters
+begin functions
+    1 fY() {cond}
+end functions
+begin species
+    1 A() 1
+    2 Y() 0
+end species
+begin reactions
+    1 0 1 eps
+    2 0 2 fY
+end reactions
+begin groups
+    1 Aobs 1
+end groups
+"""
+
+
+SPELLED_END = 6.0
+
+
+def _spelled(tmp_path, text):
+    path = tmp_path / "spelled.net"
+    path.write_text(text)
+    return bngsim.Simulator(bngsim.Model.from_net(path), method="ode").run(
+        t_span=(0.0, SPELLED_END), n_points=2, rtol=1e-10, atol=1e-12, timeout=5.0
+    )
+
+
+@pytest.mark.parametrize(
+    "cond",
+    ["if(Aobs>thr,kb,0)", "if(Aobs^2>thr^2,kb,0)", "if(Aobs*Aobs>thr*thr,kb,0)"],
+    ids=["plain", "squared", "multiplied"],
+)
+def test_a_residual_off_zero_by_rounding_on_its_surface_is_put_across(tmp_path, cond):
+    """A reaches thr = 1 + 5e-8 at t = 5, so Y(6) = kb. With A held on thr,
+    ``(Aobs^2)-(thr^2)`` reads +5.75e-17, an eighth of its ulp, while the
+    condition reads false: the residual's sign said across and leaving, so
+    the state was not taken as pinned. It stayed there, 17 million steps to
+    t = 5.03 with Y = 0, and the wall-clock timeout by t = 6. (At t = 10 the
+    step sequence happens to cross.) Every spelling now takes the plain one's
+    steps."""
+    run = _spelled(tmp_path, SPELLED.format(thr=1.0 + 5e-8, cond=cond))
+    a, y = np.asarray(run.species)[-1]
+    assert a == pytest.approx(1.0 + 1e-8 * SPELLED_END, rel=1e-11)
+    assert y == pytest.approx(KB * (SPELLED_END - 5.0), abs=0.1 * KB * 1e-10 / 1e-8)
+    assert run.solver_stats["n_steps"] < 100_000
+
+
+def test_a_product_of_two_moving_species_is_put_across(tmp_path):
+    """A and B each rise at 1e-8 from 1, and A*B reaches (1 + 5e-8)^2 at t = 5.
+    The product's residual is not 0 on its surface either, and the run timed
+    out the same way."""
+    text = TWO_MOVING.format(
+        cond="if(Aobs*Bobs>thr,kb,0)", a0=1.0, b0=1.0, fa=1e-8, fb=1e-8, thr=(1.0 + 5e-8) ** 2
+    )
+    run = _spelled(tmp_path, text)
+    a, b, y = np.asarray(run.species)[-1]
+    assert a == pytest.approx(1.0 + 1e-8 * SPELLED_END, rel=1e-11)
+    assert b == pytest.approx(1.0 + 1e-8 * SPELLED_END, rel=1e-11)
+    assert y == pytest.approx(KB * (SPELLED_END - 5.0), abs=0.1 * KB * 1e-10 / 1e-8)

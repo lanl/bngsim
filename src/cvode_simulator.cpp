@@ -8793,10 +8793,17 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
             carried += gx[uj] * f0[uj];
         }
         const double reach = kStalledSwitchUlps * ulp;
+        // "Past" by less than an ulp of the residual is rounding, not a side
+        // (issue #963). The residual and the condition are two expressions:
+        // with A held on thr, `(Aobs^2)-(thr^2)` reads +5.75e-17, an eighth of
+        // its ulp, while `Aobs^2 > thr^2` reads false, so the state was taken
+        // as across and leaving, and stayed pinned until the run ended with
+        // the switch not taken. Put across from there, a state that is across
+        // moves the few ulp further the flow already takes it.
         const bool pinned = std::isfinite(g) && std::isfinite(flow) && std::isfinite(carried) &&
                             ulp > 0.0 && carried * flow > 0.0 && std::fabs(g) <= reach &&
-                            h * std::fabs(flow) <= reach      // or the steps still move it
-                            && !(g != 0.0 && g * flow > 0.0); // or it is past, and leaving
+                            h * std::fabs(flow) <= reach // or the steps still move it
+                            && !(std::fabs(g) >= ulp && g * flow > 0.0); // or past, and leaving
         if (!pinned) {
             since[k] = std::numeric_limits<double>::quiet_NaN();
             continue;
