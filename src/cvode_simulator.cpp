@@ -1818,7 +1818,18 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
     // via a rateOf-bearing function — see the derivative at this (t, y).
     // No-op for non-rateOf models. compute_derivs publishes current_derivs
     // as a side effect; rateof_root_scratch absorbs the returned RHS.
+    //
+    // compute_derivs probes as deep as the derivatives read rateOf
+    // (rateof_flow_nesting), and a trigger can read one level deeper: at
+    // (rateOf(X0) > 0.3) with X0' = rateOf(X3) reads a rateOf whose own rate
+    // is a rateOf, which no derivative does. One probe short, it read X0's
+    // rate off the probe before, and never fired at a smooth crossing, or
+    // fired at t = 0 on another species' rate (issue #991). The full depth
+    // first, where it is deeper; a probe from an exact buffer leaves it exact.
     if (mdl->uses_rateof()) {
+        if (mdl->rateof_nesting() > mdl->rateof_flow_nesting()) {
+            mdl->refresh_rateof_derivs(static_cast<double>(t), y_ptr);
+        }
         mdl->compute_derivs(static_cast<double>(t), y_ptr, data->rateof_root_scratch.data());
     }
 
@@ -12817,7 +12828,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // reading rateOf(species) sees the zero-initialized current_derivs
             // and can spuriously fire at t=0 (e.g. `rateOf(A) > -1` would be
             // 0 > -1 = true before the first derivative is ever computed).
+            // (As deep as a trigger reads rateOf, as in the root function: issue #991.)
             if (model.uses_rateof()) {
+                if (model.rateof_nesting() > model.rateof_flow_nesting()) {
+                    model.refresh_rateof_derivs(times.t_start, y_data);
+                }
                 model.compute_derivs(times.t_start, y_data, user_data.rateof_root_scratch.data());
             }
             // A carried execution of a non-persistent event whose trigger is
@@ -12869,6 +12884,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 model.update_observables(y_data);
                 model.evaluate_functions(times.t_start);
                 if (model.uses_rateof()) {
+                    if (model.rateof_nesting() > model.rateof_flow_nesting()) {
+                        model.refresh_rateof_derivs(times.t_start, y_data);
+                    }
                     model.compute_derivs(times.t_start, y_data,
                                          user_data.rateof_root_scratch.data());
                 }
