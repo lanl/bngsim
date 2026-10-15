@@ -1,0 +1,60 @@
+name: biomodels-probe
+
+# Issue #807: every pinned BioModels download returned HTTP 403 on a GitHub
+# runner while the same URLs work from a workstation. This asks, from a runner,
+# one model through each host the fetch has used and through the REST API, and
+# records each response: the status, where it ended, and CloudFront's headers.
+# It reports and never fails; whether runners are refused by policy is what it
+# is here to find out (the issue's plan, step 2). A missing file also answers
+# 403 here ("x-cache: Error from cloudfront"), so a control that does not
+# exist is asked too.
+
+on:
+  pull_request:
+    paths:
+      - benchmarks/suites/biomodels/fetch.py
+      - .github/workflows/biomodels-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe BioModels from a runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ask each host
+        shell: python
+        run: |
+          import urllib.error, urllib.request
+
+          MODEL = "BIOMD0000000498"
+          FILE = "?filename=BIOMD0000000498_url.xml"
+          URLS = [
+              ("old host, metadata", f"https://www.ebi.ac.uk/biomodels/{MODEL}?format=json"),
+              ("new host, metadata", f"https://www.biomodels.org/{MODEL}?format=json"),
+              ("old host, pinned download", f"https://www.ebi.ac.uk/biomodels/model/download/{MODEL}.4{FILE}"),
+              ("new host, pinned download", f"https://www.biomodels.org/model/download/{MODEL}.4{FILE}"),
+              ("new host, latest download", f"https://www.biomodels.org/model/download/{MODEL}{FILE}"),
+              ("control: no such version", f"https://www.biomodels.org/model/download/{MODEL}.999?filename=nope.xml"),
+          ]
+          for label, url in URLS:
+              try:
+                  with urllib.request.urlopen(url, timeout=60) as r:
+                      body = r.read()
+                      status, final, headers = r.status, r.geturl(), r.headers
+              except urllib.error.HTTPError as exc:
+                  body, status, final, headers = b"", exc.code, exc.geturl() or url, exc.headers or {}
+              except Exception as exc:
+                  print(f"{label}: {type(exc).__name__}: {exc}")
+                  continue
+              print(
+                  f"{label}: HTTP {status}, {len(body)} bytes, ended at {final}; "
+                  f"x-cache={headers.get('x-cache')} x-amz-cf-id={headers.get('x-amz-cf-id')} "
+                  f"server={headers.get('server')}"
+              )

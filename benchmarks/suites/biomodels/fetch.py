@@ -45,6 +45,7 @@ import logging
 import random
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -59,6 +60,13 @@ PROVENANCE_MANIFEST = SCRIPT_DIR / "biomodels_provenance.json"
 
 REGISTRY_TTL_SECONDS = 7 * 24 * 3600  # reuse the cached id-list for a week
 METADATA_DELAY = 0.05  # polite pause between per-model metadata calls
+
+# BioModels moved to biomodels.org, served through CloudFront (issue #807). The
+# old https://www.ebi.ac.uk/biomodels/ URLs still answer, by two redirects, and
+# urllib follows them silently, so nothing showed the move until GitHub's
+# runners got HTTP 403 on all 317 downloads that go through it. Asked here
+# directly, with no redirect to hide which hop refused.
+BIOMODELS_BASE = "https://www.biomodels.org"
 
 logger = logging.getLogger("biomodels.fetch")
 
@@ -189,6 +197,29 @@ def available_model_ids(*, ode_only: bool, refresh_registry: bool) -> list[str]:
 # --------------------------------------------------------------------------
 # per-model SBML download
 # --------------------------------------------------------------------------
+def _urlopen(url: str, timeout: float):
+    """``urllib.request.urlopen``, with what a refusal came from logged.
+
+    An ``HTTP Error 403: Forbidden`` alone does not say which host refused, or
+    whether a CDN did: logged with the URL it ended at and CloudFront's own
+    headers (``x-cache``, ``x-amz-cf-id``), a runner's refusal can be told
+    from the origin's and reported to BioModels by request id (issue #807)."""
+    try:
+        return urllib.request.urlopen(url, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        headers = exc.headers or {}
+        logger.error(
+            "HTTP %s from %s (asked %s); x-cache=%s x-amz-cf-id=%s server=%s",
+            exc.code,
+            exc.geturl() or url,
+            url,
+            headers.get("x-cache"),
+            headers.get("x-amz-cf-id"),
+            headers.get("server"),
+        )
+        raise
+
+
 def _looks_like_sbml(data: bytes) -> bool:
     return bool(data) and b"<sbml" in data[:8192].lower()
 
@@ -203,19 +234,17 @@ def _download_via_rest(model_id: str) -> bytes | None:
     import urllib.request
 
     try:
-        with urllib.request.urlopen(
-            f"https://www.ebi.ac.uk/biomodels/{model_id}?format=json", timeout=30
-        ) as r:
+        with _urlopen(f"{BIOMODELS_BASE}/{model_id}?format=json", timeout=30) as r:
             main = (json.load(r).get("files", {}) or {}).get("main", [])
         if not main:
             return None
         url = (
-            "https://www.ebi.ac.uk/biomodels/model/download/"
+            f"{BIOMODELS_BASE}/model/download/"
             + model_id
             + "?"
             + (urllib.parse.urlencode({"filename": main[0]["name"]}))
         )
-        with urllib.request.urlopen(url, timeout=60) as r:
+        with _urlopen(url, timeout=60) as r:
             data = r.read()
         return data if _looks_like_sbml(data) else None
     except Exception as exc:
@@ -279,12 +308,11 @@ def _download_versioned(model_id: str, version: str, fname: str) -> bytes | None
     This endpoint returns the bytes of that specific revision (verified: the
     latest version reproduces our tested sha256), so the fetch is deterministic
     even after BioModels adds newer revisions."""
-    url = (
-        f"https://www.ebi.ac.uk/biomodels/model/download/{model_id}.{version}?"
-        + urllib.parse.urlencode({"filename": fname})
+    url = f"{BIOMODELS_BASE}/model/download/{model_id}.{version}?" + urllib.parse.urlencode(
+        {"filename": fname}
     )
     try:
-        with urllib.request.urlopen(url, timeout=60) as r:
+        with _urlopen(url, timeout=60) as r:
             data = r.read()
         return data if _looks_like_sbml(data) else None
     except Exception as exc:  # noqa: BLE001
