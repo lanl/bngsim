@@ -1,0 +1,39 @@
+# bngsim GH #1067 fixture: BioNetGen's Validate/test_synthesis_cBNGL_simple.bngl
+# with EC's volume 2. 0 -> @EC:A2() should run at k1*V, but NFsim reads the
+# volume only from the product molecule's compartment, and this one is on the
+# pattern: A2 at t = 10 was 9.6 against 20. Refused (RuleWorld/nfsim#106).
+begin model
+begin parameters
+k1 1
+end parameters
+begin molecule types
+A()
+A2()
+B()
+C()
+Source()
+Source2()
+end molecule types
+begin compartments
+	EC 3 2
+end compartments
+begin seed species
+$Source@EC 1
+Source2@EC 1
+end seed species
+begin reaction rules
+0 -> A@EC() k1
+0 -> @EC:A2() k1
+Source() -> B() k1
+Source2() -> Source2() + C() k1
+end reaction rules
+begin observables
+Molecules compartment_suffix A()
+Molecules compartment_preffix A2()
+Molecules constant_source B()
+Molecules non_constant_source C()
+
+end observables
+
+end model
+writeXML()

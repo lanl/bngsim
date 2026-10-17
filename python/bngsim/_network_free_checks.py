@@ -39,6 +39,13 @@ alone change no rate, so only the rate law is refused. So is a rate-law type
 NFsim does not implement: BNG2.pl writes ``Hill`` into the XML, and NFsim drops
 such a rule with a message only its captured log holds, so the rule never fires.
 
+A compartment model is refused on NFsim (issue #1067): NFsim ignores pattern-level
+compartments, misses volume factors and compartment adjacency, misplaces seed
+complexes and created molecules, and mishandles MoveConnected, and BNG2.pl's
+writeXML drops NumberPerQuantityUnit (RuleWorld/nfsim#106, #108, #109, #110,
+RuleWorld/bionetgen#348). A narrower envelope kept missing cases, one of them
+invisible in the XML, so every compartment model is refused.
+
 A function with an argument that reads, outside it, an observable that can
 change, directly or through a function it calls, is refused on NFsim too
 (issue #1062): NFsim re-evaluates such a function only on the complexes a
@@ -753,6 +760,28 @@ def refuse_nfsim_stale_local_functions(xml_path: str | Path) -> None:
         + ". NFsim re-evaluates such a function only on the complexes a reaction "
         "produces, so that term goes stale on every other molecule, without an error "
         "(RuleWorld/nfsim#104; this refusal is lifted under issue #1062). Simulate the "
+        "network BNG2.pl generates with method='ode' or method='ssa'."
+    )
+
+
+def refuse_nfsim_compartments(xml_path: str | Path) -> None:
+    """Raise :class:`ModelError` if *xml_path* declares compartments. NFsim only:
+    its compartment support is wrong in ways no check of the XML can bound."""
+    comps = compartments(xml_path)
+    if not comps:
+        return
+    label, _ = _BACKENDS["nfsim"]
+    raise ModelError(
+        f"{label} cannot run a compartment model (compartments "
+        + ", ".join(f"'{c}'" for c in comps)
+        + "). NFsim's compartment support runs such models wrong without an error: it "
+        "ignores a species-level compartment on a pattern (@EC:A()), applies no volume "
+        "factor to a rule with two or more reactants, gives no compartment to a molecule "
+        "a rule creates with none written, puts every molecule of a seed complex in the "
+        "species' compartment, binds across compartments that do not touch, and moves a "
+        "whole complex on MoveConnected; and BNG2.pl's writeXML drops "
+        "NumberPerQuantityUnit (RuleWorld/nfsim#106, #108, #109, #110, "
+        "RuleWorld/bionetgen#348; this refusal is lifted under issue #1067). Simulate the "
         "network BNG2.pl generates with method='ode' or method='ssa'."
     )
 

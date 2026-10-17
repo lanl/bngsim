@@ -136,6 +136,7 @@ class NfsimSession:
 
         from bngsim._network_free_checks import (
             constant_read_types,
+            refuse_nfsim_compartments,
             refuse_nfsim_rate_laws,
             refuse_nfsim_stale_local_functions,
             refuse_time_dependent_rate_laws,
@@ -144,6 +145,7 @@ class NfsimSession:
         refuse_time_dependent_rate_laws(self._xml_path, "nfsim")
         refuse_nfsim_rate_laws(self._xml_path)
         refuse_nfsim_stale_local_functions(self._xml_path)
+        refuse_nfsim_compartments(self._xml_path)
         # Reads let through only because no rule can change their observable
         # (GH #1062): a count edit of one of these types would make them stale.
         self._constant_read_types = constant_read_types(self._xml_path)
@@ -211,10 +213,9 @@ class NfsimSession:
         change live counts after ``initialize()``, use
         :meth:`add_species` / :meth:`remove_species`.
 
-        Neither kind of write reaches a compartment's size: BioNetGen writes
-        the size into the XML as a number, so a write to the parameter behind
-        it leaves the model at its old volume (issue #1061). Regenerate the XML
-        from BNGL to change a volume.
+        NfsimSession refuses a compartment model (GH #1067). Once that refusal
+        is lifted, note that neither kind of write reaches a compartment's
+        size: BioNetGen writes the size into the XML as a number (issue #1061).
 
         Parameters
         ----------

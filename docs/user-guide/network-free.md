@@ -213,6 +213,21 @@ it dropped a `Hill` rule silently, and it stops the load on `Sat`. Energy
 patterns with no `Arrhenius` rule change no rate and still run. Simulate such a
 model's generated network with `method="ode"` or `method="ssa"`.
 
+### Compartment models
+
+NFsim refuses a model that declares compartments, naming them. Its compartment
+support ran such models wrong without an error, in ways no check of the XML can
+bound: it ignored a species-level compartment on a pattern (`@EC:A()` matched
+every compartment, RuleWorld/nfsim#106); applied no volume factor to a rule with
+two or more reactants or to synthesis spanning compartments (#108); gave no
+compartment to a molecule a rule creates with none written (#109); put every
+molecule of a seed complex in the species' compartment, bound molecules in
+compartments that do not touch, and moved a whole complex on `MoveConnected`
+(#110). BNG2.pl's `writeXML` also drops `NumberPerQuantityUnit`
+(RuleWorld/bionetgen#348), so even a careful check could not see it. Issue #1067
+lifts the refusal once the fixes are vendored; until then simulate a compartment
+model's generated network with `method="ode"` or `method="ssa"`.
+
 ### Functions that read an observable outside their argument
 
 In `fA(x) = k*(1+AC(x))*(1+0.01*MAB)`, `AC(x)` is read through the function's
@@ -268,12 +283,11 @@ On both, a result's `solver_stats["n_steps"]` counts the events since
 `initialize`, not the segment's alone.
 
 On NFsim, a `set_param` reaches every rate constant, Michaelis-Menten `kcat` and
-`Km`, and function, before or after `initialize()`, but not a compartment's
-size. BioNetGen writes the size into the XML as a number, so a write to the
-parameter behind it (`Vc` in `c 3 Vc`) changes `get_parameter('Vc')` and leaves
-the model at the old volume: a zero-order synthesis into `c` keeps its old rate
-(issue #1061, waiting on RuleWorld/bionetgen#347 and RuleWorld/nfsim#105). To
-change a volume, regenerate the XML from BNGL at the new value.
+`Km`, and function, before or after `initialize()`. NFsim refuses a compartment
+model (see "Compartment models" above); once that refusal is lifted, note that
+a write to a compartment-size parameter does not reach the model either, since
+BioNetGen writes the size into the XML as a number (issue #1061, waiting on
+RuleWorld/bionetgen#347 and RuleWorld/nfsim#105).
 
 **PyBNF integration**: When `bngsim` is installed, `method=>"nf"` / `"nfsim"`
 routes through the in-process NFsim backend, and `method=>"rm"` / `"rulemonkey"`

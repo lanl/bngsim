@@ -999,6 +999,7 @@ class Simulator:
                 )
             from bngsim._bngsim_core import NfsimSimulator
             from bngsim._network_free_checks import (
+                refuse_nfsim_compartments,
                 refuse_nfsim_rate_laws,
                 refuse_nfsim_stale_local_functions,
                 refuse_time_dependent_rate_laws,
@@ -1007,6 +1008,7 @@ class Simulator:
             refuse_time_dependent_rate_laws(xml_path, "nfsim")
             refuse_nfsim_rate_laws(xml_path)
             refuse_nfsim_stale_local_functions(xml_path)
+            refuse_nfsim_compartments(xml_path)
             self._sim = NfsimSimulator(xml_path)
             if gml is not None:
                 self._sim.set_molecule_limit(int(gml))

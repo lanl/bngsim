@@ -302,11 +302,20 @@ class TestNfsimMethod:
 
         assert result.n_species == 0
 
-    def test_compartment_xml_smoke(self, dummy_model, nfsim_compartment_xml):
-        """cBNGL smoke test: compartmental XML parses and simulates."""
-        sim = bngsim.Simulator(dummy_model, method="nfsim", xml_path=str(nfsim_compartment_xml))
-        result = sim.run(t_span=(0, 0.1), n_points=2, seed=42)
-        assert result.n_observables == 6
+    def test_compartment_xml_is_refused(self, dummy_model, nfsim_compartment_xml):
+        """GH #1067: NFsim runs compartment models wrong, so method='nfsim' refuses one."""
+        with pytest.raises(bngsim.ModelError, match="cannot run a compartment model"):
+            bngsim.Simulator(dummy_model, method="nfsim", xml_path=str(nfsim_compartment_xml))
+
+    def test_compartment_xml_smoke(self, nfsim_compartment_xml):
+        """cBNGL smoke test, through the core the refusal does not guard: the
+        compartmental XML still parses and simulates."""
+        from bngsim._bngsim_core import NfsimSimulator
+
+        sim = NfsimSimulator(str(nfsim_compartment_xml))
+        sim.initialize(42)
+        result = sim.simulate(0, 0.1, 2)
+        sim.destroy_session()
         assert result.observable_names == [
             "X_free",
             "X_p_total",

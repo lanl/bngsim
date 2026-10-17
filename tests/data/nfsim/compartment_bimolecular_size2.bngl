@@ -1,0 +1,28 @@
+# bngsim GH #1067 fixture: A(b)@EC + B(a)@EC binding in a compartment of size 2.
+# BNG's network runs it at kf/2 (unit_conversion=1/2); NFsim applies no volume
+# factor to a bimolecular rule: AB 133.6 against 100 at t = 1. Refused
+# (RuleWorld/nfsim#108).
+begin model
+begin parameters
+  kf 0.01
+end parameters
+begin compartments
+  EC 3 2
+end compartments
+begin molecule types
+  A(b)
+  B(a)
+end molecule types
+begin seed species
+  A(b)@EC 200
+  B(a)@EC 200
+end seed species
+begin observables
+  Molecules AB A(b!1).B(a!1)
+  Molecules Afree A(b)
+end observables
+begin reaction rules
+  A(b)@EC + B(a)@EC -> A(b!1)@EC.B(a!1)@EC kf
+end reaction rules
+end model
+writeXML()

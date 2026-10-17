@@ -1,0 +1,29 @@
+# bngsim GH #1067 fixture: the observable AECp = @EC:A() carries a species-level
+# compartment on its pattern, which NFsim ignores: it counted all 300 A where
+# the network counts the 200 in EC. Refused (RuleWorld/nfsim#106).
+begin model
+begin parameters
+  kd 0.5
+end parameters
+begin compartments
+  EC 3 1
+  PM 2 1 EC
+  CP 3 1 PM
+end compartments
+begin molecule types
+  A(b)
+end molecule types
+begin seed species
+  @EC:A(b) 200
+  @CP:A(b) 100
+end seed species
+begin observables
+  Molecules Atot A()
+  Molecules AEC A()@EC
+  Molecules AECp @EC:A()
+end observables
+begin reaction rules
+  A()@EC -> 0 kd
+end reaction rules
+end model
+writeXML()

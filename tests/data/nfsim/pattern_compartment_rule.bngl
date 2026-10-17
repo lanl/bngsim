@@ -1,0 +1,28 @@
+# bngsim GH #1067 fixture: the rule @EC:A() -> 0 should degrade only the A in
+# EC, but NFsim ignores the pattern's compartment and degrades the A in CP too
+# (Atot 2 against 101 at t = 10). Refused (RuleWorld/nfsim#106).
+begin model
+begin parameters
+  kd 0.5
+end parameters
+begin compartments
+  EC 3 1
+  PM 2 1 EC
+  CP 3 1 PM
+end compartments
+begin molecule types
+  A(b)
+end molecule types
+begin seed species
+  @EC:A(b) 200
+  @CP:A(b) 100
+end seed species
+begin observables
+  Molecules Atot A()
+  Molecules AEC A()@EC
+end observables
+begin reaction rules
+  @EC:A() -> 0 kd
+end reaction rules
+end model
+writeXML()

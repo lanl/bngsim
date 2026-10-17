@@ -423,7 +423,24 @@ class TestPostInitZeroOrderRate:
     """
 
     @staticmethod
-    def _atot(xml, pre=None, post=None):
+    def _atot(xml, pre=None, post=None, core=False):
+        """Atot at t = 0..4. With *core*, through the core NfsimSimulator, which
+        the NfsimSession refusals do not guard: NfsimSession refuses a compartment
+        model (GH #1067), and this still pins the vendored volume refresh."""
+        expected_kp = {**(pre or {}), **(post or {})}.get("kp", 0.0)
+        if core:
+            from bngsim._bngsim_core import NfsimSimulator
+
+            sim = NfsimSimulator(str(xml))
+            for name, value in (pre or {}).items():
+                sim.set_param(name, value)
+            sim.initialize(1)
+            for name, value in (post or {}).items():
+                sim.set_param(name, value)
+            result = sim.simulate(0, 4, 5)
+            assert sim.get_parameter("kp") == pytest.approx(expected_kp)
+            sim.destroy_session()
+            return np.asarray(result.observable_data).ravel()
         with bngsim.NfsimSession(str(xml)) as nf:
             for name, value in (pre or {}).items():
                 nf.set_param(name, value)
@@ -431,9 +448,7 @@ class TestPostInitZeroOrderRate:
             for name, value in (post or {}).items():
                 nf.set_param(name, value)
             result = nf.simulate(0, 4, n_points=5)
-            assert nf.get_parameter("kp") == pytest.approx(
-                {**(pre or {}), **(post or {})}.get("kp", 0.0)
-            )
+            assert nf.get_parameter("kp") == pytest.approx(expected_kp)
             return np.asarray(result.observables).ravel()
 
     @staticmethod
@@ -454,8 +469,8 @@ class TestPostInitZeroOrderRate:
         self, nfsim_zero_order_switchable_rate_compartment_xml
     ):
         xml = nfsim_zero_order_switchable_rate_compartment_xml
-        post = self._atot(xml, post={"kp": 1000.0})
-        pre = self._atot(xml, pre={"kp": 1000.0})
+        post = self._atot(xml, post={"kp": 1000.0}, core=True)
+        pre = self._atot(xml, pre={"kp": 1000.0}, core=True)
         np.testing.assert_array_equal(post, pre)
         # Synthesis at kp * V = 2000, not at kp: the refresh reapplies the
         # compartment's size (mean 2987 at t = 4, against 1646 without it).

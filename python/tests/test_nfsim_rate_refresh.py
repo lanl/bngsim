@@ -65,7 +65,25 @@ def _write(src: Path, dst_dir: Path, params: dict[str, float], swap=()) -> Path:
     return out
 
 
-def _run(xml: Path, *, pre=None, post=None, seed=1, t_end=4.0, n_points=5) -> np.ndarray:
+def _run(
+    xml: Path, *, pre=None, post=None, seed=1, t_end=4.0, n_points=5, core=False
+) -> np.ndarray:
+    """Observables at n_points times. With *core*, through the core
+    NfsimSimulator, which the NfsimSession refusals do not guard: NfsimSession
+    refuses a compartment model (GH #1067), and this still pins the vendored
+    zero-order volume refresh."""
+    if core:
+        from bngsim._bngsim_core import NfsimSimulator
+
+        sim = NfsimSimulator(str(xml))
+        for name, value in (pre or {}).items():
+            sim.set_param(name, value)
+        sim.initialize(seed)
+        for name, value in (post or {}).items():
+            sim.set_param(name, value)
+        out = np.asarray(sim.simulate(0, t_end, n_points).observable_data).ravel()
+        sim.destroy_session()
+        return out
     with bngsim.NfsimSession(str(xml)) as nf:
         for name, value in (pre or {}).items():
             nf.set_param(name, value)
@@ -205,16 +223,17 @@ def test_a_zero_order_rate_carries_its_symmetry_factor_once(symmetric_zero_order
 
 
 @pytest.mark.parametrize(
-    "fixture, kp_v",
+    "fixture, kp_v, core",
     [
-        ("nfsim_zero_order_switchable_rate_xml", 1000.0),
-        ("nfsim_zero_order_switchable_rate_compartment_xml", 2000.0),
+        ("nfsim_zero_order_switchable_rate_xml", 1000.0, False),
+        # A compartment model: NfsimSession refuses it (GH #1067), the core runs it.
+        ("nfsim_zero_order_switchable_rate_compartment_xml", 2000.0, True),
     ],
 )
-def test_a_post_init_kp_runs_as_kp_written_into_the_xml(request, tmp_path, fixture, kp_v):
+def test_a_post_init_kp_runs_as_kp_written_into_the_xml(request, tmp_path, fixture, kp_v, core):
     xml = request.getfixturevalue(fixture)
-    post = _run(xml, post={"kp": 1000.0})
-    written = _run(_write(xml, tmp_path, {"kp": 1000.0}))
+    post = _run(xml, post={"kp": 1000.0}, core=core)
+    written = _run(_write(xml, tmp_path, {"kp": 1000.0}), core=core)
     np.testing.assert_array_equal(post, written)
     # Synthesis at kp * V: V = 1 without a compartment, 2 in the compartment of size 2.
     mean, var = _birth_death(np.linspace(0, 4, 5), kp=kp_v)

@@ -1,0 +1,28 @@
+# bngsim GH #1067 fixture: compartments only on molecules and seed species, all
+# of size 1, and one unimolecular rule. NFsim happens to run this one right,
+# but it is refused like every compartment model (see test_nfsim_compartments).
+begin model
+begin parameters
+  kd 0.5
+end parameters
+begin compartments
+  EC 3 1
+  PM 2 1 EC
+  CP 3 1 PM
+end compartments
+begin molecule types
+  A(b)
+end molecule types
+begin seed species
+  @EC:A(b) 200
+  @CP:A(b) 100
+end seed species
+begin observables
+  Molecules Atot A()
+  Molecules AEC A()@EC
+end observables
+begin reaction rules
+  A()@EC -> 0 kd
+end reaction rules
+end model
+writeXML()
