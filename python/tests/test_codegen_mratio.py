@@ -108,6 +108,11 @@ CASES = [
     # c2mir has already been caught miscompiling this routine once (see the note
     # on `odd = 1 - odd` in _codegen.py).
     ("the asymptotic route", 10.0, 2.5, "k*mratio(a,b,-A*100)", 50.0),
+    # a = 0 with z > 0 is summed as M(1, b+1, z) and never reaches the loop
+    # (issue #768), so this is the only case that runs the compiled copy of that
+    # series. mratio(0, 1, z) is (e^z - 1)/z, and the exp(-A) keeps the rate
+    # tame while z sweeps from 60 down to near 0.
+    ("a = 0, summed", 0.0, 1.0, "40*k*mratio(a,b,A)*exp(-A)", 60.0),
     ("a rides the species", -3.0, 9.0, "k*mratio(-A,b,-20)", 12.0),
     ("b rides the species", -4.0, 0.0, "k*mratio(a,A+2,-8)", 10.0),
 ]
@@ -166,7 +171,16 @@ def test_known_values_in_the_regime_models_use(tmp_path, a, b, z, expect):
     assert _value(tmp_path, a, b, z) == pytest.approx(expect, rel=1e-9)
 
 
-def test_both_copies_refuse_and_both_say_why(tmp_path):
+@pytest.mark.parametrize(
+    "body",
+    [
+        "k*mratio(50,2.5,-1000)",
+        # A negative b, which every clause of the rule now refuses (issue #768).
+        "k*mratio(-22.52,-25.18,-12)",
+    ],
+    ids=["positive a, large negative z", "negative b"],
+)
+def test_both_copies_refuse_and_both_say_why(tmp_path, body):
     """The region from issue #453, where the answer is a refusal in both copies.
 
     For a positive first argument with a large negative third one the fraction
@@ -181,8 +195,11 @@ def test_both_copies_refuse_and_both_say_why(tmp_path):
     Without that the compiled path reported a bare ``CV_FIRST_RHSFUNC_ERR`` and
     nothing about mratio, which is a worse answer than the wrong number it
     replaced was to diagnose.
+
+    The negative b is the same contract for issue #768: both copies returned a
+    finite wrong value there. This file is the one the MIR and Windows legs run,
+    so it is what checks the compiled copy's ``b > 0`` test on those backends.
     """
-    body = "k*mratio(50,2.5,-1000)"
     messages = {}
     for codegen in (False, True):
         with pytest.raises(Exception) as excinfo:
@@ -190,7 +207,7 @@ def test_both_copies_refuse_and_both_say_why(tmp_path):
         messages[codegen] = str(excinfo.value)
     for codegen, message in messages.items():
         assert "not reliable" in message, f"codegen={codegen} said nothing about the refusal"
-        assert "#453" in message and "#456" in message
+        assert "#453" in message and "#456" in message and "#768" in message
         assert "mratio" in message
     # The compiled one reaches it the long way round, through the witness.
     assert "non-finite" in messages[True]

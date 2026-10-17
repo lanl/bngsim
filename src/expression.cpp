@@ -32,6 +32,7 @@
 #include <deque>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -94,9 +95,13 @@ namespace bngsim {
 // The region, from 1599 argument triples checked against a 40 to 60 digit
 // reference:
 //
-//   * `a` a non-positive integer: safe by construction, not by measurement. The
+//   * `a` a negative integer: safe by construction, not by measurement. The
 //     odd partial numerator carries z*(a+k) and reaches exactly zero at k = -a,
 //     so the fraction TERMINATES. What it computes there is a finite exact sum.
+//     Not `a == 0`: the odd numerators start at k = 1, so for a = 0 none of them
+//     vanishes and the fraction runs on (issue #768). mratio(0, 1, 100) is
+//     (e^100 - 1)/100 = 2.69e41 and this returned 1.28e15; mratio(0, 0.5, 40)
+//     came back negative.
 //   * `a <= 0` with `z <= 0`: 487 triples, none wrong. This is also where BNG
 //     models live, since a model builds a = -min(AT,BT) and z = -1/Keq. It
 //     stays true when a fit moves the counts off the integers, which is why the
@@ -113,6 +118,14 @@ namespace bngsim {
 //     with a margin: 32 was the last value that leaked nothing and 16 still let
 //     two through. The second half bounds the even partial numerators, which
 //     the first half does not reach at all; see the note on issue #456 below.
+//
+// All of it for `b > 0` only (issue #768). The grids behind every clause had a
+// positive b, and with b negative and not an integer the fraction settles on a
+// false limit inside each of them: 21 of 200 triples wrong at a < 0 and z <= 0,
+// 28 of 200 at |z| <= 20, and 16 of 200 even where a is a negative integer and
+// the fraction terminates, out to the wrong sign (mratio(-22.52, -25.18, -12.00)
+// returned 2.853 where the ratio is -2.337). BNG builds b = |AT-BT| + 1, so no
+// model it writes has b <= 0.
 //
 // Everything else is refused, unless the asymptotic route below can vouch for
 // an answer of its own. That still gives up cases the fraction would have got
@@ -134,7 +147,10 @@ namespace bngsim {
 // Half of b leaves a factor of two under a threshold whose position is
 // understood rather than merely observed.
 static bool mratio_cf_is_trustworthy(double a, double b, double z) {
-    if (a <= 0.0 && a == std::floor(a)) {
+    if (!(b > 0.0)) {
+        return false;
+    }
+    if (a < 0.0 && a == std::floor(a)) {
         return true;
     }
     if (a <= 0.0 && z <= 0.0) {
@@ -277,13 +293,14 @@ static bool mratio_asymptotic(double a, double b, double z, double *out) {
         sum_den = mratio_2f0(a, a - b + 1.0, x, &err_den);
         coeff = b / (-z);
     } else {
+        // a == 0 would divide by zero below. With z > 0 it is summed exactly
+        // before the fraction is asked (issue #768); refused here in any case.
+        if (a == 0.0) {
+            return false;
+        }
         const double x = 1.0 / z;
         sum_num = mratio_2f0(b - a, -a, x, &err_num);
         sum_den = mratio_2f0(b - a, 1.0 - a, x, &err_den);
-        // a == 0 would divide by zero here, but it is a non-positive integer, so
-        // the fraction is trusted there and this is never reached with it. The
-        // dropped-branch test below refuses it in any case, since lgamma(0) is
-        // +inf.
         coeff = b / a;
     }
     if (sum_num == 0.0 || sum_den == 0.0 || !mratio_is_finite(sum_num) ||
@@ -471,7 +488,45 @@ std::string expr_compat::exact_literals(const std::string &expr) {
     return out;
 }
 
+// a == 0 has a closed form (issue #768): M(0, b, z) = 1, so the ratio is
+// M(1, b+1, z) = sum_k z^k / (b+1)_k. For b > 0 and z > 0 every term is
+// positive, so the sum carries no cancellation, where the fraction runs on at
+// a = 0 (no odd numerator vanishes) and is only marginal inside |z| <= 20:
+// mratio(0, 1, 20) came out 8.7e-9 off. Not quite good to rounding, since each
+// term adds one: against mpmath over b up to 1e4 and z up to 2e4 the worst
+// was 2.6e-13. Past the largest term, at k = z - b - 1, the terms fall faster
+// than geometrically, so a term below eps of the sum ends it. A sum past the
+// largest double is +inf, which is the ratio rounded; the non-finite warner
+// reports it as such. The cap is reached only with b past about 1e10 and z
+// near b, where the terms fall too slowly; the NaN then sends the call on to
+// the rule above, which refuses a = 0 with 2*z > b.
+//
+// The inf and NaN tests are comparisons rather than isinf/isnan because the
+// generated copy has to spell them that way (see mratio_is_finite), and the two
+// copies are kept spelled alike.
+static double mratio_a_zero_series(double b, double z) {
+    double term = 1.0;
+    double sum = 1.0;
+    for (int k = 0; k < 1000000; ++k) {
+        term *= z / (b + 1.0 + k);
+        sum += term;
+        if (sum > 1.7976931348623157e308) { // +inf
+            return sum;
+        }
+        if (z < b + 1.0 + k && term <= 1.0e-17 * sum) {
+            return sum;
+        }
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
 double expr_compat::mratio(double a, double b, double z) {
+    if (a == 0.0 && b > 0.0 && z > 0.0) {
+        const double summed = mratio_a_zero_series(b, z);
+        if (summed == summed) { // not NaN
+            return summed;
+        }
+    }
     if (!mratio_cf_is_trustworthy(a, b, z)) {
         double asymptotic = 0.0;
         if (mratio_asymptotic(a, b, z, &asymptotic)) {
@@ -482,11 +537,12 @@ double expr_compat::mratio(double a, double b, double z) {
             "arguments and would return a wrong value without saying so, and the asymptotic "
             "expansion that covers part of the rest cannot vouch for an answer here either (a=" +
             std::to_string(a) + ", b=" + std::to_string(b) + ", z=" + std::to_string(z) +
-            "). The fraction is reliable when a is a non-positive integer, when a <= 0 and "
-            "z <= 0, when |z| <= 20, or when b*b >= 64*|z*a| and z is either negative or no "
-            "more than half of b. BNG builds a = -min(AT,BT) and z = -1/Keq, which is inside "
-            "that region, so a model reaching this is using mratio in its own way. See "
-            "lanl/bngsim issues #453 and #456.");
+            "). The fraction is reliable for b > 0, and then when a is a negative integer, "
+            "when a <= 0 and z <= 0, when |z| <= 20, or when b*b >= 64*|z*a| and z is either "
+            "negative or no more than half of b. BNG builds a = -min(AT,BT), b = |AT-BT|+1 "
+            "and z = -1/Keq, which is inside that region, so a model reaching this is using "
+            "mratio in its own way. See "
+            "lanl/bngsim issues #453, #456 and #768.");
     }
     constexpr double eps = 1.0e-16;
     constexpr double tiny = 1.0e-32;
