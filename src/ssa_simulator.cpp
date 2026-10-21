@@ -1849,6 +1849,21 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     int next_output = 1;
     long total_steps = 0;
 
+    // The clock is kept as an origin plus the time elapsed since it (issue #1059).
+    // Each firing is placed at t_start + (el + tau), so its waiting time is added
+    // at the scale of the elapsed span, not of t: from t_start = 1e12 the doubles
+    // near t are 1.2e-4 apart, a waiting time of 2e-5 placed at t + tau rounded
+    // away, and a decay over two seconds fired 1.6 times too many events (z =
+    // -287). From t_start = 0, t and el are the same double, so every run there is
+    // what it was to the bit. Wherever t is set to a time of its own (an event, a
+    // breakpoint, a panel end), set_clock re-derives el from it.
+    const double t_origin = times.t_start;
+    double el = 0.0;
+    auto set_clock = [&](double t_new) {
+        t = t_new;
+        el = t_new - t_origin;
+    };
+
     // Times at which a rate or a trigger may jump: those the caller resolved
     // (set_breakpoints, from the model's time conditions) and the knots of every
     // time-indexed table function, whose value or slope breaks there. Sorted and
@@ -2198,7 +2213,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             while (r1 == 0.0)
                 r1 = next_u01();
             double tau = -std::log(r1) / a0;
-            double t_proposed = t + tau;
+            const double el_proposed = el + tau;
+            double t_proposed = t_origin + el_proposed;
 
             // Record output points strictly before the fire time. Evaluated per
             // sample, matching the main loop byte-for-byte. `time_dependent_rates`
@@ -2262,6 +2278,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
             // Advance time only (see header note: no per-step set_current_time).
             t = t_proposed;
+            el = el_proposed;
             ++total_steps;
         }
     }
@@ -2989,7 +3006,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
             if (!event_first && !fire_first) {
                 // Nothing discrete in the panel: move to its end.
-                t = s1;
+                set_clock(s1);
                 y = y1;
                 A0 = Av[4];
                 F0 = F2;
@@ -3012,7 +3029,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 y = ytmp;
                 load_y(y.data());
             }
-            t = s_cut;
+            set_clock(s_cut);
             psa_now = t;
             model.set_current_time(t);
             sync_state(t);
@@ -3169,7 +3186,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                         }
                         if (next_output >= n_out)
                             break;
-                        t = t_event_idle;
+                        set_clock(t_event_idle);
                         psa_now = t; // GH #15 — keep the PSA dwell clock on t
                         sync_state(t);
                         const bool fired = fire_rising_edges(t);
@@ -3198,7 +3215,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     }
                     if (next_output >= n_out)
                         break;
-                    t = t_lim;
+                    set_clock(t_lim);
                     psa_now = t;
                     model.set_current_time(t);
                     continue;
@@ -3236,7 +3253,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             while (r1 == 0.0)
                 r1 = next_u01(); // avoid log(0)
             double tau = -std::log(r1) / a0;
-            double t_proposed = t + tau;
+            const double el_proposed = el + tau;
+            double t_proposed = t_origin + el_proposed;
             // A breakpoint first: a piecewise-constant rate jumps there, so stop,
             // re-read the rates and redraw (exact by memorylessness).
             const bool pc_cap = pc_refresh && t_proposed > pc_next();
@@ -3294,7 +3312,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             if (pc_cap && !event_wins) {
                 // The breakpoint came first: nothing fired. The rates are re-read
                 // at the loop's top.
-                t = t_proposed;
+                set_clock(t_proposed);
                 psa_now = t;
                 model.set_current_time(t);
                 continue;
@@ -3304,7 +3322,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 // Advance time to t_event, fire the batch, redraw τ. The
                 // candidate reaction is NOT fired — its tentative τ assumed the
                 // pre-event state and is discarded on the redraw.
-                t = t_event;
+                set_clock(t_event);
                 psa_now = t; // GH #15 — keep the PSA dwell clock on t
                 sync_state(t);
                 const bool fired = fire_rising_edges(t);
@@ -3325,8 +3343,10 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
             apply_firing(selected);
 
-            // 8. Advance time unconditionally so time() stays current
+            // 8. Advance time unconditionally so time() stays current. No
+            //    breakpoint cap or event got here, so t_proposed is el_proposed's.
             t = t_proposed;
+            el = el_proposed;
             psa_now = t; // GH #15 — keep the PSA dwell clock on t
             model.set_current_time(t);
             ++total_steps;
