@@ -79,8 +79,27 @@ if [ -n "${GH_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
     prev=$(mktemp -d)
     if gh run download "$id" -R "$GITHUB_REPOSITORY" -n "nightly-$suite" -D "$prev" >/dev/null 2>&1 &&
       [ -f "$prev/verdicts.json" ]; then
+      # Re-read that night's own reports with tonight's verdicts.py where the
+      # artifact kept them, so both sides are extracted by the same rule. Its
+      # stored verdicts.json was written by the rule that night ran: the first
+      # night after #901 counted the stochastic ensemble, the night before had
+      # timed the load alone, and the two read as a x483 slowdown.
+      prev_verdicts="$prev/verdicts.json"
+      if [ -f "$prev/report.json" ]; then
+        prev_args=(--report "$prev/report.json")
+        for r in "$prev"/report-*.json; do
+          [ -f "$r" ] && prev_args+=(--report "$r")
+        done
+        prev_prov=$(python3 -c 'import json, sys
+s = json.load(open(sys.argv[1])).get("source", {})
+print(json.dumps({k: s[k] for k in ("run_id", "sha", "event") if k in s}))' "$prev/verdicts.json" 2>/dev/null || echo '{}')
+        if python3 "$here/verdicts.py" extract --kind "$kind" --suite "$suite" \
+          "${prev_args[@]}" --out "$prev/verdicts-now.json" --provenance "$prev_prov" >/dev/null 2>&1; then
+          prev_verdicts="$prev/verdicts-now.json"
+        fi
+      fi
       python3 "$here/verdicts.py" diff \
-        --baseline "$prev/verdicts.json" --fresh "$out/verdicts.json" \
+        --baseline "$prev_verdicts" --fresh "$out/verdicts.json" \
         --label "vs previous night (run $id)" --flaky "$here/flaky.json" --timeout-flips-info \
         --json-out "$out/diff-prev.json" --md-out "$out/diff-prev.md" "$@" >/dev/null || rc=1
       [ -f "$out/diff-prev.md" ] && cat "$out/diff-prev.md" >>"$summary"

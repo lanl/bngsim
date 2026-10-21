@@ -73,7 +73,10 @@ previous nightly's verdicts (the last scheduled or manual run on `main`). The se
 catches a fix that regresses before anyone re-baselined it. In that night-to-night
 comparison a flip into or out of TIMEOUT is reported, not alerted: two single nights
 can land on runner CPUs of different speed, and a timeout verdict depends on the wall
-clock. Against the committed baseline PASS -> TIMEOUT still alerts.
+clock. Against the committed baseline PASS -> TIMEOUT still alerts. The previous
+night is re-read from its own `report.json` with tonight's `verdicts.py` where its
+artifact kept one, so a change to what the extract measures (the stochastic legs'
+ensemble time, #901) is not read as a change between the two nights.
 
 `flaky.json` lists cases whose verdict measurably flips on identical code (with the
 runs that show it); their changes are reported and never alert, in both comparisons.
