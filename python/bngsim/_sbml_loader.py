@@ -169,15 +169,25 @@ def _atomic(expr: str) -> str:
     A local parameter, a function-definition argument, a species-IC lift or a
     constant assignment-rule lift is spliced into operator templates as text.
     Bare `-3` or `a+b` there changes meaning as a power base or after a minus
-    (GH #744), so anything but a name, an unsigned number or an already fully
-    parenthesised group gets parentheses.
+    (GH #744), so anything but a name, an unsigned number, an already fully
+    parenthesised group or a call gets parentheses.
+
+    A call, a name and the one balanced group after it, binds tighter than any
+    operator, so it is left bare (issue #1082). Wrapped, a formal bound to
+    ``time()`` came out ``(time())`` in a function body while the same
+    comparison written at the call site read ``time()``, and the condition
+    scans, which match text, registered each edge twice.
     """
     if _ATOMIC_TOKEN.fullmatch(expr) or _fully_parenthesised(expr):
+        return expr
+    call = _CALL_NAME.match(expr)
+    if call and _fully_parenthesised(expr[call.end() :]):
         return expr
     return f"({expr})"
 
 
 _ATOMIC_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?")
+_CALL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?=\()")
 
 
 def _fully_parenthesised(expr: str) -> bool:

@@ -57,8 +57,15 @@ def test_real_literal_parenthesises_negatives():
         ("-3", "(-3)"),
         ("a+b", "(a+b)"),
         ("(a)+(b)", "((a)+(b))"),
-        ("f(x)", "(f(x))"),
+        # A call binds tighter than any operator, so it stays bare (issue #1082).
+        ("f(x)", "f(x)"),
+        ("time()", "time()"),
+        ("sin(time())", "sin(time())"),
+        ("f(x)+g(y)", "(f(x)+g(y))"),
+        ("f(x)^2", "(f(x)^2)"),
+        ("-f(x)", "(-f(x))"),
+        ("f(x)(y)", "(f(x)(y))"),
     ],
 )
-def test_atomic_wraps_everything_but_a_single_token(text, expected):
+def test_atomic_wraps_everything_but_a_single_token_or_call(text, expected):
     assert _atomic(text) == expected
