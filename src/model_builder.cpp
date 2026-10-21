@@ -11,6 +11,7 @@
 // net_file_dir, and species-parameter references.
 
 #include "bngsim/model_builder.hpp"
+#include "bngsim/expr_compat.hpp"
 #include "bngsim/expression.hpp"
 #include "bngsim/table_function.hpp"
 #include "bngsim/types.hpp"
@@ -1797,6 +1798,24 @@ double ensure_lu_fill_estimate(const SharedModelData &sd) {
 NetworkModel ModelBuilder::build() {
     if (!bimpl_) {
         throw std::runtime_error("ModelBuilder::build() called on moved-from builder");
+    }
+
+    // ── Spell `a % b` as `mod(a, b)` in function bodies (issue #1127) ──────
+    // Same value either way (both are fmod); the stop, root and codegen scans
+    // read the named call only. A model with its own symbol named `mod` keeps
+    // its text, since the evaluator would rename that symbol's calls.
+    {
+        auto &b = *bimpl_;
+        const auto named_mod = [](const auto &items) {
+            return std::any_of(items.begin(), items.end(),
+                               [](const auto &item) { return item.name == "mod"; });
+        };
+        if (!(named_mod(b.parameters) || named_mod(b.species) || named_mod(b.observables) ||
+              named_mod(b.functions))) {
+            for (auto &f : b.functions) {
+                f.expression = expr_compat::modulo_as_calls(f.expression);
+            }
+        }
     }
 
     // ── 0. Validate model structure ──────────────────────────────────────

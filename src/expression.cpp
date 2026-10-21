@@ -521,6 +521,197 @@ std::string expr_compat::exact_literals(const std::string &expr) {
     return out;
 }
 
+// ─── `a % b` as `mod(a, b)` (issue #1127) ──────────────────────────────────
+//
+// ExprTk's `%` on doubles is std::fmod, exactly what its `mod` function is.
+// The two spellings compute the same value, but the analysis of a rate law
+// reads named calls only: the crossing stops (#869) and the state-switch roots
+// (#1068) look for `mod(`, and codegen renames `mod(` to C's `fmod(` where `%`
+// on two doubles does not compile. So a pulse written with `%` got no
+// stop and no root, and a narrow one was stepped over (Y = 0, no error).
+//
+// `%` binds like `*` and `/`, left to right, so it is rebuilt one
+// multiplicative chain at a time: `a*b % c / d` is `mod(a*b, c) / d`. A chain
+// ends at a binary `+`/`-`, a comparison, a logical operator, a comma or a
+// bracket. A unary sign stays inside its operand; where ExprTk applies it makes
+// no difference to the value, since fmod is odd in its first argument. Text
+// with no `%` is returned as written.
+
+namespace {
+
+struct ModuloRewriter {
+    const std::string &s;
+
+    static bool word(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+    }
+    static bool digit(char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; }
+
+    static std::string trim(const std::string &t) {
+        const auto b = t.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) {
+            return "";
+        }
+        return t.substr(b, t.find_last_not_of(" \t\r\n") - b + 1);
+    }
+
+    // One multiplicative chain: its operands, and the operator before each.
+    struct Chain {
+        std::vector<char> ops;          // ops[k] joins operand k to the chain before it
+        std::vector<std::string> parts; // parts[0] has no operator
+        std::string current;
+        bool has_modulo = false;
+
+        void cut(char op) {
+            parts.push_back(current);
+            ops.push_back(op);
+            current.clear();
+            has_modulo = has_modulo || op == '%';
+        }
+        std::string flush() {
+            parts.push_back(current);
+            std::string out;
+            if (!has_modulo) {
+                out = parts[0];
+                for (std::size_t k = 1; k < parts.size(); ++k) {
+                    out += ops[k - 1];
+                    out += parts[k];
+                }
+            } else {
+                // The chain's outer whitespace stays outside the rebuilt calls.
+                const std::string &first = parts.front();
+                const std::string &last = parts.back();
+                const std::string lead = first.substr(0, first.find_first_not_of(" \t\r\n"));
+                const auto tail_at = last.find_last_not_of(" \t\r\n");
+                const std::string tail =
+                    tail_at == std::string::npos ? std::string() : last.substr(tail_at + 1);
+                out = trim(first);
+                for (std::size_t k = 1; k < parts.size(); ++k) {
+                    if (ops[k - 1] == '%') {
+                        out = "mod(" + out + ", " + trim(parts[k]) + ")";
+                    } else {
+                        out += ops[k - 1];
+                        out += trim(parts[k]);
+                    }
+                }
+                out = lead + out + tail;
+            }
+            ops.clear();
+            parts.clear();
+            current.clear();
+            has_modulo = false;
+            return out;
+        }
+    };
+
+    static std::size_t close_of(const std::string &s, std::size_t open) {
+        int depth = 0;
+        for (std::size_t i = open; i < s.size(); ++i) {
+            if (s[i] == '(' || s[i] == '[' || s[i] == '{') {
+                ++depth;
+            } else if (s[i] == ')' || s[i] == ']' || s[i] == '}') {
+                if (--depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return std::string::npos;
+    }
+
+    // ExprTk's word operators, which end a chain as `+` or `<` does.
+    static bool separator_word(const std::string &w) {
+        return w == "and" || w == "or" || w == "xor" || w == "nand" || w == "nor" || w == "xnor" ||
+               w == "mand" || w == "mor" || w == "in" || w == "like" || w == "ilike";
+    }
+
+    std::string level(std::size_t b, std::size_t end) const {
+        std::string out;
+        Chain chain;
+        bool operand = false; // the last token ended an operand
+        std::size_t i = b;
+        while (i < end) {
+            const char c = s[i];
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                chain.current += c;
+                ++i;
+            } else if (c == '(' || c == '[' || c == '{') {
+                const std::size_t j = close_of(s, i);
+                if (j == std::string::npos || j >= end) {
+                    chain.current.append(s, i, end - i); // unbalanced: ExprTk reports it
+                    i = end;
+                    continue;
+                }
+                chain.current += c;
+                chain.current += level(i + 1, j);
+                chain.current += s[j];
+                i = j + 1;
+                operand = true;
+            } else if (digit(c) || (c == '.' && i + 1 < end && digit(s[i + 1]))) {
+                std::size_t j = number_token_end(s, i);
+                if (j == std::string::npos || j > end) {
+                    j = i + 1;
+                }
+                chain.current.append(s, i, j - i);
+                i = j;
+                operand = true;
+            } else if (word(c)) {
+                std::size_t j = i + 1;
+                while (j < end && (word(s[j]) || (s[j] == '.' && j + 1 < end && word(s[j + 1])))) {
+                    ++j;
+                }
+                const std::string w = s.substr(i, j - i);
+                if (separator_word(w)) {
+                    out += chain.flush();
+                    out += w;
+                    operand = false;
+                } else {
+                    chain.current += w;
+                    operand = w != "not";
+                }
+                i = j;
+            } else if ((c == '*' && !(i + 1 < end && s[i + 1] == '*')) || c == '/' || c == '%') {
+                chain.cut(c);
+                operand = false;
+                ++i;
+            } else if (c == '*' || c == '^') {
+                // `**` and `^` bind tighter than the chain: part of an operand.
+                const std::size_t n = (c == '*') ? 2 : 1;
+                chain.current.append(s, i, n);
+                operand = false;
+                i += n;
+            } else if ((c == '+' || c == '-') && !operand) {
+                chain.current += c; // a sign, part of the operand that follows
+                ++i;
+            } else if (c == '!' && !(i + 1 < end && s[i + 1] == '=')) {
+                chain.current += c; // logical not, likewise
+                ++i;
+            } else {
+                // A binary +/-, a comparison, a logical operator, a comma, ...
+                out += chain.flush();
+                std::size_t j = i + 1;
+                while (j < end && std::strchr("<>=!&|", s[j]) != nullptr &&
+                       std::strchr("<>=!&|", c) != nullptr) {
+                    ++j;
+                }
+                out.append(s, i, j - i);
+                i = j;
+                operand = false;
+            }
+        }
+        out += chain.flush();
+        return out;
+    }
+};
+
+} // namespace
+
+std::string expr_compat::modulo_as_calls(const std::string &expr) {
+    if (expr.find('%') == std::string::npos) {
+        return expr;
+    }
+    return ModuloRewriter{expr}.level(0, expr.size());
+}
+
 // a == 0 has a closed form (issue #768): M(0, b, z) = 1, so the ratio is
 // M(1, b+1, z) = sum_k z^k / (b+1)_k. For b > 0 and z > 0 every term is
 // positive, so the sum carries no cancellation, where the fraction runs on at

@@ -51,6 +51,13 @@ double rint(double x);
 // left as written, and so is anything that is not a literal.
 std::string exact_literals(const std::string &expr);
 
+// `expr` with every `a % b` written as `mod(a, b)`, which ExprTk computes the
+// same way (both are std::fmod). The analysis of a rate law reads named calls,
+// so this is what lets a pulse written with `%` get the stops and roots one
+// written with `mod()` gets (issue #1127). `%` binds like `*` and `/`, left to
+// right. Text without a `%` is returned unchanged.
+std::string modulo_as_calls(const std::string &expr);
+
 // Unconditional leading-underscore remap: "_X" → "u_X" (ExprTk rejects an
 // identifier starting with '_'). Identity for any name not starting with '_'.
 // No ExprTk built-in starts with '_', so this rewrite is always safe to apply
