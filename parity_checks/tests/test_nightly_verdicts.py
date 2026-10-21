@@ -355,6 +355,24 @@ def test_extract_core_reads_outcome_work_wall_and_backend(tmp_path):
     assert obj["source"]["cpu"] == "EPYC 7763"
 
 
+def test_a_stochastic_row_is_timed_by_its_ensemble(tmp_path):
+    """Issue #901: the ensemble is the simulation; the load alone was 0.012 s of
+    bng_nf's 4004 s. The per-replicate statistics summarize the same time."""
+    timing = {
+        "bngsim": {
+            "load_sec": 0.01,
+            "ensemble_sec": 40.0,
+            "rep_median_sec": 4.0,
+            "rep_max_sec": 6.0,
+            "rep_cold_sec": 5.0,
+            "setup_per_rep_sec": 0.001,
+        }
+    }
+    path = tmp_path / "report.json"
+    write_report(path, [_jr("M1", "PASS", method="stochastic", timing=timing)], meta={})
+    assert V.extract("core", path, "bng_nf")["cases"]["M1|stochastic"]["bngsim_sec"] == 40.01
+
+
 def test_multi_segment_backend_wins_over_the_replay_label(tmp_path):
     timing = {"bngsim": {"backend": "cc", "config": {"codegen": "full-protocol replay"}}}
     path = tmp_path / "report.json"
