@@ -13,6 +13,7 @@ import contextlib
 import contextvars
 import functools
 import io
+import locale
 import logging
 import re
 import time
@@ -3500,6 +3501,29 @@ def _import_antimony():
     return ant
 
 
+@contextlib.contextmanager
+def _antimony_numbers_in_c_locale():
+    """Antimony's parse and its SBML writer under a "C" ``LC_NUMERIC``, and the
+    caller's put back after (issue #1235).
+
+    libantimony reads and writes numbers with the C locale's decimal point: in
+    a process that had set LC_NUMERIC to de_DE, ``k = 0.1`` reached the SBML it
+    wrote as ``value="0"``, and the model ran with no rate at all. libSBML,
+    which reads that SBML, is unaffected. Switched only where the decimal
+    point is not already ``.``, so the usual process is left alone; the setting
+    is the process's, for the length of the two calls.
+    """
+    if locale.localeconv()["decimal_point"] == ".":
+        yield
+        return
+    saved = locale.setlocale(locale.LC_NUMERIC)
+    locale.setlocale(locale.LC_NUMERIC, "C")
+    try:
+        yield
+    finally:
+        locale.setlocale(locale.LC_NUMERIC, saved)
+
+
 def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = None):
     """Load an Antimony .ant file by converting to SBML first."""
     ant = _import_antimony()
@@ -3509,13 +3533,14 @@ def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = No
         raise FileNotFoundError(f"Antimony file not found: {path}")
 
     ant.clearPreviousLoads()
-    ret = ant.loadFile(str(path))
-    if ret == -1:
-        err = ant.getLastError()
-        raise RuntimeError(f"Failed to parse Antimony file {path}: {err}")
+    with _antimony_numbers_in_c_locale():
+        ret = ant.loadFile(str(path))
+        if ret == -1:
+            err = ant.getLastError()
+            raise RuntimeError(f"Failed to parse Antimony file {path}: {err}")
 
-    mod = ant.getModuleNames()[-1]
-    sbml_str = ant.getSBMLString(mod)
+        mod = ant.getModuleNames()[-1]
+        sbml_str = ant.getSBMLString(mod)
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError(f"Antimony produced empty SBML for {path}")
 
@@ -3527,13 +3552,14 @@ def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = No
     ant = _import_antimony()
 
     ant.clearPreviousLoads()
-    ret = ant.loadString(text)
-    if ret == -1:
-        err = ant.getLastError()
-        raise RuntimeError(f"Failed to parse Antimony string: {err}")
+    with _antimony_numbers_in_c_locale():
+        ret = ant.loadString(text)
+        if ret == -1:
+            err = ant.getLastError()
+            raise RuntimeError(f"Failed to parse Antimony string: {err}")
 
-    mod = ant.getModuleNames()[-1]
-    sbml_str = ant.getSBMLString(mod)
+        mod = ant.getModuleNames()[-1]
+        sbml_str = ant.getSBMLString(mod)
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError("Antimony produced empty SBML")
 

@@ -3,6 +3,7 @@
 // Core RHS evaluation: update_observables → evaluate_functions → compute rates.
 // Ported from BNG's derivs_network() (network.cpp) to instance-based design.
 
+#include "bngsim/c_locale_numbers.hpp"
 #include "bngsim/fd_jacobian.hpp"
 #include "bngsim/functional_jac_scatter.hpp"
 #include "bngsim/mm_jacobian.hpp"
@@ -4771,9 +4772,11 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
     const int nr = static_cast<int>(reactions.size());
     const int ns = static_cast<int>(species.size());
 
+    // Written in "C" (issue #1235): under a decimal-comma locale "%.17g" wrote
+    // 0,5 into the C source, which cc and MIR read as two arguments.
     auto lit = [](double v) {
         char buf[40];
-        std::snprintf(buf, sizeof(buf), "%.17g", v);
+        c_snprintf(buf, sizeof(buf), "%.17g", v);
         return std::string(buf);
     };
 

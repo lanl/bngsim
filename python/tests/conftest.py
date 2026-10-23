@@ -312,6 +312,12 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     ("benchmark", _ANYWHERE, "benchmark corpus lives outside the packaged tree"),
     ("abc.xml not at", _ANYWHERE, "fixture in a sibling PyBNF checkout; dev-only"),
     ("no .ant fixture available", _ANYWHERE, "antimony fixture is optional in this checkout"),
+    (
+        "no decimal-comma locale is installed",
+        _ANYWHERE,
+        "issue #1235's test needs de_DE, fr_FR or nl_NL; a bare image (CI's Ubuntu "
+        "without `locales` generated) has none, and macOS ships them",
+    ),
     # Platform, as opposed to environment: the feature is absent because of what
     # the OS/toolchain IS, not because this box is missing something.
     (

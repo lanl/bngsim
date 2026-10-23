@@ -23,6 +23,7 @@
 // this. Kept in its own translation-unit-free header so both wrappers share one
 // implementation.
 
+#include "bngsim/c_locale_numbers.hpp"
 #include "bngsim/expression.hpp"
 #include "bngsim/platform_compat.hpp" // POSIX getpid() shim for Windows (GH #150)
 
@@ -102,7 +103,7 @@ inline std::optional<std::string> extract_xml_attr(const std::string &line, cons
 inline bool parse_xml_number(const std::string &text, double &out) {
     const char *begin = text.c_str();
     char *end = nullptr;
-    const double v = std::strtod(begin, &end);
+    const double v = c_strtod(begin, &end);
     if (end == begin) {
         return false;
     }
@@ -263,7 +264,7 @@ inline std::filesystem::path make_unique_tmp_xml_path() {
 // loaders parse `value=` via strtod, which accepts `%.17g` output.
 inline std::string format_override_value(double v) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.17g", v);
+    c_snprintf(buf, sizeof(buf), "%.17g", v);
     return std::string(buf);
 }
 

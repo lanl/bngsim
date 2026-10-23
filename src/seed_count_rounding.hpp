@@ -25,6 +25,7 @@
 // error leaves the source untouched, so a model that loads today still loads —
 // at worst it keeps the legacy truncating behavior.
 
+#include "bngsim/c_locale_numbers.hpp"
 #include "bngsim/platform_compat.hpp" // POSIX getpid() shim for Windows (GH #150)
 
 #include <atomic>
@@ -114,7 +115,7 @@ resolve_token(const std::string &tok, const std::unordered_map<std::string, doub
     }
     try {
         std::size_t consumed = 0;
-        double d = std::stod(t, &consumed);
+        double d = c_stod(t, &consumed);
         if (consumed == t.size() && std::isfinite(d)) {
             return d;
         }
@@ -212,7 +213,7 @@ write_seed_rounded_xml(const std::string &src_xml_path,
                 if (auto id = detail::extract_attr(trimmed, "id")) {
                     if (auto v = detail::extract_attr(trimmed, "value")) {
                         try {
-                            xml_values[*id] = std::stod(*v);
+                            xml_values[*id] = c_stod(*v);
                         } catch (const std::exception &) {
                             // Non-numeric value= (shouldn't occur in BNG XML); skip.
                         }

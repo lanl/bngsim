@@ -17,6 +17,7 @@
 // ExprTk defaults to case-insensitive, which silently merges k3/K3
 // into the same variable and produces incorrect trajectories.
 #define exprtk_disable_caseinsensitivity
+#include "bngsim/c_locale_numbers.hpp"
 #include "exprtk.hpp"
 
 #include "bngsim/expr_compat.hpp"
@@ -390,8 +391,8 @@ std::string exact_spelling(double v) {
     // 16- or 17-digit D or a larger exponent falls outside that.
     for (int digits = 1; digits <= 17; ++digits) {
         char buf[40];
-        std::snprintf(buf, sizeof(buf), "%.*e", digits - 1, v);
-        if (std::strtod(buf, nullptr) != v) {
+        c_snprintf(buf, sizeof(buf), "%.*e", digits - 1, v);
+        if (c_strtod(buf, nullptr) != v) {
             continue;
         }
         const char *e = std::strchr(buf, 'e');
@@ -502,7 +503,7 @@ std::string expr_compat::exact_literals(const std::string &expr) {
             }
             const std::string token = expr.substr(i, j - i);
             char *end = nullptr;
-            const double v = std::strtod(token.c_str(), &end);
+            const double v = c_strtod(token.c_str(), &end);
             double read = 0.0;
             // Below the normal range ExprTk reads nothing at all (it refuses
             // the exponent), where strtod and the C compiler give the subnormal.
