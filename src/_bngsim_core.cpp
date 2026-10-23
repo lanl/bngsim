@@ -2959,6 +2959,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "recompute-all eligible (pure mass-action exact SSA, no events, small "
              "nr), the run takes the RR-style recompute-all + flat-scan loop by "
              "default. No-op for ineligible models; '' clears it.")
+        .def("set_codegen", &bngsim::SsaSimulator::set_codegen, py::arg("enabled"),
+             "Issue #1213: whether compiled propensities are allowed. False is the "
+             "caller's codegen=False and acts as BNGSIM_SSA_NO_CODEGEN: the run takes "
+             "the interpreted path, a MIR build's in-process JIT included.")
         .def("set_breakpoints", &bngsim::SsaSimulator::set_breakpoints, py::arg("times"),
              "Issue #719: times at which a time-dependent rate may jump. The "
              "continuous (time-dependent) loop never steps across one. Applies to "

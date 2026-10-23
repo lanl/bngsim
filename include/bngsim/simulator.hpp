@@ -99,6 +99,12 @@ class SsaSimulator {
     // which keep the incremental sum-tree path. Empty string clears it.
     void set_propensity_library(const std::string &so_path);
 
+    // Issue #1213: whether the caller allows compiled propensities. false is
+    // the caller's codegen=False, and acts as BNGSIM_SSA_NO_CODEGEN does: the
+    // run takes the interpreted path, including on a MIR build with no cc
+    // library, where the default otherwise JITs the propensities in-process.
+    void set_codegen(bool enabled);
+
     // Issue #719: times at which a time-dependent rate may jump (an if() of
     // time, a table function's breakpoint). The continuous loop never steps
     // across one, so a jump is not smeared by the quadrature and a pulse that

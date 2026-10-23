@@ -476,6 +476,8 @@ struct SsaSimulator::Impl {
     // model wasn't eligible / codegen was skipped, and the incremental sum-tree
     // path runs unchanged.
     std::string propensity_lib_path;
+    // Issue #1213 — see SsaSimulator::set_codegen.
+    bool codegen_enabled = true;
 
     // Issue #719 — see SsaSimulator::set_breakpoints. Sorted, unique.
     std::vector<double> breakpoints;
@@ -559,6 +561,8 @@ void SsaSimulator::set_breakpoints(const std::vector<double> &times) {
 void SsaSimulator::set_propensity_library(const std::string &so_path) {
     impl_->propensity_lib_path = so_path;
 }
+
+void SsaSimulator::set_codegen(bool enabled) { impl_->codegen_enabled = enabled; }
 
 // A run that raises leaves the model as it found it. The loop writes its
 // running state into the model as it goes (the species it syncs for observables,
@@ -1910,7 +1914,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         const bool want_mir = on("BNGSIM_SSA_PROP_JIT");
         const bool want_inprocess = want_cc || want_mir; // compile the source here
         const bool recompute_all_opt = on("BNGSIM_SSA_RECOMPUTE_ALL");
-        const bool codegen_disabled = on("BNGSIM_SSA_NO_CODEGEN");
+        // The caller's codegen=False as well as the environment (issue #1213):
+        // with no cc library to load, the default below JITs the propensities
+        // on a MIR build, which is for an install with no compiler and cannot
+        // tell that apart from a caller who asked for the interpreted path.
+        const bool codegen_disabled = on("BNGSIM_SSA_NO_CODEGEN") || !impl_->codegen_enabled;
 
         // Backend-agnostic eligibility for the recompute-all branch.
         const bool recompute_eligible =
@@ -1923,7 +1931,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
         // DEFAULT (no in-process override): use the Python-provided cc .so when
         // the model is eligible and within the size gate. No MIR, reached by
-        // production builds. BNGSIM_SSA_NO_CODEGEN opts out → interpreted path.
+        // production builds. BNGSIM_SSA_NO_CODEGEN or codegen=False opts out →
+        // interpreted path.
         const bool use_default =
             !want_inprocess && !codegen_disabled && recompute_eligible && size_ok;
 

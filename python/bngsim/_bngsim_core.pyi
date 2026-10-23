@@ -1164,6 +1164,10 @@ class SsaSimulator:
         """
         Issue #719: times at which a time-dependent rate may jump. The continuous (time-dependent) loop never steps across one. Applies to every later run; [] clears it.
         """
+    def set_codegen(self, enabled: bool) -> None:
+        """
+        Issue #1213: whether compiled propensities are allowed. False is the caller's codegen=False and acts as BNGSIM_SSA_NO_CODEGEN: the run takes the interpreted path, a MIR build's in-process JIT included.
+        """
     def set_piecewise_constant_functions(self, names: collections.abc.Sequence[str]) -> None:
         """
         Functions, by name, constant in time between the breakpoints: a rate that reads the clock only through them is held constant and re-read at each breakpoint. Applies to every later run; [] clears it.

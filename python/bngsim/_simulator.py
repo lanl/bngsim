@@ -294,6 +294,24 @@ _UNAVAILABLE_NF_METHODS: dict[str, str] = _unavailable_nf_methods
 # sensitivity auto-codegen path here share one source of truth.
 
 
+def _ssa_core_simulator(core, codegen):
+    """A core ``SsaSimulator`` on *core* that keeps to the caller's *codegen*.
+
+    ``codegen=False`` kept Python from building the cc propensity library and
+    stopped there. With none to load, a MIR build's C++ default JITs the
+    propensities in-process, a path that exists for an install with no
+    compiler, and the run the caller asked to be interpreted was not (issue
+    #1213). Every place an SSA engine is built passes it on, so a rebuilt, a
+    per-thread and a per-row engine keep to it too.
+    """
+    from bngsim._bngsim_core import SsaSimulator
+
+    sim = SsaSimulator(core)
+    if codegen is False:
+        sim.set_codegen(False)
+    return sim
+
+
 def _codegen_refusal(cause: BaseException | None, decline: str | None) -> str:
     """Why ``codegen=True`` could not be honoured, as the prepare call recorded it:
     the build failed (``cause``, :func:`bngsim._codegen.last_codegen_error`) or
@@ -958,9 +976,7 @@ class Simulator:
 
             # PSA shares SsaSimulator; dispatch happens at run time.
             # Event-with-delay rejection happens C++-side at run() entry.
-            from bngsim._bngsim_core import SsaSimulator
-
-            self._sim = SsaSimulator(model._core)
+            self._sim = _ssa_core_simulator(model._core, codegen)
             if self._reaction_stats:
                 self._sim.set_record_reaction_stats(True)
 
@@ -4265,9 +4281,7 @@ class Simulator:
 
             self._sim = CvodeSimulator(self._model._core)
         elif self._method in ("ssa", "psa"):
-            from bngsim._bngsim_core import SsaSimulator
-
-            self._sim = SsaSimulator(self._model._core)
+            self._sim = _ssa_core_simulator(self._model._core, self._codegen)
             if self._reaction_stats:
                 self._sim.set_record_reaction_stats(True)
 
@@ -5398,7 +5412,7 @@ class Simulator:
 
         base_seed = _resolve_seed(seed)
 
-        from bngsim._bngsim_core import SsaSimulator, TimeSpec
+        from bngsim._bngsim_core import TimeSpec
 
         def _make_times() -> Any:
             ts = TimeSpec()
@@ -5438,7 +5452,7 @@ class Simulator:
                 sim = getattr(local, "sim", None)
                 if sim is None:
                     local.model = self._model.clone()
-                    local.sim = SsaSimulator(local.model._core)
+                    local.sim = _ssa_core_simulator(local.model._core, self._codegen)
                     if self._reaction_stats:
                         local.sim.set_record_reaction_stats(True)
                     self._apply_ssa_breakpoints([local.sim], local.model, t_start, t_end)
@@ -6432,9 +6446,7 @@ class Simulator:
                 core_result = self._ode_attempts(times, opts, restore, sim=sim, core=row_core)
 
             elif self._method in ("ssa", "psa"):
-                from bngsim._bngsim_core import SsaSimulator
-
-                sim = SsaSimulator(clone._core)
+                sim = _ssa_core_simulator(clone._core, self._codegen)
                 # This row's parameters place its crossings, so resolve on the clone.
                 self._apply_ssa_breakpoints([sim], clone, t_span[0], t_span[1])
                 if self._method == "psa":
