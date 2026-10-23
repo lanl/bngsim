@@ -2942,13 +2942,15 @@ struct CvodeSimulator::Impl {
     // residual has been seen pinned. With `refuse`, for a run that carries
     // sensitivities, a pinned state ends the run instead (issue #952), once it
     // has been seen pinned over `since_steps`' worth of steps: the run's count
-    // of steps when each residual was first seen there. `ask` as above. See
-    // the definition.
+    // of steps when each residual was first seen there. `ask` as above. With
+    // `sens`, a pinned state at a surface the right-hand side is continuous
+    // across is carried over as a plain run's is, its columns unchanged
+    // (issue #1229), and only one at a jump ends the run. See the definition.
     bool carry_across_stalled_state_switch(
         void *cvode_mem, double t, double t_batch, N_Vector y, int ns,
         const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since,
         bool refuse, std::vector<long> *since_steps = nullptr,
-        const std::vector<char> *ask = nullptr);
+        const std::vector<char> *ask = nullptr, SensitivityState *sens = nullptr);
 
     // dg/dt along the flow at (t, x) — the denominator of dt*/dθ.
     // Fills `gx_out` (∂g/∂x, sized ns, zero off `support`) and `scale_out`
@@ -9437,7 +9439,8 @@ static constexpr long kWatchSteps = 8;
 bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     void *cvode_mem, double t, double t_batch, N_Vector y, int ns,
     const std::vector<const NetworkModel::StateSwitch *> &switches, std::vector<double> &since,
-    bool refuse, std::vector<long> *since_steps, const std::vector<char> *ask) {
+    bool refuse, std::vector<long> *since_steps, const std::vector<char> *ask,
+    SensitivityState *sens) {
     long steps_now = 0;
     CVodeGetNumSteps(cvode_mem, &steps_now);
     double *y_data = N_VGetArrayPointer(y);
@@ -9457,6 +9460,10 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         // Each species' move per unit of residual, over sw->species: its own
         // ulp over the residual's, toward the side that raises the residual.
         std::vector<double> push;
+        // Whether the right-hand side jumps across the surface (issue #1229).
+        // Asked only of a run that carries sensitivities, and taken as true
+        // where it is not asked.
+        bool jumps = true;
     };
     std::vector<Stalled> stalled;
     std::vector<double> gx;
@@ -9532,13 +9539,41 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         if (!(at_surface * one.dir >= 0.5 * std::fabs(flow))) {
             continue; // it runs out before the surface: the state is coming to rest
         }
+        // Issue #1229: a surface the right-hand side is continuous across, a
+        // bend (where a triangle `max(0, 1 - abs(T-c)/(w/2))` returns to 0) or
+        // an if() whose branches agree there, has no saltation term and no
+        // crossing time the columns move with: they are the same on both
+        // sides. At a tight tolerance the slope change there fails the error
+        // test as a jump would. It is read a step either side of the surface
+        // along the flow, by the reactions whose rate law reads it; one that no
+        // rate law reads (a bend stop's empty list) is continuous.
+        if (refuse && sens != nullptr) {
+            auto reads_it = state_switch_rxns.find(sw);
+            const std::vector<int> *rxns =
+                reads_it == state_switch_rxns.end() ? nullptr : &reads_it->second;
+            if (rxns != nullptr && rxns->empty()) {
+                one.jumps = false;
+            } else {
+                std::vector<double> x_own;
+                std::vector<double> f_own;
+                for (int j : sw->species) {
+                    x_own.push_back(x[static_cast<std::size_t>(j)]);
+                    f_own.push_back(f0[static_cast<std::size_t>(j)]);
+                }
+                // Long enough along the flow to put the residual its few ulp past.
+                const double step = (one.size + reach) / std::max(std::fabs(flow), 1e-300);
+                one.jumps = jumps_across_surface(sw->species, x_own, f_own, step, x, t, rxns);
+            }
+        }
         // A run is ended for it only once it has stayed there. A crossing the
         // steps do make passes through all of the above on its way: at a tight
         // tolerance the step that takes the rate law's jump is as short as
         // this, for a step or two, and then the state is across. A plain run
         // put across a step early loses nothing. A run with sensitivities
-        // would have been refused a crossing it was about to make.
-        if (refuse && since_steps != nullptr &&
+        // would have been refused a crossing it was about to make. One at a
+        // continuous surface is put across as soon as a plain run's is: the
+        // wait would only hold its clock species short while the time runs on.
+        if (refuse && one.jumps && since_steps != nullptr &&
             steps_now - (*since_steps)[k] < kStalledRefuseSteps) {
             continue;
         }
@@ -9548,7 +9583,17 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
     if (stalled.empty()) {
         return false;
     }
-    if (refuse) {
+    // Only a stalled surface the right-hand side jumps across ends a run that
+    // carries sensitivities (issue #952); the rest are carried over as a plain
+    // run's are (issue #1229), their columns unchanged.
+    std::vector<const Stalled *> jumping;
+    for (const Stalled &one : stalled) {
+        if (one.jumps) {
+            jumping.push_back(&one);
+        }
+    }
+    sync_model_at(t, x.data(), ns);
+    if (refuse && (!jumping.empty() || sens == nullptr)) {
         // A run that carries sensitivities has a jump to apply at this
         // crossing, taken from a trajectory that crosses it. This one does
         // not: the state is held an ulp short while the time runs on, and the
@@ -9559,7 +9604,7 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         msg << "Forward sensitivity: at t=" << t
             << " the state is held within a few ulp of the surface of a state-dependent "
                "rate-law switch (residual '"
-            << stalled.front().sw->residual_source
+            << (jumping.empty() ? stalled.front() : *jumping.front()).sw->residual_source
             << "') that it approaches too slowly for any step to carry it across: the step "
                "that moves the threshold species by one ulp fails its error test on the rate "
                "law's jump. The crossing is not resolved, so there is no crossing time for the "
@@ -9594,12 +9639,22 @@ bool CvodeSimulator::Impl::carry_across_stalled_state_switch(
         sync_model_at(t, x.data(), ns);
         return false;
     }
+    // A run with sensitivities is carried over a continuous surface only
+    // (above): the columns there are what they were, read before the restart
+    // that would lose them and put back after it.
+    std::vector<std::vector<double>> s_here;
+    if (refuse && sens != nullptr) {
+        s_here = capture_event_sens(cvode_mem, ns, t, *sens);
+    }
     std::copy(xc.begin(), xc.end(), y_data);
     sync_model_at(t, y_data, ns);
     const int rf = reinit_cvode(cvode_mem, static_cast<sunrealtype>(t), y);
     if (rf != CV_SUCCESS) {
         throw std::runtime_error("CVodeReInit past a stalled state-switch crossing failed: " +
                                  std::to_string(rf));
+    }
+    if (!s_here.empty()) {
+        resume_sens_after_reinit(cvode_mem, ns, s_here, *sens);
     }
     return true;
 }
@@ -14265,10 +14320,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
         state_switch_pinned_since.resize(n_sw, std::numeric_limits<double>::quiet_NaN());
         state_switch_pinned_steps.resize(n_sw, 0);
-        // Ends the run where the state is pinned (issue #952); false otherwise.
+        // Ends the run where the state is pinned at a jump (issue #952), and
+        // carries it over a continuous surface (issue #1229).
         impl_->carry_across_stalled_state_switch(cvode_mem, t, t_from, y, ns, state_switches,
                                                  state_switch_pinned_since, true,
-                                                 &state_switch_pinned_steps, &watch_ask);
+                                                 &state_switch_pinned_steps, &watch_ask, &sens);
     };
     // Asked where `every` steps have gone by since it last was. CVODE's count
     // starts again where the run is restarted.
