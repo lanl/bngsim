@@ -8669,6 +8669,92 @@ def state_switch_conditions(core, ctx=None) -> list[str]:
     return conditions
 
 
+def equalities_held_at_start(core, ctx=None) -> list[str]:
+    """The rate-law equalities over model state that the run starts on (issue #1228).
+
+    :func:`state_switch_conditions` roots no equality: a trajectory that crosses
+    ``X == c`` holds it for an instant, so its branch adds nothing, and a root
+    there would make the branch, as the restart at the crossing reads it as
+    holding over the next step. The core admits the equality's surface (issue
+    #381) and measures its branch gap either side of it, where both sides read
+    false.
+
+    A state that sits ON the surface holds the equality for a stretch:
+    ``if(Bobs==0, kb, 0)`` with B made only once A falls to q kept its branch on
+    until then. Leaving it is a switch, and neither root nor probe sees it, so a
+    sensitivity run returned dY/da and dY/dq as 0 for -6.44 and -1 with no word,
+    where ``Bobs<=0``, the same switch, is located and refused as a tangency.
+
+    Each atom here is a plain equality (or ``!=``) of things that move smoothly,
+    over live state, in a functional rate law or a function one reaches (one an
+    output alone reads moves nothing), whose residual is exactly 0 at the state the run starts
+    from, observables and functions refreshed from it, and still exactly 0 a
+    step along the flow from there: the state stays on the surface rather than
+    starting on it and leaving (``Aobs == 10`` with A decaying from 10 holds for
+    the instant t = 0, and is not one). A state whose residual turns at second
+    order, still at the start, is taken as staying, which refuses a run that
+    would have been right; it never passes one that would not. An equality over a step
+    or bend call (``floor(T/24) == 3``) is a window like any other and is not
+    one, and nor is a residual that reads the clock, since the run's start time
+    is not known here.
+    """
+    import numpy as np
+
+    from bngsim._jacobian import _inline_functions
+
+    if core.n_functions == 0:
+        return []
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    if not any(_IF_CALL.search(body) for body in dict(ctx["function_map"]).values()):
+        return []
+    func_map = _scan_function_map(ctx)
+    memo: dict[str, str] = {}
+    held: list[str] = []
+    seen: set[str] = set()
+    synced = False
+    x0 = core.get_state()
+    stepped: list = []
+
+    def value_at(residual, state):
+        # With the species at *state*, and the observables and functions
+        # refreshed from them; the start state is put back by the caller.
+        core.set_state(state)
+        core.compute_derivs(0.0, state)
+        return _evaluate_over(core, residual, [0.0])
+
+    # The rate laws, with the functions they reach written in: an equality in a
+    # function that only an output reads moves no trajectory and no column.
+    for rxn in ctx["functional_reactions"]:
+        law = _scan_rate_law(rxn)
+        flat = _inline_functions(law, func_map, memo=memo) or law
+        if not _IF_CALL.search(flat):
+            continue
+        for whole in _iter_condition_atoms(flat):
+            if not is_equality_atom(whole) or _STEP_CALL.search(whole) or _BEND_CALL.search(whole):
+                continue
+            residual = state_switch_residual(core, whole)
+            if not residual or residual in seen or _TIME_REF.search(residual):
+                continue
+            seen.add(residual)
+            synced = True
+            try:
+                if not np.all(value_at(residual, x0) == 0.0):
+                    continue
+                if not stepped:
+                    # One step along the flow: a residual every rate it reads
+                    # leaves at exactly 0 stays at exactly 0.
+                    stepped.append(x0 + 1e-6 * core.compute_derivs(0.0, x0))
+                if np.all(value_at(residual, stepped[0]) == 0.0):
+                    held.append(whole)
+            except Exception:  # noqa: BLE001 - a residual the evaluator cannot read is not asked
+                continue
+    if synced:
+        core.set_state(x0)
+        core.compute_derivs(0.0, x0)
+    return held
+
+
 def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[list[int]]:
     """For each condition, the 0-based functional reactions whose rate law reads it.
 

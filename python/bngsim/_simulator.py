@@ -2815,10 +2815,33 @@ class Simulator:
         """
         from bngsim._switch_sensitivity import (
             _surface_key,
+            equalities_held_at_start,
             state_switch_conditions,
             state_switch_reactions,
             state_switch_residual,
         )
+
+        # A rate-law equality the run starts on holds for a stretch, and leaving
+        # it is a switch nothing locates (issue #1228): refused by name, as the
+        # same switch written `<=` is refused at its tangency.
+        try:
+            held = equalities_held_at_start(core)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Equality-at-start detection failed (%s) (issue #1228).", e)
+            held = []
+        if held:
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported for this model: a rate law branches "
+                f"on {held[0]!r}, and the state starts on that equality's surface and stays "
+                "on it, so the condition holds one value for a stretch rather than an "
+                "instant. Leaving the surface is a switch "
+                "bngsim does not locate: an equality is rooted only where it is crossed, "
+                "and either side of its surface reads false, so the columns of whatever "
+                "ends the stretch would come back 0 with no jump (issue #1228). Write the "
+                "switch as the condition that ends it, or as an inequality, which is "
+                "located (`X<=c` for `X==c`, `X>c` for `X!=c`); or drop sensitivities for "
+                "this run."
+            )
 
         try:
             conditions = state_switch_conditions(core)
