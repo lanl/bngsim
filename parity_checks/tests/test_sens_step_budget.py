@@ -155,7 +155,7 @@ def _run_worker_to_the_engine_calls(monkeypatch, *, spec_extra: dict):
     which is precisely how it failed in CI, where it is not. Nothing here needs
     AMICI: the point is which number each engine wrapper is handed.
     """
-    monkeypatch.setattr(asens, "measure_warmup", lambda: {})
+    monkeypatch.setattr(asens, "measure_warmup", lambda include_amici=True: {})
     monkeypatch.setattr(asens, "set_amici_quiet", lambda: None)
     monkeypatch.setattr(asens, "amici_free_parameter_ids", lambda xml: (["k1"], object()))
     monkeypatch.setattr(

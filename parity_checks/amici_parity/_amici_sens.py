@@ -837,9 +837,9 @@ def sens_verdict(
     return v
 
 
-def measure_warmup() -> dict:
+def measure_warmup(include_amici: bool = True) -> dict:
     """Per-process warmup for both engines — see :func:`_amici_common.measure_warmup`."""
-    return ac.measure_warmup()
+    return ac.measure_warmup(include_amici)
 
 
 def set_amici_quiet() -> None:

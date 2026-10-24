@@ -260,6 +260,38 @@ the run: `generate_amici_matrix.py --report <path>` points at any report.
   time); everything else gets a verdict. Raise `--timeout` / drop `--workers` to 2
   to push the giants (RAM-heavy).
 - **Exit code 1 when DIFFs exist** — normal, not a crash.
+
+### Replaying from a reference archive (issue #805)
+
+AMICI's side of a sensitivity job is the expensive part: a cold compile per
+model, and an AMICI install to compile with. A live run can record it once and
+later runs can compare bngsim against the record with no AMICI at all:
+
+```bash
+# record: a normal live run that also writes one .npz per (model, method) job
+.venv/bin/python parity_checks/amici_parity/amici_sens_run.py \
+    --write-reference-archive runs/amici_sens_archive
+
+# replay: same jobs, AMICI never imported (not by the runner, not by a worker)
+.venv/bin/python parity_checks/amici_parity/amici_sens_run.py \
+    --reference-archive runs/amici_sens_archive
+```
+
+An entry holds AMICI's free parameter ids (so the replay negotiates the same
+shared parameter list without building the model), the shared list it ran
+with, its state and sensitivity tensors, its timing, or the build or run
+failure it hit. The replay re-runs bngsim and scores it exactly as a live run
+would; on the smoke subset the two give the same outcome, value and comment on
+every job, and the row's `timing.amici.replayed_from_archive` is `true`.
+
+An entry is used only when it still describes the job: the model file's
+sha256, the grid (`t_start`, `t_end`, `n_points`), `rtol`, `atol`, the method,
+`--max-steps`, `--param-cap` and `--param-budget` must all match, and so must
+the shared parameter list the replay negotiates. Otherwise, or with no entry,
+the row is `REFERENCE_FAILED` with `reference_refusal: archive_stale` and the
+message names what changed (`the job's rtol changed`). A stale row is never
+compared; re-record it. The two flags are mutually exclusive, and the report's
+`_meta.reference_source` says which side the AMICI numbers came from.
 - Output `runs/report_ode.json` + `runs/amici_matrix.html` are gitignored
   (regenerable). Versions stamped via `_core.versions.amici_version()` (the live
   package version); the exact AMICI reference build is pinned in `AMICI_PIN.json`.

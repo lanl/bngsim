@@ -335,7 +335,7 @@ def set_amici_quiet() -> None:
         logging.getLogger(name).setLevel(logging.ERROR)
 
 
-def measure_warmup() -> dict:
+def measure_warmup(include_amici: bool = True) -> dict:
     """One-time per-process warmup for both engines — call ONCE at worker start,
     before any model, so the heavy imports are charged here (per-process) and not
     to the first model's load. Mirrors ``_rr_common.measure_warmup`` but swaps the
@@ -353,6 +353,9 @@ def measure_warmup() -> dict:
 
     _ = sp.diff(sp.Symbol("x") ** 2, sp.Symbol("x"))
     bn_sec = time.perf_counter() - t0
+    if not include_amici:
+        # A replay from a reference archive (issue #805) never loads AMICI.
+        return {"bngsim_sec": round(bn_sec, 6)}
 
     t1 = time.perf_counter()
     import amici  # noqa: F401
