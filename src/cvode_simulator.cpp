@@ -16344,7 +16344,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         std::copy(x_row.begin(), x_row.end(), y_data);
                     }
                 }
-                impl_->sync_model_at(t_out[i], y_data, ns);
+                // Put the row's species back, and only them (issue #1183). A
+                // full sync here evaluated the model a second time per row, and
+                // the row's own refresh below evaluates the observables, the
+                // functions and rateOf again at this time and state anyway: the
+                // read-ahead cost 1.6-1.75x on 20001-row grids, where almost no
+                // row's read-ahead fires.
+                for (int si = 0; si < ns; ++si) {
+                    sp_vec_outer[si].concentration = y_data[si];
+                }
             }
         }
 
