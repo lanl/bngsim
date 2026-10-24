@@ -8435,6 +8435,9 @@ def _build_model_from_sbml_doc_in_context(doc):
         _rule_rate: dict[str, object] = {}
         # safe(var) -> the nonzero terms of its rate: (∂g/∂s, s, ṡ)
         _rule_terms: dict[str, list] = {}
+        # safe(var) -> why its rate is unknown, for a refusal that names it
+        # (issue #1193)
+        _rate_unknown_why: dict[str, str] = {}
 
         def _leaf_deriv(nm: str):
             # d(symbol)/dt: None ⇒ unknown (bail the whole V̇); 0 ⇒ constant.
@@ -8449,6 +8452,12 @@ def _build_model_from_sbml_doc_in_context(doc):
                 return _sp.Symbol(_rateof_token(sid))
             if nm in _rr_alias:
                 return _rr_deriv(_rr_alias[nm])
+            if nm in _rate_token_species:
+                # rateOf(S) is S's live rate, and its own rate is not derived
+                # here (issue #1193): read as 0, as the fall-through below did,
+                # `cv := 2 + rateOf(S3)` with S3 decaying was never diluted. Of
+                # a species that never moves continuously it is 0 for good.
+                return _sp.Integer(0) if _rate_token_species[nm] in _still_species else None
             # An event-promoted parameter jumps at its events, which rescale the
             # concentrations there (#74), and holds between them (#1052: this
             # used to make V̇ unknown and drop the whole term).
@@ -8460,14 +8469,23 @@ def _build_model_from_sbml_doc_in_context(doc):
             # unwinds with None through every rule on the cycle.
             if safe_var in _rule_rate:
                 got = _rule_rate[safe_var]
-                return None if got is _on_path else got
+                if got is _on_path:
+                    _rate_unknown_why.setdefault(
+                        safe_var, "it reads itself through a cycle of rules"
+                    )
+                    return None
+                return got
             if safe_var not in _ar_rhs_ex:
+                _rate_unknown_why.setdefault(safe_var, "its rule could not be read")
                 return None
             _rule_rate[safe_var] = _on_path
-            _rule_rate[safe_var], _rule_terms[safe_var] = _chain_rule(_ar_sym(safe_var))
+            g = _ar_sym(safe_var)
+            if g is None:
+                _rate_unknown_why.setdefault(safe_var, "its rule could not be parsed")
+            _rule_rate[safe_var], _rule_terms[safe_var] = _chain_rule(g, safe_var)
             return _rule_rate[safe_var]
 
-        def _chain_rule(g):
+        def _chain_rule(g, safe_var=None):
             # (Σ ∂g/∂s·ṡ over g's symbols, its nonzero terms), or (None, []).
             if g is None:
                 return None, []
@@ -8475,6 +8493,24 @@ def _build_model_from_sbml_doc_in_context(doc):
             for s in g.free_symbols:
                 d = _leaf_deriv(str(s))
                 if d is None:
+                    if safe_var is not None and safe_var not in _rate_unknown_why:
+                        nm = str(s)
+                        if nm in _rate_token_species:
+                            why = (
+                                f"it reads rateOf({_rate_token_species[nm]}), whose "
+                                "rate bngsim does not derive"
+                            )
+                        elif nm in _ar_alias:
+                            child = _ar_alias[nm]
+                            why = _rate_unknown_why.get(child, "its rate is unknown")
+                            why = (
+                                f"through {child}, {why}"
+                                if not why.startswith("through ")
+                                else why
+                            )
+                        else:
+                            why = f"the rate of {nm} is unknown"
+                        _rate_unknown_why[safe_var] = why
                     return None, []
                 if d != 0:
                     p = _sp.diff(g, s)
@@ -8560,6 +8596,14 @@ def _build_model_from_sbml_doc_in_context(doc):
                 vdot = _vdot_sym(_safe_name(comp))
                 _comp_vdot[comp] = vdot
                 _comp_rated[comp] = _rate_tokens(vdot) if vdot is not None else set()
+        # A size that moves with the run and whose rate is unknown was left out
+        # of the dilution, and its concentrations came back as if it held, with
+        # no word (issue #1193). Refused by name instead, below. A size that
+        # reads constants alone holds (#745), a cycle of them included, and has
+        # nothing to dilute.
+        _unknown_vdot = sorted(
+            comp for comp, v in _comp_vdot.items() if v is None and comp in ar_comp_moving
+        )
 
         # Written out in full, a rate that more than one rule reads is written
         # once per path to it, and the term is as exponential as the walk was
@@ -8642,6 +8686,13 @@ def _build_model_from_sbml_doc_in_context(doc):
             return cid
 
         _refusals: list[str] = []
+        for comp in _unknown_vdot:
+            _refusals.append(
+                f"compartment {comp} ({_size_text(comp)}) moves with the run, but bngsim "
+                f"cannot follow its size to its rate: "
+                f"{_rate_unknown_why.get(_safe_name(comp), 'its rate is unknown')}; its "
+                f"concentrations would not be diluted"
+            )
 
         # A piecewise size jumps where one of its conditions flips (#1054). The
         # chain rule above differentiates each piece, which is right between
