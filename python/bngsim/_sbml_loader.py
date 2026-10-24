@@ -9124,8 +9124,21 @@ def _build_model_from_sbml_doc_in_context(doc):
                         "flips, and bngsim cannot write the size on either side"
                     )
                     continue
+                # A helper the two triggers read is read at every root; the
+                # others only by the jump's assignments, when it executes, and
+                # so are deferred: evaluated at every step, they cost more than
+                # the model (issue #1186). Each reads only helpers before it.
+                bodies = dict(helpers)
+                in_trigger: set[str] = set()
+                stack = [n for e in written[:2] for n in _names_in(e) if n in bodies]
+                while stack:
+                    n = stack.pop()
+                    if n not in in_trigger:
+                        in_trigger.add(n)
+                        stack.extend(m for m in _names_in(bodies[n]) if m in bodies)
+                deferred = {renamed.get(n, n) for n in bodies if n not in in_trigger}
                 for name, text in helper_texts:
-                    builder.add_function(name, _unalias(text))
+                    builder.add_function(name, _unalias(text), deferred=name in deferred)
                 rises, falls, v_false, v_true = (_unalias(t) for t in texts)
                 _jump_species[comp] = [
                     s for s, sc in species_comp.items() if sc == comp and _diluted(s)
@@ -10345,7 +10358,7 @@ def _build_model_from_sbml_doc_in_context(doc):
     # e and compartment c_x, event e_c and compartment x), where an event read
     # the value of the other's function of that name. Each is added once an
     # assignment the model keeps reads it, since every function is evaluated
-    # at every step.
+    # wherever an event executes (and was, before issue #1186, at every step).
     _resize_helper_of: dict[str, str] = {}  # text -> name
     _resize_helper_text: dict[str, str] = {}  # name -> text
     _resize_helpers_added: set[str] = set()
@@ -10370,7 +10383,8 @@ def _build_model_from_sbml_doc_in_context(doc):
             for inner in _EXPRTK_NAME.findall(body):
                 if inner in _resize_helper_text:
                     add(inner)
-            builder.add_function(name, body)
+            # Read only by event assignments, so not at every step (#1186).
+            builder.add_function(name, body, deferred=True)
 
         if _resize_helper_text:
             for text in texts:

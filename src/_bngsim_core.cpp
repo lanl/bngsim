@@ -572,6 +572,9 @@ template <class S> typename S::Obj codegen_data(const bngsim::NetworkModel &m, S
         // prefers it; every emitter that DIFFERENTIATES keeps reading
         // "expression", which is the smooth declared law.
         s.set(fd, "eval_expression", val(s, f.eval_expression));
+        // Issue #1186: read only by event assignments, so the emitted
+        // right-hand side leaves it out.
+        s.set(fd, "deferred", val(s, f.deferred));
         s.push(func_list, s.done(fd));
     }
     s.set(d, "functions", s.done(func_list));
@@ -3325,7 +3328,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "a file — BNG's tfun([xs],[ys],index) form. xs must be monotonically "
              "increasing and the same length as ys.")
         .def("add_function", &bngsim::ModelBuilder::add_function, py::arg("name"),
-             py::arg("expression"), "Add a function (named expression). Returns 0-based index.")
+             py::arg("expression"), py::arg("deferred") = false,
+             "Add a function (named expression). Returns 0-based index. A deferred "
+             "function is read only by event assignments: the right-hand side and the "
+             "event roots do not evaluate it (issue #1186).")
         .def(
             "add_reaction",
             [](bngsim::ModelBuilder &self, const std::vector<int> &reactants,

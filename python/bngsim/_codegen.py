@@ -6682,6 +6682,7 @@ def generate_rhs_from_model(model) -> str:
             _obs_map,
             _func_map,
             _rateof_map,
+            with_deferred=False,
         )
         if functions
         else [],
@@ -7068,6 +7069,7 @@ def _emit_function_lines(
     obs_map: dict,
     func_map: dict,
     rateof_map: dict | None = None,
+    with_deferred: bool = True,
 ) -> list[str]:
     """C lines computing ``double func[N]; func[i] = …`` in dependency order.
 
@@ -7082,6 +7084,10 @@ def _emit_function_lines(
     so a function that references another declared after it does not read an
     uninitialised ``func[]`` slot; the ``func[i]`` slot index stays the
     declaration index, so ``func_map`` references are unaffected.
+
+    ``with_deferred=False`` leaves out the functions only event assignments
+    read (issue #1186), which no rate law and no other function reads: the RHS
+    emitter passes it.
     """
     # Built once and shared across every function body — rebuilding it per body
     # is the model-based GH #161 quadratic (see _build_ident_lookup_model).
@@ -7090,6 +7096,8 @@ def _emit_function_lines(
     lines = [f"    double func[{len(functions)}];"]
     for i in _topological_function_order(functions, tfun_call_by_name):
         f = functions[i]
+        if f.get("deferred") and not with_deferred:
+            continue
         tfun_call = tfun_call_by_name.get(f["name"])
         if tfun_call is not None:
             tf_id, idx_c = tfun_call

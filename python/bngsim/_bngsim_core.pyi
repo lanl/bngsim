@@ -35,9 +35,9 @@ class ModelBuilder:
         """
         Add a discrete event. assignments = [(sp_idx_0based, value_expr_str), ...]. delay_expr/priority_expr (when non-empty) override the constant delay/priority: the delay is evaluated when the event is triggered, the priority when it executes (issue #752). assignment_ode_only (GH #81) is a parallel bool list; true entries apply under ODE only and are skipped under SSA (the compartment-resize concentration rescale that must not perturb counts).
         """
-    def add_function(self, name: str, expression: str) -> int:
+    def add_function(self, name: str, expression: str, deferred: bool = False) -> int:
         """
-        Add a function (named expression). Returns 0-based index.
+        Add a function (named expression). Returns 0-based index. A deferred function is read only by event assignments: the right-hand side and the event roots do not evaluate it (issue #1186).
         """
     def add_inline_table_function_spec(self, func_name: str, xs: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], ys: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], index_name: str = 'time', method: str = 'linear') -> None:
         """

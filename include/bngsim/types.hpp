@@ -458,6 +458,15 @@ struct Function {
     // while only the value consumers -- the ExprTk evaluator and the codegen C
     // emitter -- read the branch.
     std::string eval_expression;
+
+    // Issue #1186: read only by event assignments, so the right-hand side
+    // (interpreted and compiled), the event roots and the analytic Jacobian's
+    // refresh leave it alone, and it is evaluated where an event executes, as
+    // everywhere else that evaluates the functions. A size jump's sides through
+    // a diamond of rules are written as functions of their own (#1145), and
+    // evaluated at every step they cost more than the model. Nothing that is
+    // not deferred may read one.
+    bool deferred = false;
 };
 
 // ─── Stoichiometry entry (sparse) ────────────────────────────────────────────

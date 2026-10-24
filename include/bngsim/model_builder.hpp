@@ -94,8 +94,9 @@ class ModelBuilder {
 
     /// Add a function (named expression). Returns the 0-based function index.
     /// The expression can reference parameter names, observable names, and
-    /// built-in functions (time(), sin(), etc.).
-    int add_function(const std::string &name, const std::string &expression);
+    /// built-in functions (time(), sin(), etc.). A deferred function is read
+    /// only by event assignments (see Function::deferred).
+    int add_function(const std::string &name, const std::string &expression, bool deferred = false);
 
     /// Add a reaction. Returns the 0-based reaction index.
     /// reactants/products: vectors of 0-based species indices. Empty = null

@@ -1986,7 +1986,8 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
         sp_vec[i].concentration = y_ptr[i];
     }
     mdl->update_observables(y_ptr);
-    mdl->evaluate_functions(static_cast<double>(t));
+    // Without the deferred functions: no trigger reads one (issue #1186).
+    mdl->evaluate_functions(static_cast<double>(t), /*with_deferred=*/false);
 
     // GH #106: refresh the live rateOf buffer, and re-evaluate the functions
     // against it, so triggers reading rateOf(species) — directly or via a
@@ -2003,7 +2004,7 @@ static int cvode_event_root_fn_body(sunrealtype t, N_Vector y, sunrealtype *gout
     // depths agree, it is as many probes as before.
     if (mdl->uses_rateof()) {
         mdl->refresh_rateof_derivs(static_cast<double>(t), y_ptr);
-        mdl->evaluate_functions(static_cast<double>(t));
+        mdl->evaluate_functions(static_cast<double>(t), /*with_deferred=*/false);
     }
 
     auto &eval = mdl->evaluator();
@@ -12937,6 +12938,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         const bool any_due = t_now >= earliest_pending();
         if (firing_in.empty() && !any_due)
             return false;
+        // The functions only event assignments read, which the right-hand side
+        // and the roots leave where they were (issue #1186), read as the rest
+        // of the functions stand now. After each fire, all are read again.
+        model.evaluate_deferred_functions(t_now);
 
         // Capture an event's UVFTT snapshot + resolved delay AT THE CURRENT
         // state (its trigger time). Used both to seed the batch and to enqueue

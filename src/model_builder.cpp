@@ -475,13 +475,15 @@ int ModelBuilder::add_observable(const std::string &name,
     return idx;
 }
 
-int ModelBuilder::add_function(const std::string &name, const std::string &expression) {
+int ModelBuilder::add_function(const std::string &name, const std::string &expression,
+                               bool deferred) {
     int idx = static_cast<int>(bimpl_->functions.size());
     Function func;
     func.index = idx + 1;
     func.name = name;
     func.expression = expression;
     func.evaluator_id = -1;
+    func.deferred = deferred;
 
     bimpl_->function_name_to_idx[name] = idx;
     bimpl_->functions.push_back(std::move(func));

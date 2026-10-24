@@ -3568,7 +3568,7 @@ void NetworkModel::fill_dense_analytical_jacobian(double t, const double *conc, 
         // func is a function-bound rate parameter, so refresh it (exact RHS
         // parity) before reading; paid only when a varvol term exists.
         if (!impl_->functional_jac.volume_terms.empty()) {
-            evaluate_functions(t);
+            evaluate_functions(t, /*with_deferred=*/false);
             for (const auto &vt : impl_->functional_jac.volume_terms) {
                 if (vt.func_param_idx0 < 0 || vt.func_param_idx0 >= static_cast<int>(params.size()))
                     continue;
@@ -3693,7 +3693,7 @@ void NetworkModel::fill_sparse_analytical_jacobian(double t, const double *conc,
         }
         // GH #171: the new ∂/∂V_live column (sparse mirror of the dense path).
         if (!impl_->functional_jac.volume_terms.empty()) {
-            evaluate_functions(t);
+            evaluate_functions(t, /*with_deferred=*/false);
             for (const auto &vt : impl_->functional_jac.volume_terms) {
                 if (vt.func_param_idx0 < 0 || vt.func_param_idx0 >= static_cast<int>(params.size()))
                     continue;
@@ -4017,7 +4017,7 @@ void NetworkModel::update_observables(const double *conc) {
     }
 }
 
-void NetworkModel::evaluate_functions(double t) {
+void NetworkModel::evaluate_functions(double t, bool with_deferred) {
     impl_->current_time = t;
 
     if (!impl_->has_functions)
@@ -4040,7 +4040,7 @@ void NetworkModel::evaluate_functions(double t) {
     const auto eval_one = [&](size_t bi) {
         const auto &[func_idx, param_idx] = bindings[bi];
         const auto &func = impl_->functions[func_idx];
-        if (func.evaluator_id < 0)
+        if (func.evaluator_id < 0 || (func.deferred && !with_deferred))
             return;
         const double val = impl_->evaluator->evaluate(func.evaluator_id);
         impl_->parameters[param_idx].value = val;
@@ -4054,6 +4054,32 @@ void NetworkModel::evaluate_functions(double t) {
             continue;
         }
         solve_function_cycle(lo, hi);
+    }
+}
+
+void NetworkModel::evaluate_deferred_functions(double t) {
+    if (!impl_->has_functions)
+        return;
+    impl_->current_time = t;
+    auto &cache = impl_->function_value_cache;
+    if (cache.size() != impl_->functions.size())
+        cache.assign(impl_->functions.size(), 0.0);
+    // In the order evaluate_functions takes, so each reads the deferred ones
+    // before it as they are now. A deferred function is never in a cycle: the
+    // loader writes them as the shared nodes of a tree, each after its own.
+    const auto &starts = impl_->shared->function_scc_starts;
+    const auto &bindings = impl_->shared->var_param_bindings;
+    for (size_t g = 0; g + 1 < starts.size(); ++g) {
+        const size_t lo = static_cast<size_t>(starts[g]);
+        if (starts[g + 1] - starts[g] != 1)
+            continue;
+        const auto &[func_idx, param_idx] = bindings[lo];
+        const auto &func = impl_->functions[func_idx];
+        if (!func.deferred || func.evaluator_id < 0)
+            continue;
+        const double val = impl_->evaluator->evaluate(func.evaluator_id);
+        impl_->parameters[param_idx].value = val;
+        cache[func_idx] = val;
     }
 }
 
@@ -4557,7 +4583,8 @@ void NetworkModel::compute_derivs_core(double t, const double *conc, double *der
     if (impl_->has_functions) {
         ++impl_->rhs_obs_func_eval_count;
         update_observables(conc);
-        evaluate_functions(t);
+        // Without the deferred functions, which no rate reads (issue #1186).
+        evaluate_functions(t, /*with_deferred=*/false);
     } else {
         impl_->current_time = t;
     }
