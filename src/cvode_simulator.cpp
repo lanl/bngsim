@@ -1258,6 +1258,11 @@ static void note_nominal_point(CvodeUserData *data, const std::vector<Parameter>
 // probe the dependents lists do not cover, re-derives everything.
 static std::vector<Parameter> &sync_sens_params(CvodeUserData *data) {
     auto &params = const_cast<std::vector<Parameter> &>(data->model->parameters());
+    // PLANTED BUG, verification only (lanl/bngsim#1259); never to be merged.
+    // Reads one Parameter past the vector's allocation and discards the value,
+    // so an unsanitized build behaves exactly as before.
+    volatile double planted = params.data()[params.capacity()].value;
+    (void)planted;
     const int n = data->n_params;
     auto synced = [data](int i) {
         return (data->sens_param_pinned != nullptr && data->sens_param_pinned[i])
