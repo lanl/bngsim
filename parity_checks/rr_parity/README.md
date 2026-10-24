@@ -476,6 +476,34 @@ moving the known/accepted ones to a `KNOWN_ARTIFACT`-style allow-list with a
 reason each — exactly as bng_parity does. (Allow-list + per-model tolerance
 overrides are the next addition; not yet wired.)
 
+## Replaying RoadRunner from a recorded archive (issue #805)
+
+A sweep can record what RoadRunner returned for each job, and a later sweep can
+compare bngsim against that record without RoadRunner installed:
+
+```bash
+# record (RoadRunner runs; the verdicts are the live ones)
+python parity_checks/rr_parity/rr_run.py --write-reference-archive runs/rr_archive
+# replay (RoadRunner is never imported)
+python parity_checks/rr_parity/rr_run.py --reference-archive runs/rr_archive
+```
+
+The archive is one compressed `.npz` per job:
+
+- RoadRunner's time grid, values and species names;
+- a `meta` record holding what the entry is the reference *for*: the model id and method, the model file's sha256, the integration interval, grid and tolerances;
+- RoadRunner's version and timing;
+- where RoadRunner raised, its exception, so a REFERENCE_FAILED or BAD_TEST row replays as it ran.
+
+An entry whose identity no longer matches its job is never compared. That covers a changed model, grid or tolerance, the way #1099 tightened BIOMD0000000374's rtol, and a missing entry. Such a row is REFERENCE_FAILED with refusal class `archive_stale`, and the nightly diff alerts wherever that turns a good case bad. A replayed row's `timing.roadrunner.replayed_from_archive` is true, and the report's `_meta.reference_source` names the archive. On the committed smoke subset, a replay with RoadRunner blocked from importing gives the live run's outcome, value and comment on every job.
+
+Still to do before the nightly replays instead of running RoadRunner (issue #805):
+
+1. Publish a full-corpus archive as a release asset, with a committed sha256 manifest.
+2. Add a CI fetch step that verifies it.
+3. Move the live RoadRunner run to a weekly schedule that refreshes the archive.
+4. Leave out the models whose license does not allow redistribution, for example the 300 of the 317 CI cannot fetch that carry no recorded license.
+
 ## Emitting golden references (`rr_golden.py`)
 
 Pure bngsim output — no RoadRunner side, no differ. Consumers (PyBNF,

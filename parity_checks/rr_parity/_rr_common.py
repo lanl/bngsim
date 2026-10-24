@@ -211,7 +211,7 @@ def align_common(
 # --------------------------------------------------------------------------- #
 # Per-process warmup (the third cost type, alongside per-model and per-integration)
 # --------------------------------------------------------------------------- #
-def measure_warmup() -> dict:
+def measure_warmup(include_roadrunner: bool = True) -> dict:
     """One-time per-process warmup cost for both engines.
 
     Must be called **once at worker start, before any engine call** so the SymPy
@@ -234,6 +234,9 @@ def measure_warmup() -> dict:
     _ = sp.diff(sp.Symbol("x") ** 2, sp.Symbol("x"))
     bn_sec = time.perf_counter() - t0
 
+    if not include_roadrunner:
+        # A replay from a reference archive (issue #805) never loads RoadRunner.
+        return {"bngsim_sec": round(bn_sec, 6)}
     rr_sec, rr_source = _rr_warmup()
     return {
         "bngsim_sec": round(bn_sec, 6),
