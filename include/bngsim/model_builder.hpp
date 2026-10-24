@@ -309,8 +309,10 @@ class ModelBuilder {
     /// Issue #1054: mark the most recently added event as the rescale where the
     /// piecewise assignment-rule size of `compartment` jumps. The ODE engine
     /// executes it before the other events of its instant read their trigger,
-    /// values and delay (Event::size_jump_compartment).
-    void set_last_event_size_jump(const std::string &compartment);
+    /// values and delay (Event::size_jump_compartment). `before`, where given, is
+    /// the compartment's size before the jump (Event::size_jump_before_expr,
+    /// issue #1181).
+    void set_last_event_size_jump(const std::string &compartment, const std::string &before = "");
 
     // ─── Discontinuity triggers (GH #72) ───────────────────────────────────
 

@@ -9076,12 +9076,22 @@ def _build_model_from_sbml_doc_in_context(doc):
                 else:
                     side_true = -1 if c.func(-q, 0) else 1
                     side_false = -side_true
-                siblings = _siblings(d0)
+                # An equality holds at its root alone, so the side a sibling
+                # is on there is the one it is reached from or left to, which
+                # its side does not say: `time == t1` beside `time < t2` with
+                # t1 = t2 read the step as passed both where the equality was
+                # reached and where it was left (issue #1181, item 3). Neither
+                # is forced: each is read as it stands, and where jumps of one
+                # compartment execute at one instant the engine reads the size
+                # before it once, from just before the instant.
+                siblings = [] if isinstance(c, (_sp.Eq, _sp.Ne)) else _siblings(d0)
 
                 def _at(side, siblings=siblings, rels=rels, g=g):
                     subs = {r: r.func(rq * side, 0) for r, rq in rels}
                     for rels1, scale, rest in siblings:
                         for r, rq in rels1:
+                            if isinstance(r, (_sp.Eq, _sp.Ne)):
+                                continue
                             # its side where rest = 0, else as it stands; as a
                             # Piecewise this costs sympy a canonicalisation per
                             # sibling, which a size of many roots pays N² times
@@ -10810,7 +10820,7 @@ def _build_model_from_sbml_doc_in_context(doc):
             priority_expr="1e308",
             assignment_ode_only=[True] * len(assignments),
         )
-        builder.set_last_event_size_jump(comp)
+        builder.set_last_event_size_jump(comp, before)
         for ai, size in rescales:
             builder.set_last_event_assignment_rescale(ai, size, -1)
         for sid in _jump_species[comp]:

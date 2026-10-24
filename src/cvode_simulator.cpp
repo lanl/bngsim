@@ -12933,6 +12933,133 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     };
 
+    // Issue #1181. Two jumps of one compartment's size that execute at one
+    // instant each froze, at the trigger, the concentration times its own
+    // ratio: the size with its own condition on the side it leaves over the
+    // size now, the other conditions read as they stand, already flipped. The
+    // last write stayed, and the concentration took one jump's share of the
+    // instant's: `1 + piecewise(0, t < t1, 1) + piecewise(0, t < t2, 1)` with t2
+    // a few ulp past t1 left [Sn] at 5·2/3 for 5/3. The loader puts on one
+    // root only the conditions a run constant relates (#1124); CVODE batches
+    // roots within its own tolerance, and a stop merges those within its
+    // instant, whatever relates them.
+    //
+    // So where more than one jump of a compartment executes at one instant,
+    // the first rescales by the whole instant's ratio and the rest stand down:
+    // the size before (its own condition on the side it leaves, every other as
+    // it stands) read just before the instant, where every condition of the
+    // batch is on the side it leaves, over the size after (read now). Its
+    // frozen values are its own ratio's, so they take the ratio of the two
+    // readings of the size before. Its rescales of the compartments that
+    // follow it read their sizes before and after its write, so they take the
+    // whole instant too. Where the two readings agree to rounding (a run
+    // constant puts both on one root, and the loader reads each on the side
+    // it leaves) the values are left as they were frozen.
+    //
+    // Just before the instant is a step back along the flow from the state
+    // now, far enough that every jump of the batch reads false there and
+    // short enough that no root behind it is crossed: each root has two jump
+    // events, one rising and one falling, so the triggers that differ there
+    // from now are two for each jump of the batch, and no more.
+    auto rescale_once_per_compartment = [&](std::vector<ExecInstance> &queue, double t_now) {
+        std::vector<std::pair<std::string, std::vector<std::size_t>>> by_comp;
+        for (std::size_t k = 0; k < queue.size(); ++k) {
+            const Event &ev = events_outer[static_cast<std::size_t>(queue[k].event_idx)];
+            if (queue[k].done || queue[k].from_delay || ev.size_jump_compartment.empty())
+                continue;
+            auto at = std::find_if(by_comp.begin(), by_comp.end(), [&](const auto &one) {
+                return one.first == ev.size_jump_compartment;
+            });
+            if (at == by_comp.end())
+                by_comp.push_back({ev.size_jump_compartment, {k}});
+            else
+                at->second.push_back(k);
+        }
+        for (const auto &[comp, ks] : by_comp) {
+            if (ks.size() < 2)
+                continue;
+            ExecInstance &first = queue[ks.front()];
+            const Event &ev0 = events_outer[static_cast<std::size_t>(first.event_idx)];
+            if (ev0.size_jump_before_expr < 0 ||
+                first.snapshot_vals.size() != ev0.assignments.size())
+                continue;
+            std::vector<int> jumps_of_comp;
+            std::vector<char> in_batch(static_cast<std::size_t>(n_events), 0);
+            for (int ei = 0; ei < n_events; ++ei)
+                if (events_outer[static_cast<std::size_t>(ei)].size_jump_compartment == comp)
+                    jumps_of_comp.push_back(ei);
+            for (std::size_t k : ks)
+                in_batch[static_cast<std::size_t>(queue[k].event_idx)] = 1;
+
+            // Now: the model holds the state the batch was triggered at.
+            const std::vector<double> x_now(y_data, y_data + ns);
+            impl_->sync_model_at(t_now, x_now.data(), ns);
+            const double before_now = eval_ref_outer.evaluate(ev0.size_jump_before_expr);
+            std::vector<char> trig_now(jumps_of_comp.size(), 0);
+            for (std::size_t j = 0; j < jumps_of_comp.size(); ++j)
+                trig_now[j] = read_trigger(jumps_of_comp[j], t_now) ? 1 : 0;
+            std::vector<double> f(static_cast<std::size_t>(ns), 0.0);
+            model.compute_derivs(t_now, x_now.data(), f.data());
+
+            sunrealtype h_last = 0.0;
+            CVodeGetLastStep(cvode_mem, &h_last);
+            const double eps = std::numeric_limits<double>::epsilon();
+            double delta =
+                2.0 *
+                std::max(100.0 * eps * (std::fabs(t_now) + std::fabs(static_cast<double>(h_last))),
+                         kSwitchInstantUlps * eps * std::max(std::fabs(t_now), 1.0));
+            double before_pre = std::numeric_limits<double>::quiet_NaN();
+            std::vector<double> x_pre(static_cast<std::size_t>(ns), 0.0);
+            for (int attempt = 0; attempt < 40 && std::isnan(before_pre); ++attempt, delta *= 2.0) {
+                const double t_pre = t_now - delta;
+                for (int si = 0; si < ns; ++si)
+                    x_pre[static_cast<std::size_t>(si)] = x_now[static_cast<std::size_t>(si)] -
+                                                          delta * f[static_cast<std::size_t>(si)];
+                impl_->sync_model_at(t_pre, x_pre.data(), ns);
+                std::size_t changed = 0;
+                bool batch_pre = true;
+                for (std::size_t j = 0; j < jumps_of_comp.size(); ++j) {
+                    const bool pre = read_trigger(jumps_of_comp[j], t_pre);
+                    changed += (pre != (trig_now[j] != 0)) ? 1 : 0;
+                    if (in_batch[static_cast<std::size_t>(jumps_of_comp[j])] != 0 && pre)
+                        batch_pre = false;
+                }
+                if (batch_pre && changed == 2 * ks.size())
+                    before_pre = eval_ref_outer.evaluate(ev0.size_jump_before_expr);
+                else if (changed > 2 * ks.size())
+                    break; // a root behind the instant is crossed: further back only adds more
+            }
+            impl_->sync_model_at(t_now, x_now.data(), ns);
+            if (std::isnan(before_pre) || !std::isfinite(before_now) || before_now == 0.0) {
+                throw std::runtime_error(
+                    "the size of compartment '" + comp + "' jumps " + std::to_string(ks.size()) +
+                    " times at t=" + diag_number(t_now) +
+                    ", and bngsim could not read it just before that instant, where each of "
+                    "those jumps has yet to happen and no other has, to rescale its "
+                    "concentrations once by the whole instant (issue #1181). Give the jumps "
+                    "times apart.");
+            }
+            double scale = before_pre / before_now;
+            if (!(std::fabs(before_pre - before_now) >
+                  1e-9 * std::max(std::fabs(before_pre), std::fabs(before_now))))
+                scale = 1.0;
+            if (scale != 1.0 && sens.n_total > 0) {
+                throw std::runtime_error(
+                    "Forward sensitivity: at t=" + diag_number(t_now) +
+                    " the size of compartment '" + comp + "' jumps " + std::to_string(ks.size()) +
+                    " times at one instant, at roots no run constant relates, and its "
+                    "concentrations are rescaled once by the whole instant (issue #1181). The "
+                    "derivative of that rescale is not implemented. The trajectory itself is "
+                    "unaffected; run without sensitivities, or give the jumps times apart.");
+            }
+            for (std::size_t a = 0; a < ev0.assignments.size(); ++a)
+                if (!is_resize_rescale(ev0, a))
+                    first.snapshot_vals[a] *= scale;
+            for (std::size_t m = 1; m < ks.size(); ++m)
+                queue[ks[m]].done = true;
+        }
+    };
+
     auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
         const bool any_due = t_now >= earliest_pending();
         if (firing_in.empty() && !any_due)
@@ -13017,6 +13144,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             } else {
                 queue.push_back(make_instance(ei));
             }
+        }
+        if (jumps_seeded) {
+            rescale_once_per_compartment(queue, t_now);
         }
         if (any_due) {
             // In the order they were queued, which among equal priorities is

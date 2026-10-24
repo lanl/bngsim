@@ -3460,11 +3460,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "species, or -1. The engine stores base * size before / size after the event's "
              "other assignments rather than the assignment's expression.")
         .def("set_last_event_size_jump", &bngsim::ModelBuilder::set_last_event_size_jump,
-             py::arg("compartment"),
+             py::arg("compartment"), py::arg("before") = "",
              "Issue #1054: mark the most recently added event as the rescale where the "
              "piecewise assignment-rule size of the compartment jumps. The ODE engine "
              "executes it before the other events of its instant read their trigger, "
-             "values and delay.")
+             "values and delay. before, where given, is the compartment's size before "
+             "the jump (issue #1181).")
         .def("set_compute_conservation_laws", &bngsim::ModelBuilder::set_compute_conservation_laws,
              py::arg("enabled"),
              "Enable/disable conservation-law detection in build() (GH #102). The "

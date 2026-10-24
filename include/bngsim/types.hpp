@@ -955,6 +955,12 @@ struct Event {
     // an event before anything else at its instant, and the other events
     // triggered there read their trigger, values and delay after it.
     std::string size_jump_compartment;
+    // Issue #1181 — for such an event, the compartment's size before its jump
+    // (the size with its own condition on the side it leaves, the others as
+    // they stand), compiled; -1 where the loader gave none. Where more than one
+    // jump of a compartment executes at one instant, the engine reads it just
+    // before the instant, with every condition there on the side it leaves.
+    int size_jump_before_expr = -1;
 };
 
 // ─── Sensitivity options ─────────────────────────────────────────────────────

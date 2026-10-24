@@ -17,6 +17,8 @@ amount/V(t) in closed form.
 
 from __future__ import annotations
 
+import math
+
 import bngsim
 import numpy as np
 import pytest
@@ -951,3 +953,176 @@ def test_the_sensitivity_of_a_rescale_on_a_rescale_is_refused(xml, param, match)
     )
     with pytest.raises(bngsim.SimulationError, match=match):
         sim.run(t_span=(0.0, 4.0), n_points=17)
+
+
+# ─── Jumps the integrator puts on one instant (#1181) ──────────────────────
+#
+# The roots above coincide by a run constant, and the loader reads each on the
+# side it leaves. CVODE batches roots within its own tolerance, and a stop
+# merges the times within its instant, whatever relates them: t2 a few ulp past
+# t1, `time/s < tm` beside `time < t1`, an equality beside a step. Each jump
+# froze its own share of the instant and the last write stayed, [Sn] 5·2/3 for
+# 5/3. The first jump of the instant now rescales by the whole of it and the
+# rest stand down.
+
+
+def _ulps_past(x, n=1):
+    for _ in range(n):
+        x = math.nextafter(x, math.inf)
+    return x
+
+
+def _steps(*thresholds, extra=""):
+    size = _cn(1)
+    for name, _ in thresholds:
+        size = _plus(size, _pw((_cn(0), _rel("lt", T, _ci(name))), otherwise=_cn(1)))
+    params = "".join(f'<parameter id="{n}" value="{v!r}" constant="true"/>' for n, v in thresholds)
+    return size, params + extra
+
+
+@pytest.mark.parametrize("codegen", [False, True], ids=["interpreted", "codegen"])
+@pytest.mark.parametrize(
+    ("t1", "t2"),
+    [
+        (2.0, _ulps_past(2.0)),
+        (2.0, 2 + 1e-15),
+        (2.0, 2 + 1e-14),
+        (2.0, 2 + 1e-13),
+        (0.3, 0.1 + 0.2),
+    ],
+    ids=["one ulp", "1e-15", "1e-14", "1e-13", "0.1 + 0.2"],
+)
+def test_two_jumps_a_few_ulp_apart_rescale_once(t1, t2, codegen):
+    size, params = _steps(("t1", t1), ("t2", t2))
+    times = np.array([0.0, 0.2, 1.9, 2.5, 3.5])
+    for seed in range(3):  # the order the jumps of an instant execute in is drawn
+        result = bngsim.Simulator(
+            bngsim.Model.from_sbml_string(_doc([("cv", size)], params=params)),
+            method="ode",
+            codegen=codegen,
+        ).run(sample_times=times, rtol=1e-10, atol=1e-12, seed=seed)
+        sn = np.asarray(result.species)[:, list(result.species_names).index("Sn")]
+        np.testing.assert_allclose(sn, 5 / (1 + (times >= t1) + (times >= t2)), rtol=1e-8)
+
+
+def test_three_jumps_a_few_ulp_apart_rescale_once():
+    """Steps 0, 1 and 2 ulp past t = 2: one instant to the run, which no run
+    constant relates (three on one root are #1132's, above)."""
+    size, params = _steps(("t1", 2.0), ("t2", _ulps_past(2.0)), ("t3", _ulps_past(2.0, 2)))
+    times = np.array([0.0, 1.9, 2.5])
+    got = _sn_at(bngsim.Model.from_sbml_string(_doc([("cv", size)], params=params)), times)
+    np.testing.assert_allclose(got, [5, 5, 5 / 4], rtol=1e-8)
+
+
+def test_a_step_up_and_a_step_down_on_one_instant_leave_the_size():
+    """`1 + piecewise(0, t < t1, 1) + piecewise(1, t < t2, 0)` with t2 one ulp
+    past t1 is 2 throughout, and [Sn] stays 5; it went to 7.5."""
+    up = _pw((_cn(0), _rel("lt", T, _ci("t1"))), otherwise=_cn(1))
+    down = _pw((_cn(1), _rel("lt", T, _ci("t2"))), otherwise=_cn(0))
+    params = (
+        '<parameter id="t1" value="2.0" constant="true"/>'
+        f'<parameter id="t2" value="{_ulps_past(2.0)!r}" constant="true"/>'
+    )
+    times = np.array([0.0, 1.9, 2.5, 3.5])
+    xml = _doc([("cv", _plus(_plus(_cn(1), up), down))], params=params)
+    np.testing.assert_allclose(_sn_at(bngsim.Model.from_sbml_string(xml), times), 5, rtol=1e-8)
+
+
+def test_a_scaled_clock_beside_a_plain_one_rescales_once():
+    """`time/s < tm` with s = 60 and tm = 2/60 crosses where 60·tm rounds to,
+    a few ulp from `time < t1`; no number relates the two at load."""
+    scaled = _pw(
+        (_cn(0), _rel("lt", f"<apply><divide/>{T}{_ci('s')}</apply>", _ci("tm"))), otherwise=_cn(1)
+    )
+    size, params = _steps(
+        ("t1", 2.0),
+        extra=f'<parameter id="s" value="60" constant="true"/>'
+        f'<parameter id="tm" value="{2 / 60!r}" constant="true"/>',
+    )
+    times = np.array([0.0, 1.9, 2.5])
+    got = _sn_at(
+        bngsim.Model.from_sbml_string(_doc([("cv", _plus(size, scaled))], params=params)), times
+    )
+    np.testing.assert_allclose(got, [5, 5, 5 / 3], rtol=1e-8)
+
+
+def test_a_clock_beside_a_species_threshold_on_one_instant():
+    """S = 10·e^(-t/2) passes 5 at t = 2·ln 2, where `time < t1` flips too."""
+    t1 = 2 * math.log(2)
+    on_s = _pw((_cn(0), _rel("gt", _ci("S"), _ci("a"))), otherwise=_cn(1))
+    size, params = _steps(("t1", t1), extra='<parameter id="a" value="5" constant="true"/>')
+    times = np.array([0.0, 1.0, 1.3, 1.5, 2.5])
+    got = _sn_at(
+        bngsim.Model.from_sbml_string(_doc([("cv", _plus(size, on_s))], params=params)), times
+    )
+    np.testing.assert_allclose(got, 5 / (1 + 2 * (times >= t1)), rtol=1e-8)
+
+
+def test_jumps_on_one_instant_beside_a_size_that_moves():
+    """cv := 1 + 0.1·S + two steps one ulp apart: the amount, 10, over cv."""
+    size, params = _steps(("t1", 2.0), ("t2", _ulps_past(2.0)))
+    size = _plus(size, _times(_cn(0.1), _ci("S")))
+    times = np.array([0.0, 1.0, 1.9, 2.5, 3.5])
+    got = _sn_at(bngsim.Model.from_sbml_string(_doc([("cv", size)], params=params)), times)
+    np.testing.assert_allclose(got, 10 / (1 + 0.1 * _s(times) + 2 * (times >= 2)), rtol=1e-7)
+
+
+@pytest.mark.parametrize(("t1", "t2"), [(2.0, 2.0), (2.0, 3.0)], ids=["together", "apart"])
+def test_an_equality_beside_a_step(t1, t2):
+    """`1 + piecewise(1, time == t1, 0) + piecewise(0, time < t2, 1)`: with t1 =
+    t2 the size is 3 at the instant and 2 after it, and [Sn] 5/2 after (RR:
+    2.5). It read the step as passed both where the equality was reached and
+    where it was left, and [Sn] stayed at 5."""
+    eq = _pw((_cn(1), _rel("eq", T, _ci("t1"))), otherwise=_cn(0))
+    step = _pw((_cn(0), _rel("lt", T, _ci("t2"))), otherwise=_cn(1))
+    params = (
+        f'<parameter id="t1" value="{t1!r}" constant="true"/>'
+        f'<parameter id="t2" value="{t2!r}" constant="true"/>'
+    )
+    times = np.array([0.0, 1.5, 2.5, 3.5])
+    xml = _doc([("cv", _plus(_plus(_cn(1), eq), step))], params=params)
+    got = _sn_at(bngsim.Model.from_sbml_string(xml), times)
+    np.testing.assert_allclose(got, 5 / (1 + (times >= t2)), rtol=1e-8)
+
+
+def test_a_follower_of_jumps_on_one_instant_takes_the_whole_instant():
+    """cv goes 1 -> 3 by two steps one ulp apart, and cw := 1 + [Sn] from 6
+    to 1 + 5/3: [Sw] = 18/(8/3) after, the amount of Sw held."""
+    size, params = _steps(("t1", 2.0), ("t2", _ulps_past(2.0)))
+    xml = _sized_doc(
+        ["cv", "cw"],
+        [("Sn", "cv", 5), ("Sw", "cw", 3)],
+        [("cv", size), ("cw", ONE_PLUS_SN)],
+        params=params,
+    )
+    times = np.array([0.0, 1.9, 2.5])
+    result = bngsim.Simulator(bngsim.Model.from_sbml_string(xml), method="ode").run(
+        sample_times=times, rtol=1e-10, atol=1e-12
+    )
+    x = np.asarray(result.species)
+    names = list(result.species_names)
+    np.testing.assert_allclose(x[:, names.index("Sn")], [5, 5, 5 / 3], rtol=1e-8)
+    np.testing.assert_allclose(x[:, names.index("Sw")], [3, 3, 18 / (1 + 5 / 3)], rtol=1e-8)
+
+
+def test_the_sensitivity_of_jumps_a_constant_puts_on_one_instant_stands():
+    """With t1 = t2 the loader reads each jump on the side it leaves, and the
+    run's columns are what they were: d[Sn]/d[Sn]0 = 1/3 after."""
+    model = bngsim.Model.from_sbml_string(_two_steps(2.0, 2.0))
+    result = bngsim.Simulator(
+        model, method="ode", sensitivity_params=["k"], sensitivity_ic=["Sn"]
+    ).run(sample_times=[0.0, 1.9, 2.5], rtol=1e-10, atol=1e-12)
+    j = list(result.species_names).index("Sn")
+    np.testing.assert_allclose(np.asarray(result.species)[:, j], [5, 5, 5 / 3], rtol=1e-8)
+    np.testing.assert_allclose(
+        np.asarray(result.sensitivities_ic)[:, j, 0], [1, 1, 1 / 3], atol=1e-8
+    )
+
+
+def test_the_sensitivity_of_jumps_a_few_ulp_apart_is_refused():
+    """It returned [Sn] = 10/3 with no word; the derivative of the instant's
+    one rescale is not implemented."""
+    model = bngsim.Model.from_sbml_string(_two_steps(2.0, _ulps_past(2.0)))
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["k"])
+    with pytest.raises(Exception, match=r"compartment 'cv' jumps 2 times at one instant.*#1181"):
+        sim.run(sample_times=[0.0, 1.9, 2.5], rtol=1e-10, atol=1e-12)

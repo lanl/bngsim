@@ -87,9 +87,9 @@ class ModelBuilder:
         """
         Issue #936: mark an assignment of the most recently added event as the concentration rescale a compartment resize injects. size_expr is the compartment's size; base_assign_idx0 the event's own assignment to the same species, or -1. The engine stores base * size before / size after the event's other assignments rather than the assignment's expression.
         """
-    def set_last_event_size_jump(self, compartment: str) -> None:
+    def set_last_event_size_jump(self, compartment: str, before: str = '') -> None:
         """
-        Issue #1054: mark the most recently added event as the rescale where the piecewise assignment-rule size of the compartment jumps. The ODE engine executes it before the other events of its instant read their trigger, values and delay.
+        Issue #1054: mark the most recently added event as the rescale where the piecewise assignment-rule size of the compartment jumps. The ODE engine executes it before the other events of its instant read their trigger, values and delay. before, where given, is the compartment's size before the jump (issue #1181).
         """
     def set_net_file_dir(self, dir: str) -> None:
         """
