@@ -14386,6 +14386,45 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         return wrote;
     };
 
+    // The clock crossings that share an event's instant *t* (issue #767), for
+    // its sensitivity jump. Their own handling follows it, at the post-event
+    // state.
+    auto clock_crossings_at = [&](double t) {
+        ClockCrossingsAtEvent clocks;
+        for (size_t k = next_switch; k < switch_list.size(); ++k) {
+            if (same_instant(switch_list[k]->t_star, t)) {
+                clocks.pending.push_back(switch_list[k]);
+            }
+        }
+        // An event root is located only to CVODE's own root tolerance, 100
+        // ulp-scale, so a trigger that rises ON a switch time is reported up to
+        // that long after the stop there.
+        const double since = t - switches_applied_t;
+        if (since >= 0.0 && since <= kEventRootSlack * kSwitchInstantUlps *
+                                         std::numeric_limits<double>::epsilon() *
+                                         std::max(std::fabs(t), 1.0)) {
+            clocks.applied = switches_applied;
+        }
+        const double reach = kEventRootSlack * kSwitchInstantUlps *
+                             std::numeric_limits<double>::epsilon() * std::max(std::fabs(t), 1.0);
+        for (const SwitchTimeSens *one : switch_list) {
+            if (std::fabs(one->t_star - t) <= 2.0 * reach) {
+                clocks.within_reach.push_back(one);
+            }
+        }
+        // Every fixed crossing on this instant: two thresholds crossed at one
+        // time are one stop to the loop, and two jumps here.
+        const std::vector<CrossingStop> &asked =
+            opts.crossing_probes.empty() ? opts.crossing_stops : opts.crossing_probes;
+        auto stop =
+            std::lower_bound(asked.begin(), asked.end(), t - reach,
+                             [](const CrossingStop &one, double at) { return one.t_star < at; });
+        for (; stop != asked.end() && stop->t_star <= t + reach; ++stop) {
+            clocks.fixed_stops.push_back(*stop);
+        }
+        return clocks;
+    };
+
     // The state half a root tolerance past an output (issue #1124), read into
     // one buffer for the run rather than one allocated for each row.
     NVectorGuard row_ahead;
@@ -15834,48 +15873,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                             "drop sensitivities for this run.");
                     }
                     // The clock crossings that share this instant (issue #767).
-                    // Their own handling follows below, at the post-event state.
                     ClockCrossingsAtEvent clocks;
                     if (!evt_s_minus.empty()) {
-                        for (size_t k = next_switch; k < switch_list.size(); ++k) {
-                            if (same_instant(switch_list[k]->t_star, static_cast<double>(t_ret))) {
-                                clocks.pending.push_back(switch_list[k]);
-                            }
-                        }
-                        // An event root is located only to CVODE's own root
-                        // tolerance, 100 ulp-scale, so a trigger that rises ON
-                        // a switch time is reported up to that long after the
-                        // stop there.
-                        const double since = static_cast<double>(t_ret) - switches_applied_t;
-                        if (since >= 0.0 &&
-                            since <= kEventRootSlack * kSwitchInstantUlps *
-                                         std::numeric_limits<double>::epsilon() *
-                                         std::max(std::fabs(static_cast<double>(t_ret)), 1.0)) {
-                            clocks.applied = switches_applied;
-                        }
-                        const double reach = kEventRootSlack * kSwitchInstantUlps *
-                                             std::numeric_limits<double>::epsilon() *
-                                             std::max(std::fabs(static_cast<double>(t_ret)), 1.0);
-                        for (const SwitchTimeSens *one : switch_list) {
-                            if (std::fabs(one->t_star - static_cast<double>(t_ret)) <=
-                                2.0 * reach) {
-                                clocks.within_reach.push_back(one);
-                            }
-                        }
-                        // Every fixed crossing on this instant: two thresholds
-                        // crossed at one time are one stop to the loop, and two
-                        // jumps here.
-                        const std::vector<CrossingStop> &asked = opts.crossing_probes.empty()
-                                                                     ? opts.crossing_stops
-                                                                     : opts.crossing_probes;
-                        auto stop = std::lower_bound(
-                            asked.begin(), asked.end(), static_cast<double>(t_ret) - reach,
-                            [](const CrossingStop &one, double t) { return one.t_star < t; });
-                        for (; stop != asked.end() &&
-                               stop->t_star <= static_cast<double>(t_ret) + reach;
-                             ++stop) {
-                            clocks.fixed_stops.push_back(*stop);
-                        }
+                        clocks = clock_crossings_at(static_cast<double>(t_ret));
                     }
                     impl_->apply_event_sensitivity_jump(
                         opts, cvode_mem, ns, static_cast<double>(t_ret), firing, executed_fires,
@@ -16274,7 +16274,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 !past) {
                 t_now = static_cast<sunrealtype>(t_out[i]);
             }
-        } else if (n_events > 0 && sens.n_total == 0 && static_cast<double>(t_now) == t_out[i]) {
+        } else if (n_events > 0 && static_cast<double>(t_now) == t_out[i]) {
             // An output CVODE interpolated to, from a step that went past it,
             // with a trigger on the state that crosses within CVODE's root
             // tolerance after it (issue #1124, item 2). `q' = 1; at q >= 2.5`
@@ -16334,7 +16334,55 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     rises = !trigger_was_true[ei] && event_dormant[ei] == 0 &&
                             read_trigger(ei, t_out[i]);
                 }
-                if (rises) {
+                if (rises && sens.n_total > 0) {
+                    // A run with sensitivity columns fires it at the row as
+                    // well, as a located root fires (issue #1182): left to the
+                    // next step's root search, it fired a few doubles later,
+                    // and the row held the state from before the event that
+                    // the same run without columns held after it. The
+                    // crossing is within half a root tolerance of the row, so
+                    // the row is t*, and ∂t*/∂θ is read from the trigger's
+                    // flow there (state_trigger_dtstar), as at a located root.
+                    // x⁻ is the state ahead, the one the trigger was read at;
+                    // s⁻ is the row's, which CVODES last returned.
+                    const std::vector<double> x_row(y_data, y_data + ns);
+                    std::copy(x_ahead, x_ahead + ns, y_data);
+                    std::vector<int> firing;
+                    for (int ei = 0; ei < n_events; ++ei) {
+                        const bool now_true = read_trigger(ei, t_out[i]);
+                        if (now_true && !trigger_was_true[ei] && event_dormant[ei] == 0) {
+                            refuse_a_flat_start_fire(ei, t_out[i]);
+                            firing.push_back(ei);
+                        }
+                        if (!now_true && !events_outer[ei].persistent) {
+                            drop_pending_of(ei);
+                        }
+                        if (trigger_was_true[ei] != now_true) {
+                            trigger_changed_at[ei] = t_out[i];
+                        }
+                        trigger_was_true[ei] = now_true;
+                    }
+                    const std::vector<double> x_minus(y_data, y_data + ns);
+                    const std::vector<std::vector<double>> s_minus =
+                        impl_->capture_event_sens(cvode_mem, ns, t_out[i], sens);
+                    executed_fires.clear();
+                    if (process_firing_batch(t_out[i], firing)) {
+                        std::fill(state_switch_zero_hold.begin(), state_switch_zero_hold.end(),
+                                  0.0);
+                        const int rf =
+                            impl_->reinit_cvode(cvode_mem, static_cast<sunrealtype>(t_out[i]), y);
+                        if (rf != CV_SUCCESS) {
+                            throw std::runtime_error(
+                                "CVodeReInit after an event on a row failed: " +
+                                std::to_string(rf));
+                        }
+                        impl_->apply_event_sensitivity_jump(
+                            opts, cvode_mem, ns, t_out[i], firing, executed_fires, x_minus, s_minus,
+                            sens, /*at_run_start=*/false, clock_crossings_at(t_out[i]));
+                    } else {
+                        std::copy(x_row.begin(), x_row.end(), y_data);
+                    }
+                } else if (rises) {
                     // The run goes on from the state ahead, within rounding
                     // of the row's: the root is then behind it, and is not
                     // found again.
