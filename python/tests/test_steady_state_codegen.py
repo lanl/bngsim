@@ -197,9 +197,10 @@ class TestSensitivityUsesAnalyticalRhs:
 begin parameters
     1 kf     0.4  # Constant
     2 kr     0.2  # Constant
+    3 big    1e300  # Constant
 end parameters
 begin functions
-    1 kink() kf*(clamp(0,Atot-1,1e300)+clamp(0,1-Atot,1e300))
+    1 kink() kf*(clamp(0,Atot-1,big)+clamp(0,1-Atot,big))
 end functions
 begin species
     1 A() 5.0

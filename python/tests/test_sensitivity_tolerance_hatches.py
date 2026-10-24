@@ -138,14 +138,16 @@ def _declined_model(k: float) -> bngsim.Model:
     ``clamp()`` has no analytic derivative (``abs()`` did not either, until issue
     #1126), so codegen refuses the whole model and CVODES' difference quotient
     carries the column. A functional rate law is multiplied by its reactant
-    concentration, so the law is ``clamp(0, k, 1e300)`` = k and the flux is
+    concentration, so the law is ``clamp(0, k, big)`` = k (big = 1e300; a clamp
+    with numbers for bounds has an analytic RHS since issue #1227) and the flux is
     ``k*S`` — the same dynamics as the elementary model above, and therefore the
     same closed form.
     """
     b = ModelBuilder()
     b.add_parameter("k", k)
+    b.add_parameter("big", 1e300)
     s_idx = b.add_species("S", 1.0)
-    b.add_function("rate", "clamp(0, k, 1e300)")
+    b.add_function("rate", "clamp(0, k, big)")
     b.add_reaction([s_idx], [], "functional", "rate")
     return bngsim.Model(b.build())
 

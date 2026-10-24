@@ -145,14 +145,10 @@ def test_the_clock_rate_column_of_a_bend_pulse(tmp_path, name):
     assert dy == pytest.approx(-10 * (area / 4) * np.exp(-area / 2), rel=1e-3)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="issue #1126: clamp() has no sympy counterpart and so no analytic "
-    "sensitivity RHS, and the difference quotient reads the clock-rate column of a "
-    "narrow pulse wrong (-1.53 for -1.52 at rtol 1e-8, 7% at the defaults)",
-)
 def test_the_clock_rate_column_of_a_clamp_pulse(tmp_path):
+    """Issue #1227: clamp() is a bend with an analytic sensitivity RHS too. On
+    the difference quotient this column was -1.53 for -1.52 at rtol 1e-8, 7% off
+    at the defaults, and did not converge."""
     law, area = PULSES["clamp triangle"]
     run = bngsim.Simulator(
         _model(tmp_path, law, 2.0), method="ode", sensitivity_params=["kx", "k_clock"]

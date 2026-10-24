@@ -205,7 +205,9 @@ def test_a_sensitivity_run_beside_a_step_on_the_state_is_refused(tmp_path, body)
     assert m._codegen_sens_decline is not None
 
 
-@pytest.mark.parametrize("body", ["k*clamp(1,A,4)", "k*avg(A,2)", "k*sum(A,2)"])
+# clamp(1,A,4) was here; it is a bend with an analytic sensitivity RHS since
+# issue #1227 (test_clamp_bend_sensitivity.py), so it no longer falls back.
+@pytest.mark.parametrize("body", ["k*avg(A,2)", "k*sum(A,2)"])
 def test_a_sensitivity_run_builds_and_falls_back(tmp_path, body):
     """The issue's own case, plus the fallback it is supposed to reach.
 

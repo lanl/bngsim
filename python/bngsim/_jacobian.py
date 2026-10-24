@@ -576,8 +576,13 @@ def _build_local_dict(preprocessed: str, sp):
     return local, alias_of
 
 
-def _exprtk_to_sympy(expr: str):
-    """Parse an ExprTk rate-law string into a sympy expression, or ``None``."""
+def _exprtk_to_sympy(expr: str, *, bends: bool = False):
+    """Parse an ExprTk rate-law string into a sympy expression, or ``None``.
+
+    ``bends`` binds ``clamp`` to the ``clampval`` twin of :func:`_kink_bindings`
+    (issue #1227), for a caller that differentiates bends and turns the twins
+    back with :func:`_finish_kinks`. Off, a ``clamp`` call is left unbound, as
+    it always was, for every other reader of this parse."""
     try:
         import sympy as sp
         from sympy.parsing.sympy_parser import parse_expr
@@ -591,6 +596,8 @@ def _exprtk_to_sympy(expr: str):
     s = re.sub(r"\blog2\s*\(", "(1.0/log(2))*log(", s)
 
     local, alias_of = _build_local_dict(s, sp)
+    if bends and re.search(r"\bclamp\s*\(", s):
+        local["clamp"] = _kink_bindings(sp)["clampval"]
 
     # Apply keyword aliases (longest first so e.g. ``lambda`` is replaced before
     # a hypothetical ``lambda2`` substring would be — word-boundary anchored).
@@ -983,10 +990,29 @@ def _kink_bindings(sp) -> dict:
 
             return type(name, (sp.Function,), {"nargs": 2, "fdiff": fdiff})
 
+        # Issue #1227: clamp(lo, x, hi) is ExprTk's e_clamp, `lo` where x < lo,
+        # else `hi` where x > hi, else `x`, tested in that order, so crossed
+        # bounds (lo > hi) give `lo` below it and `hi` from it on, which no
+        # Max/Min pair spells. Its derivative in each argument is the region
+        # where that argument is the value, each edge split as the binary twins
+        # split a tie: x between the bounds; lo below it; hi above both.
+        def clamp_fdiff(self, argindex=1):
+            lo, x, hi = self.args
+
+            def step(u):
+                return sp.Heaviside(u, sp.S.Half)
+
+            if argindex == 1:
+                return step(lo - x)
+            if argindex == 2:
+                return step(x - lo) * step(hi - x)
+            return step(x - lo) * step(x - hi)
+
         bindings = {
             "absval": absval,
             "maxval": binary("maxval", 1),
             "minval": binary("minval", -1),
+            "clampval": type("clampval", (sp.Function,), {"nargs": 3, "fdiff": clamp_fdiff}),
         }
         _kink_sympy_cache["bindings"] = bindings
     return bindings
@@ -1050,6 +1076,7 @@ def _finish_kinks(deriv):
         return deriv
     kinks = _kink_bindings(sp)
     absval = kinks["absval"]
+    clampval = kinks["clampval"]
     folds = {kinks["maxval"]: sp.Max, kinks["minval"]: sp.Min}
     deriv = deriv.replace(
         lambda n: isinstance(n, sp.Heaviside),
@@ -1089,6 +1116,10 @@ def _finish_kinks(deriv):
             )
             if type(out) is absval:
                 out = sp.Abs(out.args[0])
+            elif type(out) is clampval:
+                # The engine's order of tests, which every emitter prints.
+                lo, x, hi = out.args
+                out = sp.Piecewise((lo, x < lo), (hi, x > hi), (x, True))
         memo[node] = out
         return out
 
@@ -1368,7 +1399,9 @@ def differentiate_rate_law(
         )
         return None
 
-    sym_expr = _exprtk_to_sympy(inlined)
+    # A clamp() is a bend like abs / min / max, which this path differentiates
+    # through the kink twins below wherever they appear (issue #1227).
+    sym_expr = _exprtk_to_sympy(inlined, bends=True)
     if sym_expr is None:
         _declined(f"rate law {_short(rate_expr)} could not be parsed into sympy")
         return None

@@ -68,6 +68,7 @@ begin parameters
     3 beta    0.002  # Constant
     4 gamma   0.15  # Constant
     5 thresh  40.0  # Constant
+    6 big     1e300  # Constant
 end parameters
 begin functions
     1 betaI() {law}
@@ -89,7 +90,9 @@ end groups
 """
 
 DIFFERENTIABLE = "beta*I"
-UNDERIVABLE = "beta*(clamp(0,I-thresh,1e300)+clamp(0,thresh-I,1e300))*I"  # abs(I-thresh)
+# abs(I-thresh). The upper bound is a parameter: a clamp with numbers for bounds
+# has an analytic RHS since issue #1227, and one over a parameter still declines.
+UNDERIVABLE = "beta*(clamp(0,I-thresh,big)+clamp(0,thresh-I,big))*I"
 UNCOMPENSATED = "beta*(I>1)*I"
 
 

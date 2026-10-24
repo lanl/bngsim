@@ -1,7 +1,7 @@
 """A derived parameter's column on the difference-quotient path (issue #707).
 
 ``kd = 2*k0`` and a rate law the analytic sensitivity right-hand side declines,
-``kd*clamp(1, 0*Atot, 1e300)*Atot``, so CVODES takes each column by its internal difference
+``kd*clamp(1, 0*Atot, big)*Atot``, so CVODES takes each column by its internal difference
 quotient: it moves one parameter, reads the right-hand side, and puts it back.
 
 bngsim mirrors the moved value into the model and re-derives the derived
@@ -29,6 +29,7 @@ NET = """begin parameters
     3 ke 3*kd
     4 A0 10
     5 ks 4
+    6 big 1e300
 end parameters
 begin functions
     1 rf() {law}
@@ -47,9 +48,10 @@ T = np.linspace(0.0, 2.0, 5)
 # A rate constant of kd, written so that the analytic path declines it. Not
 # as ``kd*abs(Atot)/Atot``, a sign written as a quotient, which a run on the
 # quotient is refused for (issue #938).
-# clamp(1, x, 1e300) is max(1, x); max has an analytic sensitivity RHS since
-# issue #1126, and clamp does not.
-DECLINED = "kd*clamp(1,0*Atot,1e300)"
+# clamp(1, x, big) with big = 1e300 is max(1, x); max has an analytic sensitivity
+# RHS since issue #1126, and so does a clamp with numbers for bounds since issue
+# #1227. With the upper bound a parameter, this one is still declined.
+DECLINED = "kd*clamp(1,0*Atot,big)"
 ANALYTIC = "kd"
 
 

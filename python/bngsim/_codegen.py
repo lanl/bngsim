@@ -8823,8 +8823,8 @@ class _FunctionalDfdpScope(NamedTuple):
 
 
 def _bend_under_a_break(expr, moving: set[str]) -> str | None:
-    """The first ``abs``, ``min`` or ``max`` in *expr* that what it is written
-    in can break, as text, or ``None`` (issue #1126).
+    """The first ``abs``, ``min``, ``max`` or ``clamp`` in *expr* that what it is
+    written in can break, as text, or ``None`` (issues #1126, #1227).
 
     A bend is continuous, and so is a sum, a product, a whole positive power,
     an ``exp`` or another bend of it. A division or a fractional power may not
@@ -8837,6 +8837,8 @@ def _bend_under_a_break(expr, moving: set[str]) -> str | None:
     """
     import sympy as sp
 
+    from bngsim._jacobian import _kink_bindings
+
     def breaks(node) -> bool:
         if not isinstance(node, sp.Pow):
             return False
@@ -8844,8 +8846,10 @@ def _bend_under_a_break(expr, moving: set[str]) -> str | None:
         whole = bool(e.is_Integer and e >= 1)
         return not whole and bool({str(x) for x in node.base.free_symbols} & moving)
 
+    clampval = _kink_bindings(sp)["clampval"]
+
     def walk(node, safe: bool) -> str | None:
-        if isinstance(node, (sp.Abs, sp.Min, sp.Max)):
+        if isinstance(node, (sp.Abs, sp.Min, sp.Max, clampval)):
             if not safe:
                 return str(node)
             return next((w for a in node.args if (w := walk(a, True))), None)
@@ -8862,6 +8866,28 @@ def _bend_under_a_break(expr, moving: set[str]) -> str | None:
         return next((w for a in node.args if (w := walk(a, inner))), None)
 
     return walk(expr, True)
+
+
+def _clamp_not_known_ordered(expr) -> str | None:
+    """The first ``clamp`` in *expr* whose bounds are not numbers with ``lo <=
+    hi``, as text, or ``None`` (issue #1227).
+
+    ExprTk's ``clamp(lo, x, hi)`` reads ``x < lo`` first, so where ``lo > hi``
+    it is ``lo`` below ``x = lo`` and ``hi`` from there on: a step, not a bend.
+    A bend's root carries no jump, so only a clamp whose bounds are known to be
+    ordered is differentiated as one; any other declines, as before.
+    """
+    import sympy as sp
+
+    from bngsim._jacobian import _kink_bindings
+
+    clampval = _kink_bindings(sp)["clampval"]
+    for node in sp.preorder_traversal(expr):
+        if isinstance(node, clampval):
+            lo, _x, hi = node.args
+            if not (lo.is_number and hi.is_number and bool(lo <= hi)):
+                return f"clamp({lo}, {_x}, {hi})"
+    return None
 
 
 def _functional_rate_law_partials(
@@ -8958,11 +8984,14 @@ def _functional_rate_law_partials(
         # Admitted only alongside the gate above, so a model whose conditions
         # were NOT cleared still reports them as unsupported.
         known = known | _condition_call_heads()
+    if scope.bends_analytic:
+        # Issue #1227: clamp is a bend, differentiated through its kink twin.
+        known = known | {"clamp"}
     stray = sorted({m.group(1) for m in _IDENT_CALL_RE.finditer(probe)} - known)
     if stray:
         return None, "calls unsupported function(s): " + ", ".join(stray)
 
-    sym_expr = _exprtk_to_sympy(inlined)
+    sym_expr = _exprtk_to_sympy(inlined, bends=scope.bends_analytic)
     if sym_expr is None:
         return None, "could not be parsed for differentiation"
 
@@ -8983,6 +9012,13 @@ def _functional_rate_law_partials(
         broken = _bend_under_a_break(sym_expr, moving)
         if broken is not None:
             return None, f"uses unsupported construct: {broken} under a call, division or power"
+        crossed = _clamp_not_known_ordered(sym_expr)
+        if crossed is not None:
+            return None, (
+                f"uses unsupported construct: {crossed}, whose bounds are not numbers known "
+                "to satisfy lo <= hi; crossed bounds make clamp a step, whose jump a bend "
+                "does not carry"
+            )
 
     targets = free & (set(scope.param_of_alias) | set(scope.obs_volume_weights))
     # Issue #1126: an abs over a differentiation variable differentiates to

@@ -326,7 +326,8 @@ class TestDeclinesLoudly:
             # `gamma` as its gamma function (issue #757); #418 solves it now.
             (_UNBRACKETABLE, "neither a recognized clock threshold"),
             ("beta*(I > 1)", "is not inside an if() condition"),
-            ("beta*clamp(1, I, 4)", "clamp"),
+            # Crossed bounds: a step, not the bend an ordered clamp is (#1227).
+            ("beta*clamp(4, I, 1)", "clamp"),
             ("beta*floor(I)", "floor()"),
             ("beta*ceil(I)", "ceil()"),
         ],

@@ -44,6 +44,7 @@ NET = """begin parameters
     5 kc 5.0
     6 tau 3.4
     7 P 1.3
+    8 big 1e300
 end parameters
 begin functions
     1 fY() {fy}
@@ -64,9 +65,11 @@ begin groups
 end groups
 """
 
-# clamp(0.5, A, 1e300) is max(A, 0.5). min, max and abs have an analytic
-# sensitivity RHS since issue #1126; clamp is still declined.
-DECLINED = "kc*clamp(0.5,Aobs,1e300)"
+# clamp(0.5, A, big) with big = 1e300 is max(A, 0.5). min, max and abs have an
+# analytic sensitivity RHS since issue #1126, and so does a clamp with numbers for
+# bounds since issue #1227. With its upper bound a parameter, this clamp is not
+# known to bend, and stays declined.
+DECLINED = "kc*clamp(0.5,Aobs,big)"
 T_END = 6.0
 
 
@@ -116,12 +119,12 @@ def test_a_counter_against_a_literal_is_moved_too(tmp_path):
 
 @pytest.mark.parametrize("kc", ["1e6", "1e8"])
 def test_a_counter_beside_a_flux_a_million_times_the_jump_is_refused(tmp_path, kc):
-    """The declined rate law is ``kc·clamp(0.5, Aobs, 1e300)`` with kc at 1e6 and 1e8.
+    """The declined rate law is ``kc·clamp(0.5, Aobs, big)`` with kc at 1e6 and 1e8.
     A cut that refused at the crossing asked whether the rate law jumps there
     by more than a millionth of the largest flux in the model, and read a jump
     of 3 beside 4.4e6 as none: dY/dk came back 28.75 at rtol 1e-4 and 14.56 at
     1e-10, for 10.2."""
-    sim = _simulator(tmp_path, "if(Aobs>thr,kb,0)", f"{kc}*clamp(0.5,Aobs,1e300)", ["k", "thr"])
+    sim = _simulator(tmp_path, "if(Aobs>thr,kb,0)", f"{kc}*clamp(0.5,Aobs,big)", ["k", "thr"])
     _refused(sim, "Aobs>thr")
 
 
@@ -167,7 +170,7 @@ def test_a_step_call_on_the_state_is_refused(tmp_path):
 def test_a_step_call_on_the_state_inside_a_condition_is_refused(tmp_path):
     """``if(floor(Aobs/P) > 2, 1, 2)``: the condition's atom reads the state
     through a step call. dZ/dk came back −67.9 for −49.5."""
-    law = "kc*clamp(0.5,Aobs,1e300)*if(floor(Aobs/P)>2,1,2)"
+    law = "kc*clamp(0.5,Aobs,big)*if(floor(Aobs/P)>2,1,2)"
     sim = _simulator(tmp_path, "kb", law, ["k"], decays=True)
     _refused(sim, "floor(Aobs/P)", rtol=1e-4)
 
@@ -322,6 +325,7 @@ WIDER = """begin parameters
    11 g 1e-4
    12 idx 2*n
    13 near 1.001
+   14 big 1e300
 end parameters
 begin functions
 {funcs}
@@ -588,7 +592,7 @@ def test_the_same_bend_written_with_a_choice_runs(tmp_path, law):
 )
 def test_a_magnitude_runs(tmp_path, law):
     """Control. ``kb·abs(Aobs − thr)`` is continuous where A is thr, and so is
-    the declined law beside it, ``kc·clamp(0.5, Aobs, 1e300)``: bends, which the
+    the declined law beside it, ``kc·clamp(0.5, Aobs, big)``: bends, which the
     quotient is right across. Written as a condition, both branches are 0
     where it flips. dY/dk in closed form."""
     sim = _simulator(tmp_path, law, DECLINED, ["k"])
@@ -1480,11 +1484,12 @@ DERIVED = """begin parameters
     5 kc 5.0
     6 one 1.0
     7 n {n!r}
+    8 big 1e300
 {params}
 end parameters
 begin functions
     1 fY() {fy}
-    2 fZ() kc*clamp(0.5,Aobs,1e300)
+    2 fZ() kc*clamp(0.5,Aobs,big)
 end functions
 begin species
     1 A() A0
@@ -1512,7 +1517,7 @@ def _with_derived(tmp_path, fy, params=(), reactions=(), n=0.0):
             fy=fy,
             A0=10.0,
             n=n,
-            params="\n".join(f"   {8 + i} {text}" for i, text in enumerate(params)),
+            params="\n".join(f"   {9 + i} {text}" for i, text in enumerate(params)),
             reactions="\n".join(f"    {4 + i} {text}" for i, text in enumerate(reactions)),
         )
     )
@@ -1613,7 +1618,7 @@ def test_a_derived_parameter_that_is_in_no_rate_is_not_asked_about(tmp_path):
         fy="kb",
         A0=10.0,
         n=1.001,
-        params="    8 kd if(n>1,3,0)\n    9 c0 rint(4.4*n)",
+        params="    9 kd if(n>1,3,0)\n    10 c0 rint(4.4*n)",
         reactions="",
     ).replace("    3 Z() 0\n", "    3 Z() c0\n")
     path = tmp_path / "unused.net"
@@ -2183,6 +2188,7 @@ DECLARED = """begin parameters
     3 tau 3.4
     4 one 1.0
     5 n 0.5
+    6 big 1e300
 end parameters
 begin functions
     1 fY() if(Cobs>tau,kb,0)
