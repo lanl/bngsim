@@ -20,6 +20,9 @@ name: nightly-parity
 #   amici-sens   AMICI forward sensitivities      48 of the 50 curated BioModels x 2 methods
 #   rr-ssa       libRoadRunner gillespie          the 269 of the 306 SSA-screen BioModels
 #                                                 candidates the corpus holds (#806)
+#   fd-sens      central differences of bngsim's  45 committed .net models x 2 methods: the
+#                own trajectories                 only sensitivity oracle a .net model has,
+#                                                 and one independent of AMICI (#804)
 #
 # THE REPORT IS THE VERDICT, NOT THE EXIT CODE. Every parity runner exits 1 whenever
 # any model is DIFF/EXCEPTION/TIMEOUT and a full corpus always has some; the SBML
@@ -62,6 +65,7 @@ on:
     paths:
       - ".github/workflows/nightly-parity.yml"
       - "parity_checks/nightly/**"
+      - "parity_checks/fd_sens/**"
       # A re-baseline PR only copies a verdict file a nightly already produced;
       # re-running hours of sweeps to validate that would buy nothing.
       - "!parity_checks/nightly/baselines/**"
@@ -428,6 +432,42 @@ jobs:
           retention-days: 30
 
   # ------------------------------------------------------------------------- #
+  # bngsim's analytic forward sensitivities against central differences of its
+  # own trajectories (#804): the one sensitivity check a .net model has (BNG2.pl
+  # computes none), and an oracle independent of AMICI. Every model is a tracked
+  # .net file, so there is no corpus to fetch and no BNG2.pl. Sensitivities are
+  # always compiled (GH #214), hence --expect-backend cc; the differences run
+  # on the interpreter, so the reference does not share the code under test.
+  # About 7 s of runs on 6 workers locally.
+  # ------------------------------------------------------------------------- #
+  fd-sens:
+    name: Finite-difference sensitivity check
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Provision from uv.lock
+        run: uv sync --extra dev --python 3.12
+      - name: Build identity
+        run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp; print('bngsim', bngsim.__version__); bp.print_identity()"
+      - name: Run fd_sens_run.py
+        run: uv run --no-sync python parity_checks/fd_sens/fd_sens_run.py --workers 4 --out "$RUNNER_TEMP/fd_sens.json" || true
+      - name: Compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash parity_checks/nightly/compare.sh fd_sens core "$RUNNER_TEMP/fd_sens.json" --expect-backend cc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-fd_sens
+          path: nightly-out/fd_sens/
+          retention-days: 30
+
+  # ------------------------------------------------------------------------- #
   # Stochastic tracks against run_network's SSA and standalone NFsim. Seeds are
   # fixed on both sides.
   # ------------------------------------------------------------------------- #
@@ -570,7 +610,7 @@ jobs:
   # ------------------------------------------------------------------------- #
   report:
     name: Report
-    needs: [corpus, sbml, rr-ode, bng-ode, bng-stoch, amici-sens, rr-ssa]
+    needs: [corpus, sbml, rr-ode, bng-ode, bng-stoch, amici-sens, rr-ssa, fd-sens]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15

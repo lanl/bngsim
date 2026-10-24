@@ -1,0 +1,281 @@
+{
+ "_comment": "Models parity_checks/fd_sens/fd_sens_run.py checks bngsim's analytic forward sensitivities against central differences of its own trajectories (issue #804). Every path is a tracked .net file, so the nightly needs no corpus fetch and no BNG2.pl. Two groups: tests/data fixtures for the derivative shapes past defects broke (derived and nested-derived rate constants, Hill/Sat rewrites, the MM tQSSA forms, expression and observable chains, initial values from derived parameters, max/min/abs kinks), and published or tutorial networks from benchmarks/models/net/ode (four carry a scientific-notation rate factor, #689's shape). A model is left out, with its measurement, where a central difference is not a reference for it.",
+ "jobs": [
+  {
+   "model_id": "derived_rate_const",
+   "path": "tests/data/derived_rate_const.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "derived_quotient",
+   "path": "tests/data/derived_quotient.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "nested_derived_rate_const",
+   "path": "tests/data/nested_derived_rate_const.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "derived_param_reverse_order",
+   "path": "tests/data/derived_param_reverse_order.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "expr_sens_chain",
+   "path": "tests/data/expr_sens_chain.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "expr_sens_derived",
+   "path": "tests/data/expr_sens_derived.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "expr_sens_unsupported",
+   "path": "tests/data/expr_sens_unsupported.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "obs_sens_chain",
+   "path": "tests/data/obs_sens_chain.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "obs_zero_arg_call_sens",
+   "path": "tests/data/obs_zero_arg_call_sens.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "func_composition",
+   "path": "tests/data/func_composition.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "hill_rewrite",
+   "path": "tests/data/hill_rewrite.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "sat_rewrite",
+   "path": "tests/data/sat_rewrite.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "saturation",
+   "path": "tests/data/saturation.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "mm_tqssa",
+   "path": "tests/data/mm_tqssa.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "mm_tqssa_stiff",
+   "path": "tests/data/mm_tqssa_stiff.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "reciprocal_rate_const",
+   "path": "tests/data/reciprocal_rate_const.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "sens_scale_cancellation",
+   "path": "tests/data/sens_scale_cancellation.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "ic_derived",
+   "path": "tests/data/ic_derived.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "ic_derived_compound",
+   "path": "tests/data/ic_derived_compound.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "nanomolar_dimer",
+   "path": "tests/data/nanomolar_dimer.net",
+   "t_end": 10,
+   "n_points": 51,
+   "atol": 1e-21
+  },
+  {
+   "model_id": "jac_kinks_max_min_abs",
+   "path": "tests/data/jac_kinks_max_min_abs.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "per_observable_jac",
+   "path": "tests/data/per_observable_jac.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "const_expr_setparam",
+   "path": "tests/data/const_expr_setparam.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "cancelled_parameter_term",
+   "path": "tests/data/cancelled_parameter_term.net",
+   "t_end": 10,
+   "n_points": 51
+  },
+  {
+   "model_id": "genetic_switch",
+   "path": "benchmarks/models/net/ode/genetic_switch.net",
+   "t_end": 20,
+   "n_points": 51
+  },
+  {
+   "model_id": "blbr",
+   "path": "benchmarks/models/net/ode/blbr.net",
+   "t_end": 100,
+   "n_points": 51
+  },
+  {
+   "model_id": "Kholodenko_2000",
+   "path": "benchmarks/models/net/ode/Kholodenko_2000.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "Repressilator",
+   "path": "benchmarks/models/net/ode/Repressilator.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "Haugh2b",
+   "path": "benchmarks/models/net/ode/Haugh2b.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "RasRaf_stdBNGL_v3",
+   "path": "benchmarks/models/net/ode/RasRaf_stdBNGL_v3.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "kinetic_proofreading",
+   "path": "benchmarks/models/net/ode/kinetic_proofreading.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "lac_operon",
+   "path": "benchmarks/models/net/ode/lac_operon.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "mwc",
+   "path": "benchmarks/models/net/ode/mwc.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "erk_activation",
+   "path": "benchmarks/models/net/ode/erk_activation.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "tcr_signaling",
+   "path": "benchmarks/models/net/ode/tcr_signaling.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "energy_example1",
+   "path": "benchmarks/models/net/ode/energy_example1.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "example5_ground_truth",
+   "path": "benchmarks/models/net/ode/example5_ground_truth.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "toy_jim",
+   "path": "benchmarks/models/net/ode/toy_jim.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "localfunc",
+   "path": "benchmarks/models/net/ode/localfunc.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "CaM_Ca_interaction_v1",
+   "path": "benchmarks/models/net/ode/CaM_Ca_interaction_v1.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "flagellar_motor",
+   "path": "benchmarks/models/net/ode/flagellar_motor.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "monoBE_plusInh",
+   "path": "benchmarks/models/net/ode/monoBE_plusInh.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "gene_expression_hill",
+   "path": "benchmarks/models/net/ode/gene_expression_hill.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "SIR",
+   "path": "benchmarks/models/net/ode/SIR.net",
+   "t_end": 50,
+   "n_points": 51
+  },
+  {
+   "model_id": "wofsy_goldstein",
+   "path": "benchmarks/models/net/ode/wofsy_goldstein.net",
+   "t_end": 50,
+   "n_points": 51
+  }
+ ],
+ "excluded": {
+  "CaOscillate_functional": "An oscillator over t = 0..50: a relative step of 1e-3 shifts the phase, and the two steps' quotients differ by 19% on k7's column, judged on its own scale (BAD_TEST). Not a reference without a phase-aware difference.",
+  "egfr_path": "Over t = 0..50 no parameter column of the six sampled clears both the verdict's atol/|p| floor and the difference's own noise: the comparison would establish nothing (BAD_TEST).",
+  "LV": "The Lotka-Volterra oscillator: its sensitivity run alone took 318 s, past the 300 s job cap, and one plain run at the difference's tolerances 161 s, of the 24 the reference needs."
+ }
+}

@@ -780,6 +780,7 @@ def sens_verdict(
     *,
     param_values=None,
     atol: float | None = None,
+    forgive_mask: np.ndarray | None = None,
 ) -> dict:
     """Verdict for two aligned sensitivity tensors, via the shared differ protocol.
 
@@ -795,6 +796,12 @@ def sens_verdict(
     ``atol`` (the integration tolerance both engines ran at) enable the floor.
     Omitting either reproduces the original scale-only behavior, so the function
     stays usable from a context that does not know the parameter values.
+
+    ``forgive_mask``, shaped like the tensors, names more cells to forgive on top
+    of the floor: ones the caller knows its reference cannot adjudicate
+    (``fd_sens`` passes a finite difference's own noise and step uncertainty).
+    The counts below then audit the floor and the mask together; ``None``, the
+    default, is the floor alone.
 
     The returned dict is ``differ``'s, plus three floor-specific numbers. They
     are three because the audit question needs all three, and issue #316 is what
@@ -826,6 +833,9 @@ def sens_verdict(
     mask = None
     if param_values is not None and atol is not None:
         mask = flatten_tensor(sensitivity_noise_mask(bn_sx, am_sx, param_values, atol))
+    if forgive_mask is not None:
+        extra = flatten_tensor(np.asarray(forgive_mask, dtype=bool))
+        mask = extra if mask is None else mask | extra
     v = differ.deterministic_verdict(
         flatten_tensor(bn_sx), flatten_tensor(am_sx), forgive_mask=mask
     )

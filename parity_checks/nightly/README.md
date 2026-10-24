@@ -14,6 +14,7 @@ a regression. Nothing here blocks a PR.
 | `bng_ssa`, `bng_nf` | run_network SSA, NFsim | 110 SSA + 235 NF committed BNGL jobs |
 | `amici_sens` | AMICI forward sensitivities | 48 of the 50 curated BioModels, staggered + simultaneous |
 | `rr_ssa` | libRoadRunner gillespie (`rr_parity/ssa_screen.py`) | the 269 of the 306 SSA-screen BioModels candidates the corpus holds (#806) |
+| `fd_sens` | central differences of bngsim's own trajectories (`fd_sens/fd_sens_run.py`) | 45 committed `.net` models, staggered + simultaneous; the only sensitivity oracle a `.net` model has (#804) |
 
 **The BioModels corpus.** 992 of the 1,323 BioModels come from sys-bio/temp-biomodels
 on GitHub. The other 331 come only from BioModels itself, whose CloudFront refuses
