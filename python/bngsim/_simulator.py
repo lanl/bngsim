@@ -9193,11 +9193,13 @@ class Simulator:
         solve, though a law's dependent species is rebuilt from the law.
 
         ``tol`` is absolute, as in :meth:`steady_state`. A model at so small a
-        scale that most starts are already under it is refused; at law totals
-        above about ``1e7`` the law's round-off alone can exceed it, and a
-        root is then reported as a failed start. Below concentrations of about
-        ``1e-9``, KINSOL's step limits are absolute too, and most starts fail
-        even with a ``tol`` scaled to match.
+        scale that most starts are already under it is refused. Each solve
+        rebuilds, from each conservation law, the member that carries the most
+        of the law's total where the solve is, so a large total's round-off
+        lands in a species at its own scale rather than in a small one (issue
+        #1190). Below concentrations of about ``1e-9``, KINSOL's step limits
+        are absolute too, and most starts fail even with a ``tol`` scaled to
+        match.
 
         Parameters
         ----------

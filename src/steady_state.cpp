@@ -1921,6 +1921,91 @@ static SsDistanceSystem ss_distance_system(const NetworkModel &model, const Resi
     return s;
 }
 
+// Issue #1190: re-pivot each law onto the member that carries the most of its
+// total at the state being solved, |L_ki·y_i|, so the species reconstruct_full
+// rebuilds as T − Σ L·y_others holds the subtraction's round-off at its own
+// scale. Pivoted on its largest coefficient, an all-ones law rebuilt its first
+// member: the Gardner toggle drawn from a pool P (R1 + R2 + P = T) rebuilt R1,
+// ~28, as T − R2 − P, and from T = 1e8 its ~1e-16·T of round-off put the root's
+// residual at 2.2e-9 over tol = 1e-9, so every start of steady_states() failed.
+// Rebuilt from P instead, the round-off is 1e-16 of P.
+//
+// The rows stay in reduced echelon form: each new pivot's column is eliminated
+// from every other law, so a dependent species reads in its own law only and
+// the rebuild does not depend on law order. A `fixed` species and one the mask
+// leaves out are never pivots: either must keep its value, and a rebuilt
+// species moves. A law with no other member keeps the pivot it had. The
+// totals are recomputed at `y`, and the independent species are the rest.
+static void pivot_on_largest_members(ConservationLaws &cl, const NetworkModel &model,
+                                     const ResidualSubspace &sub, const double *y) {
+    const int ns = cl.n_species;
+    std::vector<char> is_pivot(static_cast<size_t>(ns), 0);
+    for (int k = 0; k < cl.n_laws; ++k) {
+        std::vector<double> &row = cl.coefficients[static_cast<size_t>(k)];
+        int best = -1;
+        double best_share = -1.0;
+        for (int i = 0; i < ns; ++i) {
+            const double c = row[static_cast<size_t>(i)];
+            if (std::abs(c) < 1e-15 || is_pivot[static_cast<size_t>(i)] ||
+                model.species()[i].fixed || !sub.includes(i)) {
+                continue;
+            }
+            const double share = std::abs(c * y[i]);
+            if (share > best_share) {
+                best_share = share;
+                best = i;
+            }
+        }
+        const int keep = cl.dependent[static_cast<size_t>(k)];
+        if (best < 0 || (best_share == 0.0 && keep >= 0 && !is_pivot[static_cast<size_t>(keep)] &&
+                         std::abs(row[static_cast<size_t>(keep)]) >= 1e-15)) {
+            best = keep; // no member to move to, or none carries any of the total
+        }
+        if (best < 0 || std::abs(row[static_cast<size_t>(best)]) < 1e-15) {
+            continue;
+        }
+        const double inv = 1.0 / row[static_cast<size_t>(best)];
+        for (double &v : row) {
+            v *= inv;
+        }
+        for (int j = 0; j < cl.n_laws; ++j) {
+            if (j == k) {
+                continue;
+            }
+            std::vector<double> &other = cl.coefficients[static_cast<size_t>(j)];
+            const double f = other[static_cast<size_t>(best)];
+            if (f == 0.0) {
+                continue;
+            }
+            for (int i = 0; i < ns; ++i) {
+                other[static_cast<size_t>(i)] -= f * row[static_cast<size_t>(i)];
+            }
+            other[static_cast<size_t>(best)] = 0.0;
+        }
+        cl.dependent[static_cast<size_t>(k)] = best;
+        is_pivot[static_cast<size_t>(best)] = 1;
+    }
+    for (int k = 0; k < cl.n_laws; ++k) {
+        double c = 0.0;
+        for (int i = 0; i < ns; ++i) {
+            c += cl.coefficients[static_cast<size_t>(k)][static_cast<size_t>(i)] * y[i];
+        }
+        cl.constants[static_cast<size_t>(k)] = c;
+    }
+    std::vector<char> dep(static_cast<size_t>(ns), 0);
+    for (int d : cl.dependent) {
+        if (d >= 0) {
+            dep[static_cast<size_t>(d)] = 1;
+        }
+    }
+    cl.independent.clear();
+    for (int i = 0; i < ns; ++i) {
+        if (!dep[static_cast<size_t>(i)]) {
+            cl.independent.push_back(i);
+        }
+    }
+}
+
 // `linsolv_failed`, when non-null, reports whether KINSOL failed because it
 // could not set up or apply the dense linear solver at all — as opposed to
 // merely failing to converge. For a *structurally* singular reduced Jacobian
@@ -1964,6 +2049,15 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
                 c += cl_copy.coefficients[k][i] * model.species()[i].concentration;
             }
             cl_copy.constants[k] = c;
+        }
+        // Issue #1190: the burst-free solve has no integration to fall back on
+        // when the rebuilt species' round-off fails `tol`, so it rebuilds the
+        // largest member of each law. The two-tier solver keeps the model's
+        // pivots, as do dY_ss/dp and the certificate.
+        if (!opts.newton_burst) {
+            std::vector<double> y_now(static_cast<size_t>(ns));
+            model.get_state_into(y_now.data());
+            pivot_on_largest_members(cl_copy, model, sub, y_now.data());
         }
     }
 
@@ -2279,6 +2373,25 @@ static SteadyStateResult solve_by_newton_from_state(NetworkModel &model, SteadyS
     } restore{model, start};
     // solve_by_newton already demotes a non-finite, unphysical or over-tol root.
     SteadyStateResult r = ss_newton_from(model, rhs, opts, sub, start);
+    // Issue #1190: each law is pivoted on its largest member at the state the
+    // solve starts from, and Newton can end where another member is the
+    // largest: a start with R1 drawn above the pool ended on the toggle's
+    // roots, 4e-11 and 2e-7 of them off, at a residual of 2.7e-9 and 4.4e-8
+    // over tol = 1e-9, with the round-off in a member grown small. A few steps
+    // from where it ended, pivoted there, settle a root round-off alone failed;
+    // a start that is not near a root stays failed.
+    if (!r.converged && !r.concentrations.empty() &&
+        std::all_of(r.concentrations.begin(), r.concentrations.end(),
+                    [](double v) { return std::isfinite(v); }) &&
+        ss_state_is_physical(r.concentrations, ss_negative_slack(opts))) {
+        SteadyStateResult again =
+            ss_newton_from(model, rhs, opts, sub, r.concentrations, nullptr, 5);
+        if (again.converged) {
+            again.n_steps += r.n_steps;
+            again.n_rhs_evals += r.n_rhs_evals;
+            r = std::move(again);
+        }
+    }
     if (r.converged) {
         // KINSOL stops at the first iterate under tol, and along a slow mode
         // that can be well off the root: from 40 starts each, Haugh2b, nfkb and

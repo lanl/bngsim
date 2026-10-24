@@ -439,3 +439,72 @@ def test_the_building_block_leaves_a_fixed_species_out_too(tmp_path):
     (r,) = sim.steady_state_batch(states=[[1.0, 3.0]], method="newton", newton_burst=False)
     assert r.converged, r
     np.testing.assert_allclose(r.concentrations, [1.0, 4.0], rtol=1e-9)
+
+
+# The toggle with its production drawn from a conserved pool P and divided by
+# P, so its dynamics are the toggle's: R1 + R2 + P = Ptot, and the law's own
+# pivot is R1 (issue #1190).
+_POOL_TOGGLE_NET = """begin parameters
+    1 alpha_1     156.25
+    2 alpha_2     53.526315789473685
+    3 beta        2.5
+    4 gamma       1.0
+    5 k_deg       1.0
+    6 Ptot        {ptot}
+end parameters
+begin functions
+    1 syn_R1() alpha_1/(1+(Obs_Tot_R2^beta))/Obs_P
+    2 syn_R2() alpha_2/(1+(Obs_Tot_R1^gamma))/Obs_P
+end functions
+begin species
+    1 R1() 0
+    2 R2() 0
+    3 P() Ptot
+end species
+begin reactions
+    1 3 1 syn_R1 #_R1
+    2 3 2 syn_R2 #_R2
+    3 1 3 k_deg #_R3
+    4 2 3 k_deg #_R4
+end reactions
+begin groups
+    1 Obs_Tot_R1           1
+    2 Obs_Tot_R2           2
+    3 Obs_P               3
+end groups
+"""
+
+
+def _pool_toggle(tmp_path, ptot):
+    path = tmp_path / "pool_toggle.net"
+    path.write_text(_POOL_TOGGLE_NET.format(ptot=ptot), encoding="utf-8")
+    model = bngsim.Model.from_net(str(path))
+    return bngsim.Simulator(model, method="ode"), model
+
+
+@pytest.mark.parametrize("ptot", [1e3, 1e8, 1e9])
+def test_a_root_under_a_large_conservation_total_converges(tmp_path, ptot):
+    """Issue #1190: R1, ~28, was rebuilt from the law as Ptot − R2 − P, and the
+    subtraction's ~1e-16·Ptot of round-off put the saddle's residual at 2.2e-9
+    over tol = 1e-9 from Ptot = 1e8. Rebuilt from P, the largest member, the
+    residual stays at round-off of the toggle's own scale."""
+    sim, model = _pool_toggle(tmp_path, ptot)
+    assert [model.species_names[i] for i in model.conservation_laws["dependent"]] == ["R1()"]
+    near = _SADDLE * 1.01
+    (r,) = sim.steady_state_batch(
+        states=[[*near, ptot - near.sum()]], method="newton", newton_burst=False
+    )
+    assert r.converged and r.residual < 1e-13
+    np.testing.assert_allclose(np.asarray(r.concentrations)[:2], _SADDLE, rtol=1e-8)
+    assert r.root_stability == "unstable"
+
+
+def test_steady_states_finds_the_three_roots_under_a_pool_of_1e8(tmp_path):
+    """Every start failed, and the call returned no root, at Ptot = 1e8."""
+    sim, _ = _pool_toggle(tmp_path, 1e8)
+    roots = sim.steady_states(seed=0, decades=10)
+    assert len(roots) == 3
+    assert sorted(roots.stability) == ["stable", "stable", "unstable"]
+    np.testing.assert_allclose(
+        roots.states[_row(roots, np.append(_SADDLE, 1e8 - _SADDLE.sum()))][:2], _SADDLE, rtol=1e-8
+    )
