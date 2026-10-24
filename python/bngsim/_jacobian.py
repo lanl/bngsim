@@ -273,6 +273,101 @@ def builtin_shadow_bindings(sp) -> dict:
 # clause), so the fallback only ever runs at a large |z| where it is accurate:
 # over the arguments where it actually fires, its worst error is 1.7e-8 and its
 # median is 1e-13.
+_exact_log1p_cache: dict = {}
+
+
+def _exact_log1p(sp):
+    """sympy's ``codegen.cfunctions.log1p``, valued as C's ``log1p`` is at every
+    argument (see :func:`exprtk_closed_form_bindings`). Built once, and named
+    ``log1p`` so the C and numpy printers find it by name as they do sympy's."""
+    cls = _exact_log1p_cache.get("cls")
+    if cls is None:
+        import mpmath
+        from sympy.codegen.cfunctions import log1p as _log1p
+
+        def _value(arg, prec):
+            with mpmath.workprec(prec):
+                got = mpmath.log1p(arg._to_mpmath(prec))
+            if isinstance(got, mpmath.mpc):  # x < -1, off the real line as log's is
+                return sp.Float._new(got.real._mpf_, prec) + sp.I * sp.Float._new(
+                    got.imag._mpf_, prec
+                )
+            return sp.Float._new(got._mpf_, prec)
+
+        def _eval(cls, arg):
+            # sympy's folds a number to log(1 + x), which a Float or a tiny
+            # Rational then loses to rounding: a Float is valued here, a
+            # Rational left as the call for _eval_evalf.
+            if arg.is_zero:
+                return sp.S.Zero
+            if arg.is_Float:
+                return _value(arg, arg._prec)
+            if arg.is_Rational:
+                return None
+            return _log1p.eval(arg)
+
+        def _eval_evalf(self, prec):
+            arg = self.args[0].evalf(prec)
+            if not arg.is_Number:
+                return None
+            return _value(arg, prec)
+
+        cls = type("log1p", (_log1p,), {"eval": classmethod(_eval), "_eval_evalf": _eval_evalf})
+        _exact_log1p_cache["cls"] = cls
+    return cls
+
+
+def exprtk_closed_form_bindings(sp) -> dict:
+    """``{name: callable}`` for the ExprTk calls sympy has under another name or
+    not at all, each written out as ExprTk defines it (third_party/exprtk), for a
+    ``parse_expr`` ``local_dict``. Bind it before the model's symbols, so a
+    parameter of the same name wins.
+
+    Left to ``parse_expr``, each became an undefined sympy function, whose
+    derivative sympy leaves unevaluated: ``k = log10(p)`` declined the analytic
+    sensitivity right-hand side for the whole model as if it stepped like
+    ``floor()``, for a derivative of 1/(p·ln 10) (issue #1214), and ``logn``,
+    ``ncdf``, ``deg2rad`` and ``rad2deg`` were refused outright, as calls the
+    jump detector cannot read. The calls that step (``floor``, ``ceil``,
+    ``round``, ``trunc``, ``frac``, ``sgn``, ``sign``) are not here: they have
+    no derivative to give, and decline as before.
+
+    The five that C has, sympy's ``codegen.cfunctions`` classes carry with their
+    derivatives, and they print and evaluate as C's own: ``log(1 + x)`` for
+    ``log1p`` read 0 at x = 1e-300, where a crossing time reads the value. Each
+    is in the MIR JIT's prelude, which a derivative that keeps the call (d/dp
+    of ``log10(p)^2``) prints into the source. sympy's own ``log1p`` evaluates
+    as ``log(1 + x)`` at the working precision, 0 below x = 1e-16, so its
+    value is read through mpmath's.
+    """
+    from sympy.codegen.cfunctions import expm1, hypot, log2, log10
+
+    log1p = _exact_log1p(sp)
+
+    def _avg(*args):
+        return sp.Add(*args) / len(args)
+
+    return {
+        "log10": log10,
+        "log2": log2,
+        "logn": lambda x, n: sp.log(x) / sp.log(n),
+        "log1p": log1p,
+        "expm1": expm1,
+        "hypot": hypot,
+        "ncdf": lambda x: sp.erfc(-x / sp.sqrt(2)) / 2,
+        "deg2rad": lambda x: x * sp.pi / 180,
+        "rad2deg": lambda x: x * 180 / sp.pi,
+        "deg2grad": lambda x: x * sp.Rational(10, 9),
+        "grad2deg": lambda x: x * sp.Rational(9, 10),
+        "avg": _avg,
+        "sum": lambda *args: sp.Add(*args),
+        "mul": lambda *args: sp.Mul(*args),
+        # (x < lo) ? lo : ((x > hi) ? hi : x), which is not Min(Max(x, lo), hi)
+        # where lo > hi
+        "clamp": lambda lo, x, hi: sp.Piecewise((lo, x < lo), (hi, x > hi), (x, True)),
+    }
+
+
 _ENGINE_SYMPY_FUNCS = frozenset({"mratio"})
 
 _engine_sympy_cache: dict = {}
