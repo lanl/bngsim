@@ -350,6 +350,45 @@ python generate_bng_matrix.py runs/report_nf.json    # -> runs/bng_matrix_nf.htm
 - Outputs (`runs/report_{ssa,nf}.json`, `runs/bng_matrix_{ssa,nf}.html`) are
   gitignored (regenerable). The full SSA/NF ensembles are slow — run them supervised.
 
+### Replaying the stochastic tracks from a reference archive (issue #805)
+
+The legacy side is the slow and hard-to-install half of a stochastic run. A live
+run can record it once, and later runs can then compare bngsim against that
+record with neither BNG2.pl nor `run_network` / `NFsim` installed:
+
+```bash
+# record: a normal live run that also writes one .npz per job
+python bng_stoch_run.py --track ssa --write-reference-archive runs/ssa_archive
+
+# replay: same jobs; needs no BNGPATH
+python bng_stoch_run.py --track ssa --reference-archive runs/ssa_archive
+```
+
+An entry holds what BNG2.pl built (the `.net` or BNG-XML text, or the build
+failure) and every reference ensemble the job ran. Each ensemble is keyed by
+what it was asked for, and each is the ensemble or the error it raised:
+
+- the legacy ensemble (`legacy:N:seed`);
+- the native BNG2.pl protocol of a carry-over model (`native:N:seed`);
+- each seed-escalation rung, under the same keys with that rung's replicates
+  and seeds;
+- the RoadRunner fallback oracle (`roadrunner:points:N:seed`).
+
+The replay rebuilds nothing and re-runs bngsim, plus the in-repo `.net`
+Gillespie oracle where the legacy reference failed. It walks the same
+escalation, so it reaches the same verdicts unless bngsim's own behaviour
+changed. A replay that asks for an ensemble the record does not hold, such as a
+rung the recorded run never reached, is `archive_unreplayable`.
+
+An entry is used only while it still describes the job: the BNGL's and any
+injected action block's sha256, `--n-rep`, `--seed-base` and (NF) `--nf-bscb`
+must match, and so must the run derived from the artifact (interval, steps,
+molecule limit, segment mode). Otherwise, or with no entry, the row is
+`archive_stale` and names what changed. Both kinds of row are
+`REFERENCE_FAILED`, carry the kind in `reference_refusal`, and are never
+compared; re-record to clear them. The two flags are mutually exclusive, and
+`_meta.config.reference_source` records which side was used.
+
 ## Emitting golden references
 
 `parity_golden.py` emits the `_core` **golden** references — pure bngsim output

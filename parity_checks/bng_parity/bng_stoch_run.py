@@ -56,7 +56,10 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import hashlib
+import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -525,6 +528,8 @@ def _run_escalation(
             break
         try:
             add_bn, add_leg = escalate(target - cur_n_rep, seed_base + cur_n_rep, target)
+        except ArchiveMiss:
+            raise
         except Exception as exc:
             comment += f" | escalation to N={target} aborted: {type(exc).__name__}"
             break
@@ -573,6 +578,206 @@ def _run_escalation(
 # --------------------------------------------------------------------------- #
 # Worker (module-level so it is picklable under the 'spawn' start method)
 # --------------------------------------------------------------------------- #
+# ─── The reference archive (issue #805) ─────────────────────────────────────
+#
+# A live run can record, per job, everything the legacy stack produced: the
+# artifact BNG2.pl built (the .net or BNG-XML, or the build failure) and every
+# reference ensemble the job ran — the legacy ensemble, the native BNG2.pl
+# protocol of a carry-over model, each seed-escalation rung, and the RoadRunner
+# fallback oracle — each keyed by what it was asked for. A later run replays from
+# that record with neither BNG2.pl nor the legacy binary installed. An entry whose
+# inputs no longer match the job (the BNGL's and any injected action block's
+# sha256, replicates, seed base, NF binding mode) or whose derived run (interval,
+# steps, molecule limit, segment mode) differs is stale (``archive_stale``). A
+# replay that asks for an ensemble the recorded run never ran is
+# ``archive_unreplayable``. Neither is compared: both are REFERENCE_FAILED.
+ARCHIVE_FORMAT = 1
+
+
+class ArchiveMiss(Exception):
+    """A replay needed a reference result the archive does not hold."""
+
+
+def _archive_file(directory, key: str) -> Path:
+    return Path(directory) / (re.sub(r"[^A-Za-z0-9._-]", "_", key) + ".npz")
+
+
+def _sha256(text: str | None) -> str | None:
+    return None if text is None else hashlib.sha256(text.encode()).hexdigest()
+
+
+def _json_bytes(obj) -> np.ndarray:
+    return np.frombuffer(json.dumps(obj).encode(), dtype=np.uint8)
+
+
+def archive_identity(spec: dict, bngl_text: str) -> dict:
+    """The job's inputs an archived reference is valid for."""
+    return {
+        "format": ARCHIVE_FORMAT,
+        "model_id": spec["model_id"],
+        "track": spec["track"],
+        "bngl_sha256": _sha256(bngl_text),
+        "inject_sha256": _sha256(spec.get("inject")),
+        "n_rep": int(spec["n_rep"]),
+        "seed_base": int(spec["seed_base"]),
+        "nf_bscb": bool(spec["nf_bscb"]) if spec["track"] == "nf" else None,
+    }
+
+
+def run_identity(sspec: dict, multiseg: bool) -> dict:
+    """The run the reference was made for, as derived from the built artifact."""
+    return {
+        "t_start": float(sspec["t_start"]),
+        "t_end": float(sspec["t_end"]),
+        "n_steps": int(sspec["n_steps"]),
+        "gml": sspec.get("gml"),
+        "mode": "multi_segment" if multiseg else "single_segment",
+    }
+
+
+class Legacy:
+    """The legacy side of one job: live, live and recorded, or replayed.
+
+    :meth:`build` stands in for the artifact build and :meth:`call` for any
+    reference ensemble, keyed by what it was asked for. Recording rewrites the
+    job's entry after every call, so a worker killed mid-escalation still leaves
+    what it ran. Replaying raises :class:`ArchiveMiss` for anything the entry
+    does not hold."""
+
+    def __init__(self, spec: dict, bngl_text: str, *, replay=None, record_to=None):
+        self.spec, self.replay, self.record_to = spec, replay, record_to
+        self.meta = archive_identity(spec, bngl_text)
+        self.meta["calls"] = {}
+        self.arrays: dict[str, tuple] = {}
+        self.stale = ""
+        self.last_wall = 0.0
+        if replay:
+            self._load()
+
+    def build(self, build, workdir: Path, suffix: str):
+        """``(artifact, build_sec, build_err)`` as ``build()`` returns them."""
+        if self.replay:
+            if self.stale:
+                raise ArchiveMiss(self.stale)
+            b = self.meta.get("build")
+            if b is None:
+                raise ArchiveMiss("the recorded run never built this model")
+            artifact = None
+            if b.get("artifact_text") is not None:
+                artifact = workdir / f"model{suffix}"
+                artifact.write_text(b["artifact_text"])
+            return artifact, b["build_sec"], b.get("build_err", "")
+        artifact, build_sec, build_err = build()
+        self.meta["build"] = {
+            "build_sec": build_sec,
+            "build_err": build_err,
+            "artifact_text": None if artifact is None else Path(artifact).read_text(),
+        }
+        self._save()
+        return artifact, build_sec, build_err
+
+    def check_run(self, sspec: dict, multiseg: bool) -> None:
+        want = run_identity(sspec, multiseg)
+        if not self.replay:
+            self.meta["run"] = want
+            self._save()
+            return
+        got = self.meta.get("run") or {}
+        changed = [k for k in want if got.get(k) != want[k]]
+        if changed:
+            self.stale = f"the run's {', '.join(changed)} changed"
+            raise ArchiveMiss(self.stale)
+
+    def call(self, key: str, fn, *args, **kwargs):
+        """``fn(*args, **kwargs)``, recorded or replayed under ``key``. ``fn``
+        returns ``(time, obs, names[, timing])`` or ``None``."""
+        if self.replay:
+            c = self.meta["calls"].get(key)
+            if c is None:
+                raise ArchiveMiss(
+                    f"the replay needs the {key} ensemble, which the recorded run never ran"
+                )
+            self.last_wall = c.get("wall_sec", 0.0)
+            if "error" in c:
+                raise type(c["error_type"], (RuntimeError,), {})(c["error"])
+            if c.get("none"):
+                return None
+            t, v, n = self.arrays[key]
+            if "timing" in c:
+                return t, v, n, {**c["timing"], "replayed_from_archive": True}
+            return t, v, n
+        t0 = time.perf_counter()
+        try:
+            out = fn(*args, **kwargs)
+        except Exception as exc:
+            self.meta["calls"][key] = {"error": str(exc), "error_type": type(exc).__name__}
+            self._save()
+            raise
+        c = {"wall_sec": round(time.perf_counter() - t0, 6)}
+        if out is None:
+            c["none"] = True
+        else:
+            self.arrays[key] = tuple(out[:3])
+            if len(out) > 3:
+                c["timing"] = out[3]
+        self.meta["calls"][key] = c
+        self._save()
+        return out
+
+    def _save(self) -> None:
+        if not self.record_to:
+            return
+        out = _archive_file(self.record_to, self.spec["key"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        arrays = {}
+        keys = list(self.meta["calls"])
+        for key, (t, v, n) in self.arrays.items():
+            i = keys.index(key)
+            arrays[f"time_{i}"] = np.asarray(t, dtype=float)
+            arrays[f"obs_{i}"] = np.asarray(v, dtype=float)
+            arrays[f"names_{i}"] = _json_bytes(list(n))
+        tmp = out.with_name(out.name + ".tmp.npz")
+        np.savez_compressed(tmp, meta=_json_bytes(self.meta), **arrays)
+        tmp.replace(out)
+
+    def _load(self) -> None:
+        path = _archive_file(self.replay, self.spec["key"])
+        want = self.meta
+        if not path.is_file():
+            self.stale = "no entry for this job"
+            return
+        with np.load(path, allow_pickle=False) as z:
+            got = json.loads(bytes(z["meta"]).decode())
+            changed = [k for k in want if k != "calls" and got.get(k) != want[k]]
+            if changed:
+                self.stale = f"the job's {', '.join(changed)} changed"
+                return
+            self.meta = got
+            for i, key in enumerate(got["calls"]):
+                if f"obs_{i}" in z:
+                    self.arrays[key] = (
+                        np.array(z[f"time_{i}"]),
+                        np.array(z[f"obs_{i}"]),
+                        json.loads(bytes(z[f"names_{i}"]).decode()),
+                    )
+
+
+def _not_from_archive(res: dict, legacy: Legacy, miss: ArchiveMiss, label: str) -> dict:
+    """Stamp a replay that could not use the archive. Never compared."""
+    kind = "archive_stale" if legacy.stale else "archive_unreplayable"
+    for k in ("value", "escalation", "subclass"):
+        res.pop(k, None)
+    res["value"] = None
+    res["status"] = "reference_failed"
+    res["reference_refusal"] = kind
+    res["exception"] = f"{label} (archive): {kind}: {miss}"
+    res["comment"] = (
+        "The reference archive cannot stand in for the legacy stack here; "
+        "run live or re-record it."
+    )
+    return res
+
+
 def _bn_stoch_ensemble(track, artifact, spec, n_rep, seed_base, rep_timeout):
     """Run the bngsim N-replicate ensemble for ``track`` over the built artifact.
     Returns ``(time, obs, names, timing)``. Raises on a genuine bngsim failure."""
@@ -638,7 +843,12 @@ def _worker(spec: dict, q) -> None:
     SKIP; a clean bngsim SSA refusal (validate_for_ssa) is UNSUPPORTED.
     """
     track = spec["track"]
-    warmup = bc.measure_stoch_warmup(spec.get("legacy_bin"), legacy_label=spec["legacy_label"])
+    # A replay from a reference archive needs neither BNG2.pl nor the legacy
+    # binary (issue #805).
+    replay = spec.get("reference_archive")
+    warmup = bc.measure_stoch_warmup(
+        None if replay else spec.get("legacy_bin"), legacy_label=spec["legacy_label"]
+    )
 
     res = {k: spec[k] for k in ("key", "model_id", "method")}
     res.update(
@@ -667,6 +877,7 @@ def _worker(spec: dict, q) -> None:
         q.put(res)
         return
 
+    legacy = Legacy(spec, bngl_text, replay=replay, record_to=spec.get("write_reference_archive"))
     # An injected-action fixture (rehab/action_inject) REPLACES a dud model's
     # actions, so it — not the raw BNGL — is the source of both the SSA netgen caps
     # and the simulate horizon. Non-injected SSA jobs preserve the model's own
@@ -700,21 +911,29 @@ def _worker(spec: dict, q) -> None:
         #    (CLEAN artifact); a single-segment run bakes the state prefix.
         art_prefix = "" if multiseg else state_prefix
         if track == "ssa":
-            artifact, build_sec, build_err = bc.generate_network(
-                bngl_text,
-                spec["bng2_pl"],
+            artifact, build_sec, build_err = legacy.build(
+                lambda: bc.generate_network(
+                    bngl_text,
+                    spec["bng2_pl"],
+                    workdir,
+                    timeout=spec["sub_timeout"],
+                    gen_network=gen_network,
+                    state_prefix=art_prefix,
+                ),
                 workdir,
-                timeout=spec["sub_timeout"],
-                gen_network=gen_network,
-                state_prefix=art_prefix,
+                ".net",
             )
         else:
-            artifact, build_sec, build_err = bc.generate_xml(
-                bngl_text,
-                spec["bng2_pl"],
+            artifact, build_sec, build_err = legacy.build(
+                lambda: bc.generate_xml(
+                    bngl_text,
+                    spec["bng2_pl"],
+                    workdir,
+                    timeout=spec["sub_timeout"],
+                    state_prefix=art_prefix,
+                ),
                 workdir,
-                timeout=spec["sub_timeout"],
-                state_prefix=art_prefix,
+                ".xml",
             )
         build_key = "netgen_sec" if track == "ssa" else "writexml_sec"
         if artifact is None:
@@ -770,6 +989,7 @@ def _worker(spec: dict, q) -> None:
             # ensemble matches.
             sspec["nf_complex_bookkeeping"] = bc.nf_needs_complex_bookkeeping(bngl_text)
         rep_timeout = spec["rep_timeout"]
+        legacy.check_run(sspec, multiseg)
 
         bn = bn_timing = None
         bn_exc = ""
@@ -800,7 +1020,9 @@ def _worker(spec: dict, q) -> None:
                 )
                 bn_wall = time.perf_counter() - t0
                 t0 = time.perf_counter()
-                leg = bc.native_stoch_ensemble(
+                leg = legacy.call(
+                    f"native:{spec['n_rep']}:{spec['seed_base']}",
+                    bc.native_stoch_ensemble,
                     horizon_text,
                     spec["bng2_pl"],
                     workdir / "native",
@@ -811,7 +1033,7 @@ def _worker(spec: dict, q) -> None:
                     timeout=spec["sub_timeout"],
                     target_time=bn[0],
                 )
-                leg_wall = time.perf_counter() - t0
+                leg_wall = legacy.last_wall if replay else time.perf_counter() - t0
                 # The multiseg ensemble runners return only (time, obs, names) — no
                 # per-rep timing breakdown — but we DID measure the full N-replicate
                 # WORKFLOW wall for each engine. Record it so multi-phase models appear
@@ -843,6 +1065,8 @@ def _worker(spec: dict, q) -> None:
                         "codegen": "multi-phase",
                     },
                 }
+            except ArchiveMiss:
+                raise
             except Exception:
                 multiseg = False
                 bn = leg = None
@@ -878,7 +1102,9 @@ def _worker(spec: dict, q) -> None:
             # 3b. legacy single-segment ensemble (the reference; always run).
             try:
                 t0 = time.perf_counter()
-                t, v, n, leg_timing = _legacy_stoch_ensemble(
+                t, v, n, leg_timing = legacy.call(
+                    f"legacy:{spec['n_rep']}:{spec['seed_base']}",
+                    _legacy_stoch_ensemble,
                     track,
                     artifact,
                     sspec,
@@ -888,8 +1114,10 @@ def _worker(spec: dict, q) -> None:
                     str(workdir / "leg"),
                     spec["sub_timeout"],
                 )
-                leg_wall = time.perf_counter() - t0
+                leg_wall = legacy.last_wall if replay else time.perf_counter() - t0
                 leg = (t, v, n)
+            except ArchiveMiss:
+                raise
             except Exception as exc:
                 leg_exc = f"{spec['legacy_label']}: {type(exc).__name__}: {exc}"[:400]
 
@@ -917,7 +1145,9 @@ def _worker(spec: dict, q) -> None:
         if bn_timing:
             timing["bngsim"] = bn_timing
         if leg_timing:
-            timing["legacy"] = leg_timing
+            timing["legacy"] = (
+                {**leg_timing, "replayed_from_archive": True} if replay else leg_timing
+            )
         timing["warmup"] = warmup
         res["timing"] = _with_settings(timing)
 
@@ -991,13 +1221,17 @@ def _worker(spec: dict, q) -> None:
                             bn_rr = (bn[0][:k], bn[1][:, :k, :], bn[2])
                             rr_capped_tend = float(bn[0][k - 1])
                         try:
-                            rr_oracle = nrr.net_roadrunner_ensemble(
+                            rr_oracle = legacy.call(
+                                f"roadrunner:{len(bn_rr[0])}:{spec['n_rep']}:{spec['seed_base']}",
+                                nrr.net_roadrunner_ensemble,
                                 artifact,
                                 bn_rr[0],
                                 n_rep=int(spec["n_rep"]),
                                 seed_base=int(spec["seed_base"]),
                                 obs_names=list(bn[2]),
                             )
+                        except ArchiveMiss:
+                            raise
                         except Exception:
                             rr_oracle = None
                 _score_fallback_oracles(
@@ -1034,7 +1268,9 @@ def _worker(spec: dict, q) -> None:
                     rep_timeout=rep_timeout,
                     block_same_complex_binding=(sspec["nf_bscb"] if track == "nf" else True),
                 )
-                leg = bc.native_stoch_ensemble(
+                leg = legacy.call(
+                    f"native:{delta}:{seed_base}",
+                    bc.native_stoch_ensemble,
                     horizon_text,
                     spec["bng2_pl"],
                     workdir / f"native_n{rung}",
@@ -1050,7 +1286,9 @@ def _worker(spec: dict, q) -> None:
                     track, artifact, sspec, delta, seed_base, rep_timeout
                 )
                 b = (t, v, n)
-                t, v, n, _tm = _legacy_stoch_ensemble(
+                t, v, n, _tm = legacy.call(
+                    f"legacy:{delta}:{seed_base}",
+                    _legacy_stoch_ensemble,
                     track,
                     artifact,
                     sspec,
@@ -1095,10 +1333,14 @@ def _worker(spec: dict, q) -> None:
             # (KNOWN REF / KNOWN ARTIFACT); the verdict is unchanged.
             annotate_ref_bscb(res, status, track, bngl_path.stem)
             annotate_ssa_known(res, status, track, bngl_path.stem)
+        except ArchiveMiss:
+            raise
         except Exception as exc:
             res["status"] = "exception"
             res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
         q.put(res)
+    except ArchiveMiss as miss:
+        q.put(_not_from_archive(res, legacy, miss, spec["legacy_label"]))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -1220,10 +1462,27 @@ def main() -> int:
     ap.add_argument(
         "--tier", default="", help="Comma-separated tier filter (original/slow/glacial)."
     )
+    ap.add_argument(
+        "--write-reference-archive",
+        default="",
+        metavar="DIR",
+        help="Also record the legacy side of each job to DIR (one .npz per job, issue "
+        "#805), for a later --reference-archive run.",
+    )
+    ap.add_argument(
+        "--reference-archive",
+        default="",
+        metavar="DIR",
+        help="Replay the legacy side from DIR; needs neither BNG2.pl nor the legacy "
+        "binary. A job whose entry no longer matches it (archive_stale), or that needs "
+        "an ensemble the recorded run never ran (archive_unreplayable), is not compared.",
+    )
     args = ap.parse_args()
+    if args.reference_archive and args.write_reference_archive:
+        ap.error("--reference-archive replays an archive; --write-reference-archive records one")
 
     track = args.track
-    bng2_pl, legacy_bin = _resolve_bng_tools(track)
+    bng2_pl, legacy_bin = (None, None) if args.reference_archive else _resolve_bng_tools(track)
     legacy_label = TRACKS[track]["legacy_label"]
 
     jobs_path = Path(args.jobs).resolve()
@@ -1304,6 +1563,8 @@ def main() -> int:
                 "legacy_bin": legacy_bin,
                 "legacy_label": legacy_label,
                 "inject": bc.injected_action_block(j.overrides),
+                "reference_archive": args.reference_archive or None,
+                "write_reference_archive": args.write_reference_archive or None,
             }
         )
 
@@ -1359,6 +1620,7 @@ def main() -> int:
                 timestamp=now,
                 versions=ver,
                 comment=comment,
+                reference_refusal=r.get("reference_refusal"),
                 subclass=r.get("subclass"),
                 timing=timing,
             )
@@ -1392,6 +1654,9 @@ def main() -> int:
             "rep_timeout_source": "derived per job" if args.rep_timeout is None else "cli",
             "nf_block_same_complex_binding": nf_bscb if track == "nf" else None,
             "timeout_overridden_jobs": n_timeout_ov,
+            "reference_source": (
+                f"archive:{args.reference_archive}" if args.reference_archive else "bng (live)"
+            ),
         },
         "runtime": {
             "default_timeout_sec": DEFAULT_STOCH_TIMEOUT,
