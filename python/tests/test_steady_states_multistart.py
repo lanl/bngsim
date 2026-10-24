@@ -439,3 +439,30 @@ def test_the_building_block_leaves_a_fixed_species_out_too(tmp_path):
     (r,) = sim.steady_state_batch(states=[[1.0, 3.0]], method="newton", newton_burst=False)
     assert r.converged, r
     np.testing.assert_allclose(r.concentrations, [1.0, 4.0], rtol=1e-9)
+
+
+def test_steady_states_returns_at_least_the_root_steady_state_reaches():
+    """Issue #1189: on Motivating_example every sampled start fails, and the
+    call returned no root where ``steady_state()`` converges. Its root is now
+    solved as an extra start: found by it alone, it is reported with
+    multiplicity 0, since no draw reached it, and the draws' counts are as
+    they were."""
+    model = bngsim.Model.from_net(_net("Motivating_example.net"))
+    sim = bngsim.Simulator(model, method="ode")
+    ordinary = sim.steady_state()
+    roots = sim.steady_states(n_starts=20, seed=0)
+    assert ordinary.converged
+    assert roots.n_failed == 20 and roots.basins.size == 20
+    assert len(roots) == 1 and roots.multiplicity.tolist() == [0]
+    assert roots.stability == ["stable"]
+    np.testing.assert_allclose(roots.states[0], ordinary.concentrations, rtol=1e-6, atol=1e-9)
+
+
+def test_the_extra_start_adds_nothing_to_a_root_the_draws_found():
+    """Where the draws already reach steady_state()'s root, the seed joins it
+    and counts for nothing: every start is still one draw or one failure."""
+    sim, _ = _toggle()
+    roots = sim.steady_states(seed=0)
+    assert len(roots) == 3
+    assert int(roots.multiplicity.sum()) + roots.n_failed == 200 == roots.basins.size
+    assert (roots.multiplicity > 0).all()

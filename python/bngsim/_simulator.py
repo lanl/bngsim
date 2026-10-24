@@ -9166,6 +9166,12 @@ class Simulator:
         distinct root comes with the stability certificate's verdict, so the
         saddles a run of the dynamics never rests on are reported too.
 
+        The root one ordinary :meth:`steady_state` solve reaches (with the same
+        ``mask``) is solved as one more start, so the call never returns fewer
+        roots than that solve has (issue #1189). It is no draw: it adds nothing
+        to ``multiplicity`` or ``basins``, and a root only it found has
+        multiplicity 0.
+
         This is a search, not a proof: a root with a small basin, or a saddle
         KINSOL never lands on, can be missed, and nothing here claims the list
         is complete. Completeness for polynomial mass-action systems is what
@@ -9231,19 +9237,27 @@ class Simulator:
             raise ValueError("n_starts must be at least 1")
         y0, L, held, in_law = _manifold_partition(self._model, mask)
         alone = ~held & ~in_law
+        # One ordinary solve, for two things. Its root is an extra start (issue
+        # #1189): on Motivating_example and fceri_ji_red every sampled start
+        # failed and the call returned no root at all, where steady_state()
+        # converges and Newton converges from its root at once. And, below, it
+        # gives the sampling bound its scale.
+        try:
+            ordinary = self.steady_state(tol=tol, mask=mask)
+        except Exception:  # noqa: BLE001 - a seed and a scale only; the draws stand
+            ordinary = None
         if upper is None and alone.any():
-            # The scale of the model's own steady state, from one ordinary
-            # solve: a model in no conservation law that starts at zero has no
-            # other (the Gardner toggle's roots sit at 53 and 144; a bound of
-            # 10 from its initial state found two of three roots). Read off the
-            # species `upper` bounds, and not off an accumulator: nothing
-            # settles it, so it ends wherever max_time leaves it, and a scale
-            # from there puts every start decades above the roots.
-            try:
-                reached = np.asarray(self.steady_state(tol=tol, mask=mask).concentrations)
+            # The scale of the model's own steady state: a model in no
+            # conservation law that starts at zero has no other (the Gardner
+            # toggle's roots sit at 53 and 144; a bound of 10 from its initial
+            # state found two of three roots). Read off the species `upper`
+            # bounds, and not off an accumulator: nothing settles it, so it ends
+            # wherever max_time leaves it, and a scale from there puts every
+            # start decades above the roots.
+            reached = np.zeros(0)
+            if ordinary is not None:
+                reached = np.asarray(ordinary.concentrations)
                 reached = reached[alone & ~self._model.is_pure_sink()]
-            except Exception:  # noqa: BLE001 - only a scale; the default stands
-                reached = np.zeros(0)
             upper = _default_sampling_bound(y0, L, reached)
         starts = _sample_on_conservation_manifold(
             self._model, n_starts, np.random.default_rng(seed), upper, mask, decades
@@ -9274,17 +9288,49 @@ class Simulator:
         # A $-fixed one has a zero row there, and the unmasked solve keeps it
         # as an unknown: every start on catalysis, localfunc, gene_expr_3stage
         # and Motivating_example failed on the singular matrix.
+        solve_mask = ~held if held.any() else None
         results = self.steady_state_batch(
             states=starts,
             method="newton",
             newton_burst=False,
             tol=tol,
             n_workers=n_workers,
-            mask=~held if held.any() else None,
+            mask=solve_mask,
         )
-        return SteadyStates.cluster(
+        # The ordinary solve's root, solved as the draws are, joins them last:
+        # a root is grouped by the first result that reached it, so it moves no
+        # draw from the root it reached. It is no draw, so it adds nothing to
+        # `multiplicity` or `basins`, and a root only it found has multiplicity 0.
+        seeded = False
+        if ordinary is not None and ordinary.converged:
+            # Its held species as every draw holds them: a masked accumulator
+            # ends wherever the ordinary solve's max_time left it, and the root
+            # came back as a fourth one beside the same toggle root, apart only
+            # in a species the solve does not move.
+            seed_state = np.asarray(ordinary.concentrations, dtype=float).copy()
+            seed_state[held] = starts[0][held]
+            try:
+                (from_ordinary,) = self.steady_state_batch(
+                    states=[seed_state],
+                    method="newton",
+                    newton_burst=False,
+                    tol=tol,
+                    mask=solve_mask,
+                )
+            except SimulationError:
+                from_ordinary = None
+            if from_ordinary is not None and from_ordinary.converged:
+                results = [*results, from_ordinary]
+                seeded = True
+        roots = SteadyStates.cluster(
             results, list(self._model.species_names), dedupe_rtol=dedupe_rtol, atol=tol, laws=L
         )
+        if seeded:
+            k = int(roots.basins[-1])
+            roots.multiplicity[k] -= 1
+            roots.basins = roots.basins[:-1]
+            roots.n_failed = int(np.sum(roots.basins < 0))
+        return roots
 
     # ─── Stop conditions ────────────────────────────────────────────
 
