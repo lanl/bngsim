@@ -488,16 +488,48 @@ def test_a_counter_moved_by_its_own_rate_is_refused():
     _refused(text, ["one"], 946, rtol=1e-6, atol=1e-9)
 
 
+EVENT_BETWEEN = (
+    "species X, W, V, U; X = 0; W = 0; V = 0; U = 1; a = 2; q = 0.7; c = 1\n"
+    "J0: -> X; a\nJv: -> V; 2\nJu: -> U; c*U\nJ2: -> W; piecewise(q*X, V >= 6, 0)\n"
+    f"E1: at (U > {math.exp(3 + 5e-7)!r}): X = 0.5*X\nE2: at (V >= 5.9999998): W = W + 0\n"
+)
+
+
 def test_an_event_between_the_two_does_not_hide_the_first():
     """The event on U = e^(c·t) is 5e-7 after the switch on V, inside the
     reach at rtol 1e-6, and an event that does nothing fires on V between
     them. Only the last fire was remembered: dW/dc came back 9.45 for 3.15."""
-    text = (
-        "species X, W, V, U; X = 0; W = 0; V = 0; U = 1; a = 2; q = 0.7; c = 1\n"
-        "J0: -> X; a\nJv: -> V; 2\nJu: -> U; c*U\nJ2: -> W; piecewise(q*X, V >= 6, 0)\n"
-        f"E1: at (U > {math.exp(3 + 5e-7)!r}): X = 0.5*X\nE2: at (V >= 5.9999998): W = W + 0\n"
+    _refused(EVENT_BETWEEN, ["c"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.parametrize("rtol", [2e-7, 3e-7])
+def test_an_event_whose_trigger_s_error_has_added_up_is_refused(rtol):
+    """Issue #1025, from the event's side. V = 2t is exact and its switch is
+    known to one step's tolerance; the event's trigger on U = e^(c·t) carries
+    what every step added to U's error, and at these the event was found
+    before the switch it follows: dW/dc = 9.45 for 3.15, with no error. The
+    fire now has a reach of its own, which the two are judged apart by."""
+    _refused(EVENT_BETWEEN, ["c"], 945, EVENT_TIMES, rtol=rtol, atol=1e-9)
+
+
+def test_an_event_its_tolerance_does_place_after_the_switch_runs():
+    """Control: at rtol 1e-9 the event is placed after the switch, as it is.
+    The central difference of plain runs at rtol 1e-12 gives 3.15."""
+    model = bngsim.Model.from_antimony_string(EVENT_BETWEEN)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["c"]).run(
+        sample_times=EVENT_TIMES, rtol=1e-9, atol=1e-9, timeout=60
     )
-    _refused(text, ["c"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+    w = list(run.species_names).index("W")
+    assert np.asarray(run.sensitivities)[-1, w, 0] == pytest.approx(3.15, rel=1e-5)
+
+
+SWITCH_BETWEEN = (
+    "species X, W, V, Z, Q; X = 0; W = 0; V = 1; Z = 5.9999996; Q = 0; a = 2; q = 0.7;"
+    " tau = 3; kv = 2\n"
+    "J0: -> X; a\nJv: -> V; kv*V\nJz: Z -> ; 2\nJq: -> Q; piecewise(1, Z <= 0, 0)\n"
+    f"J2: -> W; piecewise(q*X, V >= {math.exp(6 + 2 * 1.99e-5)!r}, 0)\n"
+    "E1: at (time >= tau): X = 0.5*X\n"
+)
 
 
 def test_a_switch_between_the_two_does_not_hide_the_first():
@@ -505,14 +537,61 @@ def test_a_switch_between_the_two_does_not_hide_the_first():
     before it at rtol 1e-6, and a second switch that jumps, on Z through 0,
     crosses between them. Only the last crossing was remembered: dW/dtau came
     back −1.05 for −3.15."""
-    text = (
-        "species X, W, V, Z, Q; X = 0; W = 0; V = 1; Z = 5.9999996; Q = 0; a = 2; q = 0.7;"
-        " tau = 3; kv = 2\n"
-        "J0: -> X; a\nJv: -> V; kv*V\nJz: Z -> ; 2\nJq: -> Q; piecewise(1, Z <= 0, 0)\n"
-        f"J2: -> W; piecewise(q*X, V >= {math.exp(6 + 2 * 1.99e-5)!r}, 0)\n"
-        "E1: at (time >= tau): X = 0.5*X\n"
+    _refused(SWITCH_BETWEEN, ["tau"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+
+
+@pytest.mark.parametrize("rtol", [2e-6, 1.1e-6, 9e-7, 5e-7])
+def test_a_switch_whose_error_has_added_up_is_refused_around_that_tolerance(rtol):
+    """Issue #1025. V = e^(2t) carries what every step added to its error:
+    39 to 185 times one step's tolerance at t = 3, more than the 1.99e-5 its
+    switch follows the event by, and the run found the switch first. The
+    reach was one step's tolerance, so only rtol 1e-6 itself was refused, and
+    these returned dW/dtau = −1.05 for −3.15 with no error."""
+    _refused(SWITCH_BETWEEN, ["tau"], 945, EVENT_TIMES, rtol=rtol, atol=1e-9)
+
+
+@pytest.mark.parametrize("rtol", [1e-7, 1e-8, 1e-10])
+def test_a_switch_the_tolerance_does_place_after_the_event_runs(rtol):
+    """Control. At these the run places the switch after the event, as it is:
+    W gathers 0.7·dX/dtau = −0.7 over the 4.5 after it."""
+    model = bngsim.Model.from_antimony_string(SWITCH_BETWEEN)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"]).run(
+        sample_times=EVENT_TIMES, rtol=rtol, atol=1e-9, timeout=60
     )
-    _refused(text, ["tau"], 945, EVENT_TIMES, rtol=1e-6, atol=1e-9)
+    w = list(run.species_names).index("W")
+    assert np.asarray(run.sensitivities)[-1, w, 0] == pytest.approx(-3.15, rel=1e-5)
+
+
+# The same two models run from t = -3, with the event at t = 0.
+EARLY_TIMES = [t - 3.0 for t in EVENT_TIMES]
+SWITCH_BETWEEN_EARLY = SWITCH_BETWEEN.replace("tau = 3;", "tau = 0;")
+
+
+@pytest.mark.parametrize(
+    "text, param, rtol",
+    [
+        (SWITCH_BETWEEN_EARLY, "tau", 2e-6),
+        (SWITCH_BETWEEN_EARLY, "tau", 5e-7),
+        (EVENT_BETWEEN, "c", 3e-7),
+        (EVENT_BETWEEN, "c", 2e-7),
+    ],
+    ids=["switch, 2e-6", "switch, 5e-7", "event, 3e-7", "event, 2e-7"],
+)
+def test_a_run_that_starts_off_0_counts_its_error_from_its_start(text, param, rtol):
+    """The error that has added up is counted over the run's time so far. Read
+    as |t|, a run from t = -3 had next to none at the event at 0, and these
+    came back dW/dtau = -1.05 and dW/dc = 9.45 again, with no error."""
+    _refused(text, [param], 945, EARLY_TIMES, rtol=rtol, atol=1e-9)
+
+
+def test_a_run_that_starts_off_0_runs_where_its_tolerance_places_the_two():
+    """Control: from t = -3 at rtol 1e-8 the switch is placed after the event."""
+    model = bngsim.Model.from_antimony_string(SWITCH_BETWEEN_EARLY)
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["tau"]).run(
+        sample_times=EARLY_TIMES, rtol=1e-8, atol=1e-9, timeout=60
+    )
+    w = list(run.species_names).index("W")
+    assert np.asarray(run.sensitivities)[-1, w, 0] == pytest.approx(-3.15, rel=1e-5)
 
 
 def test_a_trigger_that_reads_the_switch_s_species_and_another_is_refused():

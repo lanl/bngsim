@@ -2957,6 +2957,13 @@ struct CvodeSimulator::Impl {
                          const std::vector<double> &x, const std::vector<double> &f,
                          std::vector<double> &gx_out, double &scale_out);
 
+    // What the run's tolerances leave a residual off by where its root is
+    // found at (t, x), with ∂g/∂x `gx` over `support` and the flow `f` the state
+    // came with (issue #1025). Leaves the model synced at (t, x).
+    double residual_allowed(void *cvode_mem, double t, int ns, const std::vector<double> &x,
+                            const std::vector<double> &f, const std::vector<double> &gx,
+                            const std::vector<int> &support, double step);
+
     // ∂t*/∂θ at a located crossing of the surface g = 0, by the implicit
     // function theorem (issue #144, reused for the rate-law switches of issue
     // #150). `gidx`/`support` are the residual and the species a difference of
@@ -3034,6 +3041,9 @@ struct CvodeSimulator::Impl {
     double run_rtol = 0.0;
     double run_atol = 0.0;
     std::vector<double> run_atol_vec;
+    // Where the run under way started: its time so far is counted from here,
+    // not from t = 0.
+    double run_t_start = 0.0;
     // The event fires and the state crossings of the run so far, the latest
     // of each last: one is asked about against every one of the other within
     // its reach, not the last alone, so that a fire or a crossing that comes
@@ -3043,6 +3053,7 @@ struct CvodeSimulator::Impl {
         std::vector<int> reads;       // the species the triggers that fired read
         bool moves = false;           // whether a requested column moves that fire
         std::vector<double> x_before; // the state the event fired on
+        double reach = 0.0;           // how far from t its fire time is known (issue #1025)
     };
     std::vector<EventFire> event_fires;
     struct StateCrossing {
@@ -6325,6 +6336,59 @@ void CvodeSimulator::Impl::sync_model_at(double t, const double *x, int ns) {
     }
 }
 
+// The tolerances bound what each step adds to the state's error, not the
+// error itself, which is what a residual is off by where its root is found.
+// Taken as one step's, `V >= e^(6 + 2·1.99e-5)` with V = e^(2t) was 39 to 185
+// of it out at t = 3 over 80 to 126 steps, was placed before an event at t = 3
+// that it follows, and the run returned dW/dtau = −1.05 for −3.15 at every rtol
+// around the one it was refused at; and an event on U = e^(c·t) 5e-7 after a
+// switch was placed before it, dW/dc = 9.45 for 3.15 (issue #1025). So the
+// relative part is counted twice for every step taken, for a species whose
+// rate changes as the run goes: one whose rate holds is linear in time, which
+// the run has exactly, and keeps one step's. That is read from the flow a
+// little before the root, on the side the state came from, against the run's
+// time so far. The absolute part is a floor under a species near 0 and is
+// taken once: summed, a guard on a species decayed to 1e-9 had a reach of 684.
+double CvodeSimulator::Impl::residual_allowed(void *cvode_mem, double t, int ns,
+                                              const std::vector<double> &x,
+                                              const std::vector<double> &f,
+                                              const std::vector<double> &gx,
+                                              const std::vector<int> &support, double step) {
+    long segment_steps = 0;
+    CVodeGetNumSteps(cvode_mem, &segment_steps);
+    const double steps_taken = static_cast<double>(closed_segments.steps + segment_steps);
+    const double back = 1e-6 * std::max(std::fabs(t), 1.0);
+    std::vector<double> x_back(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f_back(static_cast<std::size_t>(ns), 0.0);
+    for (int i = 0; i < ns; ++i) {
+        const auto ui = static_cast<std::size_t>(i);
+        x_back[ui] = x[ui] - back * f[ui];
+    }
+    model.compute_derivs(t - back, x_back.data(), f_back.data());
+    sync_model_at(t, x.data(), ns);
+    // The run's time so far. Read as |t| alone, a run from t = -3 had next to
+    // none at an event at 0, and the two cases this reach exists for came back
+    // wrong with no error. The larger of the two never shrinks the reach.
+    const double run_time = std::max({std::fabs(t - run_t_start), std::fabs(t), step});
+    double allowed = 0.0;
+    for (int j : support) {
+        const auto uj = static_cast<std::size_t>(j);
+        if (j < 0 || j >= ns || uj >= gx.size()) {
+            continue;
+        }
+        const double atol_j = run_atol_vec.empty() ? run_atol : run_atol_vec[uj];
+        const double bends = std::fabs(f[uj] - f_back[uj]) / back * run_time;
+        double weight = 0.0;
+        if (std::isfinite(bends)) {
+            weight = std::fabs(f[uj]) > 0.0 ? std::min(1.0, bends / std::fabs(f[uj]))
+                                            : (bends > 0.0 ? 1.0 : 0.0);
+        }
+        const double accumulated = 1.0 + weight * (2.0 * std::max(steps_taken, 1.0) - 1.0);
+        allowed += std::fabs(gx[uj]) * (accumulated * run_rtol * std::fabs(x[uj]) + atol_j);
+    }
+    return allowed;
+}
+
 double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &support, double t,
                                            int ns, const std::vector<double> &x,
                                            const std::vector<double> &f,
@@ -6837,10 +6901,33 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // A trigger on the state that no requested column moves fires when it
     // fires.
     const bool fire_moves = std::any_of(tau.begin(), tau.end(), [](double v) { return v != 0.0; });
+    // How far from t_evt this fire's time is known: a trigger on the state is
+    // found where its residual is within what the tolerances leave it, over
+    // the rate it comes to its surface at, as a switch's crossing is (issue
+    // #1025). A trigger on the clock alone is found where the clock says.
+    double fire_reach = 0.0;
+    if (!f_minus.empty()) {
+        for (int ei : state_dep_fired) {
+            const int gidx = model.event_trigger_residual_expr(ei);
+            const std::vector<int> &support = model.event_trigger_residual_species(ei);
+            if (gidx < 0 || support.empty()) {
+                continue;
+            }
+            std::vector<double> gx;
+            double scale = 0.0;
+            const double flow =
+                residual_flow(gidx, support, t_evt, ns, x_minus, f_minus, gx, scale);
+            const double allowed =
+                residual_allowed(cvode_mem, t_evt, ns, x_minus, f_minus, gx, support, 0.0);
+            if (std::isfinite(flow) && flow != 0.0 && std::isfinite(allowed)) {
+                fire_reach = std::max(fire_reach, allowed / std::fabs(flow));
+            }
+        }
+    }
     sync_model_at(t_evt, x_after.data(), ns);
     for (const StateCrossing &crossing : state_crossings) {
-        if (!(std::fabs(t_evt - crossing.t) <= crossing.reach) || !(fire_moves || crossing.moves) ||
-            one_trajectory(fired_reads, crossing.reads)) {
+        if (!(std::fabs(t_evt - crossing.t) <= crossing.reach + fire_reach) ||
+            !(fire_moves || crossing.moves) || one_trajectory(fired_reads, crossing.reads)) {
             continue;
         }
         if (crossing.continuous) {
@@ -6863,7 +6950,8 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             }
         }
         std::ostringstream msg;
-        msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within " << crossing.reach
+        msg << "Forward sensitivity: an event fires at t=" << t_evt << ", within "
+            << crossing.reach + fire_reach
             << " of the state-dependent rate-law switch with residual '" << crossing.residual
             << "', which crossed at t=" << crossing.t
             << ". Which of the two comes first is not known to the tolerances of "
@@ -6881,7 +6969,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     if (event_fires.size() >= kCrossingsKept) {
         event_fires.erase(event_fires.begin());
     }
-    event_fires.push_back({t_evt, fired_reads, fire_moves, x_minus});
+    event_fires.push_back({t_evt, fired_reads, fire_moves, x_minus, fire_reach});
     sync_state();
 
     // Issue #945, as #946 is from the clock's side: a state-dependent switch
@@ -11246,14 +11334,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
                 flow = flow_here;
             }
             approach = flow;
-            double allowed = 0.0;
-            for (int j : sw.species) {
-                const auto uj = static_cast<std::size_t>(j);
-                if (j >= 0 && j < ns) {
-                    const double atol_j = run_atol_vec.empty() ? run_atol : run_atol_vec[uj];
-                    allowed += std::fabs(gx[uj]) * (run_rtol * std::fabs(x[uj]) + atol_j);
-                }
-            }
+            const double allowed =
+                residual_allowed(cvode_mem, t_evt, ns, x, f_minus, gx, sw.species, step);
+            sync(x, t_evt);
             if (std::isfinite(flow) && flow != 0.0 && std::isfinite(allowed)) {
                 reach += allowed / std::fabs(flow);
             } else {
@@ -11330,8 +11413,10 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         double near_fire = std::numeric_limits<double>::quiet_NaN();
         bool near_fire_moves = false;
         std::vector<const EventFire *> near_fires;
-        for (auto fire = event_fires.rbegin();
-             fire != event_fires.rend() && std::fabs(t_evt - fire->t) <= reach; ++fire) {
+        for (auto fire = event_fires.rbegin(); fire != event_fires.rend(); ++fire) {
+            if (!(std::fabs(t_evt - fire->t) <= reach + fire->reach)) {
+                continue;
+            }
             if (!one_trajectory(fire->reads, crossing_reads)) {
                 near_fires.push_back(&*fire);
                 near_fire = fire->t;
@@ -12119,6 +12204,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     impl_->run_rtol = rtol;
     impl_->run_atol = atol;
     impl_->run_atol_vec = atol_v;
+    impl_->run_t_start = times.t_start;
 
     // Dense vs sparse (KLU) matrix, including the two force flags (GH #102,
     // GH #29) — see Impl::choose_use_sparse.
