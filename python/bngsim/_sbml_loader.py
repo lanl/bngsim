@@ -8835,6 +8835,31 @@ def _build_model_from_sbml_doc_in_context(doc):
 
             return go(expr)
 
+        def _integral_powers(expr):
+            # expr with each power whose exponent is a whole Float, as MathML's
+            # `<cn>2</cn>` reaches sympy, written with that Integer instead,
+            # each distinct node rebuilt once. `cancel` reads `(S + 1)**2.0` as
+            # no polynomial, so `(S + 1)^2 > 25` beside `S^2 + 2*S + 1 < 25`,
+            # which flip at one root, were two roots, and the size's two jumps
+            # on one instant compounded: [Sn] 3.333 for 1.667 (issue #1187).
+            # Past |n| = 32 the power is left as written: `cancel` would expand
+            # it, and no condition writes one.
+            done: dict[int, object] = {}
+
+            def go(e):
+                if id(e) not in done:
+                    args = tuple(go(a) for a in e.args)
+                    n = e.exp if isinstance(e, _sp.Pow) else None
+                    # `float(n)`: sympy reads Float(2.0) == 2 as false
+                    if isinstance(n, _sp.Float) and float(n).is_integer() and abs(float(n)) <= 32:
+                        done[id(e)] = _sp.Pow(args[0], _sp.Integer(int(float(n))))
+                    else:
+                        changed = any(a is not b for a, b in zip(args, e.args, strict=True))
+                        done[id(e)] = _rebuilt(e, args) if changed else e
+                return done[id(e)]
+
+            return go(expr)
+
         def _rules_by_name() -> dict:
             # A rule's size, written through the rules it reads, -> the rule's
             # own symbol, for each rule whose size holds no condition: it is the
@@ -8991,7 +9016,10 @@ def _build_model_from_sbml_doc_in_context(doc):
             # (difference, [(relation, its difference over that one)])
             roots: list[tuple[object, list]] = []
             for r in sorted(relations, key=_sp.default_sort_key):
-                d = r.lhs - r.rhs
+                # Grouped by its difference with whole exponents as Integers;
+                # the relation itself, which the triggers are written from, is
+                # left as it is.
+                d = _integral_powers(r.lhs - r.rhs)
                 for d0, rels in roots:
                     ratio = _ratio_of(d, d0)
                     if ratio is not None:
