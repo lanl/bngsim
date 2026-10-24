@@ -2300,9 +2300,13 @@ static SteadyStateResult solve_by_newton_from_state(NetworkModel &model, SteadyS
             p.n_rhs_evals += r.n_rhs_evals;
             r = std::move(p);
         }
-        RootCertificate cert = certify_root_stability(model, rhs, opts, sub, r.concentrations);
-        r.root_stability = root_stability_name(cert.verdict);
-        r.eigenvalues = std::move(cert.eigenvalues);
+        // Issue #1191: a caller that certifies each distinct root once skips
+        // it here, and the result carries no verdict.
+        if (opts.certify_root) {
+            RootCertificate cert = certify_root_stability(model, rhs, opts, sub, r.concentrations);
+            r.root_stability = root_stability_name(cert.verdict);
+            r.eigenvalues = std::move(cert.eigenvalues);
+        }
     }
     return r;
 }

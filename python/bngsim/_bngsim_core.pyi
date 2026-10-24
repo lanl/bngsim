@@ -1177,6 +1177,7 @@ class SsaSimulator:
         GH #616: record each reaction's cumulative firing count and integrated propensity at every output time (Result.reaction_firing_counts / reaction_propensity_integrals). Exact SSA only; run_psa ignores it. Off by default, and enabling it changes no trajectory.
         """
 class SteadyStateOptions:
+    certify_root: bool
     codegen_c_source: str
     codegen_so_path: str
     criterion: str

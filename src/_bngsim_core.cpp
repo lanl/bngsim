@@ -3691,6 +3691,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("max_time", &bngsim::SteadyStateOptions::max_time)
         // Issue #524 — "newton" from the given state, no burst, stability reported.
         .def_readwrite("newton_burst", &bngsim::SteadyStateOptions::newton_burst)
+        // Issue #1191 — the burst-free solve without its stability certificate.
+        .def_readwrite("certify_root", &bngsim::SteadyStateOptions::certify_root)
         .def_readwrite("rtol", &bngsim::SteadyStateOptions::rtol)
         .def_readwrite("atol", &bngsim::SteadyStateOptions::atol)
         // Issue #196 — per-species absolute tolerance for the march. Empty

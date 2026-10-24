@@ -439,3 +439,39 @@ def test_the_building_block_leaves_a_fixed_species_out_too(tmp_path):
     (r,) = sim.steady_state_batch(states=[[1.0, 3.0]], method="newton", newton_burst=False)
     assert r.converged, r
     np.testing.assert_allclose(r.concentrations, [1.0, 4.0], rtol=1e-9)
+
+
+def test_a_burst_free_solve_can_leave_the_certificate_out():
+    """``certify=False`` skips the eigendecomposition (issue #1191): the root is
+    the same, with no verdict and no spectrum on it."""
+    sim, _ = _toggle()
+    start = _SADDLE[None, :] * 1.001
+    kw = {"states": start, "method": "newton", "newton_burst": False}
+    (full,) = sim.steady_state_batch(**kw)
+    (bare,) = sim.steady_state_batch(certify=False, **kw)
+    assert full.converged and bare.converged
+    np.testing.assert_array_equal(bare.concentrations, full.concentrations)
+    assert full.root_stability == "unstable" and len(full.eigenvalues) == 2
+    assert bare.root_stability == "" and len(bare.eigenvalues) == 0
+
+
+def test_each_distinct_root_is_certified_once(monkeypatch):
+    """Issue #1191: the starts are solved without the certificate, and only one
+    representative of each distinct root gets it, not every start that reached
+    that root. The verdicts are the ones certifying every start gave."""
+    sim, _ = _toggle()
+    certified: list[int] = []
+    batch = bngsim.Simulator.steady_state_batch
+
+    def counting(self, *a, **k):
+        if k.get("certify", True):
+            certified.append(len(k["states"]))
+        return batch(self, *a, **k)
+
+    monkeypatch.setattr(bngsim.Simulator, "steady_state_batch", counting)
+    roots = sim.steady_states(seed=0)
+    assert certified == [len(roots)] == [3]
+    assert int(roots.multiplicity.sum()) > len(roots)  # starts shared roots
+    assert sorted(roots.stability) == ["stable", "stable", "unstable"]
+    assert roots.stability[_row(roots, _SADDLE)] == "unstable"
+    assert all(len(e) == 2 for e in roots.eigenvalues)
