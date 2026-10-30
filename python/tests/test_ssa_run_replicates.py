@@ -29,14 +29,17 @@ N_REP = 10
 
 
 def _clone_per_rep_reference(net_path: Path, n: int, seed_base: int) -> list[np.ndarray]:
-    """The pre-fix ensemble pattern: clone + new Simulator per replicate."""
+    """The pre-fix ensemble pattern: clone + new Simulator per replicate, each
+    from the seed run_replicates derives for it (issue #1365)."""
+    from bngsim._seed import derived_seeds
+
     base = bngsim.Model.from_net(str(net_path))
     out: list[np.ndarray] = []
-    for i in range(n):
+    for seed in derived_seeds(seed_base, n):
         m = base.clone()
         m.reset()
         sim = bngsim.Simulator(m, method="ssa")
-        r = sim.run(t_span=T_SPAN, n_points=N_POINTS, seed=seed_base + i)
+        r = sim.run(t_span=T_SPAN, n_points=N_POINTS, seed=seed)
         out.append(np.asarray(r.species))
     return out
 
@@ -71,7 +74,9 @@ def test_run_replicates_parallel_matches_sequential(stochastic_net: Path) -> Non
 def test_run_replicates_exposes_per_replicate_seeds(simple_decay_net: Path) -> None:
     sim = bngsim.Simulator(bngsim.Model.from_net(str(simple_decay_net)), method="ssa")
     reps = sim.run_replicates(N_REP, t_span=T_SPAN, n_points=N_POINTS, seed=100)
-    assert [r.seed for r in reps] == list(range(100, 100 + N_REP))
+    from bngsim._seed import derived_seeds
+
+    assert [r.seed for r in reps] == derived_seeds(100, N_REP)
 
 
 def test_run_replicates_squeeze_shape(simple_decay_net: Path) -> None:

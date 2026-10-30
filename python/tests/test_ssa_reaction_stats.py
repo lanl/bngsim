@@ -272,8 +272,9 @@ def test_batch_rows_carry_the_blocks(net_path: Path) -> None:
     row's seed, blocks included."""
     sim = bngsim.Simulator(_model(net_path), method="ssa", reaction_stats=True)
     rows = sim.run_batch(T_SPAN, N_POINTS, params=[{"k1": 5.0}, {"k1": 2.0}], seed=5)
+    # The row's own seed, derived from the base (issue #1365).
     one = bngsim.Simulator(_model(net_path), method="ssa", reaction_stats=True).run(
-        t_span=T_SPAN, n_points=N_POINTS, seed=5
+        t_span=T_SPAN, n_points=N_POINTS, seed=rows[0].seed
     )
     assert [r.has_reaction_stats for r in rows] == [True, True]
     assert rows[0].reaction_labels == one.reaction_labels

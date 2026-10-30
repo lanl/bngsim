@@ -124,8 +124,12 @@ assert ra.seed == rb.seed == 42                  # exact reproduction
 
 The same contract applies to `Simulator.run_batch`,
 `NfsimSession.initialize`, and `RuleMonkeySession.initialize`. For
-`run_batch`, the resolved value is the **base** seed; per-sim seeds are
-`base_seed + i` and stamped onto each `Result.seed`.
+`run_batch`, `run_replicates` and `parameter_scan`, the resolved value is the
+**base** seed. Each row's seed is derived from `(base_seed, i)` by numpy's
+`SeedSequence` and stamped onto its `Result.seed`, so `run(seed=r.seed)` repeats
+that row. Bases next to each other give unrelated seeds, and the seeds of one call
+are distinct. They were `base_seed + i`, which made an ensemble from seed 1 the
+one from seed 0 shifted by a row (issue #1365).
 
 `Result.seed` is `None` for ODE results and round-trips through HDF5
 `Result.save()` / `Result.load()`. For sessions, the seed used by

@@ -183,11 +183,14 @@ class TestResultSeed:
 
 
 class TestRunBatchSeed:
-    def test_per_sim_seeds_are_consecutive(self, model):
+    def test_per_sim_seeds_are_derived_from_the_base(self, model):
+        """Derived from (base, i), not base + i (issue #1365)."""
+        from bngsim._seed import derived_seeds
+
         sim = bngsim.Simulator(model, method="ssa")
         psets = [{"k1": v} for v in [0.1, 0.2, 0.3, 0.4]]
         results = sim.run_batch(t_span=(0, 10), n_points=11, params=psets, seed=1000)
-        assert [r.seed for r in results] == [1000, 1001, 1002, 1003]
+        assert [r.seed for r in results] == derived_seeds(1000, 4)
 
     def test_default_seed_draws_fresh_base_per_call(self, model):
         sim = bngsim.Simulator(model, method="ssa")
@@ -196,9 +199,9 @@ class TestRunBatchSeed:
         rs2 = sim.run_batch(t_span=(0, 10), n_points=11, params=psets)
         # Different base seeds → different per-sim seeds
         assert rs1[0].seed != rs2[0].seed
-        # Per-sim seeds within each batch are consecutive
-        assert rs1[1].seed == rs1[0].seed + 1
-        assert rs2[1].seed == rs2[0].seed + 1
+        # Per-sim seeds within each batch are distinct (issue #1365)
+        assert rs1[1].seed != rs1[0].seed
+        assert rs2[1].seed != rs2[0].seed
 
     def test_explicit_base_reproduces_batch(self, model):
         sim1 = bngsim.Simulator(model.clone(), method="ssa")

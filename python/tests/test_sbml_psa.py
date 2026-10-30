@@ -105,9 +105,12 @@ def test_psa_sbml_matches_analytical():
 
     # kf=kr=0.01, T_END=50 → X_ss = N0·kr/(kf+kr) = 5000.
     expected_mean = N0_AMOUNT * (0.01 + 0.01 * math.exp(-0.02 * T_END)) / 0.02
-    p_x = expected_mean / N0_AMOUNT
-    var = N0_AMOUNT * p_x * (1.0 - p_x)
-    sd_mean = math.sqrt(var / n_reps)
+    # The SE of the sample itself: PSA's leaps spread the population far wider
+    # than the exact SSA's binomial N·p·q, sd 218 for 46.5 here, so 5 binomial
+    # SEs were about one of PSA's, and the test passed or failed with the seeds
+    # (issue #1365 reseeded the batch). Over 2000 replicates PSA's mean is
+    # 6843.3 for 6839.4, z = 0.8.
+    sd_mean = float(np.std(x_amounts_at_end, ddof=1)) / math.sqrt(n_reps)
 
     mean_empirical = float(np.mean(x_amounts_at_end))
     delta = abs(mean_empirical - expected_mean)
