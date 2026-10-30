@@ -768,6 +768,12 @@ struct CvodeUserData {
     // is what turns the retry off.
     std::vector<double> sens_zero_atol;
     std::vector<double> sens_zero_scratch;
+
+    // The value RHS's counterpart (issue #1340): the per-species absolute
+    // tolerance below which a slot the nonnegative clamp leaves alone (a
+    // rate-rule target, a fixed or promoted slot) is still numerically zero on
+    // the non-finite retry. Filled on every run, with or without sensitivities.
+    std::vector<double> rhs_zero_atol;
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -957,8 +963,25 @@ static inline double *clamp_state_nonneg(CvodeUserData *data, N_Vector y,
     double *s = data->rhs_nonneg_scratch.data();
     const double *y_ptr = N_VGetArrayPointer(y);
     const std::vector<char> &mask = nonneg_clamp_mask(data);
-    for (int i = 0; i < ns; ++i)
-        s[i] = (y_ptr[i] > 0.0 || !mask[i] || (spare != nullptr && spare[i])) ? y_ptr[i] : 0.0;
+    // A slot the mask leaves alone may be negative by design (V = -61), but one
+    // negative by less than its own atol is the boundary value with rounding
+    // under it: a rate-rule target at an exact equilibrium of 0 that one order
+    // of the RHS's sums put at -3.6e-27, where `a*P^z` is NaN, and the other at
+    // exactly 0 (issue #1340, MODEL1812040005). The sensitivity RHS reads such a
+    // state the same way (GH #392, clamp_state_numerically_zero). A masked slot
+    // `spare` marks keeps its value, as below 0 is where its pole is.
+    const std::vector<double> &tol = data->rhs_zero_atol;
+    const bool have_tol = tol.size() == static_cast<std::size_t>(ns);
+    for (int i = 0; i < ns; ++i) {
+        const double v = y_ptr[i];
+        if (v > 0.0) {
+            s[i] = v;
+        } else if (mask[i]) {
+            s[i] = (spare != nullptr && spare[i]) ? v : 0.0;
+        } else {
+            s[i] = (have_tol && v > -tol[static_cast<std::size_t>(i)]) ? 0.0 : v;
+        }
+    }
     return s;
 }
 
@@ -4462,6 +4485,8 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
             throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
         }
         w.user_data.atol_tracking = make_atol_tracking(rtol, atol_v, opts.atol_track_decades);
+        w.user_data.rhs_zero_atol =
+            atol_v.empty() ? std::vector<double>(static_cast<std::size_t>(ns), atol) : atol_v;
         apply_cvode_tolerances(w.cvode_mem, w.ctx, rtol, atol, atol_v, ns,
                                w.user_data.atol_tracking.active() ? cvode_tracking_ewt : nullptr);
         record_clamp_tolerances(w.user_data, w.cvode_mem, atol, atol_v, ns);
@@ -4854,6 +4879,8 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     // CVodeWFtolerances that installs the callback — are one block. Depth 0
     // leaves both empty and the SS/SV dispatch below exactly as it was.
     user_data.atol_tracking = make_atol_tracking(rtol, atol_v, opts.atol_track_decades);
+    user_data.rhs_zero_atol =
+        atol_v.empty() ? std::vector<double>(static_cast<std::size_t>(ns), atol) : atol_v;
     apply_cvode_tolerances(cvode_mem, ctx, rtol, atol, atol_v, ns,
                            user_data.atol_tracking.active() ? cvode_tracking_ewt : nullptr);
     record_clamp_tolerances(user_data, cvode_mem, atol, atol_v, ns);
