@@ -32,8 +32,9 @@ molar or other small units, which is common in SBML and BioModels. Such a
 trajectory can be off by its own size, or go negative, and CVODE reports no
 error: a binding model of species near 1e-9 M ended at -8.7e-10 for 4.1e-10.
 
-`run()`, `run_until()`, `run_batch()`, `parameter_scan()` and
-`compute_all_sensitivities()` raise `bngsim.AtolScaleWarning` in that case,
+`run()`, `run_until()`, `run_batch()`, `parameter_scan()`,
+`compute_all_sensitivities()` and `bngsim.jax.differentiable_solve()` raise
+`bngsim.AtolScaleWarning` in that case,
 once per call and naming the species, where you gave no `atol` and a species
 the solver integrates stays below it while reaching at least 1e-6 of the run's
 largest. A species stuck at rounding in a count model does not reach that, and

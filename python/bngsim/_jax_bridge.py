@@ -88,6 +88,18 @@ def _write_params(clone, names, values, flat: bool) -> None:
         clone._core.set_param(name, value, force_override=flat)
 
 
+def _hashable_atol(atol):
+    """*atol* as the custom JVP's static options can hold it: ``None`` or
+    ``"auto"`` as given, a number as a float (issue #1420)."""
+    if atol is None:
+        return None
+    if isinstance(atol, str):
+        if atol != "auto":
+            raise ValueError(f"atol must be a number, 'auto' or None, not {atol!r}")
+        return atol
+    return float(atol)
+
+
 def differentiable_solve(
     model,
     params,
@@ -95,7 +107,7 @@ def differentiable_solve(
     n_points: int,
     *,
     rtol: float = 1e-8,
-    atol: float = 1e-8,
+    atol: float | str | None = None,
     max_steps: int = 10000,
     chunk_size: int = 0,
     n_workers: int = 0,
@@ -139,8 +151,13 @@ def differentiable_solve(
         Number of output time points. Not differentiated.
     rtol : float
         Relative tolerance for CVODE. Default ``1e-8``.
-    atol : float
-        Absolute tolerance for CVODE. Default ``1e-8``.
+    atol : float, ``"auto"`` or None
+        Absolute tolerance for CVODE. ``None`` (the default) is
+        :class:`~bngsim.Simulator`'s own default, its scale warning included
+        (issue #1420): passed on as ``1e-8``, it read as the caller's choice,
+        and a model in molar units was integrated with no word to a trajectory
+        wrong by its own size. ``"auto"`` scales the tolerance to the model, as
+        ``Simulator.run(atol="auto")`` does.
     max_steps : int
         Maximum internal solver steps per output point. Default ``10000``.
     chunk_size : int
@@ -267,7 +284,7 @@ def differentiable_solve(
     # internal helpers below.
     opts = (
         float(rtol),
-        float(atol),
+        _hashable_atol(atol),
         int(max_steps),
         int(chunk_size),
         int(n_workers),
