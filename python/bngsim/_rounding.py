@@ -72,3 +72,4 @@ def round_half_up(value: float) -> int:
     if not math.isfinite(x):
         raise ValueError(f"cannot round non-finite molecule count {value!r}")
     return int(math.floor(x + 0.5)) if x >= 0.0 else int(math.ceil(x - 0.5))
+# probe for #1417: a source change with no fragment; never merged
