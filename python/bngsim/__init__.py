@@ -29,6 +29,7 @@ from bngsim._eval_spec import EvaluationSpec
 from bngsim._evaluators import JacobianMatrix
 from bngsim._exceptions import (
     BngsimError,
+    CodegenDeclinedError,
     ConversionError,
     ConversionWarning,
     DenseSolverFallbackWarning,
@@ -38,6 +39,7 @@ from bngsim._exceptions import (
     SensitivityUnsupportedError,
     SimulationError,
     SimulationTimeout,
+    SparseJacobianUnavailableError,
     SsaBoundaryWarning,
     SsaRoundingWarning,
     SsaValidationError,
@@ -383,12 +385,14 @@ __all__ = [
     "JacobianMatrix",
     # Exceptions
     "BngsimError",
+    "CodegenDeclinedError",
     "ConversionError",
     "ConversionWarning",
     "ModelError",
     "ParameterError",
     "SimulationError",
     "SimulationTimeout",
+    "SparseJacobianUnavailableError",
     "SsaBoundaryWarning",
     "SsaRoundingWarning",
     "DenseSolverFallbackWarning",

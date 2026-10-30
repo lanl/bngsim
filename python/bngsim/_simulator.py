@@ -51,11 +51,13 @@ from bngsim._codegen import (
     read_sens_decline_note,
 )
 from bngsim._exceptions import (
+    CodegenDeclinedError,
     DenseSolverFallbackWarning,
     ModelError,
     SensitivityUnsupportedError,
     SimulationError,
     SimulationTimeout,
+    SparseJacobianUnavailableError,
     SsaBoundaryWarning,
     SsaRoundingWarning,
     SsaValidationError,
@@ -304,24 +306,25 @@ def _ssa_flag_on(name: str) -> bool:
     return value != "" and value[0] != "0"
 
 
-def _codegen_refusal(cause: BaseException | None, decline: str | None) -> str:
+def _codegen_refusal(cause: BaseException | None, decline: str | None) -> RuntimeError:
     """Why ``codegen=True`` could not be honoured, as the prepare call recorded it:
     the build failed (``cause``, :func:`bngsim._codegen.last_codegen_error`) or
     codegen declined the model (``decline``,
     :func:`bngsim._codegen.last_codegen_decline`). Both are read, never inferred
-    from the other's absence."""
+    from the other's absence. A decline is a :class:`CodegenDeclinedError`, a
+    statement about the model; a failed build a plain ``RuntimeError`` (#1313)."""
     if cause is not None:
-        return (
+        return RuntimeError(
             "codegen=True requested, but the codegen build failed "
             f"({type(cause).__name__}: {cause})."
         )
     if decline is not None:
-        return (
+        return CodegenDeclinedError(
             f"codegen=True requested, but codegen declined this model: "
             f"{decline.rstrip('.')}. Run it on the interpreted RHS with codegen=None "
             "or codegen=False."
         )
-    return (
+    return RuntimeError(
         "codegen=True requested, but codegen built nothing and recorded no reason; "
         "please report this as a codegen issue."
     )
@@ -1248,9 +1251,7 @@ class Simulator:
 
                 src = prepare_model_codegen_source(model)
                 if src is None:
-                    raise RuntimeError(
-                        _codegen_refusal(last_codegen_error(), last_codegen_decline())
-                    )
+                    raise _codegen_refusal(last_codegen_error(), last_codegen_decline())
                 self._codegen_c_source = src
                 if hasattr(model, "_codegen_c_source"):
                     model._codegen_c_source = self._codegen_c_source
@@ -1265,9 +1266,7 @@ class Simulator:
 
                 so_path = prepare_model_codegen(model)
                 if so_path is None:
-                    raise RuntimeError(
-                        _codegen_refusal(last_codegen_error(), last_codegen_decline())
-                    )
+                    raise _codegen_refusal(last_codegen_error(), last_codegen_decline())
                 self._codegen_so_path = str(so_path)
                 if hasattr(model, "_codegen_so_path"):
                     model._codegen_so_path = self._codegen_so_path
@@ -5236,10 +5235,11 @@ class Simulator:
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
-        except SimulationTimeout:
+        except (SimulationTimeout, SparseJacobianUnavailableError):
             # Already a typed bngsim exception (raised via the C++ translator)
             # — pass through unchanged so callers can classify wall-clock
-            # terminations distinctly from solver errors.
+            # terminations, and a refusal by name (#1313), distinctly from
+            # solver errors.
             raise
         except SensitivityUnsupportedError:
             # Same reason, one regime over: a DECLARED refusal to differentiate a
@@ -5557,7 +5557,7 @@ class Simulator:
                 for i, future in enumerate(futures):
                     try:
                         results.append(future.result())
-                    except SensitivityUnsupportedError:
+                    except (SensitivityUnsupportedError, SparseJacobianUnavailableError):
                         raise
                     except Exception as e:
                         raise SimulationError(f"Batch simulation {i} failed: {e}") from e
@@ -6650,6 +6650,11 @@ class Simulator:
                 atol_spec.apply_to(opts)
                 opts.max_steps = max_steps
                 opts.jacobian = self._jacobian
+                # The linear solver the Simulator was asked for, as run() takes it:
+                # a batch row used to drop both flags and run whatever the auto
+                # rule picked (#1313).
+                opts.force_dense_linear_solver = self._force_dense_linear_solver
+                opts.force_sparse_linear_solver = self._force_sparse_linear_solver
                 opts.timeout_seconds = timeout_seconds
                 opts.steady_state = steady_state
                 opts.steady_state_tol = steady_state_tol
@@ -6745,7 +6750,7 @@ class Simulator:
                 f"rate-law condition ({e}) at the row's values, and the batch's code was "
                 "built where it could (issues #414, #708)."
             ) from None
-        except (SimulationTimeout, SensitivityUnsupportedError):
+        except (SimulationTimeout, SensitivityUnsupportedError, SparseJacobianUnavailableError):
             # A refusal is a refusal of the row's model, as it is from run().
             raise
         except RuntimeError as e:

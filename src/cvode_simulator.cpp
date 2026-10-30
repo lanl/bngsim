@@ -22,6 +22,7 @@
 #include "bngsim/mm_jacobian.hpp"
 #include "bngsim/model.hpp"
 #include "bngsim/platform_compat.hpp" // POSIX ssize_t shim for Windows (GH #150)
+#include "bngsim/refusals.hpp"
 #include "bngsim/result.hpp"
 #include "bngsim/simulator.hpp"
 #include "bngsim/sparse_jacobian.hpp"
@@ -4239,7 +4240,7 @@ void CvodeSimulator::Impl::setup_linsol_and_jac(void *cvode_mem, SUNContext ctx,
             // no column to perturb and nothing for KLU to factorize. sparse_ok
             // only rejects n == 0, so a model with species but no reactions can
             // still get here under the flag.
-            throw std::runtime_error(
+            throw SparseJacobianUnavailable(
                 "force_sparse_linear_solver: this model cannot supply a sparse "
                 "Jacobian — its analytical Jacobian is unavailable" +
                 std::string(jac_strategy == "fd" ? " (suppressed by jacobian=\"fd\")" : "") +

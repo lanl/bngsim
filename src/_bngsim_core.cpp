@@ -17,6 +17,7 @@
 #include <bngsim/cc_jit.hpp>
 #include <bngsim/function_columns.hpp>
 #include <bngsim/mir_jit.hpp>
+#include <bngsim/refusals.hpp>
 #include <bngsim/sparse_jacobian.hpp>
 #include <bngsim/steady_state.hpp>
 #include <bngsim/wallclock.hpp>
@@ -885,6 +886,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::object cls = py::module_::import("bngsim._exceptions").attr("SimulationTimeout");
             py::object exc = cls(py::str(e.what()), py::arg("timeout") = e.timeout_seconds(),
                                  py::arg("elapsed") = e.elapsed_seconds());
+            PyErr_SetObject(cls.ptr(), exc.ptr());
+        } catch (const bngsim::SparseJacobianUnavailable &e) {
+            // A refusal by name (issue #1313): its own type, so a caller need not
+            // read the message to tell it from a solver failure.
+            py::object cls =
+                py::module_::import("bngsim._exceptions").attr("SparseJacobianUnavailableError");
+            py::object exc = cls(py::str(e.what()));
             PyErr_SetObject(cls.ptr(), exc.ptr());
         }
     });

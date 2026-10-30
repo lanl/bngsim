@@ -10,11 +10,14 @@ Hierarchy::
     ├── ModelError            — .net parse failures, invalid model state
     │   └── UnderSpecifiedModelError — reads a symbol it never defines
     ├── SimulationError       — solver failures (convergence, NaN, etc.)
+    │   └── SparseJacobianUnavailableError — force_sparse_linear_solver on a
+    │                           model with no sparse Jacobian for KLU
     ├── SimulationTimeout     — wall-clock budget exceeded during run()
     ├── ParameterError        — unknown parameter name, type mismatch
     ├── SsaValidationError    — SBML construct incompatible with SSA
     ├── SensitivityUnsupportedError — construct forward sensitivity can't
     │                           differentiate (also a ValueError)
+    ├── CodegenDeclinedError  — codegen=True on a model codegen declines
     └── StopConditionMet      — stop condition triggered (carries partial result)
 """
 
@@ -182,6 +185,30 @@ class SensitivityUnsupportedError(BngsimError, ValueError):
     Environment failures are deliberately NOT this exception: "no C compiler and
     no JIT available" is a fixable local problem, not a property of the model,
     and stays a plain ``RuntimeError``.
+    """
+
+
+class SparseJacobianUnavailableError(SimulationError):
+    """``force_sparse_linear_solver=True`` on a model that cannot supply a sparse
+    Jacobian for KLU to factorize: its analytical Jacobian is unavailable (or
+    suppressed by ``jacobian="fd"``) and its sparsity pattern has no structural
+    nonzero to colour for finite differences (issue #1313).
+
+    A refusal by name, not a solver failure: drop the flag to use the dense
+    solver. A :class:`SimulationError`, as it was raised before it had a type,
+    so an existing ``except SimulationError`` still catches it.
+    """
+
+
+class CodegenDeclinedError(BngsimError):
+    """``codegen=True`` on a model codegen declines, such as one whose functions
+    read each other (issue #621): a statement about the model, which runs on the
+    interpreted RHS with ``codegen=None`` or ``codegen=False`` (issue #1313).
+
+    Distinct from a codegen *build* failure (a compiler error, a timeout), which
+    says nothing about the model and stays a plain ``RuntimeError``. A
+    ``RuntimeError`` (through :class:`BngsimError`), as it was raised before it
+    had a type, so an existing ``except RuntimeError`` still catches it.
     """
 
 

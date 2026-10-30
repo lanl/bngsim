@@ -434,9 +434,10 @@ def check_ajac(base: Base) -> Verdict:
 
 def _sparse_declined(e: Exception) -> bool:
     # bngsim's own refusal of the option, by name: a model with no sparse
-    # Jacobian to hand KLU under the asked strategy (a SimulationError, not a
-    # type of its own).
-    return "force_sparse_linear_solver" in str(e) and "cannot supply a sparse Jacobian" in str(e)
+    # Jacobian to hand KLU under the asked strategy, its own type (#1313).
+    import bngsim
+
+    return isinstance(e, bngsim.SparseJacobianUnavailableError)
 
 
 def check_klu(base: Base) -> Verdict:
@@ -482,11 +483,13 @@ def _compiled(job: Job):
     the caller's to judge: ``codegen=True`` builds compiled code or raises, so
     one that ran the interpreter is ``backend_as_asked``'s finding, not a
     machine without a compiler."""
+    import bngsim
+
     try:
         return run(job, codegen=True)
+    except bngsim.CodegenDeclinedError as e:  # its own type (#1313)
+        raise _Declined(_first_line(e)) from e
     except RuntimeError as e:
-        if "codegen declined this model" in str(e):
-            raise _Declined(_first_line(e)) from e
         if any(s in str(e) for s in _NO_COMPILER):  # a machine without cc: no cc path here
             raise _NoCompiler("codegen=True found no C compiler") from e
         raise
