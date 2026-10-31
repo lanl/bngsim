@@ -5,7 +5,8 @@ that the flat ``.net`` channel refuses is emitted as compartmental BNGL and
 round-trips faithfully through ``BNG2.pl generate_network`` →
 ``Model.from_net``. Covers the ``begin compartments`` reconstruction, the
 capability boundary (cross-compartment/transport, events, live volumes, and
-assignment-rule species refused fail-loud — those are deliverable 1b / #205/#223),
+assignment-rule species refused fail-loud — their rule is carried, but their
+own column is held through BNG2.pl, issue #1400),
 the ExprTk→BNGL expression normalization, and the BNG2.pl round-trip RHS
 equivalence over a handful of clean within-compartment models.
 
@@ -167,7 +168,6 @@ def test_report_fields_populated():
     ("model_id", "keyword"),
     [
         ("BIOMD0000000101", "event"),  # events refused on the generic path
-        ("BIOMD0000000009", "assignment-rule"),  # _ar_report_map (#205/#223)
         ("BIOMD0000000429", "time-varying volume"),  # live/varvol volume
         ("MODEL1006230049", "not-equal operator"),  # `!=` BNG2.pl can't parse
         ("MODEL1703150000", "non-finite"),  # ±inf FBA flux-bound parameters
@@ -462,9 +462,15 @@ def test_validate_bng2_gate(monkeypatch):
 
     import bngsim.convert._bng2 as _b
 
-    monkeypatch.setattr(_b, "roundtrip_rhs_delta", lambda *a, **k: (0.5, 99))
+    monkeypatch.setattr(_b, "roundtrip_deltas", lambda *a, **k: (0.5, 0.0, 99))
     with pytest.raises(ConversionError, match="right-hand side"):
         sbml_to_bngl(_corpus_xml("BIOMD0000000150"), validate="bng2")
+    # The report of a species an assignment rule sets, which the right-hand side
+    # cannot see, gates it too (issue #1400).
+    monkeypatch.setattr(_b, "roundtrip_deltas", lambda *a, **k: (0.0, 0.5, 99))
+    with pytest.raises(ConversionError, match="assignment rule"):
+        sbml_to_bngl(_corpus_xml("BIOMD0000000150"), validate="bng2")
+    monkeypatch.setattr(_b, "roundtrip_deltas", lambda *a, **k: (0.5, 0.0, 99))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         rep_bad = sbml_to_bngl(_corpus_xml("BIOMD0000000150"), validate="bng2", strict=False)

@@ -118,11 +118,34 @@ def _normalize_bngl_expr(expr: str) -> str:
     return out
 
 
+# The molecule-name prefix of a species an assignment rule sets (issue #1400):
+# `__ar_<rule>` names the function or observable that carries its rule, so a
+# reader of the .net BNG2.pl writes from this file can pair them. A BNGL species
+# name is a pattern (`@comp1::$B()`), which never equals the rule's name, so the
+# pair is not found by name as the flat .net writer's is (#515).
+AR_MOLECULE_PREFIX = "__ar_"
+
+
+def _rule_species_carriers(model: Any, species: list[dict[str, Any]]) -> dict[int, str]:
+    """Species index -> the name of the function or observable carrying the
+    assignment rule that sets it, for each such species the writer can mark: a
+    rule name that is a plain identifier, so the mark spells it back."""
+    amap = getattr(model, "_ar_report_map", None) or {}
+    index = {s["name"]: i for i, s in enumerate(species)}
+    out: dict[int, str] = {}
+    for name, entry in amap.items():
+        carrier = entry[1] if len(entry) > 1 else None
+        if name in index and isinstance(carrier, str) and _ID_OK.match(carrier):
+            out[index[name]] = carrier
+    return out
+
+
 def _molecule_names(
     species: list[dict[str, Any]],
     params: list[dict[str, Any]],
     functions: list[dict[str, Any]],
     shadow: set[str],
+    carriers: dict[int, str] | None = None,
 ) -> tuple[set[str], list[str]]:
     """Allocate one structureless-molecule name per species.
 
@@ -138,6 +161,13 @@ def _molecule_names(
     used: set[str] = {p["name"] for p in params if p["name"] not in shadow}
     used |= {f["name"] for f in functions}
     mol_names = [_sanitize(s["name"], used, fallback=f"S{i + 1}") for i, s in enumerate(species)]
+    # ``carriers`` (issue #1400): a species an assignment rule sets is named by
+    # its rule's carrier instead, marked, where the mark is free.
+    for i, carrier in sorted((carriers or {}).items()):
+        mark = AR_MOLECULE_PREFIX + carrier
+        if mark not in used and mark not in mol_names:
+            mol_names[i] = mark
+            used.add(mark)
     return used, mol_names
 
 
@@ -176,7 +206,10 @@ def bngl_capability_report(
 ) -> dict[str, list[str]]:
     """Inspect a model for constructs the cBNGL writer (deliverable 1) cannot carry.
 
-    Returns ``{"dropped": [...], "lossy": [...]}`` of plain-English notes.
+    Returns ``{"dropped": [...], "lossy": [...], "bngsim_only": [...]}`` of
+    plain-English notes: ``lossy`` is fatal under ``strict=True``, and
+    ``bngsim_only`` is what only bngsim's own reader reproduces of the written
+    model (warned, never fatal; issue #1400).
     ``dropped`` is non-fatal; ``lossy`` is fatal under ``strict=True``. The
     recovered class is **static compartment volumes** (incl. the unit-volume
     baseline). Refused fail-loud (each a ``lossy`` note):
@@ -215,6 +248,16 @@ def bngl_capability_report(
         head = ", ".join(repr(n) for n in names[:3])
         return head + (", …" if len(names) > 3 else "")
 
+    # BNG2.pl's generate_network aborts on a model with no reaction rules
+    # ("Nothing to do: no reaction rules defined"). Such a model was refused
+    # for its assignment-rule species before #1400 carried them; BIOMD0000000566
+    # and 567 are rule species alone.
+    if not reactions:
+        lossy.append(
+            "no reactions — BNG2.pl's generate_network aborts on a model with no "
+            "reaction rules, so the cBNGL would not build a network"
+        )
+
     n_events = int(getattr(core, "n_events", 0) or 0)
     if n_events:
         if event_override is _EVENT_GENERIC:
@@ -229,19 +272,51 @@ def bngl_capability_report(
             # carried into the actions block; otherwise the specific refusals.
             lossy.extend(event_override)
 
-    # Assignment-rule report species (GH #205, ``_ar_report_map``): a species
-    # marked fixed whose *reported* value is an assignment expression Simulator.run
-    # applies as a Python-side report transform — it is not in the model graph, so
-    # the flat .net round-trip drops it and the species clamps at its initial value
-    # (the assignment-rule forcing #223 owns the general fix).
+    # A species an assignment rule sets (``_ar_report_map``): the rule itself
+    # is carried, as the function or observable of the species' own name that
+    # every rate law reads, so the other species' dynamics are exact (issue
+    # #1400: 2.6e-13 through BNG2.pl, 0 through bngsim's reload). Only the
+    # species' own column is lost. It is written $-fixed, and BNG2.pl holds it
+    # at its initial value, as bngsim does reloading BNG2.pl's .net: that file
+    # names the species as a pattern (`@comp1::$B()`), so the reader that
+    # rebuilds the rule from a .net bngsim wrote (_ar_report_map_from_net, #515)
+    # never finds the pair. Refused rather than warned, as the .net writer warns
+    # (#1274), because nothing on this path brings the column back and the
+    # bng2 gate cannot see it: a held species has dy/dt = 0 on both sides.
+    #
+    # Where the writer can mark the species (AR_MOLECULE_PREFIX), bngsim's
+    # reader pairs it with its rule again and reports the column; BNG2.pl's own
+    # run still holds it, so that is a bngsim-only note, as the .net writer's
+    # is. A species it cannot mark keeps the refusal.
+    bngsim_only: list[str] = []
     ar = sorted((getattr(model, "_ar_report_map", None) or {}).keys())
     if ar:
-        lossy.append(
-            f"{len(ar)} assignment-rule species (e.g. {_eg(ar)}) report an algebraic "
-            "expression, not a clamped constant — the flat .net round-trip cannot "
-            "carry the rule, so the reloaded species would freeze at its initial "
-            "value (GH #205/#223; deferred)"
+        carriers = _rule_species_carriers(model, species)
+        params = data["parameters"]
+        functions = data["functions"]
+        shadow = {f["name"] for f in functions} | {o["name"] for o in data["observables"]}
+        _, mol_names = _molecule_names(species, params, functions, shadow, carriers)
+        marked = sorted(
+            species[i]["name"]
+            for i in carriers
+            if mol_names[i] == AR_MOLECULE_PREFIX + carriers[i]
         )
+        unmarked = [n for n in ar if n not in marked]
+        if marked:
+            bngsim_only.append(
+                f"{len(marked)} assignment-rule species (e.g. {_eg(marked)}) are written "
+                f"$-fixed as {AR_MOLECULE_PREFIX}<rule> beside the function that carries "
+                "their rule: bngsim reads the pair as the rule, but BNG2.pl holds each "
+                "species' own column at its initial value (its rate laws read the rule, "
+                "so only those columns differ there)"
+            )
+        if unmarked:
+            lossy.append(
+                f"{len(unmarked)} assignment-rule species (e.g. {_eg(unmarked)}): the rule "
+                "is carried, as the function its rate laws read, but the species cannot "
+                "be marked for bngsim's reader, so BNG2.pl, and bngsim reloading "
+                "BNG2.pl's .net, hold its own column at its initial value"
+            )
 
     # Live / time-varying compartment volumes — cBNGL volumes are static.
     for attr, why in (
@@ -360,7 +435,7 @@ def bngl_capability_report(
             "semantics from_net reads back; a per-species amount factor would mis-scale"
         )
 
-    return {"dropped": dropped, "lossy": lossy}
+    return {"dropped": dropped, "lossy": lossy, "bngsim_only": bngsim_only}
 
 
 def _apply_capability_policy(
@@ -380,6 +455,12 @@ def _apply_capability_policy(
             warnings.warn(
                 f"{model_name}: lossy conversion — {note}", ConversionWarning, stacklevel=3
             )
+    for note in report.get("bngsim_only", []):
+        warnings.warn(
+            f"{model_name}: a model only bngsim reads back as written — {note}",
+            ConversionWarning,
+            stacklevel=3,
+        )
 
 
 # ─── Rate compensation ─────────────────────────────────────────────────────
@@ -527,7 +608,9 @@ def write_bngl(
     shadow = func_names | obs_names
 
     # ── molecule names (one structureless molecule per species) ────────────
-    used_ids, mol_names = _molecule_names(species, params, functions, shadow)
+    used_ids, mol_names = _molecule_names(
+        species, params, functions, shadow, _rule_species_carriers(model, species)
+    )
     # Per-species observable used inside rate-law guards (apply_species_factor=False
     # divides the reactant amounts back out). Distinct prefix → never collides.
     sp_obs = [f"__sp{i + 1}" for i in range(len(species))]

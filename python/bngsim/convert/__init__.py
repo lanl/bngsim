@@ -599,22 +599,35 @@ def sbml_to_bngl(
 
     rhs_faithful: bool | None = None
     max_rhs_delta: float | None = None
+    max_ar_report_delta: float | None = None
     if validate == "bng2":
         # Authoritative cBNGL gate: round-trip the emitted .bngl through BNG2.pl and
         # compare the reloaded ODE RHS to the source's. Skip when capability already
         # found the model lossy (strict would have raised in write_bngl; a lenient
         # best-effort .bngl is not expected to build faithfully).
-        from bngsim.convert._bng2 import roundtrip_rhs_delta
+        from bngsim.convert._bng2 import roundtrip_deltas
 
         if not caps["lossy"]:
-            max_rhs_delta, _ = roundtrip_rhs_delta(model, bngl_text, stem=sbml_path.stem)
-            rhs_faithful = max_rhs_delta <= rhs_tol
+            # And what each species an assignment rule sets reports, which the
+            # right-hand side cannot see (dy/dt = 0 on both sides; issue #1400).
+            max_rhs_delta, max_ar_report_delta, _ = roundtrip_deltas(
+                model, bngl_text, stem=sbml_path.stem
+            )
+            rhs_faithful = max_rhs_delta <= rhs_tol and max_ar_report_delta <= rhs_tol
             if not rhs_faithful:
-                note = (
-                    f"the BNG2.pl round-trip does not reproduce the source ODE "
-                    f"right-hand side (max scale-relative |Δ dy/dt| = "
-                    f"{max_rhs_delta:.2e} > {rhs_tol:.0e}); the cBNGL is not faithful"
-                )
+                if max_rhs_delta > rhs_tol:
+                    note = (
+                        f"the BNG2.pl round-trip does not reproduce the source ODE "
+                        f"right-hand side (max scale-relative |Δ dy/dt| = "
+                        f"{max_rhs_delta:.2e} > {rhs_tol:.0e}); the cBNGL is not faithful"
+                    )
+                else:
+                    note = (
+                        f"the BNG2.pl round-trip does not report a species an assignment "
+                        f"rule sets as the source does (max scale-relative |Δ| = "
+                        f"{max_ar_report_delta:.2e} > {rhs_tol:.0e}); the cBNGL is not "
+                        "faithful"
+                    )
                 if strict:
                     raise ConversionError(f"{sbml_path.name}: {note}.")
                 warnings.warn(
@@ -633,7 +646,9 @@ def sbml_to_bngl(
         n_observables=model.n_observables,
         dropped=caps["dropped"],
         lossy=caps["lossy"],
+        bngsim_only=caps.get("bngsim_only", []),
         max_rhs_delta=max_rhs_delta,
+        max_ar_report_delta=max_ar_report_delta,
         rhs_faithful=rhs_faithful,
         protocol=protocol,
     )

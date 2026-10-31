@@ -3179,6 +3179,12 @@ def _unit_conversion_folds(conversions, core: Any) -> dict[str, str]:
     return {name: what for name, what in reason.items() if name not in functions}
 
 
+# A species the BNGL writer marked as set by an assignment rule, as BNG2.pl's
+# .net names it: `@comp::__ar_<rule>()`, `$` where written fixed (issue #1400;
+# bngsim.convert._bngl_writer.AR_MOLECULE_PREFIX).
+_AR_MARKED = re.compile(r"^(?:@[A-Za-z_]\w*::)?\$?__ar_([A-Za-z_]\w*)\(\)$")
+
+
 def _ar_report_map_from_net(
     core: Any, data: dict[str, Any] | None = None
 ) -> dict[str, tuple[str, str, float]]:
@@ -3202,7 +3208,15 @@ def _ar_report_map_from_net(
     species = list(core.species_names)
     obs_names = set(core.observable_names)
     func_names = set(core.function_names)
-    hits = [i for i, name in enumerate(species) if name in obs_names or name in func_names]
+    # Issue #1400: a species the BNGL writer wrote as `__ar_<rule>` is named by
+    # BNG2.pl's .net as a pattern (`@comp1::__ar_B()`), so it never collides
+    # with its rule's name; the mark names the rule instead.
+    marked = {i: m.group(1) for i, name in enumerate(species) if (m := _AR_MARKED.match(name))}
+    hits = [
+        i
+        for i, name in enumerate(species)
+        if name in obs_names or name in func_names or i in marked
+    ]
     if not hits:
         return {}
     if data is None:
@@ -3215,6 +3229,13 @@ def _ar_report_map_from_net(
         s = data["species"][i]
         name = s["name"]
         if not s.get("fixed", False):
+            continue
+        if i in marked:
+            carrier = marked[i]
+            if carrier in func_names:
+                out[name] = ("expression", carrier, 1.0)
+            elif entries.get(carrier) not in (None, [(i, 1.0)]):
+                out[name] = ("observable", carrier, 1.0)
             continue
         if name in func_names:
             out[name] = ("expression", name, 1.0)

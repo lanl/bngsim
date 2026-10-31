@@ -71,15 +71,17 @@ def _name_aligned_perm(src: Model, reloaded: Model) -> list[int]:
     molecule name rather than position. Raises :class:`ConversionError` if a source
     species has no counterpart in the reloaded network.
     """
-    from bngsim.convert._bngl_writer import _molecule_names
+    from bngsim.convert._bngl_writer import _molecule_names, _rule_species_carriers
 
     sd = src._core.codegen_data()
     rl_names = [_strip_pattern(s["name"]) for s in reloaded._core.codegen_data()["species"]]
+    # The writer's own names, the marked rule species' included (issue #1400).
     _, src_mol = _molecule_names(
         sd["species"],
         sd["parameters"],
         sd["functions"],
         {f["name"] for f in sd["functions"]} | {o["name"] for o in sd["observables"]},
+        _rule_species_carriers(src, sd["species"]),
     )
     pos = {n: i for i, n in enumerate(rl_names)}
     missing = [n for n in src_mol if n not in pos]
@@ -122,11 +124,29 @@ def roundtrip_rhs_delta(
     timeout: int = 300,
     bng2: Path | None = None,
 ) -> tuple[float, int]:
+    """:func:`roundtrip_deltas` without the assignment-rule report check:
+    ``(max_rhs_delta, reloaded_n_species)``."""
+    rhs, _ar, n = roundtrip_deltas(model, bngl_text, stem=stem, timeout=timeout, bng2=bng2)
+    return rhs, n
+
+
+def roundtrip_deltas(
+    model: Model,
+    bngl_text: str,
+    *,
+    stem: str = "model",
+    timeout: int = 300,
+    bng2: Path | None = None,
+) -> tuple[float, float, int]:
     """Run ``bngl_text`` through ``BNG2.pl generate_network`` → ``.net`` →
-    :meth:`Model.from_net`, and return ``(max_rhs_delta, reloaded_n_species)``.
+    :meth:`Model.from_net`, and return ``(max_rhs_delta, max_ar_report_delta,
+    reloaded_n_species)``.
 
     ``max_rhs_delta`` is the scale-relative RHS difference vs ``model`` (see
-    :func:`_rhs_delta`). Raises :class:`ConversionError` when ``BNG2.pl`` is
+    :func:`_rhs_delta`). ``max_ar_report_delta`` is what each species an
+    assignment rule sets reports on the two sides (``_validate._ar_report_delta``):
+    the right-hand side cannot see it, as such a species has dy/dt = 0 on both
+    (issue #1400). Raises :class:`ConversionError` when ``BNG2.pl`` is
     unavailable, times out, produces no network, or the reloaded network's species
     cannot be name-aligned — i.e. whenever faithfulness cannot be established.
     """
@@ -160,8 +180,14 @@ def roundtrip_rhs_delta(
             raise ConversionError(
                 f"BNG2.pl produced no network — the generated .bngl did not build:\n{tail}"
             )
+        from bngsim.convert._validate import _ar_report_delta
+
         reloaded = Model.from_net(net)
         perm = _name_aligned_perm(model, reloaded)
-        return _rhs_delta(model, reloaded, perm), reloaded.n_species
+        src_names = list(model.species_names)
+        back_names = list(reloaded.species_names)
+        names = {src_names[i]: back_names[j] for i, j in enumerate(perm)}
+        ar = _ar_report_delta(model, reloaded, back_names=names, back_perm=perm)
+        return _rhs_delta(model, reloaded, perm), ar, reloaded.n_species
     finally:
         shutil.rmtree(d, ignore_errors=True)

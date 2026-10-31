@@ -78,8 +78,9 @@ reader — a deliberate choice that keeps the check an *independent* oracle.
 **Capability boundary (fail-loud).** Constructs a target cannot carry faithfully are
 surfaced, not hidden: `tfun` table functions and time-varying compartment volumes
 are **refused** under the default `strict=True` (`.net`→SBML); cBNGL additionally
-refuses state-triggered events, live volumes, and the BNG-dialect gaps it cannot
-express (`!=`, non-finite parameters); SBML events are **dropped with a note**
+refuses state-triggered events, live volumes, a model with no reactions (BNG2.pl's
+`generate_network` aborts on one), and the BNG-dialect gaps it cannot express
+(`!=`, non-finite parameters); SBML events are **dropped with a note**
 (SBML→`.net`). Pass `--allow-lossy` (CLI) / `strict=False` (API) to downgrade a
 refusal to a `ConversionWarning` and emit a best-effort artifact — the validation
 ladder below still catches any numerical drift that results.
@@ -94,6 +95,17 @@ species' own column can be wrong there. The writer warns, with a `ConversionWarn
 naming those species, and never refuses, `strict=True` included;
 `capability_report` and the reports `sbml_to_net` and `validate_conversion`
 return list them under `bngsim_only`.
+
+**A `.bngl` only bngsim reads back as written.** cBNGL carries such a species the
+same way. A BNGL species name is a pattern (`@comp1::$B()`), which never equals
+its rule's name, so the writer names the molecule after the rule instead:
+`@comp1:$__ar_B()`, beside the function `B()`. bngsim's reader takes the pair as
+the rule when it loads the `.net` that BNG2.pl writes from the file, so every
+column comes back. BNG2.pl's own run still holds the species at its initial
+value, so this too is a warning, listed under `bngsim_only`, and never a refusal.
+`validate="bng2"` checks the column as well as the right-hand side, which cannot
+show a held species (dy/dt = 0 on both sides), and reports the larger difference
+as `max_ar_report_delta`.
 
 ## Validate the conversion (the L0–L4 ladder)
 
