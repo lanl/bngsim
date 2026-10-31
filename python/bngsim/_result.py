@@ -381,6 +381,12 @@ class Result:
                 "n_steps": stats.n_steps,
                 "n_rhs_evals": stats.n_rhs_evals,
                 "n_jac_evals": stats.n_jac_evals,
+                # RHS evaluations spent forming difference-quotient Jacobians,
+                # which n_rhs_evals does not count (issue #1333).
+                "n_jac_rhs_evals": stats.n_jac_rhs_evals,
+                # Jacobians formed; n_jac_evals counts the setups that may
+                # reuse one (issue #1333).
+                "n_jac_formations": stats.n_jac_formations,
                 "n_err_test_fails": stats.n_err_test_fails,
                 "n_nonlin_iters": stats.n_nonlin_iters,
                 "n_nonlin_conv_fails": stats.n_nonlin_conv_fails,
@@ -454,6 +460,8 @@ class Result:
                 "n_steps": 0,
                 "n_rhs_evals": 0,
                 "n_jac_evals": 0,
+                "n_jac_rhs_evals": 0,
+                "n_jac_formations": 0,
                 "n_err_test_fails": 0,
                 "n_nonlin_iters": 0,
                 "n_nonlin_conv_fails": 0,
@@ -2104,8 +2112,16 @@ class Result:
         """Solver diagnostics dict.
 
         Keys: ``n_steps``, ``n_rhs_evals``, ``n_jac_evals``,
-        ``n_err_test_fails``, ``n_nonlin_iters``, ``n_nonlin_conv_fails``,
-        ``n_sens_err_test_fails``, ``n_sens_nonlin_conv_fails``.
+        ``n_jac_rhs_evals``, ``n_jac_formations``, ``n_err_test_fails``, ``n_nonlin_iters``,
+        ``n_nonlin_conv_fails``, ``n_sens_err_test_fails``,
+        ``n_sens_nonlin_conv_fails``.
+
+        ``n_rhs_evals`` is CVODE's count of the integration's own evaluations.
+        ``n_jac_rhs_evals`` counts those spent forming Jacobians by difference
+        quotients, CVODE's and bngsim's alike (issue #1333); it is 0 where every
+        Jacobian is closed-form. ``n_jac_evals`` counts the linear solver's
+        setups, which can reuse a Jacobian; ``n_jac_formations`` counts the
+        Jacobians actually formed.
         """
         return self._solver_stats
 

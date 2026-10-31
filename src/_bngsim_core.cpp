@@ -895,6 +895,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("n_steps", &bngsim::SolverStats::n_steps)
         .def_readwrite("n_rhs_evals", &bngsim::SolverStats::n_rhs_evals)
         .def_readwrite("n_jac_evals", &bngsim::SolverStats::n_jac_evals)
+        .def_readwrite("n_jac_rhs_evals", &bngsim::SolverStats::n_jac_rhs_evals)
+        .def_readwrite("n_jac_formations", &bngsim::SolverStats::n_jac_formations)
         .def_readwrite("n_err_test_fails", &bngsim::SolverStats::n_err_test_fails)
         .def_readwrite("n_nonlin_iters", &bngsim::SolverStats::n_nonlin_iters)
         .def_readwrite("n_nonlin_conv_fails", &bngsim::SolverStats::n_nonlin_conv_fails)
@@ -920,6 +922,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             d["n_steps"] = s.n_steps;
             d["n_rhs_evals"] = s.n_rhs_evals;
             d["n_jac_evals"] = s.n_jac_evals;
+            d["n_jac_rhs_evals"] = s.n_jac_rhs_evals;
+            d["n_jac_formations"] = s.n_jac_formations;
             d["n_err_test_fails"] = s.n_err_test_fails;
             d["n_nonlin_iters"] = s.n_nonlin_iters;
             d["n_nonlin_conv_fails"] = s.n_nonlin_conv_fails;

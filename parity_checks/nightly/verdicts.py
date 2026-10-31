@@ -75,20 +75,24 @@ CRASH = {
 # that moves from a refusal to one of these traded a loud failure for a silent one.
 WRONG_ANSWER = {"sbml-suite": {"value_mismatch", "var_missing", "shape_mismatch"}}
 
-# bngsim ``solver_stats`` counters kept per case. The first three are compared;
-# the rest are kept so a regression report can say *why* the work grew.
+# bngsim ``solver_stats`` counters kept per case. Those in WORK_ALERT_KEYS are
+# compared; the rest are kept so a regression report can say *why* the work grew.
 WORK_KEYS = (
     "n_steps",
     "n_rhs_evals",
     "n_jac_evals",
+    "n_jac_rhs_evals",
     "n_nonlin_iters",
     "n_err_test_fails",
     "n_nonlin_conv_fails",
 )
-WORK_ALERT_KEYS = ("n_steps", "n_rhs_evals", "n_jac_evals")
+# n_jac_rhs_evals (issue #1333) is what a difference-quotient Jacobian costs in
+# f calls, which n_rhs_evals does not count; a baseline that predates it has no
+# value to compare, and is skipped until it is re-recorded.
+WORK_ALERT_KEYS = ("n_steps", "n_rhs_evals", "n_jac_evals", "n_jac_rhs_evals")
 # A per-case increase must clear this absolute floor too, so a 3 -> 5 Jacobian
 # count on a trivial model does not alert.
-WORK_MIN_DELTA = {"n_steps": 25, "n_rhs_evals": 50, "n_jac_evals": 10}
+WORK_MIN_DELTA = {"n_steps": 25, "n_rhs_evals": 50, "n_jac_evals": 10, "n_jac_rhs_evals": 50}
 # And the wall total must grow by this many seconds too, so a fixed cost on a
 # total that is near zero does not alert as a blowup: before issue #901 the
 # stochastic legs' ``bngsim_sec`` was only the load phase, 0.011 s over bng_nf's

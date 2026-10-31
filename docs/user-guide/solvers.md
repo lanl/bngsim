@@ -17,6 +17,13 @@ print(result.solver_stats)
 # {'n_steps': 1247, 'n_rhs_evals': 2891, 'n_jac_evals': 43, ...}
 ```
 
+`n_rhs_evals` is CVODE's count of the integration's own right-hand-side
+evaluations. Those spent forming a Jacobian by difference quotients (with
+`jacobian="fd"`, or where a closed form is declined) are counted separately, as
+`n_jac_rhs_evals`, which is 0 where every Jacobian is closed-form (issue #1333).
+`n_jac_evals` counts the linear solver's setups, which can reuse the last
+Jacobian; `n_jac_formations` counts the Jacobians actually formed.
+
 Those counters cover the **whole run**. CVODE's own counters restart at every
 re-initialization — an event fire, a rate-law switch crossing and a chatter
 re-arm each force one — so bngsim banks each segment as it closes rather than
