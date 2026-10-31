@@ -1250,6 +1250,7 @@ def schedule(
     workers: int,
     timeout_of,
     on_done=None,
+    depends_on=None,
 ) -> list[dict]:
     """Run ``target(spec, q)`` for each spec in up to ``workers`` subprocesses.
 
@@ -1261,6 +1262,16 @@ def schedule(
     ``{"status": "dead", "exitcode": …}``. ``on_done(finished, total, res)``
     is called for progress as each result lands. Results come back in spec
     order.
+
+    ``depends_on(spec)``, when given, is the key of a spec that must finish
+    (with any result) before this one starts, or ``None``. A free worker takes
+    the first pending spec that is ready, so a wait idles no worker while
+    another spec can run. ``amici_sens_run`` uses it to start a model's second
+    corrector method only once the first has built the code both load (issue
+    #1386): ordering alone let a long compile still be in flight when the
+    short jobs ahead of the second one ran out. A dependency on a key that no
+    spec has does not hold a spec back, and where nothing runs and nothing is
+    ready the first pending spec starts, so a dependency only orders the work.
 
     Uses the 'spawn' start method so the C extensions (bngsim, RoadRunner) are
     confined to the disposable child — the only safe way to survive an engine
@@ -1281,6 +1292,14 @@ def schedule(
     finished = 0
     post_result_join_grace = 30.0
 
+    keys = {s["key"] for s in specs}
+
+    def _ready(spec) -> bool:
+        if depends_on is None:
+            return True
+        first = depends_on(spec)
+        return first is None or first not in keys or first in done
+
     def _finish(spec, res):
         nonlocal finished
         done[spec["key"]] = res
@@ -1290,7 +1309,15 @@ def schedule(
 
     while pending or running:
         while pending and len(running) < workers:
-            spec = pending.pop(0)
+            at = next((i for i, s in enumerate(pending) if _ready(s)), None)
+            if at is None:
+                if running:
+                    break
+                # Nothing running and nothing ready (a cycle, or a dependency
+                # that can no longer finish): start the first, so an order
+                # asked for never wedges the sweep.
+                at = 0
+            spec = pending.pop(at)
             q = ctx.Queue()
             proc = ctx.Process(target=target, args=(spec, q))
             proc.start()

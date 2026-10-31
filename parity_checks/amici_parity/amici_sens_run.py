@@ -345,8 +345,13 @@ def make_specs(
     flight simultaneously under any worker count > 1, so several workers would
     race to build the same cache key; the build commits by atomic rename so the
     result is still *correct*, but every loser throws away a full C++ compile.
-    Method-major means the second method's jobs start only once the first pass has
-    populated the cache, making them load-only.
+    Method-major puts the first pass ahead of the second, but does not by itself
+    keep them apart: a model whose compile outlasts the short jobs dispatched
+    after it (BIOMD0000000457's, 150-220 s) was still building when its second
+    method started, which compiled it again alongside (issue #1386). So each
+    later method's spec waits on its first method's (:func:`first_method_key`,
+    the ``depends_on`` given :func:`schedule`), which starts it only once that
+    one has finished.
 
     ``max_steps`` rides on the spec rather than being read from a module constant
     inside the worker, so the number a row was solved under is a property of the
@@ -906,6 +911,15 @@ def _bngsim_config_meta(args) -> dict:
     }
 
 
+def first_method_key(spec: dict, methods: list[str]) -> str | None:
+    """The key of the spec a later method's spec waits on: its model's first
+    method, whose run builds the code both load (issue #1386). ``None`` for a
+    first-method spec."""
+    if spec["sens_method"] == methods[0]:
+        return None
+    return f"{spec['model_id']}:sens:{methods[0]}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1050,6 +1064,7 @@ def main() -> int:
         workers=args.workers,
         timeout_of=lambda s: s["cap"],
         on_done=_make_progress(Path(args.checkpoint).resolve() if args.checkpoint else None),
+        depends_on=lambda s: first_method_key(s, methods),
     )
     elapsed = time.perf_counter() - t0
 

@@ -333,8 +333,12 @@ same method** within a job so a timing pair is strictly apples-to-apples:
 
 Running both separates the engine effect from the method effect. The AMICI
 compile is shared between them (the corrector method is a solver setting, not a
-codegen one), so jobs are scheduled **method-major**: the second method's pass is
-load-only.
+codegen one), so jobs are scheduled **method-major**, and each model's second
+method starts only once its first has finished (`schedule(..., depends_on=)`):
+the second pass is load-only. Order alone was not enough: BIOMD0000000457's
+compile (150-220 s) outlasted the short jobs dispatched after it, so its second
+method compiled the same code alongside, and the two compiles slowed each other
+past the wall alert (#1386).
 
 ### The step budget is raised, and raised symmetrically
 
