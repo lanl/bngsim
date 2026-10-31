@@ -263,3 +263,142 @@ def test_a_row_is_read_at_its_time_where_the_shift_is_inexact(t_span, n):
     text = "species A = 1000000; k = 1e-12; R: A => ; k*A*(1 + 1e-30*time()); clock := time();"
     r = _ssa(text, t_span=t_span, n_points=n, seed=1)
     np.testing.assert_array_equal(np.asarray(r.expressions["clock"]), np.asarray(r.time))
+
+
+def _burst(t_busy, law="k*A*(1 + 1e-30*time())"):
+    """Quiet from 0, then 1e5 copies decaying at 0.5 from t_busy - 2."""
+    return (
+        f"species A = 0; k = 0.5; R: A => ; {law};\nE: at (time > {t_busy!r} - 2): A = 100000;\n"
+    )
+
+
+def _run(text, method="ssa", poplevel=None, **run):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = bngsim.Model.from_antimony_string(text)
+        kw = {} if poplevel is None else {"poplevel": poplevel}
+        return bngsim.Simulator(model, method=method, **kw).run(**run)
+
+
+_STEADY = "species A = 0; x = 0; x' = 0; R: => A; 5e4*x;\nE: at (time > {t!r} - 2): x = 1;\n"
+
+
+@pytest.mark.parametrize(
+    "text, method, poplevel",
+    [
+        pytest.param(_burst(3.2e10), "ssa", None, id="ssa decay"),
+        pytest.param(_burst(3.2e10), "psa", 1e6, id="psa decay"),
+        pytest.param(_STEADY.format(t=3.2e10), "ssa", None, id="ssa steady, through a rate rule"),
+    ],
+)
+def test_a_run_too_long_for_its_clock_is_refused(text, method, poplevel):
+    """One run from 0 that turns busy at 3.2e10: 5e4 firings per unit there,
+    where the doubles are 3.8e-6 apart, 0.19 per spacing. Each waiting time
+    after a firing that restarts the panel rounds onto them, and the run fired
+    too fast with no error: a decay busy at 1e12 kept 22831 of an exact 36788.
+    PSA at a poplevel above every population fires one molecule at a time, as
+    SSA does."""
+    t_busy = 3.2e10
+    with pytest.raises(bngsim.SimulationError, match="fires faster than its clock"):
+        _run(text, method, poplevel, sample_times=[0.0, t_busy - 2, t_busy - 1, t_busy], seed=1)
+
+
+def test_firings_that_keep_their_panel_are_not_refused():
+    """A synthesis whose rate reads the clock and nothing a firing moves: each
+    firing keeps its panel and the next is placed inside it, exactly, however
+    coarse the doubles. Busy at 1e12, 6.1 firings per spacing, it is right."""
+    t_busy = 1e12
+    text = (
+        f"species A = 0; R: => A; 5e4*(1 + 1e-30*time())*piecewise(1, time > {t_busy!r} - 2, 0);"
+    )
+    times = [0.0, t_busy - 2, t_busy - 1, t_busy]
+    ends = [
+        np.asarray(_run(text, sample_times=times, seed=s + 1).species)[-1, 0] for s in range(10)
+    ]
+    z = (np.mean(ends) - 1e5) / np.sqrt(1e5 / len(ends))
+    assert abs(z) < 5.0, z
+
+
+def test_fast_firings_between_rare_restarts_are_not_refused():
+    """A fast exchange whose firings keep the panel, 5e4 a unit at 1e12 (6.1 per
+    spacing), beside a slow decay that restarts it 8 times a unit. Only the
+    restarts round onto the clock, and their gaps are long, so the run is
+    right; the rate judged is the restarting one."""
+    t_busy = 1e12
+    text = (
+        "species A = 0; species B = 0; species C = 0; species D = 8000; kf = 500;\n"
+        "R1: A => B + C; kf*A; R2: B => A; kf*B;\n"
+        f"F: => A; 1e-3*(1 + 1e-30*time())*piecewise(1, time > {t_busy!r} - 2, 0);\n"
+        f"S: D => ; 1e-3*D*(1 + 1e-30*time())*piecewise(1, time > {t_busy!r} - 2, 0);\n"
+        f"E: at (time > {t_busy!r} - 2): A = 100;\n"
+    )
+    times = [0.0, t_busy - 2, t_busy - 1, t_busy]
+    # C counts R1's firings: 500*50 a unit at equilibrium, and 25 on the way there.
+    ends = [
+        np.asarray(_run(text, sample_times=times, seed=s + 1).species)[-1, 2] for s in range(3)
+    ]
+    np.testing.assert_allclose(np.mean(ends), 50025, rtol=0.01)
+
+
+def test_one_fast_firing_is_not_refused():
+    """The rate the next waiting time runs at is judged, not the one before the
+    firing: one molecule at 1e6 a unit at 1e12 fires once, and nothing rounds
+    after it."""
+    t_busy = 1e12
+    text = (
+        "species A = 0; k = 1e6; R: A => ; k*A*(1 + 1e-30*time());\n"
+        f"E: at (time > {t_busy!r} - 2): A = 1;\n"
+    )
+    r = _run(text, sample_times=[0.0, t_busy - 2, t_busy - 1, t_busy], seed=1)
+    assert np.asarray(r.species)[-1, 0] == 0
+
+
+@pytest.mark.parametrize(
+    "t_busy, law",
+    [
+        pytest.param(1.6e10, "k*A*(1 + 1e-30*time())", id="continuous loop, 0.095 per spacing"),
+        pytest.param(1e12, "k*A", id="discrete loop (#1075 carries the rounding)"),
+    ],
+)
+def test_a_long_run_its_clock_can_place_runs_and_keeps_its_rate(t_busy, law):
+    """Just under the limit, the continuous loop runs, and its rate is right;
+    the discrete loop carries what rounds away, so it is never refused."""
+    times = [0.0, t_busy - 2, t_busy - 1, t_busy]
+    ends = [
+        np.asarray(_run(_burst(t_busy, law), sample_times=times, seed=s + 1).species)[-1, 0]
+        for s in range(10)
+    ]
+    assert abs(_z(ends)) < 5.0, _z(ends)
+
+
+def test_the_remedy_is_a_leg_that_starts_nearer_the_busy_stretch():
+    """What the refusal says to do: run_until from a time near the busy
+    stretch, which counts its clock from there."""
+    t_busy = 1e12
+    ends = []
+    for s in range(10):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sim = bngsim.Simulator(bngsim.Model.from_antimony_string(_burst(t_busy)), method="ssa")
+            sim.run(sample_times=[0.0, t_busy / 2, t_busy - 2.5], seed=s + 1)
+            ends.append(np.asarray(sim.run_until(t_busy, n_points=3, seed=s + 101).species)[-1, 0])
+    assert abs(_z(ends)) < 5.0, _z(ends)
+
+
+def test_psa_whose_leaps_the_clock_can_place_is_not_refused():
+    """At poplevel 100 PSA leaps about 1000 molecules a firing: 50 firings per
+    unit at 1e12, 0.006 per spacing. It runs, and busy at 1e12 its mean is the
+    one busy at 1e6 (a leap rounding past a row moves a run by 1000)."""
+
+    def mean(t_busy):
+        times = [0.0, t_busy - 2, t_busy - 1, t_busy]
+        return np.mean(
+            [
+                np.asarray(
+                    _run(_burst(t_busy), "psa", 100, sample_times=times, seed=s + 1).species
+                )[-1, 0]
+                for s in range(5)
+            ]
+        )
+
+    np.testing.assert_allclose(mean(1e12), mean(1e6), rtol=0.02)
