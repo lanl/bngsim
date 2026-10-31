@@ -39,6 +39,16 @@ namespace bngsim {
 //
 // Error handling: NFsim errors throw std::runtime_error instead of calling
 // exit(). The Python wrapper catches these as RuntimeError/SimulationError.
+// A failed load names the XML, whether the loader returned NULL or threw.
+//
+// Process-wide state (#1314): the working directory is never changed (a TFUN's
+// relative file= is made absolute against the XML's directory in the copy
+// NFsim reads); std::cout/std::cerr are redirected for the duration of each
+// NFsim call and restored on every exit path, which also captures C++ output
+// from other threads in that window (C stdio is not redirected); and which
+// molecule a rule fires on is drawn from NFutil's process-wide Mersenne
+// Twister, reseeded by every prepare, so interleaved sessions do not each
+// reproduce their seed where those molecules differ (aggregation models).
 //
 // Usage:
 //   NfsimSimulator sim("model.xml");
