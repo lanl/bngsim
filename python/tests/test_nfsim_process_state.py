@@ -115,36 +115,69 @@ def test_a_load_through_the_seed_round_copy_leaves_the_cwd(places):
     assert Path(os.getcwd()).resolve() == elsewhere.resolve()
 
 
-def test_a_tfun_file_by_relative_path_loads_from_elsewhere(places):
-    """Why the cwd was changed at all: a TFUN's file= is opened at load, by
-    relative path. It must still load with the cwd elsewhere."""
-    model, elsewhere = places
+def _tfun_model(model: Path) -> Path:
+    """tfun_simple.xml and its table, copied into ``model``."""
     src = _fixture("tfun_test/tfun_simple.xml")
     shutil.copy(src, model / src.name)
     shutil.copy(src.parent / "tfun_data.dat", model / "tfun_data.dat")
-    assert 'file="tfun_data.dat"' in (model / src.name).read_text()
-    sess = bngsim.NfsimSession(str(model / src.name))
+    return model / src.name
+
+
+def _decoy(where: Path) -> None:
+    """A table of the same name with every multiplier 0: a path resolved
+    against the wrong directory reads it, runs, and gives other numbers."""
+    table = (_fixture("tfun_test/tfun_simple.xml").parent / "tfun_data.dat").read_text()
+    rows = [
+        line if line.startswith("#") or not line.strip() else f"{line.split()[0]}    0.0"
+        for line in table.splitlines()
+    ]
+    (where / "tfun_data.dat").write_text("\n".join(rows) + "\n")
+
+
+def _observables(xml: Path, **params) -> np.ndarray:
+    sess = bngsim.NfsimSession(str(xml))
+    for name, value in params.items():
+        sess.set_param(name, value)
     sess.initialize(seed=1)
     r = sess.simulate(0.0, 10.0, 11)
     sess.destroy()
-    assert np.isfinite(np.asarray(r.observables)).all()
+    return np.asarray(r.observables)
+
+
+def _from_its_own_directory(xml: Path, monkeypatch, **params) -> np.ndarray:
+    """The oracle: the run with the cwd at the XML, where a relative path
+    resolves as written on main and here alike."""
+    here = os.getcwd()
+    monkeypatch.chdir(xml.parent)
+    try:
+        return _observables(xml, **params)
+    finally:
+        monkeypatch.chdir(here)
+
+
+def test_a_tfun_file_by_relative_path_loads_from_elsewhere(places, monkeypatch):
+    """Why the cwd was changed at all: a TFUN's file= is opened at load, by
+    relative path. It must still read the XML's own table with the cwd
+    elsewhere, and a table of the same name there must not be read."""
+    model, elsewhere = places
+    xml = _tfun_model(model)
+    assert 'file="tfun_data.dat"' in xml.read_text()
+    want = _from_its_own_directory(xml, monkeypatch)
+    _decoy(elsewhere)
+    np.testing.assert_array_equal(_observables(xml), want)
     assert Path(os.getcwd()).resolve() == elsewhere.resolve()
 
 
-def test_a_tfun_file_resolves_against_the_original_xml_through_a_copy(places):
+def test_a_tfun_file_resolves_against_the_original_xml_through_a_copy(places, monkeypatch):
     """A set_param before initialize() loads a rewritten copy from the temp
     directory: the TFUN's relative file= is the original XML's neighbour, not
     the copy's."""
     model, elsewhere = places
-    src = _fixture("tfun_test/tfun_simple.xml")
-    shutil.copy(src, model / src.name)
-    shutil.copy(src.parent / "tfun_data.dat", model / "tfun_data.dat")
-    sess = bngsim.NfsimSession(str(model / src.name))
-    sess.set_param(_first_param(model / src.name), 1.5)
-    sess.initialize(seed=1)
-    r = sess.simulate(0.0, 10.0, 11)
-    sess.destroy()
-    assert np.isfinite(np.asarray(r.observables)).all()
+    xml = _tfun_model(model)
+    param = {_first_param(xml): 1.5}
+    want = _from_its_own_directory(xml, monkeypatch, **param)
+    _decoy(elsewhere)
+    np.testing.assert_array_equal(_observables(xml, **param), want)
     assert Path(os.getcwd()).resolve() == elsewhere.resolve()
 
 
@@ -154,14 +187,62 @@ def test_a_tfun_file_in_a_directory_xml_must_escape(tmp_path, monkeypatch):
     model = tmp_path / "a&b 'c'"
     model.mkdir()
     monkeypatch.chdir(tmp_path)
-    src = _fixture("tfun_test/tfun_simple.xml")
-    shutil.copy(src, model / src.name)
-    shutil.copy(src.parent / "tfun_data.dat", model / "tfun_data.dat")
-    sess = bngsim.NfsimSession(str(model / src.name))
-    sess.initialize(seed=1)
-    r = sess.simulate(0.0, 10.0, 11)
-    sess.destroy()
-    assert np.isfinite(np.asarray(r.observables)).all()
+    xml = _tfun_model(model)
+    want = _from_its_own_directory(xml, monkeypatch)
+    _decoy(tmp_path)
+    np.testing.assert_array_equal(_observables(xml), want)
+
+
+_WRITTEN = 'file="tfun_data.dat"'
+_ONE_LINE_OPEN = "<ListOfFunctions>\n"
+
+
+def _on_the_list_line(text: str) -> str:
+    """The first <Function> on the <ListOfFunctions> line, the comment between
+    them dropped."""
+    head, rest = text.split(_ONE_LINE_OPEN, 1)
+    return head + "<ListOfFunctions>" + rest[rest.index("<Function") :]
+
+
+# Spellings of one TFUN element that NFsim's TinyXML reads as the same
+# attribute (TiXmlAttribute::Parse), and markup round it that TinyXML skips.
+# The rewrite read the XML by line and matched `file="` or `file='` literally,
+# so every layout but the attribute on its own line loaded from the XML's
+# directory only, and from anywhere else read the cwd's table, if any. The
+# comment and the CDATA hold the list's end tag: a scan that read inside
+# either would stop there, before the real <Function>.
+_LAYOUTS = {
+    "spaces round =": lambda t: t.replace(_WRITTEN, 'file = "tfun_data.dat"'),
+    "on the ListOfFunctions line": _on_the_list_line,
+    "the whole file on one line": lambda t: t.replace("\n", " "),
+    "single quotes, spaces": lambda t: t.replace(_WRITTEN, "file = 'tfun_data.dat'"),
+    "unquoted": lambda t: t.replace(_WRITTEN, "file=tfun_data.dat"),
+    "the attribute on its own line": lambda t: t.replace(_WRITTEN, "\n        " + _WRITTEN),
+    "after a commented-out Function and end tag": lambda t: t.replace(
+        "<Function ",
+        '<!-- <Function id="old" file="old.dat"> </ListOfFunctions> --> <Function ',
+        1,
+    ),
+    "after CDATA holding the end tag": lambda t: t.replace(
+        "<Function ", "<![CDATA[ </ListOfFunctions> ]]> <Function ", 1
+    ),
+    "after another attribute ending in file": lambda t: t.replace(
+        _WRITTEN, 'data-file="no.dat" ' + _WRITTEN
+    ),
+}
+
+
+@pytest.mark.parametrize("layout", list(_LAYOUTS))
+def test_a_tfun_file_in_any_layout_tinyxml_reads_loads_from_elsewhere(places, monkeypatch, layout):
+    model, elsewhere = places
+    xml = _tfun_model(model)
+    want = _from_its_own_directory(xml, monkeypatch)
+    text = xml.read_text()
+    changed = _LAYOUTS[layout](text)
+    assert changed != text, "the layout's spelling is not in the fixture"
+    xml.write_text(changed)
+    _decoy(elsewhere)
+    np.testing.assert_array_equal(_observables(xml), want)
 
 
 def _first_param(xml: Path) -> str:
@@ -219,9 +300,11 @@ def test_exchangeable_molecules_hide_which_one_is_picked():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="#1314: ReactantList::pickRandom (reactantList.cpp L39, L46) and reaction.cpp "
+    raises=AssertionError,
+    reason="#1438: ReactantList::pickRandom (reactantList.cpp L39, L46) and reaction.cpp "
     "L771 draw from NFutil's process-wide Mersenne Twister, which prepare_system() "
-    "reseeds: a session prepared between another's segments moves its picks",
+    "reseeds: a session prepared between another's segments moves its picks. A "
+    "re-vendor of NFsim that changes those draws turns this into an XPASS",
 )
 def test_another_session_between_segments_does_not_move_a_seeded_trajectory():
     """In a TLBR model the molecules a rule can fire on sit in aggregates of
