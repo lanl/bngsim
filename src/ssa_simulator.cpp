@@ -2737,6 +2737,12 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
                     fire_keeps_panel[r] = keeps;
                 }
         }
+        // The reactions a firing of which restarts the panel (issue #1059, at
+        // the panel's start below).
+        std::vector<int> restart_rxns;
+        for (int r = 0; r < nr; ++r)
+            if (!fire_keeps_panel[r] && !reactions[r].is_rate_rule_ode && !reactions[r].ode_only)
+                restart_rxns.push_back(r);
         // ...and whether that firing's refresh can skip the observables and
         // functions: only when no static propensity it moves reads a function
         // (a Functional rate that reads no time is static, and reads them).
@@ -3026,6 +3032,9 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
         // step the panel's error test proposed for the next one.
         double tp = t, th0 = 0.0, s1p = t, h_next_p = h;
         bool carry = false;
+        // A firing that did not keep its panel: the next panel starts at its
+        // time, rounded onto the run's clock (issue #1059, below).
+        bool restarted_at_firing = false;
         constexpr int MAX_FLOOR_STEPS = 100;
         int floor_steps = 0; // panels accepted at hmin in a row
         constexpr long MAX_TINY_PANELS = 1000000;
@@ -3268,6 +3277,54 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             const double A_s = sel_total();
             if (!std::isfinite(A_s))
                 refuse_nonfinite_propensity(-1, A_s, t);
+            // Issue #1059: a panel a firing restarted starts at the firing's time
+            // rounded onto the run's clock, whose doubles near t are `spacing`
+            // apart, and the next waiting time is counted from there. Restarts
+            // at a steady rate a are short by a fraction sinh(p/2)/(p/2) - 1 ~
+            // p^2/24 of the time between them, p = a*spacing, and the run fires
+            // that much too fast, with no error: a decay in one run from 0 that
+            // turned busy at 1e12 (p = 6) kept 22831 of an exact 36788 (over 40
+            // seeds), at a steady rate 3.45 times the rate. A firing that keeps
+            // its panel goes on inside it exactly, so a is the rate of the
+            // reactions that restart it: fast firings that keep it, between rare
+            // restarts, leave each restart's rounding unbiased. The discrete
+            // loops carry what rounds away (#1075); this one is refused past p =
+            // 0.1, a bias of 4e-4. A leg with the busy stretch near its end
+            // nearer 0 counts its clock from there. (An event's restart rounds
+            // too, and loses part of a spacing each: issue #1436.)
+            if (restarted_at_firing) {
+                restarted_at_firing = false;
+                constexpr double kMaxFiringsPerSpacing = 0.1;
+                const double at = std::fabs(t);
+                const double spacing =
+                    std::nextafter(at, std::numeric_limits<double>::infinity()) - at;
+                // The total rate first: it bounds the restarting one, and passes
+                // wherever the doubles are fine.
+                if ((A_s + A0) * spacing > kMaxFiringsPerSpacing) {
+                    double a_next = 0.0;
+                    for (int r : restart_rxns) {
+                        const double a = is_dyn[r]
+                                             ? std::fabs(model.compute_propensity(r, conc.data()))
+                                             : propensities[r];
+                        a_next += use_psa ? scaling_factors[r] * a : a;
+                    }
+                    if (a_next * spacing > kMaxFiringsPerSpacing) {
+                        char buf[200];
+                        std::snprintf(buf, sizeof buf,
+                                      " at t = %.17g: a rate of %.3g restarting its panels is "
+                                      "%.3g firings per spacing of the doubles there (%.3g)",
+                                      origin + t, a_next, a_next * spacing, spacing);
+                        throw std::runtime_error(
+                            std::string(use_psa ? "PSA" : "SSA") +
+                            ": the run fires faster than its clock can place the firings" + buf +
+                            ". Each waiting time rounds onto them, and the run would fire too "
+                            "fast with no error (issue #1059). Run it in legs (run_until): a "
+                            "leg counts its clock from its end nearer 0, so one that starts "
+                            "just before this stretch (at negative times, ends just after it) "
+                            "places these firings exactly.");
+                    }
+                }
+            }
             double th_fire = 2.0;
             const double L0 = L_at(th0);
             const double span = A_s * hh * (1.0 - th0) + (L_at(1.0) - L0);
@@ -3527,6 +3584,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times_in, uint64_t seed, doubl
             // above (and any event drain) left the observables and functions at
             // this state: the next panel's start needs no second evaluation.
             synced = dep_graph.has_functional_rates;
+            restarted_at_firing = true;
         }
         // Rows at t_end not yet written (a row at exactly t_end whose panel
         // ended in an event).
