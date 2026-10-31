@@ -4602,7 +4602,10 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // and the run stopped there with the initial state marked steady. Such a
     // run is integrated to the end of its span, and never marked. (A model
     // with an event is not on this path.)
-    const bool check_ss = opts.steady_state && !model.functions_use_time();
+    // A function that reads the time and that no rate reads, `minutes :=
+    // time/60`, leaves the test as good as in a model without it, and the stop
+    // is kept (issue #961).
+    const bool check_ss = opts.steady_state && !model.rate_laws_read_clock();
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
     if (check_ss) {
@@ -16304,8 +16307,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // to fire: `if(time() > 5, k, 0)` is 0 at the first output point, and the
     // run stopped there with the initial state marked steady. Such a run is
     // integrated to the end of its span, and never marked.
+    // A function that reads the time and that no rate reads leaves the test as
+    // good as in a model without it, and the stop is kept (issue #961).
     const bool check_ss =
-        opts.steady_state && !(model.functions_use_time() || model.n_events() > 0);
+        opts.steady_state && !(model.rate_laws_read_clock() || model.n_events() > 0);
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
     if (check_ss) {

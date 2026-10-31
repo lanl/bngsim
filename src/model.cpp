@@ -2187,14 +2187,17 @@ NetworkModel::rate_dependencies_(std::vector<int> params, const std::vector<std:
             while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])))
                 ++k;
             const bool call = k < e.size() && e[k] == '(';
-            if (clock && id == "time" && (call || !time_declared))
+            if (clock && id == "time" && (call || !time_declared)) {
                 deps.time = true;
+                deps.clock = true;
+            }
             auto tit = tables.find(id);
             if (tit != tables.end()) {
                 const std::string &idx = tit->second->index_name();
                 const std::string key = strip_paren_suffix(idx);
                 if (is_time_index(idx)) {
                     deps.time = true;
+                    deps.clock = true;
                 } else if (auto pit = sd.param_name_to_idx.find(key);
                            pit != sd.param_name_to_idx.end()) {
                     params.push_back(pit->second);
@@ -2309,6 +2312,27 @@ bool NetworkModel::reaction_rate_reads_time(int rxn_idx0,
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(impl_->shared->reactions.size()))
         return false;
     return reaction_rate_dependencies_(rxn_idx0, pc_functions).time;
+}
+
+bool NetworkModel::rate_laws_read_clock() const {
+    for (int r = 0; r < static_cast<int>(impl_->shared->reactions.size()); ++r) {
+        if (reaction_rate_dependencies_(r).clock)
+            return true;
+    }
+    return false;
+}
+
+std::vector<int> NetworkModel::functions_reading_clock() const {
+    std::vector<int> out;
+    for (int f = 0; f < static_cast<int>(impl_->functions.size()); ++f) {
+        const Function &fn = impl_->functions[f];
+        std::vector<int> params;
+        if (fn.evaluator_id >= 0)
+            expression_support(fn.evaluator_id, nullptr, &params);
+        if (rate_dependencies_(std::move(params), {fn.expression, fn.eval_expression}).clock)
+            out.push_back(f);
+    }
+    return out;
 }
 
 bool NetworkModel::event_trigger_reads_time(int event_idx0) const {

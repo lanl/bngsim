@@ -384,6 +384,11 @@ class NetworkModel:
         Names of the model's functions, in declaration order. Each also names a parameter slot holding its evaluated value, which ``param_is_internal`` flags and ``primary_param_names`` omits (issue #227).
         """
     @property
+    def functions_reading_clock(self) -> list[str]:
+        """
+        The functions whose value moves with the clock (issue #961), by name: a steady state reports each as NaN.
+        """
+    @property
     def functions_use_time(self) -> bool:
         """
         Whether any function's value can move with simulation time alone (issue #654). Gates the SSA's time-dependent sub-stepping.
@@ -480,6 +485,11 @@ class NetworkModel:
     def pending_sensitivity_seed_param_names(self) -> list[str]:
         """
         Parameter names labeling the columns of pending_sensitivity_seed() (GH #210).
+        """
+    @property
+    def rate_laws_read_clock(self) -> bool:
+        """
+        Whether a reaction's rate reads the clock, through time, a time-indexed table, or a function or derived parameter that does; a rate accessor is not the clock (issue #961). A model whose rates read none has a steady state to solve for.
         """
     @property
     def rhs_eval_count(self) -> int:

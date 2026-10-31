@@ -337,6 +337,18 @@ class NetworkModel {
     // A trigger that does not can change only when the state does.
     bool event_trigger_reads_time(int event_idx0) const;
 
+    // Does any reaction's rate read the clock (issue #961)? The same walk as
+    // reaction_rate_reads_time, without a rate accessor, which reads the running
+    // derivatives and not the time: at a steady state they are 0 whatever the
+    // time. A model whose rates read no clock has an f(y) = 0 to solve even
+    // where a function that only reports reads it.
+    bool rate_laws_read_clock() const;
+
+    // The 0-based indices of the functions whose value moves with the clock,
+    // through `time`, a time-indexed table, or a function or derived parameter
+    // that does (issue #961). A steady state has no value for one.
+    std::vector<int> functions_reading_clock() const;
+
     // ─── Rate-law switch conditions that read model state (issue #150) ───────
     //
     // The rate-law twin of the state-dependent event trigger issue #144 covers.
@@ -941,6 +953,7 @@ class NetworkModel {
     // What a rate or a trigger reads through the model's definitions (#719).
     struct RateDeps {
         bool time = false;    // the clock, directly or through a definition
+        bool clock = false;   // the same, without a rate accessor (issue #961)
         bool unknown = false; // something whose reads cannot be named
         std::set<int> species;
     };
