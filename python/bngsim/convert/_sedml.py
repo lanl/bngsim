@@ -34,6 +34,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from bngsim._atol import ExactAtol
 from bngsim._eval_spec import EvaluationSpec
 from bngsim._exceptions import ConversionError, ConversionWarning
 
@@ -160,7 +161,7 @@ def write_sedml(
     # would silently downgrade the protocol to a scalar and hand the reader a
     # document that does not reproduce the run it claims to describe. Same for
     # "auto", which resolves to a vector.
-    if spec.atol is not None and not isinstance(spec.atol, (int, float)):
+    if spec.atol is not None and not isinstance(spec.atol, (int, float, ExactAtol)):
         raise ConversionError(
             f"cannot emit SED-ML for atol={spec.atol!r}: this is a per-species "
             f"absolute tolerance (issue #196), and {_KISAO_ATOL} (absolute "
@@ -206,7 +207,10 @@ def write_sedml(
     if spec.rtol is not None:
         params.append((_KISAO_RTOL, _num(spec.rtol)))
     if spec.atol is not None:
-        params.append((_KISAO_ATOL, _num(spec.atol)))
+        # An ExactAtol goes out as its number: KISAO:0000211 has no way to say
+        # "exactly", and read_sedml(exact_atol=True) is how a reader takes it so.
+        atol = spec.atol.value if isinstance(spec.atol, ExactAtol) else float(spec.atol)  # type: ignore[arg-type]
+        params.append((_KISAO_ATOL, _num(atol)))
     if spec.max_steps is not None:
         params.append((_KISAO_MAXSTEPS, str(int(spec.max_steps))))
     if params:
@@ -335,6 +339,7 @@ def read_sedml(
     *,
     model_source: str | None = None,
     model_format: str | None = None,
+    exact_atol: bool = False,
 ) -> EvaluationSpec:
     """Parse a SED-ML document into an :class:`~bngsim.EvaluationSpec`.
 
@@ -353,6 +358,13 @@ def read_sedml(
         ``read_sedml(sidecar, model_source="model.net", model_format="net")``.
         ``model_format`` defaults to ``"sbml"`` (the SED-ML model language) when
         not overridden.
+    exact_atol : bool
+        The document's absolute tolerance (``KISAO:0000211``) is one number.
+        bngsim reads a scalar ``atol`` as a ceiling: each species is held to the
+        smaller of it and ``rtol`` of its own scale, so a species far below the
+        number is still resolved (issue #1420; see :meth:`bngsim.Simulator.run`).
+        ``True`` holds every species to the document's number exactly instead,
+        as a :class:`bngsim.ExactAtol`.
 
     Returns
     -------
@@ -444,7 +456,7 @@ def read_sedml(
         n_points=n_points,
         outputs=tuple(outputs),
         rtol=rtol,
-        atol=atol,
+        atol=ExactAtol(atol) if exact_atol and atol is not None else atol,
         max_steps=max_steps,
     )
 

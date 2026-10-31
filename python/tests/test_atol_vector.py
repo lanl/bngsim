@@ -73,17 +73,20 @@ def _rel_err(sim, model, **run_kwargs) -> tuple[float, float, int]:
 
 
 def test_scalar_atol_cannot_resolve_the_small_species(wide_sim):
-    """The premise: no scalar atol is a tolerance for both ends of this model."""
+    """The premise: no scalar atol held for every species is a tolerance for
+    both ends of this model. (A float is read as a per-species ceiling since
+    issue #1420; ExactAtol is the scalar held exactly.)"""
     sim, model = wide_sim
+    loose, tight = bngsim.ExactAtol(1e-8), bngsim.ExactAtol(1e-17)
 
     # Loose enough to integrate cheaply — and S is unresolved, by a wide margin.
-    err_s_loose, err_b_loose, _ = _rel_err(sim, model, atol=1e-8)
+    err_s_loose, err_b_loose, _ = _rel_err(sim, model, atol=loose)
     assert err_s_loose > 0.1, "expected the small species to be badly wrong at atol=1e-8"
     assert err_b_loose < 1e-6, "the large species is fine at atol=1e-8 — that is the conflict"
 
     # Tight enough for S — and now every species pays for it.
-    _, _, n_steps_loose = _rel_err(sim, model, atol=1e-8)
-    err_s_tight, _, n_steps_tight = _rel_err(sim, model, atol=1e-17)
+    _, _, n_steps_loose = _rel_err(sim, model, atol=loose)
+    err_s_tight, _, n_steps_tight = _rel_err(sim, model, atol=tight)
     assert err_s_tight < 1e-3
     assert n_steps_tight > n_steps_loose
 
@@ -105,7 +108,7 @@ def test_small_species_goes_negative_under_a_scalar_atol(wide_sim):
     idx = model.species_names.index("S()")
 
     model.reset()
-    scalar = sim.run(t_span=(0.0, _T_END), n_points=_N_POINTS, atol=1e-8)
+    scalar = sim.run(t_span=(0.0, _T_END), n_points=_N_POINTS, atol=bngsim.ExactAtol(1e-8))
     assert scalar.species[-1, idx] < 0.0
 
     model.reset()
@@ -307,14 +310,14 @@ def test_a_scalar_clears_a_previously_set_vector(wide_sim):
     sim.set_tolerances(1e-8, [1e-17] * model.n_species)
     assert _rel_err(sim, model)[0] < 1e-3
 
-    sim.set_tolerances(1e-8, 1e-8)
+    sim.set_tolerances(1e-8, bngsim.ExactAtol(1e-8))
     assert _rel_err(sim, model)[0] > 0.1
 
 
 def test_run_argument_overrides_the_configured_vector(wide_sim):
     sim, model = wide_sim
     sim.set_tolerances(1e-8, [1e-17] * model.n_species)
-    assert _rel_err(sim, model, atol=1e-8)[0] > 0.1
+    assert _rel_err(sim, model, atol=bngsim.ExactAtol(1e-8))[0] > 0.1
 
 
 def test_set_tolerances_rejects_a_wrong_length_vector(wide_sim):
@@ -610,7 +613,7 @@ def test_normalize_atol_vector_names_the_species_it_can():
 # a consumer would feature-detect on. These tests pin the names, because the
 # cost of losing one is a downstream ``from bngsim._atol import ...``.
 
-_PUBLIC_NAMES = ["AUTO", "derive_atol", "normalize_atol_vector"]
+_PUBLIC_NAMES = ["AUTO", "ExactAtol", "derive_atol", "normalize_atol_vector"]
 
 
 @pytest.mark.parametrize("name", _PUBLIC_NAMES)

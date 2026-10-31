@@ -112,7 +112,7 @@ def test_the_issues_molar_model_is_right_and_quiet_at_the_default(tmp_path):
     result, caught = _warned(_sim(tmp_path))
     assert caught == []
     assert _off_by(result, reference) < 1e-5
-    scalar, _ = _warned(_sim(tmp_path), atol=1e-8)
+    scalar, _ = _warned(_sim(tmp_path), atol=bngsim.ExactAtol(1e-8))
     assert np.asarray(scalar.species)[-1, 0] < 0.0
 
 
