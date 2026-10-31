@@ -210,10 +210,13 @@ Two things worth knowing:
   one kwarg to rule out.
 
 `atol="auto"` derives `rtol * max(|y_i|, floor)`, where `floor` defaults to the
-smallest strictly positive species value in the model — a species sitting at
-zero has no magnitude of its own to scale, so it is treated as living at the
-smallest scale the model actually exhibits. Pass `floor=` to `auto_atol` to
-choose differently. Being built from *initial* values, this cannot see a species
+smallest strictly positive species value in the model, but not above 1 — a
+species sitting at zero has no magnitude of its own to scale, so it is treated
+as living at the smallest scale the model actually exhibits, or at one unit
+(one molecule, in a model of counts) where every species that has a scale is
+larger. Without the cap, a species at 0 beside species at 1e10 was held to an
+absolute 100, and one grown from 0 came out 100% off (MODEL2009230001). Pass
+`floor=` to `auto_atol` to choose differently. Being built from *initial* values, this cannot see a species
 that starts at order one and decays to something tiny; that is a within-species,
 over-time mismatch, and the CVODE construct for it is `CVodeWFtolerances`, which
 bngsim does not expose yet (issue #213). The corollary is worth stating plainly:
