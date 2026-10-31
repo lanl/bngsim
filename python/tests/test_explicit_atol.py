@@ -97,6 +97,49 @@ def test_exact_atol_holds_every_species_to_the_number(tmp_path, how):
     assert np.asarray(result.species)[-1, 0] < 0.0
 
 
+# The binding model with its reverse rate behind clamp(0.5, A, big): bngsim has
+# no analytic df/dp for a clamp whose bound is a parameter (see
+# test_state_crossing_on_fallback_sensitivity.py), so CVODES' difference
+# quotient carries every sensitivity column.
+DECLINED = """begin parameters
+ 1 kf 1e6
+ 2 kr 1e-3
+ 3 big 1e300
+end parameters
+begin functions
+ 1 fR() kr*clamp(0.5,Aobs,big)
+end functions
+begin species
+ 1 A() 1e-9
+ 2 B() 2e-9
+ 3 C() 0
+end species
+begin reactions
+ 1 1,2 3 kf
+ 2 3 1,2 fR
+end reactions
+begin groups
+ 1 Aobs 1
+end groups
+"""
+
+
+def test_difference_quotient_sensitivities_keep_the_scalar(tmp_path):
+    """The quotient sizes its increment from the state's error weights, so a
+    species held tighter is perturbed by less and carries more roundoff. A run
+    whose sensitivities fall back there keeps the scalar, given or default; a
+    plain run of the same model reads it as a ceiling."""
+    path = tmp_path / "declined.net"
+    path.write_text(DECLINED)
+    model = bngsim.Model.from_net(str(path))
+    dq = bngsim.Simulator(model, method="ode", sensitivity_params=["kr"])
+    assert not dq.has_analytic_sens_rhs
+    assert dq._run_atol(1e-8, 1e-8) == 1e-8
+    assert dq._run_atol(None, 1e-8) is None
+    plain = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    assert plain._run_atol(1e-8, 1e-8).vector is not None
+
+
 def test_set_tolerances_with_a_float_clears_exactness(tmp_path):
     sim = _sim(tmp_path)
     sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))

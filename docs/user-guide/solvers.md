@@ -58,6 +58,13 @@ longer, nearly all of it on models that had been wrong.
   integrates starts at 0, the floor is the smallest start of any species, a
   `$`-fixed one too, and where every species starts at 0 the default is the
   scalar.
+- **Forward sensitivities on CVODES' difference quotient keep the scalar.**
+  A model whose `∂f/∂p` bngsim cannot derive (`has_analytic_sens_rhs` is
+  `False`) runs its sensitivities on the quotient,
+  which sizes its increment from the state's error weights. A species held
+  tighter is then perturbed by less and carries more roundoff, not more
+  accuracy: one such model took 187,685 steps for 28,732, with a worse
+  gradient. So such a run is held to the scalar itself.
 - **It reads the state each call starts from**, as `atol="auto"` does, and a
   batch, a scan or a chunked sensitivity job derives it once for all its runs.
   A `run_until` step (and so a `ReactionKernel.advance`) keeps the one its

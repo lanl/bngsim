@@ -176,7 +176,7 @@ class ExactAtol:
     against a tool that applies one absolute tolerance to every species. A
     sequence of ``n_species`` values is also used exactly as given;
     ``ExactAtol(a)`` is the same as ``[a] * model.n_species`` on the scalar's own
-    code path. :func:`bngsim.convert.read_sedml` takes ``exact_atol=True`` to
+    code path. ``bngsim.convert.read_sedml`` takes ``exact_atol=True`` to
     read a SED-ML file's absolute tolerance this way.
 
     Parameters

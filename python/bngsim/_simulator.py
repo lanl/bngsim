@@ -4685,7 +4685,12 @@ class Simulator:
         return atol
 
     def _run_atol(
-        self, atol: AtolLike | None, rtol: float, *, trajectory: bool = False
+        self,
+        atol: AtolLike | None,
+        rtol: float,
+        *,
+        trajectory: bool = False,
+        sensitivities: bool | None = None,
     ) -> AtolLike | _Ceiling | None:
         """The ``atol`` an ODE call integrates at (issue #1420).
 
@@ -4720,11 +4725,27 @@ class Simulator:
         counts, whose species leave whole numbers after the first step, every
         later step took a vector, and the warm path lost its count of dense
         factorizations from one step to the next.
+
+        A run whose forward sensitivities come from CVODES' difference quotient
+        (no analytic ``∂f/∂p``, :attr:`has_analytic_sens_rhs`) keeps the scalar
+        as given. The quotient sizes its increment from the state's error
+        weights, so a species held tighter is perturbed by less and carries more
+        roundoff, not more accuracy: on a model whose sensitivities fall back
+        there (``test_a_window_written_as_a_product_runs``), species at 0 beside
+        one at 1e-4, held to 1e-14 under ``atol=1e-12``, took 187,685 steps for
+        28,732 and a gradient 1.2e-5 off a finite difference for 6.4e-8.
+        ``sensitivities`` says whether the call integrates them, where that is
+        not this Simulator's own ``sensitivity_params`` (a
+        :meth:`compute_all_sensitivities` chunk).
         """
         if trajectory and not self._continues_trajectory:
             self._trajectory_atol = None  # a new trajectory starts here
         scalar = self._scalar_atol_of(atol)
         if scalar is None:
+            return atol
+        if sensitivities is None:
+            sensitivities = bool(self._sensitivity_params or self._sensitivity_ic)
+        if sensitivities and not self._codegen_provides_sens_rhs():
             return atol
         kept = self._trajectory_atol if trajectory else None
         if kept is not None and kept[:2] == (rtol, scalar):
@@ -7529,7 +7550,7 @@ class Simulator:
         # a single tensor that gets stitched back together; deriving "auto"
         # per chunk would stitch columns integrated to different accuracies.
         effective_atol_spec = self._resolve_atol(
-            self._run_atol(atol, effective_rtol),
+            self._run_atol(atol, effective_rtol, sensitivities=True),
             effective_rtol,
             where="compute_all_sensitivities(atol=...)",
         )
