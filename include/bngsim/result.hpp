@@ -149,6 +149,10 @@ class Result {
                 const double *species_conc,     // n_species values
                 const double *observable_vals); // n_observables values
 
+    // Overwrite the time of a recorded row (an SSA run that counted its clock
+    // from t_start reports the times asked for, issue #1059).
+    void set_time(int time_index, double t);
+
     // Record expression (function) values at a time point.
     // Must be called after set_expression_names() and allocate().
     void record_expressions(int time_index,
