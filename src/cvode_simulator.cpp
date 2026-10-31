@@ -6023,6 +6023,16 @@ CvodeSimulator::Impl::read_segment_counters(void *cvode_mem) const {
     CVodeGetNumErrTestFails(cvode_mem, &c.err_test_fails);
     CVodeGetNumLinRhsEvals(cvode_mem, &c.lin_rhs_evals);
     CVodeGetNumJacEvals(cvode_mem, &c.jac_formations);
+    // The linear solver's counters restart at the first CVode call after a
+    // (re-)init (cvLsInitialize, from cvInitialSetup), not at CVodeReInit, which
+    // zeroes the rest. Until that call they still hold the segment before, which
+    // was banked: a re-init at the run's last instant counted its Jacobians
+    // twice (issue #1333). No f call yet is no call yet, so none of them are
+    // this segment's.
+    if (c.rhs_evals == 0) {
+        c.lin_rhs_evals = 0;
+        c.jac_formations = 0;
+    }
     // Only ask for the sensitivity counters when this run actually switched
     // forward sensitivities on (issue #447). Both getters return CV_NO_SENS
     // otherwise, which would leave the two fields at 0 — the honest answer for

@@ -24,7 +24,7 @@ enum LinearSolverKind {
 struct SolverStats {
     int n_steps = 0;     // total internal solver steps
     int n_rhs_evals = 0; // RHS function evaluations
-    int n_jac_evals = 0; // Jacobian evaluations
+    int n_jac_evals = 0; // linear-solver setups (CVodeGetNumLinSolvSetups)
     // RHS evaluations spent forming Jacobians by difference quotients, which
     // n_rhs_evals does not count (issue #1333): CVODE's own quotient's, and
     // bngsim's dense and colored quotients' (#1302's jump test included).

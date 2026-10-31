@@ -29,6 +29,15 @@ def _stats(text: str = _CHAIN, **kw) -> dict:
     return sim.run(**{"t_span": (0, 20), "n_points": 21, **run}).solver_stats
 
 
+def _per_formation(stats: dict) -> float:
+    """The dense quotient's evaluations per Jacobian it formed: a column per
+    species, then #1302's jump test, one point at least and four at most here."""
+    assert stats["n_jac_formations"] > 0
+    per = stats["n_jac_rhs_evals"] / stats["n_jac_formations"]
+    assert _N < per <= 4 * _N
+    return per
+
+
 def test_a_closed_form_jacobian_costs_no_evaluations():
     stats = _stats()
     assert stats["n_jac_rhs_evals"] == 0
@@ -37,28 +46,41 @@ def test_a_closed_form_jacobian_costs_no_evaluations():
 def test_the_dense_quotient_is_counted():
     """Each Jacobian formed takes a column per species and, past that, #1302's
     jump test, one more point at least: more than n_species per formation."""
-    fd = _stats(jacobian="fd")
-    assert fd["n_jac_formations"] > 0
-    assert fd["n_jac_rhs_evals"] > _N * fd["n_jac_formations"]
-    assert fd["n_jac_rhs_evals"] <= 4 * _N * fd["n_jac_formations"]
+    _per_formation(_stats(jacobian="fd"))
 
 
 @pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled in")
 def test_the_colored_quotient_is_counted():
     stats = _stats(jacobian="fd", force_sparse_linear_solver=True)
     assert stats["linear_solver"] != 0  # not the dense solver
-    # A coloring evaluates f once per color, fewer than the species here.
+    # A coloring evaluates f once per color, fewer than the species here, and
+    # a compiled run once more for its base: a chain takes two colors at least,
+    # so the base alone is not the count.
     assert stats["n_jac_formations"] > 0
-    assert stats["n_jac_rhs_evals"] >= stats["n_jac_formations"]
+    assert stats["n_jac_rhs_evals"] > stats["n_jac_formations"]
 
 
 def test_the_count_covers_a_run_its_events_restart():
     """An event's re-initialization zeroes CVODE's own counters, which the run
-    banks; this one is the run's, so the segment after a restart adds to it."""
+    banks; this one is the run's, so the segment after a restart adds to it,
+    and the two counts stay in step across it."""
     text = _CHAIN + " E1: at (time > 10): X0 = 10;"
     whole = _stats(text, jacobian="fd")
     half = _stats(text, jacobian="fd", t_span=(0, 10), n_points=11)
     assert whole["n_jac_rhs_evals"] > half["n_jac_rhs_evals"] > 0
+    _per_formation(whole)
+
+
+def test_a_restart_at_the_last_instant_counts_its_jacobians_once():
+    """CVODE's linear solver restarts its counters when the solver is next
+    called after a re-initialization, not at the re-initialization. An event
+    that fires as the run ends re-initializes with no call after it, and the
+    segment before it, already banked, was read again: 8 Jacobians for the 4 formed, 9.1
+    evaluations each for a quotient that takes more than 10."""
+    stats = _stats(
+        _CHAIN + " E1: at (time > 10): X0 = 10;", jacobian="fd", t_span=(0, 10), n_points=11
+    )
+    _per_formation(stats)
 
 
 @pytest.mark.parametrize(
