@@ -1237,6 +1237,86 @@ struct ExprTkEvaluator::Impl {
         return name;
     }
 
+    // Issue #1415: the first call in `expr` that a bracket follows, as the
+    // call's text, or "" where there is none. ExprTk multiplies a variable, or
+    // a bracketed group, against a bracket after it: `A(B)` and `(A)(B)` are
+    // A·B. After a call it does not. The bracket opens a second statement, and
+    // the expression's value is the last statement's: `k*exp(-A)(B)` came back
+    // B, and a .net rate law written so ran as its last factor. A call is a
+    // name no variable or constant is registered under, then its argument
+    // list: a built-in, a model function, a table, `time()`, or `if`/`not`.
+    // ExprTk's binary word operators are not: `(A > 1) and (B)(C)` is
+    // (A > 1) and B·C. BNG2.pl rejects the same text as a syntax error.
+    std::string call_before_bracket(const std::string &expr) const {
+        const auto ident = [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+        };
+        const std::size_t n = expr.size();
+        std::size_t i = 0;
+        while (i < n) {
+            const char c = expr[i];
+            if (std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '.') {
+                // A number, exponent included: `1e5` is not the name `e5`.
+                while (i < n &&
+                       (std::isdigit(static_cast<unsigned char>(expr[i])) != 0 || expr[i] == '.')) {
+                    ++i;
+                }
+                if (i < n && (expr[i] == 'e' || expr[i] == 'E')) {
+                    std::size_t k = i + 1;
+                    if (k < n && (expr[k] == '+' || expr[k] == '-')) {
+                        ++k;
+                    }
+                    if (k < n && std::isdigit(static_cast<unsigned char>(expr[k])) != 0) {
+                        i = k;
+                        while (i < n && std::isdigit(static_cast<unsigned char>(expr[i])) != 0) {
+                            ++i;
+                        }
+                    }
+                }
+                continue;
+            }
+            if (!(std::isalpha(static_cast<unsigned char>(c)) != 0 || c == '_')) {
+                ++i;
+                continue;
+            }
+            const std::size_t start = i;
+            while (i < n && ident(expr[i])) {
+                ++i;
+            }
+            const std::string name = expr.substr(start, i - start);
+            std::size_t open = i;
+            while (open < n && std::isspace(static_cast<unsigned char>(expr[open])) != 0) {
+                ++open;
+            }
+            static const std::unordered_set<std::string> kBinaryWords = {
+                "and", "or", "xor", "nand", "nor", "xnor", "mand", "mor", "in", "like", "ilike"};
+            if (open >= n || expr[open] != '(' || symbol_table.is_variable(name) ||
+                symbol_table.is_constant_node(name) || kBinaryWords.count(name) != 0) {
+                continue;
+            }
+            int depth = 0;
+            std::size_t close = open;
+            for (; close < n; ++close) {
+                if (expr[close] == '(') {
+                    ++depth;
+                } else if (expr[close] == ')' && --depth == 0) {
+                    break;
+                }
+            }
+            if (close >= n) {
+                return "";
+            }
+            std::size_t next = close + 1;
+            while (next < n && std::isspace(static_cast<unsigned char>(expr[next])) != 0) {
+                ++next;
+            }
+            if (next < n && (expr[next] == '(' || expr[next] == '[' || expr[next] == '{')) {
+                return expr.substr(start, close + 1 - start);
+            }
+        }
+        return "";
+    }
+
     // Rewrite `name()` → `name` for any identifier registered as a scalar
     // variable on this evaluator. BNGL's grammar (per BNG2.pl's
     // bng2/Perl2/Expression.pm:870-927) accepts an Observable as a
@@ -1587,6 +1667,18 @@ int ExprTkEvaluator::compile(const std::string &expr) {
     // Then respell any literal ExprTk would read off by an ulp, so the
     // interpreter computes with the same numbers codegen does.
     preprocessed = expr_compat::exact_literals(preprocessed);
+
+    // Issue #1415: refused, where ExprTk would keep only the bracket after it.
+    const std::string call = impl_->call_before_bracket(preprocessed);
+    if (!call.empty()) {
+        throw std::runtime_error(
+            "Expression '" + expr + "': the bracket after the call '" + call +
+            "' is not multiplied by it. ExprTk reads it as a second statement, and the "
+            "expression's value would be that statement's alone, which drops the call and "
+            "everything before it (issue #1415). BioNetGen rejects it as a syntax error. Write "
+            "the product with '*': '" +
+            call + "*(...)'.");
+    }
 
     // Delegate to compile_preprocessed (which also caches the string)
     return compile_preprocessed(preprocessed);

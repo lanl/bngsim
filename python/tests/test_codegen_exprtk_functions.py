@@ -467,20 +467,21 @@ def test_a_bracket_after_anything_else_is_left_alone(text):
     ],
 )
 def test_a_bracket_after_a_call_declines(text):
-    """The engine reads the bracket as a second statement, and gives its value
-    for the whole expression: each of these is B. There is no C for that here."""
-    assert _interpreter(text, (2.5, 0.75)) == 0.75
+    """ExprTk reads the bracket as a second statement, whose value is the whole
+    expression's: each of these was B. The engine refuses it at load now (issue
+    #1415), and the translator still has no C for it."""
+    with pytest.raises(RuntimeError, match=r"second statement.*#1415"):
+        _interpreter(text, (2.5, 0.75))
     with pytest.raises(cg.CodegenDeclined, match="second statement"):
         cg._insert_implicit_products(text, _LOOKUP)
 
 
-def test_a_bracket_after_a_table_declines():
-    """A table is a call to the engine, as ``time`` is: ``2*tfun_kf()(Atot)`` is
-    Atot, the second statement, though the lookup holds the table's name."""
-    model = _table_model("tfun_kf()(Atot)")
-    assert model._core.compute_derivs(0.0, np.array([0.0, 1.0]))[0] == 1.0
-    with pytest.raises(cg.CodegenDeclined, match="'tfun_kf'.*second statement"):
-        cg.generate_rhs_from_model(model)
+def test_a_bracket_after_a_table_is_refused():
+    """A table is a call to the engine, as ``time`` is: ``2*tfun_kf()(Atot)`` was
+    Atot, the second statement, though the lookup holds the table's name. The
+    engine refuses it at load now (issue #1415)."""
+    with pytest.raises(RuntimeError, match=r"the call 'tfun_kf\(\)'.*#1415"):
+        _table_model("tfun_kf()(Atot)")
 
 
 # The parser's products besides the lexer's (post_variable_process and
@@ -672,12 +673,11 @@ def test_each_spelling_runs_compiled_as_the_call_runs_interpreted(call, table):
 # ── What it still has no C for ───────────────────────────────────────────────
 
 # Engine-valid, and with no C the translator writes: ExprTk's word operators
-# other than and/or/not, and a bracket after a call, which the engine reads as a
-# second statement (this law is Atot).
+# other than and/or/not. A bracket after a call, which ExprTk read as a second
+# statement, is refused at load (issue #1415).
 _NO_C = {
     "xor": "k*(1 + if(Atot > 1 xor k > 1, 1, 0))",
     "nand": "k*(1 + if(Atot > 1 nand k > 1, 1, 0))",
-    "exp": "k*exp(-Atot)(Atot)",
 }
 
 
