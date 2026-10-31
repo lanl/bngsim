@@ -87,6 +87,7 @@ DECLINE_KINDS: dict[str, str] = {
     "disabled": "BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0 turned the derivation off",
     "no_context": "the model could not provide its functional-Jacobian context",
     "function_cycle": "a rate law's functions refer to each other in a cycle, or nest too deep",
+    "written_out": "a rate law written out with its functions is too long, and does not collect",
     "unparsed": "a rate law could not be parsed into sympy",
     "unresolved_symbol": "a symbol survived inlining that is no observable, constant or time",
     # _NONDIFFERENTIABLE_EMITTER_FUNCS is empty today, so nothing records this one.
@@ -1079,6 +1080,29 @@ def _species_divisor_text(
     return repr(size)
 
 
+def _inlined_for_derivation(expr: str, func_map: dict[str, str]) -> tuple[str | None, int]:
+    """``expr`` with its functions written in, for a derivation to differentiate:
+    ``(text, 0)``, or ``(None, length)`` where it would be ``length`` characters
+    written out, past :data:`_INLINE_TEXT_LIMIT`, and does not collect shorter
+    (issue #1255). The text is ``None`` on a cycle too, with a length of 0.
+
+    A rate law whose functions share nodes (a diamond of rules) writes out
+    exponentially in the depth, and where sympy cannot collect it (``sin(r_{i-1})
+    + cos(r_{i-2})``) its derivative is as long again: deriving, checking and
+    printing it took 3 s at 12 rules and 57 s at 18, for an analytical Jacobian
+    that costs every Newton setup more to evaluate than differences of the
+    right-hand side do. The length costs nothing to predict, so it is asked
+    before the text is written.
+    """
+    predicted = _inlined_length(expr, func_map)
+    if predicted is not None and predicted > _INLINE_TEXT_LIMIT:
+        compact = _compact_inlined(expr, func_map)
+        if compact is None:
+            return None, predicted
+        return compact, 0
+    return _inline_functions(expr, func_map), 0
+
+
 def _inline_functions(
     expr: str,
     func_map: dict[str, str],
@@ -1642,7 +1666,15 @@ def differentiate_rate_law(
     except ImportError:
         return None
 
-    inlined = _inline_functions(rate_expr, func_map)
+    inlined, written_out = _inlined_for_derivation(rate_expr, func_map)
+    if written_out:
+        _declined(
+            f"rate law {_short(rate_expr)} is {written_out:,} characters written out with its "
+            f"functions (past {_INLINE_TEXT_LIMIT:,}), which do not collect shorter: its "
+            "derivative would be as long (issue #1255)",
+            kind="written_out",
+        )
+        return None
     if inlined is None:
         _declined(
             f"rate law {_short(rate_expr)} references its functions in a cycle, or nests "
