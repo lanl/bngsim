@@ -886,6 +886,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::object exc = cls(py::str(e.what()), py::arg("timeout") = e.timeout_seconds(),
                                  py::arg("elapsed") = e.elapsed_seconds());
             PyErr_SetObject(cls.ptr(), exc.ptr());
+        } catch (const bngsim::SensitivityUnsupported &e) {
+            // Issue #1279: a refusal the solver reaches mid-run is typed as the
+            // ones raised before a run are.
+            py::object cls =
+                py::module_::import("bngsim._exceptions").attr("SensitivityUnsupportedError");
+            PyErr_SetObject(cls.ptr(), cls(py::str(e.what())).ptr());
         }
     });
 
@@ -1253,6 +1259,34 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "judged over the whole right-hand side, as before; an empty entry means "
             "no listed rate law reads it, so the crossing is continuous. A jump the "
             "listed reactions do not account for is judged as before.")
+        .def(
+            "set_held_equality_conditions",
+            [](bngsim::SolverOptions &self, const std::vector<std::string> &conditions) {
+                self.sensitivity.held_equality_conditions = conditions;
+            },
+            py::arg("conditions"),
+            "Issue #1279: rate-law equalities over model state, as source text "
+            "(`Bobs==0`), that a sensitivity run roots where the state leaves their "
+            "surface. The run is refused there with SensitivityUnsupportedError "
+            "where the rate laws reading one change and no jump at that instant "
+            "covers it (issue #1228). Empty (the default) watches none.")
+        .def(
+            "set_held_equality_reactions",
+            [](bngsim::SolverOptions &self, const std::vector<std::vector<int>> &reactions) {
+                self.sensitivity.held_equality_reactions = reactions;
+            },
+            py::arg("reactions"),
+            "Parallel to set_held_equality_conditions (issue #1279): the 0-based "
+            "reactions whose rate law reads each equality.")
+        .def(
+            "set_held_equality_inner",
+            [](bngsim::SolverOptions &self, const std::vector<std::vector<std::string>> &inner) {
+                self.sensitivity.held_equality_inner = inner;
+            },
+            py::arg("inner"),
+            "Parallel to set_held_equality_conditions (issue #1279): the state-switch "
+            "conditions written inside each equality, whose crossing covers a leaving "
+            "at the same instant.")
         .def(
             "set_state_switch_guards",
             [](bngsim::SolverOptions &self, const std::vector<std::string> &guards) {

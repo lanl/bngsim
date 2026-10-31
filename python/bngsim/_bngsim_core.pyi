@@ -909,6 +909,18 @@ class SolverOptions:
         """
         Set the event-time sensitivities ∂t*/∂p as (event_idx0, [∂t*/∂p per param column]) records (issue #49). An event whose trigger thresholds a fitted constant — `time >= T0` with T0 requested — fires at a time that moves with the parameter, so its forward-sensitivity jump carries two extra terms beyond the GH #212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty (the default) collapses the jump to the GH #212 form — except for a state-dependent trigger, whose ∂t*/∂p the solver differentiates at the fire instead (issue #144).
         """
+    def set_held_equality_conditions(self, conditions: collections.abc.Sequence[str]) -> None:
+        """
+        Issue #1279: rate-law equalities over model state, as source text (`Bobs==0`), that a sensitivity run roots where the state leaves their surface. The run is refused there with SensitivityUnsupportedError where the rate laws reading one change and no jump at that instant covers it (issue #1228). Empty (the default) watches none.
+        """
+    def set_held_equality_inner(self, inner: collections.abc.Sequence[collections.abc.Sequence[str]]) -> None:
+        """
+        Parallel to set_held_equality_conditions (issue #1279): the state-switch conditions written inside each equality, whose crossing covers a leaving at the same instant.
+        """
+    def set_held_equality_reactions(self, reactions: collections.abc.Sequence[collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]]) -> None:
+        """
+        Parallel to set_held_equality_conditions (issue #1279): the 0-based reactions whose rate law reads each equality.
+        """
     def set_ic_param_sens(self, triples: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
         """
         Set the initial-condition sensitivity seeds ∂x_i(0)/∂p as (species_idx0, primary_param_idx0, ∂IC/∂primary) triples (issue #43). Computed by the Python codegen layer via the sympy derived-parameter chain rule so a species IC named by a derived (ConstantExpression) parameter — e.g. Rtot = R0 — seeds the forward sensitivity w.r.t. the underlying primary. When set, these replace the model's species_ic_param_refs() identity seeding entirely (they already cover direct-parameter ICs with coefficient 1).

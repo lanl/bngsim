@@ -16,6 +16,16 @@
 
 namespace bngsim {
 
+// A forward-sensitivity run the solver declines partway, by declaration: it
+// reached a construct whose derivative it cannot produce, and refuses rather
+// than return columns it knows are wrong (issue #1279). The pybind11 layer
+// maps it to bngsim.SensitivityUnsupportedError, the type the Python checks
+// raise before a run, where a std::runtime_error became a SimulationError.
+class SensitivityUnsupported : public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+};
+
 // ─── Rate law types ─────────────────────────────────────────────────────────
 //
 // Three native rate law types. Legacy BioNetGen Sat/Hill tokens are not
@@ -1164,6 +1174,24 @@ struct SensitivityOptions {
     // branch is off, which changes nothing, rather than restart there. Empty
     // (the default) restarts at every crossing, as before.
     std::vector<std::string> state_switch_guards;
+
+    // Issue #1279: the rate-law equalities over model state (`Bobs==0`), as
+    // source text, that a sensitivity run watches for the state leaving their
+    // surface. A state on one holds its branch for a stretch, and leaving is a
+    // switch no root locates or jumps (issue #1228). Each is rooted where its
+    // residual leaves exactly 0, and the run is refused there only where the
+    // rate laws that read it change and no jump at that instant covers it. A
+    // stretch the state never leaves, or leaves only at an event, runs. Empty
+    // (the default) watches none. Read only by a run with sensitivity columns.
+    std::vector<std::string> held_equality_conditions;
+    // Parallel to held_equality_conditions: the 0-based reactions whose rate
+    // law reads each, whose flux is what can change where the state leaves.
+    std::vector<std::vector<int>> held_equality_reactions;
+    // Parallel to held_equality_conditions: the state_switch_conditions written
+    // inside each (`q-Aobs>0` in `if(fB()==0, kb, 0)` with fB gated on it). A
+    // leaving at the instant one of them is crossed is that crossing's: its
+    // jump reads the equality's readers either side of its own surface.
+    std::vector<std::vector<std::string>> held_equality_inner;
 
     // Events whose crossing time moves with a requested parameter (issue #49).
     // Empty for every model whose events fire at fixed instants — the event
