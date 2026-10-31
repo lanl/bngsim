@@ -304,6 +304,26 @@ class NetworkModel {
     void expression_support(int expr_idx, std::vector<int> *species_out,
                             std::vector<int> *params_out) const;
 
+    // What reading `expr_ids` at a state needs refreshed after the species are
+    // written (issue #1278): the observables they read and, in evaluation
+    // order, the function groups whose values they read, directly or through
+    // one another. `full` where they read anything else that moves with the
+    // state (a rateOf accessor, a slot nothing here models) or the model has a
+    // table function, whose index is read out of sight: then only
+    // update_observables() and evaluate_functions() put every slot right.
+    struct ReadPlan {
+        bool full = false;
+        std::vector<int> observables;
+        std::vector<int> groups;    // indices into the function groups, ascending
+        std::vector<int> functions; // the functions in those groups, as declared
+    };
+    ReadPlan read_plan(const std::vector<int> &expr_ids) const;
+
+    // At time `t`, with the species as the caller wrote them (`conc`): the
+    // observables and function groups of `plan`, as update_observables(conc)
+    // and evaluate_functions(t) leave them. Every other slot keeps its value.
+    void evaluate_read_plan(double t, const double *conc, const ReadPlan &plan);
+
     // The species reaction `rxn_idx0`'s SSA propensity reads (issue #719): its
     // reactants, the species its SSA falling factorial is taken over, a live
     // compartment volume it divides by, and whatever

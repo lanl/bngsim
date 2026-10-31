@@ -151,6 +151,14 @@ class NetworkModel:
         """
         Evaluate dy/dt at (t, conc), leaving the model as it was. Test/diagnostic hook.
         """
+    def _trigger_read_plan(self) -> dict:
+        """
+        The observables and functions the read-ahead refreshes to read the event triggers, or full=True where it syncs the model whole (issue #1278).
+        """
+    def _trigger_read_plan_values(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> tuple:
+        """
+        Function values after the read-ahead's refresh at (t, conc), and after a whole evaluation there; the model is left as it was (issue #1278).
+        """
     def add_table_function_arrays(self, name: str, xs: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], ys: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], index_name: str = 'time', method: str = '') -> None:
         """
         Add a table function from arrays

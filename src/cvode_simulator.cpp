@@ -14772,6 +14772,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
         return eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx) > 0.5;
     };
+    // What a read of the triggers needs refreshed at a state (issue #1278):
+    // the read-ahead on each row reads them half a root tolerance on, and a
+    // full sync there evaluated every function and observable for a handful of
+    // triggers, 1.15-1.34x a 20001-row run. Built once, over every event.
+    NetworkModel::ReadPlan trigger_plan;
+    if (n_events > 0) {
+        std::vector<int> trigger_ids;
+        trigger_ids.reserve(static_cast<size_t>(n_events));
+        for (int ei = 0; ei < n_events; ++ei) {
+            trigger_ids.push_back(events_outer[ei].trigger_expr_idx);
+        }
+        trigger_plan = model.read_plan(trigger_ids);
+    }
     auto residual_now = [&](int ei) -> double {
         const int gidx = model.event_trigger_residual_expr(ei);
         return gidx >= 0 ? eval_ref_outer.evaluate(gidx) : 0.0;
@@ -18614,11 +18627,25 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             }
             if (read_ahead) {
                 const double *x_ahead = row_ahead.data();
-                impl_->sync_model_at(t_out[i], x_ahead, ns);
+                // Only what the triggers read (issue #1278): the row's own
+                // refresh below re-evaluates the rest at the row, and the
+                // species are put back after. Where one rises, the model is
+                // synced there whole before anything fires, as it always was.
+                if (trigger_plan.full) {
+                    impl_->sync_model_at(t_out[i], x_ahead, ns);
+                } else {
+                    for (int si = 0; si < ns; ++si) {
+                        sp_vec_outer[si].concentration = x_ahead[si];
+                    }
+                    model.evaluate_read_plan(t_out[i], x_ahead, trigger_plan);
+                }
                 bool rises = false;
                 for (int ei = 0; ei < n_events && !rises; ++ei) {
                     rises = !trigger_was_true[ei] && event_dormant[ei] == 0 &&
                             read_trigger(ei, t_out[i]);
+                }
+                if (rises && !trigger_plan.full) {
+                    impl_->sync_model_at(t_out[i], x_ahead, ns);
                 }
                 if (rises && sens.n_total > 0) {
                     // A run with sensitivity columns fires it at the row as
