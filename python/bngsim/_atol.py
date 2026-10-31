@@ -160,11 +160,51 @@ class TrackingAtol:
         object.__setattr__(self, "decades", decades)
 
 
+@dataclass(frozen=True)
+class ExactAtol:
+    """An absolute tolerance held exactly, the same for every species (issue #1420).
+
+    A scalar ``atol``, the default ``1e-8`` or one you pass, is read as a
+    ceiling: each species takes the smaller of it and ``rtol`` of its own scale
+    in the state the run starts from (see :meth:`bngsim.Simulator.run`). That
+    is what keeps a species at 1e-9 M from running under the noise floor of a
+    tolerance written for molecule counts, and a SED-ML file's ``atol`` is read
+    the same way. ``ExactAtol(value)`` opts out: every species is held to
+    ``value`` itself, which is how bngsim read a scalar before.
+
+    Reach for it to reproduce a run made under the old reading, or to compare
+    against a tool that applies one absolute tolerance to every species. A
+    sequence of ``n_species`` values is also used exactly as given;
+    ``ExactAtol(a)`` is the same as ``[a] * model.n_species`` on the scalar's own
+    code path. ``bngsim.convert.read_sedml`` takes ``exact_atol=True`` to
+    read a SED-ML file's absolute tolerance this way.
+
+    Parameters
+    ----------
+    value : float
+        The absolute tolerance. Must be finite and >= 0.
+
+    Examples
+    --------
+    >>> result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9))
+    >>> sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))  # the old default
+    """
+
+    value: float
+
+    def __post_init__(self) -> None:
+        value = float(self.value)
+        if not np.isfinite(value) or value < 0.0:
+            raise ValueError(f"ExactAtol.value must be finite and >= 0, got {self.value!r}.")
+        object.__setattr__(self, "value", value)
+
+
 # What every ``atol=`` argument in the public API accepts. A float is the
 # pre-#196 scalar and behaves exactly as it did; a sequence is the per-species
 # vector; ``"auto"`` asks bngsim to derive one from the model; a
 # :class:`TrackingAtol` (or ``"tracking"``) re-evaluates that vector against the
-# trajectory instead of against the initial state.
+# trajectory instead of against the initial state; an :class:`ExactAtol` is the
+# scalar held exactly, not read as a ceiling (issue #1420).
 # Spelled with the objects rather than a forward reference: expanded into the
 # signatures of another module, the string "NDArray[np.float64]" was looked up
 # there, where NDArray is not defined, and the docs build could not render
@@ -176,12 +216,14 @@ AtolLike = (
     | Literal["auto"]
     | Literal["tracking"]
     | TrackingAtol
+    | ExactAtol
 )
 
 __all__ = [
     "AUTO",
     "DEFAULT_TRACKING_DECADES",
     "TRACKING",
+    "ExactAtol",
     "AtolLike",
     "TrackingAtol",
     "derive_atol",

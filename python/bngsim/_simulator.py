@@ -40,6 +40,7 @@ from bngsim._atol import AUTO as _ATOL_AUTO
 from bngsim._atol import TRACKING as _ATOL_TRACKING
 from bngsim._atol import (
     AtolLike,
+    ExactAtol,
     TrackingAtol,
     derive_atol,
     is_scalar_atol,
@@ -151,6 +152,16 @@ except (ImportError, AttributeError):
 # starts to matter; below it the dense solver is fine and the notice would be
 # noise. Matches the trigger suggested in GH #209.
 _DENSE_FALLBACK_WARN_NSPECIES = 2000
+
+
+class _Ceiling(NamedTuple):
+    """A scalar ``atol`` read as a ceiling, and the per-species vector it gave
+    (issue #1420): what :meth:`Simulator._run_atol` hands on, so the scalar
+    still reaches what reads a scalar. ``steady_state_tol`` falls back to it,
+    and a run that stopped at an ``atol=1e-4`` reached ``1e-8`` instead."""
+
+    scalar: float
+    vector: list[float]
 
 
 class _ResolvedAtol(NamedTuple):
@@ -758,8 +769,11 @@ class Simulator:
         # ceiling, so keeping both would leave two answers to "which vector".
         "_atol_track",
         "_atol_set",
-        # Issue #1420 — (rtol, the default atol it gave) at the start of the
-        # stored trajectory, which the run_until steps after it keep.
+        # Issue #1420 — set_tolerances was given an ExactAtol: `_atol` is held
+        # exactly rather than read as a ceiling.
+        "_atol_exact",
+        # Issue #1420 — (rtol, the scalar, the per-species atol they gave) at the
+        # start of the stored trajectory, which the run_until steps after it keep.
         "_trajectory_atol",
         "_max_steps",
         "_stop_conditions",
@@ -1150,7 +1164,8 @@ class Simulator:
         # Whether set_tolerances gave an atol: where it did not, the "scaled"
         # steady-state criterion marches at atol="auto" (issue #1001).
         self._atol_set = False
-        self._trajectory_atol: tuple[float, list[float] | None] | None = None
+        self._atol_exact = False
+        self._trajectory_atol: tuple[float, float, list[float] | None] | None = None
         self._max_steps = 10000
         self._jacobian = jacobian
         self._ode_jacobian_fell_back = False
@@ -4620,6 +4635,8 @@ class Simulator:
         would die on the first step with nothing to point at.
         """
         ceiling = spec.ceiling
+        if isinstance(ceiling, ExactAtol):
+            ceiling = ceiling.value  # a float ceiling is used as given already
         if is_scalar_atol(ceiling):
             vec = [float(ceiling)] * self._model.n_species  # type: ignore[arg-type]
             normalize_atol_vector(vec, self._model.n_species, where=where)
@@ -4664,28 +4681,41 @@ class Simulator:
         """
         if atol is None and criterion == "scaled" and not self._atol_set:
             eff_rtol = self._rtol if rtol is None else rtol
-            return self._atol_from_scale(state, eff_rtol, float(np.finfo(float).eps))
+            return self._atol_from_scale(state, eff_rtol, float(np.finfo(float).eps), self._atol)
         return atol
 
     def _run_atol(
-        self, atol: AtolLike | None, rtol: float, *, trajectory: bool = False
-    ) -> AtolLike | None:
-        """The ``atol`` an ODE call integrates at: the caller's, or where no
-        caller chose one, each species' own (issue #1420).
+        self,
+        atol: AtolLike | None,
+        rtol: float,
+        *,
+        trajectory: bool = False,
+        sensitivities: bool | None = None,
+    ) -> AtolLike | _Ceiling | None:
+        """The ``atol`` an ODE call integrates at (issue #1420).
+
+        A scalar, the caller's or the default ``1e-8``, is a ceiling: each
+        species takes the smaller of it and ``rtol`` of its scale in the state
+        the call starts from, with a floor at ``_ATOL_SCALE_RELEVANT`` of the
+        largest species, the share below which #1361 counts a species as
+        rounding (see :meth:`_atol_from_scale`). A vector, ``"auto"`` or a
+        :class:`TrackingAtol` is the caller's per-species answer, used as given.
 
         The scalar ``1e-8`` is BNG2.pl's, for species held as molecule counts. A
         species of a model in molar units sits below it, and CVODE controls none
         of its error: at bngsim's defaults 62 of 1,251 BioModels ran off their
         reference by over 1% of a species' peak, 21 of them with no warning, and
-        BIOMD0000000609 by 5.7e5. Each species instead takes the smaller of the
-        scalar and ``rtol`` of its scale in the state the call starts from, with
-        a floor at ``_ATOL_SCALE_RELEVANT`` of the largest species, the share
-        below which #1361 counts a species as rounding (see
-        :meth:`_atol_from_scale`). That cut those 62 to 14, broke none, and cost
-        17% of the corpus's run time, nearly all of it on models that were
-        wrong. It is never looser than the scalar, and in a model of counts,
-        whose species start at 0 or at least 1, every species takes the scalar:
-        162 of 175 .net models took the same steps.
+        BIOMD0000000609 by 5.7e5. Read as a ceiling it cut those 62 to 13, broke
+        none, and cost 19% of the corpus's run time, nearly all of it on models
+        that were wrong. A scalar a caller chose is no tolerance for such a
+        species either: a SED-ML file's ``atol=1e-9`` held BIOMD0000000457's
+        species_42, near 1.6e-7, to 13% at t = 5. At the SED-ML files' own
+        tolerances, read as a ceiling, runs over 1% off went from 56 to 23, none
+        got worse past 1%, and the corpus took 4.5% longer; at the parity
+        suite's rtol 1e-9, atol 1e-12, from 16 to 5, in 10% fewer steps. It is
+        never looser than the scalar, and in a model of counts, whose species
+        start at 0 or at least 1, every species takes the scalar: 162 of 175
+        .net models took the same steps.
 
         ``trajectory`` is :meth:`run`'s: a :meth:`run_until` step keeps the
         default its trajectory started with, the one the first step, or the
@@ -4695,22 +4725,55 @@ class Simulator:
         counts, whose species leave whole numbers after the first step, every
         later step took a vector, and the warm path lost its count of dense
         factorizations from one step to the next.
+
+        A run whose forward sensitivities come from CVODES' difference quotient
+        (no analytic ``∂f/∂p``, :attr:`has_analytic_sens_rhs`) keeps the scalar
+        as given. The quotient sizes its increment from the state's error
+        weights, so a species held tighter is perturbed by less and carries more
+        roundoff, not more accuracy: on a model whose sensitivities fall back
+        there (``test_a_window_written_as_a_product_runs``), species at 0 beside
+        one at 1e-4, held to 1e-14 under ``atol=1e-12``, took 187,685 steps for
+        28,732 and a gradient 1.2e-5 off a finite difference for 6.4e-8.
+        ``sensitivities`` says whether the call integrates them, where that is
+        not this Simulator's own ``sensitivity_params`` (a
+        :meth:`compute_all_sensitivities` chunk).
         """
         if trajectory and not self._continues_trajectory:
             self._trajectory_atol = None  # a new trajectory starts here
-        if not self._atol_is_default(atol):
+        scalar = self._scalar_atol_of(atol)
+        if scalar is None:
+            return atol
+        if sensitivities is None:
+            sensitivities = bool(self._sensitivity_params or self._sensitivity_ic)
+        if sensitivities and not self._codegen_provides_sens_rhs():
             return atol
         kept = self._trajectory_atol if trajectory else None
-        if kept is not None and kept[0] == rtol:
-            return kept[1]
-        own = self._atol_from_scale(self._model.get_state(), rtol, self._ATOL_SCALE_RELEVANT)
-        if trajectory:
-            self._trajectory_atol = (rtol, own)
-        return own
+        if kept is not None and kept[:2] == (rtol, scalar):
+            own = kept[2]
+        else:
+            state = self._model.get_state()
+            own = self._atol_from_scale(state, rtol, self._ATOL_SCALE_RELEVANT, scalar)
+            if trajectory:
+                self._trajectory_atol = (rtol, scalar, own)
+        return atol if own is None else _Ceiling(scalar, own)
 
-    def _atol_from_scale(self, state, rtol: float, share: float) -> list[float] | None:
+    def _scalar_atol_of(self, atol: AtolLike | None) -> float | None:
+        """The scalar an ODE call given ``atol`` reads as a ceiling, or ``None``
+        where it integrates at a vector, ``"auto"``, a tracking tolerance or an
+        :class:`ExactAtol`, each of which is used as given."""
+        if self._method != "ode":
+            return None
+        if atol is None:
+            if self._atol_vec is not None or self._atol_track is not None or self._atol_exact:
+                return None
+            return self._atol
+        return float(atol) if is_scalar_atol(atol) else None  # type: ignore[arg-type]
+
+    def _atol_from_scale(
+        self, state, rtol: float, share: float, scalar: float
+    ) -> list[float] | None:
         """Each species' ``rtol`` of its own scale in ``state``, but never more
-        than the scalar; ``None`` where every species takes the scalar, so the
+        than ``scalar``; ``None`` where every species takes the scalar, so the
         run stays on the scalar's own path.
 
         A species' scale is its value, or the floor where that is smaller: the
@@ -4729,12 +4792,14 @@ class Simulator:
         largest = float(free.max(initial=0.0))
         positive = free[free > 0.0]
         floor = max(float(positive.min()), share * largest) if positive.size else None
-        own = np.minimum(derive_atol(values, rtol, floor=floor), self._atol)
-        if np.all(own == self._atol):
+        own = np.minimum(derive_atol(values, rtol, floor=floor), scalar)
+        if np.all(own == scalar):
             return None
         return [float(v) for v in own]
 
-    def _resolve_atol(self, atol: AtolLike | None, rtol: float, *, where: str) -> _ResolvedAtol:
+    def _resolve_atol(
+        self, atol: AtolLike | _Ceiling | None, rtol: float, *, where: str
+    ) -> _ResolvedAtol:
         """Resolve one call's ``atol`` into scalar / per-species / tracking depth.
 
         ``None`` means "whatever this Simulator is configured for", which is the
@@ -4760,10 +4825,14 @@ class Simulator:
                 requested = self._atol_track
             elif self._atol_vec is not None:
                 requested = self._atol_vec
+            elif self._atol_exact:
+                requested = ExactAtol(self._atol)
             else:
                 requested = self._atol
         else:
             requested = atol
+        if isinstance(requested, _Ceiling):
+            return _ResolvedAtol(requested.scalar, requested.vector, 0.0)
         # `isinstance` first: `requested` can be a numpy array here, and
         # `array == "tracking"` is an elementwise comparison whose truth value
         # is ambiguous, not False.
@@ -4772,14 +4841,18 @@ class Simulator:
         if isinstance(requested, TrackingAtol):
             ceiling = self._tracking_ceiling(requested, rtol, where=where)
             return _ResolvedAtol(self._atol, ceiling, requested.decades)
+        if isinstance(requested, ExactAtol):
+            return _ResolvedAtol(requested.value, None, 0.0)
         if is_scalar_atol(requested):
             return _ResolvedAtol(float(requested), None, 0.0)  # type: ignore[arg-type]
         return _ResolvedAtol(self._atol, self._atol_vector_from(requested, rtol, where=where), 0.0)
 
-    def _freeze_atol(self, atol: AtolLike | None, rtol: float, *, where: str) -> AtolLike:
+    def _freeze_atol(
+        self, atol: AtolLike | _Ceiling | None, rtol: float, *, where: str
+    ) -> AtolLike | _Ceiling:
         """Resolve ``atol`` once for a call that runs many points.
 
-        Returns a plain float, an explicit list, or a :class:`TrackingAtol` with
+        Returns an :class:`ExactAtol`, an explicit list, or a :class:`TrackingAtol` with
         an explicit ceiling, so every point of a batch or scan integrates at the
         SAME tolerance. Re-deriving ``"auto"`` per point would make each row's
         error control a function of that row's initial conditions, and a sweep
@@ -4788,10 +4861,14 @@ class Simulator:
         state-dependent *within* a run by design, but the ceiling it tracks
         below must be the same one for every row.
         """
+        if isinstance(atol, _Ceiling):
+            return atol  # resolved already, scalar and vector both
         resolved = self._resolve_atol(atol, rtol, where=where)
         if resolved.decades:
             return TrackingAtol(decades=resolved.decades, ceiling=resolved.vector or [])
-        return resolved.scalar if resolved.vector is None else resolved.vector
+        # A scalar goes to each point as an ExactAtol: as a float, every point's
+        # run() would read it as a ceiling again, from that point's own start.
+        return ExactAtol(resolved.scalar) if resolved.vector is None else resolved.vector
 
     # ─── Run ────────────────────────────────────────────────────────
 
@@ -4972,24 +5049,25 @@ class Simulator:
             Ignored for ``method="ode"``.
         rtol : float, optional
             Relative tolerance for ODE solver. Default ``1e-8``.
-        atol : float, array_like, ``"auto"``, ``"tracking"``, or TrackingAtol, optional
-            Absolute tolerance for the ODE solver. Omitted (and not set by
-            :meth:`set_tolerances`), each species takes
-            ``min(1e-8, rtol * max(|x_i|, floor))`` from the state the run
+        atol : float, array_like, ``"auto"``, ``"tracking"``, TrackingAtol, or ExactAtol, optional
+            Absolute tolerance for the ODE solver. A float, or the default
+            ``1e-8`` where none is given, is a **ceiling**: each species takes
+            ``min(atol, rtol * max(|x_i|, floor))`` from the state the run
             starts from (a :meth:`run_until` step keeps the one its trajectory
             started with), where ``floor`` is the smallest value of a species
             the solver integrates, but not under 1e-6 of the largest (issue
-            #1420).
-            That is BNG2.pl's scalar ``1e-8`` wherever the scalar is a tolerance
-            for the species, and in a model of counts, whose species start at 0
-            or at least 1, it is the scalar on the scalar's path. In a model in
-            molar units it is what keeps a species at 1e-9 from running under
-            the noise floor. Where it still cannot scale a species, as in a
-            model whose species all start at 0, :class:`bngsim.AtolScaleWarning`
-            names it.
+            #1420). That is the number itself wherever the number is a
+            tolerance for the species, and in a model of counts, whose species
+            start at 0 or at least 1, it is the scalar on the scalar's path. In
+            a model in molar units it is what keeps a species at 1e-9 from
+            running under the noise floor. Where the default still cannot scale
+            a species, as in a model whose species all start at 0,
+            :class:`bngsim.AtolScaleWarning` names it.
 
-            A float is the scalar tolerance CVODE has always taken
-            (``CVodeSStolerances``). An array of ``n_species`` values, ordered
+            A :class:`bngsim.ExactAtol` holds every species to its value
+            exactly, the scalar tolerance CVODE has always taken
+            (``CVodeSStolerances``), as a float was read before issue #1420.
+            An array of ``n_species`` values, ordered
             like :attr:`Model.species_names`, is a **per-species** tolerance
             (``CVodeSVtolerances``, issue #196) — entry ``i`` is the absolute
             tolerance for species ``i``. A wrong-length array raises
@@ -6799,7 +6877,8 @@ class Simulator:
                         n_points=n_points,
                         seed=point_seed,
                         rtol=rtol,
-                        atol=scan_atol,
+                        # A _Ceiling is run()'s own resolved form, passed back.
+                        atol=scan_atol,  # type: ignore[arg-type]
                         max_steps=max_steps,
                         max_step=max_step,
                         timeout=timeout,
@@ -6830,7 +6909,9 @@ class Simulator:
         # an atol the caller chose; the call's own atol says (issue #1361).
         if self._atol_is_default(atol):
             self._warn_atol_above_scale(
-                results, "ODE parameter scan", scan_atol if isinstance(scan_atol, list) else None
+                results,
+                "ODE parameter scan",
+                scan_atol.vector if isinstance(scan_atol, _Ceiling) else None,
             )
 
         # Every row is stamped already; stamping the stack again would replace
@@ -7469,7 +7550,7 @@ class Simulator:
         # a single tensor that gets stitched back together; deriving "auto"
         # per chunk would stitch columns integrated to different accuracies.
         effective_atol_spec = self._resolve_atol(
-            self._run_atol(atol, effective_rtol),
+            self._run_atol(atol, effective_rtol, sensitivities=True),
             effective_rtol,
             where="compute_all_sensitivities(atol=...)",
         )
@@ -10528,8 +10609,10 @@ class Simulator:
             Absolute tolerance; omitted, each run takes its own per species,
             never looser than ``1e-8`` (see :meth:`run`), and a
             ``steady_state(criterion="scaled")`` march its own (see
-            :meth:`steady_state`). A float is the scalar tolerance
-            (``CVodeSStolerances``). A sequence of ``n_species`` values,
+            :meth:`steady_state`). A float is read by every run as a ceiling,
+            per species, the same way (see :meth:`run`); a
+            :class:`bngsim.ExactAtol` is held exactly (``CVodeSStolerances``).
+            A sequence of ``n_species`` values,
             ordered like :attr:`Model.species_names`, is a per-species
             tolerance (``CVodeSVtolerances``, issue #196); ``"auto"`` derives
             one now from the model's current state (see :meth:`auto_atol`) and
@@ -10556,6 +10639,7 @@ class Simulator:
         # criterion's march off atol="auto" and onto 1e-8, which runs a species
         # of 1e-9 through zero (x = -21.8 for 1).
         self._atol_set = atol is not None
+        self._atol_exact = isinstance(atol, ExactAtol)
         if atol is None:
             atol = 1e-8
         if isinstance(atol, str) and atol == _ATOL_TRACKING:
@@ -10570,6 +10654,10 @@ class Simulator:
                 ceiling=self._tracking_ceiling(atol, rtol, where="set_tolerances(atol=...)"),
             )
             self._atol_vec = None
+        elif isinstance(atol, ExactAtol):
+            self._atol = atol.value
+            self._atol_vec = None
+            self._atol_track = None
         elif is_scalar_atol(atol):
             self._atol = float(atol)  # type: ignore[arg-type]
             self._atol_vec = None
