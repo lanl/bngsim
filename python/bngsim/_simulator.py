@@ -2272,7 +2272,16 @@ class Simulator:
         # A table function read on the clock breaks at its breakpoints whether
         # or not any condition names it (issue #709).
         table_breaks = model.table_function_breaks()
-        if not conditions and not table_breaks:
+        # A smooth bump of the clock in a rate law (a Gaussian, a sech²) is 0 in
+        # doubles away from itself, and a step spanned it whole (issue #1286).
+        from bngsim._smooth_pulses import smooth_pulse_stops
+
+        try:
+            pulses = smooth_pulse_stops(model._core, float(t_start), float(t_end))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Smooth-pulse stop resolution failed (%s) (issue #1286).", e)
+            pulses = []
+        if not conditions and not table_breaks and not pulses:
             return conditions
         from bngsim._switch_sensitivity import (
             _PLAIN_INSTANT_FLOOR,
@@ -2324,7 +2333,7 @@ class Simulator:
             # unseen. The stop lands a little past the crossing; to the event
             # sensitivity jump the crossing is one more fixed one on its instant.
             stops = merge_crossing_stops(
-                sorted([*crossings, *periodic, *knots], key=lambda stop: stop.time),
+                sorted([*crossings, *periodic, *knots, *pulses], key=lambda stop: stop.time),
                 floor=1.0 if sensitivities else _PLAIN_INSTANT_FLOOR,
             )
             if periodic_at:

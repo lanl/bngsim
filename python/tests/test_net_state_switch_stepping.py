@@ -1332,13 +1332,17 @@ def test_a_held_slide_prints_nothing(tmp_path):
     assert "mxstep" not in done.stdout + done.stderr
 
 
-def _batch_ends_between(path, hold, start, stop):
+def _batch_ends_between(path, hold, start, stop, *, pulse_stops=True):
     """The times CVODE logs a batch ending at, between ``start`` and ``stop``,
     in a run of ``path`` with holding on or off; in a subprocess, as above.
     A spent batch is logged only under BNGSIM_LOG_SPENT_BATCHES=1 (issue #1124,
-    item 13), which leaves SUNDIALS' handler, and the hold's mute, as they were."""
+    item 13), which leaves SUNDIALS' handler, and the hold's mute, as they were.
+    ``pulse_stops=False`` places no stop on a smooth bump of the clock (issue
+    #1286)."""
     script = textwrap.dedent(f"""
-        import bngsim
+        import bngsim, bngsim._smooth_pulses as spm
+        if not {pulse_stops!r}:
+            spm.smooth_pulse_stops = lambda *a, **k: []
         m = bngsim.Model.from_net({str(path)!r})
         bngsim.Simulator(m).run(sample_times=[0.0, 4.0], rtol=1e-6, atol=1e-8,
                                 max_step=0.05, max_steps=20)
@@ -1360,8 +1364,13 @@ def test_a_released_hold_logs_what_main_logs(tmp_path):
     run last returned, so the times are not compared."""
     path = tmp_path / "leave.net"
     path.write_text(_SLIDE_LEAVE_NET.format(**_HOLD_CASES["leaves its band, then crosses"]))
-    assert _batch_ends_between(path, "0", 1.0, 2.4)
-    assert _batch_ends_between(path, "1", 1.0, 2.4)
+    # v() is a Gaussian of the clock, which issue #1286 stops on. A run with a
+    # crossing stop takes the stretch it has not looked inside one step at a
+    # time (#998), and a step at a time ends no batch, so there is nothing for
+    # the log to show either way (#1389). This is asked of the run without that
+    # stop, the run it was written for.
+    assert _batch_ends_between(path, "0", 1.0, 2.4, pulse_stops=False)
+    assert _batch_ends_between(path, "1", 1.0, 2.4, pulse_stops=False)
 
 
 # Issue #1064: a slide along S = 1 written over a scale H. Each spelling is the
