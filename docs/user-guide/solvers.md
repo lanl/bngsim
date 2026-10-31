@@ -23,6 +23,61 @@ re-arm each force one — so bngsim banks each segment as it closes rather than
 sampling the counters once at the end, which would report only the span after
 the last restart (issue #182).
 
+## The default tolerances, and models in small units
+
+The default `rtol` is `1e-8`. The default `atol` is BNG2.pl's scalar `1e-8`
+where that is a tolerance for every species, and a smaller one for each species
+where it is not (issue #1420):
+
+```
+atol_i = min(1e-8, rtol * max(|x_i(0)|, floor))
+floor  = max(smallest start of a species the solver integrates, 1e-6 * the largest)
+```
+
+`x(0)` is the state the call starts from. The scalar was chosen for species held
+as molecule counts. A species that stays below `atol` for the whole run has no
+error control beyond the tolerance itself, which happens in a model in molar or
+other small units, common in SBML and BioModels. Such a trajectory can be off by
+its own size, or go negative, and CVODE reports no error: a binding model of
+species near 1e-9 M ended at -8.7e-10 for 4.1e-10. Under the scalar, 62 of 1,251
+BioModels were off their reference by over 1% of a species' peak, 21 of them with
+no warning. Under this default, 14 are, and none got worse; the corpus took 17%
+longer, nearly all of it on models that had been wrong.
+
+- **It is never looser than the scalar.** A species the scalar already resolves
+  keeps it.
+- **A model of counts is unchanged.** Its species start at 0 or at least 1, so
+  every one takes the scalar, and the run is on the scalar's own code path: 162
+  of 175 `.net` models took the same steps.
+- **The floor** is where a species with no scale of its own (one that starts at
+  0) is held as though it were. It is never under 1e-6 of the largest species:
+  a model that declares a species at 1e-31 beside one at 10 does not integrate
+  with every species at 0 held to 1e-39. Where every species the solver
+  integrates starts at 0, the floor is the smallest start of any species, a
+  `$`-fixed one too, and where every species starts at 0 the default is the
+  scalar.
+- **It reads the state each call starts from**, as `atol="auto"` does, and a
+  batch, a scan or a chunked sensitivity job derives it once for all its runs.
+  A `run_until` step (and so a `ReactionKernel.advance`) keeps the one its
+  trajectory started with, so a coupling loop's answer does not depend on how
+  it is cut into steps, and a model of counts stays on the scalar. For a fit
+  that moves initial conditions, pass a vector from `bngsim.derive_atol`
+  (below) to hold it fixed.
+
+What the default cannot scale is a species that starts at 0, or below every
+scale the start gives, in a model where no species starts small: in a model
+whose species all start at 0, every species is at the scalar. `run()`,
+`run_until()`, `run_batch()`, `parameter_scan()` and
+`compute_all_sensitivities()` raise `bngsim.AtolScaleWarning` in that case,
+once per call and naming the species, where you gave no `atol` and a species
+the solver integrates stays below its tolerance while reaching at least 1e-6 of
+the run's largest. A species stuck at rounding in a count model does not reach
+that, and a `$`-fixed species or an assignment-rule target is not integrated;
+neither is warned. The remedy is `atol="tracking"` (below), which follows each
+species' magnitude, or an `atol` well below those species (issue #1361).
+
+An `atol` you pass, to a call or to `set_tolerances`, is used as given.
+
 ## Per-species absolute tolerance
 
 `atol` also takes one value **per species**, ordered like
@@ -155,10 +210,13 @@ Two things worth knowing:
   one kwarg to rule out.
 
 `atol="auto"` derives `rtol * max(|y_i|, floor)`, where `floor` defaults to the
-smallest strictly positive species value in the model — a species sitting at
-zero has no magnitude of its own to scale, so it is treated as living at the
-smallest scale the model actually exhibits. Pass `floor=` to `auto_atol` to
-choose differently. Being built from *initial* values, this cannot see a species
+smallest strictly positive species value in the model, but not above 1 — a
+species sitting at zero has no magnitude of its own to scale, so it is treated
+as living at the smallest scale the model actually exhibits, or at one unit
+(one molecule, in a model of counts) where every species that has a scale is
+larger. Without the cap, a species at 0 beside species at 1e10 was held to an
+absolute 100, and one grown from 0 came out 100% off (MODEL2009230001). Pass
+`floor=` to `auto_atol` to choose differently. Being built from *initial* values, this cannot see a species
 that starts at order one and decays to something tiny; that is a within-species,
 over-time mismatch, and the CVODE construct for it is `CVodeWFtolerances`, which
 bngsim does not expose yet (issue #213). The corollary is worth stating plainly:
@@ -246,7 +304,8 @@ the result (`"analytical"`, `"fd"`, or `"jax"`) — including `"fd"` when an
 **When to use `"fd"`**: For A/B benchmarking, or if you suspect the analytical
 Jacobian is causing issues. The `"fd"` option uses SUNDIALS' internal
 difference-quotient (DQ) approximation for dense models, and graph-colored
-finite differences for sparse (KLU) models.
+finite differences for sparse (KLU) models. Against a system SUNDIALS of
+another release, see [Installation](../installation.md#from-source).
 
 **Analytical Jacobian**: Available automatically when all reactions use
 Elementary (mass-action) rate laws. For models with Functional or
@@ -338,7 +397,7 @@ dense LU, `1` for sparse KLU, `2` for the BLAS dense factor.
 
 | Route | When (default options) |
 |---|---|
-| KLU (sparse) | at least 50 species, a Jacobian under 10% dense, and an LU factor that stays sparse (below) |
+| KLU (sparse) | at least 50 species, a Jacobian under 10% dense with a structural nonzero to factor, and an LU factor that stays sparse (below) |
 | BLAS dense factor | a model KLU would take whose LU factor fills in, on a build with BLAS |
 | built-in dense LU | everything else |
 
@@ -519,7 +578,7 @@ Each stop is a restart of the integrator, and each restart spends about one
 unit of the local error tolerance. With tens of thousands of stops in a run
 that adds up: a quantity of order `n_stops × atol` is integrated to no better
 than that. `mod(time(), 0.0003)` over 10 time units (33,000 stops) accumulates
-1.5e-3, which the default `atol` of 1e-8 does not resolve and `atol=1e-14`
+1.5e-3, which an `atol` of 1e-8 does not resolve and `atol=1e-14`
 does to 2e-8. Tighten `atol` where a run has many stops and small quantities.
 
 A stop sits on the first double at which the model's own arithmetic reads

@@ -673,16 +673,9 @@ def _worker(spec: dict, q) -> None:
     q.put(res)
 
 
-# A recording's kill is never put off past this: the nightly giant pass's own
-# cap. RoadRunner alone took 1331 s and 14 GB on MODEL1504130000, so a later kill
-# records no giant that times out at 600 s, and it keeps two such processes alive
-# on a 16 GB runner.
-RECORD_KILL_CEILING = 600.0
-
-
 def _kill_after(spec: dict) -> float:
     """When the scheduler kills a job: at its cap, or on a recording at twice it,
-    up to ``RECORD_KILL_CEILING``.
+    up to ``rc.RECORD_KILL_CEILING`` (``rc.recording_kill_after``).
 
     Issue #1290: three jobs that sit at the 300 s cap (about 280 s for both
     engines on the fastest runner, RoadRunner's load most of it, and about 1.7x
@@ -691,9 +684,7 @@ def _kill_after(spec: dict) -> float:
     the worker still judges the row against the cap itself.
     """
     cap = spec["cap"]
-    if not spec.get("write_reference_archive"):
-        return cap
-    return max(cap, min(2 * cap, RECORD_KILL_CEILING))
+    return rc.recording_kill_after(cap) if spec.get("write_reference_archive") else cap
 
 
 # Worker status -> _core Outcome. (timeout/dead are synthesized by the scheduler,
@@ -838,7 +829,7 @@ def main() -> int:
         default=None,
         help=f"Per-job wall-clock cap (s); defaults to {DEFAULT_ODE_TIMEOUT}s when unset. "
         "A recording (--write-reference-archive) kills a job only at twice the cap, up to "
-        f"{RECORD_KILL_CEILING:g}s, to give RoadRunner time to save its reference, and "
+        f"{rc.RECORD_KILL_CEILING:g}s, to give RoadRunner time to save its reference, and "
         "still reports TIMEOUT past the cap.",
     )
     ap.add_argument(

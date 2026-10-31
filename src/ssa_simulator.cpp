@@ -1354,6 +1354,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     //     them; a non-persistent one whose trigger has lapsed since does not
     //     execute. Wherever a non-persistent event's trigger is read false, its
     //     pending executions are dropped (SBML L3v2 §4.11.3).
+    //  7. A strict comparison seeded beside the non-strict one on the same
+    //     residual (`time/3 > tau` beside `time/3 >= tau`) is held back, as in
+    //     the ODE drain (issue #947): it is triggered once everything else has
+    //     settled, at the state that left. `on_crossing` is false at the run's
+    //     start, where the seeds were read true rather than seen turning true.
     // Returns true if any event modified conc[].
     struct ExecInstance {
         int event_idx;
@@ -1395,7 +1400,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     };
     // Far above any legitimate cascade depth (00978 fires ~11; 01533 ~106).
     constexpr int CASCADE_LIMIT = 100000;
-    auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
+    auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in,
+                                    bool on_crossing = true) -> bool {
         if (firing_in.empty() && !(earliest_pending() <= t_now))
             return false;
 
@@ -1451,8 +1457,70 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         std::vector<bool> prev = trigger_was_true;
         std::vector<ExecInstance> queue;
         queue.reserve(firing_in.size());
+        // (strict, its non-strict twin), on a crossing of their residual: a
+        // step back in time the twin is false, and the residual moves over
+        // that step as it moves over the step before it. The step starts past
+        // the bisection's tolerance (BISECT_EPS, 1e-12) and the time's own
+        // rounding, and doubles, as in the ODE drain, where the residual moves
+        // by less than its rounding. The probe moves only the time, so a pair
+        // a firing turned true (a species jumping past the threshold) is one
+        // batch, as is a residual that jumps. (A rate-rule species, which
+        // moves between firings, is held fixed too, so its pairs stay one
+        // batch, as before.) So a trigger that does not read the clock is
+        // never on a crossing here, and is not probed.
+        std::vector<std::pair<int, int>> held_strict;
+        if (on_crossing && firing_in.size() > 1) {
+            constexpr int kHeldProbeDoublings = 20;
+            std::vector<int> pairable;
+            for (int ei : firing_in)
+                if (events[ei].size_jump_compartment.empty())
+                    pairable.push_back(ei);
+            for (const auto &[ei, twin] : model.strict_beside_non_strict(pairable)) {
+                if (!model.event_trigger_reads_time(ei))
+                    continue;
+                const int gidx = model.event_trigger_residual_expr(ei);
+                const double g0 = eval_ref.evaluate(gidx);
+                bool on_it = false;
+                double d = 2.0 * std::max(4e-12, 64.0 * std::numeric_limits<double>::epsilon() *
+                                                     std::max(std::fabs(t_now), 1.0));
+                for (int k = 0; k <= kHeldProbeDoublings && !on_it; ++k, d *= 2.0) {
+                    model.evaluate_functions(t_now - d);
+                    const bool twin_before = eval_ref.evaluate(events[twin].trigger_expr_idx) > 0.5;
+                    const double g1 = eval_ref.evaluate(gidx);
+                    model.evaluate_functions(t_now - 2.0 * d);
+                    const double g2 = eval_ref.evaluate(gidx);
+                    const double d1 = g0 - g1;
+                    const double d2 = g1 - g2;
+                    on_it = !twin_before && d1 * d2 > 0.0 &&
+                            std::fabs(d1 - d2) <= 0.5 * std::max(std::fabs(d1), std::fabs(d2));
+                }
+                sync_state(t_now);
+                if (on_it)
+                    held_strict.emplace_back(ei, twin);
+            }
+        }
+        // Still held: cleared where the trigger changes before the rest has
+        // settled, which then triggers it as any other event. Also where an
+        // event of the instant moves its residual, which it reads true and is
+        // held at: on the crossing the residual is 0 and the strict trigger
+        // false, so that write raises it there, a cascade, as in the ODE drain.
+        std::vector<char> held;
+        std::vector<double> held_at;
+        auto residual_of = [&](int ei) {
+            return eval_ref.evaluate(model.event_trigger_residual_expr(ei));
+        };
+        if (!held_strict.empty()) {
+            held.assign(static_cast<std::size_t>(n_events), 0);
+            held_at.assign(static_cast<std::size_t>(n_events), 0.0);
+            for (const auto &pair : held_strict) {
+                held[static_cast<std::size_t>(pair.first)] = 1;
+                held_at[static_cast<std::size_t>(pair.first)] = residual_of(pair.first);
+            }
+        }
         for (int ei : firing_in) {
             prev[ei] = true;
+            if (!held.empty() && held[static_cast<std::size_t>(ei)] != 0)
+                continue;
             queue.push_back(make_instance(ei));
         }
         take_due(queue);
@@ -1501,6 +1569,21 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             // A delay that rounds to nothing queued an execution due now.
             if (ties.empty()) {
                 if (take_due(queue))
+                    continue;
+                // The strict comparisons held back, at the state the rest
+                // left (issue #947).
+                bool queued_held = false;
+                for (const auto &pair : held_strict) {
+                    const int ei = pair.first;
+                    const auto hi = static_cast<std::size_t>(ei);
+                    if (held[hi] == 0 || !prev[hi])
+                        continue;
+                    held[hi] = 0;
+                    queue.push_back(make_instance(ei));
+                    queued_held = true;
+                }
+                held_strict.clear();
+                if (queued_held)
                     continue;
                 break;
             }
@@ -1673,6 +1756,15 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                             inst.done = true;
                     drop_pending_of(ei);
                 }
+                const auto hi = static_cast<std::size_t>(ei);
+                if (!held.empty() && held[hi] != 0) {
+                    if (now_true != prev[ei]) {
+                        held[hi] = 0;
+                    } else if (now_true && residual_of(ei) != held_at[hi]) {
+                        held[hi] = 0; // raised by this write (see held_at)
+                        queue.push_back(make_instance(ei));
+                    }
+                }
                 prev[ei] = now_true;
             }
         }
@@ -1774,7 +1866,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
         // The drain leaves trigger_was_true settled, so an event that
         // falsified its own trigger can re-arm on the next rise.
-        process_firing_batch(times.t_start, t0_firing);
+        process_firing_batch(times.t_start, t0_firing, /*on_crossing=*/false);
     }
 
     // ─── Time-inhomogeneous propensity detection ─────────────────────────────

@@ -126,6 +126,12 @@ one installed where the replay ran. Neither kind of row
 is compared; re-record to clear them. The two flags are mutually exclusive, and
 the native report's `config.reference_source` records which side was used.
 
+A recording writes the model's entry after every RoadRunner call. A model that
+runs past `--timeout` gets the row a live run gives it at the cap, but its worker
+is killed only at twice the cap (up to 600 s), so RoadRunner, which runs after
+bngsim's ensemble, can save its result. Without that, a model at the cap left no
+entry, and every replay refused it (#1290).
+
 In CI the nightly replays this archive Monday to Saturday and runs the engine live on Sundays; recording and publishing it, and what may go in it, are in [`nightly/README.md`](../nightly/README.md#the-reference-archive-issue-805).
 
 ### SSA timing (GH #135)

@@ -168,6 +168,13 @@ jobs:
           # Keep the antimony floor in step with the [antimony]/[test] extras in
           # pyproject.toml -- 3.1.2 was never published to PyPI, 3.1.3 is the
           # first release carrying the repeated-conversion memory fix.
+          # Unlocked on purpose (issue #1288): every uv-sync leg runs the
+          # uv.lock version, and this one runs the newest antimony that
+          # `pip install bngsim[antimony]` gives a user. It sees a new release
+          # only in the files listed below, and only when a push or pull request
+          # touches its paths: Antimony 3.2.0 broke
+          # test_parameters_folded_at_load.py, which this leg does not run, and
+          # nothing noticed for weeks.
           python -m pip install "pytest>=8.0" "scipy>=1.15" "antimony>=3.1.3"
 
       - name: Show build / capability / compiler info
@@ -245,6 +252,7 @@ jobs:
             python/tests/test_periodic_step_stops.py \
             python/tests/test_codegen_mratio.py \
             python/tests/test_codegen_jit_prelude.py \
+            python/tests/test_codegen_exprtk_functions.py \
             python/tests/test_codegen_alias_rule.py \
             python/tests/test_codegen_name_scan.py \
             python/tests/test_ssa_propensity_export.py \

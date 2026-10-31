@@ -16,11 +16,17 @@ Jacobian at one RHS evaluation per unknown per setup — measured here as the
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import bngsim
 import numpy as np
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import threshold_forced  # noqa: E402
 
 _NETS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "models" / "net" / "ode"
 _SHP2 = "SHP2_base_model.net"  # 149 species, 2 conservation laws -> 147 unknowns
@@ -80,6 +86,7 @@ def _seeded_polish(jacobian: str):
     return ss, model._core.rhs_eval_count - ss.n_rhs_evals, n_unknowns
 
 
+@threshold_forced
 def test_polish_installs_the_closed_form_jacobian():
     """No difference-quotient columns: KINSOL is handed the matrix instead."""
     ss, dq_evals, n_unknowns = _seeded_polish("auto")
@@ -91,6 +98,7 @@ def test_polish_installs_the_closed_form_jacobian():
     )
 
 
+@threshold_forced
 def test_jacobian_fd_still_differences_the_polish():
     """``jacobian="fd"`` is the escape hatch, and it still reaches KINSOL.
 
@@ -110,6 +118,7 @@ def test_jacobian_fd_still_differences_the_polish():
     )
 
 
+@threshold_forced
 def test_march_installs_the_closed_form_jacobian():
     """The CVODE march too — its setups are the other half of issue #127.
 

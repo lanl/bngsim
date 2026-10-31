@@ -356,6 +356,21 @@ def load_verdicts(path: Path) -> dict:
 # --------------------------------------------------------------------------- #
 # diff
 # --------------------------------------------------------------------------- #
+def rebaselined(then: dict, now: dict) -> dict[str, dict]:
+    """The cases the committed baseline re-recorded between two of its versions:
+    case id -> its record in ``now``, where ``then`` held another verdict or none."""
+    old = then["cases"]
+    return {
+        cid: rec
+        for cid, rec in now["cases"].items()
+        if cid not in old or _verdict(old[cid]) != _verdict(rec)
+    }
+
+
+def _verdict(rec: dict) -> tuple:
+    return rec["outcome"], rec.get("subclass")
+
+
 def _label(rec: dict | None) -> str:
     if rec is None:
         return "MISSING"
@@ -377,6 +392,7 @@ def diff(
     flaky: dict[str, str] | None = None,
     timeout_flips_info: bool = False,
     phases_may_differ: bool = False,
+    rebaselined: dict[str, dict] | None = None,
 ) -> dict:
     """Compare two verdict files of the same kind. Returns a JSON-able result.
 
@@ -393,8 +409,17 @@ def diff(
     time. Against the committed baseline that alerts, since the check would stay
     off until someone re-extracted it; ``phases_may_differ`` only reports it,
     which is right for two single nights across a change to BNGSIM_PHASES.
+
+    ``rebaselined`` maps the cases the committed baseline re-recorded since
+    ``base`` was run (:func:`rebaselined`) to their new records. Between two
+    nights, a change into the verdict the baseline now records was reviewed when
+    it was recorded, so it is reported, not alerted: a pull request that makes a
+    check stricter re-records the rows it moves, and they would otherwise alert
+    on its own run and on the first night after it merges. A fix that regresses
+    before anyone re-baselined it is not among them, and still alerts.
     """
     flaky = flaky or {}
+    rebaselined = rebaselined or {}
     if base["kind"] != fresh["kind"]:
         raise ValueError(f"kind mismatch: baseline {base['kind']} vs fresh {fresh['kind']}")
     kind = base["kind"]
@@ -417,6 +442,8 @@ def diff(
         soft = None
         if cid in flaky:
             soft = f"flaky: {flaky[cid]}"
+        elif cid in rebaselined and _verdict(rebaselined[cid]) == _verdict(fr):
+            soft = "re-baselined since that night"
         elif timeout_flips_info and "TIMEOUT" in (bo, fo) and bo != fo:
             soft = "timeout flip between two nights (runner speed)"
         if soft and (bo, br.get("subclass")) != (fo, fr.get("subclass")):
@@ -795,6 +822,14 @@ def _cmd_extract(args) -> int:
     return 0
 
 
+def _rebaselined_from(then: str, now: str) -> dict[str, dict]:
+    """:func:`rebaselined` between two committed baseline files; nothing when
+    either is not given or not there (the run it describes predates the suite)."""
+    if not (then and now and Path(then).exists() and Path(now).exists()):
+        return {}
+    return rebaselined(load_verdicts(Path(then)), load_verdicts(Path(now)))
+
+
 def _cmd_diff(args) -> int:
     fresh = load_verdicts(Path(args.fresh))
     base_path = Path(args.baseline)
@@ -836,6 +871,7 @@ def _cmd_diff(args) -> int:
         flaky=flaky,
         timeout_flips_info=args.timeout_flips_info,
         phases_may_differ=args.phases_may_differ,
+        rebaselined=_rebaselined_from(args.baseline_then, args.baseline_now),
     )
     result["label"] = args.label
     md = render_md(result, args.label)
@@ -966,6 +1002,14 @@ def main(argv=None) -> int:
         action="store_true",
         help="report (do not alert on) the two files' bngsim_sec summing different phases",
     )
+    d.add_argument(
+        "--baseline-then",
+        default="",
+        help="the committed baseline as of the --baseline run's commit; with "
+        "--baseline-now, a change into a verdict the baseline re-recorded since "
+        "then is reported, not alerted",
+    )
+    d.add_argument("--baseline-now", default="", help="the committed baseline now")
     d.add_argument(
         "--allow-missing-baseline",
         action="store_true",

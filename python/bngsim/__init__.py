@@ -28,6 +28,7 @@ from bngsim._codegen import prepare_codegen
 from bngsim._eval_spec import EvaluationSpec
 from bngsim._evaluators import JacobianMatrix
 from bngsim._exceptions import (
+    AtolScaleWarning,
     BngsimError,
     CodegenDeclinedError,
     ConversionError,
@@ -396,6 +397,7 @@ __all__ = [
     "SsaBoundaryWarning",
     "SsaRoundingWarning",
     "DenseSolverFallbackWarning",
+    "AtolScaleWarning",
     "RuleMonkeyWarning",
     "SensitivityUnsupportedError",
     "SsaValidationError",

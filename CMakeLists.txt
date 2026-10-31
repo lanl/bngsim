@@ -280,6 +280,46 @@ if(BNGSIM_USE_SYSTEM_SUNDIALS)
     )
     message(STATUS "Using system SUNDIALS: ${SUNDIALS_DIR}")
 
+    # include/bngsim/dq_jacobian.hpp forms the dense difference quotient that
+    # CVODE forms with no Jacobian, cvLsDenseDQJac, as the vendored release forms
+    # it, bit for bit, so that a row whose step crosses a jump can be mended
+    # (issue #1002). Against another release the quotient is still a valid one,
+    # but need not be that release's own: a run can differ from its own CVODE's
+    # in the last digits. No CI leg builds against another release (issue #1335).
+    #
+    # The check only advises, so it is best-effort: metadata it cannot read skips
+    # it with a note instead of failing the configure. Releases compare by
+    # major.minor: a patch release of the vendored one (7.2.0 beside 7.2.1) left
+    # cvode_ls.c and cvodes_ls.c as they were.
+    set(_bngsim_sundials_vendored_tag "")
+    set(_bngsim_sundials_tag_error "")
+    if(EXISTS "${BNGSIM_SUNDIALS_VENDOR_METADATA}")
+        file(READ "${BNGSIM_SUNDIALS_VENDOR_METADATA}" _bngsim_sundials_vendor_json)
+        string(JSON _bngsim_sundials_vendored_tag ERROR_VARIABLE _bngsim_sundials_tag_error
+            GET "${_bngsim_sundials_vendor_json}" source authoritative_release_tag)
+    endif()
+    string(REGEX MATCH "[0-9]+\\.[0-9]+" _bngsim_sundials_vendored_mm
+        "${_bngsim_sundials_vendored_tag}")
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _bngsim_sundials_system_mm "${SUNDIALS_VERSION}")
+    if(_bngsim_sundials_tag_error OR NOT _bngsim_sundials_vendored_mm)
+        message(STATUS "Could not read the vendored SUNDIALS release from "
+            "${BNGSIM_SUNDIALS_VENDOR_METADATA}, so the system SUNDIALS is not checked "
+            "against it (issue #1335)")
+    elseif(NOT _bngsim_sundials_system_mm STREQUAL _bngsim_sundials_vendored_mm)
+        if(SUNDIALS_VERSION)
+            set(_bngsim_sundials_system_release "${SUNDIALS_VERSION}")
+        else()
+            set(_bngsim_sundials_system_release "of an unreported release")
+        endif()
+        message(WARNING
+            "System SUNDIALS ${_bngsim_sundials_system_release} is not the vendored "
+            "${_bngsim_sundials_vendored_tag}. bngsim's dense difference quotient "
+            "(jacobian=\"fd\", or a law the closed form declines) reproduces CVODE "
+            "${_bngsim_sundials_vendored_mm}'s. With this release it is still a valid "
+            "quotient, but can differ from this CVODE's own in the last digits, and no "
+            "CI leg tests the combination (issue #1335).")
+    endif()
+
     # Verify the system SUNDIALS really provides KLU instead of assuming it: a
     # conda-forge/system SUNDIALS can be built without the KLU solver even when
     # SuiteSparse headers are installed on the box.
@@ -419,13 +459,41 @@ else()
         message(STATUS "BNGsim: sparse Jacobian support explicitly disabled")
     endif()
 
+    # The one local carry in the fetched source (VENDOR.json, local_carries):
+    # CVODES's staggered sensitivity corrector, which did not restore a step
+    # its RHS refused (lanl/bngsim#1301). A build tree fetched under an older
+    # revision of it fetches afresh; checked below, since a
+    # FETCHCONTENT_SOURCE_DIR_SUNDIALS override skips the patch step.
+    set(_bngsim_carry_marker "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r3)")
+    include("${BNGSIM_SUNDIALS_DIR}/discard_stale_fetch.cmake")
+    bngsim_discard_stale_sundials_fetch(
+        "${FETCHCONTENT_BASE_DIR}" "${CMAKE_BINARY_DIR}" "${_bngsim_carry_marker}"
+        "${FETCHCONTENT_SOURCE_DIR_SUNDIALS}" "${FETCHCONTENT_FULLY_DISCONNECTED}")
     FetchContent_Declare(
         sundials
         URL "${BNGSIM_SUNDIALS_SOURCE_URL}"
         URL_HASH "SHA256=${BNGSIM_SUNDIALS_SOURCE_SHA256}"
         DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+        PATCH_COMMAND "${CMAKE_COMMAND}" -DSUNDIALS_SOURCE_DIR=<SOURCE_DIR>
+                      -P "${BNGSIM_SUNDIALS_DIR}/carry_cvodes_staggered_restore.cmake"
     )
     FetchContent_MakeAvailable(sundials)
+
+    file(READ "${sundials_SOURCE_DIR}/src/cvodes/cvodes.c" _bngsim_cvodes_c)
+    string(FIND "${_bngsim_cvodes_c}" "${_bngsim_carry_marker}" _bngsim_carry_at)
+    unset(_bngsim_cvodes_c)
+    if(_bngsim_carry_at EQUAL -1)
+        message(FATAL_ERROR
+            "The SUNDIALS source at ${sundials_SOURCE_DIR} lacks the current "
+            "lanl/bngsim#1301 carry, which forward-sensitivity runs need to be right. "
+            "A FETCHCONTENT_SOURCE_DIR_SUNDIALS copy: apply it to a pristine "
+            "src/cvodes/cvodes.c with\n"
+            "  cmake -DSUNDIALS_SOURCE_DIR=${sundials_SOURCE_DIR} -P "
+            "${BNGSIM_SUNDIALS_DIR}/carry_cvodes_staggered_restore.cmake\n"
+            "A build tree configured with FETCHCONTENT_FULLY_DISCONNECTED=ON: configure "
+            "it once with that OFF, so the stale fetch is replaced.")
+    endif()
+    set(BNGSIM_SUNDIALS_CARRIES_1301 ON)
 
     if(ENABLE_KLU)
         set(BNGSIM_LINK_KLU ON)
@@ -649,6 +717,28 @@ endif()
 # codegen backend and the ExprTk fallback are unchanged when MIR is disabled.
 option(BNGSIM_ENABLE_MIR "Build the vendored MIR micro-JIT backend for the codegen RHS (GH #78, prototype)" OFF)
 
+# Issue #1215: the address space, in MB, each MIR context reserves for its code
+# (MIR_CODE_RESERVE_SIZE). third_party/mir/README.md.bngsim says why 32.
+#
+# Declared and checked outside the MIR block, so that it is read on every
+# configure: scripts/rebuild_editable.py passes it every time (GH #459), and a
+# value passed but never read draws CMake's "not used by the project" warning
+# on every build without MIR.
+set(BNGSIM_MIR_CODE_RESERVE_MB "32" CACHE STRING
+    "Address space in MB each MIR context reserves for its code (issue #1215; 0 = none, at most 2048)")
+if(NOT BNGSIM_MIR_CODE_RESERVE_MB MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "BNGSIM_MIR_CODE_RESERVE_MB must be a whole number of MB, "
+                        "not '${BNGSIM_MIR_CODE_RESERVE_MB}'")
+endif()
+# x86-64's ±2 GB is the farthest any MIR target's direct branches reach, so a
+# larger reservation keeps no more code in reach. And math(EXPR) is 64-bit:
+# from 2^43 MB up it wraps the byte count to a negative or zero size, which MIR
+# would quietly turn into no reservation at all.
+if(BNGSIM_MIR_CODE_RESERVE_MB GREATER 2048)
+    message(FATAL_ERROR "BNGSIM_MIR_CODE_RESERVE_MB must be at most 2048 MB, "
+                        "not '${BNGSIM_MIR_CODE_RESERVE_MB}'")
+endif()
+
 if(BNGSIM_ENABLE_MIR)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mir/c2mir/c2mir.c")
         message(STATUS "Building vendored MIR micro-JIT from: third_party/mir/")
@@ -689,6 +779,18 @@ if(BNGSIM_ENABLE_MIR)
             $<$<C_COMPILER_ID:GNU,Clang,AppleClang>:-w>
             $<$<C_COMPILER_ID:MSVC>:/w>
         )
+        # Issue #1215: the size of MIR's code reservation, from
+        # BNGSIM_MIR_CODE_RESERVE_MB (declared and checked above); Windows and
+        # 32-bit hosts keep MIR's own 0. PUBLIC because MirJit's code allocator
+        # tells the reservation from the rest of MIR's mappings by its size.
+        if(NOT WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+            math(EXPR BNGSIM_MIR_CODE_RESERVE_BYTES "${BNGSIM_MIR_CODE_RESERVE_MB} * 1024 * 1024")
+            message(STATUS "MIR code reservation: ${BNGSIM_MIR_CODE_RESERVE_MB} MB per context")
+        else()
+            set(BNGSIM_MIR_CODE_RESERVE_BYTES 0)
+        endif()
+        target_compile_definitions(bngsim_mir PUBLIC
+            MIR_CODE_RESERVE_SIZE=${BNGSIM_MIR_CODE_RESERVE_BYTES})
     else()
         message(WARNING "Vendored MIR source not found at third_party/mir/, "
                         "disabling BNGSIM_ENABLE_MIR")
@@ -854,6 +956,18 @@ endif()
 
 if(BNGSIM_BUILD_RULEMONKEY)
     target_compile_definitions(bngsim PUBLIC BNGSIM_HAS_RULEMONKEY=1)
+endif()
+
+# Whether CVODES carries the lanl/bngsim#1301 fix (the fetched source always
+# does). A system SUNDIALS does not: a sensitivity run there can step past a
+# refused state uncorrected, and is refused only where an output falls in it.
+if(BNGSIM_SUNDIALS_CARRIES_1301)
+    target_compile_definitions(bngsim PRIVATE BNGSIM_SUNDIALS_CARRIES_1301=1)
+else()
+    message(WARNING
+        "System SUNDIALS lacks the lanl/bngsim#1301 fix to CVODES's staggered "
+        "sensitivity corrector: a forward-sensitivity run whose RHS refuses a state "
+        "can come back wrong. Use the fetched SUNDIALS for sensitivity work.")
 endif()
 
 # MIR micro-JIT backend (GH #78). Linked PRIVATE — the JIT is an internal

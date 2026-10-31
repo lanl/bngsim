@@ -633,6 +633,10 @@ class NfsimSimulator:
         """
         Set a parameter override (applied before each run)
         """
+    def set_species_amounts(self, amounts: collections.abc.Mapping[str, typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Seed amounts for the next run by <Species id=>, replacing any set before
+        """
     def set_species_count(self, pattern: str, count: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         Set count for an exact single-molecule BNGL species pattern
@@ -856,6 +860,10 @@ class RuleMonkeySimulator:
     def set_reads_clock(self, enabled: bool) -> None:
         """
         Whether the model reads the clock (default true): one-shot runs then run on the model's clock, else on time elapsed since t_start
+        """
+    def set_species_amounts(self, amounts: collections.abc.Mapping[str, typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Seed amounts for the next run by <Species id=>, replacing any set before
         """
     def set_species_count(self, pattern: str, count: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
@@ -1522,6 +1530,10 @@ class _CNumericLocale:
         ...
     def __init__(self) -> None:
         ...
+def _mir_jit_compile(source: str, fail_allocation: typing.SupportsInt | typing.SupportsIndex = -1, fail_mapping: typing.SupportsInt | typing.SupportsIndex = -1, fail_mapping_errno: typing.SupportsInt | typing.SupportsIndex = 12) -> tuple[int, int]:
+    """
+    MIR-compile a generated C source as if the C heap ran out at MIR's allocation number fail_allocation, or its code mapping number fail_mapping were refused with errno fail_mapping_errno (both counted from 0; -1 fails none), and return how many allocations and code mappings MIR made. A failure raises MirJit's RuntimeError (issue #1215). Internal.
+    """
 def _refuse_nonfinite_sensitivities(data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], col_names: collections.abc.Sequence[str], axis: str = 'parameter column') -> None:
     """
     Raise RuntimeError if any cell of a (n_times, n_species, n_cols) sensitivity tensor is non-finite, naming the first affected output point, every column implicated there, and how those cells split between inf and nan (GH #394); return None otherwise. The guard CvodeSimulator applies to every forward-sensitivity run (GH #384), exposed so it can be tested on a synthesized tensor rather than on a model that happens to blow up (GH #389). Internal.

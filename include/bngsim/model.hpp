@@ -241,6 +241,19 @@ class NetworkModel {
     // Empty when event_trigger_residual_expr() is -1.
     const std::vector<int> &event_trigger_residual_species(int event_idx0) const;
 
+    // The comparison that residual comes from, so that two triggers turning
+    // true at one read can be told apart (issue #947): the residual oriented
+    // to rise where the trigger turns true, with whitespace dropped
+    // (`tau <= time` and `time >= tau` give one text), and in `*strict`
+    // whether it is `<` or `>` rather than `<=` or `>=`. Empty, and `*strict`
+    // false, when event_trigger_residual_expr() is -1.
+    const std::string &event_trigger_comparison(int event_idx0, bool *strict = nullptr) const;
+
+    // Of the events in `rising`, those whose trigger is a strict comparison
+    // with the non-strict one on the same residual also in `rising`, each
+    // with that twin: `time/3 > tau` beside `time/3 >= tau` (issue #947).
+    std::vector<std::pair<int, int>> strict_beside_non_strict(const std::vector<int> &rising) const;
+
     // How deep rateOf is nested, over the species whose rateOf is read at
     // all: 0 where none of their derivatives reads a rateOf, 1 for
     // `S' = rateOf(A)` with a rateOf(S) somewhere, and so on (a few where it

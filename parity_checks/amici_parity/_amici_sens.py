@@ -847,6 +847,90 @@ def sens_verdict(
     return v
 
 
+# How far a column's peak must clear its floor to be judged: 1 / differ's
+# HARD_REL_CEILING (5%). The verdict forgives every cell inside a floor, so a
+# column only just over one would have all of its disagreement forgiven, and a
+# PASS on it would say nothing; at 20x, what a floor forgives stays under what
+# the verdict calls real. fd_sens measured it (#1167): wofsy_goldstein's K11
+# (peak 2.2x its difference's floor) passed a 30% error, and nanomolar_dimer
+# (2.5x the atol/|p| floor) 40%.
+JUDGE_FACTOR = 20.0
+
+
+def column_peaks(sx: np.ndarray) -> np.ndarray:
+    """Per parameter, the peak ``|value|`` over (time, species); a column holding
+    a non-finite cell peaks at ``inf``."""
+    t = np.asarray(sx, dtype=float)
+    if t.size == 0:
+        return np.zeros(t.shape[-1] if t.ndim else 0)
+    return np.where(np.isfinite(t), np.abs(t), np.inf).max(axis=(0, 1))
+
+
+def judged_columns(bn_sx, ref_sx, param_values, atol: float, extra_floors=None) -> list[int]:
+    """The parameter columns a verdict can judge (issue #1261).
+
+    A column's peak, the larger of the two sides', has to clear its
+    ``atol/|p|`` floor (:func:`sens_resolution_floors`), and each of
+    ``extra_floors`` if given, by :data:`JUDGE_FACTOR`. Below that the floor
+    forgives errors of many percent of the column's peak, so a PASS on it
+    would establish little; it is left out and named on the row instead. A
+    gross error there (a column zeroed or negated) is still past the floor,
+    and is not forgiven by it: amici_sens judges such a column in its
+    tensor-wide verdict, as it did before #1261.
+
+    Either side's peak counts, so a column one side gets wrong is judged
+    whichever way it is wrong: a wrongly large one on its own peak, a silent
+    zero on the other side's. A column with a non-finite cell peaks at ``inf``
+    and is always judged.
+    """
+    floors = sens_resolution_floors(param_values, atol)
+    if floors is None:
+        return []
+    if extra_floors is not None:
+        # fmax, not maximum: a NaN extra floor (fd_sens's, for a NaN parameter
+        # value) leaves the atol/|p| floor in force, as max() did there.
+        floors = np.fmax(floors, np.asarray(extra_floors, dtype=float))
+    peaks = np.maximum(column_peaks(bn_sx), column_peaks(ref_sx))
+    return [j for j in range(len(floors)) if peaks[j] > JUDGE_FACTOR * floors[j]]
+
+
+def column_verdicts(
+    bn_sx, ref_sx, param_values, atol: float, judged, forgive_mask=None
+) -> dict[int, dict]:
+    """:func:`sens_verdict` for each judged parameter column on its own (#1167, #1261).
+
+    A parameter column's sensitivities are in that parameter's units, so one
+    tensor-wide verdict judges every column against the largest one: ``differ``'s
+    significance gate counts a (species, parameter) column only past 1e-3 of the
+    whole array's peak, and forgives every cell under an absolute 1e-12. On the
+    nightly's amici_sens cases, 2,702 of 4,272 parameter columns, in 56 of 82
+    compared cases, could be zeroed, negated or multiplied by 1000 and still read
+    PASS.
+
+    Each column is therefore judged alone, scaled to a peak of 1 (so ``differ``'s
+    absolute floor is relative too), with ``atol`` scaled alike so the
+    ``atol/|p|`` floor is unchanged. ``forgive_mask``, shaped like the tensors,
+    names cells the caller's reference cannot adjudicate (fd_sens: a finite
+    difference's own noise and step error); amici_sens passes none.
+    """
+    bn_sx = np.asarray(bn_sx, dtype=float)
+    ref_sx = np.asarray(ref_sx, dtype=float)
+    if forgive_mask is not None:
+        forgive_mask = np.asarray(forgive_mask, dtype=bool)
+    out = {}
+    for j in judged:
+        a, r = bn_sx[..., [j]], ref_sx[..., [j]]
+        mags = np.abs(np.concatenate([a.ravel(), r.ravel()]))
+        mags = mags[np.isfinite(mags)]
+        peak = float(mags.max()) if mags.size else 0.0
+        c = 1.0 / peak if peak > 0.0 else 1.0
+        mask = None if forgive_mask is None else forgive_mask[..., [j]]
+        out[j] = sens_verdict(
+            a * c, r * c, param_values=[param_values[j]], atol=atol * c, forgive_mask=mask
+        )
+    return out
+
+
 def measure_warmup(include_amici: bool = True) -> dict:
     """Per-process warmup for both engines — see :func:`_amici_common.measure_warmup`."""
     return ac.measure_warmup(include_amici)

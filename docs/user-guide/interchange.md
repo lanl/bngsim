@@ -84,6 +84,17 @@ express (`!=`, non-finite parameters); SBML events are **dropped with a note**
 refusal to a `ConversionWarning` and emit a best-effort artifact — the validation
 ladder below still catches any numerical drift that results.
 
+**A `.net` only bngsim reads as written.** An SBML species an assignment rule sets
+is written `$`-fixed, beside the observable or function that holds its rule under
+the species' own name. bngsim's reader takes the pair as the rule, so the file is
+exact for bngsim, but BioNetGen's `run_network` holds the species at its initial
+value for the whole run (`B := 2*A`: B = 20 at t = 5 there, 1.64 in bngsim). Its
+rate laws read the rule through that observable or function, so only the
+species' own column can be wrong there. The writer warns, with a `ConversionWarning`
+naming those species, and never refuses, `strict=True` included;
+`capability_report` and the reports `sbml_to_net` and `validate_conversion`
+return list them under `bngsim_only`.
+
 ## Validate the conversion (the L0–L4 ladder)
 
 `net_to_sbml` / `sbml_to_net` take `validate={"L1", "L2", "full", None}`.

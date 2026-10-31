@@ -81,14 +81,13 @@ def test_mir_vendor_metadata_shape():
 def test_mir_local_carries_are_still_applied():
     """Every declared local carry must still be present in the vendored file.
 
-    The tree is stock upstream today — issue #413's bounds check in mir-gen.c
-    was carried here until upstream merged it (vnmakarov/mir#468), so the list
-    is empty — but the check stays for the next carry. Checksum anchors cannot
-    guard a carry —
-    a refresh rewrites the file from upstream AND re-anchors it, so the patch
-    vanishes with the tree still matching its own metadata. Each entry names a
-    ``marker`` comment the patch itself carries; grepping for it is the one
-    tripwire a re-vendor cannot satisfy by accident. Same check as
+    Three carries today: issue #1215's two (in mir.c and c2mir/c2mir.c) and
+    issue #1216's loop-padding NOPs in mir-gen-x86_64.c. Issue #413's was
+    dropped when upstream merged it (vnmakarov/mir#468). Checksum anchors cannot
+    guard a carry — a refresh rewrites the file from upstream AND re-anchors it,
+    so the patch vanishes with the tree still matching its own metadata. Each
+    entry names a ``marker`` comment the patch itself carries; grepping for it is
+    the one tripwire a re-vendor cannot satisfy by accident. Same check as
     ``scripts/vendor_mir.py --check``.
     """
     metadata = json.loads(MIR_VENDOR_METADATA.read_text())
@@ -96,7 +95,7 @@ def test_mir_local_carries_are_still_applied():
     assert isinstance(carries, list)
 
     for carry in carries:
-        for field in ("file", "marker", "issue", "summary", "reapply"):
+        for field in ("file", "marker", "issue", "upstream_status", "summary", "reapply"):
             assert carry.get(field), f"local carry missing {field!r}: {carry}"
         path = MIR_DIR / carry["file"]
         assert path.is_file(), f"local carry names a missing file: {carry['file']}"
@@ -152,6 +151,68 @@ def test_mir_gen_spill_reload_table_is_bounds_checked():
     assert "gen_assert (n < MAX_INSN_RELOAD_MEM_OPS)" not in recorded
 
 
+# The NOP Intel recommends for each length from 0 to 7 bytes (Intel 64 and IA-32
+# Architectures Software Developer's Manual, Vol. 2B, "NOP").
+INTEL_RECOMMENDED_NOPS = [
+    b"",
+    b"\x90",
+    b"\x66\x90",
+    b"\x0f\x1f\x00",
+    b"\x0f\x1f\x40\x00",
+    b"\x0f\x1f\x44\x00\x00",
+    b"\x66\x0f\x1f\x44\x00\x00",
+    b"\x0f\x1f\x80\x00\x00\x00\x00",
+]
+
+
+def test_mir_x86_64_loop_padding_is_intels_recommended_nops():
+    """Issue #1216: the NOPs MIR pads a loop head with must run under Rosetta 2.
+
+    From -O2, ``target_translate`` aligns the head of each innermost loop to a
+    ``LOOP_ALIGN`` (8) byte boundary, padding with ``nop_pats[n]`` for n = 0..7.
+    Upstream's 3- and 4-byte entries are the register forms ``0F 1F C0`` (nopl
+    %eax) and ``48 0F 1F C0`` (nopq %rax). An x86-64 CPU runs them, but Rosetta 2
+    raises SIGILL on both, so an x86_64 Python on Apple Silicon died the first
+    time it ran a 3- or 4-byte pad, and never at -O0 or -O1, which pad nothing.
+    The carry (VENDOR.json ``local_carries``) uses the memory forms Intel
+    recommends, as upstream's 5- to 7-byte entries already are.
+
+    A source-level assertion, because no CI leg runs x86_64 code under Rosetta.
+    """
+    src = (MIR_DIR / "mir-gen-x86_64.c").read_text()
+    # Comments out, so the carry's note quoting the old bytes is not read as an
+    # entry.
+    code = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+    # Exactly one definition, of 8: a later #undef and #define, or one per #if
+    # branch, would let a pad outgrow the table checked below.
+    aligns = re.findall(r"^[ \t]*#[ \t]*(define|undef)[ \t]+LOOP_ALIGN\b(.*)$", code, re.M)
+    assert [(d, v.strip()) for d, v in aligns] == [("define", "8")], (
+        "LOOP_ALIGN changed: padding can now take more than 7 bytes, so "
+        f"INTEL_RECOMMENDED_NOPS has to grow with it ({aligns})"
+    )
+    start = code.index("static const char *nop_pats[] = {")
+    body = code[code.index("{", start) + 1 : code.index("};", start)]
+
+    entries = []
+    for item in body.split(","):
+        if not item.strip():
+            continue
+        text = "".join(re.findall(r'"([^"]*)"', item))
+        assert re.fullmatch(r"(\\x[0-9a-fA-F]{2})*", text), f"nop_pats entry {item.strip()!r}"
+        entries.append(bytes(int(h, 16) for h in re.findall(r"\\x([0-9a-fA-F]{2})", text)))
+
+    wrong = [
+        f"{n} bytes: {got.hex(' ')} for {want.hex(' ')}"
+        for n, (got, want) in enumerate(zip(entries, INTEL_RECOMMENDED_NOPS, strict=False))
+        if got != want
+    ]
+    assert len(entries) == len(INTEL_RECOMMENDED_NOPS) and not wrong, (
+        f"nop_pats is not Intel's recommended NOPs ({len(entries)} entries): "
+        f"{'; '.join(wrong)}. Rosetta 2 raises SIGILL on the register forms "
+        "0f 1f c0 and 48 0f 1f c0; see VENDOR.json local_carries (#1216)."
+    )
+
+
 def test_mir_anchored_checksums_match_tree():
     """The VENDOR.json anchors must match the checked-in files byte-for-byte."""
     metadata = json.loads(MIR_VENDOR_METADATA.read_text())
@@ -188,3 +249,49 @@ def test_cmake_gates_mir_behind_option():
     for rel in TRANSLATION_UNITS:
         assert f"third_party/mir/{rel}" in text
     assert "BNGSIM_HAS_MIR=1" in text
+
+
+# ── Issue #1215: the address space each MIR context reserves for its code ────
+# third_party/mir/README.md.bngsim says why CMake sets 32 MB. The live models'
+# address space is measured in test_mir_equivalence.py, which runs only on a
+# MIR build: a skip here would be one run_tests.sh's walk-up probe counts
+# against it.
+
+
+def test_cmake_sizes_the_mir_code_reservation():
+    text = CMAKE_LISTS.read_text()
+    assert 'set(BNGSIM_MIR_CODE_RESERVE_MB "32" CACHE STRING' in text
+    assert "MIR_CODE_RESERVE_SIZE=${BNGSIM_MIR_CODE_RESERVE_BYTES}" in text
+    # PUBLIC: MirJit's code allocator tells the reservation apart by its size,
+    # so it must see the size mir.c was built with.
+    assert "target_compile_definitions(bngsim_mir PUBLIC\n" in text
+    assert "if(BNGSIM_MIR_CODE_RESERVE_MB GREATER 2048)" in text
+    # The vendored default it overrides is still upstream's, under the #ifndef
+    # that lets the define override it, so a refresh that moves either is seen
+    # here. bngsim_mir compiles with -w: without the guard, mir.c's own #define
+    # would replace CMake's with no warning, and every context would reserve
+    # 128 MB again.
+    mir_c = (MIR_DIR / "mir.c").read_text()
+    assert (
+        "#ifndef MIR_CODE_RESERVE_SIZE\n"
+        "#if UINTPTR_MAX == 0xffffffffffffffffu && !defined(_WIN32)\n"
+        "#define MIR_CODE_RESERVE_SIZE (128 * 1024 * 1024)\n"
+    ) in mir_c
+    assert mir_c.count("#define MIR_CODE_RESERVE_SIZE") == 2
+
+
+def test_c2mir_checks_every_struct_it_mallocs():
+    """Issue #1215: c2mir's preprocessor allocated its macro, macro-call and #if
+    records with plain malloc and wrote through the result unchecked, so running
+    out there was a segfault the allocator MirJit hands MIR never sees. The
+    local carry checks each; this is the check a refresh that adds another
+    unchecked one fails."""
+    lines = (MIR_DIR / "c2mir" / "c2mir.c").read_text().splitlines()
+    struct_malloc = re.compile(r"\bmalloc \(sizeof \(struct \w+\)\);")
+    mallocs = [i for i, line in enumerate(lines) if struct_malloc.search(line)]
+    assert len(mallocs) >= 3
+    for i in mallocs:
+        var = re.search(r"(\w+) = malloc \(", lines[i]).group(1)
+        following = [line for line in lines[i + 1 : i + 5] if line.strip()]
+        assert following[0].strip().startswith(f"if ({var} == NULL)"), (i + 1, lines[i])
+        assert "(MIR_alloc_error," in following[1], (i + 1, lines[i])

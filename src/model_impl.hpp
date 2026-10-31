@@ -415,6 +415,11 @@ struct NetworkModel::Impl {
     std::vector<int> event_trigger_residual_idx;
     std::vector<std::vector<int>> event_trigger_residual_species;
     std::vector<std::string> event_trigger_residual_reason;
+    // And the comparison the residual comes from (issue #947): its rising
+    // orientation without whitespace, and whether it is strict. Empty where
+    // there is no residual.
+    std::vector<std::string> event_trigger_comparison;
+    std::vector<char> event_trigger_strict;
 
     // For each species, the species whose rateOf its derivative reads; state
     // 1 known, 2 cannot be said (0 until they are filled).

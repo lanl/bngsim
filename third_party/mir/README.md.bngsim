@@ -1,7 +1,9 @@
 # MIR (vendored) — in-process micro-JIT for the codegen RHS
 
 This is a pruned vendor copy of [MIR](https://github.com/vnmakarov/mir) by
-Vladimir Makarov, pinned at commit `439a90a2` (MIT-licensed; see `LICENSE`).
+Vladimir Makarov, pinned at commit `439a90a2` (MIT-licensed; see `LICENSE`),
+with three local carries, two for issue #1215 and one for issue #1216 (see
+`bngsim/scripts/MIR_VENDORING.md`).
 MIR's own `README.md` is preserved alongside this file.
 
 ## Why it's here (GH #78)
@@ -49,3 +51,43 @@ the pinned commit in `VENDOR.json` and re-anchors the per-file checksums.
 `--summary` previews, `--check` is the offline tripwire that the checked-in tree
 still matches `VENDOR.json`. See `bngsim/scripts/MIR_VENDORING.md` for the full
 refresh + MIR-on build/validation flow.
+
+## The code reservation (issue #1215)
+
+Each MIR context reserves one stretch of address space for its generated code,
+`MIR_CODE_RESERVE_SIZE`, so that the code's direct branches reach each other
+(±128 MB on aarch64); code that outgrows it is mapped on its own. Upstream
+reserves 128 MB on 64-bit hosts other than Windows. That is address space, not
+memory, but a cap on the address space (`ulimit -v`, `RLIMIT_AS`, as some
+clusters set) counts it: with 128 MB, about 60 live MIR-JIT'd models filled
+8 GB. bngsim's CMake sets it to `BNGSIM_MIR_CODE_RESERVE_MB`, 32 MB by default,
+which holds the largest committed model's code in one piece (fceri_gamma's
+27.9 MB, measured on macOS arm64). bngsim generates code eagerly, and its calls
+and thunk redirects check their reach, so code mapped on its own runs the same:
+the size is address space only. Under a tight cap, configure with
+`-DBNGSIM_MIR_CODE_RESERVE_MB=8` (fceri_fyn's 7.4 MB fits), or `0` to reserve
+nothing. The value is a CMake cache entry, so a `pip`/`uv` install keeps the
+last one passed in its build directory. `scripts/rebuild_editable.py` passes
+32 on every rebuild instead (GH #459); set `BNGSIM_MIR_CODE_RESERVE_MB` in its
+environment to ask for another. Windows reserves nothing either way.
+
+## Running out (issue #1215)
+
+At a cap on the address space, the model that does not fit fails to compile.
+MIR's own answer to that was to end the process: its default error function
+and its growable arrays call `exit(1)`, and a failed code mapping comes back as
+a NULL code address that MIR writes through. `MirJit` therefore hands each
+context an allocator, a code allocator wrapping MIR's default one, and an error
+function, all of which return to `MirJit::compile` by `longjmp` (MIR.md asks only
+that an error function never return), and `MirJit` raises a `RuntimeError`. MIR cannot finish a context it
+failed in, so `MirJit` abandons it: its heap memory stays allocated, but its code
+mappings are unmapped. Two local carries make this reachable: `mir.c` exposes the
+default code allocator to wrap, and `c2mir.c` reports, through MIR's error
+function, a failure of the three records its preprocessor allocates with plain
+`malloc`.
+
+For a large model the reservation is not most of what a live MIR context holds
+against such a cap: its compiled MIR is. `MirJit` finishes c2mir as soon as it
+has made the module, which took a live fceri_fyn context from 852 MB of heap to
+388 MB (macOS arm64). A small one holds a few MB (simple_decay 1, egfr_simple_seed
+6), so the reservation is still most of it.

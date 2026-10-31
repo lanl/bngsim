@@ -223,11 +223,16 @@ def derive_atol(
     has no magnitude to scale, and ``atol[i] = 0`` would put it under pure
     relative error control, which CVODE will not integrate the moment that
     species is genuinely zero. The default takes the smallest strictly positive
-    entry of ``state``: a species with no scale of its own is treated as living
-    at the smallest scale the model actually exhibits. That is the tight
-    choice, deliberately — it can cost step size on a zero-initialized species
-    that later grows, but it never quietly drops one below the noise floor,
-    and it is the direction a caller can measure and then override.
+    entry of ``state``, but not above 1: a species with no scale of its own is
+    treated as living at the smallest scale the model actually exhibits, or at
+    one unit (one molecule, in a model of counts) where every species that has
+    a scale is larger. That is the tight choice, deliberately — it can cost
+    step size on a zero-initialized species that later grows, but it never
+    quietly drops one below the noise floor, and it is the direction a caller
+    can measure and then override. Without the cap, a model whose every start
+    is large held its species at 0 to that scale: MODEL2009230001's, beside
+    one at 1.1e10, to an absolute 110, and a species it grew from 0 came out
+    100% off.
 
     Parameters
     ----------
@@ -240,7 +245,8 @@ def derive_atol(
     floor : float, optional
         Magnitude to substitute for a species whose ``|y[i]|`` is below it.
         Must be > 0. Defaults to the smallest strictly positive ``|y[i]|``,
-        or ``1.0`` when every entry is zero.
+        but not above ``1.0``, which is also the floor when every entry is
+        zero.
 
     Returns
     -------
@@ -285,7 +291,7 @@ def derive_atol(
 
     if floor is None:
         positive = y[y > 0.0]
-        scale_floor = float(positive.min()) if positive.size else 1.0
+        scale_floor = min(float(positive.min()), 1.0) if positive.size else 1.0
     else:
         scale_floor = float(floor)
         if not np.isfinite(scale_floor) or scale_floor <= 0.0:
