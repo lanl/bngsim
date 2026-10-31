@@ -203,12 +203,17 @@ class SparseJacobianUnavailableError(SimulationError):
 class CodegenDeclinedError(BngsimError):
     """``codegen=True`` on a model codegen declines, such as one whose functions
     read each other (issue #621): a statement about the model, which runs on the
-    interpreted RHS with ``codegen=None`` or ``codegen=False`` (issue #1313).
+    interpreted RHS with ``codegen=None`` or ``codegen=False`` (issue #1313). The
+    deprecated :func:`bngsim.prepare_codegen` raises it for a decline too.
 
     Distinct from a codegen *build* failure (a compiler error, a timeout), which
     says nothing about the model and stays a plain ``RuntimeError``. A
     ``RuntimeError`` (through :class:`BngsimError`), as it was raised before it
     had a type, so an existing ``except RuntimeError`` still catches it.
+
+    Unrelated to ``bngsim._codegen.CodegenDeclined``, the emitter's private
+    signal to decline, which the prepare calls turn into a ``None`` return; this
+    is what a caller who asked for compiled code is told.
     """
 
 

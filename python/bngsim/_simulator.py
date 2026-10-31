@@ -352,6 +352,14 @@ def _codegen_refusal(cause: BaseException | None, decline: str | None) -> Runtim
     )
 
 
+# The typed exceptions a run passes up as they are, where any other error is
+# wrapped in SimulationError: a wall-clock termination, a declared refusal to
+# differentiate (#320) and a refusal by name (#1313). run(), a run_batch row and
+# run_batch's thread pool each re-raise these, from one tuple: three kept by hand
+# drifted apart, and the thread pool wrapped SimulationTimeout.
+_PASSED_THROUGH = (SimulationTimeout, SensitivityUnsupportedError, SparseJacobianUnavailableError)
+
+
 def normalize_method(requested: str) -> tuple[str, str]:
     """Normalize a user-requested method token to its canonical form.
 
@@ -5376,13 +5384,13 @@ class Simulator:
                 core_result = self._sim.run(times, used_seed, timeout_seconds)
             else:
                 raise ValueError(f"Unknown method: {self._method}")
-        except (SimulationTimeout, SparseJacobianUnavailableError):
+        except _PASSED_THROUGH:
             # Already a typed bngsim exception (raised via the C++ translator)
             # — pass through unchanged so callers can classify wall-clock
             # terminations, and a refusal by name (#1313), distinctly from
             # solver errors.
-            raise
-        except SensitivityUnsupportedError:
+            #
+            # SensitivityUnsupportedError:
             # Same reason, one regime over: a DECLARED refusal to differentiate a
             # construct is not a solver failure, and wrapping it in
             # SimulationError would destroy exactly the distinction issue #320
@@ -5831,7 +5839,7 @@ class Simulator:
                 for i, future in enumerate(futures):
                     try:
                         results.append(future.result())
-                    except (SensitivityUnsupportedError, SparseJacobianUnavailableError):
+                    except _PASSED_THROUGH:
                         raise
                     except Exception as e:
                         raise SimulationError(f"Batch simulation {i} failed: {e}") from e
@@ -7050,8 +7058,8 @@ class Simulator:
                 f"rate-law condition ({e}) at the row's values, and the batch's code was "
                 "built where it could (issues #414, #708)."
             ) from None
-        except (SimulationTimeout, SensitivityUnsupportedError, SparseJacobianUnavailableError):
-            # A refusal is a refusal of the row's model, as it is from run().
+        except _PASSED_THROUGH:
+            # A timeout or a refusal is the row's, as it is from run().
             raise
         except RuntimeError as e:
             raise SimulationError(f"Batch simulation {index} failed: {e}") from e

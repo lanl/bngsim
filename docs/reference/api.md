@@ -300,7 +300,7 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 - **`SimulationTimeout`** — Wall-clock budget exceeded; `.timeout` and `.elapsed` attributes
 - **`ParameterError`** — Unknown parameter name, invalid value
 - **`SensitivityUnsupportedError`** — Forward sensitivity declined for this model: an event whose crossing time moves in a way `dt*/dp` cannot be computed for, or a rate law that does not differentiate to closed form. A declared capability gap, not a failure — catch it to fall back on a derivative-free optimizer. Also inherits `ValueError` (what both sites raised before the class existed), so `except ValueError` still catches it. A missing compiler/JIT is *not* this exception; that stays a plain `RuntimeError`.
-- **`CodegenDeclinedError`** — `codegen=True` on a model codegen declines, such as one whose functions read each other: a statement about the model, which runs on the interpreted RHS with `codegen=None` or `codegen=False`. A codegen *build* failure (a compiler error, a timeout) says nothing about the model and stays a plain `RuntimeError`.
+- **`CodegenDeclinedError`** — `codegen=True` on a model codegen declines, such as one whose functions read each other: a statement about the model, which runs on the interpreted RHS with `codegen=None` or `codegen=False`. A codegen *build* failure (a compiler error, a timeout) says nothing about the model and stays a plain `RuntimeError`. The deprecated `bngsim.prepare_codegen` raises it for a decline too.
 - **`StopConditionMet`** — Stop condition triggered; `.result` has partial data
 
 Warnings (`UserWarning` subclasses; filter or escalate them with `warnings`):
