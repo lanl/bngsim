@@ -336,6 +336,19 @@ result_psa = sim_psa.run(t_end=300, n_steps=1000, seed=42)
 
 ## Benchmarking
 
+**What is simulated is the network from its seed state, over the horizon each
+suite sets, not the source's published protocol.** A `.bngl` is reduced to its
+model and `generate_network` (the `.net` above, and `Model.from_bngl`), so its
+actions after that call do not run: pre-equilibration, doses, washouts, and the
+parameter settings before a scan. Both engines run the same network the same
+way, so parity verdicts and timing ratios compare like with like. But the
+dynamics, stiffness and event counts can differ from the authors' experiment.
+For example, `egfr_path` declares `EGF 0` and adds `EGF_tot` only after
+equilibrating, so the ODE suite's 120 s run has no ligand. 3 of its 18 species
+move (Grb2 and Sos settle), where all 18 move with `EGF_tot` added (issue
+#1366). `Model.from_bngl` warns when the first `simulate` of a file starts from
+a state the loaded model does not hold.
+
 The SSA and PSA models are exercised by `suites/ssa/` and `suites/psa/`
 — each runs a correctness gate (BNGsim vs `run_network` ensemble
 comparison) and a timing comparison. See those suites' own `README.md`
