@@ -4557,8 +4557,8 @@ class Simulator:
         floor : float, optional
             Magnitude substituted for a species whose current value is smaller
             — the case where there is no magnitude to scale. Defaults to the
-            smallest strictly positive species value in the model (``1.0`` if
-            every species is zero).
+            smallest strictly positive species value in the model, but not
+            above ``1.0`` (see :func:`bngsim.derive_atol`).
 
         Returns
         -------
