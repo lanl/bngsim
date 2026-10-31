@@ -1074,7 +1074,10 @@ static bool followed_below_zero(CvodeUserData *data, N_Vector y, double t, const
 // claim entirely — `BIOMD0000000374` carries a species `V_membrane = -61` — and
 // `∂/∂n base^n` does not exist there at all, so that component is left alone and
 // its NaN survives to the GH #384/#386 refusal rather than being answered with a
-// confident `0`.
+// confident `0`. (That case is now also the clamp mask's to keep (#706): a slot
+// that is negative by design is one clamp_state_nonneg never touches, so the
+// sensitivity RHS's second retry, at the value RHS's own clamped state (issue
+// #1298), leaves it to the same refusal.)
 //
 // This is not the clamp GH #93 removed. That one was unconditional and lived on
 // one side of a pair: the interpreted Michaelis-Menten RHS clamped `sFree` where
@@ -1885,6 +1888,22 @@ static void capture_sens_witness(CvodeUserData *data, sunrealtype t, double *y_p
     }
 }
 
+// Whether the value RHS is non-finite at y itself, before any clamp: the test
+// that decides which state its clamp-retry integrated (issue #1298). Written
+// into `scratch`, through the same function the value RHS callback calls.
+static bool value_rhs_nonfinite_at(CvodeUserData *data, sunrealtype t, double *y_ptr,
+                                   N_Vector scratch) {
+    double *f = N_VGetArrayPointer(scratch);
+    if (data->codegen_fn != nullptr) {
+        if (data->codegen_fn(static_cast<double>(t), y_ptr, f, &data->codegen_so_data) != 0) {
+            return true;
+        }
+    } else {
+        data->model->compute_derivs(static_cast<double>(t), y_ptr, f);
+    }
+    return rhs_has_nonfinite(data, f);
+}
+
 static int cvode_codegen_sens_rhs_body(int Ns, sunrealtype t, N_Vector y, N_Vector ydot, int iS,
                                        N_Vector yS, N_Vector ySdot, void *user_data, N_Vector tmp1,
                                        N_Vector tmp2) {
@@ -1976,6 +1995,37 @@ static int cvode_codegen_sens_rhs_body(int Ns, sunrealtype t, N_Vector y, N_Vect
             rc = sens_fn(Ns, static_cast<double>(t), clamped, N_VGetArrayPointer(ydot), iS,
                          N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
                          N_VGetArrayPointer(tmp2));
+            if (rc != 0) {
+                return rc;
+            }
+            if (!rhs_has_nonfinite(data, ySdot_ptr)) {
+                return 0;
+            }
+        }
+        // Issue #1298: then at the state the value RHS and the Jacobian were
+        // evaluated at, where that is a different state. Where f(y) is
+        // non-finite, cvode_rhs integrates f(clamp(y)) and the Newton matrix
+        // is J(clamp(y)), so the columns of that same flow are
+        // J(clamp(y))·s + f_p(clamp(y)). The retry above lets a run step a
+        // hair past zero; once there, the value RHS's clamp holds the species
+        // at the value it reached rather than restoring it, it drifts past
+        // -atol_i, and this RHS refused every state from then on: CVODES cut
+        // h until it gave up, and the GH #176 retry returned another run's
+        // trajectory (MODEL2001200002: 2.6e-3 off in the state, every column
+        // wrong).
+        //
+        // Only where f(y) itself is non-finite: where it is finite the run
+        // integrates f(y), at the negative base, and a column read at
+        // clamp(y) would be another state's (#392's `pow(x, 4.0)` beside
+        // `log(x)`), so that NaN still goes to the refusal. So does a slot
+        // nonneg_clamp_mask leaves alone, negative by design (#706). f(y) is
+        // written to tmp1, the scratch CVODES gives this call, before the
+        // sensitivity function reuses it. Off with
+        // BNGSIM_SENS_CLAMP_NUMERIC_ZERO=0, like the retry above.
+        if (!data->sens_zero_atol.empty() && value_rhs_nonfinite_at(data, t, y_ptr, tmp1)) {
+            rc = sens_fn(Ns, static_cast<double>(t), clamp_state_nonneg(data, y_ptr),
+                         N_VGetArrayPointer(ydot), iS, N_VGetArrayPointer(yS), ySdot_ptr, &so_data,
+                         N_VGetArrayPointer(tmp1), N_VGetArrayPointer(tmp2));
             if (rc != 0) {
                 return rc;
             }
