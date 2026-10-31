@@ -1021,9 +1021,70 @@ _MINMAX_C_LINES = (
     "#endif",
 )
 
+# ExprTk's own functions that <math.h> has no name for, or has under the same
+# name with other arithmetic (issue #1212). Each is a line-for-line transcription
+# of its ``*_impl`` in third_party/exprtk/exprtk.hpp, or of the trinary node for
+# inrange and iclamp, so a compiled rate law computes what the interpreter does
+# down to the last bit: both sides build with -ffp-contract=off. These are the
+# ones that read an argument more than once, or need a table; the rest are one
+# expression each and are written in place by _c_engine_call.
+#
+# hypot and log2 are here although C has both, because C's are not ExprTk's:
+# ExprTk's hypot is the unscaled sqrt(a*a + b*b), which overflows to inf at
+# hypot(1e200, 1e200) where C's returns 1.4e200, and its log2 is log(v)/ln 2,
+# which differs from C's log2 in the last place for some v.
+_EXPRTK_FUNCTION_C_LINES = (
+    "#ifndef BNGSIM_EXPRTK_FUNCTIONS_DEFINED",
+    "#define BNGSIM_EXPRTK_FUNCTIONS_DEFINED",
+    "static double bngsim_frac(double v) { return v - trunc(v); }",
+    "static double bngsim_inrange(double lo, double x, double hi) {",
+    "    return (x < lo) ? 0.0 : ((x > hi) ? 0.0 : 1.0);",
+    "}",
+    "static double bngsim_iclamp(double lo, double x, double hi) {",
+    "    if ((x <= lo) || (x >= hi)) return x;",
+    "    return (2.0 * x <= (hi + lo)) ? lo : hi;",
+    "}",
+    "static double bngsim_roundn(double v, double n) {",
+    "    static const double p10[17] = {",
+    "        1.0, 1.0E+001, 1.0E+002, 1.0E+003, 1.0E+004, 1.0E+005, 1.0E+006, 1.0E+007,",
+    "        1.0E+008, 1.0E+009, 1.0E+010, 1.0E+011, 1.0E+012, 1.0E+013, 1.0E+014,",
+    "        1.0E+015, 1.0E+016};",
+    "    int i = (int)floor(n);",
+    "    i = (i < 16) ? i : 16;",
+    "    i = (0 < i) ? i : 0;",
+    "    if (v < 0.0) return ceil((v * p10[i]) - 0.5) / p10[i];",
+    "    return floor((v * p10[i]) + 0.5) / p10[i];",
+    "}",
+    "static double bngsim_root(double v, double n) {",
+    "    if (v < 0.0)",
+    "        return ((n == trunc(n)) && (fmod(n, 2.0) != 0.0)) ? -pow(fabs(v), 1.0 / n) : NAN;",
+    "    return pow(v, 1.0 / n);",
+    "}",
+    "static double bngsim_sinc(double v) {",
+    "    return (fabs(v) >= 2.220446049250313e-16) ? (sin(v) / v) : 1.0;",
+    "}",
+    "static double bngsim_equal(double a, double b) {",
+    "    const double scale = bngsim_max(1.0, bngsim_max(fabs(a), fabs(b)));",
+    "    return (fabs(a - b) <= (scale * 1e-10)) ? 1.0 : 0.0;",
+    "}",
+    "static double bngsim_not_equal(double a, double b) {",
+    "    const double scale = bngsim_max(1.0, bngsim_max(fabs(a), fabs(b)));",
+    "    return (fabs(a - b) > (scale * 1e-10)) ? 1.0 : 0.0;",
+    "}",
+    "static double bngsim_hypot(double a, double b) { return sqrt((a * a) + (b * b)); }",
+    "#endif",
+)
+
 # What every generated source opens with: the portability macros, then the
 # special functions C does not have.
-_CODEGEN_PRELUDE_LINES = _CODEGEN_MACRO_LINES + _MINMAX_C_LINES + _SPECIAL_FUNCTION_C_LINES
+_CODEGEN_PRELUDE_LINES = (
+    _CODEGEN_MACRO_LINES + _MINMAX_C_LINES + _EXPRTK_FUNCTION_C_LINES + _SPECIAL_FUNCTION_C_LINES
+)
+
+# Every function the prelude defines, by name.
+_PRELUDE_HELPERS = frozenset(
+    re.findall(r"^static double (bngsim_\w+)\(", "\n".join(_CODEGEN_PRELUDE_LINES), re.MULTILINE)
+)
 
 
 def _chunk_threshold() -> int | None:
@@ -5472,7 +5533,175 @@ def _expr_to_c(
     return _translate_expr_to_c(expr, lookup)
 
 
-_IDENT_OR_EMPTY_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)(\s*\(\s*\))?")
+# An ExprTk name, which may hold a dot between two word characters (`k.f` is one
+# name to its lexer, scan_symbol in exprtk.hpp), with the `()` of a zero-argument
+# call if it has one.
+_NAME = r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_0-9]+)*"
+_IDENT_OR_EMPTY_CALL_RE = re.compile(rf"({_NAME})(\s*\(\s*\))?")
+_NAME_RE = re.compile(_NAME)
+# The same without the dot, for a dotted name the model does not have: its
+# parts are then read the way they were before names could hold one.
+_IDENT_PART_OR_EMPTY_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)(\s*\(\s*\))?")
+# A number literal, not the digits of a name (`x1`): what an identifier inside
+# one (`e3` in `1.5e3`) is part of.
+_NUMBER_RE = re.compile(r"(?<![\w.])(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
+_CALL_AHEAD_RE = re.compile(r"\s*\(")
+
+# The C functions a translated expression may still call by the name it was
+# written with: the <math.h> functions whose ExprTk function of the same name is
+# the same call (``std::fn`` in exprtk.hpp, or the adapter in src/expression.cpp
+# for round and tgamma), and the C _replace_engine_calls writes itself (fmod for
+# mod, floor for rint). Any other call left in the text is one the translator has
+# no C for, and the compile would refuse it or, under the MIR JIT, link it to an
+# unrelated symbol (issue #1212); the translator declines it instead.
+_C_CALLS_AS_WRITTEN = frozenset(
+    {
+        "pow", "exp", "expm1", "log", "log10", "log1p", "sqrt",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+        "floor", "ceil", "round", "trunc", "erf", "erfc", "tgamma", "fmod",
+    }
+)  # fmt: skip
+
+# ExprTk's reserved words: never one side of an implicit product (its
+# commutative_inserter ignores them; `reserved_words` in exprtk.hpp).
+_EXPRTK_RESERVED_WORDS = frozenset(
+    {
+        "assert", "break", "case", "continue", "const", "default", "false", "for",
+        "if", "else", "ilike", "in", "like", "and", "nand", "nor", "not", "null",
+        "or", "repeat", "return", "shl", "shr", "swap", "switch", "true", "until",
+        "var", "while", "xnor", "xor",
+    }
+)  # fmt: skip
+
+_EXPRTK_TOKEN_RE = re.compile(
+    rf"(?P<num>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|(?P<sym>{_NAME})|(?P<ws>\s+)|(?P<other>.)",
+    re.S,
+)
+
+# The reserved words that join two operands. A bracket after any other one
+# (`if(`, `not(`) opens its call.
+_EXPRTK_OPERATOR_WORDS = frozenset(
+    {"and", "or", "nand", "nor", "xor", "xnor", "in", "like", "ilike", "shl", "shr"}
+)
+
+# The token pairs ExprTk's lexer multiplies (commutative_inserter in exprtk.hpp):
+# a number against a name or an opening bracket, a name against a number, a
+# closing bracket against a number or a name, and two names. Its parser
+# multiplies two more, which depend on what the name or the bracket is
+# (post_variable_process and post_bracket_process): a variable, and a bracketed
+# group, against the opening bracket after it. _insert_implicit_products writes
+# those from the model's names.
+_IMPLICIT_PRODUCT_PAIRS = frozenset(
+    {("num", "sym"), ("sym", "num"), ("sym", "sym")}
+    | {("num", b) for b in "([{"}
+    | {(b, "num") for b in ")]}"}
+    | {(b, "sym") for b in ")]}"}
+)
+
+# Any text that might hold one of those pairs, a bracket after a bracket, or a
+# square or curly bracket (a number may end in its dot: `2.A`); most rate laws
+# hold none, and skip the tokenizer.
+_IMPLICIT_PRODUCT_HINT = re.compile(
+    r"\d\.?\s*[A-Za-z_(\[{]|[)\]}]\s*[\w.(\[{]|[\w.]\s+[\w.]|[\[{]"
+)
+# A name before an opening bracket: a product when the name is a variable.
+_NAME_BEFORE_BRACKET_RE = re.compile("(" + _NAME + r")\s*[(\[{]")
+
+
+def _insert_implicit_products(expr: str, lookup: dict[str, tuple[str, bool]] | None = None) -> str:
+    """Write out the ``*`` ExprTk reads between two operands written side by side.
+
+    ExprTk's lexer multiplies ``2x``, ``2(x + 1)``, ``(a)b`` and ``x y``, so
+    ``2tfun_kf()/2`` is twice the table. Its parser multiplies a variable, and a
+    bracketed group, against the bracket after it: ``k(x + 1)``, ``g()(x)`` and
+    ``(a)(b)``. Copied through, ``2.0tfun_kf`` and ``p[0](obs[1])`` are not C
+    (issue #1212). Its reserved words (``and``, ``or``, ``if``...) are not
+    operands and are never multiplied. A variable is a scalar of the model or a
+    constant, as *lookup* holds them; ``time`` and a table are calls. With no
+    lookup, no name is a variable.
+
+    ExprTk groups with square and curly brackets as with round ones, and they
+    are written as round ones. After a call, a bracket opens a second statement,
+    whose value the engine gives for the whole expression (``k*exp(-x)(y)`` is
+    ``y``). There is no C for that here, and the translator declines it.
+    """
+
+    def variable(name: str) -> bool:
+        entry = lookup.get(name) if lookup else None
+        return (
+            entry is not None
+            and entry[1]
+            and name != "time"
+            and not entry[0].startswith("data->tfun_eval(")
+        )
+
+    if not _IMPLICIT_PRODUCT_HINT.search(expr) and not any(
+        variable(m.group(1)) for m in _NAME_BEFORE_BRACKET_RE.finditer(expr)
+    ):
+        return expr
+    tokens = [(m.lastgroup, m.group()) for m in _EXPRTK_TOKEN_RE.finditer(expr)]
+    out: list[str] = []
+    prev: str | None = None
+    prev_text = ""
+    # Whether the previous token is a variable, or the bracket that closed a
+    # group, which the parser multiplies against an opening bracket.
+    prev_operand = False
+    # The call the previous token closed the bracket of.
+    prev_call: str | None = None
+    # For each bracket still open, the call it opened, or None.
+    opened: list[str | None] = []
+    for i, (kind, text) in enumerate(tokens):
+        if kind == "ws":
+            out.append(text)
+            continue
+        if kind == "other":
+            kind = text
+        elif kind == "sym" and text.lower() in _EXPRTK_RESERVED_WORDS:
+            kind = "word"
+        if kind in _BRACKET_CLOSES:
+            if prev_call is not None:
+                shown = expr if len(expr) <= 200 else expr[:200] + "..."
+                raise CodegenDeclined(
+                    f"codegen has no C for the bracket after the call to {prev_call!r} in the "
+                    f"expression {shown!r}: the engine reads it as a second statement and gives "
+                    "that statement's value for the whole expression, so the interpreted engine "
+                    "runs this model instead (issue #1212)"
+                )
+            j = i + 1
+            while j < len(tokens) and tokens[j][0] == "ws":
+                j += 1
+            if (
+                prev == "sym"
+                and prev_operand
+                and kind == "("
+                and tokens[j : j + 1] == [("other", ")")]
+            ):
+                opened.append(None)  # `g()`: the variable, whose `()` the engine drops
+            elif prev_operand or (prev, kind) in _IMPLICIT_PRODUCT_PAIRS:
+                out.append("*")
+                opened.append(None)
+            elif prev == "sym" or (
+                prev == "word" and prev_text.lower() not in _EXPRTK_OPERATOR_WORDS
+            ):
+                opened.append(prev_text)
+            else:
+                opened.append(None)
+            out.append("(")
+            prev, prev_text, prev_operand, prev_call = kind, text, False, None
+            continue
+        if kind in _CLOSING_BRACKETS:
+            call = opened.pop() if opened else None
+            out.append(")")
+            prev, prev_text, prev_operand, prev_call = kind, text, call is None, call
+            continue
+        if (prev, kind) in _IMPLICIT_PRODUCT_PAIRS:
+            out.append("*")
+        out.append(text)
+        prev, prev_text, prev_call = kind, text, None
+        prev_operand = kind == "sym" and variable(text)
+    return "".join(out)
+
 
 # A bare integer literal: a digit run not glued to an identifier, a decimal
 # point, or an exponent. The ``(?<![\w.])`` / ``(?![\w.])`` guards keep us
@@ -5594,6 +5823,14 @@ _BUILTIN_IDENT_MAP: dict[str, tuple[str, bool]] = {
     # strip_empty_parens() strips `_pi()` → `_pi` there too.
     "_pi": ("M_PI", True),
     "_e": ("M_E", True),
+    # The other five have no <math.h> macro, so they are written as their value,
+    # which repr() gives back as the same double (issue #1212: `k*_R` was copied
+    # through as `_R`, and the compile failed).
+    **{
+        name: (repr(value), True)
+        for name, value in _BUILTIN_CONSTANT_VALUES.items()
+        if name not in ("_pi", "_e")
+    },
     "and": ("&&", False),
     "or": ("||", False),
     "not": ("!", False),
@@ -5678,9 +5915,12 @@ def _translate_expr_to_c(expr: str, lookup: dict[str, tuple[str, bool]]) -> str:
     rewritten to ``floor((x) + 0.5)`` by ``_replace_engine_calls`` before this
     pass runs (issue #771).
     """
+    # The products ExprTk reads between operands written side by side, first,
+    # while the text is still the model's (issue #1212).
+    result = _insert_implicit_products(expr, lookup)
     # ExprTk's reading of =, <>, -- and relational chains made explicit before
     # anything else, since each is copied through as text (issue #734).
-    result = _normalize_exprtk_operators(expr)
+    result = _normalize_exprtk_operators(result)
     # ``a % b`` on doubles does not compile in C; ``mod()`` becomes ``fmod``
     # below, which is what ExprTk's operator is (issue #1127).
     result = _spell_mod(result)
@@ -5695,19 +5935,48 @@ def _translate_expr_to_c(expr: str, lookup: dict[str, tuple[str, bool]]) -> str:
     # introduces array subscripts (``p[0]``/``y[5]``), so ``1/2`` becomes
     # ``1.0/2.0`` (= 0.5 in C) instead of integer-dividing to 0.
     result = _floatify_int_literals(result)
+    text = result
+    numbers: list[tuple[int, int]] | None = None
 
-    def _repl(m: re.Match) -> str:
+    def _in_a_number(pos: int) -> bool:
+        nonlocal numbers
+        # An exponent follows its digits, or its number's dot, directly.
+        if pos == 0 or text[pos - 1] not in "0123456789.":
+            return False
+        if numbers is None:
+            numbers = [m.span() for m in _NUMBER_RE.finditer(text)]
+        return any(a <= pos < b for a, b in numbers)
+
+    def _repl(m: re.Match, base: int = 0) -> str:
         name = m.group(1)
         empty_call = m.group(2)
         builtin = _call_form_builtin(name, empty_call)
         if builtin is not None:
             return builtin  # `time()` is the clock, even beside a scalar `time` (#776)
+        start = base + m.start()
+        if _in_a_number(start):
+            # The exponent of a number: `e3` in `1.5e3`, and `e` in `2e-3` beside a
+            # model name `e`, which the lookup would otherwise write into it.
+            return m.group(0)
         entry = lookup.get(name)
         if entry is None:
-            # Unknown identifier (e.g. math.h funcs like sin, exp, pow,
-            # sqrt, sinh, log10) — leave the whole match untouched so the
-            # following '(' or arguments survive.
-            return m.group(0)
+            if "." in name:
+                # Not a name of the model: read its parts, as before a name
+                # could hold a dot.
+                return _IDENT_PART_OR_EMPTY_CALL_RE.sub(lambda pm: _repl(pm, start), m.group(0))
+            if (
+                empty_call is None
+                and (name in _C_CALLS_AS_WRITTEN or name in _PRELUDE_HELPERS)
+                and _CALL_AHEAD_RE.match(text, base + m.end())
+            ):
+                return m.group(0)  # a <math.h> call, or a helper the prelude defines
+            shown = expr if len(expr) <= 200 else expr[:200] + "..."
+            raise CodegenDeclined(
+                f"codegen has no C for {name!r} in the expression {shown!r}: it is not a "
+                "name of the model, a function the generated C defines, or a <math.h> "
+                "function that means what the engine's does, so the interpreted engine "
+                "runs this model instead (issue #1212)"
+            )
         rep, eats_call = entry
         if empty_call is not None:
             return rep if eats_call else rep + empty_call
@@ -5813,7 +6082,53 @@ def _split_if_args(expr: str, paren_pos: int) -> list[str] | None:
 # it failed to compile (issue #869). ExprTk's ``mod`` is ``std::fmod``, which C
 # spells ``fmod``. It is not reserved, but a model's own ``mod`` is a function
 # called with empty parens or a scalar, and neither is a two-argument call.
-_ENGINE_CALL_NAMES = ("sign", "sgn", "rint", "clamp", "avg", "sum", "max", "min", "mod")
+#
+# The rest of ExprTk's functions that C has no function for by their name, or
+# has one with other arithmetic, join them for the same reason (issue #1212):
+# the two tables below, and the variadic ``mul``/``mand``/``mor``. A model's own
+# symbol of one of those names is a scalar, never a call with arguments, so a
+# call is always ExprTk's.
+
+# ExprTk's constants, as exprtk.hpp spells them (numeric::constant), so the C
+# compiler rounds the same decimal to the same double the C++ one did.
+_EXPRTK_LOG2 = "0.69314718055994530941723212145817656807550013436026"
+_EXPRTK_SQRT2 = "1.41421356237309504880168872420969807856967187537695"
+_EXPRTK_PI_180 = "0.01745329251994329576923690768488612713442871888542"
+_EXPRTK_180_PI = "57.29577951308232087679815481410517033240547246656443"
+
+# ExprTk function -> (arity, C), for the ones that are a single expression and
+# read each argument once (issue #1212). ``{0}``/``{1}`` are the arguments.
+_EXPRTK_ONE_LINE_C: dict[str, tuple[int, str]] = {
+    "logn": (2, "(log({0}) / log({1}))"),
+    "log2": (1, f"(log({{0}}) / {_EXPRTK_LOG2})"),
+    "cot": (1, "(1.0 / tan({0}))"),
+    "sec": (1, "(1.0 / cos({0}))"),
+    "csc": (1, "(1.0 / sin({0}))"),
+    "ncdf": (1, f"(0.5 * erfc(-(({{0}}) / {_EXPRTK_SQRT2})))"),
+    "deg2rad": (1, f"(({{0}}) * {_EXPRTK_PI_180})"),
+    "rad2deg": (1, f"(({{0}}) * {_EXPRTK_180_PI})"),
+    "deg2grad": (1, "(({0}) * (10.0 / 9.0))"),
+    "grad2deg": (1, "(({0}) * (9.0 / 10.0))"),
+}
+
+# ExprTk function -> (arity, helper in _EXPRTK_FUNCTION_C_LINES).
+_EXPRTK_HELPER_C: dict[str, tuple[int, str]] = {
+    "frac": (1, "bngsim_frac"),
+    "inrange": (3, "bngsim_inrange"),
+    "iclamp": (3, "bngsim_iclamp"),
+    "roundn": (2, "bngsim_roundn"),
+    "root": (2, "bngsim_root"),
+    "sinc": (1, "bngsim_sinc"),
+    "equal": (2, "bngsim_equal"),
+    "not_equal": (2, "bngsim_not_equal"),
+    "hypot": (2, "bngsim_hypot"),
+}
+
+_ENGINE_CALL_NAMES = (
+    ("sign", "sgn", "rint", "clamp", "avg", "sum", "max", "min", "mod", "mul", "mand", "mor")
+    + tuple(_EXPRTK_ONE_LINE_C)
+    + tuple(_EXPRTK_HELPER_C)
+)
 _ENGINE_CALL_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(_ENGINE_CALL_NAMES) + r")\s*\(")
 
 
@@ -5833,10 +6148,29 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
 
     An argument count these do not know cannot come from a model the engine
     accepted, since the engine checks arity when it compiles the expression.
-    Returning ``None`` there leaves the call for the C compiler to complain
-    about rather than guessing at a meaning.
+    Returning ``None`` there leaves the call as written, and the identifier pass
+    declines it by name (issue #1212) rather than guessing at a meaning.
     """
     n = len(args)
+    if name in _EXPRTK_ONE_LINE_C:
+        arity, form = _EXPRTK_ONE_LINE_C[name]
+        return form.format(*args) if n == arity else None
+    if name in _EXPRTK_HELPER_C:
+        arity, helper = _EXPRTK_HELPER_C[name]
+        return f"{helper}({', '.join(args)})" if n == arity else None
+    if name == "mul":
+        # vararg_mul_op: a left-to-right product, as `sum` is a left-to-right sum.
+        if n == 0:
+            return None
+        return "(" + " * ".join(f"({a})" for a in args) + ")"
+    if name in ("mand", "mor"):
+        # vararg_mand_op / vararg_mor_op: 1 when every (any) argument is
+        # nonzero, tested in order and stopping at the first that decides it, as
+        # && and || do. A NaN is nonzero, in both.
+        if n == 0:
+            return None
+        joined = (" && " if name == "mand" else " || ").join(f"(({a}) != 0.0)" for a in args)
+        return f"(({joined}) ? 1.0 : 0.0)"
     if name in ("sign", "sgn"):
         # SignFunction in src/expression.cpp and ExprTk's sgn_impl, same form.
         if n != 1:
@@ -5891,8 +6225,9 @@ def _c_engine_call(name: str, args: list[str]) -> str | None:
 
 
 def _replace_engine_calls(expr: str) -> str:
-    """Rewrite every ``sign``/``sgn``/``rint``/``clamp``/``avg``/``sum``/``mod`` call to
-    C, and fold an n-ary ``max``/``min`` into nested binary calls (GH #556).
+    """Rewrite every call in ``_ENGINE_CALL_NAMES`` to C (``sign``, ``rint``,
+    ``clamp``, ``mod``, ExprTk's functions C has no name for...), and fold an
+    n-ary ``max``/``min`` into nested binary calls (GH #556).
 
     Runs after ``_replace_if_calls`` and before identifier substitution, in both
     translation pipelines, so the arguments are still the model's own text and
@@ -7009,22 +7344,24 @@ def _topological_function_order(
         for table, (_, idx_c) in (tfun_call_by_name or {}).items()
         if idx_c.startswith("func[")
     }
-    table_call = (
-        re.compile(r"(?<![A-Za-z0-9_])tfun_(" + "|".join(map(re.escape, owner_by_table)) + r")\(")
-        if owner_by_table
-        else None
-    )
     for i, f in enumerate(functions):
         deps: set[int] = set()
-        for tok in re.findall(r"[A-Za-z_]\w*", f["expression"]):
-            j = name_to_idx.get(tok)
+        tables: set[str] = {f["name"]} & owner_by_table.keys()
+
+        # The names the translator reads (a dotted `k.f` is one), and the tables
+        # read as `tfun_<table>` by any spelling of the call (issue #1212). A
+        # dotted name the model does not have is read by its parts, as before.
+        read: list[str] = []
+        for tok in _NAME_RE.findall(f["expression"]):
+            known = tok in name_to_idx or tok.removeprefix("tfun_") in owner_by_table
+            read.extend([tok] if known or "." not in tok else tok.split("."))
+        for name in read:
+            j = name_to_idx.get(name)
             if j is not None and j != i:
                 deps.add(j)
-        if table_call is not None:
-            tables = set(table_call.findall(f["expression"]))
-            if f["name"] in owner_by_table:
-                tables.add(f["name"])
-            deps.update(owner_by_table[table] for table in tables)
+            if name.startswith("tfun_") and name.removeprefix("tfun_") in owner_by_table:
+                tables.add(name.removeprefix("tfun_"))
+        deps.update(owner_by_table[table] for table in tables)
         for j in deps:
             successors[j].append(i)
             in_degree[i] += 1
@@ -7101,7 +7438,17 @@ def _emit_function_lines(
     # Built once and shared across every function body — rebuilding it per body
     # is the model-based GH #161 quadratic (see _build_ident_lookup_model).
     lookup = _build_ident_lookup_model(param_map, species_map, obs_map, func_map, rateof_map)
-    embedded_tfun = _embedded_tfun_resolver(tfun_call_by_name)
+    # A table is read by `tfun_<table>`: a whole body `tfun_g()`, or a call nested
+    # in arithmetic, `(tfun('drive') + 5)/k`, which reaches codegen as a reference
+    # to a table of its own (`tfun_f_complex__tfun0()`). ExprTk takes `tfun_g`,
+    # `tfun_g ()` and `2tfun_g()` as the same call, so the name goes in the
+    # lookup rather than being matched as `tfun_g()` in the translated text,
+    # which missed the other spellings (issue #1212). A model scalar of the same
+    # name keeps it, as it did.
+    for table, (tf_id, idx_c) in tfun_call_by_name.items():
+        lookup.setdefault(
+            f"tfun_{table}", (f"data->tfun_eval({tf_id}, {idx_c}, data->tfun_ctx)", True)
+        )
     lines = [f"    double func[{len(functions)}];"]
     for i in _topological_function_order(functions, tfun_call_by_name):
         f = functions[i]
@@ -7122,33 +7469,8 @@ def _emit_function_lines(
         # law, because the guarded form's ``S == 0`` branch would otherwise read
         # as a moving state switch and cost the analytic sensitivity RHS.
         c_expr = _translate_expr_to_c(f.get("eval_expression") or f["expression"], lookup)
-        if embedded_tfun is not None:
-            c_expr = embedded_tfun(c_expr)
         lines.append(f"    func[{i}] = {c_expr};  /* {f['name']} */")
     return lines
-
-
-def _embedded_tfun_resolver(tfun_call_by_name: dict):
-    """Rewrite embedded table-function references in translated C, or ``None``.
-
-    A ``tfun()`` call nested inside arithmetic -- ``(tfun('drive') + 5)/k`` --
-    reaches codegen as a synthetic reference ``tfun_<table>()`` to a table of its
-    own (``tfun_f_complex__tfun0()``), which the translator passes through
-    verbatim. The returned callable resolves each one to the ``data->tfun_eval``
-    callback a whole-body tfun gets, so the emitted C calls the loader's table
-    rather than an undeclared function. The ``.net`` RHS did this with a
-    placeholder pass until #803 routed ``.net`` models here; without it such a
-    model failed to compile.
-    """
-    if not tfun_call_by_name:
-        return None
-    names = sorted(tfun_call_by_name, key=len, reverse=True)
-    pattern = re.compile(r"\btfun_(" + "|".join(map(re.escape, names)) + r")\(\s*\)")
-    calls = {
-        name: f"data->tfun_eval({tf_id}, {idx_c}, data->tfun_ctx)"
-        for name, (tf_id, idx_c) in tfun_call_by_name.items()
-    }
-    return lambda c_expr: pattern.sub(lambda mo: calls[mo.group(1)], c_expr)
 
 
 def _jac_c_float(x) -> str:
@@ -12865,6 +13187,11 @@ def prepare_model_codegen(model) -> Path | None:
             except Exception as e:  # noqa: BLE001 - a note, not the build
                 logger.debug("Could not work out the output-sensitivity support (%s)", e)
         return so_path
+    except CodegenDeclined as exc:
+        # Raised while emitting, before anything is compiled (issue #1212).
+        logger.debug("codegen declined: %s", exc)
+        _record_codegen_decline(str(exc))
+        return None
     except Exception as e:
         logger.warning("Model codegen failed: %s", e)
         _record_codegen_error(e)
@@ -12910,6 +13237,10 @@ def prepare_model_codegen_source(model) -> str | None:
             emit_sens_rhs=want_sens_rhs(model),
         )
         return c_source
+    except CodegenDeclined as exc:
+        logger.debug("codegen declined: %s", exc)
+        _record_codegen_decline(str(exc))
+        return None
     except Exception as e:
         logger.warning("Model codegen source generation failed: %s", e)
         _record_codegen_error(e)

@@ -58,9 +58,9 @@ class TestResetConcSemantics:
         sim.save_concentrations("s")
 
         scan = sim.parameter_scan("k1", [0.1], t_span=(0, 10), n_points=11, reset_to="s")
-        batch = sim.run_batch(
-            t_span=(0, 10), n_points=11, params=[{"k1": 0.1}]
-        )  # clones + reset() -> seed
+        # clones + reset() -> seed, and says that it does (issue #1362)
+        with pytest.warns(UserWarning, match="run_batch starts every point from the model's"):
+            batch = sim.run_batch(t_span=(0, 10), n_points=11, params=[{"k1": 0.1}])
         assert _A(scan[0])[0] == pytest.approx(a_snap, rel=1e-9)  # snapshot ≈ 36.79
         assert _A(batch[0])[0] == pytest.approx(100.0)  # seed
         assert a_snap < 50.0  # the two are genuinely different

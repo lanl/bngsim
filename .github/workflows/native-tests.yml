@@ -12,7 +12,7 @@ name: native-tests
 # as the contrast that made the C++ gap worse. Issue #169 showed that assumption
 # was itself the other half of the problem: a local hook covers one platform and
 # `--no-verify` removes it, so python/tests had no cross-platform CI gate either.
-# python-tests.yml (ubuntu + macos-14, whole suite, default build) is that gate
+# python-tests.yml (ubuntu + macos-15, whole suite, default build) is that gate
 # now; this job remains the C++ half.
 #
 # That is not hypothetical. #28 flipped SteadyStateOptions::method from "newton"

@@ -79,9 +79,12 @@ name: nightly-parity
 # A manual run picks its mode; a pull request replays once a manifest is committed.
 # Recording and refreshing the archive: parity_checks/nightly/README.md.
 #
-# Pull requests that touch this workflow or parity_checks/nightly/ run it too, so
-# a change to the nightly is validated before it lands; there a missing baseline
-# is allowed (that is how a new suite's first baseline is recorded).
+# Pull requests that touch this workflow, parity_checks/nightly/ or a leg's own
+# code run it too, so a change to the nightly is validated before it lands; there
+# a missing baseline is allowed (that is how a new suite's first baseline is
+# recorded). A pull request runs only the legs its changed files feed, as
+# parity_checks/nightly/pr_legs.py maps them, and the corpus job only where one
+# of those reads the corpus (#1387); a scheduled or dispatched run runs them all.
 #
 # Scheduled workflows run only from the default branch, and GitHub disables them
 # after 60 days without repository activity.
@@ -103,12 +106,25 @@ on:
     paths:
       - ".github/workflows/nightly-parity.yml"
       - "parity_checks/nightly/**"
+      # Each leg's own code, and what they share (#1387). The plan job runs
+      # only the legs a PR's files feed (parity_checks/nightly/pr_legs.py).
+      - "parity_checks/_core/**"
+      - "parity_checks/rr_parity/**"
+      - "parity_checks/bng_parity/**"
+      - "parity_checks/amici_parity/**"
       - "parity_checks/fd_sens/**"
       - "parity_checks/differential/**"
+      - "benchmarks/suites/sbml_test_suite/**"
+      - "benchmarks/_effort.py"
+      # The corpus job hashes it into its key and checks the mirror against it.
+      - "benchmarks/suites/biomodels/biomodels_provenance.json"
+      - "harness/**"
       # A re-baseline PR only copies a verdict file a nightly already produced;
       # re-running hours of sweeps to validate that would buy nothing.
       - "!parity_checks/nightly/baselines/**"
       - "!parity_checks/nightly/flaky.json"
+      # No leg reads documentation.
+      - "!**/*.md"
 
 permissions:
   contents: read
@@ -135,10 +151,42 @@ jobs:
     name: Plan
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # the PR's changed files, for the legs step
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
+      # Whether each leg runs: every one, but on a pull request only those its
+      # changed files feed (#1387).
+      sbml: ${{ steps.legs.outputs.sbml }}
+      rr-ode: ${{ steps.legs.outputs.rr-ode }}
+      bng-ode: ${{ steps.legs.outputs.bng-ode }}
+      rr-ssa: ${{ steps.legs.outputs.rr-ssa }}
+      fd-sens: ${{ steps.legs.outputs.fd-sens }}
+      differential: ${{ steps.legs.outputs.differential }}
+      differential-nf: ${{ steps.legs.outputs.differential-nf }}
+      bng-stoch: ${{ steps.legs.outputs.bng-stoch }}
+      amici-sens: ${{ steps.legs.outputs.amici-sens }}
+      corpus: ${{ steps.legs.outputs.corpus }}
     steps:
       - uses: actions/checkout@v4
+      - id: legs
+        env:
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            # A renamed file's old path too: the leg that read it there changed.
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed.txt"
+            python3 parity_checks/nightly/pr_legs.py < "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/legs.txt"
+          else
+            python3 parity_checks/nightly/pr_legs.py --all > "$RUNNER_TEMP/legs.txt"
+          fi
+          cat "$RUNNER_TEMP/legs.txt" >> "$GITHUB_OUTPUT"
+          echo "Legs: $(grep '=true' "$RUNNER_TEMP/legs.txt" | cut -d= -f1 | paste -sd ' ' -)" >> "$GITHUB_STEP_SUMMARY"
       - id: mode
         env:
           EVENT: ${{ github.event_name }}
@@ -169,6 +217,8 @@ jobs:
   # ------------------------------------------------------------------------- #
   corpus:
     name: BioModels corpus
+    needs: plan
+    if: needs.plan.outputs.corpus == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -230,6 +280,8 @@ jobs:
   # ------------------------------------------------------------------------- #
   sbml:
     name: SBML test suite + DSMTS
+    needs: plan
+    if: needs.plan.outputs.sbml == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -312,6 +364,7 @@ jobs:
   rr-ode:
     name: RoadRunner ODE parity
     needs: [plan, corpus]
+    if: needs.plan.outputs.rr-ode == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 210
     env:
@@ -406,6 +459,7 @@ jobs:
   bng-ode:
     name: BNG ODE parity · ${{ matrix.arm }}
     needs: plan
+    if: needs.plan.outputs.bng-ode == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     # Both arms replay the bng_ode archive (run_network's side does not depend on how
@@ -489,6 +543,7 @@ jobs:
   rr-ssa:
     name: RoadRunner SSA screen
     needs: [plan, corpus]
+    if: needs.plan.outputs.rr-ssa == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -556,6 +611,8 @@ jobs:
   # ------------------------------------------------------------------------- #
   fd-sens:
     name: Finite-difference sensitivity check
+    needs: plan
+    if: needs.plan.outputs.fd-sens == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -594,7 +651,8 @@ jobs:
   # ------------------------------------------------------------------------- #
   differential:
     name: Path-agreement check
-    needs: [corpus]
+    needs: [plan, corpus]
+    if: needs.plan.outputs.differential == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -650,6 +708,8 @@ jobs:
   # ------------------------------------------------------------------------- #
   differential-nf:
     name: Network-free engine agreement
+    needs: plan
+    if: needs.plan.outputs.differential-nf == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -688,6 +748,7 @@ jobs:
   bng-stoch:
     name: BNG stochastic parity · ${{ matrix.track }}
     needs: plan
+    if: needs.plan.outputs.bng-stoch == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
@@ -769,6 +830,7 @@ jobs:
   amici-sens:
     name: AMICI forward-sensitivity parity
     needs: [plan, corpus]
+    if: needs.plan.outputs.amici-sens == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     env:
@@ -861,6 +923,12 @@ jobs:
   # manifest to commit in the run summary and the reference-manifest artifact.
   # Every suite or none: if a suite packed nothing (its job died, or a good row had
   # no recorded reference), the manifest step refuses and nothing is published.
+  # The tag goes on the default branch's head, not on the recorded commit. A
+  # recording takes hours, and run 40899940910's publish was refused (HTTP 403)
+  # creating its tag at the recorded commit after a change to this file merged
+  # mid-run: this job's token may not make a ref whose workflow files differ from
+  # the default branch's. The notes and the manifest name the recorded commit,
+  # and a replay reads only the assets and their sha256s.
   # ------------------------------------------------------------------------- #
   publish:
     name: Publish the reference archive
@@ -881,6 +949,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           ls -l reference-out
@@ -894,8 +963,10 @@ jobs:
             echo "Reference-engine outputs for bngsim's nightly parity check (issue #805), recorded by $RUN_URL at $GITHUB_SHA."
             echo
             echo "Not a bngsim release. One asset per suite; each holds a README, entries.json (every entry's model, source and license) and, where any entry is not CC0, bngsim's NOTICE. The nightly replays from these once parity_checks/nightly/reference_archive.json pins them; parity_checks/nightly/README.md has the procedure."
+            echo
+            echo "The tag points at $DEFAULT_BRANCH's head when this was published, not at the recorded commit, which is the one named above."
           } > notes.md
-          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$DEFAULT_BRANCH" --latest=false \
             --title "Data: nightly parity reference archive ($tag)" --notes-file notes.md reference-out/*.tar.gz
           {
             echo "### Reference archive $tag published"

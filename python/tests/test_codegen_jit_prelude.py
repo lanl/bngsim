@@ -529,18 +529,23 @@ class TestEachSourceDefinesEveryConstantSympyCanPrint:
 
 # ─── a call the prelude does not declare ───────────────────────────────────
 #
-# The emitter writes some ExprTk functions through as bare calls it has no C for
-# (frac, inrange, iclamp, roundn, root, logn, sinc, equal, a table function's
-# name). cc refuses such a source as a call to an undeclared function, and codegen
-# falls back or refuses by name. c2mir instead takes the call as an implicit
-# ``int name()``, the C89 rule, so on the JIT backend the name reached MIR_link as
-# an import of its own. One the resolver could not find, MIR's default error
-# function reported by exit(1), which ended the Python process mid-run. One dlsym
-# could find was bound to whatever global has that spelling: on macOS a private
-# framework loaded into the Python process exports an ``equal``, and a run of
-# ``k*(1 + equal(k, 0.5))`` came back with B(1) = 0.787 where the answer is 1.264,
-# with no warning. MirJit now refuses every import outside the prelude's table
-# before it links.
+# The emitter used to write some ExprTk functions through as bare calls it had no
+# C for (frac, inrange, iclamp, roundn, root, logn, sinc, equal, a table
+# function's name). cc refuses such a source as a call to an undeclared function.
+# c2mir instead takes the call as an implicit ``int name()``, the C89 rule, so on
+# the JIT backend the name reached MIR_link as an import of its own. One the
+# resolver could not find, MIR's default error function reported by exit(1),
+# which ended the Python process mid-run. One dlsym could find was bound to
+# whatever global has that spelling: on macOS a private framework loaded into
+# the Python process exports an ``equal``, and a run of ``k*(1 + equal(k, 0.5))``
+# came back with B(1) = 0.787 where the answer is 1.264, with no warning. MirJit
+# now refuses every import outside the prelude's table before it links.
+#
+# Since issue #1212 the emitter writes C for each of those, and declines any call
+# it has none for before a source exists, so no model's own source carries such
+# a call to the JIT any more. The JIT's refusal is still its last line, and is
+# pinned here on a source made by hand: the one generated for a law that calls
+# exp, with the call renamed.
 
 _UNDECLARED_NET = """begin parameters
     1 k 0.5
@@ -550,7 +555,7 @@ begin species
     2 B() 0
 end species
 begin functions
-    1 f() {law}
+    1 f() k*(1 + exp(k))
 end functions
 begin reactions
     1 1 2 f #_R1
@@ -560,18 +565,24 @@ begin groups
 end groups
 """
 
-# name -> a rate law that calls it where the call decides the rate all run long.
-_UNDECLARED_LAWS = {
-    "equal": "k*(1 + equal(k, 0.5))",
-    "frac": "k*(1 + frac(k + 2))",
+# name -> the call that replaces exp(p[0]) in the generated source.
+_UNDECLARED_CALLS = {
+    "equal": "equal(p[0], 0.5)",
+    "frac": "frac(p[0] + 2.0)",
 }
 
+_EXP_CALL = "exp(p[0])"
+
 # Run in a child: before the fix the frac case exit(1)ed, which would have taken
-# the pytest worker with it rather than failing this test.
+# the pytest worker with it rather than failing this test. The source is handed
+# over on the model, which is where automatic codegen takes a JIT source from.
 _RUN_IN_A_CHILD = """
 import sys
 import bngsim
-sim = bngsim.Simulator(bngsim.Model.from_net(sys.argv[1]), method="ode", codegen=True)
+from bngsim import _codegen as cg
+model = bngsim.Model.from_net(sys.argv[1])
+model._codegen_c_source = cg.prepare_model_codegen_source(model).replace(sys.argv[2], sys.argv[3])
+sim = bngsim.Simulator(model, method="ode")
 try:
     sim.run(t_span=(0.0, 5.0), n_points=6)
 except Exception as e:
@@ -582,15 +593,27 @@ else:
 
 
 class TestACallThePreludeDoesNotDeclareIsRefused:
-    @pytest.mark.parametrize("name", list(_UNDECLARED_LAWS))
-    def test_the_emitter_still_writes_it_as_a_bare_call(self, tmp_path, prelude, name):
-        """Keeps the end-to-end case honest: it covers the hole only while the
-        emitted source calls ``name`` without defining it, and the prelude does
-        not declare it. If the codegen learns C for one, pick another name."""
-        model = _model(tmp_path, _UNDECLARED_NET.format(law=_UNDECLARED_LAWS[name]))
+    @pytest.mark.parametrize("name", list(_UNDECLARED_CALLS))
+    def test_the_emitter_writes_c_for_it_now(self, tmp_path, prelude, name):
+        """What makes a hand-built source necessary: the emitter's own source for
+        the function no longer calls it bare (issue #1212)."""
+        law = {"equal": "k*(1 + equal(k, 0.5))", "frac": "k*(1 + frac(k + 2))"}[name]
+        model = _model(tmp_path, _UNDECLARED_NET.replace("k*(1 + exp(k))", law))
         code = _COMMENTS.sub(" ", cg.prepare_model_codegen_source(model))
+        assert not re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*\(", code)
+        assert re.search(rf"\bbngsim_{re.escape(name)}\s*\(", code)
+
+    @pytest.mark.parametrize("name", list(_UNDECLARED_CALLS))
+    def test_the_hand_built_source_calls_it_bare(self, tmp_path, prelude, name):
+        """Keeps the end-to-end case honest: it covers the hole only while the
+        source calls ``name`` without defining it, and the prelude does not
+        declare it."""
+        model = _model(tmp_path, _UNDECLARED_NET)
+        source = cg.prepare_model_codegen_source(model)
+        assert _EXP_CALL in source
+        code = _COMMENTS.sub(" ", source.replace(_EXP_CALL, _UNDECLARED_CALLS[name]))
         call = rf"(?<![A-Za-z0-9_]){re.escape(name)}\s*\("
-        assert re.search(call, code), f"the emitted source no longer calls {name}()"
+        assert re.search(call, code), f"the source does not call {name}()"
         assert not re.search(rf"\b(?:double|int)\s+{re.escape(name)}\s*\(", code)
         assert not re.search(call, prelude)
 
@@ -598,12 +621,12 @@ class TestACallThePreludeDoesNotDeclareIsRefused:
         not getattr(bngsim, "HAS_MIR", False),
         reason="bngsim built without the MIR backend (configure with -DBNGSIM_ENABLE_MIR=ON)",
     )
-    @pytest.mark.parametrize("name", list(_UNDECLARED_LAWS))
+    @pytest.mark.parametrize("name", list(_UNDECLARED_CALLS))
     def test_the_jit_refuses_it_by_name(self, tmp_path, name):
         net = tmp_path / "m.net"
-        net.write_text(_UNDECLARED_NET.format(law=_UNDECLARED_LAWS[name]))
+        net.write_text(_UNDECLARED_NET)
         child = subprocess.run(
-            [sys.executable, "-c", _RUN_IN_A_CHILD, str(net)],
+            [sys.executable, "-c", _RUN_IN_A_CHILD, str(net), _EXP_CALL, _UNDECLARED_CALLS[name]],
             env={**os.environ, "BNGSIM_CODEGEN_JIT": "mir"},
             capture_output=True,
             text=True,

@@ -143,6 +143,49 @@ def test_flaky_case_changes_never_alert():
     assert r["changed"][0]["case"] == "A|ode" and "flaky" in r["changed"][0]["note"]
 
 
+def test_a_row_re_baselined_since_that_night_is_reported_not_alerted():
+    # #1427: a stricter check moves A from PASS to DIFF and re-records it. Against
+    # the night before, that row is the reviewed change, on the pull request's own
+    # run and on the first night after it merges.
+    then = BASE
+    now = fresh_with(A_ode=rec("DIFF"))
+    r = V.diff(BASE, now, rebaselined=V.rebaselined(then, now))
+    assert r["n_alerts"] == 0
+    assert r["changed"][0]["case"] == "A|ode"
+    assert "re-baselined since that night" in r["changed"][0]["note"]
+    # Only into the verdict recorded: a run where A crashes instead still alerts.
+    r = V.diff(BASE, fresh_with(A_ode=rec("EXCEPTION")), rebaselined=V.rebaselined(then, now))
+    assert r["alerts"]["regressed"] == 1
+
+
+def test_a_fix_that_regresses_into_a_stale_baseline_still_alerts():
+    # The baseline still says DIFF from before C was fixed; last night C passed and
+    # tonight it is back to DIFF. Nobody recorded that, so it is the regression the
+    # night-to-night comparison exists for.
+    stale = BASE
+    last_night = fresh_with(C_ode=rec("PASS"))
+    r = V.diff(last_night, BASE, rebaselined=V.rebaselined(stale, stale))
+    assert [x["case"] for x in r["regressed"]] == ["C|ode"]
+
+
+def test_rebaselined_lists_new_and_moved_rows_only():
+    now = fresh_with(A_ode=rec("DIFF"), C_ode=rec("DIFF", "rr_known"), F_ode=rec("PASS"))
+    assert sorted(V.rebaselined(BASE, now)) == ["A|ode", "C|ode", "F|ode"]
+    assert V.rebaselined(BASE, BASE) == {}
+
+
+def test_cli_reads_the_baseline_then_and_now(tmp_path):
+    last_night = _write(tmp_path, "prev.json", BASE)
+    tonight = _write(tmp_path, "tonight.json", fresh_with(A_ode=rec("DIFF")))
+    then = _write(tmp_path, "then.json", BASE)
+    assert V.main(["diff", "--baseline", last_night, "--fresh", tonight]) == 1
+    args = ["diff", "--baseline", last_night, "--fresh", tonight, "--baseline-then", then]
+    assert V.main([*args, "--baseline-now", tonight]) == 0
+    # Without a baseline of that night's commit, nothing is excused.
+    missing = str(tmp_path / "absent.json")
+    assert V.main([*args[:5], "--baseline-then", missing, "--baseline-now", tonight]) == 1
+
+
 def test_cli_reads_the_flaky_file_for_its_suite(tmp_path):
     base = _write(tmp_path, "base.json", BASE)
     worse = _write(tmp_path, "worse.json", fresh_with(A_ode=rec("TIMEOUT")))

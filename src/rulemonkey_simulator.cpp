@@ -217,9 +217,18 @@ struct RuleMonkeySimulator::Impl {
     // Keyed by `<Species id=>` because ids are unique where BNGL patterns need
     // not be (upstream resolves a key by pattern first, then by id; no `id` in
     // 223 corpus XMLs is also some other species' pattern).
+    //
+    // The caller's seed amounts (issue #1373) are pins of the same kind, so
+    // they are laid down here too, on top of the rounding, or the clear would
+    // drop them at the next set_param. Each is rounded half-up the same way,
+    // and set_initial_amount refuses an id with no seed species, or an
+    // amount that is negative or not finite.
     void apply_seed_rounding() {
         sim->clear_initial_amount_overrides();
         for (const auto &row : sim->initial_species()) {
+            if (species_amounts.count(row.id) != 0) {
+                continue;
+            }
             // Fail-safe, matching the overlay this replaced: an amount that is
             // not a finite non-negative number is left for the engine to
             // reject or truncate as it sees fit.
@@ -230,7 +239,17 @@ struct RuleMonkeySimulator::Impl {
             sim->set_initial_amount(
                 row.id, static_cast<double>(bngsim::seedround::round_half_up_count(row.amount)));
         }
+        for (const auto &[id, amount] : species_amounts) {
+            const double count =
+                std::isfinite(amount) && amount >= 0.0
+                    ? static_cast<double>(bngsim::seedround::round_half_up_count(amount))
+                    : amount;
+            sim->set_initial_amount(id, count);
+        }
     }
+
+    // Seed amounts by <Species id=> (issue #1373).
+    std::unordered_map<std::string, double> species_amounts;
 
     std::string xml_path;
     std::unique_ptr<rulemonkey::RuleMonkeySimulator> sim;
@@ -412,6 +431,21 @@ void RuleMonkeySimulator::set_param(const std::string &name, double value) {
 void RuleMonkeySimulator::clear_param_overrides() {
     impl_->sim->clear_param_overrides();
     impl_->apply_seed_rounding();
+}
+
+void RuleMonkeySimulator::set_species_amounts(
+    const std::unordered_map<std::string, double> &amounts) {
+    // Restore the pins as they were if the engine refuses one, so a refused
+    // call leaves the next run seeded as before it.
+    auto previous = std::move(impl_->species_amounts);
+    impl_->species_amounts = amounts;
+    try {
+        impl_->apply_seed_rounding();
+    } catch (...) {
+        impl_->species_amounts = std::move(previous);
+        impl_->apply_seed_rounding();
+        throw;
+    }
 }
 
 void RuleMonkeySimulator::set_reads_clock(bool enabled) { impl_->reads_clock = enabled; }

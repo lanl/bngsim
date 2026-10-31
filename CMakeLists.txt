@@ -461,8 +461,14 @@ else()
 
     # The one local carry in the fetched source (VENDOR.json, local_carries):
     # CVODES's staggered sensitivity corrector, which did not restore a step
-    # its RHS refused (lanl/bngsim#1301). Checked below, since a
+    # its RHS refused (lanl/bngsim#1301). A build tree fetched under an older
+    # revision of it fetches afresh; checked below, since a
     # FETCHCONTENT_SOURCE_DIR_SUNDIALS override skips the patch step.
+    set(_bngsim_carry_marker "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r3)")
+    include("${BNGSIM_SUNDIALS_DIR}/discard_stale_fetch.cmake")
+    bngsim_discard_stale_sundials_fetch(
+        "${FETCHCONTENT_BASE_DIR}" "${CMAKE_BINARY_DIR}" "${_bngsim_carry_marker}"
+        "${FETCHCONTENT_SOURCE_DIR_SUNDIALS}" "${FETCHCONTENT_FULLY_DISCONNECTED}")
     FetchContent_Declare(
         sundials
         URL "${BNGSIM_SUNDIALS_SOURCE_URL}"
@@ -474,17 +480,18 @@ else()
     FetchContent_MakeAvailable(sundials)
 
     file(READ "${sundials_SOURCE_DIR}/src/cvodes/cvodes.c" _bngsim_cvodes_c)
-    string(FIND "${_bngsim_cvodes_c}" "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r2)" _bngsim_carry_at)
+    string(FIND "${_bngsim_cvodes_c}" "${_bngsim_carry_marker}" _bngsim_carry_at)
     unset(_bngsim_cvodes_c)
     if(_bngsim_carry_at EQUAL -1)
         message(FATAL_ERROR
             "The SUNDIALS source at ${sundials_SOURCE_DIR} lacks the current "
             "lanl/bngsim#1301 carry, which forward-sensitivity runs need to be right. "
-            "A build tree fetched before this revision: delete its _deps/sundials-* "
-            "directories and configure again. A FETCHCONTENT_SOURCE_DIR_SUNDIALS copy: "
-            "apply it with\n"
+            "A FETCHCONTENT_SOURCE_DIR_SUNDIALS copy: apply it to a pristine "
+            "src/cvodes/cvodes.c with\n"
             "  cmake -DSUNDIALS_SOURCE_DIR=${sundials_SOURCE_DIR} -P "
-            "${BNGSIM_SUNDIALS_DIR}/carry_cvodes_staggered_restore.cmake")
+            "${BNGSIM_SUNDIALS_DIR}/carry_cvodes_staggered_restore.cmake\n"
+            "A build tree configured with FETCHCONTENT_FULLY_DISCONNECTED=ON: configure "
+            "it once with that OFF, so the stale fetch is replaced.")
     endif()
     set(BNGSIM_SUNDIALS_CARRIES_1301 ON)
 

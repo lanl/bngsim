@@ -32,8 +32,8 @@ Methods:
 - **`restore_concentrations(label=None)`** — Restore a snapshot; no label restores the default slot, a `label` restores that named state (BNG `resetConcentrations("name")`)
 - **`has_saved_concentrations(label=None)`** — Whether a named snapshot (or, with no label, any) exists
 - `saved_concentration_labels` — Sorted names of saved named snapshots
-- **`set_concentration(name, value)`** — Set a single species concentration
-- **`get_concentration(name)`** — Get a single species concentration
+- **`set_concentration(name, value)`** — Set a single species concentration. A fixed species can be named with its `$` or without it (`"$X(a)"` or `"X(a)"`, `"@c::$X()"` or `"@c::X()"`), as BNG2.pl's `setConcentration` takes either: the model's `species_names` drop the `$` the `.net` writes
+- **`get_concentration(name)`** — Get a single species concentration, named the same way
 - **`pure_sink_species()`** → `list[str]` — write-only accumulator species: a product of ≥1 reaction, a reactant of none, read by no other species' derivative, and not `$`-fixed. These put a structural floor under `||f(y)||_2/n` (issue #74)
 - **`is_pure_sink()`** → `ndarray (n_species,) of bool` — the array form, so `mask=~model.is_pure_sink()`
 - **`declare_ic_sensitivity({species: {param: d_ic_d_param}})`** — Declare `∂x_k(0)/∂θ` for an initial condition your own code assigns (issue #111). A declared species' row is taken as **fully specified**: parameters not named get `0.0`, so it *replaces* the model's parameter-graph row rather than adding to it
@@ -101,7 +101,7 @@ Interactive:
 - **`set_time(t)`** — Set `current_time` (finite, else `ValueError`); the next `run_until` integrates from there
 
 Stop conditions:
-- **`add_stop_condition(condition, *, label)`** — `str` expression or `callable`
+- **`add_stop_condition(condition, *, label)`** — `str` expression or `callable`. `run` raises `StopConditionMet` with the result cut at the first sample a condition holds at; `run_batch`, `run_replicates` and `parameter_scan` return each row that meets one cut there, with `Result.stop_condition` set, and refuse `squeeze=True` while one is registered (issue #1369)
 - **`clear_stop_conditions()`**
 
 Steady-state (`method` ∈ `"integration"` (default), `"newton"`, `"kinsol"` alias):
@@ -244,6 +244,7 @@ Properties:
 - **`dataframe`** — `pandas.DataFrame` (requires pandas)
 - **`xr`** — AMICI-style xarray accessor; `result.xr.species`, `.observables`, `.expressions`, `.sensitivities`, `.sensitivities_ic` return labeled `xarray.DataArray`s with `time`/`state`/`observable`/`expression`/`parameter`/`ic_state` coords (requires xarray)
 - **`solver_stats`** — `dict` with solver diagnostics
+- **`stop_condition`** — `str | None`: the label (else the expression) of the stop condition the result was cut at, `None` where none was met (issue #1369)
 - **`custom_attrs`** — `dict` for user metadata
 - `n_times`, `n_species`, `n_observables`, `n_expressions`
 - `species_names`, `observable_names`, `expression_names`
@@ -259,7 +260,7 @@ Methods:
 - **`to_xarray()`** → `xarray.Dataset` bundling species/observables/expressions/sensitivities/sensitivities_ic with shared `time` coord (requires xarray); `custom_attrs` + `seed` propagate to `ds.attrs`
 - **`save(path)`** — Save to HDF5 (requires h5py)
 - **`Result.load(path)`** — Load from HDF5 (class method)
-- **`Result.squeeze(results)`** — Stack list into 3D batch result
+- **`Result.squeeze(results)`** — Stack list into 3D batch result; refuses a list holding a row that met a stop condition
 
 ## `bngsim.SteadyStateResult`
 

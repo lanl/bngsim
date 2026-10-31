@@ -3070,6 +3070,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "Set a parameter override (applied before each run)")
         .def("clear_param_overrides", &bngsim::NfsimSimulator::clear_param_overrides,
              "Clear all parameter overrides")
+        .def("set_species_amounts", &bngsim::NfsimSimulator::set_species_amounts,
+             py::arg("amounts"),
+             "Seed amounts for the next run by <Species id=>, replacing any set before")
         .def("set_molecule_limit", &bngsim::NfsimSimulator::set_molecule_limit, py::arg("limit"),
              "Set global molecule limit (default: INT_MAX, no artificial limit)")
         .def("set_connectivity", &bngsim::NfsimSimulator::set_connectivity, py::arg("enabled"),
@@ -3203,6 +3206,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
              py::arg("value"), "Set a parameter override")
         .def("clear_param_overrides", &bngsim::RuleMonkeySimulator::clear_param_overrides,
              "Clear all parameter overrides")
+        .def("set_species_amounts", &bngsim::RuleMonkeySimulator::set_species_amounts,
+             py::arg("amounts"),
+             "Seed amounts for the next run by <Species id=>, replacing any set before")
         .def("set_molecule_limit", &bngsim::RuleMonkeySimulator::set_molecule_limit,
              py::arg("limit"), "Set global molecule limit")
         .def("set_block_same_complex_binding",

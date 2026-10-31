@@ -633,6 +633,10 @@ class NfsimSimulator:
         """
         Set a parameter override (applied before each run)
         """
+    def set_species_amounts(self, amounts: collections.abc.Mapping[str, typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Seed amounts for the next run by <Species id=>, replacing any set before
+        """
     def set_species_count(self, pattern: str, count: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         Set count for an exact single-molecule BNGL species pattern
@@ -856,6 +860,10 @@ class RuleMonkeySimulator:
     def set_reads_clock(self, enabled: bool) -> None:
         """
         Whether the model reads the clock (default true): one-shot runs then run on the model's clock, else on time elapsed since t_start
+        """
+    def set_species_amounts(self, amounts: collections.abc.Mapping[str, typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Seed amounts for the next run by <Species id=>, replacing any set before
         """
     def set_species_count(self, pattern: str, count: typing.SupportsInt | typing.SupportsIndex) -> None:
         """

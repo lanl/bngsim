@@ -1,0 +1,170 @@
+name: forced-jit
+
+# Nightly: the whole Python suite with every model compiled through the MIR
+# micro-JIT (issue #1217). BNGSIM_CODEGEN_JIT=mir selects the JIT, and
+# BNGSIM_CODEGEN_THRESHOLD=1 lowers the auto-codegen threshold from 256 species
+# to 1, so a model that would run interpreted is compiled too.
+#
+# mir.yml runs a hand-picked list of codegen files under the JIT, and a bug
+# outside the list is a bug it cannot see. Run by hand, this run found #1208 (a
+# call the generated C never declared, which made MIR exit() the pytest worker),
+# #1212 (calls the emitter had no C for) and #1357 (a run test the compiled
+# march could not take). It is a signal only while it passes, so the tests that
+# cannot pass under it say why (python/tests/_codegen_backend.py, #1350): a test
+# about cc's .so or its name skips under the JIT, and one that needs a small
+# model to run interpreted skips under a lowered threshold, each with a reason
+# conftest.py declares. BNGSIM_SKIP_AUDIT=strict holds every other skip to its
+# declaration, so a skip nobody decided on fails the run.
+#
+# Nightly, not per pull request: it is the whole suite, compiled, on two
+# platforms. Run it on demand (workflow_dispatch) before merging a change to
+# the emitter or the JIT. A pull request that edits this file runs it, so a
+# change here is checked before it lands.
+#
+# Two platforms because the answers differ by platform: #1357's compiled march
+# ended at exactly 0 on x86-64 Linux and within 1e-52 of it on arm64 macOS, and
+# its run test failed at a different step on each.
+#
+# The build is python-tests.yml's (uv sync --extra dev: KLU built from source,
+# NFsim on), with MIR turned on through SKBUILD_CMAKE_DEFINE, the way
+# sanitizers.yml adds its flags. pyproject.toml is untouched, and the suite runs
+# as python-tests.yml runs it, in the same two shards. --max-worker-restart: a
+# JIT bug can kill a worker (#1208's exit), and xdist stops replacing crashed
+# workers after 4 per worker by default, which silently drops the rest of the run.
+#
+# A failure opens one tracking issue, or comments on it, as sanitizers.yml does.
+#
+# Scheduled workflows run only from the default branch, and GitHub disables them
+# after 60 days without repository activity.
+
+on:
+  schedule:
+    - cron: "53 7 * * *" # 07:53 UTC; off the hour, between sanitizers' 06:37 and nightly-parity's 08:17
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra pytest args (e.g. -x, -k some_pattern, or a single file path)"
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - ".github/workflows/forced-jit.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forced-jit-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  suite:
+    name: Python suite · every model through MIR · ${{ matrix.os }} · ${{ matrix.shard }}/2
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest # x86_64 Linux
+          - macos-15 # macOS arm64
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # One cache per platform, written by shard 1 only, as in python-tests.yml.
+      # The key ends in -build because the action restores by prefix.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: forced-jit-${{ matrix.os }}-build
+          save: ${{ matrix.shard == 1 }}
+          max-size: 500M
+
+      - name: Build bngsim (the default configuration, and MIR on)
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          SKBUILD_CMAKE_DEFINE: BNGSIM_ENABLE_MIR=ON
+        run: |
+          set -euxo pipefail
+          uv sync --extra dev --python 3.12 --reinstall-package bngsim
+          ccache --show-stats
+
+      # Without MIR compiled in, BNGSIM_CODEGEN_JIT=mir has no JIT to select,
+      # and a green run would say nothing about it.
+      - name: Guard against a build without MIR
+        run: |
+          set -euxo pipefail
+          uv run --no-sync python -c "import platform, sys; print(platform.platform()); print(sys.version)"
+          uv run --no-sync python -c "import bngsim, sys; print('bngsim', bngsim.__version__, 'HAS_MIR', bngsim.HAS_MIR, 'HAS_KLU', bngsim.HAS_KLU); sys.exit(0 if bngsim.HAS_MIR else 'HAS_MIR is False: the MIR backend was not built')"
+
+      - name: Run the suite with every model through the JIT (this shard)
+        if: ${{ matrix.shard == 1 || !github.event.inputs.pytest_args }}
+        env:
+          BNGSIM_CODEGEN_JIT: mir
+          BNGSIM_CODEGEN_THRESHOLD: "1"
+          BNGSIM_SKIP_AUDIT: strict
+          BNGSIM_TEST_DATA: ${{ github.workspace }}/tests/data
+          BNGSIM_TEST_CACHE_DIR: ${{ runner.temp }}/bngsim-test-cache
+          BNGSIM_TEST_SHARD: ${{ matrix.shard }}/2
+          PYTEST_ARGS: ${{ github.event.inputs.pytest_args }}
+        run: |
+          set -o pipefail
+          if [ -n "$PYTEST_ARGS" ]; then unset BNGSIM_TEST_SHARD; fi
+          # shellcheck disable=SC2086  # PYTEST_ARGS is words or nothing
+          uv run --no-sync python -m pytest -p no:cacheprovider python/tests \
+            -n auto --dist worksteal --max-worker-restart=500 \
+            -q --tb=short -rfE --durations=15 $PYTEST_ARGS \
+            2>&1 | tee forced-jit-${{ matrix.os }}-${{ matrix.shard }}.log
+
+      - name: Upload the pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: forced-jit-${{ matrix.os }}-${{ matrix.shard }}
+          path: forced-jit-${{ matrix.os }}-${{ matrix.shard }}.log
+          if-no-files-found: ignore
+
+  report:
+    name: Report
+    needs: [suite]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the tracking issue
+        if: github.event_name != 'pull_request' && needs.suite.result != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Nightly forced-JIT suite: failures"
+          RESULT: ${{ needs.suite.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Forced-JIT run on \`${GITHUB_SHA::8}\`: $RUN_URL"
+            echo
+            echo "- The suite, every model through MIR (\`BNGSIM_CODEGEN_JIT=mir BNGSIM_CODEGEN_THRESHOLD=1\`): **$RESULT**"
+            echo
+            echo "Each failed job lists its failures at the end of its log, which is also uploaded. A test that cannot pass under a forced JIT for a reason that is not a bug belongs in \`python/tests/_codegen_backend.py\`, with a reason \`conftest.py\` declares (#1217)."
+          } > body.md
+          num=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == env.TITLE)) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue comment "$num" -R "$GITHUB_REPOSITORY" --body-file body.md
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body-file body.md
+          fi
+      - name: Fail the run on any failure
+        if: needs.suite.result != 'success'
+        run: exit 1

@@ -219,6 +219,15 @@ class NfsimSimulator {
     /// Clear all parameter overrides.
     void clear_param_overrides();
 
+    /// Seed amounts for the next run(), keyed by `<Species id=>`, replacing
+    /// any set before (issue #1373). Each one replaces that species'
+    /// `concentration=` in the XML NFsim parses, rounded half-up like every
+    /// seed (GH #51), and outranks a parameter override that species reads.
+    /// An empty map seeds every species from the XML again. A run whose XML
+    /// has no seed species with one of these ids throws. Not applied to a
+    /// live session, whose molecules already exist.
+    void set_species_amounts(const std::unordered_map<std::string, double> &amounts);
+
     /// Evaluate an arbitrary BNG expression with the current overrides applied.
     /// Useful for re-rendering BNG functions or rate laws against the
     /// override namespace without piping every expression through Python.

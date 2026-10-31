@@ -1580,16 +1580,24 @@ def _canonical_species_key(s: str):
 def resolve_species_name(name: str, canonical_names) -> str:
     """Map a ``setConcentration`` pattern to the canonical ``.net`` species name (GH #182).
 
-    Exact name -> unchanged. Otherwise, for a concrete bond-free species, the UNIQUE
-    canonical species sharing its structural key. If there is no match, the match is
+    Exact name -> unchanged. A fixed-species ``$`` is dropped, as BNG2.pl drops it.
+    Otherwise, for a concrete bond-free species, the UNIQUE canonical species sharing
+    its structural key. If there is no match, the match is
     ambiguous, or the pattern is non-concrete/malformed, returns ``name`` unchanged so
     the caller's exact-name ``set_concentration`` raises and the replay falls back —
     we never substitute a guessed species.
     """
     canonical = list(canonical_names)
-    if name in set(canonical):
+    names = set(canonical)
+    if name in names:
         return name
-    key = _canonical_species_key(name)
+    # BNG2.pl ignores a fixed-species `$` here, and bngsim's .net names never hold
+    # one, so `$X()` and `@c::$X()` are looked up without it.
+    m = re.match(r"^(@\w+::?)?\$(.*)$", name.strip())
+    bare = (m.group(1) or "") + m.group(2) if m else name
+    if bare in names:
+        return bare
+    key = _canonical_species_key(bare)
     if key is None:
         return name
     matches = [c for c in canonical if _canonical_species_key(c) == key]

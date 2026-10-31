@@ -124,14 +124,17 @@ def test_the_compiled_right_hand_side_flips_where_the_interpreter_does(tmp_path,
     multiply-add, `time() - P*floor(time()/P)` rounds once where the
     interpreter rounds twice, and flipped a double away at some edges: the
     compiled run was ten times less accurate at rtol 1e-10. Compiled without
-    it, the two runs are one."""
+    it, the two runs are one. The MIR JIT, which compiles the same source in
+    process (BNGSIM_CODEGEN_JIT=mir, issue #1217), gives the same run too:
+    skipping it there skipped the check under the JIT, with a reason that said
+    the C compiler was missing."""
     ends = []
     for codegen in (False, True):
         sim = bngsim.Simulator(
             _model(tmp_path, _SPELLINGS["remainder"], P, w), method="ode", codegen=codegen
         )
-        if codegen and sim.codegen_backend != "cc":
-            pytest.skip("no C compiler: the compiled right-hand side is not built with cc")
+        if codegen and sim.codegen_backend not in ("cc", "mir"):
+            pytest.skip("no C compiler: the right-hand side is not compiled")
         r = sim.run(t_span=(0.0, t_end), n_points=11, rtol=1e-10, atol=1e-12)
         ends.append(float(np.asarray(r.species)[-1, 0]))
     assert ends[1] == pytest.approx(_on_time(P, w, t_end), rel=5e-9)

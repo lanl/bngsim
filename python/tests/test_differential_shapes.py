@@ -1798,6 +1798,42 @@ def test_arms_that_agree_attribute_the_diff_to_one_side():
     assert not D.contested({"klu_vs_dense": {"status": "diff", "extra": {"attribution": a}}})
 
 
+def test_an_arm_takes_a_side_within_the_bound_and_none_past_it():
+    """Arms half the bound off each side take that side; twice it off, neither.
+    Arms that copy a side exactly pass under any bound at all, a far too tight
+    one included, and #1304's dense arm reads neither on some grids anyway."""
+    base = _base("derived-log10")
+    ref, path = base.x, base.x * 1.5
+    v = _verdict(ref, path)
+    near, far = 1.0 + 0.5 * base.limit, 1.0 + 2.0 * base.limit
+    a = D.attribute(base, v, {"tighter": path * near, "dense": ref * near})
+    assert a["verdict"] == "split", a
+    assert a["arms"]["tighter"]["side"] == "path" and a["arms"]["dense"]["side"] == "reference", a
+    a = D.attribute(base, v, {"tighter": path * far, "dense": ref * far})
+    assert a["verdict"] == "unattributed", a
+    assert {s["side"] for s in a["arms"].values()} == {"neither"}, a
+
+
+@pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled")
+def test_klu_and_dense_are_compared_on_one_jacobian(monkeypatch):
+    """``klu_vs_dense``'s dense reference is asked for the Jacobian its KLU
+    path ran on: what differs is the linear solver and how each builds that
+    Jacobian (KLU's FD one is colored over the sparsity), not which is asked."""
+    asked = []
+    real = D.run
+
+    def spy(job, **kw):
+        asked.append(kw)
+        return real(job, **kw)
+
+    monkeypatch.setattr(D, "run", spy)
+    v = D.check_klu(_base("derived-log10"))
+    assert v.status == "pass", v
+    sparse = [kw["jacobian"] for kw in asked if kw.get("force_sparse_linear_solver")]
+    dense = [kw["jacobian"] for kw in asked if kw.get("force_dense_linear_solver")]
+    assert sparse and dense == sparse[-1:], asked
+
+
 def test_a_diff_is_attributed_by_real_arms(monkeypatch):
     """check_all attributes every DIFF: here a planted cc_vs_interp that moves
     the path by 50%, which the real arms (the base at a hundredfold tighter
@@ -1883,23 +1919,145 @@ def test_an_answer_that_jumps_with_the_grid_is_contested(monkeypatch):
     assert v.status == "diff" and "n_points+1" in v.note, v
 
 
-_B338 = _ROOT / "parity_checks/rr_parity/models/BIOMD0000000338/BIOMD0000000338_url.xml"
+def _zero_start(growth: str) -> D.Job:
+    """S at 0 beside a decaying A, with S' = +k·S (``growth`` "1,1", S -> 2S)
+    or -k·S ("0"): S = 0 is the answer either way, and an unstable one in the
+    first, as BIOMD0000000908's sunitinib is."""
+    path = _net(
+        f"zero-start-{'grows' if growth == '1,1' else 'decays'}",
+        " 1 k 4\n 2 a 0.5",
+        " 1 S() 0\n 2 A() 10",
+        "",
+        f" 1 1 {growth} k\n 2 2 0 a",
+        " 1 Sobs 1",
+    )
+    return D.Job(path.stem, path, 0.0, 10.0, 21)
 
 
-@pytest.mark.skipif(
-    not _B338.exists(), reason="rr_parity corpus model BIOMD0000000338 not present"
-)
+def test_the_nudge_moves_a_held_start_by_its_share_of_a_step():
+    """S, held at 0, moves by its share of atol; A, decaying from 10, not at all."""
+    job = _zero_start("0")
+    x0 = np.asarray(D.run(job, nudge=D.START_NUDGE)[0].species)[0]
+    np.testing.assert_allclose(x0, [D.START_NUDGE * job.atol, 10.0], rtol=1e-12)
+
+
+def test_only_a_species_the_equations_hold_still_is_nudged():
+    """S' = 4·S holds S at 0, and only S is nudged. Not D, held too but read by
+    a trigger at its threshold (BIOMD0000000285's death events); not A, which
+    nothing moves (265's switches); not B, already moving."""
+    model = bngsim.Model.from_antimony_string(
+        "species S = 0, D = 0, A = 0, B = 1; S' = 4*S; D' = A; A' = 0; B' = -B\n"
+        "E: at (D > 0): S = 0"
+    )
+    assert model.species_names == ["S", "D", "A", "B"]
+    assert D.held_at_start(model, 0.0).tolist() == [True, False, False, False]
+
+
+def test_an_unstable_zero_the_rounding_keeps_is_contested():
+    """S = 0 holds exactly in both runs as written. From a start the solver
+    cannot tell from it, the growing S leaves 0 by e^{4t}: 1e-13 at the first
+    row, past the bound by t = 10. The decaying S stays put."""
+    grows = D.check_stable(D.Base(_zero_start("1,1")))
+    assert grows.status == "diff" and "a start nudged" in grows.note, grows
+    assert D.contested({"stable": {"status": "diff", "extra": grows.extra}})
+    decays = D.check_stable(D.Base(_zero_start("0")))
+    assert decays.status == "pass", decays
+
+
+def test_a_run_that_fails_from_the_nudged_start_is_contested(monkeypatch):
+    base = _base("derived-log10")
+    real = D.run
+
+    def fails(job, nudge=0.0, **kw):
+        if nudge:
+            raise bngsim.SimulationError("CV_CONV_FAILURE (planted)")
+        return real(job, **kw)
+
+    monkeypatch.setattr(D, "run", fails)
+    v = D.check_stable(base)
+    assert v.status == "diff" and "from which the run fails (CV_CONV_FAILURE" in v.note, v
+    assert D.contested({"stable": {"status": "diff", "extra": v.extra}})
+
+
+_B1304 = {
+    m: _ROOT / f"parity_checks/rr_parity/models/{m}/{m}_url.xml"
+    for m in ("BIOMD0000000338", "BIOMD0000000339")
+}
+
+
+@pytest.mark.parametrize("model", sorted(_B1304))
 @pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled")
-def test_1304s_model_reads_contested_with_each_arms_side_named():
-    """#1304: KLU reads Fg 311 at t = 2 and dense 0.73. The base runs on KLU,
-    so the KLU route at a hundredfold tighter tolerance sides with KLU, and
-    the dense solver with dense: split, contested."""
-    job = D.Job("BIOMD0000000338", _B338, 0.0, 2.0, 101, rtol=1e-6, atol=1e-9)
+def test_1304s_models_attribute_each_arm_to_the_side_it_takes(model):
+    """#1304: XIIa = K = 0 is an exact, unstable solution of both models, and
+    the KLU base keeps it. The dense LU's rounding breaks it, and which way and
+    when depend on the CPU and the output grid. So the check reads a coin with
+    three faces:
+
+    * Broken upward, dense takes the activated branch, as libRoadRunner does
+      (338's Fg 0.73 against KLU's 311; 339 1.8e-2 of the peak apart), and
+      the dense arm lands with the reference: the arms split, and the
+      model is contested. Both models at this window on arm64; 339 on x86-64.
+    * Broken upward, but the dense arm, on the default Jacobian, leaves 0 at
+      another moment than the reference on the FD one, and lands within the
+      bound of neither side: only the tighter arm takes one, and the verdict
+      is the path's. 338 at 61 and 81 points on arm64, at 99 on x86-64.
+    * Broken downward, the laws carry XIIa to its pole at -1 and the dense
+      reference is refused (#135; test_clamp_far_below_zero.py): nothing to
+      attribute, and the test skips. 338 at this window on x86-64; 339 at
+      4001 points on arm64.
+
+    What holds on every face is asserted: KLU's tighter arm keeps the exact
+    solution, on the path's side; no arm that leaves it takes that side; the
+    verdict follows from the sides. A test of one face at one grid reads the
+    coin, not the code, as 338's did: it passed on arm64 and failed on x86-64."""
+    path = _B1304[model]
+    if not path.exists():
+        pytest.skip(f"rr_parity corpus model {model} not present")
+    job = D.Job(model, path, 0.0, 2.0, 101, rtol=1e-6, atol=1e-9)
     v = D.check_all(job, None, ("klu_vs_dense",))["klu_vs_dense"]
+    if v.status == "exception":
+        # The note is the first line of whichever run failed. Skip only where
+        # KLU completes and the dense run is the refusal at XIIa's pole.
+        D.run(job, force_sparse_linear_solver=True, jacobian="fd")
+        with pytest.raises(bngsim.SimulationError, match="carried concentration 'XIIa'"):
+            D.run(job, force_dense_linear_solver=True, jacobian="fd")
+        pytest.skip("the dense reference was refused at XIIa's pole here, so nothing to attribute")
     assert v.status == "diff", v
     a = v.extra["attribution"]
-    assert a["verdict"] == "split", a
-    assert a["arms"]["tighter"]["side"] == "path" and a["arms"]["dense"]["side"] == "reference", a
+    sides = {arm: s["side"] for arm, s in a["arms"].items()}
+    assert sides.pop("tighter") == "path", a
+    assert "dense" in sides and set(sides.values()) <= {"reference", "neither"}, a
+    assert a["verdict"] == ("split" if "reference" in sides.values() else "path"), a
+
+
+def test_a_klu_base_takes_the_dense_solver_as_its_other_arm(monkeypatch):
+    """The third arms of a base KLU took: its own route at a hundredfold tighter
+    tolerance, and the dense solver. Every other attribution test's base is
+    dense, so without this the dense arm is read only by #1304's corpus models,
+    which CI has none of. A copy of a base that ran dense stands in for one KLU
+    took (the cached base is shared): the dense arm reruns it exactly."""
+    shared = _base("derived-log10")
+    routed = shared.linear_solver
+    base = shared.against(shared.x)
+    base.linear_solver = 1
+    asked = []
+    real = D.run
+
+    def spy(job, **kw):
+        asked.append((job, kw))
+        return real(job, **kw)
+
+    monkeypatch.setattr(D, "run", spy)
+    arms = D._arm_runs(base)
+    assert set(arms) == {"tighter", "dense"}, sorted(arms)
+    (tight, tight_kw), (job, dense_kw) = asked
+    assert tight_kw == {} and (tight.rtol, tight.atol) == (
+        base.job.rtol / 100,
+        base.job.atol / 100,
+    )
+    assert job == base.job and dense_kw == {"force_dense_linear_solver": True}, asked
+    assert D.gap(arms["dense"], base.x, base.job.atol) == 0.0
+    assert shared.linear_solver == routed
 
 
 def test_what_1309_adds_runs_in_what_is_left_of_the_cap(monkeypatch):

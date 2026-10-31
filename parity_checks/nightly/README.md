@@ -81,7 +81,10 @@ run summary but never alert.
 
 Each suite is compared twice: against the committed baseline, and against the
 previous nightly's verdicts (the last scheduled or manual run on `main`). The second
-catches a fix that regresses before anyone re-baselined it. In that night-to-night
+catches a fix that regresses before anyone re-baselined it. A row the committed
+baseline re-recorded since that night's commit, which tonight matches, is reported
+there and not alerted: it was reviewed when it was recorded, as a pull request that
+makes a check stricter records the rows it moves. In that night-to-night
 comparison a flip into or out of TIMEOUT is reported, not alerted: two single nights
 can land on runner CPUs of different speed, and a timeout verdict depends on the wall
 clock. Against the committed baseline PASS -> TIMEOUT still alerts.
@@ -178,7 +181,8 @@ the cap itself, as on a live night. `ssa_screen.py`, which saves its entry after
 every RoadRunner call, likewise takes a model's row at its cap as a live run does
 and kills the worker only at twice the cap. The
 publish job then creates the next `reference-data-vN` release with all six assets,
-or none if any suite failed to pack, and writes the manifest into the run summary
+or none if any suite failed to pack (its tag is on the default branch's head; the
+manifest names the recorded commit), and writes the manifest into the run summary
 and the `reference-manifest` artifact. Nothing replays from the new release until
 that file is committed:
 
@@ -211,3 +215,28 @@ python parity_checks/nightly/verdicts.py diff --baseline parity_checks/nightly/b
 
 A local run against a CI baseline differs in platform, so expect small work-counter
 and timeout differences; the per-case outcomes are what carry over.
+
+## Which legs a pull request runs
+
+A pull request that touches the workflow, `parity_checks/nightly/` or a leg's own
+code runs the nightly, but only the legs its changed files feed (#1387). The plan
+job lists the PR's files and hands them to `pr_legs.py`. Its `RULES` map each
+directory to the legs that import from it, or read its data: `differential` runs
+fd_sens's models, for example. A runner, and a module only it imports, feeds
+only its own leg. The corpus job runs only where one of those legs reads the
+BioModels corpus. The PR's other files (its changelog fragment, `python/`, its
+tests) run no leg here, just as a PR with only those runs none. Neither does
+documentation, nor `bng_parity/golden/` (the golden gate's data).
+
+- **Changes to shared code run every leg:** the workflow and the nightly scripts.
+- **`parity_checks/_core` and `rr_parity/_rr_common.py`**, which every parity
+  runner imports, run every leg but `sbml`.
+- **A triggering path no rule names runs every leg** too.
+- **Scheduled and dispatched runs** run every leg.
+
+`parity_checks/tests/test_pr_legs.py` measures each runner's imports again, file by
+file and including imports inside functions, so a runner that comes to import
+another file fails there until `RULES` says that file feeds its leg. The data a
+job reads (a jobs list, a pin, a model) shows in no import: the test's cases pin
+those by hand, so a leg that comes to read another directory's data needs a rule
+and a case.
