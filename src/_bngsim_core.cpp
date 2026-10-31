@@ -17,6 +17,7 @@
 #include <bngsim/cc_jit.hpp>
 #include <bngsim/function_columns.hpp>
 #include <bngsim/mir_jit.hpp>
+#include <bngsim/refusals.hpp>
 #include <bngsim/sparse_jacobian.hpp>
 #include <bngsim/steady_state.hpp>
 #include <bngsim/wallclock.hpp>
@@ -871,12 +872,16 @@ PYBIND11_MODULE(_bngsim_core, m) {
     // The Python wrapper layer catches C++ std::runtime_error / std::invalid_argument
     // and re-raises as bngsim.ModelError / ParameterError / SimulationError.
     //
-    // Exception: bngsim::TimeoutError. The Python-side `SimulationTimeout`
+    // Exceptions, translated here: bngsim::TimeoutError and
+    // bngsim::SparseJacobianUnavailable. The Python-side `SimulationTimeout`
     // class carries `timeout` and `elapsed` attributes which the wrapper
     // layer can't reconstruct from a generic RuntimeError message — those
     // would round-trip lossily. We translate it directly so the attributes
-    // survive. `bngsim._exceptions` is imported lazily inside the lambda so
-    // module construction order remains free of cycles.
+    // survive. `SparseJacobianUnavailableError` is a refusal by name (issue
+    // #1313), which a caller tells from a solver failure by its type, so it
+    // can't arrive as the wrapper's SimulationError either. `bngsim._exceptions`
+    // is imported lazily inside the lambda so module construction order
+    // remains free of cycles.
     py::register_exception_translator([](std::exception_ptr p) {
         try {
             if (p)
@@ -885,6 +890,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::object cls = py::module_::import("bngsim._exceptions").attr("SimulationTimeout");
             py::object exc = cls(py::str(e.what()), py::arg("timeout") = e.timeout_seconds(),
                                  py::arg("elapsed") = e.elapsed_seconds());
+            PyErr_SetObject(cls.ptr(), exc.ptr());
+        } catch (const bngsim::SparseJacobianUnavailable &e) {
+            // A refusal by name (issue #1313): its own type, so a caller need not
+            // read the message to tell it from a solver failure.
+            py::object cls =
+                py::module_::import("bngsim._exceptions").attr("SparseJacobianUnavailableError");
+            py::object exc = cls(py::str(e.what()));
             PyErr_SetObject(cls.ptr(), exc.ptr());
         }
     });
