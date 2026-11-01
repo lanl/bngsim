@@ -551,17 +551,31 @@ def test_a_state_held_on_a_jump_is_refused_with_the_closed_form(tmp_path):
     has a root on its side of c. The state is held at X* = c, and dX*/ds =
     1/k1 = 4.76 was returned, where the held state does not move (issue
     #1330's review)."""
-    path = tmp_path / "ifjump.net"
-    path.write_text(
-        f"begin parameters\n 1 s 1.3\n 2 k1 0.21\n 3 c {1.3 / K1 - 3e-12!r}\nend parameters\n"
-        "begin functions\n 1 loss() k1*(1 + 1e-12*if(Xo > c, 1, 0))\nend functions\n"
-        "begin species\n 1 X() 0\nend species\nbegin groups\n 1 Xo 1\nend groups\n"
-        "begin reactions\n 1 0 1 s\n 2 1 0 loss\nend reactions\n"
-    )
-    model = bngsim.Model.from_net(str(path))
+    model = _if_jump(tmp_path)
     assert model.prepare_analytical_jacobian()
     with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
         bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["s"])
+
+
+def test_a_held_species_no_parameter_moves_is_returned(tmp_path):
+    """Held where it is, X does not move with g, which makes only G: the
+    columns are the held state's, and are returned."""
+    out = bngsim.Simulator(_if_jump(tmp_path), method="ode").steady_state(sensitivity_params=["g"])
+    assert out.sens_held_species is None
+    np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [0.0, 1.0], atol=1e-12)
+
+
+def _if_jump(tmp_path):
+    # X's loss k1·(1 + 1e-12·if(X > c, 1, 0)), c 3e-12 under s/k1; G made at g.
+    path = tmp_path / "ifjump.net"
+    path.write_text(
+        f"begin parameters\n 1 s 1.3\n 2 k1 0.21\n 3 c {1.3 / K1 - 3e-12!r}\n 4 g 2.0\n"
+        " 5 one 1.0\nend parameters\n"
+        "begin functions\n 1 loss() k1*(1 + 1e-12*if(Xo > c, 1, 0))\nend functions\n"
+        "begin species\n 1 X() 0\n 2 G() 0\nend species\nbegin groups\n 1 Xo 1\nend groups\n"
+        "begin reactions\n 1 0 1 s\n 2 1 0 loss\n 3 0 2 g\n 4 2 0 one\nend reactions\n"
+    )
+    return bngsim.Model.from_net(str(path))
 
 
 def test_a_root_on_a_step_is_returned(tmp_path):
