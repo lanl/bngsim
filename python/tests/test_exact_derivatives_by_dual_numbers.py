@@ -221,8 +221,7 @@ def test_the_matrix_is_the_closed_forms(name):
         model = bngsim.Model.from_antimony_string(_CLOSED_FORM_TEXTS[name.split(":", 1)[1]])
     else:
         model = _load(name)
-    if not model.prepare_analytical_jacobian():
-        pytest.skip(f"{name} has no complete closed form here")
+    assert model.prepare_analytical_jacobian(), f"{name} was chosen for a complete closed form"
     core = model._core
     y0 = np.asarray(core.get_state(), dtype=float)
     rng = np.random.default_rng(1330)
