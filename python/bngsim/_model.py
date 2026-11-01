@@ -2502,6 +2502,12 @@ class Model:
         closed-form terms (:meth:`prepare_analytical_jacobian`), which an ODE
         solve would do at its own setup; later calls reuse them.
 
+        Where there is no closed form, the matrix is exact all the same, by
+        dual numbers through the interpreter (issue #1330): each rate law and
+        function as the interpreter evaluates it, differentiated branch by
+        branch, with no step. Only a model the dual evaluation cannot follow (a
+        ring of functions that read each other, ``rateOf``) is differenced.
+
         Parameters
         ----------
         y : array_like, shape ``(n_species,)``
@@ -2516,12 +2522,6 @@ class Model:
             sparsity pattern — the same pattern from either source, so a
             consumer can allocate for it once — with the same ``source``
             attribute set on it. Needs scipy.
-
-        Where there is no closed form, the matrix is exact all the same, by
-        dual numbers through the interpreter (issue #1330): each rate law and
-        function as the interpreter evaluates it, differentiated branch by
-        branch, with no step. Only a model the dual evaluation cannot follow (a
-        ring of functions that read each other, ``rateOf``) is differenced.
 
         Returns
         -------
