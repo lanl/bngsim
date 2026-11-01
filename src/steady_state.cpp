@@ -4341,13 +4341,18 @@ static constexpr double kDualEntryFloor = 1e-10;
 
 // Whether a parameter moves species i on the branch the state is on: its entry
 // of dY_ss/dp is more than kDualSidesAgree of the species' own scale per unit
-// of the parameter, |y_i|/|p| (|y_i| where p is 0), and of kDualEntryFloor of
-// the column's largest. Against the column's largest alone, X beside G at 1e8
-// (dX*/dp = 6.7e-4 where dG*/dp = 1e8) read as not moving.
+// of the parameter, |y_i|/|p| (|y_i| where p is 0), with kDualEntryFloor of
+// the column's largest at least, or more than kDualSidesAgree of the column's
+// largest. Against the column's largest alone, X beside G at 1e8 (dX*/dp =
+// 6.7e-4 where dG*/dp = 1e8) read as not moving; against its own scale alone,
+// a parameter of 1e-10 that makes X (dX*/dz = 4.76, X* = 6.19) did, where one
+// of 0 did not.
 static bool ss_species_moves(double entry, double y_i, double p_value, double column_largest) {
     const double per_p = std::abs(p_value) > 0.0 ? std::abs(p_value) : 1.0;
     const double own = std::abs(y_i) / per_p;
-    return !(std::abs(entry) <= kDualSidesAgree * std::max(own, kDualEntryFloor * column_largest));
+    const double size = std::abs(entry);
+    return !(size <= kDualSidesAgree * std::max(own, kDualEntryFloor * column_largest)) ||
+           !(size <= kDualSidesAgree * column_largest);
 }
 
 // The least residual, of a species' terms, that a state held on a jump is

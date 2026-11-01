@@ -557,6 +557,15 @@ def test_a_state_held_on_a_jump_is_refused_with_the_closed_form(tmp_path):
         bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["s"])
 
 
+def test_a_held_species_a_small_parameter_moves_is_refused(tmp_path):
+    """z = 1e-10 makes X: dX*/dz = 1/k1 = 4.76 on the branch, nothing of X* =
+    6.19 per unit of z, and was returned, where z = 0 was refused (issue
+    #1330's review)."""
+    sim = bngsim.Simulator(_if_jump(tmp_path, z=1e-10), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
+        sim.steady_state(sensitivity_params=["z"])
+
+
 def test_a_held_species_no_parameter_moves_is_returned(tmp_path):
     """Held where it is, X does not move with g, which makes only G: the
     columns are the held state's, and are returned."""
@@ -565,15 +574,16 @@ def test_a_held_species_no_parameter_moves_is_returned(tmp_path):
     np.testing.assert_allclose(np.asarray(out.sensitivity)[:, 0], [0.0, 1.0], atol=1e-12)
 
 
-def _if_jump(tmp_path):
-    # X's loss k1·(1 + 1e-12·if(X > c, 1, 0)), c 3e-12 under s/k1; G made at g.
+def _if_jump(tmp_path, z=0.0):
+    # X made at s + z, its loss k1·(1 + 1e-12·if(X > c, 1, 0)) with c 3e-12
+    # under (s + z)/k1; G made at g.
     path = tmp_path / "ifjump.net"
     path.write_text(
-        f"begin parameters\n 1 s 1.3\n 2 k1 0.21\n 3 c {1.3 / K1 - 3e-12!r}\n 4 g 2.0\n"
-        " 5 one 1.0\nend parameters\n"
+        f"begin parameters\n 1 s 1.3\n 2 k1 0.21\n 3 c {(1.3 + z) / K1 - 3e-12!r}\n 4 g 2.0\n"
+        f" 5 one 1.0\n 6 z {z!r}\nend parameters\n"
         "begin functions\n 1 loss() k1*(1 + 1e-12*if(Xo > c, 1, 0))\nend functions\n"
         "begin species\n 1 X() 0\n 2 G() 0\nend species\nbegin groups\n 1 Xo 1\nend groups\n"
-        "begin reactions\n 1 0 1 s\n 2 1 0 loss\n 3 0 2 g\n 4 2 0 one\nend reactions\n"
+        "begin reactions\n 1 0 1 s\n 2 1 0 loss\n 3 0 2 g\n 4 2 0 one\n 5 0 1 z\nend reactions\n"
     )
     return bngsim.Model.from_net(str(path))
 
