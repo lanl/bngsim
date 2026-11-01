@@ -33,6 +33,12 @@ namespace expr_compat {
 // modified-Lentz method so it stays finite on BNG's large-|z| range (issue #42).
 double mratio(double a, double b, double z);
 
+// d/dz mratio(a, b, z), as the compiled code's bngsim_mratio_dz computes it
+// (python/bngsim/_codegen.py; issue #457): R·((a+1)/(b+1)·R(a+1,b+1,z) − (a/b)·R),
+// and where mratio refuses the shifted call, Kummer's contiguous relation
+// (b − (b−z)·R)/z − (a/b)·R². Neither a nor b has a derivative of this kind.
+double mratio_dz(double a, double b, double z);
+
 // rint(x): BNG's round-to-nearest, floor(x + 0.5) — the definition BNG2.pl's
 // run_network evaluates (muParser's Rint). A half rounds up, toward +inf, so
 // rint(-2.5) is -2 and rint(-0.5) is 0 (issue #771). This is NOT C's rint

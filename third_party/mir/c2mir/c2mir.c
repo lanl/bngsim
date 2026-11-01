@@ -2097,6 +2097,8 @@ static macro_t new_macro (c2m_ctx_t c2m_ctx, token_t id, VARR (token_t) * params
   pre_ctx_t pre_ctx = c2m_ctx->pre_ctx;
   macro_t tab_m, m = malloc (sizeof (struct macro));
 
+  if (m == NULL) /* BNGsim local carry (lanl/bngsim#1215) */
+    (*MIR_get_error_func (c2m_ctx->ctx)) (MIR_alloc_error, "no memory");
   m->id = id;
   m->params = params;
   m->replacement = replacement;
@@ -2122,9 +2124,11 @@ static void finish_macros (c2m_ctx_t c2m_ctx) {
   if (macro_tab != NULL) HTAB_DESTROY (macro_t, macro_tab);
 }
 
-static macro_call_t new_macro_call (MIR_alloc_t alloc, macro_t m, pos_t pos) {
+static macro_call_t new_macro_call (c2m_ctx_t c2m_ctx, MIR_alloc_t alloc, macro_t m, pos_t pos) {
   macro_call_t mc = malloc (sizeof (struct macro_call));
 
+  if (mc == NULL) /* BNGsim local carry (lanl/bngsim#1215) */
+    (*MIR_get_error_func (c2m_ctx->ctx)) (MIR_alloc_error, "no memory");
   mc->macro = m;
   mc->pos = pos;
   mc->repl_pos = 0;
@@ -2145,9 +2149,12 @@ static void free_macro_call (macro_call_t mc) {
   free (mc);
 }
 
-static ifstate_t new_ifstate (int skip_p, int true_p, int else_p, pos_t if_pos) {
+static ifstate_t new_ifstate (c2m_ctx_t c2m_ctx, int skip_p, int true_p, int else_p,
+                              pos_t if_pos) {
   ifstate_t ifstate = malloc (sizeof (struct ifstate));
 
+  if (ifstate == NULL) /* BNGsim local carry (lanl/bngsim#1215) */
+    (*MIR_get_error_func (c2m_ctx->ctx)) (MIR_alloc_error, "no memory");
   ifstate->skip_p = skip_p;
   ifstate->true_p = true_p;
   ifstate->else_p = else_p;
@@ -3055,7 +3062,7 @@ static void process_directive (c2m_ctx_t c2m_ctx) {
       if (strcmp (t1->repr, "ifdef") == 0) skip_if_part_p = !skip_if_part_p;
       true_p = !skip_if_part_p;
     }
-    VARR_PUSH (ifstate_t, ifs, new_ifstate (skip_if_part_p, true_p, FALSE, t1->pos));
+    VARR_PUSH (ifstate_t, ifs, new_ifstate (c2m_ctx, skip_if_part_p, true_p, FALSE, t1->pos));
   } else if (strcmp (t->repr, "endif") == 0 || strcmp (t->repr, "else") == 0) {
     t1 = t;
     t = get_next_pptoken (c2m_ctx);
@@ -3089,7 +3096,7 @@ static void process_directive (c2m_ctx_t c2m_ctx) {
                && VARR_LAST (ifstate_t, ifs)->skip_p) {
       skip_if_part_p = true_p = TRUE;
       skip_nl (c2m_ctx, NULL, NULL);
-      VARR_PUSH (ifstate_t, ifs, new_ifstate (skip_if_part_p, true_p, FALSE, t->pos));
+      VARR_PUSH (ifstate_t, ifs, new_ifstate (c2m_ctx, skip_if_part_p, true_p, FALSE, t->pos));
     } else if (strcmp (t->repr, "elif") == 0 && VARR_LAST (ifstate_t, ifs)->true_p) {
       VARR_LAST (ifstate_t, ifs)->skip_p = skip_if_part_p = TRUE;
       skip_nl (c2m_ctx, NULL, NULL);
@@ -3102,7 +3109,7 @@ static void process_directive (c2m_ctx_t c2m_ctx) {
       true_p = val.uns_p ? val.u.u_val != 0 : val.u.i_val != 0;
       skip_if_part_p = !true_p;
       if (strcmp (t->repr, "if") == 0)
-        VARR_PUSH (ifstate_t, ifs, new_ifstate (skip_if_part_p, true_p, FALSE, t->pos));
+        VARR_PUSH (ifstate_t, ifs, new_ifstate (c2m_ctx, skip_if_part_p, true_p, FALSE, t->pos));
       else {
         VARR_LAST (ifstate_t, ifs)->skip_p = skip_if_part_p;
         VARR_LAST (ifstate_t, ifs)->true_p = true_p;
@@ -3593,7 +3600,7 @@ static macro_call_t try_param_macro_call (c2m_ctx_t c2m_ctx, macro_t m, token_t 
     out_token (c2m_ctx, macro_id);
     return NULL;
   }
-  mc = new_macro_call (alloc, m, macro_id->pos);
+  mc = new_macro_call (c2m_ctx, alloc, m, macro_id->pos);
   find_args (c2m_ctx, mc);
   VARR_PUSH (macro_call_t, macro_call_stack, mc);
   return mc;
@@ -3772,7 +3779,7 @@ static void processing (c2m_ctx_t c2m_ctx, int ignore_directive_p) {
 #ifdef C2MIR_PREPRO_DEBUG
       fprintf (stderr, "# push back <EOR>\n");
 #endif
-      mc = new_macro_call (alloc, m, t->pos);
+      mc = new_macro_call (c2m_ctx, alloc, m, t->pos);
       add_tokens (mc->repl_buffer, m->replacement);
       copy_and_push_back (c2m_ctx, do_concat (c2m_ctx, mc->repl_buffer), mc->pos);
       m->ignore_p = TRUE;

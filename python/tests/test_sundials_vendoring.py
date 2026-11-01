@@ -101,7 +101,28 @@ def test_sundials_vendor_metadata_shape():
 
     assert metadata["guardrails"]["required_component_paths"] == EXPECTED_COMPONENT_PATHS
     assert metadata["guardrails"]["required_text_tokens"] == EXPECTED_REQUIRED_TEXT_TOKENS
-    assert metadata["local_carries"] == []
+    assert [carry["marker"] for carry in metadata["local_carries"]] == [
+        "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r3)"
+    ]
+
+
+def test_sundials_local_carries_are_applied_at_fetch():
+    """Each carry names the script that applies it, which holds the carry's
+    marker, and the configure applies that script and then requires the marker
+    in the fetched source (issue #1301). The source is not in the repository,
+    so the configure-time check is the tripwire a refresh cannot pass by
+    accident; python/tests/test_sens_staggered_corrector_restore.py is the
+    behavioral one."""
+    metadata = json.loads(SUNDIALS_VENDOR_METADATA.read_text())
+    cmake = CMAKE_LISTS.read_text()
+    for carry in metadata["local_carries"]:
+        for field in ("file", "function", "marker", "issue", "applied_by", "summary", "reapply"):
+            assert carry.get(field), f"local carry missing {field!r}: {carry}"
+        script = BNGSIM_ROOT / carry["applied_by"]
+        assert script.is_file(), carry["applied_by"]
+        assert carry["marker"] in script.read_text()
+        assert f"${{BNGSIM_SUNDIALS_DIR}}/{script.name}" in cmake
+        assert carry["marker"] in cmake
 
 
 def test_cmake_reads_pinned_sundials_metadata():

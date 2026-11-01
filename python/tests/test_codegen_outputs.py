@@ -216,6 +216,24 @@ def test_codegen_engages_for_forward_reference_model(monkeypatch):
     assert getattr(m, "_codegen_so_path", "") or getattr(m, "_codegen_c_source", "")
 
 
+def test_a_compiled_run_leaves_the_rule_set_parameters_at_its_end(monkeypatch):
+    """The compiled output evaluator fills the rows without writing the model,
+    and the compiled RHS writes no parameter, so after the run ``get_param`` on
+    a parameter an assignment rule sets read its value at load (issue #1358).
+    ``b := 0.5·S`` and ``a := b``, so both read 0.5·S(4) = 5·e^-2, not the
+    5.0 they hold at load.
+
+    The mir-jit leg runs this file under BNGSIM_CODEGEN_JIT=mir, so this is the
+    MIR backend's check as well as cc's."""
+    monkeypatch.delenv("BNGSIM_NO_CODEGEN", raising=False)
+    m = bngsim.Model.from_sbml_string(_decay_with_rules_sbml())
+    sim = bngsim.Simulator(m, method="ode", codegen=True)
+    r = sim.run(t_span=(0.0, 4.0), n_points=21, rtol=1e-9, atol=1e-12)
+    s_end = float(np.asarray(r.species)[-1, list(r.species_names).index("S")])
+    assert m.get_param("b") == pytest.approx(0.5 * s_end, rel=1e-12)
+    assert m.get_param("a") == m.get_param("b")
+
+
 # ─── Source-emitter gating ───────────────────────────────────────────────────
 
 

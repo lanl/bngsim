@@ -415,6 +415,11 @@ struct NetworkModel::Impl {
     std::vector<int> event_trigger_residual_idx;
     std::vector<std::vector<int>> event_trigger_residual_species;
     std::vector<std::string> event_trigger_residual_reason;
+    // And the comparison the residual comes from (issue #947): its rising
+    // orientation without whitespace, and whether it is strict. Empty where
+    // there is no residual.
+    std::vector<std::string> event_trigger_comparison;
+    std::vector<char> event_trigger_strict;
 
     // For each species, the species whose rateOf its derivative reads; state
     // 1 known, 2 cannot be said (0 until they are filled).
@@ -508,6 +513,12 @@ struct NetworkModel::Impl {
     // and both values. Reset on entry to every attach, so kind is None after a
     // success. Plain data: clone() copies it right after functional_jac.
     FunctionalJacobianDecline functional_jac_decline;
+
+    // The right-hand side and functions on dual numbers (issue #1330;
+    // model_dual.cpp). Built on first use and again when the expressions it
+    // compiled change; it holds addresses into this instance (its parameters,
+    // its tables), so clone() leaves it empty and the clone builds its own.
+    std::shared_ptr<NetworkModel::DualShadow> dual_shadow;
 
     Impl()
         : shared(std::make_shared<SharedModelData>()),

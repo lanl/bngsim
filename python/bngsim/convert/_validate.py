@@ -770,6 +770,9 @@ class ConversionValidationReport:
     levels: list[LevelResult] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
     lossy: list[str] = field(default_factory=list)
+    # What only bngsim's own reader reproduces of the target (sbml2net, issue
+    # #1274): never a failed level.
+    bngsim_only: list[str] = field(default_factory=list)
 
     def level(self, name: str) -> LevelResult | None:
         for lv in self.levels:
@@ -794,6 +797,7 @@ class ConversionValidationReport:
             "ok": self.ok,
             "dropped": list(self.dropped),
             "lossy": list(self.lossy),
+            "bngsim_only": list(self.bngsim_only),
             "levels": [
                 {
                     "level": lv.level,
@@ -818,6 +822,8 @@ class ConversionValidationReport:
             lines.append(f"  dropped: {note}")
         for note in self.lossy:
             lines.append(f"  lossy:   {note}")
+        for note in self.bngsim_only:
+            lines.append(f"  bngsim-only: {note}")
         for lv in self.levels:
             lines.append("  " + lv.summary())
         return "\n".join(lines)
@@ -851,7 +857,7 @@ class _Plan:
     load_target: Callable[..., Model]  # (path) -> Model
     write_back: Callable[..., str]  # (model, path, strict) -> str  (target → source format)
     load_back: Callable[..., Model]  # (path) -> Model
-    capability: Callable[..., dict]  # (model) -> {"dropped": [...], "lossy": [...]}
+    capability: Callable[..., dict]  # (model) -> {"dropped": [...], "lossy": [...], ...}
     target_suffix: str
     back_suffix: str
     target_is_sbml: bool
@@ -1235,6 +1241,7 @@ def _grade_target(
         target_path=report_target_path,
         dropped=list(caps.get("dropped", [])),
         lossy=list(caps.get("lossy", [])),
+        bngsim_only=list(caps.get("bngsim_only", [])),
     )
 
     # ── L0 ───────────────────────────────────────────────────────────
@@ -1510,6 +1517,7 @@ def validate_conversion(
                 target_path=None,
                 dropped=list(caps.get("dropped", [])),
                 lossy=list(caps.get("lossy", [])),
+                bngsim_only=list(caps.get("bngsim_only", [])),
             )
             for lv in want:
                 gating = lv != "L4"

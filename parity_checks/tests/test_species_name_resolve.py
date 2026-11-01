@@ -77,3 +77,16 @@ def test_bonded_complex_pattern_is_not_guessed():
     # return unchanged so we never guess a complex's canonical ordering.
     canonical = ["A(b!1).B(a!1)"]
     assert bc.resolve_species_name("B(a!1).A(b!1)", canonical) == "B(a!1).A(b!1)"
+
+
+def test_fixed_species_dollar_is_dropped():
+    # BNG2.pl's setConcentration("$X()") finds the species, and bngsim's .net names
+    # never hold the `$`: without this, the multi-segment replay fell back.
+    canonical = ["X(a)", "@c::Y()", "B(q,p)", "A(b!1).X(a!1)"]
+    assert bc.resolve_species_name("$X(a)", canonical) == "X(a)"
+    # A complex has no structural key, so only the exact name without `$` finds it.
+    assert bc.resolve_species_name("$A(b!1).X(a!1)", canonical) == "A(b!1).X(a!1)"
+    assert bc.resolve_species_name("@c::$Y()", canonical) == "@c::Y()"
+    assert bc.resolve_species_name("@c:$Y()", canonical) == "@c::Y()"
+    assert bc.resolve_species_name("$B(p,q)", canonical) == "B(q,p)"
+    assert bc.resolve_species_name("$Z()", canonical) == "$Z()"  # no match: unchanged

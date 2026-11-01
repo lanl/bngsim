@@ -83,6 +83,12 @@ def _cmakelists_options() -> dict[str, str]:
     return dict(pattern.findall(CMAKELISTS.read_text()))
 
 
+def _cmakelists_cache_strings() -> dict[str, str]:
+    """Every ``set(NAME "default" CACHE STRING ...)`` in the top-level CMakeLists.txt."""
+    pattern = re.compile(r"""set\(\s*([A-Za-z_][A-Za-z0-9_]*)\s+"([^"]*)"\s+CACHE\s+STRING\b""")
+    return dict(pattern.findall(CMAKELISTS.read_text()))
+
+
 def _defines(cmd: list[str]) -> dict[str, str]:
     """The ``-DNAME=VALUE`` flags of a cmake argv, as a mapping."""
     out: dict[str, str] = {}
@@ -154,6 +160,37 @@ def test_every_cmake_option_is_classified() -> None:
     )
 
 
+def test_tuning_setting_defaults_match_cmakelists() -> None:
+    mod = _rebuild_editable()
+    declared = _cmakelists_cache_strings()
+    mismatched = {
+        name: (default, declared.get(name))
+        for name, default in mod._TUNING_SETTING_DEFAULTS.items()
+        if declared.get(name) != default
+    }
+    assert not mismatched, (
+        "scripts/rebuild_editable.py records a different CACHE STRING default than "
+        f"CMakeLists.txt for {mismatched} (script value, CMakeLists value)."
+    )
+
+
+def test_every_cmake_cache_string_is_classified() -> None:
+    """``option()`` covers only booleans; a ``CACHE STRING`` setting is inherited too.
+
+    BNGSIM_MIR_CODE_RESERVE_MB (issue #1215) was the first: until the script
+    named it, a value one install passed stayed in the shared cache for every
+    later editable rebuild.
+    """
+    mod = _rebuild_editable()
+    unclassified = set(_cmakelists_cache_strings()) - set(mod._TUNING_SETTING_DEFAULTS)
+    assert not unclassified, (
+        f"CMakeLists.txt declares CACHE STRING setting(s) {sorted(unclassified)} that "
+        "scripts/rebuild_editable.py does not pass, so an editable rebuild inherits "
+        "them from whichever build last wrote the shared CMakeCache.txt (GH #459). "
+        "Add them to _TUNING_SETTING_DEFAULTS."
+    )
+
+
 # ── the configure line names everything ──────────────────────────────────────
 
 
@@ -164,6 +201,8 @@ def test_configure_passes_every_feature_option() -> None:
         assert name in defines, f"{name} is not on the configure line, so it is inherited"
     for name, value in mod._PINNED_OPTION_VALUES.items():
         assert defines.get(name) == value
+    for name, value in mod._TUNING_SETTING_DEFAULTS.items():
+        assert defines.get(name) == value, f"{name} is not on the configure line"
 
 
 def test_configure_passes_the_klu_options_that_used_to_be_inherited() -> None:
@@ -228,6 +267,24 @@ def test_unparseable_env_value_is_refused_by_name() -> None:
     assert "maybe" in message
 
 
+@pytest.mark.parametrize(("raw", "value"), [("0", "0"), ("8", "8"), (" 128 ", "128")])
+def test_env_var_sets_the_mir_code_reservation(raw: str, value: str) -> None:
+    """A number, not a boolean: ``_as_cmake_bool`` would read ``0`` as OFF."""
+    assert (
+        _configure_defines(BNGSIM_MIR_CODE_RESERVE_MB=raw)["BNGSIM_MIR_CODE_RESERVE_MB"] == value
+    )
+
+
+@pytest.mark.parametrize("raw", ["32MB", "-1", "8.5", "ON"])
+def test_unparseable_mir_code_reservation_is_refused_by_name(raw: str) -> None:
+    mod = _rebuild_editable()
+    with pytest.raises(SystemExit) as excinfo:
+        mod._resolve_cmake_settings(REPO_ROOT, environ={"BNGSIM_MIR_CODE_RESERVE_MB": raw})
+    message = str(excinfo.value)
+    assert "BNGSIM_MIR_CODE_RESERVE_MB" in message
+    assert repr(raw) in message
+
+
 # ── the cache guard ──────────────────────────────────────────────────────────
 
 
@@ -236,7 +293,7 @@ def _cache(tmp_path: Path, **entries: str) -> Path:
     build_dir.mkdir()
     lines = ["# This is the CMakeCache file.", "//A comment line", ""]
     for name, value in entries.items():
-        kind = "STRING" if name == "CMAKE_BUILD_TYPE" else "BOOL"
+        kind = "STRING" if name in ("CMAKE_BUILD_TYPE", "BNGSIM_MIR_CODE_RESERVE_MB") else "BOOL"
         lines.append(f"{name}:{kind}={value}")
         # CMake writes a sibling INTERNAL entry whose name carries a dash; the
         # parser must not read it as a value for the option itself.
@@ -322,6 +379,21 @@ def test_a_requested_change_is_not_a_conflict(tmp_path: Path) -> None:
     settings = mod._resolve_cmake_settings(REPO_ROOT, environ={"BNGSIM_ENABLE_MIR": "1"})
     cached = mod._cmake_cache_values(build_dir, settings)
     assert mod._configuration_conflicts(cached, settings) == []
+
+
+def test_a_different_mir_code_reservation_is_reconfigured_not_refused(tmp_path: Path) -> None:
+    """A tree left at 128 by another install is put back to 32, not deleted.
+
+    The reservation only recompiles mir.c, so the conflict message's
+    ``rm -rf`` would be wrong advice; the configure line pinning 32 is the fix.
+    """
+    mod = _rebuild_editable()
+    build_dir = _cache(tmp_path, BNGSIM_MIR_CODE_RESERVE_MB="128")
+    settings = mod._resolve_cmake_settings(REPO_ROOT, environ={})
+    cached = mod._cmake_cache_values(build_dir, settings)
+    assert cached == {"BNGSIM_MIR_CODE_RESERVE_MB": "128"}
+    assert mod._configuration_conflicts(cached, settings) == []
+    assert _configure_defines()["BNGSIM_MIR_CODE_RESERVE_MB"] == "32"
 
 
 def test_a_debug_cache_stops_a_release_rebuild(tmp_path: Path) -> None:

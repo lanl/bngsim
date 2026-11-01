@@ -199,6 +199,21 @@ inline AtolTracking make_atol_tracking(double rtol, const std::vector<double> &a
     return t;
 }
 
+// The tracking rule's denominator for species i at the value y,
+// rtol*|y| + clamp(rtol*|y|, lo_i, hi_i): the 1/ewt_i CVODE tests a step with.
+// The error weights below and the restart test's band (tolerance_unit) both
+// read it here, so the band cannot drift from the weights (issue #907).
+inline double tracking_unit(const AtolTracking &t, std::size_t i, double y) {
+    const double rel = t.rtol * std::abs(y);
+    double a = rel;
+    if (a < t.lo[i]) {
+        a = t.lo[i];
+    } else if (a > t.hi[i]) {
+        a = t.hi[i];
+    }
+    return rel + a;
+}
+
 // The body of the CVEwtFn. Each translation unit wraps this in a two-line
 // callback that casts its own user-data type, because CVODE hands the error
 // weight function whatever went to CVodeSetUserData and that is a different
@@ -217,21 +232,26 @@ inline int fill_tracking_ewt(const AtolTracking &t, N_Vector y, N_Vector ewt) {
     const sunrealtype *yd = N_VGetArrayPointer(y);
     sunrealtype *w = N_VGetArrayPointer(ewt);
     for (sunindextype i = 0; i < n; ++i) {
-        const double rel = t.rtol * std::abs(static_cast<double>(yd[i]));
-        double a = rel;
-        const size_t k = static_cast<size_t>(i);
-        if (a < t.lo[k]) {
-            a = t.lo[k];
-        } else if (a > t.hi[k]) {
-            a = t.hi[k];
-        }
-        const double denom = rel + a;
+        const double denom = tracking_unit(t, static_cast<size_t>(i), static_cast<double>(yd[i]));
         if (!(denom > 0.0) || !std::isfinite(denom)) {
             return -1;
         }
         w[i] = static_cast<sunrealtype>(1.0 / denom);
     }
     return 0;
+}
+
+// What the run's error weight holds species i to at the value y: the 1/ewt_i
+// that CVODE's own rule gives there (issue #907). Where tracking is on that is
+// tracking_unit, which reads the rule's own rtol and ceiling, and `rtol` and
+// `atol_i` are not read. Without tracking it is rtol*|y| + atol_i, the same
+// expression, to the bit, as a band read from the scalar or the vector.
+inline double tolerance_unit(const AtolTracking &t, double rtol, double atol_i, std::size_t i,
+                             double y) {
+    if (t.active()) {
+        return tracking_unit(t, i, y);
+    }
+    return rtol * std::abs(y) + atol_i;
 }
 
 // Hand CVODE the tolerances for this run: `CVodeWFtolerances` when `ewt_fn` is
