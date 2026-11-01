@@ -351,8 +351,12 @@ def test_suite_adapter_uses_semantic_concentration_for_hosu_event_resize():
   </event></listOfEvents>
  </model></sbml>"""
     model, res = _run(sbml, t_end=1.0, n=3)
-    raw = np.asarray(res.species)[:, list(res.species_names).index("H")]
+    # Stored as amount/V_static; reported at amount/V_live, in Result.species as
+    # in [H] (issue #1368).
+    raw = np.asarray(res.state)[:, list(res.state_names).index("H")]
     np.testing.assert_allclose(raw[-1], 5.0, rtol=1e-12, atol=0.0)
+    reported = np.asarray(res.species)[:, list(res.species_names).index("H")]
+    np.testing.assert_allclose(reported[-1], 2.5, rtol=1e-12, atol=0.0)
 
     bench_dir = Path(__file__).resolve().parents[2] / "benchmarks" / "suites" / "sbml_test_suite"
     added = str(bench_dir) not in sys.path

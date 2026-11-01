@@ -319,9 +319,11 @@ def test_hosu_species_not_rescaled_at_resize():
     model = bngsim.Model.from_sbml_string(SBML_HOSU_RESIZE)
     r = bngsim.Simulator(model, method="ode").run(t_span=(0, 1.4), n_points=141)
     t = np.asarray(r.time)
-    names = list(r.species_names)
-    H = np.asarray(r.species)[:, names.index("H")]
-    S = np.asarray(r.species)[:, names.index("S")]
+    # The stored values (Result.state): Result.species reports H at amount/V_live
+    # (issue #1368), which does step at the resize.
+    names = list(r.state_names)
+    H = np.asarray(r.state)[:, names.index("H")]
+    S = np.asarray(r.state)[:, names.index("S")]
 
     i_pre = np.where(t <= TE)[0][-1]
     i_post = np.where(t > TE)[0][0]
