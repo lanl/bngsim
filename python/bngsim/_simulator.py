@@ -2971,6 +2971,10 @@ class Simulator:
                 "(issue #150).",
                 e,
             )
+            # The equalities are found on their own, and are watched with no
+            # switch inside them to cover a leaving: #1228's start check did not
+            # need the conditions either, and a stretch unwatched is silent.
+            self._apply_held_equalities(opts, core, ctx, [])
             return
         self._apply_held_equalities(opts, core, ctx, conditions)
         stops: list[str] = []
@@ -3033,6 +3037,11 @@ class Simulator:
         state-switch *conditions* written inside it, whose crossing covers a
         leaving at its own instant. A stretch the run never leaves, or leaves
         only at an event, runs.
+
+        Only finding the equalities can leave them unwatched. Without the
+        reaction map the solver reads every reaction's flux, and without the
+        inner switches it covers no leaving by one: either refuses more, where
+        dropping the equalities with them gave the washout's columns as 0 again.
         """
         from bngsim._switch_sensitivity import (
             _iter_condition_atoms,
@@ -3044,8 +3053,17 @@ class Simulator:
 
         try:
             equalities = [atom for atom, _ in rate_law_equalities(core, ctx)]
-            if not equalities:
-                return
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "Rate-law equality detection failed (%s); a state that leaves one is not "
+                "watched (issue #1279).",
+                e,
+            )
+            return
+        if not equalities:
+            return
+        opts.set_held_equality_conditions(equalities)
+        try:
             switched = {
                 _surface_key(r) for r in (state_switch_residual(core, c) for c in conditions) if r
             }
@@ -3058,17 +3076,24 @@ class Simulator:
                 ]
                 for equality in equalities
             ]
-            reactions = state_switch_reactions(core, equalities, ctx)
-        except Exception as e:  # pragma: no cover - defensive
+        except Exception as e:
             logger.warning(
-                "Rate-law equality detection failed (%s); a state that leaves one is not "
-                "watched (issue #1279).",
+                "The state switches inside a rate-law equality were not found (%s); a "
+                "leaving at one's crossing is refused (issue #1279).",
                 e,
             )
-            return
-        opts.set_held_equality_conditions(equalities)
-        opts.set_held_equality_reactions(reactions)
-        opts.set_held_equality_inner(inner)
+        else:
+            opts.set_held_equality_inner(inner)
+        try:
+            reactions = state_switch_reactions(core, equalities, ctx)
+        except Exception as e:
+            logger.warning(
+                "Rate-law equality reaction map failed (%s); a leaving is judged over "
+                "every reaction's flux (issue #1279).",
+                e,
+            )
+        else:
+            opts.set_held_equality_reactions(reactions)
 
     def _apply_state_switch_roots(self, opts, model, covered=None) -> None:
         """Root the rate-law conditions over model state for a plain run (issue #897).
@@ -5553,10 +5578,11 @@ class Simulator:
             # ValueError: before it was typed the refusal was a plain ValueError
             # and fell past the RuntimeError arm below untouched, so adding the
             # BngsimError base silently routed it INTO the wrapper. Only the
-            # switch-time site (_switch_sensitivity, issue #48) raises from
+            # switch-time site (_switch_sensitivity, issue #48) raised from
             # inside this try — the event and codegen refusals are raised during
             # setup and never reach here — which is why one site regressed and
-            # the other two did not.
+            # the other two did not. The solver's own refusal where the state
+            # leaves a rate-law equality (issue #1279) arrives here typed too.
             raise
         except RuntimeError as e:
             raise SimulationError(f"Simulation failed: {e}{_tracking_hint(track_decades)}") from e

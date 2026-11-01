@@ -203,3 +203,22 @@ def test_every_entry_point_refuses_it_typed(entry):
             sim.compute_all_sensitivities(
                 t_span=(0, 8), n_points=9, params=PARAMS, chunk_size=1, n_workers=1
             )
+
+
+@pytest.mark.parametrize(
+    "fails", ["state_switch_reactions", "state_switch_conditions", "_surface_key"]
+)
+def test_a_detector_that_fails_leaves_the_equality_watched(monkeypatch, fails):
+    """The reaction map, the conditions and the switches inside the equality
+    are best-effort. Failing any of them dropped the equalities with them, and
+    the washout came back [0, 0, 2.218876] again, with a warning about
+    something else. The solver reads every reaction without the map and
+    covers no leaving by an inner switch without those, so it refuses."""
+    import bngsim._switch_sensitivity as switch_sensitivity
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("detector failed")
+
+    monkeypatch.setattr(switch_sensitivity, fails, fail)
+    with pytest.raises(SensitivityUnsupportedError, match=r"'B==0.*leaves it at t=3\.2188"):
+        _columns(_model("1): B = 0"))
