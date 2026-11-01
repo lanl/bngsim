@@ -69,7 +69,10 @@ def _name_aligned_perm(src: Model, reloaded: Model) -> list[int]:
 
     BNG2.pl may reorder/rename species, so alignment is by the writer's sanitized
     molecule name rather than position. Raises :class:`ConversionError` if a source
-    species has no counterpart in the reloaded network.
+    species has no counterpart in the reloaded network, or the reloaded network
+    has species the source does not: both probes read the reload at a source
+    state, which says nothing of an extra species' value (``_eval_rhs`` refused
+    the length with a ValueError, and the report probe an IndexError).
     """
     from bngsim.convert._bngl_writer import _molecule_names, _rule_species_carriers
 
@@ -88,6 +91,11 @@ def _name_aligned_perm(src: Model, reloaded: Model) -> list[int]:
     if missing:
         raise ConversionError(
             f"cannot align {len(missing)} species after BNG2.pl round-trip (e.g. {missing[:5]})"
+        )
+    if len(rl_names) != len(src_mol):
+        raise ConversionError(
+            f"cannot align the species after BNG2.pl round-trip: its network has "
+            f"{len(rl_names)}, the source {len(src_mol)}"
         )
     return [pos[n] for n in src_mol]
 

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import tempfile
 import warnings
 from pathlib import Path
 
@@ -61,8 +60,9 @@ def _sbml(tmp_path: Path, text: str) -> Path:
     return path
 
 
-def _bng2(bngl: str, action: str) -> Path:
-    d = Path(tempfile.mkdtemp())
+def _bng2(tmp_path: Path, bngl: str, action: str) -> Path:
+    d = tmp_path / "bng2"
+    d.mkdir()
     (d / "m.bngl").write_text(bngl + "\n" + action + "\n")
     subprocess.run(
         [str(_BNG2), "--outdir", str(d), str(d / "m.bngl")],
@@ -192,6 +192,80 @@ end functions
     assert _ar_report_delta(src, back, back_names=names) > 1e-3
 
 
+def test_a_reload_with_another_species_count_is_refused_by_name(tmp_path):
+    """A species BNG2.pl's network has and the source does not cannot be read
+    at a source state. The alignment refuses it as the ConversionError every
+    caller of the round-trip maps, not as the IndexError the column check
+    raised (``yb[back_perm] = y``) or the right-hand side's ValueError."""
+    from bngsim.convert._bng2 import _name_aligned_perm
+
+    src = bngsim.Model.from_sbml(str(_sbml(tmp_path, MODELS["nonlinear"])))
+    net = """\
+begin parameters
+    1 k1 0.5
+end parameters
+begin species
+    1 @c::$__ar_B() 100
+    2 @c::C() 0
+    3 @c::A() 10
+    4 @c::X() 1
+end species
+begin reactions
+    1 3 0 k1
+end reactions
+begin functions
+    1 B() 2
+end functions
+"""
+    path = tmp_path / "back.net"
+    path.write_text(net)
+    with pytest.raises(ConversionError, match="its network has 4, the source 3"):
+        _name_aligned_perm(src, bngsim.Model.from_net(str(path)))
+
+
+def test_the_summary_names_the_column_delta(tmp_path, monkeypatch):
+    """A round-trip refused for the column alone says so in its summary, which
+    ``bngsim-sbml2bngl --gate`` prints, beside a right-hand side delta of 0."""
+    import bngsim.convert._bng2 as _b
+
+    monkeypatch.setattr(_b, "roundtrip_deltas", lambda *a, **k: (0.0, 0.5, 3))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConversionWarning)
+        rep = sbml_to_bngl(_sbml(tmp_path, MODELS["nonlinear"]), validate="bng2", strict=False)
+    assert rep.rhs_faithful is False and rep.max_ar_report_delta == 0.5
+    assert "max|Δ assignment-rule species| = 5.00e-01" in rep.summary()
+
+
+def test_the_corpus_harness_gates_the_column_as_the_gate_does(tmp_path, monkeypatch):
+    """``parity_checks/rr_parity/cbngl_bng2_validate.py`` measures a model as
+    ``sbml_to_bngl(validate="bng2")`` does: a column the right-hand side cannot
+    see is a mismatch there too, not "faithful" (BIOMD0000000664 was)."""
+    import importlib.util
+
+    import bngsim.convert._bng2 as _b
+
+    harness_path = (
+        Path(__file__).resolve().parents[2]
+        / "parity_checks"
+        / "rr_parity"
+        / "cbngl_bng2_validate.py"
+    )
+    spec = importlib.util.spec_from_file_location("_cbngl_bng2_validate", harness_path)
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+    xml = _sbml(tmp_path, MODELS["nonlinear"])
+    monkeypatch.setattr(harness, "_corpus_xml", lambda _model_id: xml)
+    for deltas, status in (
+        ((0.0, 0.5, 3), "ar_report_mismatch"),
+        ((0.5, 0.0, 3), "rhs_mismatch"),
+        ((0.0, 0.0, 3), "faithful"),
+    ):
+        monkeypatch.setattr(_b, "roundtrip_deltas", lambda *a, _d=deltas, **k: _d)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConversionWarning)
+            assert harness.validate_one("m")["status"] == status
+
+
 # --------------------------------------------------------------------------- #
 # through BNG2.pl
 # --------------------------------------------------------------------------- #
@@ -205,7 +279,7 @@ def test_every_column_comes_back_through_bng2_pl(tmp_path, case):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConversionWarning)
         bngl = write_bngl(src, strict=True)
-    d = _bng2(bngl, "generate_network({overwrite=>1})")
+    d = _bng2(tmp_path, bngl, "generate_network({overwrite=>1})")
     want, got = _end(src), _end(bngsim.Model.from_net(str(d / "m.net")))
     assert set(got) == set(want)
     for name, value in want.items():
@@ -232,6 +306,7 @@ def test_bng2_pls_own_run_still_holds_the_column(tmp_path):
         warnings.simplefilter("ignore", ConversionWarning)
         bngl = write_bngl(src, strict=True)
     d = _bng2(
+        tmp_path,
         bngl,
         'generate_network({overwrite=>1})\nsimulate({method=>"ode",t_end=>5,n_steps=>10,'
         "atol=>1e-12,rtol=>1e-10})",

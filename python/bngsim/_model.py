@@ -3251,9 +3251,13 @@ def _ar_report_map_from_net(
     function is therefore reported through it, exactly as the source model does
     (#515). Neither BNG2.pl nor a hand-written network produces that collision —
     a BNGL species name is a pattern, and the writer's per-species identity
-    group is excluded — so a plain ``.net`` keeps the empty map it always had.
-    ``codegen_data`` is consulted only when a name collides, and not at all
-    when the caller passes the ``data`` it already holds (the ``.net`` writer).
+    group is excluded. So the BNGL writer names such a species' molecule after
+    its rule instead (``__ar_<rule>``, issue #1400), and a fixed species BNG2.pl
+    writes as ``@comp::__ar_X()`` is reported through the function or the
+    non-identity observable ``X``. Any other ``.net`` keeps the empty map it
+    always had. ``codegen_data`` is consulted only when a name collides or a
+    species is marked, and not at all when the caller passes the ``data`` it
+    already holds (the ``.net`` writer).
     """
     species = list(core.species_names)
     obs_names = set(core.observable_names)

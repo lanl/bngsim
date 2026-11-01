@@ -232,7 +232,11 @@ def bngl_capability_report(
       ``.net`` channel the round-trip validates through;
     * **amount-valued species in a non-unit compartment** — the writer keeps the
       concentration-space semantics ``from_net`` reads back, so a per-species
-      amount factor would mis-scale.
+      amount factor would mis-scale;
+    * **a model with no reactions** — BNG2.pl's ``generate_network`` aborts on
+      one;
+    * **an assignment-rule species the writer cannot mark** — a marked one is a
+      ``bngsim_only`` note instead (issue #1400).
 
     Pure; no I/O, no warnings.
     """
@@ -276,18 +280,15 @@ def bngl_capability_report(
     # is carried, as the function or observable of the species' own name that
     # every rate law reads, so the other species' dynamics are exact (issue
     # #1400: 2.6e-13 through BNG2.pl, 0 through bngsim's reload). Only the
-    # species' own column is lost. It is written $-fixed, and BNG2.pl holds it
-    # at its initial value, as bngsim does reloading BNG2.pl's .net: that file
-    # names the species as a pattern (`@comp1::$B()`), so the reader that
-    # rebuilds the rule from a .net bngsim wrote (_ar_report_map_from_net, #515)
-    # never finds the pair. Refused rather than warned, as the .net writer warns
-    # (#1274), because nothing on this path brings the column back and the
-    # bng2 gate cannot see it: a held species has dy/dt = 0 on both sides.
-    #
-    # Where the writer can mark the species (AR_MOLECULE_PREFIX), bngsim's
-    # reader pairs it with its rule again and reports the column; BNG2.pl's own
-    # run still holds it, so that is a bngsim-only note, as the .net writer's
-    # is. A species it cannot mark keeps the refusal.
+    # species' own column is at stake. It is written $-fixed, and BNG2.pl's own
+    # run holds it at its initial value. BNG2.pl's .net names the species as a
+    # pattern (`@comp1::$B()`), which never equals its rule's name, so the
+    # writer marks it (AR_MOLECULE_PREFIX) and bngsim's reader pairs the mark
+    # with its rule (_ar_report_map_from_net) and reports the column. That is a
+    # bngsim-only note, as the .net writer's is (#1274), and the bng2 gate
+    # checks the column, which the right-hand side cannot show (dy/dt = 0 on
+    # both sides). A species the writer cannot mark would be held by both
+    # readers, so it is refused.
     bngsim_only: list[str] = []
     ar = sorted((getattr(model, "_ar_report_map", None) or {}).keys())
     if ar:
@@ -305,17 +306,17 @@ def bngl_capability_report(
         if marked:
             bngsim_only.append(
                 f"{len(marked)} assignment-rule species (e.g. {_eg(marked)}) are written "
-                f"$-fixed as {AR_MOLECULE_PREFIX}<rule> beside the function that carries "
-                "their rule: bngsim reads the pair as the rule, but BNG2.pl holds each "
-                "species' own column at its initial value (its rate laws read the rule, "
-                "so only those columns differ there)"
+                f"$-fixed as {AR_MOLECULE_PREFIX}<rule> beside the function or observable "
+                "that carries their rule: bngsim reads the pair as the rule, but BNG2.pl "
+                "holds each species' own column at its initial value (its rate laws read "
+                "the rule, so only those columns differ there)"
             )
         if unmarked:
             lossy.append(
                 f"{len(unmarked)} assignment-rule species (e.g. {_eg(unmarked)}): the rule "
-                "is carried, as the function its rate laws read, but the species cannot "
-                "be marked for bngsim's reader, so BNG2.pl, and bngsim reloading "
-                "BNG2.pl's .net, hold its own column at its initial value"
+                "is carried, as the function or observable its rate laws read, but the "
+                "species cannot be marked for bngsim's reader, so BNG2.pl, and bngsim "
+                "reloading BNG2.pl's .net, hold its own column at its initial value"
             )
 
     # Live / time-varying compartment volumes — cBNGL volumes are static.

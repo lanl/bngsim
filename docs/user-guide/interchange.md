@@ -61,10 +61,11 @@ into a BNGL actions block.
 report = bngsim.convert.sbml_to_bngl("model.xml", "model.bngl")
 
 # Prove faithfulness with the BNG2.pl round-trip oracle (validate="bng2"): flatten
-# the emitted .bngl via `BNG2.pl generate_network`, reload, and compare the ODE RHS
-# to the source. Needs BNG2.pl on $BNGPATH or PATH.
+# the emitted .bngl via `BNG2.pl generate_network`, reload, and compare the ODE RHS,
+# and each assignment-rule species' reported value, to the source. Needs BNG2.pl
+# on $BNGPATH or PATH.
 report = bngsim.convert.sbml_to_bngl("model.xml", "model.bngl", validate="bng2")
-print(report.rhs_faithful)   # True when the round-trip reproduces the source RHS
+print(report.rhs_faithful)   # True when the round-trip reproduces the source
 ```
 
 ```bash
@@ -104,8 +105,8 @@ the rule when it loads the `.net` that BNG2.pl writes from the file, so every
 column comes back. BNG2.pl's own run still holds the species at its initial
 value, so this too is a warning, listed under `bngsim_only`, and never a refusal.
 `validate="bng2"` checks the column as well as the right-hand side, which cannot
-show a held species (dy/dt = 0 on both sides), and reports the larger difference
-as `max_ar_report_delta`.
+show a held species (dy/dt = 0 on both sides), and reports the column's largest
+difference as `max_ar_report_delta`.
 
 ## Validate the conversion (the L0–L4 ladder)
 

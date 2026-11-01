@@ -164,7 +164,7 @@ class ConversionReport:
     protocol: ProtocolSpec | None = None  # parsed from a source .bngl, when given
     bngl_out: str | None = None  # path of the emitted .bngl actions block, when written (GH #222)
     # What only bngsim's own reader reproduces of the written network: warned,
-    # never fatal (sbml_to_net; see capability_report, issue #1274).
+    # never fatal (sbml_to_net, issue #1274; sbml_to_bngl, issue #1400).
     bngsim_only: list[str] = field(default_factory=list)
 
     # Direction-flavored aliases so each call site reads naturally.
@@ -223,6 +223,10 @@ class ConversionReport:
             lines.append("  " + self.structural.summary())
         if self.max_rhs_delta is not None:
             lines.append(f"  numerical: max|Δ dy/dt| = {self.max_rhs_delta:.2e}")
+        if self.max_ar_report_delta is not None:
+            lines.append(
+                f"  numerical: max|Δ assignment-rule species| = {self.max_ar_report_delta:.2e}"
+            )
         if self.validation is not None:
             for lv in self.validation.levels:
                 lines.append("  " + lv.summary())
@@ -546,11 +550,14 @@ def sbml_to_bngl(
         **BNG2.pl round-trip oracle** — flatten the emitted ``.bngl`` via
         ``BNG2.pl generate_network``, reload through :func:`bngsim.Model.from_net`,
         and compare the ODE right-hand side to the source's (probed at several t>0
-        instants). Sets :attr:`ConversionReport.rhs_faithful` / ``max_rhs_delta``;
-        a divergence raises :class:`bngsim.ConversionError` under ``strict`` (else
-        warns). Needs ``BNG2.pl`` on ``$BNGPATH`` or ``PATH`` (raises if absent,
-        times out, or the ``.bngl`` does not build — faithfulness unprovable). This
-        is the authoritative cBNGL gate; there is no in-tree cBNGL reader by design.
+        instants), and what each species an assignment rule sets reports, which
+        the right-hand side cannot show (issue #1400). Sets
+        :attr:`ConversionReport.rhs_faithful` / ``max_rhs_delta`` /
+        ``max_ar_report_delta``; a divergence in either raises
+        :class:`bngsim.ConversionError` under ``strict`` (else warns). Needs
+        ``BNG2.pl`` on ``$BNGPATH`` or ``PATH`` (raises if absent, times out, or the
+        ``.bngl`` does not build — faithfulness unprovable). This is the
+        authoritative cBNGL gate; there is no in-tree cBNGL reader by design.
     rhs_tol : float
         Scale-relative RHS tolerance for ``validate="bng2"`` (default 1e-6).
     t_span, n_points : tuple[float, float], int
@@ -560,9 +567,9 @@ def sbml_to_bngl(
     Returns
     -------
     ConversionReport
-        With ``validate="bng2"``, :attr:`rhs_faithful` / :attr:`max_rhs_delta`
-        carry the oracle verdict; otherwise both are None and ``ok`` reflects the
-        capability check (no fatal ``lossy`` notes).
+        With ``validate="bng2"``, :attr:`rhs_faithful` / :attr:`max_rhs_delta` /
+        :attr:`max_ar_report_delta` carry the oracle verdict; otherwise they are
+        None and ``ok`` reflects the capability check (no fatal ``lossy`` notes).
     """
     from bngsim._exceptions import ConversionError, ConversionWarning
     from bngsim._model import Model

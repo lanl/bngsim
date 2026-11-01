@@ -4,11 +4,11 @@ Deliverable 1 recovers **static compartment volumes**: a non-unit-volume model
 that the flat ``.net`` channel refuses is emitted as compartmental BNGL and
 round-trips faithfully through ``BNG2.pl generate_network`` →
 ``Model.from_net``. Covers the ``begin compartments`` reconstruction, the
-capability boundary (cross-compartment/transport, events, live volumes, and
-assignment-rule species refused fail-loud — their rule is carried, but their
-own column is held through BNG2.pl, issue #1400),
-the ExprTk→BNGL expression normalization, and the BNG2.pl round-trip RHS
-equivalence over a handful of clean within-compartment models.
+capability boundary (cross-compartment/transport, events and live volumes
+refused fail-loud; an assignment-rule species is carried and warned, and is
+covered in ``test_bngl_rule_species.py``, issue #1400), the ExprTk→BNGL
+expression normalization, and the BNG2.pl round-trip RHS equivalence over a
+handful of clean within-compartment models.
 
 The round-trip suite shells out to ``BNG2.pl`` (``$BNGPATH/BNG2.pl``) and skips
 cleanly when it — or the rr_parity corpus — is absent, like the other
