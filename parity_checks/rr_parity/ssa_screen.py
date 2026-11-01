@@ -1204,7 +1204,8 @@ class Reference:
     ``ssa``, ``nonfinite_rate`` and ``ode`` have the signatures of
     :func:`_rr_common.rr_ssa`, :func:`_rr_common.rr_ssa_nonfinite_rate` and
     :func:`_rr_ode`. Recording rewrites the model's entry after every RoadRunner
-    call, so a worker killed mid-ladder still leaves what it ran. Replaying
+    call, so a worker killed mid-ladder still leaves what it ran, and the
+    scheduler kills a recording later than its cap (``_schedule``). Replaying
     raises :class:`ArchiveMiss` for a call the entry does not hold."""
 
     def __init__(self, spec: dict, n: int, seed_base: int, *, replay=None, record_to=None):
@@ -1443,6 +1444,15 @@ def _judge_nonfinite(
             return
 
 
+def _spec_row(spec: dict) -> dict:
+    """A result row started from its spec, without the paths that are the run's,
+    not the model's."""
+    row = dict(spec)
+    for k in ("sbml_path", "reference_archive", "write_reference_archive"):
+        row.pop(k, None)
+    return row
+
+
 def _worker(
     spec: dict,
     n: int,
@@ -1480,9 +1490,7 @@ def _worker(
     xml = spec["sbml_path"]
     t_end = float(spec["t_end"])
     n_steps = int(spec["n_steps"])
-    entry = dict(spec)
-    for k in ("sbml_path", "reference_archive", "write_reference_archive"):
-        entry.pop(k, None)
+    entry = _spec_row(spec)
     # Accumulate per-engine timing alongside the warmup as each engine runs, so
     # every exit path (including an engine-error early return) carries whatever was
     # measured: an RR-side error still keeps bngsim's load+ensemble timing, and the
@@ -1843,11 +1851,70 @@ def _build_corpus(args) -> list[dict]:
     return specs
 
 
-def _schedule(specs, args) -> list[dict]:
+def _row_at_cap(r: dict, args) -> dict:
+    """The row of a model that ran past the per-model cap: what it put on its queue
+    last, the SSA verdict it saved before a hang-prone ODE attribution, or
+    ``too_slow``. The caller has drained the queue."""
+    spec = r["spec"]
+    vf = PROBE_DIR / f"{spec['name']}.verdict.json"
+    if r["latest"] is not None:
+        entry = r["latest"]  # finished just before the kill — a full result
+        entry.pop("attribution_pending", None)
+    elif vf.exists():
+        # Recovered a completed SSA verdict despite the kill — the slow step
+        # was the ODE attribution, not the SSA (e.g. MODEL1909300003: SSA
+        # fires 62 events, the deterministic oracle hangs). A fail we never
+        # finished attributing is provisional, not a bngsim defect →
+        # 'attribution_incomplete' (yellow).
+        try:
+            entry = json.loads(vf.read_text())
+            if entry.get("attribution_pending") and entry.get("status") == "fail":
+                entry["status"] = "attribution_incomplete"
+            entry.pop("attribution_pending", None)
+        except Exception:
+            entry = None
+    else:
+        entry = None
+    if entry is None:
+        entry = _spec_row(spec)
+        entry["status"] = "too_slow"
+        entry["error"] = f"exceeded {args.timeout}s wall cap"
+        entry["elapsed_sec_wall"] = round(time.time() - r["start"], 1)
+        # Recover the activity probe the killed worker wrote before its
+        # ensemble, so a timed-out (= most-active) model still reports its
+        # stochastic activity (minimal bngsim timing block; probe estimate).
+        pf = PROBE_DIR / f"{spec['name']}.json"
+        if pf.exists():
+            try:
+                v = float(json.loads(pf.read_text())["events_per_time"])
+                entry["timing"] = {
+                    "bngsim": {
+                        "events_per_time": v,
+                        "events_per_rep": round(v * float(spec["t_end"]), 1),
+                        "events_probe": True,
+                    }
+                }
+            except Exception:
+                pass
+    return entry
+
+
+def _schedule(specs, args, worker=None) -> list[dict]:
     """Run model specs in up to ``--jobs`` child processes with a per-model
-    wall-clock cap; kill and mark ``too_slow`` on overrun."""
+    wall-clock cap; kill and mark ``too_slow`` on overrun.
+
+    Issue #1290: a recording takes the row at the cap as a live run does, but
+    kills the worker only at ``rc.recording_kill_after(cap)``. RoadRunner runs
+    after bngsim's ensemble, and ``Reference`` saves the entry after each of its
+    calls, so the extra time lets a model that sits at the cap leave its
+    reference, which a replay, running bngsim alone, can then compare.
+    ``worker`` stands in for ``_worker`` in tests."""
     import multiprocessing as mp
     import shutil
+
+    worker = worker or _worker
+    recording = bool(getattr(args, "write_reference_archive", None))
+    kill_after = rc.recording_kill_after(args.timeout) if recording else args.timeout
 
     # Fresh activity-probe sidecar dir for this run (a killed worker leaves its
     # estimate here; we recover it on the too_slow branch below).
@@ -1861,12 +1928,24 @@ def _schedule(specs, args) -> list[dict]:
     total = len(specs)
     finished = 0
 
+    def _drain(r):
+        while True:
+            try:
+                r["latest"] = r["q"].get_nowait()
+            except Exception:
+                break
+
+    def _finish(spec, res):
+        nonlocal finished
+        done[spec["name"]] = res
+        finished += 1
+        _print_progress(finished, total, res)
+
     while pending or running:
         while pending and len(running) < args.jobs:
             spec = pending.pop(0)
             if not spec.get("exists", True):
-                entry = dict(spec)
-                entry.pop("sbml_path", None)
+                entry = _spec_row(spec)
                 entry["status"] = "skip"
                 entry["error"] = "sbml file not found"
                 done[spec["name"]] = entry
@@ -1874,7 +1953,7 @@ def _schedule(specs, args) -> list[dict]:
                 continue
             q = ctx.Queue()
             proc = ctx.Process(
-                target=_worker,
+                target=worker,
                 args=(
                     spec,
                     args.n,
@@ -1899,83 +1978,42 @@ def _schedule(specs, args) -> list[dict]:
             # puts a PRELIMINARY verdict before the (hang-prone) ODE attribution and
             # a FINAL one after, so a kill during attribution still leaves the
             # verdict here instead of being discarded as 'too_slow'.
-            while True:
-                try:
-                    r["latest"] = r["q"].get_nowait()
-                except Exception:
-                    break
+            _drain(r)
+            elapsed = time.time() - r["start"]
             if not proc.is_alive():
                 proc.join()
-                while True:  # final drain — the FINAL put may have landed post-tick
-                    try:
-                        r["latest"] = r["q"].get_nowait()
-                    except Exception:
-                        break
+                _drain(r)  # final drain — the FINAL put may have landed post-tick
+                if "at_cap" in r:
+                    # A recording past the cap: its row is the one taken there.
+                    _finish(spec, r["at_cap"])
+                    continue
                 res = r["latest"]
                 if res is None:
                     try:
                         res = r["q"].get(timeout=2.0)
                     except Exception:
-                        res = dict(spec)
-                        res.pop("sbml_path", None)
+                        res = _spec_row(spec)
                         res["status"] = "error"
                         res["error"] = f"worker died without result (exit={proc.exitcode})"
                 res.pop("attribution_pending", None)
-                done[spec["name"]] = res
-                finished += 1
-                _print_progress(finished, total, res)
-            elif time.time() - r["start"] > args.timeout:
+                _finish(spec, res)
+            elif "at_cap" not in r and elapsed > args.timeout:
+                if not recording:
+                    proc.terminate()
+                    proc.join()
+                _drain(r)  # one last drain — the worker may have FINISHED right at the cap
+                row = _row_at_cap(r, args)
+                if recording:
+                    # The row a live run kills it with; the worker runs on to save
+                    # RoadRunner's side of the model (issue #1290).
+                    r["at_cap"] = row
+                    still.append(r)
+                else:
+                    _finish(spec, row)
+            elif "at_cap" in r and elapsed > kill_after:
                 proc.terminate()
                 proc.join()
-                while True:  # one last drain — the worker may have FINISHED right at the cap
-                    try:
-                        r["latest"] = r["q"].get_nowait()
-                    except Exception:
-                        break
-                vf = PROBE_DIR / f"{spec['name']}.verdict.json"
-                if r["latest"] is not None:
-                    entry = r["latest"]  # finished just before the kill — a full result
-                    entry.pop("attribution_pending", None)
-                elif vf.exists():
-                    # Recovered a completed SSA verdict despite the kill — the slow step
-                    # was the ODE attribution, not the SSA (e.g. MODEL1909300003: SSA
-                    # fires 62 events, the deterministic oracle hangs). A fail we never
-                    # finished attributing is provisional, not a bngsim defect →
-                    # 'attribution_incomplete' (yellow).
-                    try:
-                        entry = json.loads(vf.read_text())
-                        if entry.get("attribution_pending") and entry.get("status") == "fail":
-                            entry["status"] = "attribution_incomplete"
-                        entry.pop("attribution_pending", None)
-                    except Exception:
-                        entry = None
-                else:
-                    entry = None
-                if entry is None:
-                    entry = dict(spec)
-                    entry.pop("sbml_path", None)
-                    entry["status"] = "too_slow"
-                    entry["error"] = f"exceeded {args.timeout}s wall cap"
-                    entry["elapsed_sec_wall"] = round(time.time() - r["start"], 1)
-                    # Recover the activity probe the killed worker wrote before its
-                    # ensemble, so a timed-out (= most-active) model still reports its
-                    # stochastic activity (minimal bngsim timing block; probe estimate).
-                    pf = PROBE_DIR / f"{spec['name']}.json"
-                    if pf.exists():
-                        try:
-                            v = float(json.loads(pf.read_text())["events_per_time"])
-                            entry["timing"] = {
-                                "bngsim": {
-                                    "events_per_time": v,
-                                    "events_per_rep": round(v * float(spec["t_end"]), 1),
-                                    "events_probe": True,
-                                }
-                            }
-                        except Exception:
-                            pass
-                done[spec["name"]] = entry
-                finished += 1
-                _print_progress(finished, total, entry)
+                _finish(spec, r["at_cap"])
             else:
                 still.append(r)
         running = still
@@ -2038,7 +2076,12 @@ def main() -> int:
     p.add_argument("--n", type=int, default=DEFAULT_N, help="Replicates per engine.")
     p.add_argument("--jobs", type=int, default=DEFAULT_JOBS, help="Concurrent model processes.")
     p.add_argument(
-        "--timeout", type=float, default=DEFAULT_TIMEOUT, help="Per-model wall-clock cap (s)."
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help="Per-model wall-clock cap (s). A recording (--write-reference-archive) takes "
+        "a model's row at the cap but kills it only at twice the cap, up to "
+        f"{rc.RECORD_KILL_CEILING:g}s, so RoadRunner can save its results.",
     )
     p.add_argument("--max-models", type=int, default=0, help="Cap biomodels count (0 = all).")
     p.add_argument("--t-end", type=float, default=DEFAULT_T_END, help="BioModels horizon.")

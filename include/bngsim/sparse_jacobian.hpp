@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "bngsim/fd_jacobian.hpp"
 #include "bngsim/lapack_dense_linsol.hpp"
 #include "bngsim/types.hpp"
 
@@ -30,6 +31,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace bngsim {
 
@@ -142,6 +144,15 @@ inline bool fill_routes_to_dense(const JacobianSparsity &sp, int ns, double lu_f
 //
 // `lu_fill` is routing_lu_fill(model, ns, jacobian_strategy): a model the size
 // and density test sends to KLU goes dense when fill_routes_to_dense says so.
+//
+// A structurally empty Jacobian (nnz == 0: species no reaction moves, an event's
+// targets) has a density of 0, which the density test reads as sparse, but it
+// gives KLU nothing to factor and, under jacobian="fd", nothing to color, and the
+// run was refused for force_sparse_linear_solver, a flag the caller never set
+// (SBML Test Suite 01530). So the size and density test sends it to the dense
+// solver, as codegen's own reading of this rule already did (_codegen.py's
+// fallback for a core that does not report routes_sparse). force_sparse still
+// asks for KLU, and is refused by name where nothing can fill the matrix.
 inline bool route_to_sparse_linear_solver(const JacobianSparsity &sp, int ns,
                                           const std::string &jacobian_strategy, bool force_dense,
                                           bool force_sparse, double lu_fill) {
@@ -149,7 +160,7 @@ inline bool route_to_sparse_linear_solver(const JacobianSparsity &sp, int ns,
     const bool sparse_ok = (jacobian_strategy != "jax") && !sp.empty();
     return sparse_ok && !force_dense &&
            (force_sparse ||
-            ((ns >= SPARSE_THRESHOLD) && (sp.density < SPARSE_DENSITY_MAX) &&
+            ((ns >= SPARSE_THRESHOLD) && (sp.nnz > 0) && (sp.density < SPARSE_DENSITY_MAX) &&
              !fill_routes_to_dense(sp, ns, lu_fill, jacobian_strategy, force_dense, force_sparse)));
 #else
     (void)sp;
@@ -207,10 +218,31 @@ inline void install_csc_structure(IndexT *col_ptrs, IndexT *row_indices,
 // scratch buffers are ns long — the caller owns them so a per-step Jacobian
 // allocates nothing. `eval_rhs(t, y_pert, fy_pert)` evaluates the SAME right-
 // hand side the session is integrating.
+//
+// `jump_rows`, 4·ns long, turns on the jump test of fd_jacobian.hpp (issue
+// #1002), over the matrix the loop above left (which gives each row's terms):
+// one more evaluation per color at twice the step and, for a color one of whose
+// entries may step across a jump, two at minus one and minus two steps; an
+// entry that does is given fd_entry_past_jump. A column of a color leaves the
+// rows of the other columns of that color alone, so one evaluation serves them
+// all, as the quotient's own does. A column is tested where fd_jump_testable
+// takes it, and its mends are kept as fd_jacobian.hpp says. Null leaves the
+// quotient as it was. `*n_mended` (if given) counts the entries mended.
+//
+// The step. With the session's error weights `ewt` (and `min_inc` from them,
+// cvode_dq_min_inc), a column's step is CVODE's own dense difference
+// quotient's (cvLsDenseDQJac): max(sqrt(eps)*|y_j|, min_inc/ewt_j), on the
+// scale the error test judges y_j by. Without them, sqrt(eps)*max(|y_j|, 1): a
+// floor of 1 in absolute terms, which moved a species of 1e-9 by fifteen times
+// itself, so the matrix KLU factored was the Jacobian somewhere else, and Newton
+// failed to converge or reached a state with no finite rate where dense
+// differences, on the weights, ran (#1254).
 template <typename EvalRhs>
 inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, const double *y,
                                 const double *fy, double *jac_data, double *y_pert, double *fy_pert,
-                                double *h_vals, EvalRhs &&eval_rhs) {
+                                double *h_vals, EvalRhs &&eval_rhs, double *jump_rows = nullptr,
+                                int *n_mended = nullptr, const double *ewt = nullptr,
+                                double min_inc = 1.0) {
     // Finite difference perturbation scale
     const double sqrt_uround = 1.4901161193847656e-8; // sqrt(machine epsilon)
 
@@ -222,7 +254,8 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
         std::memcpy(y_pert, y, static_cast<std::size_t>(ns) * sizeof(double));
 
         for (int j : group) {
-            double h = sqrt_uround * std::max(std::abs(y[j]), 1.0);
+            double h = ewt != nullptr ? std::max(sqrt_uround * std::abs(y[j]), min_inc / ewt[j])
+                                      : sqrt_uround * std::max(std::abs(y[j]), 1.0);
             h_vals[j] = h;
             y_pert[j] += h;
         }
@@ -241,6 +274,136 @@ inline void colored_fd_jacobian(const JacobianSparsity &sp, int ns, double t, co
                 jac_data[k] = (fy_pert[i] - fy[i]) * inv_h;
             }
         }
+    }
+    if (jump_rows == nullptr) {
+        return;
+    }
+
+    double *f2 = jump_rows;
+    double *fm1 = jump_rows + ns;
+    double *fm2 = jump_rows + 2 * static_cast<std::ptrdiff_t>(ns);
+    double *terms = jump_rows + 3 * static_cast<std::ptrdiff_t>(ns);
+    for (int i = 0; i < ns; ++i) {
+        terms[i] = std::abs(fy[i]);
+    }
+    for (int j = 0; j < ns; ++j) {
+        for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k) {
+            terms[sp.row_indices[k]] += std::abs(jac_data[k] * y[j]);
+        }
+    }
+    // f at y + m·Σh_j·e_j over the color; false where it fails, so a probe the
+    // session itself never asked for cannot end the run.
+    auto side = [&](const std::vector<int> &group, double m, double *out) {
+        std::memcpy(y_pert, y, static_cast<std::size_t>(ns) * sizeof(double));
+        for (int j : group) {
+            y_pert[j] = y[j] + m * h_vals[j];
+        }
+        try {
+            eval_rhs(t, y_pert, out);
+        } catch (...) {
+            return false;
+        }
+        return true;
+    };
+    std::vector<FdJumpMend> mends;
+    for (int c = 0; c < sp.n_colors; ++c) {
+        const auto &group = sp.color_groups[c];
+        auto mendable = [&](int j) { return fd_jump_testable(y[j], h_vals[j]); };
+        if (std::none_of(group.begin(), group.end(), mendable) || !side(group, 2.0, f2)) {
+            continue;
+        }
+        // f(y + h) is fy + h·J to the rounding of the column formula.
+        auto may_at = [&](int j, int64_t k) {
+            const int i = static_cast<int>(sp.row_indices[k]);
+            const double d01 = jac_data[k] * h_vals[j];
+            return fd_step_may_cross_jump(d01, f2[i] - fy[i] - d01, fd_jump_floor(terms[i]));
+        };
+        bool may = false;
+        for (int j : group) {
+            if (!mendable(j)) {
+                continue;
+            }
+            for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1] && !may; ++k) {
+                may = may_at(j, k);
+            }
+        }
+        if (!may || !side(group, -1.0, fm1) || !side(group, -2.0, fm2)) {
+            continue;
+        }
+        for (int j : group) {
+            if (!mendable(j)) {
+                continue;
+            }
+            for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k) {
+                const int i = static_cast<int>(sp.row_indices[k]);
+                const double d01 = jac_data[k] * h_vals[j];
+                const double d12 = f2[i] - fy[i] - d01;
+                const double dmm = fm1[i] - fm2[i];
+                const double floor = fd_jump_floor(terms[i]);
+                if (may_at(j, k) && fd_step_crosses_jump(dmm, d01, d12, floor)) {
+                    mends.push_back({static_cast<std::size_t>(k), j, jac_data[k]});
+                    jac_data[k] = fd_entry_past_jump(dmm, fy[i] - fm1[i], d12, floor, h_vals[j]);
+                }
+            }
+        }
+    }
+    if (mends.empty()) {
+        return;
+    }
+    for (int i = 0; i < ns; ++i) {
+        terms[i] = std::abs(fy[i]);
+    }
+    for (int j = 0; j < ns; ++j) {
+        for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k) {
+            terms[sp.row_indices[k]] += std::abs(jac_data[k] * y[j]);
+        }
+    }
+    // J·f with every mend in, for fd_jump_came_across's prediction along the flow.
+    double *jf = fm1;
+    std::fill(jf, jf + ns, 0.0);
+    for (int j = 0; j < ns; ++j) {
+        for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k) {
+            jf[sp.row_indices[k]] += jac_data[k] * fy[j];
+        }
+    }
+    auto came_across = [&](long j, std::size_t a, std::size_t b) {
+        const double tau = h_vals[j] / std::abs(fy[j]);
+        for (int k = 0; k < ns; ++k) {
+            y_pert[k] = y[k] - tau * fy[k];
+        }
+        try {
+            eval_rhs(t, y_pert, fm2);
+        } catch (...) {
+            return false;
+        }
+        for (std::size_t e = a; e < b; ++e) {
+            const int i = static_cast<int>(sp.row_indices[mends[e].at]);
+            if (fd_jump_came_across(fm2[i], fy[i] - tau * jf[i], mends[e].was * h_vals[j])) {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (std::size_t a = 0; a < mends.size();) {
+        const long j = mends[a].col;
+        std::size_t b = a;
+        while (b < mends.size() && mends[b].col == j) {
+            ++b;
+        }
+        bool own_row = false;
+        for (std::size_t e = a; e < b; ++e) {
+            own_row = own_row || sp.row_indices[mends[e].at] == j;
+        }
+        const bool keep = fd_jump_unparked(fy[j], terms[j]) &&
+                          (terms[j] == 0.0 || (own_row && came_across(j, a, b)));
+        for (std::size_t e = a; e < b; ++e) {
+            if (!keep) {
+                jac_data[mends[e].at] = mends[e].was;
+            } else if (n_mended != nullptr) {
+                ++*n_mended;
+            }
+        }
+        a = b;
     }
 }
 

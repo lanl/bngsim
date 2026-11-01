@@ -714,7 +714,10 @@ class TestEndToEnd:
             before = bngsim.Simulator(_xcomp("5", open_=True), method="ode").steady_state(
                 sensitivity_params=names
             )
-        assert before.sens_dfdp_source == "finite-difference"  # what #160 replaces
+        # What #160 replaces was a difference quotient; without the emitted
+        # column the factor is now exact by dual numbers (issue #1330).
+        assert before.sens_dfdp_source == "automatic-differentiation"
+        np.testing.assert_allclose(before.sensitivity, ss.sensitivity, rtol=1e-12, atol=1e-15)
 
         rows = list(ss.species_names)
         got = np.asarray(ss.sensitivity)

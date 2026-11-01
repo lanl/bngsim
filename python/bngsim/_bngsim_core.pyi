@@ -195,6 +195,10 @@ class NetworkModel:
         """
         For each conservation law, the 0-based indices of the species it holds: those whose coefficient, over the species' volume, is not rounding beside the law's largest. Issue #758.
         """
+    def dual_unsupported_reason(self) -> str:
+        """
+        Empty where the model's right-hand side and functions can be evaluated on dual numbers (issue #1330); else what it lacks.
+        """
     def evaluate_over_times(self, expression: str, times: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], shift: typing.SupportsFloat | typing.SupportsIndex = 0.0) -> numpy.typing.NDArray[numpy.float64]:
         """
         The value of an expression at each of `times`, with the clock set to that time and everything else as it stands, in the evaluator's own arithmetic. For a text that reads the clock, parameters and builtins only (a rate law's condition on time): a function slot, an observable or a species is read at its present value, not at the time asked. The clock is put back before returning. `shift` is the value of the variable `bngsim_scan_shift_` meanwhile, for a text written over a counter as `time() + bngsim_scan_shift_`. Raises if the expression does not compile.
@@ -226,6 +230,10 @@ class NetworkModel:
     def fill_dense_analytical_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
         """
         The analytical Jacobian at (t, conc) as a float64 ndarray (n_species, n_species), J[i, j] = ∂f_i/∂x_j. Only the closed-form terms the model carries: check analytical_jacobian_complete first, or the matrix is partial. Issue #523.
+        """
+    def fill_dense_dual_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], side: typing.SupportsInt | typing.SupportsIndex = 0) -> typing.Any:
+        """
+        The Jacobian at (t, conc), exact, by dual numbers through the interpreter (issue #1330), as a (float64 ndarray (n_species, n_species), tied, jumped) triple; None where the model has no dual evaluation (dual_unsupported_reason) or its values are not the right-hand side's. `tied` is whether the state sits where a law changes branch; `side` (0, 1, -1) decides such a point as the interpreter does, or from above or below along each column's direction, and `jumped` whether a law's value jumps there from that side.
         """
     def fill_dense_fd_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
         """
@@ -633,6 +641,10 @@ class NfsimSimulator:
         """
         Set a parameter override (applied before each run)
         """
+    def set_species_amounts(self, amounts: collections.abc.Mapping[str, typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Seed amounts for the next run by <Species id=>, replacing any set before
+        """
     def set_species_count(self, pattern: str, count: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         Set count for an exact single-molecule BNGL species pattern
@@ -857,6 +869,10 @@ class RuleMonkeySimulator:
         """
         Whether the model reads the clock (default true): one-shot runs then run on the model's clock, else on time elapsed since t_start
         """
+    def set_species_amounts(self, amounts: collections.abc.Mapping[str, typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Seed amounts for the next run by <Species id=>, replacing any set before
+        """
     def set_species_count(self, pattern: str, count: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         Set count for an exact BNGL species pattern (adds/removes the diff)
@@ -900,6 +916,18 @@ class SolverOptions:
     def set_event_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
         """
         Set the event-time sensitivities ∂t*/∂p as (event_idx0, [∂t*/∂p per param column]) records (issue #49). An event whose trigger thresholds a fitted constant — `time >= T0` with T0 requested — fires at a time that moves with the parameter, so its forward-sensitivity jump carries two extra terms beyond the GH #212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty (the default) collapses the jump to the GH #212 form — except for a state-dependent trigger, whose ∂t*/∂p the solver differentiates at the fire instead (issue #144).
+        """
+    def set_held_equality_conditions(self, conditions: collections.abc.Sequence[str]) -> None:
+        """
+        Issue #1279: rate-law equalities over model state, as source text (`Bobs==0`), that a sensitivity run roots where the state leaves their surface. The run is refused there with SensitivityUnsupportedError where the rate laws reading one change and no jump at that instant covers it (issue #1228). Empty (the default) watches none.
+        """
+    def set_held_equality_inner(self, inner: collections.abc.Sequence[collections.abc.Sequence[str]]) -> None:
+        """
+        Parallel to set_held_equality_conditions (issue #1279): the state-switch conditions written inside each equality, whose crossing covers a leaving at the same instant.
+        """
+    def set_held_equality_reactions(self, reactions: collections.abc.Sequence[collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]]) -> None:
+        """
+        Parallel to set_held_equality_conditions (issue #1279): the 0-based reactions whose rate law reads each equality.
         """
     def set_ic_param_sens(self, triples: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
         """
@@ -1037,6 +1065,18 @@ class SolverStats:
         ...
     @n_jac_evals.setter
     def n_jac_evals(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def n_jac_formations(self) -> int:
+        ...
+    @n_jac_formations.setter
+    def n_jac_formations(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def n_jac_rhs_evals(self) -> int:
+        ...
+    @n_jac_rhs_evals.setter
+    def n_jac_rhs_evals(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def n_nonlin_conv_fails(self) -> int:
@@ -1297,6 +1337,9 @@ class SteadyStateResultCore:
     def expression_sens_missing_species(self) -> list[int]:
         ...
     @property
+    def expression_sens_tied(self) -> list[bool]:
+        ...
+    @property
     def expression_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
         ...
     @property
@@ -1360,9 +1403,6 @@ class SteadyStateResultCore:
     def sens_dfdp_source(self) -> str:
         ...
     @property
-    def sens_fd_disagree_function(self) -> int:
-        ...
-    @property
     def sens_fd_disagree_param(self) -> int:
         ...
     @property
@@ -1370,18 +1410,6 @@ class SteadyStateResultCore:
         ...
     @property
     def sens_fd_floored(self) -> float:
-        ...
-    @property
-    def sens_fd_function_floored(self) -> float:
-        ...
-    @property
-    def sens_fd_function_half_step(self) -> float:
-        ...
-    @property
-    def sens_fd_function_own_step(self) -> float:
-        ...
-    @property
-    def sens_fd_function_param(self) -> int:
         ...
     @property
     def sens_fd_half_step(self) -> float:
@@ -1396,6 +1424,15 @@ class SteadyStateResultCore:
     def sens_fd_own_step_species(self) -> list[int]:
         ...
     @property
+    def sens_held_after(self) -> float:
+        ...
+    @property
+    def sens_held_before(self) -> float:
+        ...
+    @property
+    def sens_held_species(self) -> int:
+        ...
+    @property
     def sens_jacobian_rcond(self) -> float:
         ...
     @property
@@ -1406,6 +1443,9 @@ class SteadyStateResultCore:
         ...
     @property
     def sens_mask_reader_species(self) -> int:
+        ...
+    @property
+    def sens_output_evaluated(self) -> bool:
         ...
     @property
     def sens_output_source(self) -> str:
@@ -1480,6 +1520,24 @@ class SteadyStateResultCore:
     def sens_species_scale(self) -> list[float]:
         ...
     @property
+    def sens_tie_above(self) -> float:
+        ...
+    @property
+    def sens_tie_below(self) -> float:
+        ...
+    @property
+    def sens_tie_jump(self) -> bool:
+        ...
+    @property
+    def sens_tie_param(self) -> int:
+        ...
+    @property
+    def sens_tie_species(self) -> int:
+        ...
+    @property
+    def sens_tie_value(self) -> float:
+        ...
+    @property
     def sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
         ...
     @property
@@ -1534,6 +1592,10 @@ class _CNumericLocale:
         ...
     def __init__(self) -> None:
         ...
+def _mir_jit_compile(source: str, fail_allocation: typing.SupportsInt | typing.SupportsIndex = -1, fail_mapping: typing.SupportsInt | typing.SupportsIndex = -1, fail_mapping_errno: typing.SupportsInt | typing.SupportsIndex = 12) -> tuple[int, int]:
+    """
+    MIR-compile a generated C source as if the C heap ran out at MIR's allocation number fail_allocation, or its code mapping number fail_mapping were refused with errno fail_mapping_errno (both counted from 0; -1 fails none), and return how many allocations and code mappings MIR made. A failure raises MirJit's RuntimeError (issue #1215). Internal.
+    """
 def _refuse_nonfinite_sensitivities(data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], col_names: collections.abc.Sequence[str], axis: str = 'parameter column') -> None:
     """
     Raise RuntimeError if any cell of a (n_times, n_species, n_cols) sensitivity tensor is non-finite, naming the first affected output point, every column implicated there, and how those cells split between inf and nan (GH #394); return None otherwise. The guard CvodeSimulator applies to every forward-sensitivity run (GH #384), exposed so it can be tested on a synthesized tensor rather than on a model that happens to blow up (GH #389). Internal.

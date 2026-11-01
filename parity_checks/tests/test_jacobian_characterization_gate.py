@@ -336,7 +336,7 @@ def test_analyze_keeps_incomplete_and_sweepless_rows_out_of_degenerate(tmp_path,
 # Issue #538 — the rows say why a model is on finite differences, and the census
 # counts them by that.
 # --------------------------------------------------------------------------- #
-def test_analyze_counts_finite_difference_rows_by_decline_kind(tmp_path, capsys):
+def test_analyze_counts_the_rows_off_the_closed_form_by_decline_kind(tmp_path, capsys):
     rows = [
         _row("analytical", **_swept(1.0, 10.0)),
         _row(
@@ -363,22 +363,30 @@ def test_analyze_counts_finite_difference_rows_by_decline_kind(tmp_path, capsys)
         # a report from before the field: no kind recorded, which is not the model's
         # own "unrecorded"
         _row("fd_old", method="finite_difference", complete=False, **_swept(1.0, 10.0)),
+        # off the closed form by dual numbers (issue #1330): counted all the same
+        _row(
+            "ad_a",
+            method="automatic_differentiation",
+            complete=False,
+            jacobian_decline_kind="budget",
+            **_swept(1.0, 10.0),
+        ),
     ]
     cp = tmp_path / "char.json"
     cp.write_text(json.dumps({"results": rows}))
     out = J.analyze(cp, None, None, horizons_path=tmp_path / "missing.json")
     assert out["jacobian_declines"] == {
+        "budget": ["ad_a", "fd_c"],
         "fd_mismatch": ["fd_a", "fd_b"],
-        "budget": ["fd_c"],
         "not_in_report": ["fd_old"],
     }
     assert out["summary"]["jacobian_decline_kind"] == {
+        "budget": 2,
         "fd_mismatch": 2,
-        "budget": 1,
         "not_in_report": 1,
     }
     printed = capsys.readouterr().out
-    assert "finite-difference rows by decline kind" in printed and "fd_mismatch" in printed
+    assert "rows off the closed form by decline kind" in printed and "fd_mismatch" in printed
 
 
 _NET_MRATIO = """begin parameters
@@ -405,7 +413,7 @@ def test_jacobian_evaluators_record_the_status_and_the_decline_kind(tmp_path):
     p = tmp_path / "m.net"
     p.write_text(_NET_MRATIO)
     _, _, fields = J.jacobian_evaluators(bngsim.Model.from_net(str(p)))
-    assert fields["jacobian_method"] == "finite_difference"
+    assert fields["jacobian_method"] == "automatic_differentiation"  # issue #1330
     assert fields["jacobian_decline_kind"] == "non_emittable"
     assert fields["analytical_jacobian_status"].startswith("declined: the derivative")
     _, _, fields = J.jacobian_evaluators(

@@ -416,8 +416,7 @@ Excluded species come back with a **NaN** `dY_ss/dp` row. A species with no
 steady value has no steady-state gradient, and `0.0` would be a confident wrong
 answer a fitter would read as "this parameter does not matter". Any observable
 or expression sensitivity that sums such a species is NaN for the same reason.
-One that does not read it has its value, also where the expression's
-derivative is taken by finite differences.
+One that does not read it has its value.
 
 `steady_state_batch(mask=...)` applies one mask to every entry — the pure-sink
 set is structural, so it does not move with the parameter set, which is what
@@ -694,7 +693,7 @@ ss = sim.steady_state(
 print(ss.rhs_backend)             # "codegen-so" | "codegen-jit" | "exprtk"
 print(ss.sens_jacobian_source)    # "codegen" | "analytical" | "finite-difference"
 print(ss.sens_dfdp_source)        # "codegen" | "finite-difference"
-print(ss.sens_output_source)      # "codegen" | "mixed" | "finite-difference"
+print(ss.sens_output_source)      # "codegen" | "partial" | "none"
 
 # Sensitivity matrix: (n_species, n_params)
 print(ss.sensitivity.shape)       # (50, 3)
@@ -915,17 +914,28 @@ Since issue #75 that total derivative is not merely *matching* the CVODES codege
 chain rule — it **is** that chain rule: the compiled `bngsim_codegen_output_sens`
 evaluator, fed the solved `dY_ss/dp` columns, so a steady-state gradient and a
 converged long-run gradient come from one derivation. `ss.sens_output_source`
-reports which path the expression block took:
+reports how much of the expression block it answered:
 
 - `"codegen"` — every function came from the compiled chain rule.
-- `"mixed"` — some did; the rest were finite-differenced. That is a function the
-  codegen declines to differentiate (a table function, a function that reads
-  `rateOf`, or a non-smooth builtin such as `abs`/`min`/`max`/`floor` — the
-  same constructs listed for `∂f/∂p` above), or an auto-generated `_rateLawN`
-  intermediate outside the user-selectable set.
-- `"finite-difference"` — none did, because the model has no compiled
-  output-sensitivity evaluator at all (an embedded table-function wrapper, or
-  a model with no user-selectable global functions).
+- `"partial"` — some did. The rest are functions the codegen declines to
+  differentiate (a table function, a function that reads `rateOf`, or a
+  non-smooth construct such as `if`/`abs`/`min`/`max`/`floor` — the same
+  constructs listed for `∂f/∂p` above), or rows that are NaN for their own
+  reason (a species `mask=` left out that they read, say).
+- `"none"` — none did: each function is declined or has a NaN row of its own
+  (it reads a species `mask=` left out, say), or the model has no compiled
+  output-sensitivity evaluator at all (an embedded table-function wrapper).
+
+A function the chain rule does not answer has no steady-state derivative: its
+row is NaN, and `output_sensitivities` refuses it by name, with the construct,
+as it does after a CVODE run (issue #1002). It is not differenced. A difference
+quotient of a function over the state steps a small species by 1.5e-8 of the
+largest concentration, and can be wrong with nothing to show it: beside a
+species at 1e8, `abs(X)*abs(X)/(K^2 + X^2) + G` at `X = 0` read 2.13 for a
+derivative of 0, the same at two steps; an `if()` on a parameter at 0 was
+differenced across its jump. A species set by an assignment rule that is such a
+function has a NaN `dY_ss/dp` row for the same reason, and a compartment sized
+by one refuses the solve.
 
 The observable block is the exact linear projection either way, and is not
 covered by this field. Its weights are the group factors times the amount-valued

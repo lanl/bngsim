@@ -1,24 +1,25 @@
-# Steady-state expression output-sensitivity fixture: MIXED codegen / FD block.
+# Steady-state expression output-sensitivity fixture: a PARTIAL codegen block.
 #
-# Issue #75 routes d(func)/dp through the compiled `bngsim_codegen_output_sens`
-# and keeps the finite-difference block as a PER-FUNCTION fallback. This model
-# carries one function of each status #198's analysis assigns, so a single solve
-# exercises both halves and `ss.sens_output_source` must read "mixed":
+# Issue #75 routes d(func)/dp through the compiled `bngsim_codegen_output_sens`.
+# A row it does not answer was differenced until issue #1002, and is NaN now,
+# refused by name. This model carries one function of each status #198's
+# analysis assigns, so a single solve exercises both, and
+# `ss.sens_output_source` must read "partial":
 #
 #   "ok"          flux() = _rateLaw1*A_tot         the codegen answers this row
 #   "unsupported" capA() = gain*max(A_tot,floor_)  `max` is not differentiated;
 #                                                  the emitter writes a NaN
-#                                                  sentinel and the FD block
-#                                                  answers instead
+#                                                  sentinel, and the row is
+#                                                  refused by name
 #   "skipped"     _rateLaw2() = koff               an auto rate law no user
 #                                                  function references, so it is
 #                                                  outside the differentiated
 #                                                  closure and the emitter leaves
-#                                                  the row untouched — the FD
-#                                                  block answers it too, which is
-#                                                  what keeps the RAW block
+#                                                  the row untouched: it stays
+#                                                  the NaN pre-fill, so the RAW
+#                                                  block
 #                                                  (raw_expression_sensitivity_data)
-#                                                  from silently reading zero
+#                                                  does not silently read zero
 #
 # Same A <-> B / `_rateLaw1 = chi*kon` skeleton as ss_expr_sens_derived.net, so
 # both rows have a closed form. With a = chi*kon and b = koff, conservation gives
@@ -26,8 +27,7 @@
 #
 #     A_ss = b/(a+b) = 0.5/10.5,   flux = a·A_ss = a·b/(a+b)
 #
-# `floor_` = 0.001 sits far below A_ss (~0.0476) relative to the sqrt(eps) FD
-# step, so max() selects A_tot on both sides of every probe and
+# `floor_` = 0.001 sits far below A_ss (~0.0476), so max() selects A_tot and
 #
 #     capA        = gain·A_ss
 #     dcapA/dgain = A_ss                       (explicit-parameter term)

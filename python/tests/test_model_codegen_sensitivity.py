@@ -20,6 +20,8 @@ Issue refs:
 from __future__ import annotations
 
 import ctypes
+import os
+import sys
 
 import bngsim
 import numpy as np
@@ -32,6 +34,10 @@ from bngsim._codegen import (
     generate_sens_from_model,
     prepare_model_codegen,
 )
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import threshold_forced  # noqa: E402
 
 
 def _build_decay_model() -> Model:
@@ -317,6 +323,7 @@ class TestSensAutoTrigger:
         else:
             assert m._codegen_so_path == sim._codegen_so_path
 
+    @threshold_forced
     def test_no_sens_does_not_trigger_codegen(self):
         # Tiny model without sensitivity_params — codegen should NOT fire
         # (ExprTk is faster than codegen below ~150 species).

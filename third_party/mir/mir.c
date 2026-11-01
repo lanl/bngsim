@@ -730,6 +730,10 @@ static void hard_reg_name_finish (MIR_context_t ctx);
 #include "mir-alloc-default.c"
 #include "mir-code-alloc-default.c"
 
+/* BNGsim local carry (lanl/bngsim#1215): the default code allocator, so that an
+   embedder can wrap it to see each mapping rather than copy its platform code. */
+MIR_code_alloc_t _MIR_get_default_code_alloc (void) { return &default_code_alloc; }
+
 MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   MIR_context_t ctx;
 

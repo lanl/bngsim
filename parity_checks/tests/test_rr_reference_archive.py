@@ -346,6 +346,37 @@ def test_a_recording_is_killed_at_twice_the_cap_up_to_a_ceiling(
     assert comments == {f"killed at {kill_at}s wall cap"}
 
 
+@pytest.mark.parametrize(
+    ("flag", "slow_kill_at"),
+    [(None, 1200.0), ("--write-reference-archive", 1200.0)],
+)
+def test_a_model_roadrunner_is_slow_to_load_keeps_its_own_cap(
+    tmp_path, monkeypatch, flag, slow_kill_at
+):
+    """libRoadRunner 2.11.0 takes about 550 s to load MODEL1006230049, 053 and 077
+    on a CI runner, so the light pass's 300 s timed them out every live night
+    (#1288). Their own cap wins over a shorter --timeout, live or recording; every
+    other job keeps the --timeout's."""
+    manifest = json.loads(SMOKE_JOBS.read_text())
+    manifest["jobs"][0]["model_id"] = "MODEL1006230049"
+    jobs = tmp_path / "jobs.json"
+    jobs.write_text(json.dumps(manifest))
+    seen = {}
+
+    def schedule(specs, worker, *, timeout_of, **kw):
+        seen.update({s["model_id"]: (s["cap"], timeout_of(s)) for s in specs})
+        return [{**s, "status": "timeout", "cap": timeout_of(s)} for s in specs]
+
+    monkeypatch.setattr(R.rc, "schedule", schedule)
+    argv = ["rr_run.py", "--jobs", str(jobs), "--timeout", "300"]
+    argv += [flag, str(tmp_path / "arch")] if flag else []
+    monkeypatch.setattr(sys, "argv", [*argv, "--out", str(tmp_path / "report.json")])
+    R.main()
+    assert seen.pop("MODEL1006230049") == (1200.0, slow_kill_at)
+    other_kill_at = 600.0 if flag else 300.0
+    assert seen and set(seen.values()) == {(300.0, other_kill_at)}
+
+
 def test_a_timeout_the_worker_judged_keeps_its_own_note(tmp_path, monkeypatch):
     """A recording's row past the cap was not killed there; the report says what
     happened rather than "killed at"."""

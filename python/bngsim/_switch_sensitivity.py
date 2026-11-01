@@ -9445,53 +9445,17 @@ def state_switch_conditions(core, ctx=None) -> list[str]:
     return conditions
 
 
-def equalities_held_at_start(core, ctx=None, t0: float = 0.0) -> list[str]:
-    """The rate-law equalities over model state that the run starts on (issue #1228).
+def rate_law_equalities(core, ctx=None) -> list[tuple[str, str]]:
+    """The plain equalities over live state a functional rate law branches on.
 
-    :func:`state_switch_conditions` roots no equality: a trajectory that crosses
-    ``X == c`` holds it for an instant, so its branch adds nothing, and a root
-    there would make the branch, as the restart at the crossing reads it as
-    holding over the next step. The core admits the equality's surface (issue
-    #381) and measures its branch gap either side of it, where both sides read
-    false.
-
-    A state that sits ON the surface holds the equality for a stretch:
-    ``if(Bobs==0, kb, 0)`` with B made only once A falls to q kept its branch on
-    until then. Leaving it is a switch, and neither root nor probe sees it, so a
-    sensitivity run returned dY/da and dY/dq as 0 for -6.44 and -1 with no word,
-    where ``Bobs<=0``, the same switch, is located and refused as a tangency.
-
-    Each atom here is a plain equality (or ``!=``) of things that move smoothly,
-    over live state, in a functional rate law or a function one reaches (one an
-    output alone reads moves nothing), whose residual is exactly 0 at the state the run starts
-    from, observables and functions refreshed from it, and still exactly 0 a
-    step along the flow from there: the state stays on the surface rather than
-    starting on it and leaving (``Aobs == 10`` with A decaying from 10 holds for
-    the instant t = 0, and is not one). An equality over a step or bend call
-    (``floor(T/24) == 3``) is a window like any other and is not one.
-
-    The test is first order and reads the flow alone, so it never passes a run
-    that would be wrong but refuses some that would be right (issue #1279): a
-    residual that turns at second order at the start, a stretch that outlasts
-    the run, one that only an event ends (the event's own jump is right), one
-    that a rooted condition inside the equality ends (``if(fB()==0, kb, 0)``
-    with ``fB`` gated by ``if(q-Aobs>0, …)``), and one whose conjunction never
-    holds for another reason.
-
-    The start is read at *t0*, the run's start time, and the step lands at *t0*
-    plus the step: a rate or a residual that reads the clock is read where the
-    run is. Read at t = 0, ``if(time()<1, 1, 0)`` in B's rate made B leave 0 at
-    once in a run over (5, 20) that held it there until t*, and the columns came
-    back 0 again. The species, and a pending carry-over dx/dθ seed, are put back
-    as found, since ``set_state`` drops the seed (GH #210) that a
-    ``carry_sensitivities=True`` run starts from. The observables and functions
-    are left refreshed from the start state.
-
-    Only the start is read. A state that an event puts on the surface mid-run
-    is not seen here (issue #1279).
+    Each as ``(atom, residual)``, one per residual: an equality (or ``!=``) of
+    things that move smoothly, in a rate law or a function one reaches (one an
+    output alone reads moves nothing). An equality over a step or bend call
+    (``floor(T/24) == 3``) is a window like any other and is not one. A state
+    on one of these surfaces holds its branch for a stretch, and a
+    sensitivity run roots where it leaves (issues #1228, #1279). ``[]`` for a
+    model with no conditional rate law, before anything is probed.
     """
-    import numpy as np
-
     from bngsim._jacobian import _inline_functions
 
     if core.n_functions == 0:
@@ -9502,9 +9466,8 @@ def equalities_held_at_start(core, ctx=None, t0: float = 0.0) -> list[str]:
         return []
     func_map = _scan_function_map(ctx)
     memo: dict[str, str] = {}
-    # The rate laws, with the functions they reach written in: an equality in a
-    # function that only an output reads moves no trajectory and no column. Each
-    # law and each atom is read once, however many reactions share it.
+    # The rate laws, with the functions they reach written in. Each law and each
+    # atom is read once, however many reactions share it.
     atoms: dict[str, None] = {}
     for law in dict.fromkeys(_scan_rate_law(rxn) for rxn in ctx["functional_reactions"]):
         flat = _inline_functions(law, func_map, memo=memo) or law
@@ -9519,50 +9482,7 @@ def equalities_held_at_start(core, ctx=None, t0: float = 0.0) -> list[str]:
         if residual and residual not in seen:
             seen.add(residual)
             candidates.append((whole, residual))
-    if not candidates:
-        return []
-
-    step = 1e-6
-    x0 = core.get_state()
-    seed = (
-        (
-            np.array(core.pending_sensitivity_seed(), dtype=np.float64),
-            list(core.pending_sensitivity_seed_param_names),
-        )
-        if core.has_pending_sensitivity_seed
-        else None
-    )
-
-    def value_at(residual, t, state):
-        # With the species at *state*, and the observables and functions
-        # refreshed from them at *t*; the start is put back below.
-        core.set_state(state)
-        core.compute_derivs(t, state)
-        return _evaluate_over(core, residual, [t])
-
-    held: list[str] = []
-    stepped = None
-    try:
-        for whole, residual in candidates:
-            try:
-                if not np.all(value_at(residual, t0, x0) == 0.0):
-                    continue
-                if stepped is None:
-                    # One step along the flow: a residual every rate it reads
-                    # leaves at exactly 0 stays at exactly 0.
-                    stepped = x0 + step * core.compute_derivs(t0, x0)
-                if np.all(value_at(residual, t0 + step, stepped) == 0.0):
-                    held.append(whole)
-            except Exception:  # noqa: BLE001 - a residual the evaluator cannot read is not asked
-                continue
-    finally:
-        core.set_state(x0)
-        if seed is not None:
-            core.set_pending_sensitivity_seed(*seed)
-        # The run refreshes them anyway, and says why where it cannot.
-        with contextlib.suppress(Exception):
-            core.compute_derivs(t0, x0)
-    return held
+    return candidates
 
 
 def state_switch_reactions(core, conditions: Sequence[str], ctx=None) -> list[list[int]]:

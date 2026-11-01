@@ -130,6 +130,20 @@ during a delay counts at its value when the event executes. Two events are on
 one instant when their execution times are the same number. Delayed events of
 equal priority execute in the order they were triggered in.
 
+A strict comparison and the non-strict one with the same two sides are the
+exception where the run crosses their threshold. `time/3 > tau` beside
+`time/3 >= tau` (or `tau <= time/3`) can turn true at one read, but the
+non-strict one is true on the crossing and the strict one only past it. So the
+strict one executes after the non-strict one and everything else of the
+instant, and its trigger, values and delay are read at the state they left.
+Where an event of the instant moves either side, the strict one is raised there
+instead, as a cascade, and executes where its priority puts it.
+That holds in ODE and SSA runs, whatever the rounding of the threshold (issue
+#947). Where the two sides jump past each other instead (a reaction firing in
+SSA, a `piecewise` that switches), both turn true at one instant and they are
+one batch. A forward-sensitivity run refuses such a pair by name where the
+strict event reads or writes a species the first ones wrote.
+
 ```python
 # Antimony delayed event example
 model = bngsim.Model.from_antimony_string("""

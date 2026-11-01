@@ -27,6 +27,12 @@ Each model here has a closed-form steady state AND a closed-form gradient
 derived in its ``.net`` header, so the assertions owe the solver nothing. Every
 one of them fails on the step rule it is about — by 79-94% for #76, and by 100%
 (a fabricated exact zero) for #123.
+
+Since issue #1330 these factors are exact by dual numbers wherever the model
+has a dual evaluation, and the probes run only for one that has none; this
+module switches the dual one off (BNGSIM_NO_DUAL_NUMBERS) to keep them tested.
+test_exact_derivatives_by_dual_numbers.py holds the dual path to the same
+closed forms.
 """
 
 from __future__ import annotations
@@ -40,6 +46,13 @@ from bngsim import _codegen as cg
 from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
 
 _DATA = Path(__file__).resolve().parents[2] / "tests" / "data"
+
+
+@pytest.fixture(autouse=True)
+def _differenced(monkeypatch):
+    """Every model of this module on the difference quotients (issue #1330)."""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+
 
 # A <-> B with the forward rate constant derived as kf = kon/KD, KD = 1e-9 — the
 # shape ode/before_bunching carries, and the reason the RHS depends on KD
@@ -168,14 +181,27 @@ class TestParameterProbe:
         scale = max(np.abs(an).max(), 1e-30)
         assert np.abs(fd - an).max() / scale < 1e-6
 
-    def test_expression_sensitivity_carries_the_same_probe(self):
-        """``compute_ss_output_sensitivity`` differences ``∂func/∂p`` with the
-        same step. ``perKD() = A_tot/KD`` is non-linear in KD, so the explicit
-        term is 16x low on the absolute floor even though the state chain that
-        rides along with it is fine."""
+    def test_expression_sensitivity_is_not_differenced(self):
+        """``compute_ss_output_sensitivity`` differenced ``∂func/∂p`` with the
+        same step where no compiled chain rule was attached (``perKD() =
+        A_tot/KD``, 16x low on the absolute floor before #123). Since issue
+        #1002 it differences nothing: with no compiled code the row is NaN,
+        for ``SteadyStateResult.output_sensitivities`` to refuse by name."""
         result, _ = _core_sensitivity(_RECIPROCAL, ["KD", "kon", "koff"])
-        assert result.sens_output_source == "finite-difference"
+        assert result.sens_output_source == "none"
         assert list(result.expression_names) == ["perKD"]
+        assert np.isnan(np.asarray(result.expression_sensitivity_data)[0]).all()
+
+    @requires_cc
+    def test_expression_sensitivity_from_the_compiled_chain_rule(self):
+        """The same row from the compiled ``bngsim_codegen_output_sens``, which
+        owes the step nothing."""
+        warm = bngsim.Model.from_net(str(_RECIPROCAL))
+        warm.prepare_analytical_jacobian()
+        warm._want_output_sens = True
+        so = str(cg.prepare_model_codegen(warm))
+        result, _ = _core_sensitivity(_RECIPROCAL, ["KD", "kon", "koff"], so_path=so)
+        assert result.sens_output_source == "codegen"
         got = np.asarray(result.expression_sensitivity_data)[0]
         np.testing.assert_allclose(got, _DPERKD, rtol=1e-6)
 

@@ -49,6 +49,16 @@ analytical Jacobian is *partial* — a rate law the symbolic differentiator
 declined, such as a table function — is never handed the partial matrix under
 the first label; it is differenced, and reported as such.
 
+A difference quotient is checked before it is returned, as `steady_state`
+checks the columns it solves with it (issue #1002). The columns of species far
+below the state's scale, and of species at 0, are taken again at the species'
+own step and at half the first; where an entry moves by more than 1e-4 of
+itself (1e-10 of its column's largest, at least), `jacobian` raises
+`SimulationError` naming the entry and its two values. Beside a species at
+1e8, one near 0 is stepped by 1.5, and an entry of a term of second order in
+it is a secant across it, not its slope. A model whose rate laws all have a
+closed form is never differenced, and never refused.
+
 `sparse=True` returns a `scipy.sparse.csc_array` over the model's structural
 sparsity pattern instead of a dense array. The pattern is the same for either
 source, so a consumer can allocate for it once. The first `jacobian` call on a

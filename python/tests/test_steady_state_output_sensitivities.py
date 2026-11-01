@@ -475,51 +475,69 @@ class TestCompiledOutputSensPath:
         ss = sim.steady_state(sensitivity_params=["kon", "chi", "koff"])
         assert ss.sens_output_source == "codegen"
 
-    def test_beats_finite_differences_against_the_closed_form(self):
-        """Accuracy, the reason #75 leads with it: the FD explicit term is a
-        one-sided √eps quotient. Same model, same closed form, both paths."""
+    def test_matches_the_closed_form(self):
+        """The compiled row against the closed form. Before issue #1002 a row
+        with no compiled code was differenced, a one-sided √eps quotient
+        right to 8.6e-8 here where the compiled one is right to 1.1e-9."""
         params = ["kon", "chi", "koff", "_rateLaw1"]
         cf = TestDerivedParameterChain()._closed_form()
         exact = np.array([cf["dflux"][p] for p in params])
-
-        with _as_before_75():
-            fd = _steady_state(DERIVED_NET, params)
         cg = _steady_state(DERIVED_NET, params)
-
-        assert fd.sens_output_source == "finite-difference"
         assert cg.sens_output_source == "codegen"
-
-        fd_got = fd.output_sensitivities(["expression:flux"])[0]
         cg_got = cg.output_sensitivities(["expression:flux"])[0]
-        # Both are right; the compiled one is right by a wide margin (measured
-        # 8.6e-8 vs 1.1e-9 — and that floor is the steady-state solve, not the
-        # chain rule). An order of magnitude is the assertion; the difference is
-        # nearly two.
-        np.testing.assert_allclose(fd_got, exact, rtol=1e-5)
-        fd_err = np.max(np.abs(fd_got - exact) / exact)
-        cg_err = np.max(np.abs(cg_got - exact) / exact)
-        assert cg_err < fd_err / 10.0
+        np.testing.assert_allclose(cg_got, exact, rtol=1e-8)
 
-    def test_fallback_still_answers_when_the_symbol_is_absent(self):
-        """The FD block is a live fallback, not dead code: with no symbol the
-        answers are unchanged (that is what every other test here measured before
-        #75), and the result says so."""
+    def test_no_symbol_is_answered_by_dual_numbers(self):
+        """With no symbol every function row was differenced before issue
+        #1002, and NaN after it. Each is exact now, by dual numbers through the
+        interpreter (issue #1330): the rows the compiled chain rule gives."""
+        params = ["k1", "k3", "amp", "Km"]
+        with _as_before_75():
+            ad = _steady_state(CLOSED_NET, params)
+        cg = _steady_state(CLOSED_NET, params)
+        assert ad.sens_output_source == "automatic-differentiation"
+        assert cg.sens_output_source == "codegen"
+        selection = ["expression:satA", "expression:lin"]
+        np.testing.assert_allclose(
+            ad.output_sensitivities(selection),
+            cg.output_sensitivities(selection),
+            rtol=1e-12,
+            atol=1e-15,
+        )
+
+    def test_no_symbol_is_refused_by_name_not_differenced(self, monkeypatch):
+        """With no dual evaluation either, the rows are NaN, and
+        ``output_sensitivities`` refuses each by name: a quotient of a function
+        over the state can be wrong with nothing to show it."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         params = ["k1", "k3", "amp", "Km"]
         with _as_before_75():
             fd = _steady_state(CLOSED_NET, params)
         cg = _steady_state(CLOSED_NET, params)
 
-        assert fd.sens_output_source == "finite-difference"
+        assert fd.sens_output_source == "none"
         assert cg.sens_output_source == "codegen"
-        sel = ["expression:satA", "expression:lin"]
+        np.testing.assert_array_equal(fd.sensitivity, cg.sensitivity)
         np.testing.assert_allclose(
-            cg.output_sensitivities(sel), fd.output_sensitivities(sel), rtol=1e-6, atol=1e-9
+            fd.output_sensitivities(["observable:A_tot"]),
+            cg.output_sensitivities(["observable:A_tot"]),
+            rtol=1e-12,
         )
+        with pytest.raises(ValueError) as refusal:
+            fd.output_sensitivities(["expression:satA", "expression:lin"])
+        message = str(refusal.value)
+        assert "'expression:satA'" in message and "'expression:lin'" in message
+        assert "the compiled code it was solved with carries no chain rule" in message
+        assert "issue #1002" in message
 
     def test_regeneration_failure_keeps_the_working_artifact(self, monkeypatch):
         """The re-prep DROPS an attached artifact to rebuild it with output sens.
         If that rebuild fails, the drop must not turn a call that used to succeed
-        into a refusal — the old artifact goes back and the block differences."""
+        into a refusal — the old artifact goes back. Its block has no chain
+        rule, and is not differenced (issue #1002): the solve returns, and the
+        function rows are refused by name. (With no dual evaluation: with one,
+        they are exact, issue #1330.)"""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         m = bngsim.Model.from_net(DERIVED_NET)
         sim = bngsim.Simulator(m, method="ode", codegen=True)
 
@@ -531,7 +549,10 @@ class TestCompiledOutputSensPath:
         ss = sim.steady_state(sensitivity_params=["kon", "chi", "koff"])
         assert ss.converged
         assert ss.rhs_backend.startswith("codegen")  # the old artifact came back
-        assert ss.sens_output_source == "finite-difference"
+        assert ss.sens_output_source == "none"
+        assert np.isfinite(ss.sensitivity).all()
+        with pytest.raises(ValueError, match=r"'expression:flux'.*carries no chain rule"):
+            ss.output_sensitivities(["expression:flux"])
 
     def test_regeneration_failure_with_nothing_to_restore_propagates(self, monkeypatch):
         """With no artifact to put back, the refusal is the real GH #214 one.
@@ -550,16 +571,17 @@ class TestCompiledOutputSensPath:
         with pytest.raises(RuntimeError, match="simulated codegen failure"):
             sim.steady_state(sensitivity_params=["kon"])
 
-    def test_declined_model_is_all_finite_difference(self):
+    def test_declined_model_has_no_block_to_report(self):
         """A whole-model decline emits no symbol at all — here because every
         function is an auto-generated ``_rateLawN`` and #198 differentiates only
-        the user-selectable closure. The block must still be filled."""
+        the user-selectable closure. No function is returned, so there is
+        nothing to report (it said "finite-difference" before issue #1002)."""
         m = bngsim.Model.from_net(DECLINED_NET)
         sim = bngsim.Simulator(m, method="ode")
         ss = sim.steady_state(sensitivity_params=["k1"])
         assert ss.converged
         assert ss.expression_names == []  # nothing user-facing to select
-        assert ss.sens_output_source == "finite-difference"
+        assert ss.sens_output_source == ""
 
     # ── The mixed block ──────────────────────────────────────────────────────
 
@@ -576,62 +598,78 @@ class TestCompiledOutputSensPath:
                 "koff": a**2 / d,
                 "gain": 0.0,
             },
-            # capA = gain·A_ss (max() selects A_tot) — the "unsupported" row, FD.
+            # capA = gain·A_ss (max() selects A_tot) — the "unsupported" row.
             "capA": {
                 "kon": -self.GAIN * self.CHI * b / d,
                 "chi": -self.GAIN * self.KON * b / d,
                 "koff": self.GAIN * a / d,
                 "gain": b / (a + b),
             },
-            # _rateLaw2 = koff — the "skipped" row, also FD.
+            # _rateLaw2 = koff — the "skipped" row.
             "_rateLaw2": {"kon": 0.0, "chi": 0.0, "koff": 1.0, "gain": 0.0},
         }
 
-    def test_mixed_block_is_reported_and_correct(self):
+    def test_mixed_block_is_exact(self):
         """One solve, one function of each #198 status. The compiled evaluator
-        answers ``flux``; ``capA`` (``max()``) comes back as a NaN sentinel and
-        ``_rateLaw2`` (outside the differentiated closure) is left untouched, so
-        both fall through to FD — and neither may leak a NaN or a silent zero.
+        answers ``flux``; ``capA`` (``max()``) it leaves, and dual numbers give
+        it exactly (issue #1330); both are their closed forms."""
+        params = ["kon", "chi", "koff", "gain"]
+        m = bngsim.Model.from_net(MIXED_NET)
+        ss = bngsim.Simulator(m, method="ode").steady_state(sensitivity_params=params)
+        assert ss.sens_output_source == "codegen+automatic-differentiation"
+        cf = self._mixed_closed_form()
+        got = ss.output_sensitivities(["expression:flux", "expression:capA"])
+        want = [[cf[f][p] for p in params] for f in ("flux", "capA")]
+        np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-8)
+
+    def test_mixed_block_is_reported_and_correct(self, monkeypatch):
+        """With no dual evaluation: ``capA`` comes back as a NaN sentinel and
+        ``_rateLaw2`` (outside the differentiated closure) is left untouched.
+        ``capA`` was differenced before issue #1002, and is refused by name now,
+        with the construct; ``flux`` is returned, and neither row is a silent 0.
         """
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         params = ["kon", "chi", "koff", "gain"]
         m = bngsim.Model.from_net(MIXED_NET)
         sim = bngsim.Simulator(m, method="ode")
         ss = sim.steady_state(sensitivity_params=params)
         assert ss.converged
-        assert ss.sens_output_source == "mixed"
+        assert ss.sens_output_source == "partial"
         assert ss.expression_names == ["flux", "capA"]  # _rateLaw2 filtered out
 
         cf = self._mixed_closed_form()
-        got = ss.output_sensitivities(["expression:flux", "expression:capA"])
-        assert np.all(np.isfinite(got)), "a declined row leaked its NaN sentinel"
-        np.testing.assert_allclose(
-            got,
-            [[cf["flux"][p] for p in params], [cf["capA"][p] for p in params]],
-            rtol=1e-5,
-            atol=1e-8,
-        )
+        got = ss.output_sensitivities(["expression:flux"])
+        np.testing.assert_allclose(got, [[cf["flux"][p] for p in params]], rtol=1e-5, atol=1e-8)
+        with pytest.raises(ValueError, match=r"'expression:capA'.*unsupported construct: max\(\)"):
+            ss.output_sensitivities(["expression:flux", "expression:capA"])
+        assert np.isnan(ss.sensitivities_expressions[1]).all()
 
-    def test_skipped_row_keeps_its_finite_difference_value(self):
+    def test_skipped_row_is_exact(self):
         """The emitter leaves a function outside the user closure at whatever the
-        caller pre-filled. Pre-filling with NaN is what routes it to FD instead —
-        pre-filling with zero would have made the RAW block read a confident 0.0
-        for ``d(_rateLaw2)/dkoff``, which is 1.0.
-
-        The skipped row is filtered out of the user-facing block, so this reads
-        the core result's ``raw_expression_*`` directly.
-        """
+        caller pre-filled; dual numbers give it, ``d(_rateLaw2)/dθ`` = (0, 0,
+        1, 0) (issue #1330), not a confident 0.0 for dkoff. The skipped row is
+        filtered out of the user-facing block, so this reads the core result's
+        ``raw_expression_*`` directly."""
         params = ["kon", "chi", "koff", "gain"]
         core = _core_steady_state(MIXED_NET, params)
-        assert core.sens_output_source == "mixed"
+        raw_names = list(core.raw_expression_names)
+        np.testing.assert_array_equal(
+            core.raw_expression_sensitivity_data[raw_names.index("_rateLaw2")],
+            [self._mixed_closed_form()["_rateLaw2"][p] for p in params],
+        )
+
+    def test_skipped_row_is_not_a_confident_zero(self, monkeypatch):
+        """With no dual evaluation, pre-filled with zero, the RAW block would
+        read a confident 0.0 for ``d(_rateLaw2)/dkoff``, which is 1.0. It is
+        NaN: the pre-fill, which nothing differences now (issue #1002).
+        """
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+        params = ["kon", "chi", "koff", "gain"]
+        core = _core_steady_state(MIXED_NET, params)
+        assert core.sens_output_source == "partial"
         raw_names = list(core.raw_expression_names)
         assert raw_names == ["flux", "capA", "_rateLaw2"]
-        cf = self._mixed_closed_form()["_rateLaw2"]
-        np.testing.assert_allclose(
-            core.raw_expression_sensitivity_data[raw_names.index("_rateLaw2")],
-            [cf[p] for p in params],
-            rtol=1e-6,
-            atol=1e-9,
-        )
+        assert np.isnan(core.raw_expression_sensitivity_data[raw_names.index("_rateLaw2")]).all()
 
 
 # ── Amount-valued (hOSU) observables carry their volume factor (issue #119) ──
@@ -764,15 +802,17 @@ class TestAmountValuedObservableVolumeFactor:
         )
 
 
-# ── The differenced block beside a species with no row ───────────────────────
+# ── The function block beside a species with no row ──────────────────────────
 #
 # ``P`` is made at ``kp`` and lost at ``kd*P``: P* = kp/kd = 5, and
 # dP*/d(kp, kd) = (1/kd, -kp/kd²) = (5, -25). An if() conditional is a function
-# the compiled evaluator declines, so ``piecewise(...)`` puts a row through the
-# finite-difference fallback. A rule target (``T := ...``) is left out of the
-# solve, and so is a species ``mask=`` leaves out, and the row of each is NaN.
-# The fallback multiplied every species' row into every function's, so a
-# function that does not read such a species took 0·NaN.
+# the compiled evaluator declines, so ``piecewise(...)`` put a row through the
+# finite-difference fallback, which multiplied every species' row into every
+# function's: a function that does not read a species with no row took 0·NaN.
+# A rule target (``T := ...``) is left out of the solve, and so is a species
+# ``mask=`` leaves out, and the row of each is NaN. Since issue #1002 nothing
+# is differenced: ``piecewise(...)`` is refused by name, and the compiled
+# functions here are what carries the rows.
 
 _MADE_AND_LOST = (
     "compartment D = 1; species P in D; P = 0; kp = 1; kd = 0.2;\nR3: => P; kp; R4: P => ; kd*P;\n"
@@ -810,13 +850,14 @@ def _central_row(text, read, rel=1e-4):
     return np.array(row)
 
 
-class TestFiniteDifferenceBesideARowlessSpecies:
+class TestFunctionBlockBesideARowlessSpecies:
     def test_a_rule_target_does_not_poison_an_expression(self):
-        """``W`` is ``P`` here, so its row is (5, -25). Main returned NaN once
-        ``T := 2*P`` was beside it, though ``W`` does not read ``T``."""
-        text = _MADE_AND_LOST + "W := piecewise(P, P < 100, 2*P);\nspecies T in D; T := 2*P;\n"
+        """Control. ``W`` is ``P`` here, so its row is (5, -25). Main returned
+        NaN once ``T := 2*P`` was beside it, though ``W`` does not read ``T``,
+        where ``W`` was differenced."""
+        text = _MADE_AND_LOST + "W := P;\nspecies T in D; T := 2*P;\n"
         ss = _ant_steady_state(text)
-        assert ss.sens_output_source == "finite-difference"
+        assert ss.sens_output_source == "codegen"
         assert [ss.species_names[i] for i in ss.excluded_species] == ["T"]
         got = ss.output_sensitivities(["expression:W"])[0]
         np.testing.assert_allclose(got, _DP, rtol=1e-7)
@@ -824,6 +865,47 @@ class TestFiniteDifferenceBesideARowlessSpecies:
             got, _central_row(text, lambda s: _expression_value(s, "W")), rtol=1e-6
         )
         np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
+
+    def test_a_declined_expression_beside_a_rule_target_is_exact(self):
+        """``W := piecewise(P, ...)`` has no compiled derivative; dual numbers
+        give it, d(W)/dθ = dP*/dθ on the branch P* = 5 is on (issue #1330), and
+        T's row is its rule's."""
+        text = _MADE_AND_LOST + "W := piecewise(P, P < 100, 2*P);\nspecies T in D; T := 2*P;\n"
+        ss = _ant_steady_state(text)
+        np.testing.assert_allclose(ss.output_sensitivities(["expression:W"])[0], _DP, rtol=1e-7)
+        np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
+
+    def test_a_declined_expression_beside_a_rule_target_is_refused_by_name(self, monkeypatch):
+        """With no dual evaluation it is refused by name, and T's row is its
+        rule's (issue #1002)."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+        text = _MADE_AND_LOST + "W := piecewise(P, P < 100, 2*P);\nspecies T in D; T := 2*P;\n"
+        ss = _ant_steady_state(text)
+        assert ss.sens_output_source == "none"
+        with pytest.raises(ValueError, match=r"'expression:W'.*if\(\) conditional.*#1002"):
+            ss.output_sensitivities(["expression:W"])
+        np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
+
+    def test_a_rule_target_whose_rule_is_declined_is_exact(self):
+        """``T := piecewise(2*P, ...)``: T's row is its rule's, which dual
+        numbers give, 2·dP*/dθ on the branch P* = 5 is on (issue #1330)."""
+        text = _MADE_AND_LOST + "species T in D; T := piecewise(2*P, P < 100, 3*P);\n"
+        ss = _ant_steady_state(text)
+        np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
+        np.testing.assert_allclose(ss.output_sensitivities(["species:P"])[0], _DP, rtol=1e-7)
+
+    def test_a_rule_target_whose_rule_is_declined_is_refused_by_name(self, monkeypatch):
+        """With no dual evaluation T's row is NaN and ``species:T`` is refused
+        naming the rule (issue #1002). It was differenced before."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+        text = _MADE_AND_LOST + "species T in D; T := piecewise(2*P, P < 100, 3*P);\n"
+        ss = _ant_steady_state(text)
+        assert np.isnan(np.asarray(ss.sensitivity)[ss.species_names.index("T")]).all()
+        with pytest.raises(
+            ValueError, match=r"'species:T'.*none for its rule 'T' \(uses unsupported"
+        ):
+            ss.output_sensitivities(["species:T"])
+        np.testing.assert_allclose(ss.output_sensitivities(["species:P"])[0], _DP, rtol=1e-7)
 
     @pytest.mark.parametrize(
         "rule,want",
@@ -835,8 +917,9 @@ class TestFiniteDifferenceBesideARowlessSpecies:
     def test_an_expression_that_reads_a_rule_target_has_the_rule_s_derivative(self, rule, want):
         """``Y`` is ``T``. It reads the rule under ``T``'s name, not ``T``'s own
         slot, so its derivative comes through ``P``'s row: (10, -50) for
-        ``2*P`` and (50, -250) for ``P^2``. Main returned NaN for both."""
-        text = _MADE_AND_LOST + f"Y := piecewise(T, P < 100, 3*T);\nspecies T in D; T := {rule};\n"
+        ``2*P`` and (50, -250) for ``P^2``. Main returned NaN for both where
+        ``Y`` was differenced; compiled, it has the rule's derivative."""
+        text = _MADE_AND_LOST + f"Y := T;\nspecies T in D; T := {rule};\n"
         ss = _ant_steady_state(text)
         np.testing.assert_allclose(ss.output_sensitivities(["expression:Y"])[0], want, rtol=1e-7)
         np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], want, rtol=1e-7)
@@ -844,12 +927,11 @@ class TestFiniteDifferenceBesideARowlessSpecies:
     def test_a_masked_species_is_refused_only_in_what_reads_it(self):
         """``Z`` collects what ``P`` loses at ``kz*P`` and has no steady value,
         so ``mask=`` leaves it out. P* = kp/(kd + kz), and ``W`` = ``P`` has the
-        row (1/0.3, -1/0.09); main returned NaN. ``V`` reads ``Z`` and has no
-        derivative: its row was NaN, and is now refused by name (issue #1124,
-        item 10). The species tensor keeps Z's NaN row."""
+        row (1/0.3, -1/0.09); main returned NaN where it was differenced. ``V``
+        reads ``Z`` and has no derivative: its row was NaN, and is now refused
+        by name (issue #1124, item 10). The species tensor keeps Z's NaN row."""
         text = _MADE_AND_LOST + (
-            "species Z in D; Z = 0; kz = 0.1; R5: P => Z; kz*P;\n"
-            "W := piecewise(P, P < 100, 2*P); V := piecewise(Z, P < 100, 2*Z);\n"
+            "species Z in D; Z = 0; kz = 0.1; R5: P => Z; kz*P;\nW := P; V := 2*Z;\n"
         )
         ss = _ant_steady_state(text, mask_sinks=True)
         assert [ss.species_names[i] for i in ss.excluded_species] == ["Z"]
@@ -862,13 +944,14 @@ class TestFiniteDifferenceBesideARowlessSpecies:
             ss.output_sensitivities(["W", "species:Z"])
         assert np.isnan(np.asarray(ss.sensitivity)[ss.species_names.index("Z")]).all()
 
-    # ``C := piecewise(1 + P, ...)`` is 1 + P* = 6, and ``T`` is an amount 2·P
-    # in it, reported over the live size: [T] = 2P/C, d[T] = 2/C²·dP.
-    _SIZED = "C := piecewise(1 + P, P < 100, 2 + P);\nsubstanceOnly species T in C; T := 2*P;\n"
+    # ``C := 1 + P`` is 1 + P* = 6, and ``T`` is an amount 2·P in it, reported
+    # over the live size: [T] = 2P/C, d[T] = 2/C²·dP.
+    _SIZED = "C := 1 + P;\nsubstanceOnly species T in C; T := 2*P;\n"
 
-    def test_a_size_by_a_differenced_rule_gives_an_amount_its_row(self):
-        """Main raised that ``mask=`` had left the size out of the solve, with
-        no ``mask=`` given: the size's row was NaN from ``T``'s."""
+    def test_a_size_by_a_rule_gives_an_amount_its_row(self):
+        """Control. Main raised that ``mask=`` had left the size out of the
+        solve, with no ``mask=`` given, where the size's rule was differenced:
+        the size's row was NaN from ``T``'s."""
         text = _MADE_AND_LOST + self._SIZED
         ss = _ant_steady_state(text)
         np.testing.assert_allclose(ss.output_sensitivities(["expression:C"])[0], _DP, rtol=1e-7)
@@ -876,21 +959,42 @@ class TestFiniteDifferenceBesideARowlessSpecies:
         np.testing.assert_allclose(got, 2 / 36 * _DP, rtol=1e-7)
         np.testing.assert_allclose(got, _central_row(text, lambda s: s["T"]), rtol=1e-6)
 
-    @pytest.mark.parametrize(
-        "size",
-        [
-            "C := piecewise(1 + Z, P < 100, 2 + Z);",  # differenced
-            "C := 1 + Z;",  # compiled
-        ],
-    )
-    def test_a_size_that_reads_a_masked_species_is_refused_by_name(self, size):
+    def test_a_size_by_a_declined_rule_is_exact(self):
+        """``C := piecewise(1 + P, ...)`` has no compiled derivative; dual
+        numbers give it (issue #1330), and T = 2P in C = 1 + P is the
+        concentration 2P/(1 + P), whose row is 2/(1 + P)²·dP*/dθ."""
+        text = _MADE_AND_LOST + (
+            "C := piecewise(1 + P, P < 100, 2 + P);\nsubstanceOnly species T in C; T := 2*P;\n"
+        )
+        ss = _ant_steady_state(text)
+        np.testing.assert_allclose(
+            ss.output_sensitivities(["species:T"])[0], 2 / 36 * _DP, rtol=1e-7
+        )
+
+    def test_a_size_by_a_declined_rule_is_refused_by_name(self, monkeypatch):
+        """With no dual evaluation it was differenced, and T's row with it; the
+        solve is refused now, naming the size and the construct (issue
+        #1002)."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+        text = _MADE_AND_LOST + (
+            "C := piecewise(1 + P, P < 100, 2 + P);\nsubstanceOnly species T in C; T := 2*P;\n"
+        )
+        with pytest.raises(
+            bngsim.SimulationError,
+            match=r"\['T'\].*for T, its size C has no steady-state derivative \(the compiled "
+            r"code has none for its rule: uses unsupported construct: if\(\) conditional; "
+            r"issue #1002\).*written without that construct",
+        ):
+            _ant_steady_state(text)
+
+    def test_a_size_that_reads_a_masked_species_is_refused_by_name(self):
         """The size's rule reads ``Z``, which ``mask=`` leaves out, so the size
         has no row and neither has ``T``. The refusal names ``Z`` as the
         cause; main said only that ``mask=`` left the size, or a species its
         rule reads, out of the solve."""
         text = _MADE_AND_LOST + (
             "species Z in D; Z = 0; kz = 0.1; R5: P => Z; kz*P;\n"
-            f"{size}\nsubstanceOnly species T in C; T := 2*P;\n"
+            "C := 1 + Z;\nsubstanceOnly species T in C; T := 2*P;\n"
         )
         with pytest.raises(
             bngsim.SimulationError,
@@ -985,15 +1089,22 @@ def test_every_selector_without_a_derivative_is_named_at_once():
     assert "'observable:A'" not in message
 
 
-def test_the_solve_records_no_missing_species_for_a_value_that_is_not_finite():
+@pytest.mark.parametrize("body", ["log10(L)", "sqrt(L - 1)"], ids=["-inf", "nan"])
+def test_the_solve_records_no_missing_species_for_a_value_that_is_not_finite(body):
     """The FD sweep took any nonzero partial for a read, and every partial of
     -inf is NaN, so ``logL := log10(L)`` at L = 0 recorded the masked ``B`` as
-    the species with no row it read. It reads none, and the record says so."""
+    the species with no row it read. It reads none, and the record says so.
+    A value that is NaN (``sqrt(L - 1)``) moves with every step, since NaN
+    equals nothing, and is not taken for a read either: a control, since
+    main's sweep had the same guard, which the step that only asks whether a
+    value moves keeps (issue #1002)."""
     m = bngsim.Model.from_antimony_string(
         "species A = 1; species B = 0; species L = 0; k1 = 1; k2 = 0.5; kL = 1;\n"
-        "J0: -> A; k1; J1: A -> B; k2*A; JL: L -> ; kL*L;\nlogL := log10(L);"
+        f"J0: -> A; k1; J1: A -> B; k2*A; JL: L -> ; kL*L;\nlogL := {body};"
     )
     ss = bngsim.Simulator(m, method="ode").steady_state(
         sensitivity_params=["k1", "k2"], mask=~np.asarray(m.is_pure_sink())
     )
     assert ss._expression_sens_missing[ss.expression_names.index("logL")] is None
+    with pytest.raises(ValueError, match=r"'expression:logL'.*value at the steady state is"):
+        ss.output_sensitivities("expression:logL")

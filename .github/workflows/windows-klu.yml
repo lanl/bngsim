@@ -111,6 +111,10 @@ on:
       - "ci/build_suitesparse.ps1"
       - "python/tests/test_codegen_jacobian_sparse.py"
       - "python/tests/test_steady_state_linear_solver.py"
+      # Issue #1254 — KLU's colored FD Jacobian, whose step rule lives in
+      # sparse_jacobian.hpp; every case of its test is KLU-gated.
+      - "include/bngsim/sparse_jacobian.hpp"
+      - "python/tests/test_colored_fd_jacobian_steps.py"
       # The count guard reads its bound from ci/test_floors.env through
       # ci/check_test_count.sh (issue #584). Moving the bound must run the leg
       # whose count it bounds, or a wrong value lands unchecked.
@@ -224,6 +228,7 @@ jobs:
           python -m pytest -p no:cacheprovider \
             python/tests/test_codegen_jacobian_sparse.py \
             python/tests/test_steady_state_linear_solver.py \
+            python/tests/test_colored_fd_jacobian_steps.py \
             -rA --tb=long ${{ inputs.pytest_args }} \
             2>&1 | tee klu-windows.log
 

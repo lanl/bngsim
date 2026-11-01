@@ -14,10 +14,14 @@ The species' own step has the opposite failure: a term that reads it through a
 sum with something much larger, ``C·((K + X) − K)``, answers in steps of that
 sum's last bit, which the own step does not see. Nothing in a row tells the two
 apart in every case, so the columns are solved with both matrices. Where they
-agree the floored one's are returned, as they were; where they are further
-apart than 1e-4 of a column's largest, they are refused. The same holds of the
-state-chain term of a function's sensitivity, which is differenced at the
-default settings too.
+agree the floored one's are returned, as they were; where an entry is further
+apart than 1e-4 of itself (1e-10 of its column's largest, at least), they are
+refused. Held to 1e-4 of the column's largest instead, an entry small within
+its column passed 12% off. The state-chain term
+of a function's sensitivity was differenced at the default settings too, and
+held to the same check; it is not differenced at all now (Step 2 of the plan
+on #1002): a function the compiled chain rule has no derivative for is
+refused by name, as after a run.
 
 The own step reads a row only where its rounding over the step is under the
 term, and a row that a much larger species is in it does not read: there a
@@ -28,6 +32,13 @@ those columns, and those of species at 0, taken whole at half the floored
 step, which a secant moves with and a slope does not.
 
 Every expected value is a closed form.
+
+Since issue #1330 a model the dual evaluation follows takes these derivatives
+exactly instead, by dual numbers through the interpreter, and none of them is
+differenced: test_exact_derivatives_by_dual_numbers.py holds it to the same
+closed forms. The differences above still run for a model with no dual
+evaluation (a ring of functions that read each other, rateOf), so this module
+switches the dual one off (BNGSIM_NO_DUAL_NUMBERS) to keep their checks tested.
 """
 
 from __future__ import annotations
@@ -38,6 +49,13 @@ import warnings
 import bngsim
 import numpy as np
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _differenced(monkeypatch):
+    """Every model of this module on the difference quotients (issue #1330)."""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+
 
 S, K1, K2, KD = 1.3, 0.21, 0.73, 0.5
 # 0 -> X at s, X -> 0 at k1, X + X -> D at k2 (a net loss of 2*k2*X^2), D -> 0.
@@ -107,6 +125,15 @@ def _first_quotient(model, y, j):
 def _steady(model, **kw):
     sim = bngsim.Simulator(model, method="ode", **kw)
     return sim.steady_state(sensitivity_params=["s"])
+
+
+def _refused_by_name(out, name, construct):
+    """``output_sensitivities`` refuses the function by its name and the
+    construct the compiled chain rule has no derivative for (issue #1002)."""
+    with pytest.raises(ValueError, match=rf"'expression:{name}' has no steady-state") as err:
+        out.output_sensitivities([name])
+    assert f"uses unsupported construct: {construct}" in str(err.value)
+    assert "issue #1002" in str(err.value)
 
 
 # ─── The steady state's columns ──────────────────────────────────────────────
@@ -261,12 +288,14 @@ def test_a_row_the_own_step_sees_nothing_of_does_not_hide_a_column_it_decides(tm
     path = tmp_path / "grain_row.net"
     path.write_text(ALL_GRAIN.format(s=S, k1=K1, k2=K2, kd=KD, big=float(big), k=float(k)))
     model = bngsim.Model.from_net(path)
-    with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
+    with pytest.raises(bngsim.SimulationError, match=r"dY_ss/dp .*issue #1002") as err:
         _steady(model, jacobian="fd")
-    # The entry furthest apart is E's: 0.81 at the floored step against the
-    # closed form 2·dX*/ds/kd = 1.4475 at X's own step.
-    assert "with X() stepped by 1.5e-8 of itself" in str(err.value)
-    assert "1.44752" in str(err.value)
+    # The entry furthest apart relative to itself is X's own: the secant at
+    # the floored step, against the closed form at X's own step.
+    msg = str(err.value)
+    floored = {1e8: 0.202473, 1e10: 0.00453885}[big]
+    assert f"dX()/ds is {floored:.6g} with every species stepped" in msg
+    assert f"{DX_DS:.6g} with X() stepped by 1.5e-8 of itself" in msg
 
 
 def test_a_grain_row_beside_a_column_both_steps_agree_on_is_returned(tmp_path):
@@ -282,24 +311,28 @@ def test_a_grain_row_beside_a_column_both_steps_agree_on_is_returned(tmp_path):
 # ─── A function's sensitivity ────────────────────────────────────────────────
 
 
-def test_a_function_the_step_decides_is_refused_at_the_default_settings(tmp_path):
+@pytest.mark.parametrize("big", [1e4, 1e8])
+def test_a_declined_function_is_refused_by_name(tmp_path, big):
     """``xsq = abs(X)·X`` has no compiled derivative, so its sensitivity at a
-    steady state is assembled from a differenced ``∂xsq/∂X``, with the
+    steady state was assembled from a differenced ``∂xsq/∂X``, with the
     closed-form Jacobian too. d(xsq)/ds = 2·X*·dX*/ds; beside G = 1e8 it
-    came back 85% off at the default settings."""
-    with pytest.raises(bngsim.SimulationError, match=r"function sensitivities") as err:
-        _steady(_model(tmp_path, 1e8, functions=("xsq",)))
-    assert "dxsq/ds" in str(err.value)
+    came back 85% off at the default settings, and #1100 refused the solve.
+    Beside G = 1e4 the quotient was right to 8.5e-5, and was returned; a
+    quotient does not tell the two apart. Neither is differenced now: the
+    solve returns dY_ss/dp, and xsq is refused by name."""
+    out = _steady(_model(tmp_path, big, functions=("xsq",)))
+    assert float(np.asarray(out.sensitivity)[0, 0]) == pytest.approx(DX_DS, rel=1e-7)
+    assert out.sens_output_source == "none"
+    _refused_by_name(out, "xsq", "abs()")
 
 
 @pytest.mark.parametrize("functions", [("xsq", "big"), ("big", "xsq")])
-def test_a_compiled_function_does_not_hide_a_declined_one_the_step_decides(tmp_path, functions):
+def test_a_compiled_function_beside_a_declined_one_keeps_its_row(tmp_path, functions):
     """``big = 1e8 + X`` has a compiled derivative and ``xsq = abs(X)·X`` has
-    not. The own step moves ``1e8 + X`` by its last bit or not at all, so
-    that row is not taken; taken whole or not at all, X's column was not,
-    and d(xsq)/ds came back 1.17 for 0.633 (85% off) with no error beside
-    G = 1e8, where alone it is refused. Each function's state-chain term is
-    its own sum, and a row another function vetoes is no reason to skip it."""
+    not. d(xsq)/ds came back 1.17 for 0.633 (85% off) with no error beside
+    G = 1e8 and ``big`` (#1100's review), and both were refused with the
+    solve after it. ``big`` is returned now, d(big)/ds = dX*/ds, and ``xsq``
+    is refused by name, in either order."""
     text = NET.format(s=S, k1=K1, k2=K2, kd=KD, big=1e8)
     lines = {"xsq": "    1 xsq() abs(Xo)*Xo\n", "big": "    2 big() 1e8+Xo\n"}
     block = "".join(lines[name] for name in functions)
@@ -307,24 +340,18 @@ def test_a_compiled_function_does_not_hide_a_declined_one_the_step_decides(tmp_p
     path = tmp_path / "mixed.net"
     path.write_text(text)
     model = bngsim.Model.from_net(path)
-    with pytest.raises(bngsim.SimulationError, match=r"function sensitivities") as err:
-        _steady(model)
-    assert "dxsq/ds" in str(err.value)
-
-
-def test_a_function_both_steps_agree_on_is_returned(tmp_path):
-    """Control. At G = 1e4 the two partials are 8.5e-5 of each other."""
-    out = _steady(_model(tmp_path, 1e4, functions=("xsq",)))
-    assert out.sens_fd_disagree_function is None
-    got = float(np.asarray(out.output_sensitivities(["xsq"])).ravel()[0])
-    assert got == pytest.approx(2 * X_SS * DX_DS, rel=1e-4)
+    out = _steady(model)
+    assert out.sens_output_source == "partial"
+    got = float(np.asarray(out.output_sensitivities(["big"])).ravel()[0])
+    assert got == pytest.approx(DX_DS, rel=1e-7)
+    _refused_by_name(out, "xsq", "abs()")
 
 
 def test_a_function_linear_in_a_small_species_is_returned(tmp_path):
-    """Control. ``weak = 1e-3·X``: d(weak)/ds = 1e-3·dX*/ds, whatever the
-    step."""
+    """Control. ``weak = 1e-3·X`` has a compiled derivative: d(weak)/ds =
+    1e-3·dX*/ds."""
     out = _steady(_model(tmp_path, 1e8, functions=("weak",)))
-    assert out.sens_fd_disagree_function is None
+    assert out.sens_output_source == "codegen"
     got = float(np.asarray(out.output_sensitivities(["weak"])).ravel()[0])
     assert got == pytest.approx(1e-3 * DX_DS, rel=1e-7)
 
@@ -360,17 +387,15 @@ def test_the_second_matrix_of_a_state_of_one_scale_is_the_first(tmp_path):
     np.testing.assert_array_equal(np.asarray(own), floored)
 
 
-def test_model_jacobian_warns_where_the_step_decides(tmp_path, monkeypatch):
+def test_model_jacobian_refuses_where_the_step_decides(tmp_path, monkeypatch):
     """``Model.jacobian()`` differences by the same sweep where the closed
-    form is not to be had (issue #523). It returns the floored matrix, as it
-    did, and warns with the entry."""
+    form is not to be had (issue #523). It returned the floored matrix beside
+    a warning, and the matrix's column of X is a secant across X (issue
+    #1002); it refuses now, naming the entry."""
     model = _model(tmp_path, 1e8, functions=())
     monkeypatch.setattr(type(model), "prepare_analytical_jacobian", lambda self: False)
-    y = _state(1e8)
-    with pytest.warns(UserWarning, match=r"issue #1002"):
-        jac = model.jacobian(y)
-    assert jac.source == "finite-difference"
-    np.testing.assert_array_equal(np.asarray(jac)[:, 0], _first_quotient(model, y, 0))
+    with pytest.raises(bngsim.SimulationError, match=r"Model\.jacobian\(\) does not return"):
+        model.jacobian(_state(1e8))
 
 
 def test_model_jacobian_is_quiet_where_the_steps_agree(tmp_path, monkeypatch):
@@ -466,24 +491,17 @@ def test_curvature_both_steps_agree_on_is_returned(tmp_path):
     assert out.sens_fd_half_step_species == ["X()"]
 
 
-def test_curvature_in_a_declined_function_over_a_larger_species_is_refused(tmp_path):
+@pytest.mark.parametrize("big", [1e4, 1e8])
+def test_curvature_in_a_declined_function_over_a_larger_species_is_refused(tmp_path, big):
     """``gx = abs(X)·X + G`` has no compiled derivative, so its state-chain
-    term is differenced at the default settings. d(gx)/ds = 2·X*·dX*/ds +
+    term was differenced at the default settings. d(gx)/ds = 2·X*·dX*/ds +
     dG*/ds = 117.91; beside G = 1e8 it came back 125.01 (6% off) with no
-    error, the own step reading nothing of a function at 1e8."""
-    with pytest.raises(bngsim.SimulationError, match=r"function sensitivities") as err:
-        _steady(_second_order(tmp_path, 1e8, functions=True))
-    msg = str(err.value)
-    assert "dgx/ds is 125.01" in msg
-    assert "stepped by half the first step" in msg
-
-
-def test_curvature_in_a_declined_function_both_steps_agree_on_is_returned(tmp_path):
-    """Control. At G = 1e4 the two totals are 3e-6 of each other."""
-    out = _steady(_second_order(tmp_path, 1e4, functions=True))
-    assert out.sens_fd_disagree_function is None
-    got = float(np.asarray(out.output_sensitivities(["gx"])).ravel()[0])
-    assert got == pytest.approx(2 * SO_DG_DS, rel=1e-5)
+    error, the own step reading nothing of a function at 1e8, and #1294
+    refused the solve. At G = 1e4 it was right to 3e-6 and returned. It is
+    refused by name at both now, and dG*/ds comes from the closed form."""
+    out = _steady(_second_order(tmp_path, big, functions=True))
+    assert float(np.asarray(out.sensitivity)[1, 0]) == pytest.approx(SO_DG_DS, rel=1e-7)
+    _refused_by_name(out, "gx", "abs()")
 
 
 @pytest.mark.parametrize("big", [1e4, 1e8])
@@ -496,44 +514,68 @@ def test_a_species_at_0_the_parameter_moves_is_refused(tmp_path, big):
     with pytest.raises(bngsim.SimulationError, match=r"issue #1002") as err:
         _steady(_model(tmp_path, big, functions=(), s=0.0), jacobian="fd")
     msg = str(err.value)
-    h = SQRT_EPS * float(big)
-    floored = 1.0 / (K1 + 2 * K2 * h)
-    assert "dX()/ds is " + format(floored, ".6g") in msg
     assert "stepped by half the first step" in msg
+    # The entry furthest apart relative to itself: at G = 1e4, D's, whose
+    # floored secant k2·h·dX*/ds/kd stands for 0; at 1e8, X's own.
+    h = SQRT_EPS * float(big)
+    floored_x = 1.0 / (K1 + 2 * K2 * h)
+    if big < 1e6:
+        assert f"dD()/ds is {K2 * h * floored_x / KD:.6g}" in msg
+    else:
+        assert f"dX()/ds is {floored_x:.6g}" in msg
 
 
 @pytest.mark.parametrize("big", [1.0, 1e8])
 def test_a_species_at_0_is_returned_where_the_step_does_not_decide(tmp_path, big):
     """Control. With s = 0 and the columns asked for sg, nothing moves X,
     and its column, wrong as it is at 1e8, is multiplied by 0: dG*/dsg = 1
-    and dX*/dsg = 0 are returned. At G = 1 the floored step is 1.5e-8 and
-    the column is right to 1e-7."""
+    and dX*/dsg = 0 are returned."""
     model = _model(tmp_path, big, functions=(), s=0.0)
     sim = bngsim.Simulator(model, method="ode", jacobian="fd")
-    out = sim.steady_state(sensitivity_params=["sg", "s"] if big == 1.0 else ["sg"])
+    out = sim.steady_state(sensitivity_params=["sg"])
     sens = np.asarray(out.sensitivity)
     assert sens[0, 0] == 0.0
     assert sens[2, 0] == pytest.approx(1.0, rel=1e-12)
-    if big == 1.0:
-        assert sens[0, 1] == pytest.approx(1.0 / K1, rel=1e-6)
     assert out.sens_fd_disagree_species is None
     assert out.sens_fd_half_step_species == ["X()", "D()"]
 
 
+def test_an_entry_near_0_the_step_moves_is_refused(tmp_path):
+    """With s = 0 beside G = 1, X* = 0 and dD*/ds = 2·k2·X*·dX*/ds/kd = 0.
+    The floored step (1.5e-8) reads 1.04e-7 for it, and half the step half
+    that. The column was right to 1e-7 of its largest entry (dX*/ds = 1/k1),
+    and main returned it; held to 1e-4 of itself (1e-10 of the column's
+    largest, at least), the entry is not confirmed, and the columns are
+    refused (issue #1002)."""
+    model = _model(tmp_path, 1.0, functions=(), s=0.0)
+    sim = bngsim.Simulator(model, method="ode", jacobian="fd")
+    with pytest.raises(bngsim.SimulationError, match=r"dD\(\)/ds is 1\.0\d+e-07"):
+        sim.steady_state(sensitivity_params=["sg", "s"])
+
+
+def test_an_entry_small_within_its_column_is_held_to_itself(tmp_path):
+    """``X + X -> X + X + G`` at k = 1e-6 beside G at 1e8: dG*/ds =
+    2·k·X*/k1 = 5.896e-5, and the floored step reads k·(2X* + h)/k1 =
+    6.605e-5, 12% off. The half step reads it 6% off, 3.6e-6 from the first,
+    which is 7.5e-7 of the column's largest entry (dX*/ds = 4.76): held to 1e-4 of that, main
+    returned it with no error. Held to 1e-4 of itself, it is refused."""
+    text = SECOND_ORDER.replace("    3 k   1.0\n", "    3 k   1e-6\n").format(s=S, k1=K1, big=1e8)
+    text = text.replace("    1 gx() abs(Xo)*Xo + Go\n", "")
+    path = tmp_path / "small_entry.net"
+    path.write_text(text)
+    with pytest.raises(bngsim.SimulationError, match=r"dG\(\)/ds is 6\.60476e-05"):
+        _steady(bngsim.Model.from_net(path), jacobian="fd")
+
+
 def test_a_declined_function_of_a_species_at_0_is_refused(tmp_path):
-    """``xsq = abs(X)·X`` is differenced; with s = 0, X* = 0 and
+    """``xsq = abs(X)·X`` was differenced; with s = 0, X* = 0 and
     d(xsq)/ds = 2·|X*|·dX*/ds = 0. Its partial across the floored step is
     h for 0, so d(xsq)/ds came back 7.1e-8, the step's alone, at the default
-    settings beside G = 1, with no error. At half the step it is half that."""
-    with pytest.raises(bngsim.SimulationError, match=r"function sensitivities") as err:
-        _steady(_model(tmp_path, 1.0, functions=("xsq",), s=0.0))
-    msg = str(err.value)
-    assert "dxsq/ds is " + format(SQRT_EPS / K1, ".6g") in msg
-    assert (
-        format(0.5 * SQRT_EPS / K1, ".6g")
-        + " with the species far below that scale and those at 0"
-        in msg
-    )
+    settings beside G = 1, with no error, and #1294 refused the solve. The
+    solve returns dX*/ds = 1/k1 now, and xsq is refused by name."""
+    out = _steady(_model(tmp_path, 1.0, functions=("xsq",), s=0.0))
+    assert float(np.asarray(out.sensitivity)[0, 0]) == pytest.approx(1.0 / K1, rel=1e-7)
+    _refused_by_name(out, "xsq", "abs()")
 
 
 NAN_WINDOW = """begin parameters
@@ -583,9 +625,10 @@ def test_a_half_step_answer_that_is_no_number_is_refused(tmp_path):
 @pytest.mark.parametrize("kw", [{}, {"jacobian": "fd"}])
 def test_a_half_step_column_that_is_no_number_is_not_read_where_its_entry_is_0(tmp_path, kw):
     """Control. Asked for sg, which moves neither X nor E, the answer does
-    not read X's column, nor r's partial over X: dG*/dsg = 1 and the rest 0
-    are returned, as on main, with the differenced Jacobian and with the
-    default one (where only r's partial is differenced)."""
+    not read X's column: dG*/dsg = 1 and the rest 0 are returned, as on main,
+    with the differenced Jacobian and with the default one. ``r`` reads an
+    ``if()``, which has no compiled derivative, and is refused by name (it
+    was differenced, and 0 here)."""
     path = tmp_path / "nan_window.net"
     path.write_text(NAN_WINDOW)
     sim = bngsim.Simulator(bngsim.Model.from_net(path), method="ode", **kw)
@@ -594,8 +637,7 @@ def test_a_half_step_column_that_is_no_number_is_not_read_where_its_entry_is_0(t
     assert sens[0, 0] == 0.0
     assert sens[1, 0] == 0.0
     assert sens[2, 0] == pytest.approx(1.0, rel=1e-12)
-    got = float(np.asarray(out.output_sensitivities(["r"])).ravel()[0])
-    assert got == 0.0
+    _refused_by_name(out, "r", "if() conditional")
 
 
 # SECOND_ORDER with Z, made at kz = 1e-30 and removed at 1, which makes X at
@@ -627,14 +669,14 @@ def test_a_column_of_1e_29_is_held_to_the_same_check(tmp_path):
     assert "stepped by half the first step" in str(err.value)
 
 
-def test_a_function_column_of_1e_28_is_held_to_the_same_check(tmp_path):
+def test_a_function_column_of_1e_28_is_refused_by_name(tmp_path):
     """``gx = abs(X)·X + G`` beside G at 1e8: d(gx)/dq is 1.2e-28, and the
-    floored partial over X reads it 6% high at the default settings, where
-    main returned it with no error."""
+    floored partial over X read it 6% high at the default settings, where
+    main returned it with no error (and #1294 refused the solve). It is not
+    differenced now, whatever its size."""
     sim = bngsim.Simulator(_tiny_column(tmp_path, True), method="ode")
-    with pytest.raises(bngsim.SimulationError, match=r"function sensitivities") as err:
-        sim.steady_state(sensitivity_params=["q"])
-    assert "dgx/dq is " in str(err.value)
+    out = sim.steady_state(sensitivity_params=["q"])
+    _refused_by_name(out, "gx", "abs()")
 
 
 @pytest.mark.parametrize("s", [1e-12, 1e-9])
@@ -727,27 +769,26 @@ def test_a_species_the_mask_leaves_out_is_stepped_again_where_its_column_is_read
 
 
 def test_a_function_whose_half_step_partial_is_no_number_is_refused(tmp_path):
-    """At the default settings r's partial over X is differenced, and it is
-    no number at half the step, where dX*/ds is not 0: refused, as the
-    species' columns are with ``jacobian="fd"``. (d(r)/ds is 0 here, and
-    main returns it; a partial that is no number confirms nothing.)"""
+    """At the default settings r's partial over X was differenced, and it is
+    no number at half the step, where dX*/ds is not 0: #1294 refused the
+    solve. It is not differenced now: the solve returns dX*/ds = 1/k1, and
+    ``r`` is refused by name."""
     path = tmp_path / "nan_window.net"
     path.write_text(NAN_WINDOW)
-    with pytest.raises(bngsim.SimulationError, match=r"function sensitivities") as err:
-        _steady(bngsim.Model.from_net(path))
-    assert "dr/ds is 0 " in str(err.value)
-    assert "nan with the species far below that scale and those at 0" in str(err.value)
+    out = _steady(bngsim.Model.from_net(path))
+    assert float(np.asarray(out.sensitivity)[0, 0]) == pytest.approx(1.0 / K1, rel=1e-7)
+    _refused_by_name(out, "r", "if() conditional")
 
 
-def test_model_jacobian_warns_where_the_half_step_is_no_number(tmp_path, monkeypatch):
+def test_model_jacobian_refuses_where_the_half_step_is_no_number(tmp_path, monkeypatch):
     """``Model.jacobian()`` at X = 0 beside G = 1e8 in the model whose rate
     is no number for X between 0.6 and 0.9: the column of X at half the
-    step is no number, and the warning says so."""
+    step is no number, and the refusal says so (it warned)."""
     path = tmp_path / "nan_window.net"
     path.write_text(NAN_WINDOW)
     model = bngsim.Model.from_net(path)
     monkeypatch.setattr(type(model), "prepare_analytical_jacobian", lambda self: False)
-    with pytest.warns(UserWarning, match=r"and nan stepped by half that"):
+    with pytest.raises(bngsim.SimulationError, match=r"and nan stepped by half that"):
         model.jacobian(np.array([0.0, 0.0, 1e8]))
 
 
@@ -798,14 +839,118 @@ def test_the_third_matrix_of_a_state_of_one_scale_is_the_first(tmp_path):
     np.testing.assert_array_equal(np.asarray(half), floored)
 
 
-def test_model_jacobian_warns_where_the_half_step_decides(tmp_path, monkeypatch):
-    """``Model.jacobian()`` returns the floored matrix and warns with the
-    entry where the half step moves it, in a row the own step cannot read:
-    d(rate of G)/dX is k·(2X + h), 13.871, and 13.126 at half the step."""
+def test_model_jacobian_refuses_where_the_half_step_decides(tmp_path, monkeypatch):
+    """``Model.jacobian()`` refuses, naming the entry, where the half step
+    moves it, in a row the own step cannot read: d(rate of G)/dX is
+    k·(2X + h), 13.871, and 13.126 at half the step (it returned the
+    floored matrix beside a warning)."""
     model = _second_order(tmp_path, 1e8)
     monkeypatch.setattr(type(model), "prepare_analytical_jacobian", lambda self: False)
     y = np.array([SO_X, 1e8 + SO_X * SO_X])
-    with pytest.warns(UserWarning, match=r"d\(rate of G\(\)\)/dX\(\) .* stepped by half that"):
-        jac = model.jacobian(y)
-    assert jac.source == "finite-difference"
-    np.testing.assert_array_equal(np.asarray(jac)[:, 0], _first_quotient(model, y, 0))
+    with pytest.raises(
+        bngsim.SimulationError,
+        match=r"d\(rate of G\(\)\)/dX\(\) is 13\.8711 .* 13\.126 stepped by half that",
+    ):
+        model.jacobian(y)
+
+
+def test_model_jacobian_holds_an_entry_small_within_its_column_to_itself(tmp_path, monkeypatch):
+    """``X + X -> X + X + G`` at k = 1e-6 beside G at 1e8: in X's column,
+    d(rate of G)/dX = 2·k·X* = 1.2e-5 sits beside -k1 = -0.21, and the
+    floored step reads k·(2X* + h) for it, the half step k·(2X* + h/2). The
+    two are 7.5e-7 apart, 3.5e-6 of the column's largest entry, which passed;
+    held to 1e-4 of itself the entry is refused."""
+    text = SECOND_ORDER.replace("    3 k   1.0\n", "    3 k   1e-6\n").format(s=S, k1=K1, big=1e8)
+    text = text.replace("    1 gx() abs(Xo)*Xo + Go\n", "")
+    path = tmp_path / "small_entry.net"
+    path.write_text(text)
+    model = bngsim.Model.from_net(path)
+    monkeypatch.setattr(type(model), "prepare_analytical_jacobian", lambda self: False)
+    with pytest.raises(bngsim.SimulationError, match=r"d\(rate of G\(\)\)/dX\(\)"):
+        model.jacobian(np.array([SO_X, 1e8 + 1e-6 * SO_X * SO_X]))
+
+
+RESIDUE = """begin parameters
+    1 s   1.3
+    2 k1  0.21
+    3 sg  1e8
+    4 dg  1.0
+    5 k   1.0
+end parameters
+begin species
+    1 X() 0
+    2 G() 1e8
+    3 Y() 0
+end species
+begin groups
+    1 Xo 1
+end groups
+begin functions
+    1 res() k*((Xo + 1) - 1 - Xo)
+end functions
+begin reactions
+    1 0 1 s
+    2 1 0 k1
+    3 0 2 sg
+    4 2 0 dg
+    5 0 3 res
+    6 3 0 dg
+end reactions
+"""
+
+
+def test_an_entry_of_rounding_residue_is_not_held_to_itself(tmp_path, monkeypatch):
+    """Control. Y is made at ``k·((X + 1) − 1 − X)``, the rounding of a sum,
+    so dY*/ds is rounding too: -2.8e-15 beside dX*/ds = 4.76, and another
+    rounding at half the step. An entry is held to 1e-4 of itself only down
+    to 1e-10 of its column's largest; held to itself alone, this column, a
+    right answer to its last bits, was refused. ``Model.jacobian()`` keeps the
+    same floor."""
+    path = tmp_path / "residue.net"
+    path.write_text(RESIDUE)
+    out = _steady(bngsim.Model.from_net(path), jacobian="fd")
+    sens = np.asarray(out.sensitivity)[:, 0]
+    assert sens[0] == pytest.approx(1 / K1, rel=1e-9)
+    assert abs(sens[2]) < 1e-12
+    assert "Y()" in out.sens_fd_half_step_species
+    model = bngsim.Model.from_net(path)
+    monkeypatch.setattr(type(model), "prepare_analytical_jacobian", lambda self: False)
+    assert model.jacobian(np.array([1.3 / K1, 1e8, float(out.concentrations[2])])).source == (
+        "finite-difference"
+    )
+
+
+def test_model_jacobian_does_not_hold_rounding_to_itself(tmp_path, monkeypatch):
+    """Control. Y is made at ``k·((X + K) − K − X)`` with K = 3, the rounding
+    of a sum: its entry in X's column is -3.7e-17 at the floored step and
+    -7.5e-17 at half of it, beside -k1 = -0.21. Held to 1e-4 of itself the
+    matrix was refused; the floor, 1e-10 of the column's largest, returns it,
+    as ``steady_state`` does its columns."""
+    text = RESIDUE.replace("    5 k   1.0\n", "    5 k   1.0\n    6 K   3.0\n").replace(
+        "((Xo + 1) - 1 - Xo)", "((Xo + K) - K - Xo)"
+    )
+    path = tmp_path / "residue_k.net"
+    path.write_text(text)
+    model = bngsim.Model.from_net(path)
+    monkeypatch.setattr(type(model), "prepare_analytical_jacobian", lambda self: False)
+    assert model.jacobian(np.array([0.3, 1e8, 0.0])).source == "finite-difference"
+
+
+def test_model_jacobian_checks_a_column_with_an_entry_that_is_no_number(tmp_path, monkeypatch):
+    """W is made at ``sqrt(X − 10)``, no number at X = 6.19, so X's column has
+    a NaN in W's row. The column's largest was NaN, which no entry exceeds,
+    and the column was not checked: G's entry, 13.871 at the floored step and
+    13.126 at half of it, was returned. The check is over the entries that
+    are numbers, as ``steady_state``'s is, and refuses it."""
+    text = SECOND_ORDER.format(s=S, k1=K1, big=1e8).replace("    1 gx() abs(Xo)*Xo + Go\n", "")
+    text = (
+        text.replace("    2 G() 100000000.0\n", "    2 G() 100000000.0\n    3 W() 0\n")
+        .replace("begin functions\n", "begin functions\n    1 wr() sqrt(Xo - 10)\n")
+        .replace("    5 2 0 dg\n", "    5 2 0 dg\n    6 0 3 wr\n")
+    )
+    path = tmp_path / "nan_row.net"
+    path.write_text(text)
+    model = bngsim.Model.from_net(path)
+    monkeypatch.setattr(type(model), "prepare_analytical_jacobian", lambda self: False)
+    with pytest.raises(bngsim.SimulationError, match=r"d\(rate of G\(\)\)/dX\(\) is 13\.8711"):
+        model.jacobian(np.array([SO_X, 1e8 + SO_X * SO_X, 0.0]))

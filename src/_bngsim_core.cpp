@@ -17,11 +17,13 @@
 #include <bngsim/cc_jit.hpp>
 #include <bngsim/function_columns.hpp>
 #include <bngsim/mir_jit.hpp>
+#include <bngsim/refusals.hpp>
 #include <bngsim/sparse_jacobian.hpp>
 #include <bngsim/steady_state.hpp>
 #include <bngsim/wallclock.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -870,12 +872,18 @@ PYBIND11_MODULE(_bngsim_core, m) {
     // The Python wrapper layer catches C++ std::runtime_error / std::invalid_argument
     // and re-raises as bngsim.ModelError / ParameterError / SimulationError.
     //
-    // Exception: bngsim::TimeoutError. The Python-side `SimulationTimeout`
-    // class carries `timeout` and `elapsed` attributes which the wrapper
-    // layer can't reconstruct from a generic RuntimeError message — those
-    // would round-trip lossily. We translate it directly so the attributes
-    // survive. `bngsim._exceptions` is imported lazily inside the lambda so
-    // module construction order remains free of cycles.
+    // Exceptions, translated here: bngsim::TimeoutError,
+    // bngsim::SparseJacobianUnavailable and bngsim::SensitivityUnsupported.
+    // The Python-side `SimulationTimeout` class carries `timeout` and
+    // `elapsed` attributes which the wrapper layer can't reconstruct from a
+    // generic RuntimeError message — those would round-trip lossily. We
+    // translate it directly so the attributes survive.
+    // `SparseJacobianUnavailableError` is a refusal by name (issue #1313),
+    // which a caller tells from a solver failure by its type, so it can't
+    // arrive as the wrapper's SimulationError either, nor can the refusal a
+    // sensitivity run reaches mid-run (issue #1279). `bngsim._exceptions`
+    // is imported lazily inside the lambda so module construction order
+    // remains free of cycles.
     py::register_exception_translator([](std::exception_ptr p) {
         try {
             if (p)
@@ -885,6 +893,19 @@ PYBIND11_MODULE(_bngsim_core, m) {
             py::object exc = cls(py::str(e.what()), py::arg("timeout") = e.timeout_seconds(),
                                  py::arg("elapsed") = e.elapsed_seconds());
             PyErr_SetObject(cls.ptr(), exc.ptr());
+        } catch (const bngsim::SparseJacobianUnavailable &e) {
+            // A refusal by name (issue #1313): its own type, so a caller need not
+            // read the message to tell it from a solver failure.
+            py::object cls =
+                py::module_::import("bngsim._exceptions").attr("SparseJacobianUnavailableError");
+            py::object exc = cls(py::str(e.what()));
+            PyErr_SetObject(cls.ptr(), exc.ptr());
+        } catch (const bngsim::SensitivityUnsupported &e) {
+            // Issue #1279: a refusal the solver reaches mid-run is typed as the
+            // ones raised before a run are.
+            py::object cls =
+                py::module_::import("bngsim._exceptions").attr("SensitivityUnsupportedError");
+            PyErr_SetObject(cls.ptr(), cls(py::str(e.what())).ptr());
         }
     });
 
@@ -894,6 +915,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("n_steps", &bngsim::SolverStats::n_steps)
         .def_readwrite("n_rhs_evals", &bngsim::SolverStats::n_rhs_evals)
         .def_readwrite("n_jac_evals", &bngsim::SolverStats::n_jac_evals)
+        .def_readwrite("n_jac_rhs_evals", &bngsim::SolverStats::n_jac_rhs_evals)
+        .def_readwrite("n_jac_formations", &bngsim::SolverStats::n_jac_formations)
         .def_readwrite("n_err_test_fails", &bngsim::SolverStats::n_err_test_fails)
         .def_readwrite("n_nonlin_iters", &bngsim::SolverStats::n_nonlin_iters)
         .def_readwrite("n_nonlin_conv_fails", &bngsim::SolverStats::n_nonlin_conv_fails)
@@ -919,6 +942,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             d["n_steps"] = s.n_steps;
             d["n_rhs_evals"] = s.n_rhs_evals;
             d["n_jac_evals"] = s.n_jac_evals;
+            d["n_jac_rhs_evals"] = s.n_jac_rhs_evals;
+            d["n_jac_formations"] = s.n_jac_formations;
             d["n_err_test_fails"] = s.n_err_test_fails;
             d["n_nonlin_iters"] = s.n_nonlin_iters;
             d["n_nonlin_conv_fails"] = s.n_nonlin_conv_fails;
@@ -1252,6 +1277,34 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "judged over the whole right-hand side, as before; an empty entry means "
             "no listed rate law reads it, so the crossing is continuous. A jump the "
             "listed reactions do not account for is judged as before.")
+        .def(
+            "set_held_equality_conditions",
+            [](bngsim::SolverOptions &self, const std::vector<std::string> &conditions) {
+                self.sensitivity.held_equality_conditions = conditions;
+            },
+            py::arg("conditions"),
+            "Issue #1279: rate-law equalities over model state, as source text "
+            "(`Bobs==0`), that a sensitivity run roots where the state leaves their "
+            "surface. The run is refused there with SensitivityUnsupportedError "
+            "where the rate laws reading one change and no jump at that instant "
+            "covers it (issue #1228). Empty (the default) watches none.")
+        .def(
+            "set_held_equality_reactions",
+            [](bngsim::SolverOptions &self, const std::vector<std::vector<int>> &reactions) {
+                self.sensitivity.held_equality_reactions = reactions;
+            },
+            py::arg("reactions"),
+            "Parallel to set_held_equality_conditions (issue #1279): the 0-based "
+            "reactions whose rate law reads each equality.")
+        .def(
+            "set_held_equality_inner",
+            [](bngsim::SolverOptions &self, const std::vector<std::vector<std::string>> &inner) {
+                self.sensitivity.held_equality_inner = inner;
+            },
+            py::arg("inner"),
+            "Parallel to set_held_equality_conditions (issue #1279): the state-switch "
+            "conditions written inside each equality, whose crossing covers a leaving "
+            "at the same instant.")
         .def(
             "set_state_switch_guards",
             [](bngsim::SolverOptions &self, const std::vector<std::string> &guards) {
@@ -2424,6 +2477,41 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "as a float64 ndarray (n_species, n_species), J[i, j] = ∂f_i/∂x_j, "
             "stepped by the steady-state solver's own rule. Issue #523.")
         .def(
+            "fill_dense_dual_jacobian",
+            [](bngsim::NetworkModel &self, double t,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc,
+               int side) -> py::object {
+                const double *y = state_arg(self, conc, "fill_dense_dual_jacobian");
+                const int ns = self.n_species();
+                if (side < -1 || side > 1) {
+                    throw py::value_error("fill_dense_dual_jacobian: side must be -1, 0 or 1");
+                }
+                std::vector<double> jac(static_cast<size_t>(ns) * ns, 0.0);
+                bool ok = true;
+                bool tied = false;
+                bool jumped = false;
+                if (ns > 0) {
+                    py::gil_scoped_release release;
+                    ok = self.fill_dense_dual_jacobian(
+                        t, y, jac.data(), static_cast<bngsim::DualTie>(side), &tied, &jumped);
+                }
+                if (!ok) {
+                    return py::none();
+                }
+                return py::make_tuple(colmajor_to_ndarray_2d(jac, ns), tied, jumped);
+            },
+            py::arg("t"), py::arg("conc"), py::arg("side") = 0,
+            "The Jacobian at (t, conc), exact, by dual numbers through the interpreter "
+            "(issue #1330), as a (float64 ndarray (n_species, n_species), tied, jumped) "
+            "triple; None where the model has no dual evaluation (dual_unsupported_reason) "
+            "or its values are not the right-hand side's. `tied` is whether the state sits "
+            "where a law changes branch; `side` (0, 1, -1) decides such a point as the "
+            "interpreter does, or from above or below along each column's direction, and "
+            "`jumped` whether a law's value jumps there from that side.")
+        .def("dual_unsupported_reason", &bngsim::NetworkModel::dual_unsupported_reason,
+             "Empty where the model's right-hand side and functions can be evaluated on "
+             "dual numbers (issue #1330); else what it lacks.")
+        .def(
             "fill_dense_fd_jacobian_own_step",
             [](bngsim::NetworkModel &self, double t,
                py::array_t<double, py::array::c_style | py::array::forcecast> conc,
@@ -3065,6 +3153,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "Set a parameter override (applied before each run)")
         .def("clear_param_overrides", &bngsim::NfsimSimulator::clear_param_overrides,
              "Clear all parameter overrides")
+        .def("set_species_amounts", &bngsim::NfsimSimulator::set_species_amounts,
+             py::arg("amounts"),
+             "Seed amounts for the next run by <Species id=>, replacing any set before")
         .def("set_molecule_limit", &bngsim::NfsimSimulator::set_molecule_limit, py::arg("limit"),
              "Set global molecule limit (default: INT_MAX, no artificial limit)")
         .def("set_connectivity", &bngsim::NfsimSimulator::set_connectivity, py::arg("enabled"),
@@ -3198,6 +3289,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
              py::arg("value"), "Set a parameter override")
         .def("clear_param_overrides", &bngsim::RuleMonkeySimulator::clear_param_overrides,
              "Clear all parameter overrides")
+        .def("set_species_amounts", &bngsim::RuleMonkeySimulator::set_species_amounts,
+             py::arg("amounts"),
+             "Seed amounts for the next run by <Species id=>, replacing any set before")
         .def("set_molecule_limit", &bngsim::RuleMonkeySimulator::set_molecule_limit,
              py::arg("limit"), "Set global molecule limit")
         .def("set_block_same_complex_binding",
@@ -3322,6 +3416,50 @@ PYBIND11_MODULE(_bngsim_core, m) {
 #else
     m.attr("HAS_MIR") = false;
 #endif
+
+    // Issue #1215: MIR ended the process when it ran out of memory or address
+    // space; MirJit now raises. This fails one allocation or code mapping of a
+    // compile (a fail_mapping refuses the reservation too, so that there are
+    // mappings to fail), so a test can fail each in turn.
+    //
+    // Internal — the leading underscore is the contract.
+    m.def(
+        "_mir_jit_compile",
+        [](const std::string &source, long long fail_allocation, long long fail_mapping,
+           int fail_mapping_errno) -> std::pair<long long, long long> {
+#ifdef BNGSIM_HAS_MIR
+            namespace detail = bngsim::detail;
+            struct Reset {
+                ~Reset() {
+                    detail::mir_test_hooks = false;
+                    detail::mir_failing_allocation = -1;
+                    detail::mir_failing_mapping = -1;
+                    detail::mir_failing_mapping_errno = ENOMEM;
+                }
+            } reset;
+            detail::mir_test_hooks = true;
+            detail::mir_allocation_count = 0;
+            detail::mir_mapping_count = 0;
+            detail::mir_failing_allocation = fail_allocation;
+            detail::mir_failing_mapping = fail_mapping;
+            detail::mir_failing_mapping_errno = fail_mapping_errno;
+            bngsim::MirJit jit(source);
+            return {detail::mir_allocation_count, detail::mir_mapping_count};
+#else
+            (void)fail_allocation;
+            (void)fail_mapping;
+            (void)fail_mapping_errno;
+            bngsim::MirJit jit(source); // throws: this build has no MIR
+            return {0, 0};
+#endif
+        },
+        py::arg("source"), py::arg("fail_allocation") = -1, py::arg("fail_mapping") = -1,
+        py::arg("fail_mapping_errno") = ENOMEM,
+        "MIR-compile a generated C source as if the C heap ran out at MIR's allocation number "
+        "fail_allocation, or its code mapping number fail_mapping were refused with errno "
+        "fail_mapping_errno (both counted from 0; -1 fails none), and return how many allocations "
+        "and code mappings MIR made. A failure raises MirJit's RuntimeError (issue #1215). "
+        "Internal.");
 
     // ─── ModelBuilder (programmatic model construction) ──────────────────────
     py::class_<bngsim::ModelBuilder>(m, "ModelBuilder")
@@ -3869,9 +4007,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("linear_solver", &bngsim::SteadyStateResult::linear_solver)
         .def_readonly("sens_jacobian_source", &bngsim::SteadyStateResult::sens_jacobian_source)
         .def_readonly("sens_dfdp_source", &bngsim::SteadyStateResult::sens_dfdp_source)
-        // Issue #75 — "codegen" / "mixed" / "finite-difference" for the d(func)/dp
-        // block, so a caller can tell the compiled chain rule from the fallback.
+        // Issues #75, #1002 — "codegen" / "partial" / "none": how much of the
+        // d(func)/dp block the compiled chain rule answered (the rest is NaN).
         .def_readonly("sens_output_source", &bngsim::SteadyStateResult::sens_output_source)
+        .def_readonly("sens_output_evaluated", &bngsim::SteadyStateResult::sens_output_evaluated)
         .def_readonly("sens_jacobian_rcond", &bngsim::SteadyStateResult::sens_jacobian_rcond)
         // Issue #995 — whether the steady state is an isolated root of the
         // system dY_ss/dp was solved on, and the returned state on it.
@@ -3920,15 +4059,15 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("sens_fd_floored", &bngsim::SteadyStateResult::sens_fd_floored)
         .def_readonly("sens_fd_own_step", &bngsim::SteadyStateResult::sens_fd_own_step)
         .def_readonly("sens_fd_half_step", &bngsim::SteadyStateResult::sens_fd_half_step)
-        .def_readonly("sens_fd_disagree_function",
-                      &bngsim::SteadyStateResult::sens_fd_disagree_function)
-        .def_readonly("sens_fd_function_param", &bngsim::SteadyStateResult::sens_fd_function_param)
-        .def_readonly("sens_fd_function_floored",
-                      &bngsim::SteadyStateResult::sens_fd_function_floored)
-        .def_readonly("sens_fd_function_own_step",
-                      &bngsim::SteadyStateResult::sens_fd_function_own_step)
-        .def_readonly("sens_fd_function_half_step",
-                      &bngsim::SteadyStateResult::sens_fd_function_half_step)
+        .def_readonly("sens_tie_species", &bngsim::SteadyStateResult::sens_tie_species)
+        .def_readonly("sens_tie_param", &bngsim::SteadyStateResult::sens_tie_param)
+        .def_readonly("sens_tie_value", &bngsim::SteadyStateResult::sens_tie_value)
+        .def_readonly("sens_tie_above", &bngsim::SteadyStateResult::sens_tie_above)
+        .def_readonly("sens_tie_below", &bngsim::SteadyStateResult::sens_tie_below)
+        .def_readonly("sens_tie_jump", &bngsim::SteadyStateResult::sens_tie_jump)
+        .def_readonly("sens_held_species", &bngsim::SteadyStateResult::sens_held_species)
+        .def_readonly("sens_held_before", &bngsim::SteadyStateResult::sens_held_before)
+        .def_readonly("sens_held_after", &bngsim::SteadyStateResult::sens_held_after)
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::SteadyStateResult &r) {
@@ -3983,6 +4122,20 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                    }
                                    for (size_t i : user_function_indices(r.function_names)) {
                                        filtered.push_back(r.function_sens_missing_species[i]);
+                                   }
+                                   return filtered;
+                               })
+        // Whether each expression's row was left NaN because its dual-number
+        // derivative depends on the side (issue #1330), filtered as
+        // ``expression_names`` is.
+        .def_property_readonly("expression_sens_tied",
+                               [](const bngsim::SteadyStateResult &r) {
+                                   std::vector<bool> filtered;
+                                   if (r.function_sens_tied.empty()) {
+                                       return filtered;
+                                   }
+                                   for (size_t i : user_function_indices(r.function_names)) {
+                                       filtered.push_back(r.function_sens_tied[i] != 0);
                                    }
                                    return filtered;
                                })

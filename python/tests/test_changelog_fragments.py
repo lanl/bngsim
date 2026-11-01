@@ -422,6 +422,25 @@ class TestTheGatesAreWiredUp:
         # to use its own exemption. Found on this workflow's own pull request.
         assert "labeled" in body and "unlabeled" in body
 
+    def test_every_run_finishes_and_reads_the_label_when_it_runs(self):
+        """``gh pr create --label`` fires ``opened`` and ``labeled`` together.
+        Under a concurrency group one run was cancelled, and a cancelled run
+        stays in the commit's rollup as a red ``fragment staged`` beside the
+        one that passed (#1407, #1408). With both runs finishing, both have to
+        agree, so the label comes from the API at run time and not from each
+        event's payload, which is a snapshot of the moment it fired."""
+        workflow = REPO_ROOT / ".github" / "workflows" / "changelog.yml"
+        if not workflow.is_file():
+            pytest.skip(".github/workflows is not in this checkout")
+        body = "\n".join(
+            line
+            for line in workflow.read_text(encoding="utf-8").split("\n")
+            if not line.lstrip().startswith("#")
+        )
+        assert "concurrency" not in body
+        assert "github.event.pull_request.labels" not in body
+        assert "changelog exempt" in body
+
     def test_the_pre_commit_hook_runs_the_check_at_both_gating_stages(self):
         """``stages:`` is absent on purpose, so the hook inherits
         ``default_stages: [pre-commit, pre-push]``. A hook that ran only on
