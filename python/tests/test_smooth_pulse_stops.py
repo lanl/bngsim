@@ -122,6 +122,57 @@ def test_no_stop_where_there_is_no_bump_of_a_clock(tmp_path, law):
     assert smooth_pulse_stops(bngsim.Model.from_net(str(path))._core, 0.0, 30.0) == []
 
 
+def _functions(tmp_path, *functions: str) -> bngsim.Model:
+    path = tmp_path / "fns.net"
+    path.write_text(
+        "begin parameters\n 1 kx 1\n 2 k_clock 2\n 3 c 25\n 4 s 0.25\n 5 dG -3\n 6 RT 2.5\n"
+        "end parameters\n"
+        "begin species\n 1 T() 0\n 2 X() 10\n 3 Y() 0\nend species\n"
+        "begin functions\n"
+        + "".join(f" {i} {f}\n" for i, f in enumerate(functions, 1))
+        + "end functions\n"
+        "begin reactions\n 1 0 1 k_clock\n 2 2 3 f #_FUNC\nend reactions\n"
+        "begin groups\n 1 Tobs 1\n 2 Xo 2\nend groups\n"
+    )
+    return bngsim.Model.from_net(str(path))
+
+
+@pytest.mark.parametrize(
+    "functions",
+    [
+        pytest.param(["f() kx*exp(-dG/RT)"], id="a Boltzmann factor: no clock"),
+        pytest.param(["f() kx*exp(-((Xo-c)/s)^2)"], id="a bump of the state"),
+        pytest.param(
+            ["g() if(time()<1,Xo,7)", "f() kx*exp(0.9*g())"], id="the clock beside the state"
+        ),
+        pytest.param(["f() kx*_e^(-dG/RT)"], id="_e^ of no clock"),
+    ],
+)
+def test_a_call_that_is_no_bump_of_a_clock_is_not_parsed(tmp_path, monkeypatch, functions):
+    """MODEL1006230090's rate laws call exp 22 times, none of them on a clock.
+    Inlining every rate law that held one and parsing it took over 7 minutes
+    a run there. Read from the texts, such a call is answered at once."""
+
+    def inlined(*a, **k):
+        raise AssertionError("the rate laws were inlined")
+
+    monkeypatch.setattr("bngsim._switch_sensitivity._rate_law_flat_parts", inlined)
+    assert smooth_pulse_stops(_functions(tmp_path, *functions)._core, 0.0, 30.0) == []
+
+
+@pytest.mark.parametrize(
+    "functions",
+    [
+        pytest.param(["g() -((time()-c)/s)^2", "f() kx*exp(g())"], id="through a function"),
+        pytest.param(["g() (Tobs-50)/0.5", "f() kx*exp(-g()^2)"], id="a counter, through one"),
+    ],
+)
+def test_a_bump_named_through_another_function_is_found(tmp_path, functions):
+    """The clock read through the functions a call names is still a clock."""
+    stops = smooth_pulse_stops(_functions(tmp_path, *functions)._core, 0.0, 30.0)
+    assert [s.time for s in stops] == pytest.approx([25.0])
+
+
 def test_models_alike_but_for_the_feed_do_not_share_stops(model):
     """The same functions, values and state, with the counter fed at 1 (kx) in
     place of 2: the centre T = 50 is at t = 50. Asked after the model fed at 2,

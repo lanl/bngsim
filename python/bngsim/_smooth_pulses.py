@@ -54,6 +54,10 @@ from typing import Any
 # A rate law with none of these spells no bump, and is not parsed. `_e^q` and
 # `pow(_e, q)` are parsed as exp(q).
 _BUMP_CALL = re.compile(r"(?<![A-Za-z0-9_.])(?:(?:exp|cosh|tanh)\s*\(|_e\s*\^|pow\s*\(\s*_e\s*,)")
+# The clock as the parse reads it: `time()` and no other spelling (`t()` is a
+# name in the model, #659).
+_TIME_CALL = re.compile(r"(?<![A-Za-z0-9_.])time\s*\(\s*\)")
+_NAME = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*")
 # How far from its centre, in widths, a bump is still more than a rounding of
 # its peak: exp(-6^2) is 2.3e-16 of it, and sech² and 1 - tanh² fall as
 # 4·e^(-2u), 1.2e-16 at u = 19. A bump centred past the end of the run by less
@@ -202,9 +206,70 @@ def smooth_pulse_stops(core, t_start: float, t_end: float) -> list[Any]:
     return list(stops)
 
 
+def _call_arguments(text: str):
+    """The text of each bump call's argument in *text*: what a balanced
+    ``exp(``, ``cosh(`` or ``tanh(`` holds, the exponent of ``pow(_e, q)``, and
+    all that follows ``_e^``."""
+    for m in _BUMP_CALL.finditer(text):
+        if m.group(0).startswith("_e"):
+            yield text[m.end() :]
+            continue
+        depth, i = 1, m.end()
+        while i < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        yield text[m.end() : i]
+
+
+def _a_clock_in_a_bump(core, t_start: float, raw: tuple[str, ...]) -> bool:
+    """Whether a bump call's argument can be a function of a clock alone, read
+    from the function texts before anything is inlined or parsed.
+
+    A bump's argument has the clock as its one symbol once the parameter values
+    are put in. One that reaches no clock, through the functions and derived
+    parameters it names, is no bump; nor is one that reaches a species or an
+    observable that is no clock, which stays a second symbol. Most `exp` calls
+    in rate laws are one or the other (a Boltzmann factor, a rate of a
+    voltage), and inlining and parsing every rate law that holds one took over
+    7 minutes a run on MODEL1006230090, whose 22 are all of them."""
+    clocks = set(_counter_clocks(core, t_start, lambda name: name))
+    state = (set(core.observable_names) | set(core.species_names)) - clocks
+    defs = dict(zip(core.function_names, raw, strict=True))
+    for name, is_expr, expr in zip(
+        core.param_names, core.param_is_expression, core.param_expressions, strict=True
+    ):
+        if is_expr and expr:
+            defs.setdefault(name, expr)
+
+    def reads(text: str) -> tuple[bool, bool, set[str]]:
+        names = set(_NAME.findall(text))
+        clock = bool(_TIME_CALL.search(text) or names & clocks)
+        return clock, bool(names & state), names & defs.keys()
+
+    direct = {name: reads(text) for name, text in defs.items()}
+    reach = {name: [clock, other] for name, (clock, other, _named) in direct.items()}
+    grew = True
+    while grew:
+        grew = False
+        for name, (_clock, _other, named) in direct.items():
+            for k in (0, 1):
+                if not reach[name][k] and any(reach[n][k] for n in named):
+                    reach[name][k] = grew = True
+    for text in raw:
+        for arg in _call_arguments(text):
+            clock, other, named = reads(arg)
+            if (clock or any(reach[n][0] for n in named)) and not (
+                other or any(reach[n][1] for n in named)
+            ):
+                return True
+    return False
+
+
 def _resolve(core, t_start: float, t_end: float) -> list[Any]:
     from bngsim._switch_sensitivity import _rate_law_flat_parts, _write_flats
 
+    if not _a_clock_in_a_bump(core, t_start, tuple(core.function_expressions)):
+        return []
     made = _rate_law_flat_parts(core)
     texts = [t for t in _write_flats(core, made)[: made[1]] if _BUMP_CALL.search(t)]
     if not texts:
