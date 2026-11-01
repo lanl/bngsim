@@ -384,8 +384,8 @@ class Result:
                 # RHS evaluations spent forming difference-quotient Jacobians,
                 # which n_rhs_evals does not count (issue #1333).
                 "n_jac_rhs_evals": stats.n_jac_rhs_evals,
-                # Jacobians formed; n_jac_evals counts the setups that may
-                # reuse one (issue #1333).
+                # Jacobians the solver asked for; n_jac_evals counts the
+                # setups, which may reuse one (issue #1333).
                 "n_jac_formations": stats.n_jac_formations,
                 "n_err_test_fails": stats.n_err_test_fails,
                 "n_nonlin_iters": stats.n_nonlin_iters,
@@ -2118,10 +2118,10 @@ class Result:
 
         ``n_rhs_evals`` is CVODE's count of the integration's own evaluations.
         ``n_jac_rhs_evals`` counts those spent forming Jacobians by difference
-        quotients, CVODE's and bngsim's alike (issue #1333); it is 0 where every
-        Jacobian is closed-form. ``n_jac_evals`` counts the linear solver's
-        setups, which can reuse a Jacobian; ``n_jac_formations`` counts the
-        Jacobians actually formed.
+        quotients (issue #1333); it is 0 where every Jacobian is closed-form.
+        ``n_jac_evals`` counts the linear solver's setups, which can reuse a
+        Jacobian; ``n_jac_formations`` counts the Jacobians the solver asked
+        for, one that a failed right-hand-side call cut short included.
         """
         return self._solver_stats
 

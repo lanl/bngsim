@@ -3079,10 +3079,13 @@ struct CvodeSimulator::Impl {
         long int sens_conv_fails = 0;
         long int sens_err_test_fails = 0;
         // CVODE's own difference-quotient Jacobian's f calls, where it forms
-        // one (CVodeGetNumLinRhsEvals; issue #1333).
+        // one (CVodeGetNumLinRhsEvals; issue #1333). Every run gives it a
+        // callback of bngsim's, so this is 0 today; it is read so that a path
+        // that one day leaves CVODE to its own quotient is counted too.
         long int lin_rhs_evals = 0;
-        // The Jacobians formed (CVodeGetNumJacEvals), where n_jac_evals counts
-        // the linear-solver setups, which can reuse one (issue #1333).
+        // The Jacobians CVODE asked for (CVodeGetNumJacEvals), where
+        // n_jac_evals counts the linear-solver setups, which can reuse one
+        // (issue #1333).
         long int jac_formations = 0;
 
         void operator+=(const SegmentCounters &o) {

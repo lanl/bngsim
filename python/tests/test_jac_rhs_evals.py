@@ -31,10 +31,14 @@ def _stats(text: str = _CHAIN, **kw) -> dict:
 
 def _per_formation(stats: dict) -> float:
     """The dense quotient's evaluations per Jacobian it formed: a column per
-    species, then #1302's jump test, one point at least and four at most here."""
+    species, then #1302's jump test, one point past each testable column. Two
+    more are taken for a column whose rows may step across a jump, which a law
+    as smooth as the chain's does not have, so three a species bounds it here.
+    That bound is what holds the two counts in step across a restart: with the
+    closed segments' formations dropped, the run below reads 38 a formation."""
     assert stats["n_jac_formations"] > 0
     per = stats["n_jac_rhs_evals"] / stats["n_jac_formations"]
-    assert _N < per <= 4 * _N
+    assert _N < per <= 3 * _N
     return per
 
 
