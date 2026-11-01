@@ -12,8 +12,13 @@ goes to 0; and ``A' = kp − kd·A`` with an event that sets ``kp = 1`` at
 
 A rate that reads the time has no ``f(y) = 0`` without a time being chosen, and
 an event needs a trajectory. Both are refused now, by name, as is a model
-where a reported quantity reads the time and no rate does: that came back at
-its value at ``t = 0`` beside a state marked converged.
+whose species or compartment size is reported through a rule on the time: that
+came back at its value at ``t = 0`` beside a state marked converged.
+
+A function that reads the time and that only reports, ``minutes := time/60``,
+was refused with them, though the state does not depend on it (issue #961).
+The state is solved for now, and the function reported as NaN, having no
+steady value.
 
 The early stop of ``run(steady_state=True)`` tests ``‖f(t, y)‖`` at an output
 point, which for such a model says nothing of the next: a rate switched on at
@@ -161,11 +166,92 @@ def test_the_run_the_message_points_at_reaches_the_steady_state(tmp_path):
     assert np.asarray(out.species)[-1, names.index("A")] == pytest.approx(1.0, abs=1e-6)
 
 
-def test_a_reported_function_that_reads_the_time_is_refused(tmp_path):
-    """``seen() = 2*time()`` is read by no reaction, and is reported: it came
-    back 0, its value at t = 0, beside a state marked converged."""
+def _expression(result, name):
+    return float(np.asarray(result._expression_values)[list(result.expression_names).index(name)])
+
+
+@pytest.mark.parametrize("method", ["integration", "newton"])
+def test_a_function_that_reads_the_time_and_only_reports_is_nan(tmp_path, method):
+    """``seen() = 2*time()`` is read by no reaction: A -> B at k settles at
+    [0, 1] whatever the time. #710 refused it, and before that it came back 0,
+    its value at t = 0 (issue #961)."""
     sim = bngsim.Simulator(_ramped(tmp_path, law="k"), method="ode")
-    _refused(sim.steady_state, "it reads the time, through")
+    out = sim.steady_state(method=method)
+    assert out.converged
+    np.testing.assert_allclose(out.concentrations, [0.0, 1.0], atol=1e-8)
+    assert np.isnan(_expression(out, "seen"))
+    assert _expression(out, "kt") == pytest.approx(1.0)
+
+
+def test_its_sensitivity_row_is_nan_and_the_state_s_is_not(tmp_path):
+    """dB/dk = 0 at a steady state of A -> B; seen's row has no value."""
+    sim = bngsim.Simulator(_ramped(tmp_path, law="k"), method="ode")
+    out = sim.steady_state(sensitivity_params=["k"])
+    np.testing.assert_allclose(np.asarray(out.sensitivity).ravel(), [0.0, 0.0], atol=1e-8)
+    names = list(out.expression_names)
+    rows = np.asarray(out.sensitivities_expressions)
+    assert np.isnan(rows[names.index("seen")]).all()
+    assert np.isfinite(rows[names.index("kt")]).all()
+    with pytest.raises(ValueError, match=r"'expression:seen'.*reads the time.*issue #961"):
+        out.output_sensitivities("expression:seen")
+
+
+def test_a_batch_of_such_a_model_is_solved(tmp_path):
+    rows = bngsim.Simulator(_ramped(tmp_path, law="k"), method="ode").steady_state_batch(
+        [{"k": 1.0}, {"k": 2.0}]
+    )
+    for row in rows:
+        np.testing.assert_allclose(row.concentrations, [0.0, 1.0], atol=1e-8)
+        assert np.isnan(_expression(row, "seen"))
+
+
+def test_a_function_that_reads_the_time_through_another_is_nan(tmp_path):
+    path = tmp_path / "nested_report.net"
+    path.write_text(
+        RAMPED.format(law="k", rate="kt").replace(
+            "    2 seen() 2*time()\n", "    2 seen() 2*time()\n    3 later() 1 + seen()\n"
+        )
+    )
+    out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state()
+    assert out.converged
+    assert np.isnan(_expression(out, "later"))
+
+
+def test_a_table_on_the_time_that_only_reports_is_nan(tmp_path):
+    path = tmp_path / "table_report.net"
+    path.write_text(
+        RAMPED.format(law="k", rate="kt").replace(
+            "    2 seen() 2*time()\n", "    2 seen() tfun([0,1,2,50],[0,0.5,1,1],time)\n"
+        )
+    )
+    out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state()
+    np.testing.assert_allclose(out.concentrations, [0.0, 1.0], atol=1e-8)
+    assert np.isnan(_expression(out, "seen"))
+
+
+def test_an_sbml_rule_on_the_time_that_only_reports_is_nan():
+    """BIOMD0000000739 and 951 report the time in minutes, ``minutes :=
+    time/60``, and nothing reads it."""
+    text = "species A, B; A = 1; B = 0; kf = 1; kr = 0.5; minutes := time/60\n"
+    text += "J1: A -> B; kf*A; J2: B -> A; kr*B\n"
+    sim = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode")
+    out = sim.steady_state()
+    names = list(out.species_names)
+    got = np.asarray(out.concentrations)
+    assert got[names.index("A")] == pytest.approx(1 / 3, rel=1e-6)
+    assert got[names.index("B")] == pytest.approx(2 / 3, rel=1e-6)
+    assert np.isnan(_expression(out, "minutes"))
+
+
+def test_the_core_solver_reports_such_a_function_as_nan(tmp_path):
+    from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
+
+    core = _ramped(tmp_path, law="k")._core
+    assert core.functions_use_time and not core.rate_laws_read_clock
+    assert core.functions_reading_clock == ["seen"]
+    out = find_steady_state(core, SteadyStateOptions())
+    values = dict(zip(out.expression_names, out.expression_values, strict=False))
+    assert np.isnan(values["seen"]) and values["kt"] == pytest.approx(1.0)
 
 
 def test_the_time_written_bare_is_refused(tmp_path):
@@ -306,6 +392,51 @@ def test_a_time_course_of_a_model_that_reads_no_time_stops_early(tmp_path):
     )
     out, species = _early(sens)
     assert len(species) < 201 and out.solver_stats["steady_state_reached"]
+
+
+@pytest.mark.parametrize("sensitivity", [False, True], ids=["plain", "with a sensitivity"])
+def test_a_time_course_stops_early_beside_a_function_that_only_reports(tmp_path, sensitivity):
+    """``seen() = 2*time()`` is read by no rate: A -> B settles as it would
+    without it, and the run stops there. #710 ran it to the end of its span
+    (issue #961). The rows it reports read the time where they were taken."""
+    kw = {"sensitivity_params": ["k"]} if sensitivity else {}
+    sim = bngsim.Simulator(_ramped(tmp_path, law="k"), method="ode", **kw)
+    out, species = _early(sim)
+    assert len(species) < 201 and out.solver_stats["steady_state_reached"]
+    np.testing.assert_allclose(species[-1], [0.0, 1.0], atol=1e-6)
+    seen = np.asarray(out.expressions)[:, list(out.expression_names).index("seen")]
+    np.testing.assert_allclose(seen, 2 * np.asarray(out.time), rtol=1e-12)
+
+
+def test_a_batch_row_stops_early_beside_a_function_that_only_reports(tmp_path):
+    rows = bngsim.Simulator(_ramped(tmp_path, law="k"), method="ode").run_batch(
+        params=[{"k": 1.0}, {"k": 2.0}], t_span=(0.0, 200.0), n_points=201, steady_state=True
+    )
+    for row in rows:
+        assert len(np.asarray(row.species)) < 201
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        RULE_ON_TIME,
+        "compartment C; C := 1 + time/(1+time); substanceOnly species A in C, B in C;"
+        " A = 1; B = 0; k = 1\nJ: A -> B; k*A\nJ2: B -> A; k*B\n",
+    ],
+    ids=["a species set by a rule on the time", "a compartment sized by one"],
+)
+def test_a_time_course_does_not_stop_while_a_reported_state_reads_the_time(text):
+    """No rate reads the time, and what is reported as a state does: S, or the
+    concentrations in C, are still moving where ``‖f(y)‖`` has settled."""
+    out, species = _early(bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode"))
+    assert len(species) == 201 and not out.solver_stats["steady_state_reached"]
+    rows = bngsim.Simulator(bngsim.Model.from_antimony_string(text), method="ode").run_batch(
+        params=[{"kf" if "kf" in text else "k": 1.0}],
+        t_span=(0.0, 200.0),
+        n_points=201,
+        steady_state=True,
+    )
+    assert all(len(np.asarray(row.species)) == 201 for row in rows)
 
 
 def test_a_rate_that_reads_its_own_derivative_is_not_refused():
