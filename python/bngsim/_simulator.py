@@ -1722,6 +1722,32 @@ class Simulator:
                 "p +/- h."
             )
 
+    def _raise_if_param_on_a_kink(self, param_names: Sequence[str], core=None) -> None:
+        """Refuse a forward-sensitivity column for a parameter that sits on a
+        kink of a rate law (issue #1332).
+
+        ``abs``, ``min``, ``max``, ``clamp`` and ``if()`` over parameters alone,
+        at values that put them exactly on their switch, have no derivative in a
+        parameter that moves the switch. The compiled ``∂f/∂p`` took
+        ``sign(0) = 0`` and the average at a tie: ``10*abs(q) + s`` at q = 0
+        gave dX*/dq = 0 for one-sided slopes of +-47.62, and ``10*min(q, 1) + s``
+        at q = 1 gave 23.81 for 47.62 or 0, in a run and at a steady state,
+        with no error. Asked at the values the run or row has, since a write
+        can put a parameter on its kink after the Simulator is built.
+        """
+        from bngsim._parameter_kinks import parameters_on_a_kink
+
+        lines = parameters_on_a_kink(self._model._core if core is None else core, param_names)
+        if lines:
+            raise SensitivityUnsupportedError(
+                "Forward sensitivity is not supported where a parameter sits on a kink of "
+                "a rate law, where the law has no derivative in it: "
+                + "; ".join(lines)
+                + ". Its slopes on the two sides differ, and the column would be one "
+                "side's, or neither (issue #1332). Move the parameter off the switch, or "
+                "difference the run at p +/- h on each side."
+            )
+
     def _raise_if_conserved_total_sensitivity_unknown(self, params: Sequence[str]) -> None:
         """Refuse a steady-state column whose conserved totals' own derivative
         is not known (issue #704).
@@ -5362,6 +5388,7 @@ class Simulator:
             # CVODES' difference quotient, which drops the saltation jump. Refuse
             # rather than return the flagged-wrong gradient.
             self._raise_if_uncompensated_crossing_sensitivities()
+            self._raise_if_param_on_a_kink(self._sensitivity_params)
 
         # GH #210 — pre-equilibration / carry-over output sensitivities. Only
         # meaningful for the ODE forward-sensitivity path; validate early.
@@ -7186,6 +7213,7 @@ class Simulator:
                     # is kept by what it reads, so a row that changes none of
                     # that costs a lookup.
                     self._raise_if_uncompensated_crossing_sensitivities(core=clone._core)
+                    self._raise_if_param_on_a_kink(self._sensitivity_params, core=clone._core)
                     opts.set_sensitivity_method(self._sensitivity_method)
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone. Outside
@@ -7437,6 +7465,7 @@ class Simulator:
             # set_param itself refuses.
             self._raise_if_compartment_size_params(target_params)
             self._raise_if_folded_at_load_params(target_params)
+            self._raise_if_param_on_a_kink(target_params)
             # Issue #329 — and the same for a function's backing slot, which the
             # `params=None` branch below drops with a warning saying its column
             # "would be identically zero". Naming it was the one route that got
@@ -8349,6 +8378,7 @@ class Simulator:
             # #704; the ∂f/∂V half is the one in play here, and it is complete.)
             self._raise_if_compartment_size_params(list(sensitivity_params))
             self._raise_if_folded_at_load_params(list(sensitivity_params))
+            self._raise_if_param_on_a_kink(list(sensitivity_params))
             # Issue #329 — a function's backing slot is refused here for the
             # same reason the constructor refuses it: ∂f/∂p is read out of that
             # same emitted sensitivity RHS, where the slot is a value the engine
