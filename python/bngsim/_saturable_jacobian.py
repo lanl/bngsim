@@ -50,7 +50,7 @@ from collections.abc import Set as AbstractSet
 # pure-Python (no SymPy at import); the time placeholder must match so the
 # codegen C resolver maps it to the time variable identically for both paths.
 from bngsim._codegen import _PY_KEYWORD_PARAM_NAMES
-from bngsim._jacobian import _TIME_SYM, _inline_functions
+from bngsim._jacobian import _TIME_SYM, _inlined_for_derivation
 
 # Unary functions whose derivative is known and emittable. ``ln`` canonicalizes
 # to ``log`` (natural log in both ExprTk and C). Anything not here fails parsing
@@ -856,7 +856,9 @@ def differentiate_rate_law_native(
     non-zero partial (``{}`` for a constant-rate law — a *success*, zero column),
     or ``None`` when the expression is outside the recognized saturable family
     (then the caller falls back to the SymPy path)."""
-    inlined = _inline_functions(rate_expr, func_map)
+    # A law past the text limit that does not collect is left to the SymPy path,
+    # which declines it by name (issue #1255) without writing it out.
+    inlined, _written_out = _inlined_for_derivation(rate_expr, func_map)
     if inlined is None:
         return None
     try:
