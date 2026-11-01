@@ -1617,7 +1617,8 @@ struct SteadyStateResult {
     // A state held on a jump: where J or ∂f/∂p was taken by dual numbers, a
     // Newton step from the state, to the root of the branches those derivatives
     // are of, left a residual larger than the one it started from (each over
-    // its species' terms, Σ|J_ij|·|y_j|, and over 1e-13 of them). The state is
+    // its species' terms, Σ|J_ij|·|y_j|, at least 1e-9 of the largest
+    // species', and over 1e-13 of them). The state is
     // then within the solver's tolerance of a jump that no root of its branch
     // is beside: `f` jumps across 0 there, and the state is held on the jump
     // (2·k2·rint(X·1e12)/1e12·X, a staircase whose steps are under the

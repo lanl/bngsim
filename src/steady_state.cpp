@@ -4339,7 +4339,11 @@ struct SsColumnSystem {
 // to is no smaller than the one it left; from a root of the branch the step
 // takes the residual down by a factor of the residual. Each species' residual
 // is taken over its terms (rhs_term_scale), and one under kRoundingShare of
-// them is what rounding left at either state. `f` is the right-hand side at
+// them is what rounding left at either state. A species whose terms are under
+// kScaleFloor of the largest species' is taken over that instead: egfr_path
+// has Shc at 2.7e5 bound only by receptor species at nothing, its terms 2e-30
+// beside others' 220, and the step that moves those species by 1e-27 takes
+// its residual from 2e-30 to 1e-29, all of itself. `f` is the right-hand side at
 // the returned state and `to` the state the step leads to. Leaves the
 // right-hand side's caches as an evaluation at the returned state leaves them.
 static void ss_measure_held_on_a_jump(SteadyStateRhs &rhs, SteadyStateResult &result,
@@ -4349,6 +4353,15 @@ static void ss_measure_held_on_a_jump(SteadyStateRhs &rhs, SteadyStateResult &re
     const double *y_ss = result.concentrations.data();
     std::vector<double> terms, f_to(static_cast<size_t>(ns), 0.0);
     rhs_term_scale(J, y_ss, ns, terms);
+    double largest = 0.0;
+    for (const int i : unknowns) {
+        if (sub.includes(i) && std::isfinite(terms[static_cast<size_t>(i)])) {
+            largest = std::max(largest, terms[static_cast<size_t>(i)]);
+        }
+    }
+    if (!(largest > 0.0)) {
+        return; // nothing moves anything
+    }
     rhs.eval(0.0, to.data(), f_to.data());
     double before = 0.0, after = 0.0;
     int at = -1;
@@ -4357,7 +4370,7 @@ static void ss_measure_held_on_a_jump(SteadyStateRhs &rhs, SteadyStateResult &re
             continue;
         }
         const size_t k = static_cast<size_t>(i);
-        const double over = terms[k] > 0.0 ? terms[k] : 1.0;
+        const double over = std::max(terms[k], kScaleFloor * largest);
         before = std::max(before, std::abs(f[k]) / over);
         const double r = std::abs(f_to[k]) / over;
         if (!(r <= after)) {
