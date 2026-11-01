@@ -2098,6 +2098,140 @@ void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_ou
                                             std::make_pair(std::move(sp_out), std::move(pa_out)));
 }
 
+NetworkModel::ReadPlan NetworkModel::read_plan(const std::vector<int> &expr_ids) const {
+    ReadPlan plan;
+    if (!impl_->table_functions.empty()) {
+        plan.full = true;
+        return plan;
+    }
+    std::unordered_set<const double *> species_addr;
+    for (const Species &sp : impl_->species) {
+        species_addr.insert(&sp.concentration);
+    }
+    std::unordered_map<const double *, int> obs_of;
+    for (int i = 0; i < static_cast<int>(impl_->observables.size()); ++i) {
+        obs_of.emplace(&impl_->observables[static_cast<size_t>(i)].total, i);
+    }
+    std::unordered_map<const double *, int> param_of;
+    for (int i = 0; i < static_cast<int>(impl_->parameters.size()); ++i) {
+        param_of.emplace(&impl_->parameters[static_cast<size_t>(i)].value, i);
+    }
+    // param index -> the binding (and so the group) of the function that writes it.
+    const auto &bindings = impl_->shared->var_param_bindings;
+    const auto &starts = impl_->shared->function_scc_starts;
+    std::unordered_map<int, size_t> binding_of_param;
+    for (size_t bi = 0; bi < bindings.size(); ++bi) {
+        binding_of_param.emplace(bindings[bi].second, bi);
+    }
+    const auto group_of = [&](size_t bi) {
+        size_t g = 0;
+        while (g + 1 < starts.size() && static_cast<size_t>(starts[g + 1]) <= bi) {
+            ++g;
+        }
+        return g;
+    };
+
+    std::set<int> observables;
+    std::set<int> groups;
+    std::unordered_set<int> visited;
+    std::function<void(int)> visit = [&](int eid) {
+        if (eid < 0 || plan.full || !visited.insert(eid).second) {
+            return;
+        }
+        for (const double *addr : impl_->evaluator->referenced_variable_addresses(eid)) {
+            if (species_addr.count(addr) != 0 || addr == &impl_->current_time) {
+                continue;
+            }
+            if (auto ob = obs_of.find(addr); ob != obs_of.end()) {
+                observables.insert(ob->second);
+                continue;
+            }
+            auto pa = param_of.find(addr);
+            if (pa == param_of.end()) {
+                plan.full = true; // a rateOf accessor, or something unmodelled
+                return;
+            }
+            auto fb = binding_of_param.find(pa->second);
+            if (fb == binding_of_param.end()) {
+                // A plain or derived parameter: evaluate_functions() does not
+                // write it, so it reads the same either way.
+                continue;
+            }
+            const size_t g = group_of(fb->second);
+            if (groups.insert(static_cast<int>(g)).second) {
+                for (size_t bi = static_cast<size_t>(starts[g]);
+                     bi < static_cast<size_t>(starts[g + 1]); ++bi) {
+                    visit(impl_->functions[static_cast<size_t>(bindings[bi].first)].evaluator_id);
+                }
+            }
+        }
+    };
+    for (int eid : expr_ids) {
+        visit(eid);
+    }
+    if (!plan.full) {
+        plan.observables.assign(observables.begin(), observables.end());
+        plan.groups.assign(groups.begin(), groups.end());
+        std::set<int> functions;
+        for (int g : plan.groups) {
+            for (size_t bi = static_cast<size_t>(starts[static_cast<size_t>(g)]);
+                 bi < static_cast<size_t>(starts[static_cast<size_t>(g) + 1]); ++bi) {
+                functions.insert(bindings[bi].first);
+            }
+        }
+        plan.functions.assign(functions.begin(), functions.end());
+    }
+    return plan;
+}
+
+void NetworkModel::evaluate_read_plan(double t, const double *conc, const ReadPlan &plan) {
+    impl_->current_time = t;
+    const auto &species_list = impl_->species;
+    for (int oi : plan.observables) {
+        // As update_observables() sums each one.
+        auto &obs = impl_->observables[static_cast<size_t>(oi)];
+        double total = 0.0;
+        for (const auto &entry : obs.entries) {
+            const int idx0 = entry.species_index - 1;
+            if (idx0 >= 0 && idx0 < static_cast<int>(species_list.size())) {
+                double v = conc[idx0];
+                const auto &sp = species_list[static_cast<size_t>(idx0)];
+                if (sp.amount_valued) {
+                    v *= sp.volume_factor;
+                }
+                total += entry.factor * v;
+            }
+        }
+        obs.total = total;
+    }
+    if (plan.groups.empty()) {
+        return;
+    }
+    // As evaluate_functions(t) evaluates each group, in the same order.
+    auto &cache = impl_->function_value_cache;
+    if (cache.size() != impl_->functions.size()) {
+        cache.assign(impl_->functions.size(), 0.0);
+    }
+    const auto &starts = impl_->shared->function_scc_starts;
+    const auto &bindings = impl_->shared->var_param_bindings;
+    for (int g : plan.groups) {
+        const size_t lo = static_cast<size_t>(starts[static_cast<size_t>(g)]);
+        const size_t hi = static_cast<size_t>(starts[static_cast<size_t>(g) + 1]);
+        if (hi - lo != 1) {
+            solve_function_cycle(lo, hi);
+            continue;
+        }
+        const auto &[func_idx, param_idx] = bindings[lo];
+        const auto &func = impl_->functions[static_cast<size_t>(func_idx)];
+        if (func.evaluator_id < 0) {
+            continue;
+        }
+        const double val = impl_->evaluator->evaluate(func.evaluator_id);
+        impl_->parameters[static_cast<size_t>(param_idx)].value = val;
+        cache[static_cast<size_t>(func_idx)] = val;
+    }
+}
+
 // The end of the number starting at e[i]: digits and a point, then an exponent
 // only when one is well formed (`1e-5`), so the `e` of `2exp(x)` is a name.
 static size_t skip_number(const std::string &e, size_t i) {
