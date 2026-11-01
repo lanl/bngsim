@@ -233,7 +233,7 @@ class NetworkModel:
         """
     def fill_dense_dual_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], side: typing.SupportsInt | typing.SupportsIndex = 0) -> typing.Any:
         """
-        The Jacobian at (t, conc), exact, by dual numbers through the interpreter (issue #1330), as a (float64 ndarray (n_species, n_species), tied) pair; None where the model has no dual evaluation (dual_unsupported_reason) or its values are not the right-hand side's. `tied` is whether the state sits where a law changes branch; `side` (0, 1, -1) decides such a point as the interpreter does, or from above or below along each column's direction.
+        The Jacobian at (t, conc), exact, by dual numbers through the interpreter (issue #1330), as a (float64 ndarray (n_species, n_species), tied, jumped) triple; None where the model has no dual evaluation (dual_unsupported_reason) or its values are not the right-hand side's. `tied` is whether the state sits where a law changes branch; `side` (0, 1, -1) decides such a point as the interpreter does, or from above or below along each column's direction, and `jumped` whether a law's value jumps there from that side.
         """
     def fill_dense_fd_jacobian(self, t: typing.SupportsFloat | typing.SupportsIndex, conc: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> numpy.typing.NDArray[numpy.float64]:
         """
