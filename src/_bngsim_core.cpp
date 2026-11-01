@@ -2425,6 +2425,39 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "as a float64 ndarray (n_species, n_species), J[i, j] = ∂f_i/∂x_j, "
             "stepped by the steady-state solver's own rule. Issue #523.")
         .def(
+            "fill_dense_dual_jacobian",
+            [](bngsim::NetworkModel &self, double t,
+               py::array_t<double, py::array::c_style | py::array::forcecast> conc,
+               int side) -> py::object {
+                const double *y = state_arg(self, conc, "fill_dense_dual_jacobian");
+                const int ns = self.n_species();
+                if (side < -1 || side > 1) {
+                    throw py::value_error("fill_dense_dual_jacobian: side must be -1, 0 or 1");
+                }
+                std::vector<double> jac(static_cast<size_t>(ns) * ns, 0.0);
+                bool ok = true;
+                bool tied = false;
+                if (ns > 0) {
+                    py::gil_scoped_release release;
+                    ok = self.fill_dense_dual_jacobian(t, y, jac.data(),
+                                                       static_cast<bngsim::DualTie>(side), &tied);
+                }
+                if (!ok) {
+                    return py::none();
+                }
+                return py::make_tuple(colmajor_to_ndarray_2d(jac, ns), tied);
+            },
+            py::arg("t"), py::arg("conc"), py::arg("side") = 0,
+            "The Jacobian at (t, conc), exact, by dual numbers through the interpreter "
+            "(issue #1330), as a (float64 ndarray (n_species, n_species), tied) pair; None "
+            "where the model has no dual evaluation (dual_unsupported_reason) or its values "
+            "are not the right-hand side's. `tied` is whether the state sits where a law "
+            "changes branch; `side` (0, 1, -1) decides such a point as the interpreter "
+            "does, or from above or below along each column's direction.")
+        .def("dual_unsupported_reason", &bngsim::NetworkModel::dual_unsupported_reason,
+             "Empty where the model's right-hand side and functions can be evaluated on "
+             "dual numbers (issue #1330); else what it lacks.")
+        .def(
             "fill_dense_fd_jacobian_own_step",
             [](bngsim::NetworkModel &self, double t,
                py::array_t<double, py::array::c_style | py::array::forcecast> conc,
@@ -3972,6 +4005,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("sens_fd_floored", &bngsim::SteadyStateResult::sens_fd_floored)
         .def_readonly("sens_fd_own_step", &bngsim::SteadyStateResult::sens_fd_own_step)
         .def_readonly("sens_fd_half_step", &bngsim::SteadyStateResult::sens_fd_half_step)
+        .def_readonly("sens_tie_species", &bngsim::SteadyStateResult::sens_tie_species)
+        .def_readonly("sens_tie_param", &bngsim::SteadyStateResult::sens_tie_param)
+        .def_readonly("sens_tie_value", &bngsim::SteadyStateResult::sens_tie_value)
+        .def_readonly("sens_tie_above", &bngsim::SteadyStateResult::sens_tie_above)
+        .def_readonly("sens_tie_below", &bngsim::SteadyStateResult::sens_tie_below)
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::SteadyStateResult &r) {
@@ -4026,6 +4064,20 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                    }
                                    for (size_t i : user_function_indices(r.function_names)) {
                                        filtered.push_back(r.function_sens_missing_species[i]);
+                                   }
+                                   return filtered;
+                               })
+        // Whether each expression's row was left NaN because its dual-number
+        // derivative depends on the side (issue #1330), filtered as
+        // ``expression_names`` is.
+        .def_property_readonly("expression_sens_tied",
+                               [](const bngsim::SteadyStateResult &r) {
+                                   std::vector<bool> filtered;
+                                   if (r.function_sens_tied.empty()) {
+                                       return filtered;
+                                   }
+                                   for (size_t i : user_function_indices(r.function_names)) {
+                                       filtered.push_back(r.function_sens_tied[i] != 0);
                                    }
                                    return filtered;
                                })

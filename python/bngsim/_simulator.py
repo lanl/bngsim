@@ -8104,15 +8104,26 @@ class Simulator:
         is evaluated by ``bngsim_codegen_output_sens``, the GH #198 chain rule a
         CVODES forward-sensitivity ``run()`` already uses, fed the solved
         ``dY_ss/dp`` columns — so a steady-state gradient and a long-run one come
-        from the same evaluator. A function that evaluator declines (a table
-        function, a non-smooth construct such as ``if()``, ``abs()`` or
-        ``max()``, a function that reads ``rateOf``) has no derivative here, as
-        after a run: its row is ``NaN``, and ``ss.output_sensitivities`` refuses
-        it by name, with the reason. It is not differenced: a difference quotient
-        of a function over the state can be wrong with nothing to show it (issue
-        #1002). ``ss.sens_output_source`` reports ``"codegen"``, ``"partial"``,
-        or ``"none"``. The *observable* block is an exact linear projection
-        through the group factors and never differences anything.
+        from the same evaluator.
+
+        **Where there is no closed form, the derivatives are exact all the
+        same** (issue #1330): the Jacobian, ``∂f/∂p`` and a function's row are
+        taken by dual numbers through the interpreter, each law and function as
+        it is evaluated, differentiated branch by branch with no step. That
+        covers ``jacobian="fd"``, a model whose closed form declines a law, a
+        rate law the sensitivity emitter declines (Michaelis-Menten, a condition,
+        a non-smooth builtin), and a function the compiled chain rule declines
+        (a table function, ``if()``, ``abs()``, ``max()``). At a steady state
+        that sits exactly where a law changes branch, the answer is taken from
+        each side, and refused where the two differ. Only a model the dual
+        evaluation cannot follow (a ring of functions that read each other,
+        ``rateOf``) falls back: its Jacobian and ``∂f/∂p`` to difference
+        quotients checked at more than one step (issue #1002), and its function
+        rows to ``NaN``, which ``ss.output_sensitivities`` refuses by name, with
+        the reason. ``ss.sens_jacobian_source``, ``ss.sens_dfdp_source`` and
+        ``ss.sens_output_source`` say which path each took. The *observable*
+        block is an exact linear projection through the group factors and never
+        differences anything.
         """
         if self._method != "ode":
             raise ValueError(
@@ -8254,6 +8265,7 @@ class Simulator:
         self._warn_about_ss_sensitivity(result)
         self._raise_if_not_an_isolated_root(result, max_time, mask is not None)
         self._raise_if_the_step_decides(result)
+        self._raise_if_the_side_decides(result)
         return result
 
     @staticmethod
@@ -8519,6 +8531,37 @@ class Simulator:
                 )
                 + f" {why}"
             )
+
+    @staticmethod
+    def _raise_if_the_side_decides(result: SteadyStateResult) -> None:
+        """Refuse ``dY_ss/dp`` where the steady state sits where a rate law
+        changes branch and the columns are not the same from the two sides
+        (issue #1330).
+
+        Where there is no closed form, the Jacobian and ``∂f/∂p`` are exact by
+        dual numbers: each law as the interpreter evaluates it, differentiated
+        along the branch it takes. At a state exactly on a branch point —
+        ``if(X > c, ...)`` at X = c, ``abs(X)`` or ``max(X, 0)`` at X = 0, a
+        step of ``floor()`` — that branch's derivative is one of two one-sided
+        ones. The columns are solved with the matrices from each side; where
+        they agree the side did not matter and they are returned, and where an
+        entry differs by more than 1e-8 of itself (1e-10 of its column's
+        largest, at least) the steady state has no derivative, and it is
+        refused.
+        """
+        if result.sens_tie_species is None:
+            return
+        raise SimulationError(
+            "steady_state(sensitivity_params=...) does not return dY_ss/dp for this model "
+            "at this steady state (issue #1330): the state sits where a rate law changes "
+            "branch (a comparison, if(), abs(), min() or max() at a tie, a step of floor() "
+            "or rint()), and the derivative there depends on the side it is approached "
+            f"from. d{result.sens_tie_species}/d{result.sens_tie_param} is "
+            f"{result.sens_tie_above:.6g} from one side and {result.sens_tie_below:.6g} "
+            f"from the other (the branch the state is on gives {result.sens_tie_value:.6g}). "
+            "The steady state has no derivative in that parameter: a change of either sign "
+            "moves it onto a different branch. A state beside the branch point has one."
+        )
 
     def _raise_if_not_an_isolated_root(
         self,
@@ -11507,24 +11550,30 @@ class SteadyStateResult:
     sens_jacobian_source, sens_dfdp_source : str
         How each factor of ``dY_ss/dp = -J⁻¹·(∂f/∂p)`` was built.
         ``sens_jacobian_source`` is ``"codegen"`` (compiled analytical Jacobian),
-        ``"analytical"`` (interpreted analytical), or ``"finite-difference"``;
-        ``sens_dfdp_source`` is ``"codegen"`` or ``"finite-difference"``. Both
-        are ``""`` when no sensitivity was requested. Issue #63 — both factors
-        were unconditionally finite-differenced before it, and the result gave
-        no way to tell.
+        ``"analytical"`` (interpreted analytical),
+        ``"automatic-differentiation"`` (exact, by dual numbers through the
+        interpreter, where there is no closed form or ``jacobian="fd"`` asked
+        for none; issue #1330), or ``"finite-difference"`` (a model the dual
+        evaluation cannot follow: a ring of functions that read each other,
+        ``rateOf``); ``sens_dfdp_source`` is ``"codegen"``,
+        ``"automatic-differentiation"`` or ``"finite-difference"``. Both are
+        ``""`` when no sensitivity was requested. Issue #63 — both factors were
+        unconditionally finite-differenced before it, and the result gave no
+        way to tell.
     sens_output_source : str
-        How much of the expression block ``d(func)/dp`` the compiled
-        ``bngsim_codegen_output_sens`` chain rule answered (issues #75, #1002) —
-        the same evaluator a CVODES forward-sensitivity ``run()`` uses:
-        ``"codegen"`` (every function), ``"partial"`` (some), or ``"none"`` (not
-        one: each declined or NaN for its own reason, no compiled evaluator, or
-        the codegen declined the whole model). A row it
-        does not answer is ``NaN``, and :meth:`output_sensitivities` refuses it
-        by name, with the reason, as it does after a run: a function's partials
-        are not differenced at a steady state (issue #1002). ``""`` when no
-        sensitivity was requested or the model has no global functions. The
-        *observable* block is an exact linear projection either way and is not
-        covered by this field.
+        What answered the expression block ``d(func)/dp`` (issues #75, #1002,
+        #1330): ``"codegen"`` (the compiled ``bngsim_codegen_output_sens``
+        chain rule, the same evaluator a CVODES forward-sensitivity ``run()``
+        uses, for every function), ``"automatic-differentiation"`` (dual
+        numbers through the interpreter, for every function: those the chain
+        rule declines, or every one of a model with none),
+        ``"codegen+automatic-differentiation"`` (every function, by the two),
+        ``"partial"`` (some), or ``"none"`` (not one). A row that has no
+        answer is ``NaN``, and :meth:`output_sensitivities` refuses it by name,
+        with the reason: a function's partials are not differenced at a steady
+        state (issue #1002). ``""`` when no sensitivity was requested or the
+        model has no global functions. The *observable* block is an exact
+        linear projection either way and is not covered by this field.
     sens_jacobian_rcond : float
         ``min|U_jj| / max|U_jj|`` from the LU of the (reduced) Jacobian that was
         inverted — how close to singular the sensitivity system was.
@@ -11661,6 +11710,19 @@ class SteadyStateResult:
         and the one with them at half the floored step (each the floored one
         where that matrix has no column taken). ``steady_state`` raises where
         there is one. None where they agree.
+    sens_tie_species, sens_tie_param : str or None
+    sens_tie_value, sens_tie_above, sens_tie_below : float
+        Where the Jacobian or ``∂f/∂p`` was taken by dual numbers
+        (``"automatic-differentiation"``) and the steady state sits where a
+        rate law changes branch — ``if(X > c, ...)`` at X = c, ``abs(X)`` or
+        ``max(X, 0)`` at X = 0, a step of ``floor()`` — so that the derivative
+        of the branch it is on is one of two one-sided ones: the entry of
+        ``dY_ss/dp`` furthest apart when the columns are solved with the
+        matrices from the two sides, by more than 1e-8 of itself (1e-10 of its
+        column's largest, at least), its value in ``sensitivity`` and its
+        values from above and below (issue #1330). ``steady_state`` raises
+        where there is one: the steady state has no derivative there. None
+        where the side does not matter.
 
     Notes
     -----
@@ -11746,6 +11808,11 @@ class SteadyStateResult:
         "sens_fd_floored",
         "sens_fd_own_step",
         "sens_fd_half_step",
+        "sens_tie_species",
+        "sens_tie_param",
+        "sens_tie_value",
+        "sens_tie_above",
+        "sens_tie_below",
         "_sensitivity",
         "_sens_param_names",
         "_observable_names",
@@ -11753,6 +11820,7 @@ class SteadyStateResult:
         "_observable_sensitivity",
         "_expression_sensitivity",
         "_expression_sens_missing",
+        "_expression_sens_tied",
         "_expression_sens_unsupported",
         "_sens_output_evaluated",
         "_observable_values",
@@ -11878,6 +11946,13 @@ class SteadyStateResult:
         self.sens_fd_floored = getattr(core, "sens_fd_floored", 0.0)
         self.sens_fd_own_step = getattr(core, "sens_fd_own_step", 0.0)
         self.sens_fd_half_step = getattr(core, "sens_fd_half_step", 0.0)
+        # Issue #1330 — whether the side a state on a law's change of branch is
+        # approached from decides the columns.
+        self.sens_tie_species = _named(species, getattr(core, "sens_tie_species", -1))
+        self.sens_tie_param = _named(columns, getattr(core, "sens_tie_param", -1))
+        self.sens_tie_value = getattr(core, "sens_tie_value", 0.0)
+        self.sens_tie_above = getattr(core, "sens_tie_above", 0.0)
+        self.sens_tie_below = getattr(core, "sens_tie_below", 0.0)
 
         self._sensitivity: np.ndarray | None
         if core.n_sens_params > 0:
@@ -11902,6 +11977,10 @@ class SteadyStateResult:
         self._expression_sens_missing = [
             _named(species, i) for i in getattr(core, "expression_sens_missing_species", [])
         ]
+        # Per expression, whether its row is NaN because its derivative by dual
+        # numbers is not the same from the two sides of a change of branch
+        # (issue #1330).
+        self._expression_sens_tied = [bool(t) for t in getattr(core, "expression_sens_tied", [])]
         # Issue #247 — observable / function VALUES at the returned state. Present
         # on every solve (the sensitivity blocks above are not), because what they
         # are here for is the assignment-rule species whose own slot is frozen.
@@ -12121,6 +12200,22 @@ class SteadyStateResult:
         rule = meta["name"] if kind == "expression" else None
         if kind == "species":
             rule = self._rule_target_expressions.get(meta["name"])
+        # Issue #1330: a function whose derivative by dual numbers is not the
+        # same from the two sides of a change of branch the state sits on.
+        tied_of = self._expression_names.index(rule) if rule in self._expression_names else None
+        if (
+            tied_of is not None
+            and tied_of < len(self._expression_sens_tied)
+            and self._expression_sens_tied[tied_of]
+        ):
+            whose = f"its rule {rule!r}" if kind == "species" else "it"
+            return (
+                f"output_sensitivities: {meta['selector']!r} has no steady-state "
+                f"derivative: the steady state sits where {whose} changes branch (a "
+                "comparison, if(), abs(), min() or max() at a tie, a step of floor() "
+                "or rint()), and its derivative is not the same from the two sides "
+                "(issue #1330)."
+            )
         unsupported = self._expression_sens_unsupported.get(rule) if rule else None
         if unsupported is None and rule and not self._sens_output_evaluated:
             # The compiled code the solve had carries no chain rule at all (a

@@ -98,6 +98,10 @@ namespace bngsim {
 // than the model's Parameter vector, so any caller that mutates a parameter
 // (the finite-difference ∂f/∂p fallback below) must call sync_params()
 // afterwards. The interpreted backend reads the model directly and does not care.
+// The SteadyStateResult spelling of a derivative taken by dual numbers (issue
+// #1330): sens_jacobian_source, sens_dfdp_source and sens_output_source.
+static constexpr const char *kAutomaticDifferentiation = "automatic-differentiation";
+
 class SteadyStateRhs {
   public:
     SteadyStateRhs(NetworkModel &model, const SteadyStateOptions &opts) : model_(model) {
@@ -272,6 +276,19 @@ class SteadyStateRhs {
             return;
         }
         model_.fill_sparse_analytical_jacobian(t, y, vals);
+    }
+
+    // The Jacobian and ∂f/∂p exact by dual numbers through the interpreted
+    // evaluator (issue #1330; NetworkModel::fill_dense_dual_jacobian), for a
+    // model with no closed form or a solve that asked for none. False where
+    // the model has no dual evaluation, which leaves the caller to difference.
+    bool fill_dual_jacobian(double t, const double *y, double *jac, DualTie tie = DualTie::Value,
+                            bool *tied = nullptr) {
+        return model_.fill_dense_dual_jacobian(t, y, jac, tie, tied);
+    }
+    bool eval_dual_dfdp(double t, const double *y, int param_index, double *out,
+                        DualTie tie = DualTie::Value, bool *tied = nullptr) {
+        return model_.fill_dual_dfdp(t, y, param_index, out, tie, tied);
     }
 
     // The analytical ∂f/∂p exists only in the compiled artifact — there is no
@@ -2891,9 +2908,15 @@ static inline bool param_fd_widen(double response, double g_i, double term_scale
 // The Jacobian at a state, and its restriction to the unknown subspace
 // ---------------------------------------------------------------------------
 
-// Dense column-major J (ns×ns) at `y`: closed form when the model has one, else
-// one-sided finite differences (one RHS evaluation per column). Returns the
-// SteadyStateResult::sens_jacobian_source spelling of which ran.
+// Dense column-major J (ns×ns) at `y`: closed form when the model has one,
+// else exact by dual numbers where the model has a dual evaluation (issue
+// #1330), else one-sided finite differences (one RHS evaluation per column).
+// Returns the SteadyStateResult::sens_jacobian_source spelling of which ran.
+// `*tied` (where given) says whether the dual one met a state where a law
+// changes branch, from which side the matrix is not the same (dual.hpp).
+// `exact` false keeps the difference quotient where there is no closed form:
+// for a measure that steers the solve, which was tuned on it and which the
+// retry on differences (find_steady_state) chose it for.
 //
 // Shared by dY_ss/dp and the stability certificate (issue #78) so the two read
 // the SAME matrix. Left as its own function rather than inlined twice: an FD
@@ -2901,10 +2924,19 @@ static inline bool param_fd_widen(double response, double g_i, double term_scale
 // them (the ∂f/∂p probes needed three passes — #63, #76, #123 — to get right).
 static const char *ss_fill_state_jacobian(SteadyStateRhs &rhs, const double *y, int ns,
                                           const ResidualSubspace &sub, bool want_analytical,
-                                          double *J) {
+                                          double *J, bool *tied = nullptr, bool exact = true) {
+    if (tied != nullptr) {
+        *tied = false;
+    }
     if (want_analytical && rhs.has_analytical_jacobian()) {
         rhs.fill_dense_jacobian(0.0, y, J);
         return rhs.jacobian_source();
+    }
+    // A difference quotient reads a secant, and a law can be written whose
+    // secants agree at every pair of steps a check takes (issue #1330). The
+    // derivative itself needs no check.
+    if (exact && rhs.fill_dual_jacobian(0.0, y, J, DualTie::Value, tied)) {
+        return kAutomaticDifferentiation;
     }
     // J[:,j] = (f(y + h·e_j) − f(y)) / h — the sweep in bngsim/fd_jacobian.hpp,
     // which NetworkModel::fill_dense_fd_jacobian runs on the interpreted RHS for
@@ -3668,10 +3700,13 @@ static double ss_newton_distance(NetworkModel &model, SteadyStateRhs &rhs,
 
     const bool want_analytical = ss_want_analytical_jacobian(opts.jacobian);
     // J at `at`, the model moved there for it; true where it was differenced.
+    // A measure that decides where the solve stops: on differences where there
+    // is no closed form, as it was tuned (not the dual numbers of issue #1330).
     const auto jacobian_at = [&](const double *at, std::vector<double> &Jm) {
         Jm.assign(un * un, 0.0);
         model.set_state_from(at);
-        return std::strcmp(ss_fill_state_jacobian(rhs, at, ns, sub, want_analytical, Jm.data()),
+        return std::strcmp(ss_fill_state_jacobian(rhs, at, ns, sub, want_analytical, Jm.data(),
+                                                  nullptr, /*exact=*/false),
                            "finite-difference") == 0;
     };
     // The Newton step for rates `fm` through `Jm`, every species' share of it:
@@ -5056,6 +5091,97 @@ static void ss_confirm_differenced_columns(SteadyStateRhs &rhs, SteadyStateResul
     }
 }
 
+// How far apart an entry of the columns solved with the matrices from the two
+// sides of a law's change of branch (issue #1330) may be, as a part of itself,
+// and the least it is held to, as a part of its column's largest. Both are
+// exact matrices: where the side does not matter, the two answers differ by
+// what solving a different matrix rounds, and where it does, by the kink.
+static constexpr double kDualSidesAgree = 1e-8;
+static constexpr double kDualEntryFloor = 1e-10;
+
+// Issue #1330: J or ∂f/∂p was taken by dual numbers at a state that sits where
+// a law changes branch (`jacobian_tied`, `dfdp_tied`): the derivative of the
+// branch the state is on is one of two one-sided ones. The columns are solved
+// again with each side's (DualTie::Above, DualTie::Below), and where either
+// answer is further from the first than kDualSidesAgree of the entry
+// (kDualEntryFloor of its column's largest, at least), the entry furthest apart
+// is put on the result, which steady_state() refuses: the steady state has no
+// derivative there. Where they agree, the side did not matter, and the columns
+// are the first's. `solve_columns(J, sens, rcond)` is the solve that gave
+// result.sensitivity, reading ∂f/∂p from `dfdp`, which is swapped for each
+// side's and put back.
+template <class Solve>
+static void ss_confirm_dual_sides(SteadyStateRhs &rhs, SteadyStateResult &result, const double *J,
+                                  std::vector<double> &dfdp, const std::vector<int> &pidx, int ns,
+                                  int np, const ResidualSubspace &sub, bool jacobian_tied,
+                                  bool dfdp_tied, Solve &&solve_columns) {
+    if (!jacobian_tied && !dfdp_tied) {
+        return;
+    }
+    const double *y_ss = result.concentrations.data();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const DualTie which[2] = {DualTie::Above, DualTie::Below};
+    std::vector<double> sides[2];
+    for (int k = 0; k < 2; ++k) {
+        std::vector<double> J_side(J, J + static_cast<size_t>(ns) * ns);
+        bool ok = !jacobian_tied || rhs.fill_dual_jacobian(0.0, y_ss, J_side.data(), which[k]);
+        const std::vector<double> dfdp_kept = dfdp;
+        for (int p = 0; ok && dfdp_tied && p < np; ++p) {
+            ok = rhs.eval_dual_dfdp(0.0, y_ss, pidx[static_cast<size_t>(p)],
+                                    dfdp.data() + static_cast<size_t>(p) * ns, which[k]);
+        }
+        sides[k] = result.sensitivity;
+        if (ok) {
+            solve_columns(J_side.data(), sides[k], nullptr);
+        } else {
+            std::fill(sides[k].begin(), sides[k].end(), nan);
+        }
+        dfdp = dfdp_kept;
+    }
+    // The caches as an evaluation at the state leaves them.
+    std::vector<double> f0(static_cast<size_t>(ns));
+    rhs.eval(0.0, y_ss, f0.data());
+
+    double worst = 0.0;
+    for (int p = 0; p < np; ++p) {
+        double largest = 0.0;
+        for (const int i : sub.included) {
+            const double v = result.sensitivity[static_cast<size_t>(i) * np + p];
+            if (std::isfinite(v)) {
+                largest = std::max(largest, std::abs(v));
+            }
+        }
+        for (const int i : sub.included) {
+            const size_t k = static_cast<size_t>(i) * np + p;
+            const double v = result.sensitivity[k];
+            if (!std::isfinite(v)) {
+                continue; // no answer to confirm
+            }
+            double apart = 0.0;
+            for (const auto &side : sides) {
+                const double d = std::abs(side[k] - v);
+                apart =
+                    std::isnan(d) ? std::numeric_limits<double>::infinity() : std::max(apart, d);
+            }
+            const double held_to = std::max(std::abs(v), kDualEntryFloor * largest);
+            if (apart <= kDualSidesAgree * held_to) {
+                continue;
+            }
+            const double share = held_to > 0.0 && std::isfinite(apart)
+                                     ? apart / held_to
+                                     : std::numeric_limits<double>::infinity();
+            if (result.sens_tie_species < 0 || share > worst) {
+                worst = share;
+                result.sens_tie_species = i;
+                result.sens_tie_param = p;
+                result.sens_tie_value = v;
+                result.sens_tie_above = sides[0][k];
+                result.sens_tie_below = sides[1][k];
+            }
+        }
+    }
+}
+
 static void
 compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResult &result,
                        const std::vector<std::string> &param_names,
@@ -5098,21 +5224,43 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
     // ss_want_analytical_jacobian, which is also what the two solver tiers gate
     // their own Jacobian callback on.
     const bool want_analytical = ss_want_analytical_jacobian(opts_jacobian);
+    bool jacobian_tied = false;
     result.sens_jacobian_source =
-        ss_fill_state_jacobian(rhs, y_ss, ns, sub, want_analytical, J.data());
+        ss_fill_state_jacobian(rhs, y_ss, ns, sub, want_analytical, J.data(), &jacobian_tied);
 
     // ── Step 2: ∂f/∂p for each sensitivity parameter ──────────────────────────
     // A function of the state and its Jacobian, so that the check of issue
     // #995 (ss_measure_root) can ask for it again at the state one Newton step
     // on. At the returned state it is what it was.
+    // `dfdp_tied` is whether the last dual ∂f/∂p met a law changing branch.
+    bool dfdp_tied = false;
     const auto fill_dfdp = [&](const double *y_at, const double *J_at, std::vector<double> &out) {
         out.assign(static_cast<size_t>(ns) * np, 0.0); // column-major: out[p*ns+i]
+        dfdp_tied = false;
+        // Exact by dual numbers where there is no compiled ∂f/∂p (issue
+        // #1330), every column or none, so that a result has one source.
+        const auto dual_dfdp = [&]() {
+            for (int p = 0; p < np; ++p) {
+                bool tied = false;
+                if (!rhs.eval_dual_dfdp(0.0, y_at, pidx[p],
+                                        out.data() + static_cast<size_t>(p) * ns, DualTie::Value,
+                                        &tied)) {
+                    return false;
+                }
+                dfdp_tied = dfdp_tied || tied;
+            }
+            return true;
+        };
         if (rhs.has_analytical_dfdp()) {
             result.sens_dfdp_source = "codegen";
             for (int p = 0; p < np; ++p) {
                 rhs.eval_dfdp(0.0, y_at, pidx[p], out.data() + static_cast<size_t>(p) * ns);
             }
+        } else if (dual_dfdp()) {
+            result.sens_dfdp_source = kAutomaticDifferentiation;
         } else {
+            dfdp_tied = false;
+            std::fill(out.begin(), out.end(), 0.0);
             // Finite differences in the parameter, at the fixed steady state:
             // ∂f/∂p[:,p] = (f(y; p+h) − f(y; p)) / h. sync_params() re-derives
             // constant-expression parameters after each write, so a rate law stored
@@ -5441,6 +5589,8 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         };
         solve_columns(J.data(), result.sensitivity, &result.sens_jacobian_rcond);
         ss_confirm_differenced_columns(rhs, result, J.data(), ns, np, sub, solve_columns);
+        ss_confirm_dual_sides(rhs, result, J.data(), dfdp, pidx, ns, np, sub, jacobian_tied,
+                              dfdp_tied, solve_columns);
 
         // Issue #995: whether this was an isolated root, and the state on it,
         // asked of the same system. The totals and the fixed species force the
@@ -5517,6 +5667,8 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         };
         solve_columns(J.data(), result.sensitivity, &result.sens_jacobian_rcond);
         ss_confirm_differenced_columns(rhs, result, J.data(), ns, np, sub, solve_columns);
+        ss_confirm_dual_sides(rhs, result, J.data(), dfdp, pidx, ns, np, sub, jacobian_tied,
+                              dfdp_tied, solve_columns);
 
         // Issue #995: whether this was an isolated root, and the state on it.
         std::vector<int> every_species(static_cast<size_t>(ns));
@@ -5731,21 +5883,103 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
             }
         }
 
+        // Issue #1330: a row the compiled chain rule leaves, or every row of
+        // a model with none, by dual numbers: each function's derivative along
+        // the solved column dY_ss/dp with the parameter itself moving, which
+        // is d(func)/dp, state chain and explicit term at once. A species with
+        // no row (NaN) gives NaN to whatever reads it, as above. Where the
+        // state sits on a function's change of branch (dual.hpp), the row is
+        // taken from each side, and left NaN where the sides differ.
+        result.function_sens_tied.assign(static_cast<size_t>(n_func), 0);
+        std::vector<uint8_t> by_dual(n_func, 0);
+        if (!std::all_of(answered.begin(), answered.end(), [](uint8_t a) { return a != 0; }) &&
+            std::all_of(pidx.begin(), pidx.end(), [](int i) { return i >= 0; })) {
+            const auto columns = [&](DualTie tie, bool *tied, std::vector<double> &out) {
+                out.assign(static_cast<size_t>(np) * n_func, nan);
+                std::vector<double> dconc(static_cast<size_t>(ns));
+                bool any = false;
+                for (int p = 0; p < np; ++p) {
+                    for (int i = 0; i < ns; ++i) {
+                        dconc[static_cast<size_t>(i)] =
+                            result.sensitivity[static_cast<size_t>(i) * np + p];
+                    }
+                    bool met = false;
+                    if (!model.dual_function_derivatives(
+                            0.0, y_ss, dconc.data(), pidx[p],
+                            out.data() + static_cast<size_t>(p) * n_func, tie, &met)) {
+                        return false;
+                    }
+                    any = any || met;
+                }
+                if (tied != nullptr) {
+                    *tied = any;
+                }
+                return true;
+            };
+            std::vector<double> dual_rows; // [p*n_func + m]
+            bool tied = false;
+            if (columns(DualTie::Value, &tied, dual_rows)) {
+                std::vector<double> above, below;
+                const bool sides = tied && columns(DualTie::Above, nullptr, above) &&
+                                   columns(DualTie::Below, nullptr, below);
+                for (int m = 0; m < n_func; ++m) {
+                    if (answered[m]) {
+                        continue;
+                    }
+                    bool row_ok = true;
+                    bool row_tied = false;
+                    for (int p = 0; p < np && row_ok; ++p) {
+                        const size_t k = static_cast<size_t>(p) * n_func + m;
+                        const double v = dual_rows[k];
+                        row_ok = std::isfinite(v);
+                        if (row_ok && tied) {
+                            for (const std::vector<double> *side : {&above, &below}) {
+                                const double w = sides ? (*side)[k] : nan;
+                                if (!(std::abs(w - v) <=
+                                      kDualSidesAgree * std::max(std::abs(v), std::abs(w)))) {
+                                    row_tied = true;
+                                }
+                            }
+                        }
+                    }
+                    if (row_ok && row_tied) {
+                        result.function_sens_tied[static_cast<size_t>(m)] = 1;
+                        continue;
+                    }
+                    if (!row_ok) {
+                        continue;
+                    }
+                    for (int p = 0; p < np; ++p) {
+                        result.function_sensitivity[static_cast<size_t>(m) * np + p] =
+                            dual_rows[static_cast<size_t>(p) * n_func + m];
+                    }
+                    answered[m] = 1;
+                    by_dual[m] = 1;
+                }
+            }
+        }
+
         // Counted over the rows a result returns: an auto-generated _rateLawN
         // is not among them, and the evaluator does not differentiate one
         // outside the user-function closure.
         int n_returned = 0;
         int n_returned_answered = 0;
+        int n_returned_by_dual = 0;
         for (int m = 0; m < n_func; ++m) {
             if (!is_auto_rate_law(result.function_names[static_cast<size_t>(m)])) {
                 ++n_returned;
                 n_returned_answered += answered[m];
+                n_returned_by_dual += by_dual[m];
             }
         }
-        result.sens_output_source = n_returned == 0                     ? ""
-                                    : n_returned_answered == n_returned ? "codegen"
-                                    : n_returned_answered == 0          ? "none"
-                                                                        : "partial";
+        result.sens_output_source =
+            n_returned == 0 ? ""
+            : n_returned_answered == n_returned
+                ? (n_returned_by_dual == 0            ? "codegen"
+                   : n_returned_by_dual == n_returned ? kAutomaticDifferentiation
+                                                      : "codegen+automatic-differentiation")
+            : n_returned_answered == 0 ? "none"
+                                       : "partial";
 
         // The species with no row that each row left NaN reads, for the refusal
         // to name. A function whose own value is not finite reads as moved by

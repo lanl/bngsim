@@ -1,0 +1,375 @@
+"""Exact derivatives where there is no closed form, by dual numbers (issue #1330).
+
+A difference quotient of the right-hand side steps each species by 1.5e-8 of
+the larger of itself and the state's largest concentration, and reads a secant.
+#1100, #1294 and #1337 solve ``steady_state(sensitivity_params=...)`` again
+with two more steps and refuse where the answers differ, and no finite set of
+steps catches every law: one can be written whose secants agree at exactly
+those steps. With ``jacobian="fd"``, or one rate law the closed form declines
+anywhere in the model, a Hill law at X* = 0 with K = h/√2 returned dG*/ds =
+2.130 for 0, a kink just past X* 4.762 for 0, and dX*/dp 2.02e-4 for 3.62e-4
+beside an unrelated species at 1e8, with no error.
+
+Where the closed form is declined or not asked for, the Jacobian, ∂f/∂p and a
+function's row are taken by dual numbers through the interpreter now: each law
+as the interpreter evaluates it, its derivative along the branch it takes, with
+no step. At a state that sits exactly where a law changes branch the answer is
+taken from each side, and refused where the two differ.
+
+Every expected value is a closed form, or the closed-form Jacobian itself.
+"""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import bngsim
+import numpy as np
+import pytest
+
+_DATA = Path(__file__).resolve().parents[2] / "tests" / "data"
+SQRT_EPS = 1.4901161193847656e-8
+# The floored step of a species at or near 0 beside G at 1e8.
+H = SQRT_EPS * 1e8
+K1 = 0.21
+
+# 0 -> X at s, X -> 0 at k1, so X* = s/k1. G is made at sg = 1e8 and at a rate
+# r that reads X, and lost at 1, so dG*/ds = (dr/dX)(X*)/k1. With `declined`,
+# a species Z made at 1 and lost at 1 + 1e-12·rint(Z), a law the closed form
+# declines: the model then has none, at the default settings.
+_NET = """begin parameters
+    1 s   {s!r}
+    2 k1  0.21
+    3 sg  1e8
+    4 dg  1.0
+    5 one 1.0
+end parameters
+begin species
+    1 X() 0
+    2 G() 1e8
+    3 Z() 1
+end species
+begin groups
+    1 Xo 1
+    2 Zo 3
+end groups
+begin functions
+    1 r() {rate}
+    2 zl() 1 + 1e-12*rint(Zo)
+end functions
+begin reactions
+    1 0 1 s
+    2 1 0 k1
+    3 0 2 r
+    4 0 2 sg
+    5 2 0 dg
+{declined}end reactions
+"""
+_DECLINED = "    6 0 3 one\n    7 3 0 zl\n"
+
+
+def _issue_model(tmp_path, s, rate, declined=False):
+    path = tmp_path / "m.net"
+    path.write_text(_NET.format(s=s, rate=rate, declined=_DECLINED if declined else ""))
+    return bngsim.Model.from_net(str(path))
+
+
+def _hill_at_zero():
+    # Hill n = 2 at X* = 0 with K = h/√2: its secants over h and h/2 agree.
+    return 0.0, f"Xo^2/({H / math.sqrt(2)!r}^2 + Xo^2)", 0.0
+
+
+def _kink_beyond():
+    # A kink 1e-5·h beyond X*: the slope at X* is 0.
+    c = 1.3 / K1 + 1e-5 * H
+    return 1.3, f"if(Xo > {c!r}, Xo - {c!r}, 0)", 0.0
+
+
+def _small_entry():
+    # X + X -> X + X + G at k = 1e-6: dG*/ds = 2·k·X*/k1, an entry small
+    # within its column (12% off on a difference quotient).
+    return 1.3, "1e-6*Xo*Xo", 2e-6 * (1.3 / K1) / K1
+
+
+_CASES = {"hill at 0": _hill_at_zero, "kink beyond": _kink_beyond, "small entry": _small_entry}
+
+
+class TestTheIssuesCases:
+    @pytest.mark.parametrize("case", ["hill at 0", "kink beyond"])
+    def test_jacobian_fd(self, tmp_path, case):
+        """``jacobian="fd"`` asks for no closed form: 2.130 and 4.762 on main."""
+        s, rate, want = _CASES[case]()
+        sim = bngsim.Simulator(_issue_model(tmp_path, s, rate), method="ode", jacobian="fd")
+        out = sim.steady_state(sensitivity_params=["s"])
+        assert out.sens_jacobian_source == "automatic-differentiation"
+        np.testing.assert_allclose(
+            np.asarray(out.sensitivity)[:, 0], [1 / K1, want, 0.0], rtol=1e-12
+        )
+        assert np.asarray(out.sensitivity)[1, 0] == want
+
+    @pytest.mark.parametrize("case", sorted(_CASES))
+    def test_a_law_the_closed_form_declines(self, tmp_path, case):
+        """One declined law takes the closed form away from every law; at the
+        default settings both factors are dual numbers' now, and exact."""
+        s, rate, want = _CASES[case]()
+        sim = bngsim.Simulator(_issue_model(tmp_path, s, rate, declined=True), method="ode")
+        out = sim.steady_state(sensitivity_params=["s"])
+        assert out.sens_jacobian_source == "automatic-differentiation"
+        assert out.sens_dfdp_source == "automatic-differentiation"
+        np.testing.assert_allclose(np.asarray(out.sensitivity)[1, 0], want, rtol=1e-12, atol=0)
+
+    @pytest.mark.parametrize("q", [1e-3, 0.1, 1.0])
+    def test_an_entry_far_below_its_columns_largest(self, tmp_path, q):
+        """#1337's floor: an entry of a small species far below its column's
+        largest passed at any relative error under 1e-10 of that largest, and
+        at q = 1e-3 dX*/dp came back 2.024e-4 for 3.617e-4. Here the law the
+        closed form declines is in another species, Z, so that X's own loss is
+        the quadratic 2·k2·X² (#1330's comment wrote it as
+        2·k2·rint(X·1e12)/1e12, a staircase whose exact derivative is not the
+        quadratic's)."""
+        text = (
+            "begin parameters\n 1 s 1.3\n 2 k1 0.21\n 3 k2 0.73\n 4 p 1.0\n"
+            f" 5 q {q!r}\n 6 c 1e8\n 7 dg 1.0\n 8 xp q*p\n 9 gp c*p\n 10 one 1.0\n"
+            "end parameters\nbegin functions\n 1 zl() 1 + 1e-12*rint(Zo)\nend functions\n"
+            "begin species\n 1 X() 0\n 2 G() 1e8\n 3 Z() 1\nend species\n"
+            "begin groups\n 1 Xo 1\n 2 Zo 3\nend groups\n"
+            "begin reactions\n 1 0 1 s\n 2 0 1 xp\n 3 1 0 k1\n 4 1,1 0 k2\n"
+            " 5 0 2 gp\n 6 2 0 dg\n 7 0 3 one\n 8 3 0 zl\nend reactions\n"
+        )
+        path = tmp_path / "floor.net"
+        path.write_text(text)
+        out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
+            sensitivity_params=["p"]
+        )
+        assert out.sens_jacobian_source == "automatic-differentiation"
+        x = float(out.concentrations[0])
+        np.testing.assert_allclose(
+            np.asarray(out.sensitivity)[0, 0], q / (0.21 + 4 * 0.73 * x), rtol=1e-12
+        )
+
+    def test_with_no_dual_evaluation_the_difference_quotient_returns(self, tmp_path, monkeypatch):
+        """The control: with dual numbers switched off the same solve takes the
+        difference quotient, and its answer is the secant main returned."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+        s, rate, _ = _kink_beyond()
+        sim = bngsim.Simulator(_issue_model(tmp_path, s, rate), method="ode", jacobian="fd")
+        out = sim.steady_state(sensitivity_params=["s"])
+        assert out.sens_jacobian_source == "finite-difference"
+        np.testing.assert_allclose(np.asarray(out.sensitivity)[1, 0], 1 / K1, rtol=1e-3)
+
+
+# Models whose closed-form Jacobian is complete, across the rate-law kinds the
+# dual evaluation mirrors: mass action, functional laws through observables and
+# functions, Michaelis-Menten, derived rate constants, tables, abs/min/max,
+# compartments of different size.
+_CLOSED_FORM_MODELS = [
+    "mm_tqssa.net",
+    "mm_tqssa_stiff.net",
+    "jac_kinks_max_min_abs.net",
+    "tfun_param_indexed.net",
+    "derived_rate_const.net",
+    "nested_derived_rate_const.net",
+    "func_composition.net",
+    "hill_rewrite.net",
+    "sat_rewrite.net",
+    "saturation.net",
+    "per_observable_jac.net",
+    "egfr_simple_seed.net",
+    "ige_receptor_cycle.net",
+    "sink_compart.net",
+    "BIOMD0000000002.xml",
+    "BIOMD0000000038.xml",
+    "MODEL1712050008.xml",
+]
+
+
+def _load(name):
+    path = str(_DATA / name)
+    return bngsim.Model.from_net(path) if name.endswith(".net") else bngsim.Model.from_sbml(path)
+
+
+@pytest.mark.parametrize("name", _CLOSED_FORM_MODELS)
+def test_the_matrix_is_the_closed_forms(name):
+    """Where the closed form exists the dual matrix is the same matrix, at the
+    model's state and at one moved off it: the two are derived independently
+    (sympy, and the interpreter on dual numbers), and agree to rounding."""
+    model = _load(name)
+    if not model.prepare_analytical_jacobian():
+        pytest.skip(f"{name} has no complete closed form here")
+    core = model._core
+    y0 = np.asarray(core.get_state(), dtype=float)
+    rng = np.random.default_rng(1330)
+    scale = max(float(np.max(np.abs(y0))), 1e-12)
+    y1 = np.abs(y0) * (1 + 0.1 * rng.random(y0.size)) + 1e-3 * scale * rng.random(y0.size)
+    for y in (y0, y1):
+        closed = np.asarray(core.fill_dense_analytical_jacobian(0.0, y))
+        got = core.fill_dense_dual_jacobian(0.0, y, 0)
+        assert got is not None, core.dual_unsupported_reason()
+        dual, _ = got
+        rows = np.max(np.abs(closed), axis=1, keepdims=True)
+        np.testing.assert_allclose(dual, closed, rtol=1e-12, atol=0)
+        assert np.all(np.abs(dual - closed) <= 1e-12 * np.maximum(np.abs(closed), rows))
+
+
+# X is never made and sits at 0; G is made at g·max(X, 0) + s. At X = 0 the
+# kink of max is met, but X stays at 0 whatever the parameters, so the side
+# does not decide the answer: dG*/ds = 1/dg.
+_KINK_NOT_READ = """begin parameters
+    1 s  2.0
+    2 g  3.0
+    3 dg 0.5
+    4 kx 0.4
+    5 one 1.0
+end parameters
+begin species
+    1 X() 0
+    2 G() 4
+    3 Z() 1
+end species
+begin groups
+    1 Xo 1
+    2 Zo 3
+end groups
+begin functions
+    1 r() g*max(Xo, 0) + s
+    2 zl() 1 + 1e-12*rint(Zo)
+end functions
+begin reactions
+    1 0 2 r
+    2 2 0 dg
+    3 1 0 kx
+    4 0 3 one
+    5 3 0 zl
+end reactions
+"""
+
+# The same with a parameter q on a kink: X made at k·|q| + s (written with
+# clamp, which leaves the model no compiled ∂f/∂p), at q = 0, where d|q|/dq is
+# 1 from above and -1 from below.
+_PARAMETER_ON_A_KINK = """begin parameters
+    1 s   2.0
+    2 k   3.0
+    3 k1  0.5
+    4 q   0.0
+    5 big 1e300
+end parameters
+begin species
+    1 X() 4
+end species
+begin functions
+    1 r() k*(clamp(0,q,big) + clamp(0,-q,big)) + s
+end functions
+begin reactions
+    1 0 1 r
+    2 1 0 k1
+end reactions
+"""
+
+
+class TestATie:
+    def test_a_kink_the_answer_does_not_read_is_returned(self, tmp_path):
+        path = tmp_path / "k.net"
+        path.write_text(_KINK_NOT_READ)
+        out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
+            sensitivity_params=["s", "g"]
+        )
+        assert out.sens_jacobian_source == "automatic-differentiation"
+        assert out.sens_tie_species is None
+        np.testing.assert_allclose(np.asarray(out.sensitivity)[1], [1 / 0.5, 0.0], rtol=1e-12)
+
+    def test_a_parameter_on_a_kink_is_refused(self, tmp_path):
+        """dX*/dq is 3/0.5 = 6 from above and -6 from below: there is no
+        derivative, and the solve says so with both."""
+        path = tmp_path / "q.net"
+        path.write_text(_PARAMETER_ON_A_KINK)
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+        with pytest.raises(
+            bngsim.SimulationError, match=r"#1330.*dX\(\)/dq is (-?6|-6|6).*from one side"
+        ) as err:
+            sim.steady_state(sensitivity_params=["s", "q"])
+        assert "6" in str(err.value) and "-6" in str(err.value)
+
+    def test_off_the_kink_it_is_returned(self, tmp_path):
+        path = tmp_path / "q.net"
+        path.write_text(_PARAMETER_ON_A_KINK.replace("4 q   0.0", "4 q   -0.5"))
+        out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
+            sensitivity_params=["s", "q"]
+        )
+        assert out.sens_dfdp_source == "automatic-differentiation"
+        np.testing.assert_allclose(np.asarray(out.sensitivity)[0], [2.0, -6.0], rtol=1e-12)
+
+    def test_model_jacobian_on_a_kink_is_refused(self, tmp_path):
+        """Model.jacobian() of the model above at X = 0 has no value in the
+        column of X: max(X, 0) is 1 from above and 0 from below. Beside it, it
+        is exact."""
+        path = tmp_path / "k.net"
+        path.write_text(_KINK_NOT_READ)
+        model = bngsim.Model.from_net(str(path))
+        with pytest.raises(bngsim.SimulationError, match=r"#1330.*d\(rate of G\(\)\)/dX\(\)"):
+            model.jacobian([0.0, 4.0, 1.0])
+        J = model.jacobian([0.5, 4.0, 1.0])
+        assert J.source == "automatic-differentiation"
+        np.testing.assert_array_equal(J[:2, :2], [[-0.4, 0.0], [3.0, -0.5]])
+
+
+class TestWhereThereIsNoDualEvaluation:
+    def test_rateof(self):
+        model = bngsim.Model.from_antimony_string(
+            "compartment C0 = 1; k1 = 0.3; g = 0.7;\nspecies P in C0 = 1; species S in C0 = 0;\n"
+            "J1: 2P -> ; k1*P*C0;\nS' = g*rateOf(P);\n"
+        )
+        assert "rateOf" in model._core.dual_unsupported_reason()
+        assert model._core.fill_dense_dual_jacobian(0.0, [1.0, 0.0], 0) is None
+
+    def test_a_ring_of_functions(self, tmp_path):
+        path = tmp_path / "cyc.net"
+        path.write_text(
+            "begin parameters\n 1 A0 1.0\nend parameters\nbegin functions\n"
+            " 1 F1() Atot-F2()\n 2 F2() 0.5*F1()\n 3 kr() F2()/Atot\nend functions\n"
+            "begin species\n 1 A() A0\n 2 B() 0\nend species\n"
+            "begin reactions\n 1 1 2 kr\nend reactions\nbegin groups\n 1 Atot 1\nend groups\n"
+        )
+        model = bngsim.Model.from_net(str(path))
+        assert "read each other" in model._core.dual_unsupported_reason()
+
+
+# One law per built-in the dual evaluation gives a derivative of its own, in
+# X = 2 beside Y = 3: each against its closed form.
+_BUILTINS = {
+    "mratio(-3, 2, -Xo/Yo)": None,  # against a central difference
+    "Xo^2.5 + exp(-Xo)*log(Yo)": lambda x, y: (2.5 * x**1.5 - math.exp(-x) * math.log(y)),
+    "sqrt(Xo*Yo) + atan2(Xo, Yo)": lambda x, y: (0.5 * math.sqrt(y / x) + y / (x * x + y * y)),
+    "tanh(Xo - Yo) + erf(Xo/3)": lambda x, y: (
+        1 - math.tanh(x - y) ** 2 + 2 / math.sqrt(math.pi) * math.exp(-((x / 3) ** 2)) / 3
+    ),
+    "if(Xo > 1, Xo*Xo, 0) + floor(Yo*1.3)": lambda x, y: 2 * x,
+    "min(Xo, Yo) + max(Xo/2, 0.1) + abs(Xo - Yo)": lambda x, y: 1 + 0.5 - 1,
+    "ln(Xo) + log10(Xo) + Xo % 1.5": lambda x, y: 1 / x + 1 / (x * math.log(10)) + 1,
+    "tgamma(Xo + 1)": lambda x, y: math.gamma(x + 1) * (1.5 - 0.5772156649015329),
+}
+
+
+@pytest.mark.parametrize("law", sorted(_BUILTINS))
+def test_a_builtin(tmp_path, law):
+    """d(law)/dX at X = 2, Y = 3, as the entry of G's row in X's column (G is
+    made at the law and lost at 1). tgamma'(3) = Γ(3)·ψ(3) = 2·(3/2 - γ)."""
+    path = tmp_path / "b.net"
+    path.write_text(
+        "begin parameters\n 1 one 1.0\nend parameters\nbegin species\n"
+        " 1 X() 2\n 2 Y() 3\n 3 G() 0\nend species\n"
+        "begin groups\n 1 Xo 1\n 2 Yo 2\nend groups\n"
+        f"begin functions\n 1 law() {law}\nend functions\n"
+        "begin reactions\n 1 0 3 law\n 2 3 0 one\nend reactions\n"
+    )
+    core = bngsim.Model.from_net(str(path))._core
+    got = core.fill_dense_dual_jacobian(0.0, np.array([2.0, 3.0, 0.0]), 0)
+    assert got is not None, core.dual_unsupported_reason()
+    entry = got[0][2, 0]
+    want_of = _BUILTINS[law]
+    if want_of is None:
+        h = 1e-6
+        f = [core.compute_derivs(0.0, np.array([2.0 + d, 3.0, 0.0]))[2] for d in (h, -h)]
+        np.testing.assert_allclose(entry, (f[0] - f[1]) / (2 * h), rtol=1e-6)
+    else:
+        np.testing.assert_allclose(entry, want_of(2.0, 3.0), rtol=1e-12)

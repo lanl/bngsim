@@ -86,6 +86,20 @@ class TableFunction {
     /// and we don't want to round-trip through the model's mutable state.
     double evaluate_at(double x) const;
 
+    /// The slope of the piece evaluate_at(x) reads (issue #1330): 0 beyond the
+    /// endpoints and for a step table, and (y1 - y0)/(x1 - x0) on the interval
+    /// [x0, x1) that holds x. At a knot that is the interval to its right, as
+    /// evaluate_at takes it; the slope to its left is left_slope_at.
+    double slope_at(double x) const;
+
+    /// The slope just left of x: that of the interval (x0, x1] that holds x,
+    /// 0 at or below the first knot and beyond the last. Equal to slope_at but
+    /// at a knot.
+    double left_slope_at(double x) const;
+
+    /// Whether x is a knot, where the two slopes may differ, or a step jumps.
+    bool is_knot(double x) const;
+
     /// Set the pointer to the index variable.
     /// Must be called before evaluate(). The pointed-to double must remain
     /// valid for the lifetime of this TableFunction.
