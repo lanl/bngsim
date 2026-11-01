@@ -1,0 +1,33 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 kp     0.01  # Constant
+    2 km     0.1  # Constant
+    3 kph    0.5  # Constant
+    4 kdeph  0.3  # Constant
+    5 L0     300  # Constant
+    6 R0     200  # Constant
+    7 NA     6.02214076e23  # Constant
+    8 V      1.3e-15  # Constant
+    9 kv     1/(NA*V)  # ConstantExpression
+   10 kph2   (((kph*kv)*NA)*V)/3  # ConstantExpression
+end parameters
+begin species
+    1 L(r) L0
+    2 R(Y~0,l) R0
+    3 L(r!1).R(Y~0,l!1) 0
+    4 L(r!1).R(Y~P,l!1) 0
+    5 R(Y~P,l) 0
+end species
+begin reactions
+    1 1,2 3 kp #_R1
+    2 3 1,2 km #_reverse__R1
+    3 3 4 kph2 #_R2
+    4 4 1,5 km #_reverse__R1
+    5 4 3 kdeph #_R3
+    6 1,5 4 kp #_R1
+    7 5 2 kdeph #_R3
+end reactions
+begin groups
+    1 RP                   4,5
+    2 Lfree                1
+end groups

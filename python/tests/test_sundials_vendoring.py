@@ -102,7 +102,7 @@ def test_sundials_vendor_metadata_shape():
     assert metadata["guardrails"]["required_component_paths"] == EXPECTED_COMPONENT_PATHS
     assert metadata["guardrails"]["required_text_tokens"] == EXPECTED_REQUIRED_TEXT_TOKENS
     assert [carry["marker"] for carry in metadata["local_carries"]] == [
-        "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r2)"
+        "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r3)"
     ]
 
 

@@ -751,6 +751,10 @@ struct NfsimSimulator::Impl {
     // Parameter overrides: applied via setParameter() before each run
     std::unordered_map<std::string, double> param_overrides;
 
+    // Seed amounts by <Species id=>, written into the XML NFsim parses in
+    // place of each one's concentration= (issue #1373).
+    std::unordered_map<std::string, double> species_amounts;
+
     // BNG XML parameter table — lazily loaded the first time we need to
     // propagate an override to dependents. Populated from the same XML the
     // NFsim System is built from, but kept separate so it remains accessible
@@ -822,10 +826,24 @@ struct NfsimSimulator::Impl {
         // values for parameter-id concentrations; an empty overlay falls back to
         // the XML's own value= attrs. No-op (and no temp file) when every seed
         // concentration is already integer.
-        if (auto rounded = bngsim::seedround::write_seed_rounded_xml(xml_to_load.string(),
-                                                                     resolved_param_values)) {
+        // The same pass writes the caller's seed amounts (issue #1373). Its
+        // fail-safe would load the XML's amounts instead, which is the silent
+        // wrong start this exists to end: every id must come back written.
+        std::vector<std::string> applied;
+        if (auto rounded = bngsim::seedround::write_seed_rounded_xml(
+                xml_to_load.string(), resolved_param_values, species_amounts, &applied)) {
             seed_round_guard.emplace(*rounded);
             xml_to_load = seed_round_guard->path();
+        }
+        if (applied.size() != species_amounts.size()) {
+            std::string missing;
+            for (const auto &[id, amount] : species_amounts) {
+                if (std::find(applied.begin(), applied.end(), id) == applied.end()) {
+                    missing += (missing.empty() ? "" : ", ") + id;
+                }
+            }
+            throw std::runtime_error("NfsimSimulator: could not seed species " + missing +
+                                     " with the amounts set for them in " + xml_path);
         }
 
         // Resolve relative TFUN/file dependencies against the XML directory.
@@ -1002,6 +1020,10 @@ void NfsimSimulator::set_param(const std::string &name, double value) {
         // the next simulate() call re-samples next-firing times.
         impl_->session_system->invalidateStepToCache();
     }
+}
+
+void NfsimSimulator::set_species_amounts(const std::unordered_map<std::string, double> &amounts) {
+    impl_->species_amounts = amounts;
 }
 
 void NfsimSimulator::clear_param_overrides() {

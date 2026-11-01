@@ -10,7 +10,7 @@ import logging
 import re
 import time
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, overload
 
@@ -144,12 +144,24 @@ class Model:
         "_stoich_coo",
         "_volume_factors_memo",
         "_frozen_params",
+        "_loaded_params",
+        "_loaded_state",
     )
 
     def __init__(
         self, _core: NetworkModel, _guarded: list[tuple[str, str, str]] | None = None
     ) -> None:
         self._core = _core
+        # Every parameter's value as the model was built, which a network-free
+        # run compares the model's values with to find the ones set since, and
+        # hands its backend (issue #1360, _network_free_params). A clone keeps
+        # its parent's.
+        self._loaded_params: dict[str, float] = {
+            name: float(_core.get_param(name)) for name in _core.param_names
+        }
+        # And every species' amount, which it hands the backend the same way
+        # where the model has changed it (issue #1373).
+        self._loaded_state: tuple[float, ...] = tuple(float(x) for x in _core.get_state())
         self._codegen_so_path: str = ""
         # GH #198: whether codegen should emit the expression output-sensitivity
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
@@ -1302,6 +1314,8 @@ class Model:
             An independent deep copy.
         """
         m = Model(_core=self._core.clone(), _guarded=self._guarded_functions)
+        m._loaded_params = dict(self._loaded_params)
+        m._loaded_state = self._loaded_state
         m._net_path = self._net_path
         m._want_output_sens = self._want_output_sens
         m._codegen_so_path = self._codegen_so_path
@@ -1915,7 +1929,9 @@ class Model:
         Parameters
         ----------
         name : str
-            Species name (e.g. ``"A(b)"``).
+            Species name (e.g. ``"A(b)"``). A fixed species' ``$`` may be given
+            or left out: the model names ``$A(b)`` in a ``.net`` ``A(b)``, and
+            BNG2.pl's ``setConcentration`` ignores the ``$`` too.
         value : float
             New concentration value.
 
@@ -1928,6 +1944,15 @@ class Model:
         -----
         Implements BNG ``setConcentration("name", value)`` action.
 
+        The value is the start of the next :meth:`Simulator.run`, of every
+        replicate of :meth:`Simulator.run_replicates`, and of
+        :meth:`Simulator.parameter_scan`, whose default reset target is the
+        model's state at the call. :meth:`reset` does not keep it, and
+        neither does :meth:`Simulator.run_batch`, which starts every point from
+        the initial conditions, and warns that it does (issue #1362). Call
+        :meth:`save_concentrations` after it to make it the state :meth:`reset`
+        returns to.
+
         For forward sensitivity, this is a **literal** initial condition:
         ``∂x_k(0)/∂θ = 0``. It therefore supersedes whatever the species' declared
         initial condition depended on — if the ``.net`` set it from a parameter
@@ -1935,10 +1960,8 @@ class Model:
         row is dropped (issue #113). When the value you assign *does* depend on a
         differentiated parameter, say so with :meth:`declare_ic_sensitivity`.
         """
-        try:
-            self._core.set_concentration(name, float(value))
-        except (KeyError, RuntimeError) as e:
-            raise ModelError(f"Species '{name}' not found in model") from e
+        value = float(value)
+        name = self._species_call(name, lambda n: self._core.set_concentration(n, value))[0]
         # A fresh assignment supersedes whatever this species' initial condition
         # was declared to depend on; declare again after the write (issue #111).
         self._declared_ic_sens.pop(name, None)
@@ -1951,7 +1974,8 @@ class Model:
         Parameters
         ----------
         name : str
-            Species name.
+            Species name, a fixed species' ``$`` given or left out, as for
+            :meth:`set_concentration`.
 
         Returns
         -------
@@ -1963,9 +1987,21 @@ class Model:
         ModelError
             If the species name is not found.
         """
+        return float(self._species_call(name, self._core.get_concentration)[1])
+
+    def _species_call(self, name: str, call: Callable[[str], Any]) -> tuple[str, Any]:
+        """``(the model's name, call(it))`` for species *name*: *name* itself,
+        or else *name* without a fixed species' ``$``, which the model's names
+        never hold. Raises :class:`ModelError` when neither is a species."""
         try:
-            return self._core.get_concentration(name)
+            return name, call(name)
         except (KeyError, RuntimeError) as e:
+            bare = _unclamped(name)
+            if bare != name:
+                try:
+                    return bare, call(bare)
+                except (KeyError, RuntimeError):
+                    pass
             raise ModelError(f"Species '{name}' not found in model") from e
 
     def get_state(self) -> np.ndarray:
@@ -2060,11 +2096,13 @@ class Model:
         species = set(self.species_names)
         params = set(self.param_names)
         staged: dict[str, dict[str, float]] = {}
-        for sp, row in sens.items():
+        for given, row in sens.items():
+            # A fixed species' `$` may be given, as for set_concentration.
+            sp = given if given in species else _unclamped(given)
             if sp not in species:
                 raise ModelError(
-                    f"declare_ic_sensitivity: species {sp!r} not found in model. "
-                    "Names must match species_names exactly."
+                    f"declare_ic_sensitivity: species {given!r} not found in model. "
+                    "Names must match species_names, a fixed species' `$` aside."
                 )
             staged[sp] = {}
             for p, d in row.items():
@@ -2464,6 +2502,12 @@ class Model:
         closed-form terms (:meth:`prepare_analytical_jacobian`), which an ODE
         solve would do at its own setup; later calls reuse them.
 
+        Where there is no closed form, the matrix is exact all the same, by
+        dual numbers through the interpreter (issue #1330): each rate law and
+        function as the interpreter evaluates it, differentiated branch by
+        branch, with no step. Only a model the dual evaluation cannot follow (a
+        ring of functions that read each other, ``rateOf``) is differenced.
+
         Parameters
         ----------
         y : array_like, shape ``(n_species,)``
@@ -2482,9 +2526,10 @@ class Model:
         Returns
         -------
         JacobianMatrix or scipy.sparse.csc_array
-            ``.source`` is ``"analytical"`` or ``"finite-difference"``, the
-            spellings :attr:`bngsim.SteadyStateResult.solver_jacobian_source`
-            uses for the same two cases.
+            ``.source`` is ``"analytical"``, ``"automatic-differentiation"`` or
+            ``"finite-difference"``, the spellings
+            :attr:`bngsim.SteadyStateResult.sens_jacobian_source` uses for the
+            same three cases.
 
         Raises
         ------
@@ -2494,13 +2539,18 @@ class Model:
             If rates of change are written in terms of each other's ``rateOf``
             in a ring (an algebraic loop, which has no right-hand side).
         SimulationError
-            If the matrix is a difference quotient whose step decides an entry
-            (issue #1002): the entry moves by more than 1e-4 of itself (1e-10 of
-            its column's largest, at least) when its column is taken again at
-            the species' own step or at half the first.
+            If the matrix is exact by dual numbers and ``y`` sits where a rate
+            law changes branch (``if(X > c, …)`` at X = c, ``abs(X)`` or
+            ``max(X, 0)`` at X = 0, a step of ``floor()``) such that an entry is
+            not the same from the two sides (issue #1330): the Jacobian has no
+            value there. Or if the matrix is a difference quotient whose step
+            decides an entry (issue #1002): the entry moves by more than 1e-4 of
+            itself (1e-10 of its column's largest, at least) when its column is
+            taken again at the species' own step or at half the first.
         """
         from bngsim._evaluators import (
             ANALYTICAL,
+            AUTOMATIC_DIFFERENTIATION,
             FINITE_DIFFERENCE,
             JacobianMatrix,
             csc_from_pattern,
@@ -2513,23 +2563,61 @@ class Model:
         if ring:
             raise ModelError(ring)
         analytical = self.prepare_analytical_jacobian()
-        source = ANALYTICAL if analytical else FINITE_DIFFERENCE
         y_arr = np.asarray(y, dtype=np.float64)
         t = float(t)
-        if sparse:
-            if analytical:
-                vals = self._core.fill_sparse_analytical_jacobian(t, y_arr)
-            else:
-                dense = self._core.fill_dense_fd_jacobian(t, y_arr)
-                self._raise_if_the_step_decides(t, y_arr, dense)
-                vals = gather_pattern(self._core, dense)
-            return csc_from_pattern(self._core, vals, source)
         if analytical:
-            dense = self._core.fill_dense_analytical_jacobian(t, y_arr)
+            source = ANALYTICAL
+            if sparse:
+                vals = self._core.fill_sparse_analytical_jacobian(t, y_arr)
+                return csc_from_pattern(self._core, vals, source)
+            return JacobianMatrix(self._core.fill_dense_analytical_jacobian(t, y_arr), source)
+        dense = self._dual_jacobian(t, y_arr)
+        if dense is not None:
+            source = AUTOMATIC_DIFFERENTIATION
         else:
+            source = FINITE_DIFFERENCE
             dense = self._core.fill_dense_fd_jacobian(t, y_arr)
             self._raise_if_the_step_decides(t, y_arr, dense)
+        if sparse:
+            return csc_from_pattern(self._core, gather_pattern(self._core, dense), source)
         return JacobianMatrix(dense, source)
+
+    def _dual_jacobian(self, t: float, y: np.ndarray) -> np.ndarray | None:
+        """The Jacobian exact by dual numbers (issue #1330), or None where the
+        model has no dual evaluation. Where ``y`` sits on a law's change of
+        branch the matrix is taken from each side too, and refused where an
+        entry differs between them: the Jacobian has no value there."""
+        got = self._core.fill_dense_dual_jacobian(t, y, 0)
+        if got is None:
+            return None
+        dense, tied, _ = got
+        if not tied:
+            return dense
+        sides = []
+        for side in (1, -1):
+            other = self._core.fill_dense_dual_jacobian(t, y, side)
+            if other is not None and other[2]:
+                raise SimulationError(
+                    "Model.jacobian() has no value at this state (issue #1330): a rate law "
+                    "changes branch here (a comparison, if(), a step of floor() or rint()) "
+                    "and its value jumps, so the right-hand side has no derivative across "
+                    "it. A state beside the branch point has one."
+                )
+            sides.append(other[0] if other is not None else np.full_like(dense, np.nan))
+        apart = np.maximum(np.abs(sides[0] - dense), np.abs(sides[1] - dense))
+        apart[np.isnan(apart)] = np.inf
+        if not np.any(apart > 0.0):
+            return dense
+        i, j = np.unravel_index(int(np.argmax(apart)), apart.shape)
+        names = self.species_names
+        raise SimulationError(
+            "Model.jacobian() has no value at this state (issue #1330): it sits where a "
+            "rate law changes branch (a comparison, if(), abs(), min() or max() at a tie, "
+            "a step of floor() or rint()), and the entry "
+            f"d(rate of {names[i]})/d{names[j]} is {sides[0][i, j]:.6g} from one side and "
+            f"{sides[1][i, j]:.6g} from the other. The Jacobian of either branch is that "
+            f"of a state beside this one: move {names[j]} off the branch point."
+        )
 
     def _raise_if_the_step_decides(self, t: float, y: np.ndarray, dense: np.ndarray) -> None:
         """Refuse the difference quotient ``dense`` where it and the same
@@ -3020,6 +3108,19 @@ def _remember(memo: dict, key, value) -> None:
 _UNIT_CONVERSION = re.compile(r"\bunit_conversion\s*=\s*([^\s#][^#]*?)\s*(?:#|$)")
 # A number first, so that the ``e`` of ``6.0221e+23`` is not read as a name.
 _NUMBER_OR_NAME = re.compile(r"(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|([A-Za-z_]\w*)")
+
+
+def _unclamped(name: str) -> str:
+    """*name* without BNG's fixed-species ``$``, at the start or after an
+    ``@c::`` prefix, as the .net loader drops it from the species names a model
+    holds (net_file_loader.cpp)."""
+    if name.startswith("$"):
+        return name[1:]
+    if name.startswith("@"):
+        sep = name.find("::")
+        if sep != -1 and name[sep + 2 : sep + 3] == "$":
+            return name[: sep + 2] + name[sep + 3 :]
+    return name
 
 
 def _names_in(expression: str) -> list[str]:

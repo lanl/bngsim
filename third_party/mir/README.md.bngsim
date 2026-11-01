@@ -2,7 +2,8 @@
 
 This is a pruned vendor copy of [MIR](https://github.com/vnmakarov/mir) by
 Vladimir Makarov, pinned at commit `439a90a2` (MIT-licensed; see `LICENSE`),
-with two local carries for issue #1215 (see `bngsim/scripts/MIR_VENDORING.md`).
+with three local carries, two for issue #1215 and one for issue #1216 (see
+`bngsim/scripts/MIR_VENDORING.md`).
 MIR's own `README.md` is preserved alongside this file.
 
 ## Why it's here (GH #78)

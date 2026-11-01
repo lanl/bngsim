@@ -17,7 +17,15 @@
 // ExprTk defaults to case-insensitive, which silently merges k3/K3
 // into the same variable and produces incorrect trajectories.
 #define exprtk_disable_caseinsensitivity
+// ExprTk on dual numbers too (issue #1330): what has to be declared before
+// exprtk.hpp, then exprtk.hpp, then the overloads its templates find for a
+// Dual. The order is the point, so each is its own block: clang-format sorts
+// the includes within a block, and sorted, the first comes last.
+#include "exprtk_dual_pre.hpp"
+
 #include "exprtk.hpp"
+
+#include "exprtk_dual.hpp"
 
 #include "bngsim/c_locale_numbers.hpp"
 #include "bngsim/expr_compat.hpp"
@@ -363,6 +371,15 @@ static bool mratio_asymptotic(double a, double b, double z, double *out) {
 }
 
 double expr_compat::rint(double x) { return std::floor(x + 0.5); }
+
+double expr_compat::mratio_dz(double a, double b, double z) {
+    const double r = expr_compat::mratio(a, b, z);
+    const double shifted = expr_compat::mratio(a + 1.0, b + 1.0, z);
+    if (mratio_is_finite(shifted)) {
+        return r * ((a + 1.0) / (b + 1.0) * shifted - (a / b) * r);
+    }
+    return (b - (b - z) * r) / z - (a / b) * r * r;
+}
 
 // ─── Numeric literals, read as strtod reads them ─────────────────────────────
 //
@@ -1698,6 +1715,182 @@ std::unique_ptr<ExprTkEvaluator> ExprTkEvaluator::clone_empty() const {
     // table, not the expression list. The caller re-registers and re-compiles.
     return std::make_unique<ExprTkEvaluator>();
 }
+
+// ─── The same expressions on dual numbers (issue #1330) ──────────────────────
+//
+// The built-ins ExprTkEvaluator registers, on duals: each value is the double
+// its double twin above returns, and the derivative is that value's. A step
+// function (rint, round, sign) meets a tie where its argument sits on a jump
+// and moves (bngsim/dual.hpp).
+
+struct DualMratioFunction : public exprtk::ifunction<Dual> {
+    DualMratioFunction() : exprtk::ifunction<Dual>(3) {
+        exprtk::ifunction<Dual>::allow_zero_parameters() = false;
+    }
+    // d/dz is mratio_dz, the compiled code's. Neither a nor b has a derivative
+    // of that kind (issue #457), so a direction that moves either has none:
+    // NaN, which the caller reads as no exact derivative.
+    Dual operator()(const Dual &a, const Dual &b, const Dual &z) override {
+        const double value = expr_compat::mratio(a.v, b.v, z.v);
+        if (a.d != 0.0 || b.d != 0.0) {
+            return Dual(value, std::numeric_limits<double>::quiet_NaN());
+        }
+        return Dual(value, z.d == 0.0 ? 0.0 : expr_compat::mratio_dz(a.v, b.v, z.v) * z.d);
+    }
+};
+
+struct DualLnFunction : public exprtk::ifunction<Dual> {
+    DualLnFunction() : exprtk::ifunction<Dual>(1) {}
+    Dual operator()(const Dual &x) override { return bngsim::dualmath::log(x); }
+};
+
+// BNG's floor(x + 0.5): constant between halves, jumping up at each.
+struct DualRintFunction : public exprtk::ifunction<Dual> {
+    DualRintFunction() : exprtk::ifunction<Dual>(1) {}
+    Dual operator()(const Dual &x) override {
+        return dualmath::dual_step(
+            x, [](double u) { return expr_compat::rint(u); },
+            [](double u) { return std::floor(u + 0.5) == u + 0.5; },
+            [](double u, bool up) {
+                return up ? expr_compat::rint(u) : expr_compat::rint(u) - 1.0;
+            });
+    }
+};
+
+// C's round, a half away from zero: jumping at each half, up above zero and
+// down below it.
+struct DualRoundFunction : public exprtk::ifunction<Dual> {
+    DualRoundFunction() : exprtk::ifunction<Dual>(1) {}
+    Dual operator()(const Dual &x) override {
+        return dualmath::dual_step(
+            x, [](double u) { return std::round(u); },
+            [](double u) { return std::fabs(u) - std::floor(std::fabs(u)) == 0.5; },
+            [](double u, bool up) {
+                const double r = std::round(u);
+                if (u > 0.0) {
+                    return up ? r : r - 1.0;
+                }
+                return up ? r + 1.0 : r;
+            });
+    }
+};
+
+struct DualSignFunction : public exprtk::ifunction<Dual> {
+    DualSignFunction() : exprtk::ifunction<Dual>(1) {}
+    Dual operator()(const Dual &x) override { return bngsim::dualmath::sgn(x); }
+};
+
+struct DualTgammaFunction : public exprtk::ifunction<Dual> {
+    DualTgammaFunction() : exprtk::ifunction<Dual>(1) {}
+    Dual operator()(const Dual &x) override { return bngsim::dualmath::tgamma(x); }
+};
+
+struct DualTimeFunction : public exprtk::ifunction<Dual> {
+    Dual *time_ptr = nullptr;
+    DualTimeFunction() : exprtk::ifunction<Dual>(0) {
+        exprtk::ifunction<Dual>::allow_zero_parameters() = true;
+    }
+    Dual operator()() override { return time_ptr ? *time_ptr : Dual(0.0); }
+};
+
+struct DualFunc0Adapter : public exprtk::ifunction<Dual> {
+    std::function<Dual()> fn;
+    explicit DualFunc0Adapter(std::function<Dual()> f)
+        : exprtk::ifunction<Dual>(0), fn(std::move(f)) {
+        exprtk::ifunction<Dual>::allow_zero_parameters() = true;
+    }
+    Dual operator()() override { return fn(); }
+};
+
+struct ExprTkDualEvaluator::Impl {
+    using SymbolTable = exprtk::symbol_table<Dual>;
+    using Expression = exprtk::expression<Dual>;
+    using Parser = exprtk::parser<Dual>;
+
+    SymbolTable symbol_table;
+    // Its own, built on the first compile, for the reasons ExprTkEvaluator's
+    // is (issue #257).
+    std::unique_ptr<Parser> parser;
+    std::vector<Expression> expressions;
+
+    DualMratioFunction mratio_func;
+    DualLnFunction ln_func;
+    DualRintFunction rint_func;
+    DualRoundFunction round_func;
+    DualSignFunction sign_func;
+    DualTgammaFunction tgamma_func;
+    DualTimeFunction time_func;
+    std::vector<std::unique_ptr<exprtk::ifunction<Dual>>> user_functions;
+
+    // ExprTkEvaluator::Impl::init_builtins, key for key.
+    Impl() {
+        const auto constant = [&](const std::string &name, double value) {
+            symbol_table.add_constant(expr_compat::compute_registration_name(name), Dual(value));
+        };
+        constant("_pi", 3.14159265358979323846);
+        constant("_e", 2.71828182845904523536);
+        constant("_NA", 6.02214076e23);
+        constant("_kB", 1.380649e-23);
+        constant("_R", 8.314462618153241);
+        constant("_h", 6.62607015e-34);
+        constant("_F", 96485.33212331002);
+        symbol_table.add_function("ln", ln_func);
+        symbol_table.add_function("rint", rint_func);
+        symbol_table.add_reserved_function("round", round_func);
+        symbol_table.add_function("sign", sign_func);
+        symbol_table.add_function("tgamma", tgamma_func);
+        symbol_table.add_function("mratio", mratio_func);
+        symbol_table.add_function("time", time_func);
+    }
+
+    // ExprTkEvaluator::Impl::configure_parser, setting for setting.
+    Parser &acquire_parser() {
+        if (!parser) {
+            parser = std::make_unique<Parser>();
+            parser->settings().set_max_stack_depth(4096);
+            parser->settings().disable_base_function(Parser::settings_t::e_bf_round);
+        }
+        return *parser;
+    }
+};
+
+ExprTkDualEvaluator::ExprTkDualEvaluator() : impl_(std::make_unique<Impl>()) {}
+ExprTkDualEvaluator::~ExprTkDualEvaluator() = default;
+
+bool ExprTkDualEvaluator::try_define_variable(const std::string &name, Dual *addr) {
+    return impl_->symbol_table.add_variable(expr_compat::compute_registration_name(name), *addr);
+}
+
+bool ExprTkDualEvaluator::define_function(const std::string &name, std::function<Dual()> fn) {
+    auto adapter = std::make_unique<DualFunc0Adapter>(std::move(fn));
+    if (!impl_->symbol_table.add_function(name, *adapter)) {
+        return false;
+    }
+    impl_->user_functions.push_back(std::move(adapter));
+    return true;
+}
+
+int ExprTkDualEvaluator::compile_preprocessed(const std::string &preprocessed_expr) {
+    Impl::Expression expression;
+    expression.register_symbol_table(impl_->symbol_table);
+    Impl::Parser &parser = impl_->acquire_parser();
+    if (!parser.compile(preprocessed_expr, expression)) {
+        throw std::runtime_error("ExprTk (dual) compilation failed for expression: '" +
+                                 preprocessed_expr + "' — " + parser.error());
+    }
+    const int id = static_cast<int>(impl_->expressions.size());
+    impl_->expressions.push_back(std::move(expression));
+    return id;
+}
+
+Dual ExprTkDualEvaluator::evaluate(int expr_id) {
+    if (expr_id < 0 || expr_id >= static_cast<int>(impl_->expressions.size())) {
+        throw std::runtime_error("Invalid dual expression ID: " + std::to_string(expr_id));
+    }
+    return impl_->expressions[static_cast<std::size_t>(expr_id)].value();
+}
+
+void ExprTkDualEvaluator::set_time_ptr(Dual *time_addr) { impl_->time_func.time_ptr = time_addr; }
 
 // ─── Reserved names ──────────────────────────────────────────────────────────
 

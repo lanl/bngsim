@@ -24,7 +24,10 @@ print(batch.species.shape)  # (100, 101, n_species)
 ```
 
 `run_batch` clones the model and resets every point to the `.net` seed initial
-conditions — correct for a dose–response from a fresh start.
+conditions — correct for a dose–response from a fresh start. Where the model is
+not at them (after a `set_concentration`, or a run), it warns that the points do
+not start where the model is. `run_replicates` starts every replicate where the
+model is, as `run` does.
 
 ## Parameter scans that carry a pre-equilibrated state
 
@@ -180,4 +183,18 @@ try:
     sim.run_until(t=1000)
 except bngsim.StopConditionMet as e:
     sim.restore(snap)   # back to where the leg started
+```
+
+`run_batch`, `run_replicates` and `parameter_scan` (with `bifurcate`) check
+every row the same way and raise nothing: a row that meets a condition comes
+back cut there, beside the rows that ran to the end, and `Result.stop_condition`
+names the condition it met (`None` on a row that met none). Conditions are
+checked in the order they were added, and the first one met cuts the row.
+`squeeze=True` is refused while a condition is registered, since a cut row is
+shorter than the rest; `Result.squeeze(rows)` stacks the list when no row was
+cut.
+
+```python
+rows = sim.run_batch(params=[{"k": 0.1}, {"k": 0.001}], t_span=(0, 100))
+[r.stop_condition for r in rows]   # e.g. ['low_A', None]
 ```

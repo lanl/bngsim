@@ -181,7 +181,7 @@ print((vsize_kb() - before) / 1024 / int(sys.argv[2]))
 
 
 def test_a_live_mir_model_holds_far_less_than_upstreams_reservation():
-    """Address space, not memory: 20 live MIR-JIT'd models of a two-species
+    """Address space, not memory: 100 live MIR-JIT'd models of a two-species
     network. With upstream's 128 MB reservation each held 128 MB; with the
     default 32 MB, a little over 32. The bound catches a fall back to
     upstream's size, not the exact setting: a build configured at 0 passes too."""
@@ -190,7 +190,7 @@ def test_a_live_mir_model_holds_far_less_than_upstreams_reservation():
     net = os.path.join(DATA, "simple_decay.net")
     env = {**os.environ, "BNGSIM_CODEGEN_JIT": "mir"}
     done = subprocess.run(
-        [sys.executable, "-c", _RESERVE_PROBE, str(net), "20"],
+        [sys.executable, "-c", _RESERVE_PROBE, str(net), "100"],
         capture_output=True,
         text=True,
         env=env,
@@ -200,9 +200,14 @@ def test_a_live_mir_model_holds_far_less_than_upstreams_reservation():
     per_model_mb = float(done.stdout.strip().splitlines()[-1])
     # Measured on macOS arm64: 32.1 MB a model at the default 32, 128.1 at
     # upstream's 128 and 0.1 at 0, so a model's other mappings come to about
-    # 0.1 MB. 40 leaves 8 MB of that for an allocator that maps more, and
-    # upstream's 128 still fails it by a factor of three.
-    assert per_model_mb <= 40.0, per_model_mb
+    # 0.1 MB. The growth is the whole address space's, though, and that holds
+    # the heap too, about 1.1 MB a live model, which the macos-14 and -15
+    # runners map in regions of up to 128 MB, 128-512 MB for 300 MB of
+    # mallocs (#1402). Two taken among 20 models read as 45.65 MB a model
+    # against a bound of 40. Over 100, 512 MB is 5.1 MB a model, and 64,
+    # halfway to upstream's 128 by ratio, leaves room for it, while upstream's
+    # 128 still fails it by a factor of two.
+    assert per_model_mb <= 64.0, per_model_mb
 
 
 # ── Issue #1215: running out is a RuntimeError, not the end of the process ───
@@ -312,11 +317,16 @@ def vsize_kb():
     return int(out.stdout.split()[0])
 
 src = open(sys.argv[1]).read()
-last = _mir_jit_compile(src)[0] - 1
+n = int(sys.argv[2])
+# Nine tenths of the way: the reservation is MIR_init2's first mapping, so it
+# is long mapped, and every compile gets there. Not the last allocation: on
+# arm64 a compile now and then makes fewer than the first did, and finishes.
+# Late in a compile a failure keeps less heap than midway, 0.8 MB against 2.
+late = _mir_jit_compile(src)[0] * 9 // 10
 
 def fail():
     try:
-        _mir_jit_compile(src, last)
+        _mir_jit_compile(src, late)
     except RuntimeError:
         return
     raise AssertionError("the injected failure did not raise")
@@ -324,17 +334,17 @@ def fail():
 for _ in range(3):
     fail()
 before = vsize_kb()
-for _ in range(20):
+for _ in range(n):
     fail()
-print((vsize_kb() - before) / 1024 / 20)
+print((vsize_kb() - before) / 1024 / n)
 """
 
 
 def test_a_compile_that_runs_out_gives_back_its_address_space(tmp_path):
     """MIR cannot finish a context it failed in, so MirJit abandons it, but it
     unmaps the context's code first: the reservation is what a cap on the
-    address space counts. Failing a compile's last allocation leaves the
-    reservation mapped; 20 such failures keep about nothing of it each."""
+    address space counts. Failing an allocation late in a compile leaves the
+    reservation mapped; 100 such failures keep about nothing of it each."""
     if sys.platform == "win32":
         pytest.skip("POSIX-specific: MIR reserves no address space for its code on Windows")
     src = tmp_path / "model.c"
@@ -342,15 +352,21 @@ def test_a_compile_that_runs_out_gives_back_its_address_space(tmp_path):
         prepare_model_codegen_source(bngsim.Model.from_net(os.path.join(DATA, "simple_decay.net")))
     )
     done = subprocess.run(
-        [sys.executable, "-c", _ABANDON_PROBE, str(src)],
+        [sys.executable, "-c", _ABANDON_PROBE, str(src), "100"],
         capture_output=True,
         text=True,
         timeout=600,
     )
     assert done.returncode == 0, done.stderr[-2000:]
     per_failure_mb = float(done.stdout.strip().splitlines()[-1])
-    # Measured on macOS arm64: 0.00 MB a failure; 32 if the reservation stayed.
-    assert per_failure_mb <= 4.0, per_failure_mb
+    # A failure that kept its reservation keeps all 32 MB of it. What else
+    # grows is the heap an abandoned context keeps, about 1 MB a failure, and
+    # macOS maps a heap in regions of up to 128 MB on arm64 that its own
+    # malloc statistics leave out: one taken among 20 failures read as 6.8-7.25
+    # MB a failure on the macos-14 runners (issue #1402). Over 100 failures,
+    # 0.8 MB a failure on macOS x86_64; three such regions on top of that
+    # would read under 5. A kept reservation reads 32, four times the bound.
+    assert per_failure_mb <= 8.0, per_failure_mb
 
 
 _CAP_PROBE = """

@@ -24,6 +24,28 @@ rm = bngsim.Simulator(model, method="nf_exact", xml_path="model.xml")
 result = rm.run(t_span=(0, 100), n_points=101, seed=42)
 ```
 
+Each run uses the model's parameters. NFsim and RuleMonkey read the XML, so a
+run passes them every parameter set on the model with `Model.set_param` since it
+was loaded, before or after the `Simulator` was built. Parameters that depend on
+it, and seed amounts that read it, follow, except a derived parameter written on
+the model, which keeps the value written there as it does on the model. A model
+whose parameters are all back at their loaded values runs as the XML has it.
+`run_batch` does not run a network-free method: scan point by point with
+`Model.set_param` and `Simulator.run`.
+
+It starts from the model's species amounts the same way. A run passes the
+backend every species amount changed since the model was loaded, whether by
+`Model.set_concentration` or by an SSA or ODE run on the model (a network-free
+run leaves the model as it was). So a network-free run after an SSA run on the
+same model starts where that run ended, as a second SSA run would: call
+`Model.reset()` first, or give the SSA run `model.clone()`, to start both from
+the initial amounts. Where a run passes any parameter, it passes every seed
+species' amount too. Each amount is rounded half-up to a count, as every seed
+is. It takes precedence over the parameter that species' seed amount reads. The
+XML has to list the species as a seed species, under the name the `.net` gives
+it. If it doesn't, a nonzero amount is refused, because the backend would start
+that species at 0.
+
 ### NFsim connectivity option
 
 BNGsim's in-process NFsim wrapper defaults to `connectivity=False`.
