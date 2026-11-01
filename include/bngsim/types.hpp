@@ -1614,19 +1614,20 @@ struct SteadyStateResult {
     double sens_tie_above = 0.0;
     double sens_tie_below = 0.0;
     bool sens_tie_jump = false;
-    // A state held on a jump: where J or ∂f/∂p was taken by dual numbers, a
-    // Newton step from the state, to the root of the branches those derivatives
-    // are of, left a residual larger than the one it started from (each over
-    // its species' terms, Σ|J_ij|·|y_j|, at least 1e-9 of the largest
-    // species', and over 1e-13 of them). The state is
-    // then within the solver's tolerance of a jump that no root of its branch
-    // is beside: `f` jumps across 0 there, and the state is held on the jump
-    // (2·k2·rint(X·1e12)/1e12·X, a staircase whose steps are under the
-    // tolerance), where it does not move as the branch would.
-    // sens_held_species is the species whose residual the step left largest
-    // (0-based; -1 where none), and sens_held_before / sens_held_after the
-    // largest residual before and after the step, each over its terms.
-    // steady_state() refuses it.
+    // A state held on a jump: a Newton step from the state, to the root of the
+    // branches its laws take, changes some law's branch (where the model has a
+    // dual evaluation, however J was taken) and leaves a residual larger than
+    // the one it started from (each over its species' terms, Σ|J_ij|·|y_j|,
+    // at least 1e-9 of the largest species', and over 1e-14 of them), and the
+    // branch moves the species whose residual grew most. The state is then
+    // within the solver's tolerance of a jump in a law's value
+    // that no root of its branch is beside: `f` jumps across 0 there, and the
+    // state is held on the jump (2·k2·rint(X·1e12)/1e12·X, a staircase whose
+    // steps are under the tolerance), where it does not move as the branch
+    // would. sens_held_species is the species whose residual the step left
+    // largest (0-based; -1 where none), and sens_held_before /
+    // sens_held_after the largest residual before and after the step, each
+    // over its terms. steady_state() refuses it.
     int sens_held_species = -1;
     double sens_held_before = 0.0;
     double sens_held_after = 0.0;

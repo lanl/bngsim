@@ -482,6 +482,22 @@ def test_a_state_moved_across_a_jump_is_refused(tmp_path):
         sim.steady_state(sensitivity_params=["s"])
 
 
+def test_a_state_moved_across_a_jump_beside_a_large_column_is_refused(tmp_path):
+    """The same, with W made at 1e10·s in s's column. X moves by dX*/ds = 2,
+    as much as X* is per unit of s, which against 1e-8 of dW*/ds = 1e10 read
+    as not moving, and dG*/ds = 0 was returned."""
+    path = tmp_path / "f.net"
+    path.write_text(
+        _NET.format(s=1.0, rate="floor(Xo)", declined=_DECLINED + "    8 0 4 big\n    9 4 0 one\n")
+        .replace("    2 k1  0.21\n", "    2 k1  0.5\n")
+        .replace("    5 one 1.0\n", "    5 one 1.0\n    6 big 1e10*s\n")
+        .replace("    3 Z() 1\n", "    3 Z() 1\n    4 W() 0\n")
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#1330.*value jumps where X\(\) sits"):
+        sim.steady_state(sensitivity_params=["s"])
+
+
 # #1330's comment: X's loss written as a staircase, 2·k2·rint(X·1e12)/1e12·X,
 # with steps of 1e-12 in X, under the solver's tolerance.
 _STAIRCASE = """begin parameters
@@ -516,16 +532,36 @@ end reactions
 """
 
 
-def test_a_state_held_on_a_jump_is_refused(tmp_path):
+@pytest.mark.parametrize("steps", ["1e12", "1e13"])
+def test_a_state_held_on_a_jump_is_refused(tmp_path, steps):
     """At q = 1e-3 the step the state is on has no root: f jumps across 0 at
     its edge, and the state is held there, within the tolerance. The branch's
     dX*/dp, q/(k1 + 2·k2·rint(X·1e12)/1e12) = 6.7e-4, is not the held state's,
-    and was returned."""
+    and was returned. With steps of 1e-13 the jump is 1e-13 of X's terms."""
     path = tmp_path / "stair.net"
-    path.write_text(_STAIRCASE.format(q=1e-3))
+    path.write_text(_STAIRCASE.format(q=1e-3).replace("1e12", steps))
     sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
     with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
         sim.steady_state(sensitivity_params=["p"])
+
+
+def test_a_state_held_on_a_jump_is_refused_with_the_closed_form(tmp_path):
+    """The same hold where the closed form differentiates every law: X's loss
+    k1·(1 + 1e-12·if(X > c, 1, 0)), c 3e-12 under s/k1, so that neither branch
+    has a root on its side of c. The state is held at X* = c, and dX*/ds =
+    1/k1 = 4.76 was returned, where the held state does not move (issue
+    #1330's review)."""
+    path = tmp_path / "ifjump.net"
+    path.write_text(
+        f"begin parameters\n 1 s 1.3\n 2 k1 0.21\n 3 c {1.3 / K1 - 3e-12!r}\nend parameters\n"
+        "begin functions\n 1 loss() k1*(1 + 1e-12*if(Xo > c, 1, 0))\nend functions\n"
+        "begin species\n 1 X() 0\nend species\nbegin groups\n 1 Xo 1\nend groups\n"
+        "begin reactions\n 1 0 1 s\n 2 1 0 loss\nend reactions\n"
+    )
+    model = bngsim.Model.from_net(str(path))
+    assert model.prepare_analytical_jacobian()
+    with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
+        bngsim.Simulator(model, method="ode").steady_state(sensitivity_params=["s"])
 
 
 def test_a_root_on_a_step_is_returned(tmp_path):

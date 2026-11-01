@@ -37,14 +37,25 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace bngsim {
 
 enum class DualTie : int { Value = 0, Above = 1, Below = -1 };
 
+// One branch a law took (dual_note_branch): what decided it, a comparison's
+// order, a step's value, abs's sign or a table's piece.
+struct DualBranch {
+    double taken = 0.0;
+};
+
 struct DualContext {
     DualTie tie = DualTie::Value;
     bool tied = false; // a tie was met since this was last cleared
+    // Where set, each branch taken is appended, in the order the laws take
+    // them: two states whose records differ are on different branches of some
+    // law (NetworkModel::dual_branches).
+    std::vector<DualBranch> *branches = nullptr;
 };
 
 // One per thread: a NetworkModel is evaluated on one thread at a time (every
@@ -52,6 +63,30 @@ struct DualContext {
 inline DualContext &dual_context() {
     thread_local DualContext context;
     return context;
+}
+
+inline void dual_note_branch(double taken) {
+    DualContext &ctx = dual_context();
+    if (ctx.branches != nullptr) {
+        ctx.branches->push_back(DualBranch{taken});
+    }
+}
+
+// Whether two records (dual_note_branch) are of different branches: of
+// different lengths (an if() read the other way), or with an entry that
+// differs. NaN is the same as NaN.
+inline bool dual_branches_differ(const std::vector<DualBranch> &from,
+                                 const std::vector<DualBranch> &to) {
+    if (from.size() != to.size()) {
+        return true;
+    }
+    for (std::size_t k = 0; k < from.size(); ++k) {
+        const double a = from[k].taken, b = to[k].taken;
+        if (!(a == b || (std::isnan(a) && std::isnan(b)))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // A product's derivative a'·b + a·b'. A term whose derivative is 0 is left out
@@ -174,6 +209,7 @@ inline Dual &Dual::operator/=(const Dual &o) { return *this = *this / o; }
 // direction by an infinitesimal step on the side `tie` says; Value decides a
 // tie as level. A NaN on either side compares as nothing does (unordered = 2).
 inline int dual_order(const Dual &a, const Dual &b) {
+    dual_note_branch(a.v < b.v ? -1.0 : (a.v > b.v ? 1.0 : (a.v == b.v ? 0.0 : 2.0)));
     if (a.v < b.v) {
         return -1;
     }
@@ -218,6 +254,7 @@ namespace dualmath {
 template <class F, class Jumps, class After>
 inline Dual dual_step(const Dual &x, F &&f, Jumps &&jumps, After &&after) {
     const double value = f(x.v);
+    dual_note_branch(value);
     if (x.d == 0.0 || !std::isfinite(x.v) || !jumps(x.v)) {
         return Dual(value);
     }
@@ -351,6 +388,7 @@ inline Dual tgamma(const Dual &x) {
 // the one-sided derivative, |x'| and −|x'|.
 inline Dual abs(const Dual &x) {
     const double value = (x.v < 0.0) ? -x.v : x.v;
+    dual_note_branch(x.v > 0.0 ? 1.0 : (x.v < 0.0 ? -1.0 : x.v));
     if (x.v > 0.0) {
         return Dual(value, x.d);
     }

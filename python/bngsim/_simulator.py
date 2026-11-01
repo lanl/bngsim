@@ -8562,9 +8562,10 @@ class Simulator:
         largest, at least) the steady state has no derivative, and it is
         refused.
 
-        A state held on a jump in a law's value is refused too: one within the
-        solver's tolerance of a jump that no root of its branch is beside,
-        where a Newton step to that branch's root leaves a larger residual
+        A state held on a jump in a law's value is refused too, however the
+        derivatives were taken: one within the solver's tolerance of a jump
+        that no root of its branch is beside, where a Newton step to that
+        branch's root changes some law's branch and leaves a larger residual
         than it started from. The branch's derivative is not the state's
         there.
         """
@@ -11770,15 +11771,16 @@ class SteadyStateResult:
         its species there and the parameter moves the species, so that the
         steady state crosses the jump (the two sides may agree then).
     sens_held_species : str or None
-        Where ``J`` or ``∂f/∂p`` was taken by dual numbers and the state is
-        held on a jump in a rate law's value within the solver's tolerance of
-        it, with no root of its branch beside it: a Newton step to that
-        branch's root left a larger residual than it started from. The species
-        whose residual the step left largest (issue #1330); ``steady_state``
-        raises where there is one. None where the step took the residual down.
+        Where the state is held on a jump in a rate law's value within the
+        solver's tolerance of it, with no root of its branch beside it: a
+        Newton step to that branch's root changed some law's branch and left a
+        larger residual than it started from. The species whose residual the
+        step left largest (issue #1330); ``steady_state`` raises where there
+        is one. None where the step changed no branch or took the residual
+        down.
     sens_held_before, sens_held_after : float
         The largest residual before and after that step, each over its
-        species' terms.
+        species' terms (at least 1e-9 of the largest species').
 
     Notes
     -----

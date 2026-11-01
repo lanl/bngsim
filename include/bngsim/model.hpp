@@ -562,6 +562,12 @@ class NetworkModel {
                                   bool *jumped = nullptr,
                                   std::vector<char> *jumped_columns = nullptr);
 
+    // The branches the laws take at (t, conc), in the order they take them
+    // (bngsim/dual.hpp, dual_note_branch), into `out`: two states whose records
+    // dual_branches_differ() are on different branches of some law. False
+    // where the model has no dual evaluation.
+    bool dual_branches(double t, const double *conc, std::vector<DualBranch> &out);
+
     // ∂f/∂p for the parameter at `param_idx0`, into `out` (n_species): the
     // total derivative, through the parameters derived from it, as a step of it
     // held against its own expression gives (SteadyStateRhs::sync_params).

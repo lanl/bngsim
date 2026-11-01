@@ -88,6 +88,11 @@ std::vector<std::intptr_t> dual_shadow_key(const NetworkModel::Impl &impl) {
 // interval evaluate_at reads, and at a knot the index moves across, the tie.
 Dual dual_table(const TableFunction &tf, const Dual &x) {
     const double value = tf.evaluate_at(x.v);
+    // The piece: a step table's value, a linear table's slope (which changes
+    // only at a corner).
+    if (std::isfinite(x.v)) {
+        dual_note_branch(tf.method() == InterpolationMethod::Step ? value : tf.slope_at(x.v));
+    }
     if (x.d == 0.0 || !std::isfinite(x.v)) {
         return Dual(value, x.d == 0.0 ? 0.0 : std::numeric_limits<double>::quiet_NaN());
     }
@@ -536,6 +541,18 @@ bool dual_same_value(double base, double side, double scale) {
 }
 
 } // namespace
+
+bool NetworkModel::dual_branches(double t, const double *conc, std::vector<DualBranch> &out) {
+    DualShadow *s = dual_shadow_();
+    out.clear();
+    if (!s->eval) {
+        return false;
+    }
+    return with_tie(DualTie::Value, nullptr, [&] {
+        dual_context().branches = &out;
+        return dual_evaluate_(*s, t, conc, nullptr, -1, false, false);
+    });
+}
 
 bool NetworkModel::fill_dense_dual_jacobian(double t, const double *conc, double *jac, DualTie tie,
                                             bool *tied, bool *jumped,

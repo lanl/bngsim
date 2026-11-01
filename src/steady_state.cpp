@@ -290,6 +290,9 @@ class SteadyStateRhs {
                         DualTie tie = DualTie::Value, bool *tied = nullptr) {
         return model_.fill_dual_dfdp(t, y, param_index, out, tie, tied);
     }
+    bool dual_branches(double t, const double *y, std::vector<DualBranch> &out) {
+        return model_.dual_branches(t, y, out);
+    }
 
     // The analytical ∂f/∂p exists only in the compiled artifact — there is no
     // interpreted counterpart, so an absent symbol means the caller must
@@ -4328,29 +4331,64 @@ struct SsColumnSystem {
     double horizon = 0.0; // the time the solve was given to settle in (max_time)
 };
 
-// Issue #1330: J and ∂f/∂p by dual numbers are those of the branch each law
-// takes at the state. Where the state is within the solver's tolerance of a
-// jump in a law's value and no root of its branch is beside it, `f` jumps
-// across 0 at the jump and the state is held there: 2·k2·rint(X·1e12)/1e12·X,
-// a staircase whose steps are under the tolerance, at q = 1e-3 in #1330's
-// comment. Held on the jump, the state does not move as the branch would
-// (dX*/dp = 6.7e-4 from the branch, nothing on the jump). A Newton step from
-// it, to the root of the branch, crosses the jump, and the residual it leads
-// to is no smaller than the one it left; from a root of the branch the step
-// takes the residual down by a factor of the residual. Each species' residual
-// is taken over its terms (rhs_term_scale), and one under kRoundingShare of
-// them is what rounding left at either state. A species whose terms are under
-// kScaleFloor of the largest species' is taken over that instead: egfr_path
+// How far apart an entry of the columns solved with the matrices from the two
+// sides of a law's change of branch (issue #1330) may be, as a part of itself,
+// and the least it is held to, as a part of its column's largest. Both are
+// exact matrices: where the side does not matter, the two answers differ by
+// what solving a different matrix rounds, and where it does, by the kink.
+static constexpr double kDualSidesAgree = 1e-8;
+static constexpr double kDualEntryFloor = 1e-10;
+
+// Whether a parameter moves species i on the branch the state is on: its entry
+// of dY_ss/dp is more than kDualSidesAgree of the species' own scale per unit
+// of the parameter, |y_i|/|p| (|y_i| where p is 0), and of kDualEntryFloor of
+// the column's largest. Against the column's largest alone, X beside G at 1e8
+// (dX*/dp = 6.7e-4 where dG*/dp = 1e8) read as not moving.
+static bool ss_species_moves(double entry, double y_i, double p_value, double column_largest) {
+    const double per_p = std::abs(p_value) > 0.0 ? std::abs(p_value) : 1.0;
+    const double own = std::abs(y_i) / per_p;
+    return !(std::abs(entry) <= kDualSidesAgree * std::max(own, kDualEntryFloor * column_largest));
+}
+
+// The least residual, of a species' terms, that a state held on a jump is
+// refused for (ss_measure_held_on_a_jump): over what f's rounding leaves where
+// a law changes branch within a Newton step.
+static constexpr double kHeldResidual = 1e-14;
+
+// Issue #1330: a state held on a jump in a law's value. Where the state is
+// within the solver's tolerance of a jump that no root of its branch is beside,
+// `f` jumps across 0 there and the state is held on the jump:
+// 2·k2·rint(X·1e12)/1e12·X, a staircase whose steps are under the tolerance,
+// at q = 1e-3 in #1330's comment, or 1e-12·if(X > c, 1, 0) in a loss. Held,
+// the state does not move as the branch would (dX*/dp = 6.7e-4 from the
+// branch, nothing on the jump), and the derivative of the branch, however it
+// was taken, is not the state's.
+//
+// A Newton step from such a state, to the root of the branch, crosses the jump:
+// some law takes another branch at the state it leads to (dual_branches, where
+// the model has a dual evaluation), and the residual there is larger than the
+// one it left. A step that changes no law's branch is not asked, so that no
+// smooth model is: BIOMD0000000419 has a residual of 5e-14 of its terms, and
+// its step leaves 1e-13. A step across a law's kink, where the root is on the
+// other branch, leaves a smaller residual; the columns there are #995's
+// (ss_measure_root, 6). Each species' residual is taken over its terms
+// (rhs_term_scale), at least kScaleFloor of the largest species': egfr_path
 // has Shc at 2.7e5 bound only by receptor species at nothing, its terms 2e-30
-// beside others' 220, and the step that moves those species by 1e-27 takes
-// its residual from 2e-30 to 1e-29, all of itself. `f` is the right-hand side at
-// the returned state and `to` the state the step leads to. Leaves the
-// right-hand side's caches as an evaluation at the returned state leaves them.
+// beside others' 220. A species whose residual is not a number at either
+// state is passed over. `f` is the right-hand side at the returned state and
+// `to` the state the step leads to. Leaves the right-hand side's caches as an
+// evaluation at the returned state leaves them.
 static void ss_measure_held_on_a_jump(SteadyStateRhs &rhs, SteadyStateResult &result,
                                       const double *J, int ns, const std::vector<int> &unknowns,
-                                      const ResidualSubspace &sub, const std::vector<double> &f,
-                                      const std::vector<double> &to) {
+                                      const ResidualSubspace &sub,
+                                      const std::vector<double> &param_values,
+                                      const std::vector<double> &f, const std::vector<double> &to) {
     const double *y_ss = result.concentrations.data();
+    std::vector<DualBranch> at_state, at_step;
+    if (!rhs.dual_branches(0.0, y_ss, at_state) || !rhs.dual_branches(0.0, to.data(), at_step) ||
+        !dual_branches_differ(at_state, at_step)) {
+        return;
+    }
     std::vector<double> terms, f_to(static_cast<size_t>(ns), 0.0);
     rhs_term_scale(J, y_ss, ns, terms);
     double largest = 0.0;
@@ -4371,15 +4409,38 @@ static void ss_measure_held_on_a_jump(SteadyStateRhs &rhs, SteadyStateResult &re
         }
         const size_t k = static_cast<size_t>(i);
         const double over = std::max(terms[k], kScaleFloor * largest);
-        before = std::max(before, std::abs(f[k]) / over);
-        const double r = std::abs(f_to[k]) / over;
-        if (!(r <= after)) {
-            after = r;
+        const double r0 = std::abs(f[k]) / over;
+        const double r1 = std::abs(f_to[k]) / over;
+        if (!std::isfinite(r0) || !std::isfinite(r1)) {
+            continue;
+        }
+        before = std::max(before, r0);
+        if (r1 > after) {
+            after = r1;
             at = i;
         }
     }
     rhs.eval(0.0, y_ss, f_to.data());
-    if (after > std::max(before, kRoundingShare)) {
+    if (!(after > std::max(before, kHeldResidual))) {
+        return;
+    }
+    // Held where it is, the species does not move with a parameter. Where the
+    // branch does not move it either, the columns are the held state's: the
+    // upstream l-type calcium model holds Voltage at 50 by laws of its own.
+    const int np = result.n_sens_params;
+    bool moves = false;
+    for (int p = 0; p < np && !moves; ++p) {
+        double largest_entry = 0.0;
+        for (const int i : sub.included) {
+            const double v = result.sensitivity[static_cast<size_t>(i) * np + p];
+            if (std::isfinite(v)) {
+                largest_entry = std::max(largest_entry, std::abs(v));
+            }
+        }
+        moves = ss_species_moves(result.sensitivity[static_cast<size_t>(at) * np + p], y_ss[at],
+                                 param_values[static_cast<size_t>(p)], largest_entry);
+    }
+    if (moves) {
         result.sens_held_species = at;
         result.sens_held_before = before;
         result.sens_held_after = after;
@@ -4392,7 +4453,7 @@ static void ss_measure_held_on_a_jump(SteadyStateRhs &rhs, SteadyStateResult &re
 // state leaves them.
 static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, const double *J, int ns,
                             int np, const SsColumnSystem &sys, const ResidualSubspace &sub,
-                            bool want_analytical, bool by_dual) {
+                            bool want_analytical) {
     const ConservationLaws &laws = *sys.laws;
     const std::vector<int> &unknowns = *sys.unknowns;
     const int n = static_cast<int>(unknowns.size());
@@ -4548,9 +4609,7 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         result.sens_root_relaxation = inf;
         return;
     }
-    if (by_dual) {
-        ss_measure_held_on_a_jump(rhs, result, J, ns, unknowns, sub, f, stepped.to);
-    }
+    ss_measure_held_on_a_jump(rhs, result, J, ns, unknowns, sub, sys.param_values, f, stepped.to);
     const auto all_finite = [](const std::vector<double> &v) {
         for (const double x : v) {
             if (!std::isfinite(x)) {
@@ -5152,14 +5211,6 @@ static void ss_confirm_differenced_columns(SteadyStateRhs &rhs, SteadyStateResul
     }
 }
 
-// How far apart an entry of the columns solved with the matrices from the two
-// sides of a law's change of branch (issue #1330) may be, as a part of itself,
-// and the least it is held to, as a part of its column's largest. Both are
-// exact matrices: where the side does not matter, the two answers differ by
-// what solving a different matrix rounds, and where it does, by the kink.
-static constexpr double kDualSidesAgree = 1e-8;
-static constexpr double kDualEntryFloor = 1e-10;
-
 // Issue #1330: J or ∂f/∂p was taken by dual numbers at a state that sits where
 // a law changes branch (`jacobian_tied`, `dfdp_tied`): the derivative of the
 // branch the state is on is one of two one-sided ones. The columns are solved
@@ -5174,7 +5225,8 @@ static constexpr double kDualEntryFloor = 1e-10;
 template <class Solve>
 static void ss_confirm_dual_sides(SteadyStateRhs &rhs, SteadyStateResult &result, const double *J,
                                   std::vector<double> &dfdp, const std::vector<int> &pidx, int ns,
-                                  int np, const ResidualSubspace &sub, bool jacobian_tied,
+                                  int np, const ResidualSubspace &sub,
+                                  const std::vector<double> &param_values, bool jacobian_tied,
                                   bool dfdp_tied, Solve &&solve_columns) {
     if (!jacobian_tied && !dfdp_tied) {
         return;
@@ -5237,7 +5289,8 @@ static void ss_confirm_dual_sides(SteadyStateRhs &rhs, SteadyStateResult &result
             // derivative (floor(X) at X* = 2 with dX*/ds = 1/k1: G* steps from
             // 1 to 2). Held where it is (dX*/dp = 0), it stays on the jump.
             const bool crosses =
-                jumps[static_cast<size_t>(i)] && !(std::abs(v) <= kDualSidesAgree * largest);
+                jumps[static_cast<size_t>(i)] &&
+                ss_species_moves(v, y_ss[i], param_values[static_cast<size_t>(p)], largest);
             if (crosses) {
                 apart = std::numeric_limits<double>::infinity();
             }
@@ -5422,12 +5475,6 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
 
     // Issue #995: what ss_measure_root needs to solve the columns again.
     SsColumnSystem column_system;
-    // Whether the columns' J or ∂f/∂p was taken by dual numbers (issue #1330),
-    // asked when the columns have been solved.
-    const auto by_dual = [&result]() {
-        return result.sens_jacobian_source == kAutomaticDifferentiation ||
-               result.sens_dfdp_source == kAutomaticDifferentiation;
-    };
     column_system.fill_dfdp = fill_dfdp;
     column_system.model = &model;
     column_system.start = &start_state;
@@ -5673,8 +5720,8 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         };
         solve_columns(J.data(), result.sensitivity, &result.sens_jacobian_rcond);
         ss_confirm_differenced_columns(rhs, result, J.data(), ns, np, sub, solve_columns);
-        ss_confirm_dual_sides(rhs, result, J.data(), dfdp, pidx, ns, np, sub, jacobian_tied,
-                              dfdp_tied, solve_columns);
+        ss_confirm_dual_sides(rhs, result, J.data(), dfdp, pidx, ns, np, sub,
+                              column_system.param_values, jacobian_tied, dfdp_tied, solve_columns);
 
         // Issue #995: whether this was an isolated root, and the state on it,
         // asked of the same system. The totals and the fixed species force the
@@ -5703,8 +5750,7 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
             }
             return add;
         };
-        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical,
-                        by_dual());
+        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical);
 
         // A masked-out species was held fixed above, which is what made the
         // system solvable — but "held fixed" is not a gradient. Its row read 0
@@ -5752,8 +5798,8 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         };
         solve_columns(J.data(), result.sensitivity, &result.sens_jacobian_rcond);
         ss_confirm_differenced_columns(rhs, result, J.data(), ns, np, sub, solve_columns);
-        ss_confirm_dual_sides(rhs, result, J.data(), dfdp, pidx, ns, np, sub, jacobian_tied,
-                              dfdp_tied, solve_columns);
+        ss_confirm_dual_sides(rhs, result, J.data(), dfdp, pidx, ns, np, sub,
+                              column_system.param_values, jacobian_tied, dfdp_tied, solve_columns);
 
         // Issue #995: whether this was an isolated root, and the state on it.
         std::vector<int> every_species(static_cast<size_t>(ns));
@@ -5763,8 +5809,7 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         column_system.laws = &all_laws;
         column_system.unknowns = &every_species;
         column_system.forcing = [](const double *, int, int) { return 0.0; };
-        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical,
-                        by_dual());
+        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical);
 
         // RAII guards handle cleanup
     }
