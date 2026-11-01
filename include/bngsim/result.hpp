@@ -22,9 +22,18 @@ enum LinearSolverKind {
 };
 
 struct SolverStats {
-    int n_steps = 0;             // total internal solver steps
-    int n_rhs_evals = 0;         // RHS function evaluations
-    int n_jac_evals = 0;         // Jacobian evaluations
+    int n_steps = 0;     // total internal solver steps
+    int n_rhs_evals = 0; // RHS function evaluations
+    int n_jac_evals = 0; // linear-solver setups (CVodeGetNumLinSolvSetups)
+    // RHS evaluations spent forming Jacobians by difference quotients, which
+    // n_rhs_evals does not count (issue #1333): bngsim's dense and colored
+    // quotients' (#1302's jump test included), and CVODE's own where it forms
+    // one, which no run leaves it to. 0 where every Jacobian is closed-form.
+    int n_jac_rhs_evals = 0;
+    // Jacobians CVODE asked for (CVodeGetNumJacEvals), one that a failed f
+    // call cut short included: n_jac_evals counts the linear solver's setups,
+    // and a setup can reuse the Jacobian it last formed.
+    int n_jac_formations = 0;
     int n_err_test_fails = 0;    // error test failures
     int n_nonlin_iters = 0;      // nonlinear solver iterations
     int n_nonlin_conv_fails = 0; // nonlinear (Newton) convergence failures —
