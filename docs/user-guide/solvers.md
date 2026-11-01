@@ -91,8 +91,9 @@ longer, nearly all of it on models that had been wrong.
 What the default cannot scale is a species that starts at 0, or below every
 scale the start gives, in a model where no species starts small: in a model
 whose species all start at 0, every species is at the scalar. `run()`,
-`run_until()`, `run_batch()`, `parameter_scan()` and
-`compute_all_sensitivities()` raise `bngsim.AtolScaleWarning` in that case,
+`run_until()`, `run_batch()`, `parameter_scan()`,
+`compute_all_sensitivities()` and `bngsim.jax.differentiable_solve()` raise
+`bngsim.AtolScaleWarning` in that case,
 once per call and naming the species, where you gave no `atol` and a species
 the solver integrates stays below its tolerance while reaching at least 1e-6 of
 the run's largest. A species stuck at rounding in a count model does not reach
