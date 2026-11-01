@@ -2502,6 +2502,12 @@ class Model:
         closed-form terms (:meth:`prepare_analytical_jacobian`), which an ODE
         solve would do at its own setup; later calls reuse them.
 
+        Where there is no closed form, the matrix is exact all the same, by
+        dual numbers through the interpreter (issue #1330): each rate law and
+        function as the interpreter evaluates it, differentiated branch by
+        branch, with no step. Only a model the dual evaluation cannot follow (a
+        ring of functions that read each other, ``rateOf``) is differenced.
+
         Parameters
         ----------
         y : array_like, shape ``(n_species,)``
@@ -2520,9 +2526,10 @@ class Model:
         Returns
         -------
         JacobianMatrix or scipy.sparse.csc_array
-            ``.source`` is ``"analytical"`` or ``"finite-difference"``, the
-            spellings :attr:`bngsim.SteadyStateResult.solver_jacobian_source`
-            uses for the same two cases.
+            ``.source`` is ``"analytical"``, ``"automatic-differentiation"`` or
+            ``"finite-difference"``, the spellings
+            :attr:`bngsim.SteadyStateResult.sens_jacobian_source` uses for the
+            same three cases.
 
         Raises
         ------
@@ -2532,13 +2539,18 @@ class Model:
             If rates of change are written in terms of each other's ``rateOf``
             in a ring (an algebraic loop, which has no right-hand side).
         SimulationError
-            If the matrix is a difference quotient whose step decides an entry
-            (issue #1002): the entry moves by more than 1e-4 of itself (1e-10 of
-            its column's largest, at least) when its column is taken again at
-            the species' own step or at half the first.
+            If the matrix is exact by dual numbers and ``y`` sits where a rate
+            law changes branch (``if(X > c, …)`` at X = c, ``abs(X)`` or
+            ``max(X, 0)`` at X = 0, a step of ``floor()``) such that an entry is
+            not the same from the two sides (issue #1330): the Jacobian has no
+            value there. Or if the matrix is a difference quotient whose step
+            decides an entry (issue #1002): the entry moves by more than 1e-4 of
+            itself (1e-10 of its column's largest, at least) when its column is
+            taken again at the species' own step or at half the first.
         """
         from bngsim._evaluators import (
             ANALYTICAL,
+            AUTOMATIC_DIFFERENTIATION,
             FINITE_DIFFERENCE,
             JacobianMatrix,
             csc_from_pattern,
@@ -2551,23 +2563,61 @@ class Model:
         if ring:
             raise ModelError(ring)
         analytical = self.prepare_analytical_jacobian()
-        source = ANALYTICAL if analytical else FINITE_DIFFERENCE
         y_arr = np.asarray(y, dtype=np.float64)
         t = float(t)
-        if sparse:
-            if analytical:
-                vals = self._core.fill_sparse_analytical_jacobian(t, y_arr)
-            else:
-                dense = self._core.fill_dense_fd_jacobian(t, y_arr)
-                self._raise_if_the_step_decides(t, y_arr, dense)
-                vals = gather_pattern(self._core, dense)
-            return csc_from_pattern(self._core, vals, source)
         if analytical:
-            dense = self._core.fill_dense_analytical_jacobian(t, y_arr)
+            source = ANALYTICAL
+            if sparse:
+                vals = self._core.fill_sparse_analytical_jacobian(t, y_arr)
+                return csc_from_pattern(self._core, vals, source)
+            return JacobianMatrix(self._core.fill_dense_analytical_jacobian(t, y_arr), source)
+        dense = self._dual_jacobian(t, y_arr)
+        if dense is not None:
+            source = AUTOMATIC_DIFFERENTIATION
         else:
+            source = FINITE_DIFFERENCE
             dense = self._core.fill_dense_fd_jacobian(t, y_arr)
             self._raise_if_the_step_decides(t, y_arr, dense)
+        if sparse:
+            return csc_from_pattern(self._core, gather_pattern(self._core, dense), source)
         return JacobianMatrix(dense, source)
+
+    def _dual_jacobian(self, t: float, y: np.ndarray) -> np.ndarray | None:
+        """The Jacobian exact by dual numbers (issue #1330), or None where the
+        model has no dual evaluation. Where ``y`` sits on a law's change of
+        branch the matrix is taken from each side too, and refused where an
+        entry differs between them: the Jacobian has no value there."""
+        got = self._core.fill_dense_dual_jacobian(t, y, 0)
+        if got is None:
+            return None
+        dense, tied, _ = got
+        if not tied:
+            return dense
+        sides = []
+        for side in (1, -1):
+            other = self._core.fill_dense_dual_jacobian(t, y, side)
+            if other is not None and other[2]:
+                raise SimulationError(
+                    "Model.jacobian() has no value at this state (issue #1330): a rate law "
+                    "changes branch here (a comparison, if(), a step of floor() or rint()) "
+                    "and its value jumps, so the right-hand side has no derivative across "
+                    "it. A state beside the branch point has one."
+                )
+            sides.append(other[0] if other is not None else np.full_like(dense, np.nan))
+        apart = np.maximum(np.abs(sides[0] - dense), np.abs(sides[1] - dense))
+        apart[np.isnan(apart)] = np.inf
+        if not np.any(apart > 0.0):
+            return dense
+        i, j = np.unravel_index(int(np.argmax(apart)), apart.shape)
+        names = self.species_names
+        raise SimulationError(
+            "Model.jacobian() has no value at this state (issue #1330): it sits where a "
+            "rate law changes branch (a comparison, if(), abs(), min() or max() at a tie, "
+            "a step of floor() or rint()), and the entry "
+            f"d(rate of {names[i]})/d{names[j]} is {sides[0][i, j]:.6g} from one side and "
+            f"{sides[1][i, j]:.6g} from the other. The Jacobian of either branch is that "
+            f"of a state beside this one: move {names[j]} off the branch point."
+        )
 
     def _raise_if_the_step_decides(self, t: float, y: np.ndarray, dense: np.ndarray) -> None:
         """Refuse the difference quotient ``dense`` where it and the same
