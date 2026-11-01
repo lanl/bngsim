@@ -386,16 +386,22 @@ def test_dfdp_reaches_a_law_through_a_derived_parameter(tmp_path):
 
 
 def test_a_state_parked_on_a_jump_has_columns_from_either_side(tmp_path):
-    """The upstream l-type calcium model (k_v_stim = 50 with k_v_leak = 1):
-    Voltage relaxes to exactly 50, where v_rec = if((-70 + V) < -20, ...)
-    jumps. From either side the law's value differs, and the column of V is
-    that side's branch; the columns solved with each agree, as the steady
-    state does not cross the jump as the parameters move. They are the closed
-    form's, which re-solves at p ± h confirm (-0.534842 and 0.445702 for the
-    largest entries)."""
+    """The upstream l-type calcium model (k_v_stim = 50 with k_v_leak = 1),
+    started with Voltage at 50, where v_rec = if((-70 + V) < -20, ...) jumps.
+    V's rate is then exactly 0 and V stays on the jump: relaxing to it instead
+    leaves V an ulp to one side, which side by the platform's rounding, and the
+    run dies on one of them (the fixture's header). From either side the law's
+    value differs, and the column of V is that side's branch; the columns
+    solved with each agree, as the steady state does not cross the jump as the
+    parameters move. They are the closed form's, which re-solves at p ± h
+    confirm (-0.534842 and 0.445702 for the largest entries)."""
     text = (_DATA / "ltype_calcium_discontinuous_jacobian.net").read_text()
     path = tmp_path / "ltype.net"
-    path.write_text(text.replace("49.99999999999", "50.0"))
+    path.write_text(
+        text.replace("49.99999999999", "50.0").replace(
+            "    3 Voltage() 1\n", "    3 Voltage() 50\n"
+        )
+    )
     params = ["k_open_max", "V_half"]
     dual = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode", jacobian="fd")
     got = dual.steady_state(sensitivity_params=params)
@@ -407,6 +413,7 @@ def test_a_state_parked_on_a_jump_has_columns_from_either_side(tmp_path):
     # The state is on the jump: from a side, a law's value is not its value.
     core = bngsim.Model.from_net(str(path))._core
     y = np.asarray(got.concentrations)
+    assert y[2] == 50.0  # Voltage, on the jump
     assert core.fill_dense_dual_jacobian(0.0, y, 0)[1]  # tied
     assert any(core.fill_dense_dual_jacobian(0.0, y, side)[2] for side in (1, -1))  # jumped
 
