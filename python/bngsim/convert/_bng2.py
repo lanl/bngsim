@@ -103,7 +103,13 @@ def _name_aligned_perm(src: Model, reloaded: Model) -> list[int]:
 def _rhs_delta(src: Model, reloaded: Model, perm: list[int], times=_PROBE_TIMES) -> float:
     """Largest scale-relative ``|Δ dy/dt|`` over the shared initial state and a few
     aligned probe states, evaluated at each of ``times``. Non-finite cells
-    (out-of-domain probes) are skipped."""
+    (out-of-domain probes) are skipped.
+
+    ``perm[i]`` is the reload's index of source species ``i``
+    (:func:`_name_aligned_perm`): the reload's state puts ``y[i]`` at
+    ``perm[i]``, and its derivative is read back in source order as ``b[perm]``,
+    as ``_validate._ar_report_delta`` reads ``back_perm``. ``y[perm]`` is the
+    inverse, the same only when BNG2.pl's reorder is its own inverse."""
     import numpy as np
 
     y0 = np.asarray(src.get_state(), dtype=float)
@@ -113,9 +119,10 @@ def _rhs_delta(src: Model, reloaded: Model, perm: list[int], times=_PROBE_TIMES)
     for t in times:
         for y in states:
             a = np.asarray(src._core._eval_rhs(t, y.tolist()), dtype=np.float64)
-            b = np.asarray(reloaded._core._eval_rhs(t, y[perm].tolist()), dtype=np.float64)
-            bb = np.empty_like(b)
-            bb[perm] = b
+            yr = np.empty_like(y)
+            yr[perm] = y
+            b = np.asarray(reloaded._core._eval_rhs(t, yr.tolist()), dtype=np.float64)
+            bb = b[perm]
             finite = np.isfinite(a) & np.isfinite(bb)
             if not finite.any():
                 continue

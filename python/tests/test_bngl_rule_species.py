@@ -153,10 +153,16 @@ end functions
     assert amap == {"@c::__ar_X()": ("expression", "X", 1.0)}
 
 
-def test_the_column_check_reads_a_reordered_reload_in_its_own_order(tmp_path):
-    """``_ar_report_delta`` on a reload whose species BNG2.pl put in another
-    order: read at the same state through ``back_perm``, it agrees; read in the
-    source's order, it does not."""
+def test_both_checks_read_a_reordered_reload_in_its_own_order(tmp_path):
+    """The two halves of the bng2 gate on a reload whose species BNG2.pl put in
+    another order, a 3-cycle (``[C, B, A]`` for the source's ``[A, C, B]``),
+    which a reorder that is its own inverse cannot tell from its inverse.
+    ``_name_aligned_perm`` gives the reload's index of each source species, and
+    the column check (``back_perm``) and the right-hand side (``_rhs_delta``)
+    both read the reload at the same state through it: they agree. Read in the
+    source's order, or through the inverse (which ``_rhs_delta`` applied), they
+    do not."""
+    from bngsim.convert._bng2 import _name_aligned_perm, _rhs_delta
     from bngsim.convert._validate import _ar_report_delta
 
     src = bngsim.Model.from_sbml(str(_sbml(tmp_path, MODELS["nonlinear"])))
@@ -167,13 +173,13 @@ begin parameters
     2 k2 0.3
 end parameters
 begin species
-    1 @c::$__ar_B() 100
-    2 @c::C() 0
+    1 @c::C() 0
+    2 @c::$__ar_B() 100
     3 @c::A() 10
 end species
 begin reactions
     1 3 0 k1
-    2 0 2 J2
+    2 0 1 J2
 end reactions
 begin groups
     1 Aobs 3
@@ -187,9 +193,14 @@ end functions
     path.write_text(net)
     back = bngsim.Model.from_net(str(path))
     names = {"A": "@c::A()", "C": "@c::C()", "B": "@c::__ar_B()"}
-    perm = [2, 1, 0]  # source index -> reload index
+    perm = [2, 0, 1]  # source index -> reload index
+    inverse = [1, 2, 0]
+    assert _name_aligned_perm(src, back) == perm
     assert _ar_report_delta(src, back, back_names=names, back_perm=perm) <= 1e-12
     assert _ar_report_delta(src, back, back_names=names) > 1e-3
+    assert _ar_report_delta(src, back, back_names=names, back_perm=inverse) > 1e-3
+    assert _rhs_delta(src, back, perm) <= 1e-12
+    assert _rhs_delta(src, back, inverse) > 1e-3
 
 
 def test_a_reload_with_another_species_count_is_refused_by_name(tmp_path):
