@@ -181,7 +181,24 @@ _CLOSED_FORM_MODELS = [
     "BIOMD0000000002.xml",
     "BIOMD0000000038.xml",
     "MODEL1712050008.xml",
+    "MODEL1812040006.xml",  # amount-valued (hasOnlySubstanceUnits) species
+    "BIOMD0000000407.xml",
+    "fixed_species.net",
 ]
+
+# Compartments: of different size (a law across them divides each species'
+# term by its own), and one whose size moves, so that a species' term is
+# divided by the live size, which is a species too.
+_CLOSED_FORM_TEXTS = {
+    "two sizes": (
+        "compartment C1 = 1, C2 = 5; species A in C1 = 2; species B in C2 = 0.5;\n"
+        "k = 0.3; kb = 0.1; J1: A -> B; k*A*C1; J2: B -> A; kb*B*C2;\n"
+    ),
+    "a growing size": (
+        "compartment C = 1; C' = 0.05*C; species A in C = 2; species B in C = 0.1;\n"
+        "k = 0.3; J1: A -> B; k*A*B*C;\n"
+    ),
+}
 
 
 def _load(name):
@@ -189,12 +206,17 @@ def _load(name):
     return bngsim.Model.from_net(path) if name.endswith(".net") else bngsim.Model.from_sbml(path)
 
 
-@pytest.mark.parametrize("name", _CLOSED_FORM_MODELS)
+@pytest.mark.parametrize(
+    "name", _CLOSED_FORM_MODELS + [f"antimony:{key}" for key in _CLOSED_FORM_TEXTS]
+)
 def test_the_matrix_is_the_closed_forms(name):
     """Where the closed form exists the dual matrix is the same matrix, at the
     model's state and at one moved off it: the two are derived independently
     (sympy, and the interpreter on dual numbers), and agree to rounding."""
-    model = _load(name)
+    if name.startswith("antimony:"):
+        model = bngsim.Model.from_antimony_string(_CLOSED_FORM_TEXTS[name.split(":", 1)[1]])
+    else:
+        model = _load(name)
     if not model.prepare_analytical_jacobian():
         pytest.skip(f"{name} has no complete closed form here")
     core = model._core
@@ -207,9 +229,14 @@ def test_the_matrix_is_the_closed_forms(name):
         got = core.fill_dense_dual_jacobian(0.0, y, 0)
         assert got is not None, core.dual_unsupported_reason()
         dual, _ = got
+        # To the rounding of each row's terms: an entry that is a cancellation
+        # in one derivation may be written without it in the other (sympy
+        # cancels; the interpreter evaluates the law as written).
         rows = np.max(np.abs(closed), axis=1, keepdims=True)
-        np.testing.assert_allclose(dual, closed, rtol=1e-12, atol=0)
-        assert np.all(np.abs(dual - closed) <= 1e-12 * np.maximum(np.abs(closed), rows))
+        apart = np.abs(dual - closed)
+        held = 1e-10 * np.maximum(np.abs(closed), rows)
+        i, j = np.unravel_index(int(np.argmax(apart - held)), apart.shape)
+        assert np.all(apart <= held), (int(i), int(j), dual[i, j], closed[i, j])
 
 
 # X is never made and sits at 0; G is made at g·max(X, 0) + s. At X = 0 the
@@ -313,6 +340,48 @@ class TestATie:
         np.testing.assert_array_equal(J[:2, :2], [[-0.4, 0.0], [3.0, -0.5]])
 
 
+# kf = kon/KD is a derived rate constant, so ∂f/∂KD reaches the law through
+# it; the clamp() law leaves the model no compiled ∂f/∂p. A <-> B with A + B = 1:
+# A* = kr/(kf + kr), so dA*/dKD = kr·(kon/KD²)/(kf + kr)².
+_DERIVED = """begin parameters
+    1 kon 2.0
+    2 KD  0.5
+    3 kf  kon/KD
+    4 kr  1.5
+    5 big 1e300
+end parameters
+begin species
+    1 A() 1
+    2 B() 0
+end species
+begin groups
+    1 Ao 1
+end groups
+begin functions
+    1 fwd() kf*clamp(0, Ao, big)/Ao
+end functions
+begin reactions
+    1 1 2 fwd
+    2 2 1 kr
+end reactions
+"""
+
+
+def test_dfdp_reaches_a_law_through_a_derived_parameter(tmp_path):
+    path = tmp_path / "d.net"
+    path.write_text(_DERIVED)
+    out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
+        sensitivity_params=["KD", "kr"]
+    )
+    assert out.sens_dfdp_source == "automatic-differentiation"
+    kf, kr = 4.0, 1.5
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity)[0],
+        [kr * (2.0 / 0.25) / (kf + kr) ** 2, kf / (kf + kr) ** 2],
+        rtol=1e-12,
+    )
+
+
 class TestWhereThereIsNoDualEvaluation:
     def test_rateof(self):
         model = bngsim.Model.from_antimony_string(
@@ -347,6 +416,8 @@ _BUILTINS = {
     "min(Xo, Yo) + max(Xo/2, 0.1) + abs(Xo - Yo)": lambda x, y: 1 + 0.5 - 1,
     "ln(Xo) + log10(Xo) + Xo % 1.5": lambda x, y: 1 / x + 1 / (x * math.log(10)) + 1,
     "tgamma(Xo + 1)": lambda x, y: math.gamma(x + 1) * (1.5 - 0.5772156649015329),
+    # exp(1000·X) overflows: the logistic is 0 there, and so is its slope.
+    "1/(1 + exp(1000*Xo)) + Xo": lambda x, y: 1.0,
 }
 
 
