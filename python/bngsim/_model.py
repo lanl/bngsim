@@ -819,13 +819,21 @@ class Model:
         script, so ``perl`` must be on ``PATH`` too (macOS and most Linux
         distributions ship one; stock Windows does not).
 
-        The file's **actions block is not executed.** A ``.bngl`` typically ends
+        The file's **experiment is not executed.** A ``.bngl`` typically ends
         in ``simulate({...})`` or ``parameter_scan({...})``, and running the file
         as written would run the author's entire experiment just to obtain a
-        network. Only ``generate_network`` is run — carrying the source's own
-        ``max_iter``/``max_agg``/``max_stoich``, since those are what make an
-        unbounded rule set finite. Pass ``protocol=True`` to get the actions back
-        as a :class:`~bngsim.convert.ProtocolSpec` rather than lose them.
+        network. Its actions before the first ``generate_network`` are applied,
+        except runs and file writes. ``generate_network`` itself runs with the
+        source's own ``max_iter``/``max_agg``/``max_stoich``, since those are what
+        make an unbounded rule set finite. Everything after it is dropped. Pass
+        ``protocol=True`` to get the actions back as a
+        :class:`~bngsim.convert.ProtocolSpec` rather than lose them.
+
+        A :class:`~bngsim.ConversionWarning` names the dropped actions that set
+        a parameter or a concentration the first ``simulate`` or
+        ``parameter_scan`` starts from, where the loaded model holds another
+        value (issue #1366). With ``protocol=True``, the spec carries them
+        instead.
 
         Parameters
         ----------
@@ -894,6 +902,7 @@ class Model:
             defer_jacobian=defer_jacobian,
         )
         if not protocol:
+            _warn_dropped_state_changes(model, path)
             return model
 
         from bngsim.convert import parse_bngl_protocol
@@ -3296,3 +3305,28 @@ def _ar_report_map_from_net(
         elif entries.get(name) not in (None, [(i, 1.0)]):
             out[name] = ("observable", name, 1.0)
     return out
+
+
+def _warn_dropped_state_changes(model: Model, path: str | Path) -> None:
+    """Warn, once, that the source's first ``simulate`` starts from a state this
+    model does not hold (issue #1366): the actions that set it come after the
+    source's ``generate_network``, and only the network is loaded."""
+    from bngsim._bngl_loader import dropped_state_changes
+    from bngsim._exceptions import ConversionWarning
+
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return
+    changes = dropped_state_changes(model, text)
+    if not changes:
+        return
+    shown = "; ".join(changes[:3]) + (f"; and {len(changes) - 3} more" if len(changes) > 3 else "")
+    warnings.warn(
+        f"{Path(path).name}: its first simulate runs after {shown}, which from_bngl "
+        "does not apply (actions after generate_network are the author's experiment). "
+        "The model is loaded as declared. Pass protocol=True to get the actions as a "
+        "ProtocolSpec.",
+        ConversionWarning,
+        stacklevel=3,
+    )
