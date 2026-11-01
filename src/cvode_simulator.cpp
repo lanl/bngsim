@@ -23,6 +23,7 @@
 #include "bngsim/model.hpp"
 #include "bngsim/nonneg_clamp.hpp"
 #include "bngsim/platform_compat.hpp" // POSIX ssize_t shim for Windows (GH #150)
+#include "bngsim/refusals.hpp"
 #include "bngsim/result.hpp"
 #include "bngsim/simulator.hpp"
 #include "bngsim/sparse_jacobian.hpp"
@@ -698,6 +699,11 @@ struct CvodeUserData {
     // test evaluates.
     void *dq_cvode_mem = nullptr;
     CVRhsFn dq_rhs = nullptr;
+    // The right-hand-side evaluations a Jacobian is formed from (issue #1333):
+    // the dense quotient's, its jump test's side points, and the colored
+    // quotient's. CVODE's own count (n_rhs_evals) has none of them. Points at
+    // the run's counter on Impl; null where nothing counts.
+    long *jac_rhs_evals = nullptr;
     std::vector<double> dq_scratch;
     bool dq_debug = false;
 
@@ -2130,6 +2136,9 @@ static bool dq_side_point(CvodeUserData *data, sunrealtype t, N_Vector y, N_Vect
     const bool had_witness = data->nonfinite_witness.captured;
     const bool had_error = static_cast<bool>(data->callback_error);
     const bool had_refusal = !data->below_zero_refusal.empty();
+    if (data->jac_rhs_evals != nullptr) {
+        ++*data->jac_rhs_evals;
+    }
     const int rc = data->dq_rhs(t, y, f, data);
     data->x_max = x_max;
     if (!had_refusal) {
@@ -2160,7 +2169,12 @@ static int cvode_dense_dq_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMa
     int mended = 0;
     const int rc = cvode_dense_dq_past_jumps(
         data->dq_cvode_mem, y, fy, J, tmp1, tmp2, tmp3, data->dq_scratch,
-        [&](N_Vector out) { return data->dq_rhs(t, y, out, user_data); },
+        [&](N_Vector out) {
+            if (data->jac_rhs_evals != nullptr) {
+                ++*data->jac_rhs_evals;
+            }
+            return data->dq_rhs(t, y, out, user_data);
+        },
         [&](N_Vector out) { return dq_side_point(data, t, y, out); }, &mended);
     if (mended > 0 && data->dq_debug) {
         std::fprintf(stderr, "[jac] dense DQ t=%.17g: %d entries step across a jump\n",
@@ -2430,6 +2444,9 @@ static int cvode_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMat
         }
         model->compute_derivs(static_cast<double>(t), y_data, data->colored_jac_f_base.data());
         f_base = data->colored_jac_f_base.data();
+        if (data->jac_rhs_evals != nullptr) {
+            ++*data->jac_rhs_evals;
+        }
     }
 
     if (data->colored_jac_jump_rows.size() != 4 * static_cast<std::size_t>(ns)) {
@@ -2438,7 +2455,12 @@ static int cvode_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMat
     int mended = 0;
     colored_fd_jacobian(
         sp, ns, static_cast<double>(t), y_data, f_base, jac_data, y_pert, fy_pert, h_vals,
-        [model](double tt, const double *yy, double *ydot) { model->compute_derivs(tt, yy, ydot); },
+        [model, counter = data->jac_rhs_evals](double tt, const double *yy, double *ydot) {
+            if (counter != nullptr) {
+                ++*counter;
+            }
+            model->compute_derivs(tt, yy, ydot);
+        },
         data->colored_jac_jump_rows.data(), &mended, ewt, min_inc);
     if (mended > 0 && data->dq_debug) {
         std::fprintf(stderr, "[jac] colored DQ t=%.17g: %d entries step across a jump\n",
@@ -3057,6 +3079,15 @@ struct CvodeSimulator::Impl {
         // re-inits alongside the state's, for the same reason (#182).
         long int sens_conv_fails = 0;
         long int sens_err_test_fails = 0;
+        // CVODE's own difference-quotient Jacobian's f calls, where it forms
+        // one (CVodeGetNumLinRhsEvals; issue #1333). Every run gives it a
+        // callback of bngsim's, so this is 0 today; it is read so that a path
+        // that one day leaves CVODE to its own quotient is counted too.
+        long int lin_rhs_evals = 0;
+        // The Jacobians CVODE asked for (CVodeGetNumJacEvals), where
+        // n_jac_evals counts the linear-solver setups, which can reuse one
+        // (issue #1333).
+        long int jac_formations = 0;
 
         void operator+=(const SegmentCounters &o) {
             steps += o.steps;
@@ -3067,9 +3098,14 @@ struct CvodeSimulator::Impl {
             err_test_fails += o.err_test_fails;
             sens_conv_fails += o.sens_conv_fails;
             sens_err_test_fails += o.sens_err_test_fails;
+            lin_rhs_evals += o.lin_rhs_evals;
+            jac_formations += o.jac_formations;
         }
     };
     SegmentCounters closed_segments;
+    // bngsim's own Jacobian quotients' f calls this run (CvodeUserData::
+    // jac_rhs_evals points here), reset with closed_segments (issue #1333).
+    long jac_rhs_evals = 0;
 
     // Whether CVODES forward sensitivity analysis is switched on for the CVODE
     // memory these counters are read from (issue #447). Set when CVodeSensInit1
@@ -4216,7 +4252,7 @@ void CvodeSimulator::Impl::setup_linsol_and_jac(void *cvode_mem, SUNContext ctx,
             // no column to perturb and nothing for KLU to factorize. sparse_ok
             // only rejects n == 0, so a model with species but no reactions can
             // still get here under the flag.
-            throw std::runtime_error(
+            throw SparseJacobianUnavailable(
                 "force_sparse_linear_solver: this model cannot supply a sparse "
                 "Jacobian — its analytical Jacobian is unavailable" +
                 std::string(jac_strategy == "fd" ? " (suppressed by jacobian=\"fd\")" : "") +
@@ -4433,6 +4469,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         w.user_data = CvodeUserData{&model};
         CVRhsFn rhs_fn = setup_codegen_rhs(opts, w.user_data, w.codegen_param_buf);
         w.user_data.dq_rhs = rhs_fn;
+        w.user_data.jac_rhs_evals = &jac_rhs_evals;
 
         int flag = CVodeInit(w.cvode_mem, rhs_fn, times.t_start, w.y);
         if (flag != CV_SUCCESS) {
@@ -4514,6 +4551,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // (Nothing re-inits mid-run here — the warm path takes no events — so this
     // stays 0 through to record_solver_stats.)
     closed_segments = SegmentCounters{};
+    jac_rhs_evals = 0;
     // This path never runs forward sensitivities (it is excluded from the warm
     // fast path in run()), so the counters read below must leave the two
     // sensitivity fields alone — issue #447.
@@ -4821,6 +4859,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     CVRhsFn rhs_fn = setup_codegen_rhs(opts, user_data, codegen_param_buf);
     run_rhs_fn = rhs_fn;
     user_data.dq_rhs = rhs_fn;
+    user_data.jac_rhs_evals = &jac_rhs_evals;
 
     int flag = CVodeInit(cvode_mem, rhs_fn, times.t_start, y);
     if (flag != CV_SUCCESS) {
@@ -4829,6 +4868,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     // Fresh CVODE memory, so its own counters start at 0; the carried half of
     // the run's totals is an Impl member and has to be cleared (issue #182).
     closed_segments = SegmentCounters{};
+    jac_rhs_evals = 0;
     blas_factor_base = 0; // a fresh solver: its count starts at 0
     // Fresh CVODE memory has no forward sensitivities on it either, whatever a
     // previous run left behind (issue #447). setup_forward_sensitivities sets
@@ -5985,6 +6025,18 @@ CvodeSimulator::Impl::read_segment_counters(void *cvode_mem) const {
     CVodeGetNumNonlinSolvIters(cvode_mem, &c.nonlin_iters);
     CVodeGetNumNonlinSolvConvFails(cvode_mem, &c.nonlin_conv_fails);
     CVodeGetNumErrTestFails(cvode_mem, &c.err_test_fails);
+    CVodeGetNumLinRhsEvals(cvode_mem, &c.lin_rhs_evals);
+    CVodeGetNumJacEvals(cvode_mem, &c.jac_formations);
+    // The linear solver's counters restart at the first CVode call after a
+    // (re-)init (cvLsInitialize, from cvInitialSetup), not at CVodeReInit, which
+    // zeroes the rest. Until that call they still hold the segment before, which
+    // was banked: a re-init at the run's last instant counted its Jacobians
+    // twice (issue #1333). No f call yet is no call yet, so none of them are
+    // this segment's.
+    if (c.rhs_evals == 0) {
+        c.lin_rhs_evals = 0;
+        c.jac_formations = 0;
+    }
     // Only ask for the sensitivity counters when this run actually switched
     // forward sensitivities on (issue #447). Both getters return CV_NO_SENS
     // otherwise, which would leave the two fields at 0 — the honest answer for
@@ -6036,6 +6088,8 @@ void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver 
     result.solver_stats().n_steps = static_cast<int>(total.steps);
     result.solver_stats().n_rhs_evals = static_cast<int>(total.rhs_evals);
     result.solver_stats().n_jac_evals = static_cast<int>(total.lin_solv_setups);
+    result.solver_stats().n_jac_rhs_evals = static_cast<int>(total.lin_rhs_evals + jac_rhs_evals);
+    result.solver_stats().n_jac_formations = static_cast<int>(total.jac_formations);
     result.solver_stats().n_nonlin_iters = static_cast<int>(total.nonlin_iters);
     result.solver_stats().n_nonlin_conv_fails = static_cast<int>(total.nonlin_conv_fails);
     result.solver_stats().n_err_test_fails = static_cast<int>(total.err_test_fails);
