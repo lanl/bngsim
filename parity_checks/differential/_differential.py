@@ -294,15 +294,16 @@ def run(job: Job, nudge: float = 0.0, **kw):
     """A run of a fresh model (a run leaves its state on the Model it was given):
     the Result and the Simulator. It has until :data:`_DEADLINE`. ``nudge``
     moves the start of each species :func:`held_at_start` up by that share of
-    what a step may err by in it, ``rtol·|x| + atol`` (:data:`START_NUDGE`)."""
+    what a step may err by in it, ``rtol·|x| + atol`` (:data:`START_NUDGE`),
+    its atol the one the run holds it to (:func:`step_atol`)."""
     import bngsim
 
     model = load(job.path)
+    sim = bngsim.Simulator(model, method="ode", **{**job.sim, **kw})
     if nudge:
         x0 = model.get_state()
         held = held_at_start(model, job.t_start)
-        model.set_state(x0 + held * nudge * (job.rtol * np.abs(x0) + job.atol))
-    sim = bngsim.Simulator(model, method="ode", **{**job.sim, **kw})
+        model.set_state(x0 + held * nudge * (job.rtol * np.abs(x0) + step_atol(sim, job)))
     result = sim.run(
         t_span=(job.t_start, job.t_end),
         n_points=job.n_points,
@@ -312,6 +313,16 @@ def run(job: Job, nudge: float = 0.0, **kw):
         timeout=_left(),
     )
     return result, sim
+
+
+def step_atol(sim, job: Job) -> float | np.ndarray:
+    """The atol ``sim`` holds each species to under ``job.atol``: a scalar is a
+    ceiling, each species taking at most ``rtol`` of its own scale (#1420). A
+    nudge read from the scalar is no rounding there: BIOMD0000000951's thrombin
+    at 0, held to 5e-18, took 1e-12 M, and the answer moved by 11% of its peak."""
+    own = sim._run_atol(job.atol, job.rtol)
+    vector = getattr(own, "vector", None)
+    return job.atol if vector is None else np.asarray(vector, dtype=float)
 
 
 def own_drift(job: Job, base: np.ndarray) -> float:
