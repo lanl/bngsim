@@ -33,23 +33,25 @@ the last restart (issue #182).
 
 ## The default tolerances, and models in small units
 
-The default `rtol` is `1e-8`. The default `atol` is BNG2.pl's scalar `1e-8`
-where that is a tolerance for every species, and a smaller one for each species
-where it is not (issue #1420):
+The default `rtol` is `1e-8`. The default `atol` is BNG2.pl's scalar `1e-8`, and
+bngsim reads a scalar `atol`, the default or one you pass, as a **ceiling**: each
+species is held to the scalar where that is a tolerance for it, and to a smaller
+one where it is not (issue #1420):
 
 ```
-atol_i = min(1e-8, rtol * max(|x_i(0)|, floor))
+atol_i = min(atol, rtol * max(|x_i(0)|, floor))
 floor  = max(smallest start of a species the solver integrates, 1e-6 * the largest)
 ```
 
-`x(0)` is the state the call starts from. The scalar was chosen for species held
+`x(0)` is the state the call starts from. To hold every species to the number
+exactly instead, pass `atol=bngsim.ExactAtol(value)` (see below). The scalar was chosen for species held
 as molecule counts. A species that stays below `atol` for the whole run has no
 error control beyond the tolerance itself, which happens in a model in molar or
 other small units, common in SBML and BioModels. Such a trajectory can be off by
 its own size, or go negative, and CVODE reports no error: a binding model of
 species near 1e-9 M ended at -8.7e-10 for 4.1e-10. Under the scalar, 62 of 1,251
 BioModels were off their reference by over 1% of a species' peak, 21 of them with
-no warning. Under this default, 14 are, and none got worse; the corpus took 17%
+no warning. Under this default, 13 are, and none got worse; the corpus took 19%
 longer, nearly all of it on models that had been wrong.
 
 - **It is never looser than the scalar.** A species the scalar already resolves
@@ -64,6 +66,13 @@ longer, nearly all of it on models that had been wrong.
   integrates starts at 0, the floor is the smallest start of any species, a
   `$`-fixed one too, and where every species starts at 0 the default is the
   scalar.
+- **Forward sensitivities on CVODES' difference quotient keep the scalar.**
+  A model whose `∂f/∂p` bngsim cannot derive (`has_analytic_sens_rhs` is
+  `False`) runs its sensitivities on the quotient,
+  which sizes its increment from the state's error weights. A species held
+  tighter is then perturbed by less and carries more roundoff, not more
+  accuracy: one such model took 187,685 steps for 28,732, with a worse
+  gradient. So such a run is held to the scalar itself.
 - **It reads the state each call starts from**, as `atol="auto"` does, and a
   batch, a scan or a chunked sensitivity job derives it once for all its runs.
   A `run_until` step (and so a `ReactionKernel.advance`) keeps the one its
@@ -84,7 +93,37 @@ that, and a `$`-fixed species or an assignment-rule target is not integrated;
 neither is warned. The remedy is `atol="tracking"` (below), which follows each
 species' magnitude, or an `atol` well below those species (issue #1361).
 
-An `atol` you pass, to a call or to `set_tolerances`, is used as given.
+### A scalar `atol` you pass, and holding it exactly
+
+**A scalar `atol` you pass is read the same way, as a ceiling.** This includes
+one given to `set_tolerances`, and a SED-ML file's absolute tolerance
+(`KISAO:0000211`), which `bngsim.convert.read_sedml` turns into one. Every
+species is held to that number or tighter, never looser, so a species far below
+it is still resolved. Until issue #1420 a scalar was held exactly for every
+species. A SED-ML file's `atol=1e-9` at `rtol=1e-6` then held BIOMD0000000457's
+species_42, near 1.6e-7, to 13% at t = 5, and libRoadRunner's answer at the
+same tolerances was right, because libRoadRunner scales its absolute tolerance
+by each species' value.
+
+**To hold every species to exactly the number you give**, say so:
+
+```python
+result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9))
+sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))   # the old default, exactly
+spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
+```
+
+`ExactAtol` is accepted wherever `atol` is: `run`, `run_until`, `run_batch`,
+`parameter_scan`, `compute_all_sensitivities`, `set_tolerances` and
+`steady_state`. An `EvaluationSpec` carries it through its JSON as
+`{"exact": value}`. SED-ML has no way to say "exactly", so `write_sedml` writes
+the number, and `read_sedml(..., exact_atol=True)` is how a reader takes it back
+that way. A vector of `n_species` values is also used exactly as given.
+
+Reach for it to reproduce a run made under the old reading, or to compare with
+a tool that holds one absolute tolerance for every species.
+`steady_state(atol=...)` takes a scalar as given in any case: under
+`criterion="scaled"` it is also the run test's tolerance.
 
 ## Per-species absolute tolerance
 

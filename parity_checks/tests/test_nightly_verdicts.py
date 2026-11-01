@@ -169,9 +169,31 @@ def test_a_fix_that_regresses_into_a_stale_baseline_still_alerts():
 
 
 def test_rebaselined_lists_new_and_moved_rows_only():
-    now = fresh_with(A_ode=rec("DIFF"), C_ode=rec("DIFF", "rr_known"), F_ode=rec("PASS"))
-    assert sorted(V.rebaselined(BASE, now)) == ["A|ode", "C|ode", "F|ode"]
+    more = {**W, "n_steps": 300}
+    now = fresh_with(
+        A_ode=rec("DIFF"),
+        B_ode=rec("PASS", work=more, sec=1.0),
+        C_ode=rec("DIFF", "rr_known"),
+        F_ode=rec("PASS"),
+    )
+    assert sorted(V.rebaselined(BASE, now)) == ["A|ode", "B|ode", "C|ode", "F|ode"]
     assert V.rebaselined(BASE, BASE) == {}
+
+
+def test_work_re_baselined_since_that_night_is_not_compared():
+    # #1434: a tolerance change re-records A's work at 3x; against the night
+    # before, that is the reviewed work, per case and in the totals.
+    more = {"n_steps": 300, "n_rhs_evals": 600, "n_jac_evals": 60}
+    now = fresh_with(A_ode=rec("PASS", work=more, sec=1.0))
+    r = V.diff(BASE, now, rebaselined=V.rebaselined(BASE, now))
+    assert r["n_alerts"] == 0
+    assert r["efficiency"] == [] and r["rebaselined_work"] == ["A|ode"]
+    assert r["work_totals"]["n_steps"]["before"] == W["n_steps"]  # B only
+    assert "Work on 1 case(s) the committed baseline re-recorded" in V.render_md(r, "x")
+    # Past the work it was re-recorded at, it alerts again.
+    worse = fresh_with(A_ode=rec("PASS", work={**more, "n_steps": 900}, sec=1.0))
+    r = V.diff(BASE, worse, rebaselined=V.rebaselined(BASE, now))
+    assert r["alerts"]["efficiency_cases"] == 3 and r["rebaselined_work"] == []  # 3 counters
 
 
 def test_cli_reads_the_baseline_then_and_now(tmp_path):

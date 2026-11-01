@@ -55,7 +55,8 @@ def _off_by(x, reference):
 def test_each_species_is_held_to_rtol_of_its_start(tmp_path):
     """A at 1e-9 and B at 2e-9 take 1e-8 of themselves; C, at 0, the floor:
     the smallest start, 1e-9, which is above 1e-6 of the largest."""
-    assert _sim(tmp_path)._run_atol(None, 1e-8) == pytest.approx([1e-17, 2e-17, 1e-17], rel=1e-15)
+    own = _sim(tmp_path)._run_atol(None, 1e-8)
+    assert own.vector == pytest.approx([1e-17, 2e-17, 1e-17], rel=1e-15)
 
 
 def test_a_model_of_counts_takes_the_scalar_bit_for_bit(tmp_path):
@@ -63,7 +64,7 @@ def test_a_model_of_counts_takes_the_scalar_bit_for_bit(tmp_path):
     assert sim._run_atol(None, 1e-8) is None
     default = sim.run(**SPAN)
     sim.model.reset()
-    chosen = sim.run(atol=1e-8, **SPAN)
+    chosen = sim.run(atol=bngsim.ExactAtol(1e-8), **SPAN)
     assert np.array_equal(np.asarray(default.species), np.asarray(chosen.species))
     assert default.solver_stats["n_steps"] == chosen.solver_stats["n_steps"]
 
@@ -71,7 +72,7 @@ def test_a_model_of_counts_takes_the_scalar_bit_for_bit(tmp_path):
 def test_it_is_never_looser_than_the_scalar():
     """X at 1e3 would take 1e-5 of rtol alone; the scalar holds it to 1e-8."""
     sim = _antimony("X = 1e3; Y = 1e-3; k = 0.1; R: X -> Y; k*X; D: Y -> ; k*Y;")
-    assert sim._run_atol(None, 1e-8) == pytest.approx([1e-8, 1e-11], rel=1e-15)
+    assert sim._run_atol(None, 1e-8).vector == pytest.approx([1e-8, 1e-11], rel=1e-15)
 
 
 def test_the_floor_is_a_millionth_of_the_largest():
@@ -79,7 +80,7 @@ def test_the_floor_is_a_millionth_of_the_largest():
     own scale its run fails. Held as though at 1e-5, they take 1e-13; so does a
     species at 0."""
     sim = _antimony("X = 10; Y = 1e-31; Z = 0; k = 0.1; R: X -> Y; k*X; S: Y -> Z; k*Y;")
-    assert sim._run_atol(None, 1e-8) == pytest.approx([1e-8, 1e-13, 1e-13], rel=1e-15)
+    assert sim._run_atol(None, 1e-8).vector == pytest.approx([1e-8, 1e-13, 1e-13], rel=1e-15)
 
 
 def test_with_every_integrated_species_at_0_a_fixed_one_gives_the_floor():
@@ -88,11 +89,12 @@ def test_with_every_integrated_species_at_0_a_fixed_one_gives_the_floor():
     species' scale holds X to 5e-13, 1e-5 of the 5e-8 it settles at, and the
     run is off by about that instead of the scalar's 13%."""
     src = "$L = 5e-5; X = 0; k = 1e-4; R: L -> X; k*L; D: X -> ; 0.1*X;"
-    assert _antimony(src)._run_atol(None, 1e-8) == pytest.approx([5e-13, 5e-13], rel=1e-15)
+    assert _antimony(src)._run_atol(None, 1e-8).vector == pytest.approx([5e-13, 5e-13], rel=1e-15)
     span = {"t_span": (0, 100), "n_points": 21}
     reference = _antimony(src).run(rtol=1e-12, atol=1e-22, **span)
     assert _off_by(_antimony(src).run(**span).species, reference.species) < 1e-4
-    assert _off_by(_antimony(src).run(atol=1e-8, **span).species, reference.species) > 1e-2
+    scalar = _antimony(src).run(atol=bngsim.ExactAtol(1e-8), **span)
+    assert _off_by(scalar.species, reference.species) > 1e-2
 
 
 def test_with_every_species_at_0_it_is_the_scalar():
@@ -107,17 +109,15 @@ def test_a_run_until_step_keeps_the_default_its_trajectory_started_with(tmp_path
     default, chosen = _sim(tmp_path, a=1000, b=2000), _sim(tmp_path, a=1000, b=2000)
     for t in (1.0, 2.0, 3.0):
         kept = default.run_until(t, n_points=3)
-        given = chosen.run_until(t, n_points=3, atol=1e-8)
+        given = chosen.run_until(t, n_points=3, atol=bngsim.ExactAtol(1e-8))
         assert np.array_equal(np.asarray(kept.species), np.asarray(given.species))
         assert default._run_atol(None, 1e-8) is not None  # where the step starts
 
 
-def test_an_atol_the_caller_chose_is_left_alone(tmp_path):
+def test_a_per_species_atol_the_caller_chose_is_left_alone(tmp_path):
     sim = _sim(tmp_path)
-    assert sim._run_atol(1e-8, 1e-8) == 1e-8
-    assert sim._run_atol("auto", 1e-8) == "auto"
-    sim.set_tolerances(rtol=1e-8, atol=1e-8)
-    assert sim._run_atol(None, 1e-8) is None
+    for atol in ("auto", "tracking", [1e-8] * 3, bngsim.ExactAtol(1e-8)):
+        assert sim._run_atol(atol, 1e-8) is atol
 
 
 def test_an_rtol_of_0_keeps_the_scalar(tmp_path):

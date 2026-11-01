@@ -362,17 +362,34 @@ def load_verdicts(path: Path) -> dict:
 # --------------------------------------------------------------------------- #
 def rebaselined(then: dict, now: dict) -> dict[str, dict]:
     """The cases the committed baseline re-recorded between two of its versions:
-    case id -> its record in ``now``, where ``then`` held another verdict or none."""
+    case id -> its record in ``now``, where ``then`` held another verdict, other
+    solver work, or none."""
     old = then["cases"]
     return {
         cid: rec
         for cid, rec in now["cases"].items()
-        if cid not in old or _verdict(old[cid]) != _verdict(rec)
+        if cid not in old
+        or _verdict(old[cid]) != _verdict(rec)
+        or old[cid].get("work") != rec.get("work")
     }
 
 
 def _verdict(rec: dict) -> tuple:
     return rec["outcome"], rec.get("subclass")
+
+
+def _within_recorded_work(fresh: dict, recorded: dict | None, work_ratio: float) -> bool:
+    """Whether ``fresh``'s solver work stays within ``recorded``'s, by the
+    per-case alert rule, on every counter both carry."""
+    if not recorded or not recorded.get("work"):
+        return False
+    for key in WORK_ALERT_KEYS:
+        vr, vf = recorded["work"].get(key), fresh["work"].get(key)
+        if vr is None or vf is None:
+            continue
+        if vf > vr * work_ratio and vf - vr >= WORK_MIN_DELTA[key]:
+            return False
+    return True
 
 
 def _label(rec: dict | None) -> str:
@@ -420,7 +437,9 @@ def diff(
     it was recorded, so it is reported, not alerted: a pull request that makes a
     check stricter re-records the rows it moves, and they would otherwise alert
     on its own run and on the first night after it merges. A fix that regresses
-    before anyone re-baselined it is not among them, and still alerts.
+    before anyone re-baselined it is not among them, and still alerts. The same
+    goes for solver work: a case whose work was re-recorded, and which tonight
+    does not exceed, is left out of the work comparison (``rebaselined_work``).
     """
     flaky = flaky or {}
     rebaselined = rebaselined or {}
@@ -466,6 +485,13 @@ def diff(
     # Efficiency: only where both runs are good and both carry counters.
     both_good = [c for c in b if c in f and b[c]["outcome"] in good and f[c]["outcome"] in good]
     work_cases = [c for c in both_good if b[c].get("work") and f[c].get("work")]
+    # A case whose work the committed baseline re-recorded since the earlier
+    # night, and which tonight does not exceed, is that reviewed work: it is
+    # left out of the comparison, per case and in the totals (#1434).
+    rebaselined_work = sorted(
+        c for c in work_cases if _within_recorded_work(f[c], rebaselined.get(c), work_ratio)
+    )
+    work_cases = [c for c in work_cases if c not in set(rebaselined_work)]
     work_items = []
     totals = {}
     for key in WORK_ALERT_KEYS:
@@ -564,6 +590,7 @@ def diff(
         "regressed": regressed,
         "new_crash": new_crash,
         "efficiency": work_items,
+        "rebaselined_work": rebaselined_work,
         "work_totals": totals,
         "wall": wall,
         "backend_miss": backend_miss,
@@ -763,6 +790,13 @@ def render_md(result: dict, label: str = "", limit: int = 40) -> str:
             cols.append("note")
         lines += _table(result["efficiency"], cols, limit)
         lines.append("")
+    if result.get("rebaselined_work"):
+        n = len(result["rebaselined_work"])
+        lines += [
+            f"Work on {n} case(s) the committed baseline re-recorded since then, which "
+            "tonight does not exceed, is not compared.",
+            "",
+        ]
     tot = result["work_totals"]
     if any(t["before"] for t in tot.values()):
         lines.append("Total bngsim work over cases good in both runs:")

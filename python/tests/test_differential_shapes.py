@@ -1941,6 +1941,23 @@ def test_the_nudge_moves_a_held_start_by_its_share_of_a_step():
     np.testing.assert_allclose(x0, [D.START_NUDGE * job.atol, 10.0], rtol=1e-12)
 
 
+def test_the_nudge_is_a_share_of_the_atol_the_species_is_held_to():
+    """A scalar atol is a ceiling (#1420): S at 0 beside A at 1e-6 is held to
+    rtol·1e-6 = 1e-14, not the scalar 1e-10, so the nudge moves it by 1e-17.
+    By the scalar's share, 1e-13 is ten times what a step may err by in S."""
+    path = _net(
+        "zero-start-small",
+        " 1 k 4\n 2 a 0.5",
+        " 1 S() 0\n 2 A() 1e-6",
+        "",
+        " 1 1 0 k\n 2 2 0 a",
+        " 1 Sobs 1",
+    )
+    job = D.Job(path.stem, path, 0.0, 10.0, 21)
+    x0 = np.asarray(D.run(job, nudge=D.START_NUDGE)[0].species)[0]
+    np.testing.assert_allclose(x0, [D.START_NUDGE * job.rtol * 1e-6, 1e-6], rtol=1e-12)
+
+
 def test_only_a_species_the_equations_hold_still_is_nudged():
     """S' = 4·S holds S at 0, and only S is nudged. Not D, held too but read by
     a trigger at its threshold (BIOMD0000000285's death events); not A, which

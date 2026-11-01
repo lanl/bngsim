@@ -297,7 +297,8 @@ class TestPerSpeciesAtol:
         exact = 1.0e-9 * np.exp(-10.0 * 0.5)
 
         model.reset()
-        scalar = sim.run(t_span=(0.0, 0.5), n_points=6, atol=1e-8)
+        # A float is a per-species ceiling since issue #1420; ExactAtol holds it.
+        scalar = sim.run(t_span=(0.0, 0.5), n_points=6, atol=bngsim.ExactAtol(1e-8))
         assert scalar.species[-1, idx] < 0.0
 
         model.reset()
