@@ -198,6 +198,10 @@ _CLOSED_FORM_TEXTS = {
         "compartment C = 1; C' = 0.05*C; species A in C = 2; species B in C = 0.1;\n"
         "k = 0.3; J1: A -> B; k*A*B*C;\n"
     ),
+    "a growing size across compartments": (
+        "compartment C1 = 1, C2 = 5; C1' = 0.05*C1; species A in C1 = 2; species B in C2 = 0.5;\n"
+        "k = 0.3; kb = 0.1; J1: A -> B; k*A*C1; J2: B -> A; kb*B*C2;\n"
+    ),
 }
 
 
@@ -445,6 +449,27 @@ _BUILTINS = {
     # exp(1000·X) overflows: the logistic is 0 there, and so is its slope.
     "1/(1 + exp(1000*Xo)) + Xo": lambda x, y: 1.0,
 }
+
+
+@pytest.mark.parametrize("law", ["floor(Xo)", "ceil(Xo)", "rint(Xo - 0.5)", "round(Xo + 0.5)"])
+def test_a_step_at_its_jump_is_a_tie_that_jumps(tmp_path, law):
+    """A step function of X at X = 2, where it jumps: the dual meets the tie,
+    and from a side the law's value is not its value."""
+    path = tmp_path / "s.net"
+    path.write_text(
+        "begin parameters\n 1 one 1.0\nend parameters\nbegin species\n"
+        " 1 X() 2\n 2 G() 0\nend species\nbegin groups\n 1 Xo 1\nend groups\n"
+        f"begin functions\n 1 law() {law}\nend functions\n"
+        "begin reactions\n 1 0 2 law\n 2 2 0 one\nend reactions\n"
+    )
+    core = bngsim.Model.from_net(str(path))._core
+    y = np.array([2.0, 0.0])
+    _, tied, _ = core.fill_dense_dual_jacobian(0.0, y, 0)
+    assert tied
+    assert any(core.fill_dense_dual_jacobian(0.0, y, side)[2] for side in (1, -1))
+    # Beside the jump it is a step, flat, and no tie.
+    J, tied, _ = core.fill_dense_dual_jacobian(0.0, np.array([2.25, 0.0]), 0)
+    assert not tied and J[1, 0] == 0.0
 
 
 @pytest.mark.parametrize("law", sorted(_BUILTINS))
