@@ -22,6 +22,7 @@ gives every slot the one number.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import bngsim
@@ -30,6 +31,10 @@ import pytest
 
 _RUN = {"t_span": (0, 10), "n_points": 11, "rtol": 1e-8, "atol": 1e-9}
 _EXACT = {**_RUN, "atol": bngsim.ExactAtol(1e-9)}
+
+_CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
+_needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
+_needs_klu = pytest.mark.skipif(not bngsim._bngsim_core.HAS_KLU, reason="KLU not compiled")
 
 
 def _sinking(c: str, order: str, power: str = "0.5") -> bngsim.Model:
@@ -69,6 +74,43 @@ def test_a_run_with_sensitivities_reads_it_the_same_way():
     infinite, which no reading of P makes a sensitivity of."""
     model = _sinking("1e-30", "AP", power="1.5")
     r = bngsim.Simulator(model, method="ode", sensitivity_params=["k"]).run(**_RUN)
+    names = list(r.species_names)
+    np.testing.assert_array_equal(np.asarray(r.species)[:, names.index("A")], 1.0)
+
+
+@pytest.mark.parametrize(
+    "codegen", [False, pytest.param(True, marks=_needs_cc)], ids=["interpreted", "compiled"]
+)
+@pytest.mark.parametrize(
+    "sparse", [False, pytest.param(True, marks=_needs_klu)], ids=["dense", "sparse"]
+)
+def test_the_closed_form_jacobian_reads_the_band_too(sparse, codegen):
+    """P^1.5 in A's decay: the Jacobian's 1.5*k*A*P^0.5 has no value for P
+    below 0, and is 0 at P = 0. Under jacobian="analytical" no difference
+    quotient stands in, so each of the four fills (dense and sparse,
+    interpreted and compiled) reads the band itself or the run fails. Through
+    P^0.5, whose slope at 0 is infinite under any reading, the cases above fall
+    back to the quotient and reach none of them. Codegen emits its sparse fill
+    only for a model past the sparse gate, so the sparse rows carry a chain of
+    60 species beside, which the band does not touch."""
+    model = _sinking("1e-30", "AP", power="1.5")
+    if sparse:
+        chain = "\n".join(f"  R{i}: X{i} -> X{i + 1}; kx*X{i};" for i in range(1, 60))
+        model = bngsim.Model.from_antimony_string(
+            "model m\n  species A = 1, P = 0, "
+            + ", ".join(f"X{i} = 1" for i in range(1, 61))
+            + ";\n  k = 0.1; c = 1e-30; kx = 0.01;\n  P' = -c;\n  J: A -> ; k*A*P^1.5;\n"
+            + chain
+            + "\nend"
+        )
+    sim = bngsim.Simulator(
+        model,
+        method="ode",
+        jacobian="analytical",
+        force_sparse_linear_solver=sparse,
+        codegen=codegen,
+    )
+    r = sim.run(**_RUN)
     names = list(r.species_names)
     np.testing.assert_array_equal(np.asarray(r.species)[:, names.index("A")], 1.0)
 
