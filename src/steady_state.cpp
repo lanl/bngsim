@@ -5492,7 +5492,12 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         column_system.param_values.push_back(params[static_cast<size_t>(pidx[p])].value);
     }
 
-    if (!all_laws.empty() || sub.masked) {
+    // A `$`-fixed species is no unknown either (issue #961): solved for as one,
+    // its zero row made J singular in a model with no law and no mask, and the
+    // columns were refused as "dY_ss/dp does not exist".
+    const bool any_fixed = std::any_of(model.species().begin(), model.species().end(),
+                                       [](const Species &s) { return s.fixed; });
+    if (!all_laws.empty() || sub.masked || any_fixed) {
         // Reduced-space sensitivity solve.
         //
         // `solve_idx` is the unknown set (ss_unknown_species): the
@@ -5513,8 +5518,14 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         // ss_unknown_species' set, as they were.
         ConservationLaws cl;
         std::vector<int> solve_idx;
-        ss_kept_species_system(model, all_laws, sub, ss_unknown_species(model, all_laws, sub), cl,
-                               solve_idx);
+        // A fixed species is no unknown of the columns (issue #961): its row of
+        // J is 0, and kept, it made the solve singular, beside a law as well as
+        // with none. Its own row of dY_ss/dp is what a parameter sets it to.
+        std::vector<int> unknowns = ss_unknown_species(model, all_laws, sub);
+        unknowns.erase(std::remove_if(unknowns.begin(), unknowns.end(),
+                                      [&](int i) { return model.species()[i].fixed; }),
+                       unknowns.end());
+        ss_kept_species_system(model, all_laws, sub, unknowns, cl, solve_idx);
         // Issue #995: a species the mask left out, that no law gives, is held
         // where the solve left it. That is its part in the derivative only
         // where no equation the columns are solved on reads it: `A <-> M` with
