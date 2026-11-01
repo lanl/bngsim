@@ -533,13 +533,15 @@ bool dual_same_value(double base, double side, double scale) {
 } // namespace
 
 bool NetworkModel::fill_dense_dual_jacobian(double t, const double *conc, double *jac, DualTie tie,
-                                            bool *tied, bool *jumped) {
+                                            bool *tied, bool *jumped,
+                                            std::vector<char> *jumped_columns) {
     DualShadow *s = dual_shadow_();
     if (!s->eval) {
         return false;
     }
     const int ns = n_species();
     bool any_jump = false;
+    std::vector<char> column_jumps(static_cast<std::size_t>(ns), 0);
     std::vector<double> seed(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> J(static_cast<std::size_t>(ns) * static_cast<std::size_t>(ns), 0.0);
     const bool ok = with_tie(tie, tied, [&] {
@@ -560,15 +562,19 @@ bool NetworkModel::fill_dense_dual_jacobian(double t, const double *conc, double
             }
             // A law whose value jumps where species j crosses the state: the
             // column is the derivative of the branch on that side, as the
-            // column at the state is the branch's at the state. Whether the
-            // steady state moves through the jump is for the answers to say
-            // (ss_confirm_dual_sides); a state on the surface of a law that
-            // holds it there (a slide) has columns from either side.
-            for (int i = 0; tie != DualTie::Value && i < ns && !any_jump; ++i) {
-                any_jump = !dual_same_value(base[static_cast<std::size_t>(i)],
-                                            s->f[static_cast<std::size_t>(i)],
-                                            scale[static_cast<std::size_t>(i)]);
+            // column at the state is the branch's at the state, and the column
+            // is reported (`jumped_columns`). A steady state that species j
+            // moves away from as a parameter moves crosses the jump and has no
+            // derivative; one held where it is (a state parked on the jump by
+            // laws of its own) does (ss_confirm_dual_sides).
+            bool jumps = false;
+            for (int i = 0; tie != DualTie::Value && i < ns && !jumps; ++i) {
+                jumps = !dual_same_value(base[static_cast<std::size_t>(i)],
+                                         s->f[static_cast<std::size_t>(i)],
+                                         scale[static_cast<std::size_t>(i)]);
             }
+            column_jumps[static_cast<std::size_t>(j)] = jumps ? 1 : 0;
+            any_jump = any_jump || jumps;
             std::copy(s->df.begin(), s->df.end(), J.begin() + static_cast<std::ptrdiff_t>(j) * ns);
         }
         return true;
@@ -579,6 +585,9 @@ bool NetworkModel::fill_dense_dual_jacobian(double t, const double *conc, double
     std::copy(J.begin(), J.end(), jac);
     if (jumped != nullptr) {
         *jumped = any_jump;
+    }
+    if (jumped_columns != nullptr) {
+        *jumped_columns = std::move(column_jumps);
     }
     return true;
 }

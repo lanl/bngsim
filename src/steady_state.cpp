@@ -283,8 +283,8 @@ class SteadyStateRhs {
     // model with no closed form or a solve that asked for none. False where
     // the model has no dual evaluation, which leaves the caller to difference.
     bool fill_dual_jacobian(double t, const double *y, double *jac, DualTie tie = DualTie::Value,
-                            bool *tied = nullptr) {
-        return model_.fill_dense_dual_jacobian(t, y, jac, tie, tied);
+                            bool *tied = nullptr, std::vector<char> *jumped_columns = nullptr) {
+        return model_.fill_dense_dual_jacobian(t, y, jac, tie, tied, nullptr, jumped_columns);
     }
     bool eval_dual_dfdp(double t, const double *y, int param_index, double *out,
                         DualTie tie = DualTie::Value, bool *tied = nullptr) {
@@ -5122,9 +5122,16 @@ static void ss_confirm_dual_sides(SteadyStateRhs &rhs, SteadyStateResult &result
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const DualTie which[2] = {DualTie::Above, DualTie::Below};
     std::vector<double> sides[2];
+    // The species along which a law's value jumps from either side.
+    std::vector<char> jumps(static_cast<size_t>(ns), 0);
     for (int k = 0; k < 2; ++k) {
         std::vector<double> J_side(J, J + static_cast<size_t>(ns) * ns);
-        bool ok = !jacobian_tied || rhs.fill_dual_jacobian(0.0, y_ss, J_side.data(), which[k]);
+        std::vector<char> side_jumps;
+        bool ok = !jacobian_tied ||
+                  rhs.fill_dual_jacobian(0.0, y_ss, J_side.data(), which[k], nullptr, &side_jumps);
+        for (size_t j = 0; j < side_jumps.size() && j < jumps.size(); ++j) {
+            jumps[j] = static_cast<char>(jumps[j] || side_jumps[j]);
+        }
         const std::vector<double> dfdp_kept = dfdp;
         for (int p = 0; ok && dfdp_tied && p < np; ++p) {
             ok = rhs.eval_dual_dfdp(0.0, y_ss, pidx[static_cast<size_t>(p)],
@@ -5164,6 +5171,15 @@ static void ss_confirm_dual_sides(SteadyStateRhs &rhs, SteadyStateResult &result
                     std::isnan(d) ? std::numeric_limits<double>::infinity() : std::max(apart, d);
             }
             const double held_to = std::max(std::abs(v), kDualEntryFloor * largest);
+            // A species along which a law's value jumps, moved by the
+            // parameter: the steady state crosses the jump, and has no
+            // derivative (floor(X) at X* = 2 with dX*/ds = 1/k1: G* steps from
+            // 1 to 2). Held where it is (dX*/dp = 0), it stays on the jump.
+            const bool crosses =
+                jumps[static_cast<size_t>(i)] && !(std::abs(v) <= kDualSidesAgree * largest);
+            if (crosses) {
+                apart = std::numeric_limits<double>::infinity();
+            }
             if (apart <= kDualSidesAgree * held_to) {
                 continue;
             }
@@ -5177,6 +5193,7 @@ static void ss_confirm_dual_sides(SteadyStateRhs &rhs, SteadyStateResult &result
                 result.sens_tie_value = v;
                 result.sens_tie_above = sides[0][k];
                 result.sens_tie_below = sides[1][k];
+                result.sens_tie_jump = crosses;
             }
         }
     }

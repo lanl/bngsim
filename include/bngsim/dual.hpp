@@ -385,14 +385,19 @@ inline Dual sgn(const Dual &x) {
 // has the derivative of b·a^(b−1)·a' alone (0 at b > 1, a' at b = 1, not finite
 // below), and ln(0) does not enter it. That is the closed form's account of a
 // zero base too (issue #541). std::pow(a, b) is the value, as the interpreter's.
+// Two terms are left out where the power does not move along them: at an
+// exponent of 0 the power is 1 whatever the base (pow(x, 0) = 1, at x = 0 too),
+// and at a power of 0 (a base of 0 and an exponent above 0) it stays 0 as the
+// exponent moves, where a^b·ln(a)·b' reads 0·(−∞): a Hill coefficient over a
+// species at 0.
 inline Dual pow(const Dual &a, const Dual &b) {
     const double value = std::pow(a.v, b.v);
     double d = 0.0;
-    if (a.d != 0.0) {
+    if (a.d != 0.0 && b.v != 0.0) {
         // b·a^(b−1), with a^(b−1) from pow so that a = 0 at b = 1 gives 1.
         d += b.v * std::pow(a.v, b.v - 1.0) * a.d;
     }
-    if (b.d != 0.0) {
+    if (b.d != 0.0 && value != 0.0) {
         d += value * std::log(a.v) * b.d;
     }
     return Dual(value, d);

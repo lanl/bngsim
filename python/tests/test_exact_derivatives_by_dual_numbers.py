@@ -412,6 +412,77 @@ def test_a_state_parked_on_a_jump_has_columns_from_either_side(tmp_path):
     assert any(core.fill_dense_dual_jacobian(0.0, y, side)[2] for side in (1, -1))  # jumped
 
 
+_TABLE = """begin parameters
+    1 drug_conc {dose!r}
+    2 one       1.0
+end parameters
+begin functions
+    1 response() tfun('dose_response.tfun', drug_conc)
+end functions
+begin species
+    1 B() 0
+end species
+begin reactions
+    1 0 1 response
+    2 1 0 one
+end reactions
+"""
+
+
+@pytest.mark.parametrize(
+    ("dose", "slope"),
+    [(0.3, 50.0), (0.5, 50.0), (0.0, None), (1.0, None)],
+    ids=["inside", "a knot with no corner", "the first knot", "a corner"],
+)
+def test_a_table_over_a_parameter(tmp_path, dose, slope):
+    """B* = response(dose), linear between knots: its slope inside a piece and
+    at a knot where the slopes either side are the same; refused at a knot
+    where they are not, the first one included (0 below it, 50 above)."""
+    (tmp_path / "dose_response.tfun").write_text((_DATA / "dose_response.tfun").read_text())
+    path = tmp_path / "t.net"
+    path.write_text(_TABLE.format(dose=dose))
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    if slope is None:
+        with pytest.raises(bngsim.SimulationError, match=r"#1330.*changes branch"):
+            sim.steady_state(sensitivity_params=["drug_conc"])
+    else:
+        out = sim.steady_state(sensitivity_params=["drug_conc"])
+        np.testing.assert_allclose(np.asarray(out.sensitivity)[0, 0], slope, rtol=1e-12)
+
+
+def test_a_hill_coefficient_over_a_species_at_zero(tmp_path):
+    """r = X^n/(K^n + X^n) at X* = 0: G* does not move with n or K. The dual
+    of X^n in n read 0·ln(0) = NaN there, and the solve was refused as singular
+    (issue #1330's review)."""
+    path = tmp_path / "h.net"
+    path.write_text(
+        _NET.format(s=0.0, rate="Xo^n/(K^n + Xo^n)", declined=_DECLINED).replace(
+            "    5 one 1.0\n", "    5 one 1.0\n    6 n 2.5\n    7 K 0.3\n"
+        )
+    )
+    out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
+        sensitivity_params=["n", "K"]
+    )
+    assert out.sens_jacobian_source == "automatic-differentiation"
+    np.testing.assert_array_equal(np.asarray(out.sensitivity)[1], [0.0, 0.0])
+
+
+def test_a_state_moved_across_a_jump_is_refused(tmp_path):
+    """G is made at floor(X) with X* = s/k1 = 2: the steady state sits on the
+    jump of floor, and s moves X across it (G* steps from 1 to 2 as s goes
+    through 1). From either side floor is flat, so the two sides' columns
+    agree; the steady state still has no derivative in s."""
+    path = tmp_path / "f.net"
+    path.write_text(
+        _NET.format(s=1.0, rate="floor(Xo)", declined=_DECLINED).replace(
+            "    2 k1  0.21\n", "    2 k1  0.5\n"
+        )
+    )
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#1330.*value jumps where X\(\) sits"):
+        sim.steady_state(sensitivity_params=["s"])
+
+
 class TestWhereThereIsNoDualEvaluation:
     def test_rateof(self):
         model = bngsim.Model.from_antimony_string(

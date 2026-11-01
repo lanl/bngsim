@@ -101,7 +101,9 @@ double TableFunction::evaluate_at(double x) const {
 double TableFunction::slope_at(double x) const {
     if (std::isnan(x))
         return std::numeric_limits<double>::quiet_NaN();
-    if (method_ == InterpolationMethod::Step || x <= xs_.front() || x >= xs_.back())
+    // At the first knot itself the value is the first interval's left end, and
+    // the slope to its right is that interval's (left_slope_at is 0 there).
+    if (method_ == InterpolationMethod::Step || x < xs_.front() || x >= xs_.back())
         return 0.0;
     // evaluate_at's interval, found as it finds it.
     auto it = std::upper_bound(xs_.begin(), xs_.end(), x);

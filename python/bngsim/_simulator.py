@@ -8564,6 +8564,17 @@ class Simulator:
         """
         if result.sens_tie_species is None:
             return
+        if result.sens_tie_jump:
+            raise SimulationError(
+                "steady_state(sensitivity_params=...) does not return dY_ss/dp for this "
+                "model at this steady state (issue #1330): a rate law's value jumps where "
+                f"{result.sens_tie_species} sits (a comparison, if(), a step of floor() or "
+                f"rint()), and {result.sens_tie_param} moves {result.sens_tie_species} "
+                f"(d{result.sens_tie_species}/d{result.sens_tie_param} = "
+                f"{result.sens_tie_value:.6g} on the branch the state is on), so the steady "
+                "state crosses the jump: it has no derivative in that parameter. A state "
+                "beside the jump has one."
+            )
         raise SimulationError(
             "steady_state(sensitivity_params=...) does not return dY_ss/dp for this model "
             "at this steady state (issue #1330): the state sits where a rate law changes "
@@ -11736,6 +11747,10 @@ class SteadyStateResult:
         values from above and below (issue #1330). ``steady_state`` raises
         where there is one: the steady state has no derivative there. None
         where the side does not matter.
+    sens_tie_jump : bool
+        Whether that entry was refused because a rate law's value jumps along
+        its species there and the parameter moves the species, so that the
+        steady state crosses the jump (the two sides may agree then).
 
     Notes
     -----
@@ -11826,6 +11841,7 @@ class SteadyStateResult:
         "sens_tie_value",
         "sens_tie_above",
         "sens_tie_below",
+        "sens_tie_jump",
         "_sensitivity",
         "_sens_param_names",
         "_observable_names",
@@ -11966,6 +11982,7 @@ class SteadyStateResult:
         self.sens_tie_value = getattr(core, "sens_tie_value", 0.0)
         self.sens_tie_above = getattr(core, "sens_tie_above", 0.0)
         self.sens_tie_below = getattr(core, "sens_tie_below", 0.0)
+        self.sens_tie_jump = bool(getattr(core, "sens_tie_jump", False))
 
         self._sensitivity: np.ndarray | None
         if core.n_sens_params > 0:

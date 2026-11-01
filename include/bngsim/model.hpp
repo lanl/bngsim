@@ -555,10 +555,12 @@ class NetworkModel {
 
     // Dense column-major n×n J (jac[j*n + i] = ∂f_i/∂x_j) at (t, conc). From a
     // side (`tie` Above or Below), `*jumped` (where given) says whether a law's
-    // value jumps there, along some species: the column is that side's branch.
+    // value jumps there, along some species, and `*jumped_columns` (where
+    // given, one per species) along which: such a column is that side's branch.
     bool fill_dense_dual_jacobian(double t, const double *conc, double *jac,
                                   DualTie tie = DualTie::Value, bool *tied = nullptr,
-                                  bool *jumped = nullptr);
+                                  bool *jumped = nullptr,
+                                  std::vector<char> *jumped_columns = nullptr);
 
     // ∂f/∂p for the parameter at `param_idx0`, into `out` (n_species): the
     // total derivative, through the parameters derived from it, as a step of it

@@ -1505,6 +1505,9 @@ class SteadyStateResultCore:
     def sens_tie_below(self) -> float:
         ...
     @property
+    def sens_tie_jump(self) -> bool:
+        ...
+    @property
     def sens_tie_param(self) -> int:
         ...
     @property

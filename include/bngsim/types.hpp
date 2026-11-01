@@ -1605,11 +1605,15 @@ struct SteadyStateResult {
     // where none is), sens_tie_value its value in `sensitivity`, and
     // sens_tie_above / sens_tie_below its values from the two sides (NaN where
     // a side has none). steady_state() refuses it: there is no derivative.
+    // sens_tie_jump is set where the entry is refused because a law's value
+    // jumps along that species there and the parameter moves the species, so
+    // that the steady state crosses the jump (both sides may agree then).
     int sens_tie_species = -1;
     int sens_tie_param = -1;
     double sens_tie_value = 0.0;
     double sens_tie_above = 0.0;
     double sens_tie_below = 0.0;
+    bool sens_tie_jump = false;
 
     // ─── Observable / function output sensitivities at steady state (GH #12) ───
     // The chain-rule projection of the species dY_ss/dp above onto the model's
