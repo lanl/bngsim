@@ -228,7 +228,7 @@ def test_the_matrix_is_the_closed_forms(name):
         closed = np.asarray(core.fill_dense_analytical_jacobian(0.0, y))
         got = core.fill_dense_dual_jacobian(0.0, y, 0)
         assert got is not None, core.dual_unsupported_reason()
-        dual, _ = got
+        dual, _, _ = got
         # To the rounding of each row's terms: an entry that is a cancellation
         # in one derivation may be written without it in the other (sympy
         # cancels; the interpreter evaluates the law as written).
@@ -380,6 +380,32 @@ def test_dfdp_reaches_a_law_through_a_derived_parameter(tmp_path):
         [kr * (2.0 / 0.25) / (kf + kr) ** 2, kf / (kf + kr) ** 2],
         rtol=1e-12,
     )
+
+
+def test_a_state_parked_on_a_jump_has_columns_from_either_side(tmp_path):
+    """The upstream l-type calcium model (k_v_stim = 50 with k_v_leak = 1):
+    Voltage relaxes to exactly 50, where v_rec = if((-70 + V) < -20, ...)
+    jumps. From either side the law's value differs, and the column of V is
+    that side's branch; the columns solved with each agree, as the steady
+    state does not cross the jump as the parameters move. They are the closed
+    form's, which re-solves at p ± h confirm (-0.534842 and 0.445702 for the
+    largest entries)."""
+    text = (_DATA / "ltype_calcium_discontinuous_jacobian.net").read_text()
+    path = tmp_path / "ltype.net"
+    path.write_text(text.replace("49.99999999999", "50.0"))
+    params = ["k_open_max", "V_half"]
+    dual = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode", jacobian="fd")
+    got = dual.steady_state(sensitivity_params=params)
+    assert got.sens_jacobian_source == "automatic-differentiation"
+    closed = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    want = closed.steady_state(sensitivity_params=params)
+    assert want.sens_jacobian_source != "automatic-differentiation"
+    np.testing.assert_allclose(got.sensitivity, want.sensitivity, rtol=1e-6, atol=1e-12)
+    # The state is on the jump: from a side, a law's value is not its value.
+    core = bngsim.Model.from_net(str(path))._core
+    y = np.asarray(got.concentrations)
+    assert core.fill_dense_dual_jacobian(0.0, y, 0)[1]  # tied
+    assert any(core.fill_dense_dual_jacobian(0.0, y, side)[2] for side in (1, -1))  # jumped
 
 
 class TestWhereThereIsNoDualEvaluation:

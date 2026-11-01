@@ -2590,12 +2590,19 @@ class Model:
         got = self._core.fill_dense_dual_jacobian(t, y, 0)
         if got is None:
             return None
-        dense, tied = got
+        dense, tied, _ = got
         if not tied:
             return dense
         sides = []
         for side in (1, -1):
             other = self._core.fill_dense_dual_jacobian(t, y, side)
+            if other is not None and other[2]:
+                raise SimulationError(
+                    "Model.jacobian() has no value at this state (issue #1330): a rate law "
+                    "changes branch here (a comparison, if(), a step of floor() or rint()) "
+                    "and its value jumps, so the right-hand side has no derivative across "
+                    "it. A state beside the branch point has one."
+                )
             sides.append(other[0] if other is not None else np.full_like(dense, np.nan))
         apart = np.maximum(np.abs(sides[0] - dense), np.abs(sides[1] - dense))
         apart[np.isnan(apart)] = np.inf

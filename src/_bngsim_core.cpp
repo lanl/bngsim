@@ -2437,23 +2437,25 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 std::vector<double> jac(static_cast<size_t>(ns) * ns, 0.0);
                 bool ok = true;
                 bool tied = false;
+                bool jumped = false;
                 if (ns > 0) {
                     py::gil_scoped_release release;
-                    ok = self.fill_dense_dual_jacobian(t, y, jac.data(),
-                                                       static_cast<bngsim::DualTie>(side), &tied);
+                    ok = self.fill_dense_dual_jacobian(
+                        t, y, jac.data(), static_cast<bngsim::DualTie>(side), &tied, &jumped);
                 }
                 if (!ok) {
                     return py::none();
                 }
-                return py::make_tuple(colmajor_to_ndarray_2d(jac, ns), tied);
+                return py::make_tuple(colmajor_to_ndarray_2d(jac, ns), tied, jumped);
             },
             py::arg("t"), py::arg("conc"), py::arg("side") = 0,
             "The Jacobian at (t, conc), exact, by dual numbers through the interpreter "
-            "(issue #1330), as a (float64 ndarray (n_species, n_species), tied) pair; None "
-            "where the model has no dual evaluation (dual_unsupported_reason) or its values "
-            "are not the right-hand side's. `tied` is whether the state sits where a law "
-            "changes branch; `side` (0, 1, -1) decides such a point as the interpreter "
-            "does, or from above or below along each column's direction.")
+            "(issue #1330), as a (float64 ndarray (n_species, n_species), tied, jumped) "
+            "triple; None where the model has no dual evaluation (dual_unsupported_reason) "
+            "or its values are not the right-hand side's. `tied` is whether the state sits "
+            "where a law changes branch; `side` (0, 1, -1) decides such a point as the "
+            "interpreter does, or from above or below along each column's direction, and "
+            "`jumped` whether a law's value jumps there from that side.")
         .def("dual_unsupported_reason", &bngsim::NetworkModel::dual_unsupported_reason,
              "Empty where the model's right-hand side and functions can be evaluated on "
              "dual numbers (issue #1330); else what it lacks.")

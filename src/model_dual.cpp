@@ -533,13 +533,13 @@ bool dual_same_value(double base, double side, double scale) {
 } // namespace
 
 bool NetworkModel::fill_dense_dual_jacobian(double t, const double *conc, double *jac, DualTie tie,
-                                            bool *tied) {
+                                            bool *tied, bool *jumped) {
     DualShadow *s = dual_shadow_();
     if (!s->eval) {
         return false;
     }
     const int ns = n_species();
-    const double nan = std::numeric_limits<double>::quiet_NaN();
+    bool any_jump = false;
     std::vector<double> seed(static_cast<std::size_t>(ns), 0.0);
     std::vector<double> J(static_cast<std::size_t>(ns) * static_cast<std::size_t>(ns), 0.0);
     const bool ok = with_tie(tie, tied, [&] {
@@ -558,18 +558,18 @@ bool NetworkModel::fill_dense_dual_jacobian(double t, const double *conc, double
             if (!done) {
                 return false;
             }
-            bool jumps = false;
-            for (int i = 0; tie != DualTie::Value && i < ns && !jumps; ++i) {
-                jumps = !dual_same_value(base[static_cast<std::size_t>(i)],
-                                         s->f[static_cast<std::size_t>(i)],
-                                         scale[static_cast<std::size_t>(i)]);
+            // A law whose value jumps where species j crosses the state: the
+            // column is the derivative of the branch on that side, as the
+            // column at the state is the branch's at the state. Whether the
+            // steady state moves through the jump is for the answers to say
+            // (ss_confirm_dual_sides); a state on the surface of a law that
+            // holds it there (a slide) has columns from either side.
+            for (int i = 0; tie != DualTie::Value && i < ns && !any_jump; ++i) {
+                any_jump = !dual_same_value(base[static_cast<std::size_t>(i)],
+                                            s->f[static_cast<std::size_t>(i)],
+                                            scale[static_cast<std::size_t>(i)]);
             }
-            auto column = J.begin() + static_cast<std::ptrdiff_t>(j) * ns;
-            if (jumps) {
-                std::fill(column, column + ns, nan);
-            } else {
-                std::copy(s->df.begin(), s->df.end(), column);
-            }
+            std::copy(s->df.begin(), s->df.end(), J.begin() + static_cast<std::ptrdiff_t>(j) * ns);
         }
         return true;
     });
@@ -577,6 +577,9 @@ bool NetworkModel::fill_dense_dual_jacobian(double t, const double *conc, double
         return false;
     }
     std::copy(J.begin(), J.end(), jac);
+    if (jumped != nullptr) {
+        *jumped = any_jump;
+    }
     return true;
 }
 
