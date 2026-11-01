@@ -121,6 +121,10 @@ Current carry topics:
 - every table function indexed by the time read at each of its breakpoints in
   `stepTo()`, whether or not a reaction has fired, so a rate that is 0 until a
   later breakpoint turns on (GH #892)
+- an expression with a bracket right after a call refused in NFsim's
+  mu::Parser shim, as the host evaluator refuses it, through
+  `bngsim::expr_compat::call_before_bracket` (GH #1415; it landed in GH #1419
+  as a direct edit to the vendored tree and was carried after)
 
 Not a carry, but tied to the vendored NFsim: bngsim refuses, by name, the rate
 laws NFsim cannot run, in `python/bngsim/_network_free_checks.py`
@@ -239,6 +243,8 @@ Expected carry order:
     rule that reads one cannot be built
 20. time-indexed table functions read at their breakpoints in `stepTo()`
     (GH #892)
+21. a bracket right after a call refused in NFsim's mu::Parser shim, as the
+    host refuses it (GH #1415)
 
 When you intentionally change the carry stack, regenerate the patch bundle
 afterward.
@@ -392,9 +398,11 @@ pre-commit run --hook-stage manual local-ci-vendor-verify
 pre-commit run --hook-stage manual local-ci-vendor-verify-strict
 ```
 
-A paused GitHub Actions job (`vendor_verify` in `.github/workflows/build.yml`)
-will run the same check automatically when the Actions quota resets in
-June 2026.
+CI runs it on every pull request and push to `main`: the `nfsim-vendor` job in
+`.github/workflows/lint.yml` replays the patch series onto the `base_commit`
+`VENDOR.json` records and runs `--verify-clean` against that candidate. Until
+it did, nothing ran the tripwire outside the manual stage, and GH #1419's edit
+to `nfsim_funcparser.h` landed as a direct edit.
 
 When the tripwire fires, do not bypass it. Drift means a direct edit
 slipped through; follow the remediation message — land the change on
