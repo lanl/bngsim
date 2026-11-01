@@ -2294,7 +2294,16 @@ class Simulator:
         # A table function read on the clock breaks at its breakpoints whether
         # or not any condition names it (issue #709).
         table_breaks = model.table_function_breaks()
-        if not conditions and not table_breaks:
+        # A smooth bump of the clock in a rate law (a Gaussian, a sech²) is 0 in
+        # doubles away from itself, and a step spanned it whole (issue #1286).
+        from bngsim._smooth_pulses import smooth_pulse_stops
+
+        try:
+            pulses = smooth_pulse_stops(model._core, float(t_start), float(t_end))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Smooth-pulse stop resolution failed (%s) (issue #1286).", e)
+            pulses = []
+        if not conditions and not table_breaks and not pulses:
             return conditions
         from bngsim._switch_sensitivity import (
             _PLAIN_INSTANT_FLOOR,
@@ -2349,6 +2358,23 @@ class Simulator:
                 sorted([*crossings, *periodic, *knots], key=lambda stop: stop.time),
                 floor=1.0 if sensitivities else _PLAIN_INSTANT_FLOOR,
             )
+            # The stops on smooth bumps join after the instants something
+            # switches at are counted (issue #1286). The probes below are handed
+            # over where an instant has more than one crossing, and a bump's stop
+            # crosses nothing: counted with them, one bump elsewhere in the run
+            # dropped the probes, and an event on the instant of two fixed
+            # switches, the one the event does not commute with lost, returned a
+            # sensitivity in place of the #767 refusal. A bump on the instant of
+            # a stop is that stop, which keeps the double its resolver chose.
+            switch_instants = len(stops)
+            if pulses:
+                from bngsim._smooth_pulses import apart_from
+
+                floor = 1.0 if sensitivities else _PLAIN_INSTANT_FLOOR
+                stops = merge_crossing_stops(
+                    sorted([*stops, *apart_from(pulses, stops, floor)], key=lambda s: s.time),
+                    floor=floor,
+                )
             if periodic_at:
                 crossings = sorted([*crossings, *periodic_at], key=lambda stop: stop.time)
         except (TriggerEqualityNeverHolds, StopsMoveWithAnEvent) as e:
@@ -2381,7 +2407,7 @@ class Simulator:
                 (stop.time, stop.clock_species_idx, stop.threshold) for stop in crossings
             )
             opts.set_crossing_probes(
-                list(probes) if len(probes) > len(stops) or periodic_at else []
+                list(probes) if len(probes) > switch_instants or periodic_at else []
             )
         over_budget = self._switches_the_run(model, over_budget)
         if over_budget:
