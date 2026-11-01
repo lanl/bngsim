@@ -163,6 +163,9 @@ class ConversionReport:
     validation: ConversionValidationReport | None = None
     protocol: ProtocolSpec | None = None  # parsed from a source .bngl, when given
     bngl_out: str | None = None  # path of the emitted .bngl actions block, when written (GH #222)
+    # What only bngsim's own reader reproduces of the written network: warned,
+    # never fatal (sbml_to_net; see capability_report, issue #1274).
+    bngsim_only: list[str] = field(default_factory=list)
 
     # Direction-flavored aliases so each call site reads naturally.
     @property
@@ -214,6 +217,8 @@ class ConversionReport:
             lines.append(f"  dropped: {note}")
         for note in self.lossy:
             lines.append(f"  lossy:   {note}")
+        for note in self.bngsim_only:
+            lines.append(f"  bngsim-only: {note}")
         if self.structural is not None:
             lines.append("  " + self.structural.summary())
         if self.max_rhs_delta is not None:
@@ -406,6 +411,7 @@ def sbml_to_net(
                 n_observables=model.n_observables,
                 dropped=caps["dropped"],
                 lossy=caps["lossy"],
+                bngsim_only=caps["bngsim_only"],
                 rhs_faithful=False,
                 protocol=protocol,
             )
@@ -484,6 +490,7 @@ def sbml_to_net(
         n_observables=model.n_observables,
         dropped=caps["dropped"],
         lossy=caps["lossy"],
+        bngsim_only=caps["bngsim_only"],
         structural=structural,
         max_rhs_delta=max_rhs_delta,
         max_ar_report_delta=max_ar_report_delta,

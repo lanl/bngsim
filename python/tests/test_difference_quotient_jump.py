@@ -518,3 +518,113 @@ def test_a_sum_parked_on_its_threshold_is_not_mended(
     net, _ = _split(data_dir, tmp_path, "50.0")
     window = dict(t_span=(0.0, 150.0), n_points=301, rtol=rtol, atol=atol)
     assert "across a jump" not in _split_mends(net, monkeypatch, capfd, sparse=sparse, **window)
+
+
+# ── The two steady-state quotients #1302 left as they were (issue #1335) ─────
+#
+# KINSOL's own difference quotient (``method="newton"`` with ``jacobian="fd"``;
+# a declined law sends ``newton`` to the march instead) and the march's colored
+# sparse one (KLU, forced here) have no mend for a step across a jump. Neither
+# has been seen to need one: #1302 tried 72 and 24 variants and found no wrong
+# answer. These pin that, from a start on a threshold and just either side of
+# it, and on a species held at 0, against closed forms. Each asserts the path
+# it took, so it cannot pass on another one.
+#
+# Three paths:
+# * "KINSOL" starts KINSOL on the given state (``newton_burst=False``). The
+#   default ``newton`` marches a burst into the root's basin first, so KINSOL's
+#   quotient would be formed away from the jump.
+# * "burst on KLU, then KINSOL" is the default ``newton`` with KLU forced: a
+#   burst on the march's colored quotient, then KINSOL's polish, which always
+#   factors densely (``linear_solver`` names the march's route).
+# * "colored march" is the march alone.
+#
+# Every root here is exact: f is affine in X on each side of the threshold, so
+# each solve lands on its root to rounding (relative error 0 on every row,
+# measured). ROOT leaves a platform its last bits.
+#
+# A final state cannot see a wrong colored quotient: with it negated, every
+# threshold row still lands on its root. The march's work can: on these rows it
+# takes at most 236 RHS evaluations with the right quotient, and at least 414
+# with it negated (7,896 on the gate, unconverged). MARCH_RHS sits between.
+# The march's rows need KLU, so a KLU-off build skips them and their budget.
+ROOT = 1e-12
+MARCH_RHS = 350
+
+
+def _source_and_switch(tmp_path: Path, s: float, x0: float) -> bngsim.Model:
+    """X made at s and lost at kx·k(X)·X, k = 0.04 above 5 and 0.02 at or below.
+    The one steady state is s/0.02 where that is at most 5, else s/0.04."""
+    return _net(
+        tmp_path,
+        [f"X() {x0!r}", "S() 1"],
+        ["Xobs 1", "Sobs 2"],
+        ["f() kx*if(Xobs > 5, 0.04, 0.02)", f"src() {s!r}/Sobs"],
+        ["1 0 f", "2 1,2 src"],
+    )
+
+
+def _kinsol(sim: bngsim.Simulator):
+    """KINSOL from the model's own state, with no burst first."""
+    return sim.steady_state_batch(params=[{}], method="newton", newton_burst=False)[0]
+
+
+# (simulator options, how it is solved, the path it must take)
+_PATHS = {
+    "KINSOL": ({}, _kinsol, ("newton", "dense")),
+    "burst on KLU, then KINSOL": (
+        {"force_sparse_linear_solver": True},
+        lambda sim: sim.steady_state(method="newton"),
+        ("newton", "klu"),
+    ),
+    "colored march": (
+        {"force_sparse_linear_solver": True},
+        lambda sim: sim.steady_state(method="integration"),
+        ("integration", "klu"),
+    ),
+}
+
+
+_requires_klu = pytest.mark.skipif(
+    not bngsim._bngsim_core.HAS_KLU, reason="build has no SuiteSparse/KLU"
+)
+_PATH_PARAMS = [
+    pytest.param(name, marks=_requires_klu) if taken[1] == "klu" else name
+    for name, (_, _, taken) in _PATHS.items()
+]
+
+
+def _solved_on(result, path: tuple[str, str]) -> None:
+    assert result.converged
+    assert (result.method_used, result.linear_solver) == path
+    assert result.solver_jacobian_source == "finite-difference"
+    if path[0] == "integration":
+        assert result.n_rhs_evals <= MARCH_RHS
+
+
+@pytest.mark.parametrize("path", _PATH_PARAMS)
+@pytest.mark.parametrize("x0", [5.0, 5.0 + 1e-9, 5.0 - 1e-9], ids=["on", "above", "below"])
+@pytest.mark.parametrize(("s", "exact"), [(0.08, 4.0), (0.4, 10.0)], ids=["lands below", "above"])
+def test_a_steady_state_solved_from_a_threshold(
+    tmp_path: Path, path: str, x0: float, s: float, exact: float
+) -> None:
+    sim_kw, solve, taken = _PATHS[path]
+    model = _source_and_switch(tmp_path, s, x0)
+    result = solve(bngsim.Simulator(model, method="ode", jacobian="fd", **sim_kw))
+    _solved_on(result, taken)
+    assert abs(float(np.asarray(result.concentrations)[0]) / exact - 1.0) < ROOT
+
+
+@pytest.mark.parametrize("path", _PATH_PARAMS)
+@pytest.mark.parametrize(
+    ("model", "exact"), [(_gate, 0.5), (_held_inhibitor, 20.0)], ids=["gate", "inhibitor"]
+)
+def test_a_steady_state_beside_a_species_held_at_zero(tmp_path: Path, path: str, model, exact):
+    """The run's two #1002 failures, on the two quotients the runs' mend does
+    not reach: the held species stays exactly 0, and Y lands where it should."""
+    sim_kw, solve, taken = _PATHS[path]
+    result = solve(bngsim.Simulator(model(tmp_path), method="ode", jacobian="fd", **sim_kw))
+    _solved_on(result, taken)
+    c = np.asarray(result.concentrations)
+    assert c[0] == 0.0
+    assert abs(c[1] / exact - 1.0) < ROOT

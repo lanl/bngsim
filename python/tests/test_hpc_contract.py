@@ -18,12 +18,17 @@ frontend's job.
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import bngsim
 import numpy as np
 import pytest
 from bngsim import _codegen
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import under_jit_no_cc_artifact  # noqa: E402
 
 # Honor BNGSIM_TEST_DATA so this module works under run_tests.sh (which copies
 # tests to a temp dir, breaking __file__-relative resolution).
@@ -70,6 +75,7 @@ class TestCacheDirControl:
         monkeypatch.delenv("BNGSIM_CODEGEN_CACHE_DIR", raising=False)
         assert _codegen._default_cache_dir() == Path.home() / ".cache" / "bngsim" / "codegen"
 
+    @under_jit_no_cc_artifact
     def test_compiled_artifact_lands_in_redirected_dir(self, monkeypatch, tmp_path):
         """A codegen build writes its .so into the redirected cache, not ~/.cache."""
         cache = tmp_path / "cache"
@@ -94,12 +100,16 @@ class TestBatchArtifactReuseStateless:
 
     def test_plain_batch_carries_codegen_artifact(self):
         """A codegen Simulator's run_batch reuses the one shared .so per row
-        (previously the per-row path ran interpreted, reusing nothing)."""
+        (previously the per-row path ran interpreted, reusing nothing). Under
+        the codegen JIT the artifact is the C source it compiles in process,
+        and the cross-talk half below matters most there (issue #1217)."""
         sim = bngsim.Simulator(
             bngsim.Model.from_net(_expr_chain_net()), method="ode", codegen=True
         )
-        assert sim._codegen_so_path  # one artifact, prepared once
+        # One artifact, prepared once: cc's .so or the JIT's source.
+        assert sim._codegen_so_path or sim._codegen_c_source
         so_before = sim._codegen_so_path
+        src_before = sim._codegen_c_source
 
         theta = [{"k1": 0.05 + 0.01 * i} for i in range(12)]
         rows = sim.run_batch(
@@ -108,7 +118,9 @@ class TestBatchArtifactReuseStateless:
 
         # The artifact is unchanged (shared, not re-created per row).
         assert sim._codegen_so_path == so_before
-        assert Path(so_before).exists()
+        assert sim._codegen_c_source == src_before
+        if so_before:
+            assert Path(so_before).exists()
 
         # Each row equals an independent single run for that θ — no shared
         # mutable state leaked across the concurrent clones.

@@ -165,7 +165,13 @@ def _refused(model, param, params=None, times=T, **kw):
 def _source(model) -> str:
     from bngsim import _codegen
 
-    return _codegen.generate_sens_from_model(model._core, functional=True, emit_term_scale=True)
+    source = _codegen.generate_sens_from_model(model._core, functional=True, emit_term_scale=True)
+    # None is a declined derivation, its budget spent among them (issue #1416),
+    # and read as one rather than as a TypeError at the caller's `in`.
+    assert source is not None, (
+        "the sensitivity derivation was declined: see last_codegen_decline()"
+    )
+    return source
 
 
 EXPORT = "int bngsim_codegen_edge_without_case(int iP, double t,"
@@ -1366,9 +1372,19 @@ def _sir_v5(**values):
     return model
 
 
+@pytest.fixture
+def unbudgeted(monkeypatch):
+    """SIR_v5's derivations, run with no wall-clock budget (issue #1416). What
+    these ask is what the derivatives say, not how fast they are found: beside
+    the suite's other workers the ∂f/∂p derivation ran past its 20 s, and the
+    tests failed on the budget. SIR_v4's test pins both the same way."""
+    monkeypatch.setenv("BNGSIM_JAC_DERIV_BUDGET_S", "inf")
+    monkeypatch.setenv("BNGSIM_SENS_DERIV_BUDGET_S", "inf")
+
+
 @needs_sir_v5
 @pytest.mark.parametrize("param", ["dt_2023", "fD_2023"])
-def test_sir_v5_with_a_singular_exponent_is_refused(param):
+def test_sir_v5_with_a_singular_exponent_is_refused(param, unbudgeted):
     """Each season is ``s^(a-1)·(1 - s^a)^(b-1)`` on a counter, with its
     onset, width and exponents chosen by year. The model has no case at all,
     and at its own values no exponent is under 1. With ``a_2023 = 1.5`` the
@@ -1383,7 +1399,7 @@ def test_sir_v5_with_a_singular_exponent_is_refused(param):
 
 
 @needs_sir_v5
-def test_sir_v5_at_its_own_values_keeps_its_columns():
+def test_sir_v5_at_its_own_values_keeps_its_columns(unbudgeted):
     """Control. Nothing is singular at the model's own values, and the
     listed parameters keep their columns."""
     index = None

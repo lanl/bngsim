@@ -27,6 +27,10 @@ ANALYTICAL = "analytical"
 #: the same spelling :attr:`bngsim.SteadyStateResult.solver_jacobian_source`
 #: uses for the same fallback.
 FINITE_DIFFERENCE = "finite-difference"
+#: ``JacobianMatrix.source`` when dual numbers through the interpreter built it,
+#: exactly, for a model with no closed form (issue #1330) — the spelling
+#: :attr:`bngsim.SteadyStateResult.sens_jacobian_source` uses for the same.
+AUTOMATIC_DIFFERENTIATION = "automatic-differentiation"
 
 #: Marks a pickle state written by :meth:`JacobianMatrix.__reduce__`. A stream
 #: written before issue #635 carries numpy's own state and no ``source``, and
@@ -51,10 +55,12 @@ class JacobianMatrix(np.ndarray):
     ----------
     source : str
         ``"analytical"`` when every reaction's derivative came from the model's
-        closed form, ``"finite-difference"`` when the matrix is the one-sided
-        difference quotient of :meth:`bngsim.Model.rhs`. A model whose
-        analytical Jacobian is incomplete never hands back the partial matrix
-        under the first label; it differences instead and says so.
+        closed form; ``"automatic-differentiation"`` when it has none and the
+        matrix is exact by dual numbers through the interpreter (issue
+        #1330); ``"finite-difference"`` when the matrix is the one-sided
+        difference quotient of :meth:`bngsim.Model.rhs`, for a model with
+        neither. A model whose analytical Jacobian is incomplete never hands
+        back the partial matrix under the first label.
     """
 
     # __slots__ omitted: ndarray subclasses must not declare __slots__

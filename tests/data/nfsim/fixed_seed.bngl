@@ -1,0 +1,26 @@
+# bngsim issue #1373 fixture: a fixed ($) seed species. BNG2.pl writes it as
+# $X(a) in both the .net and the XML, and bngsim's .net loader names it X(a).
+begin model
+begin parameters
+  k 0.001
+  A0 100
+  X0 50
+end parameters
+begin molecule types
+  A(x)
+  X(a)
+end molecule types
+begin seed species
+  A(x) A0
+  $X(a) X0
+end seed species
+begin observables
+  Molecules Afree A(x)
+  Molecules Xfree X(a)
+end observables
+begin reaction rules
+  A(x) + X(a) -> A(x!1).X(a!1) k
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeXML()

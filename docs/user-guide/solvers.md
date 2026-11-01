@@ -17,11 +17,120 @@ print(result.solver_stats)
 # {'n_steps': 1247, 'n_rhs_evals': 2891, 'n_jac_evals': 43, ...}
 ```
 
+`n_rhs_evals` is CVODE's count of the integration's own right-hand-side
+evaluations. Those spent forming a Jacobian by difference quotients (with
+`jacobian="fd"`, or where a closed form is declined) are counted separately, as
+`n_jac_rhs_evals`, which is 0 where every Jacobian is closed-form (issue #1333).
+`n_jac_evals` counts the linear solver's setups, which can reuse the last
+Jacobian; `n_jac_formations` counts the Jacobians the solver asked for (one that
+a failed right-hand-side call cut short among them).
+
 Those counters cover the **whole run**. CVODE's own counters restart at every
 re-initialization — an event fire, a rate-law switch crossing and a chatter
 re-arm each force one — so bngsim banks each segment as it closes rather than
 sampling the counters once at the end, which would report only the span after
 the last restart (issue #182).
+
+## The default tolerances, and models in small units
+
+The default `rtol` is `1e-8`. The default `atol` is BNG2.pl's scalar `1e-8`, and
+bngsim reads a scalar `atol`, the default or one you pass, as a **ceiling**: each
+species is held to the scalar where that is a tolerance for it, and to a smaller
+one where it is not (issue #1420):
+
+```
+atol_i = min(atol, rtol * max(|x_i(0)|, floor))
+floor  = max(smallest start of a species the solver integrates, 1e-6 * the largest)
+```
+
+A species that starts below the floor keeps `rtol * |x_i(0)|` wherever that is
+more than double precision resolves beside the largest start (`ε`, 2.2e-16, of it).
+
+`x(0)` is the state the call starts from. To hold every species to the number
+exactly instead, pass `atol=bngsim.ExactAtol(value)` (see below). The scalar was chosen for species held
+as molecule counts. A species that stays below `atol` for the whole run has no
+error control beyond the tolerance itself, which happens in a model in molar or
+other small units, common in SBML and BioModels. Such a trajectory can be off by
+its own size, or go negative, and CVODE reports no error: a binding model of
+species near 1e-9 M ended at -8.7e-10 for 4.1e-10. Under the scalar, 62 of 1,251
+BioModels were off their reference by over 1% of a species' peak, 21 of them with
+no warning. Under this default, 13 are, and none got worse; the corpus took 19%
+longer, nearly all of it on models that had been wrong.
+
+- **It is never looser than the scalar.** A species the scalar already resolves
+  keeps it.
+- **A model of counts is unchanged.** Its species start at 0 or at least 1, so
+  every one takes the scalar, and the run is on the scalar's own code path: 162
+  of 175 `.net` models took the same steps.
+- **The floor** is where a species with no scale of its own (one that starts at
+  0) is held as though it were. It is never under 1e-6 of the largest species:
+  a model that declares a species at 1e-31 beside one at 10 does not integrate
+  with every species at 0 held to 1e-39. A species with a scale of its own
+  below the floor keeps it, where double precision resolves `rtol` of it: held
+  as though at the floor, BIOMD0000000857's Ephe, at 1e-5 beside a pool at 500,
+  stopped CVODE on 14 of 381 output grids at `rtol=1e-6, atol=1e-9` (issue
+  #1439). Where every species the solver
+  integrates starts at 0, the floor is the smallest start of any species, a
+  `$`-fixed one too, and where every species starts at 0 the default is the
+  scalar.
+- **Forward sensitivities on CVODES' difference quotient keep the scalar.**
+  A model whose `∂f/∂p` bngsim cannot derive (`has_analytic_sens_rhs` is
+  `False`) runs its sensitivities on the quotient,
+  which sizes its increment from the state's error weights. A species held
+  tighter is then perturbed by less and carries more roundoff, not more
+  accuracy: one such model took 187,685 steps for 28,732, with a worse
+  gradient. So such a run is held to the scalar itself.
+- **It reads the state each call starts from**, as `atol="auto"` does, and a
+  batch, a scan or a chunked sensitivity job derives it once for all its runs.
+  A `run_until` step (and so a `ReactionKernel.advance`) keeps the one its
+  trajectory started with, so a coupling loop's answer does not depend on how
+  it is cut into steps, and a model of counts stays on the scalar. For a fit
+  that moves initial conditions, pass a vector from `bngsim.derive_atol`
+  (below) to hold it fixed.
+
+What the default cannot scale is a species that starts at 0, or below every
+scale the start gives, in a model where no species starts small: in a model
+whose species all start at 0, every species is at the scalar. `run()`,
+`run_until()`, `run_batch()`, `parameter_scan()` and
+`compute_all_sensitivities()` raise `bngsim.AtolScaleWarning` in that case,
+once per call and naming the species, where you gave no `atol` and a species
+the solver integrates stays below its tolerance while reaching at least 1e-6 of
+the run's largest. A species stuck at rounding in a count model does not reach
+that, and a `$`-fixed species or an assignment-rule target is not integrated;
+neither is warned. The remedy is `atol="tracking"` (below), which follows each
+species' magnitude, or an `atol` well below those species (issue #1361).
+
+### A scalar `atol` you pass, and holding it exactly
+
+**A scalar `atol` you pass is read the same way, as a ceiling.** This includes
+one given to `set_tolerances`, and a SED-ML file's absolute tolerance
+(`KISAO:0000211`), which `bngsim.convert.read_sedml` turns into one. Every
+species is held to that number or tighter, never looser, so a species far below
+it is still resolved. Until issue #1420 a scalar was held exactly for every
+species. A SED-ML file's `atol=1e-9` at `rtol=1e-6` then held BIOMD0000000457's
+species_42, near 1.6e-7, to 13% at t = 5, and libRoadRunner's answer at the
+same tolerances was right, because libRoadRunner scales its absolute tolerance
+by each species' value.
+
+**To hold every species to exactly the number you give**, say so:
+
+```python
+result = sim.run(t_span=(0, 100), rtol=1e-6, atol=bngsim.ExactAtol(1e-9))
+sim.set_tolerances(rtol=1e-8, atol=bngsim.ExactAtol(1e-8))   # the old default, exactly
+spec = bngsim.convert.read_sedml("simulation.sedml", exact_atol=True)
+```
+
+`ExactAtol` is accepted wherever `atol` is: `run`, `run_until`, `run_batch`,
+`parameter_scan`, `compute_all_sensitivities`, `set_tolerances` and
+`steady_state`. An `EvaluationSpec` carries it through its JSON as
+`{"exact": value}`. SED-ML has no way to say "exactly", so `write_sedml` writes
+the number, and `read_sedml(..., exact_atol=True)` is how a reader takes it back
+that way. A vector of `n_species` values is also used exactly as given.
+
+Reach for it to reproduce a run made under the old reading, or to compare with
+a tool that holds one absolute tolerance for every species.
+`steady_state(atol=...)` takes a scalar as given in any case: under
+`criterion="scaled"` it is also the run test's tolerance.
 
 ## Per-species absolute tolerance
 
@@ -155,10 +264,13 @@ Two things worth knowing:
   one kwarg to rule out.
 
 `atol="auto"` derives `rtol * max(|y_i|, floor)`, where `floor` defaults to the
-smallest strictly positive species value in the model — a species sitting at
-zero has no magnitude of its own to scale, so it is treated as living at the
-smallest scale the model actually exhibits. Pass `floor=` to `auto_atol` to
-choose differently. Being built from *initial* values, this cannot see a species
+smallest strictly positive species value in the model, but not above 1 — a
+species sitting at zero has no magnitude of its own to scale, so it is treated
+as living at the smallest scale the model actually exhibits, or at one unit
+(one molecule, in a model of counts) where every species that has a scale is
+larger. Without the cap, a species at 0 beside species at 1e10 was held to an
+absolute 100, and one grown from 0 came out 100% off (MODEL2009230001). Pass
+`floor=` to `auto_atol` to choose differently. Being built from *initial* values, this cannot see a species
 that starts at order one and decays to something tiny; that is a within-species,
 over-time mismatch, and the CVODE construct for it is `CVodeWFtolerances`, which
 bngsim does not expose yet (issue #213). The corollary is worth stating plainly:
@@ -246,7 +358,8 @@ the result (`"analytical"`, `"fd"`, or `"jax"`) — including `"fd"` when an
 **When to use `"fd"`**: For A/B benchmarking, or if you suspect the analytical
 Jacobian is causing issues. The `"fd"` option uses SUNDIALS' internal
 difference-quotient (DQ) approximation for dense models, and graph-colored
-finite differences for sparse (KLU) models.
+finite differences for sparse (KLU) models. Against a system SUNDIALS of
+another release, see [Installation](../installation.md#from-source).
 
 **Analytical Jacobian**: Available automatically when all reactions use
 Elementary (mass-action) rate laws. For models with Functional or
@@ -338,7 +451,7 @@ dense LU, `1` for sparse KLU, `2` for the BLAS dense factor.
 
 | Route | When (default options) |
 |---|---|
-| KLU (sparse) | at least 50 species, a Jacobian under 10% dense, and an LU factor that stays sparse (below) |
+| KLU (sparse) | at least 50 species, a Jacobian under 10% dense with a structural nonzero to factor, and an LU factor that stays sparse (below) |
 | BLAS dense factor | a model KLU would take whose LU factor fills in, on a build with BLAS |
 | built-in dense LU | everything else |
 
@@ -396,6 +509,16 @@ the run, stops the integration on each, and restarts there. That covers:
 - the breakpoints of a table function over time;
 - the same conditions written on a unit-rate counter species.
 
+A smooth pulse with no switch in it has the same trouble. A narrow Gaussian
+`exp(-((time()-t0)/s)^2)` is exactly 0 in doubles away from itself, so a step
+spanned it whole. bngsim stops on the centre of each such bump in the value of
+a rate law (issue #1286). It reads `exp` of a quadratic in the clock with a
+negative leading term (also written `_e^` or `pow(_e, ...)`), and `cosh` or
+`tanh` of a linear function of it, which covers sech² written `1/cosh(u)^2` or
+`1 - tanh(u)^2`. The clock is `time()` or a counter species fed at a constant
+rate, at any rate. A bump centred just past the end of the run, with its rise
+inside the run, gets a stop at the end.
+
 A condition is first read exactly where it has a shape bngsim knows (linear in
 time, a repeating schedule, a step of a linear argument, a sinusoid, a
 polynomial). Any other is evaluated over the run window with the model's own
@@ -406,10 +529,12 @@ way.
 
 What this does not cover:
 
-- **A smooth pulse with no switch in it**, such as a narrow Gaussian
-  `exp(-((time()-t0)/s)^2)` feeding a model that is otherwise at rest. Nothing
-  changes branch, so there is nothing to stop at. Pass `max_step` no larger
-  than the pulse's width.
+- **A smooth pulse of a shape not listed above**, such as the derivative of a
+  logistic, `exp(-u)/(1+exp(-u))^2`, or a bump of a counter whose feed reads
+  the state or is changed by an event. Nothing changes branch, so there is
+  nothing to stop at. Pass `max_step` no larger than the pulse's width. A
+  counter that an event resets has its bump stopped on only where it first
+  reaches it, and a warning says so.
 - **A window narrower than 1/8,192 of the run that no sample has any sign
   of**: one made by a smooth residual that is flat to the last bit outside the
   window (`exp(-((time()-t0)/s)^2) > 0.5` with `s` a millionth of the run), or
@@ -519,7 +644,7 @@ Each stop is a restart of the integrator, and each restart spends about one
 unit of the local error tolerance. With tens of thousands of stops in a run
 that adds up: a quantity of order `n_stops × atol` is integrated to no better
 than that. `mod(time(), 0.0003)` over 10 time units (33,000 stops) accumulates
-1.5e-3, which the default `atol` of 1e-8 does not resolve and `atol=1e-14`
+1.5e-3, which an `atol` of 1e-8 does not resolve and `atol=1e-14`
 does to 2e-8. Tighten `atol` where a run has many stops and small quantities.
 
 A stop sits on the first double at which the model's own arithmetic reads
