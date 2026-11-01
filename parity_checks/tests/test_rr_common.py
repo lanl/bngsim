@@ -97,6 +97,88 @@ def test_schedule_kills_overrunning_job_and_completes_the_rest():
     assert by_key["fast1"]["status"] == "ok" and by_key["fast2"]["status"] == "ok"
 
 
+def test_schedule_starts_a_dependent_spec_only_after_the_one_it_waits_on():
+    """Issue #1386: a model's second corrector method started while its first
+    was still compiling the code both load, and compiled it again. With
+    ``depends_on``, "second" waits for "first"; the short jobs after it do not
+    wait, so no worker idles meanwhile."""
+    specs = [
+        {"key": "first", "sleep": 1.5},
+        {"key": "a", "sleep": 0.1},
+        {"key": "b", "sleep": 0.1},
+        {"key": "second", "sleep": 0.1},
+        {"key": "c", "sleep": 0.1},
+    ]
+    out = rc.schedule(
+        specs,
+        sw.timed_worker,
+        workers=3,
+        timeout_of=lambda s: 30.0,
+        depends_on=lambda s: "first" if s["key"] == "second" else None,
+    )
+    by = {r["key"]: r for r in out}
+    assert by["second"]["start"] >= by["first"]["end"]
+    # The jobs it does not wait on ran while "first" did.
+    assert by["c"]["start"] < by["first"]["end"]
+    assert [r["key"] for r in out] == [s["key"] for s in specs]
+
+
+def test_schedule_without_depends_on_starts_the_second_spec_alongside():
+    """Control: the race the dependency closes. Ordered behind short jobs only,
+    "second" starts before "first" ends."""
+    specs = [
+        {"key": "first", "sleep": 1.5},
+        {"key": "a", "sleep": 0.1},
+        {"key": "second", "sleep": 0.1},
+    ]
+    out = rc.schedule(specs, sw.timed_worker, workers=3, timeout_of=lambda s: 30.0)
+    by = {r["key"]: r for r in out}
+    assert by["second"]["start"] < by["first"]["end"]
+
+
+def test_schedule_runs_a_spec_whose_dependency_times_out():
+    """A first job that is killed still finishes, so the one waiting on it runs."""
+    specs = [{"key": "first", "sleep": 30.0}, {"key": "second", "sleep": 0.0}]
+    out = rc.schedule(
+        specs,
+        sw.timed_worker,
+        workers=2,
+        timeout_of=lambda s: 0.5 if s["key"] == "first" else 30.0,
+        depends_on=lambda s: "first" if s["key"] == "second" else None,
+    )
+    by = {r["key"]: r for r in out}
+    assert by["first"]["status"] == "timeout" and by["second"]["status"] == "ok"
+
+
+def test_schedule_does_not_hold_back_a_spec_waiting_on_no_spec():
+    """A dependency no spec has holds nothing back: it starts beside a long
+    job, not after it."""
+    specs = [{"key": "long", "sleep": 1.5}, {"key": "orphan", "sleep": 0.0}]
+    out = rc.schedule(
+        specs,
+        sw.timed_worker,
+        workers=2,
+        timeout_of=lambda s: 30.0,
+        depends_on=lambda s: "nobody" if s["key"] == "orphan" else None,
+    )
+    by = {r["key"]: r for r in out}
+    assert by["orphan"]["start"] < by["long"]["end"]
+
+
+def test_schedule_runs_every_spec_of_a_dependency_cycle():
+    """Two specs waiting on each other still run: a dependency orders the
+    work and never wedges a sweep."""
+    specs = [{"key": "x", "sleep": 0.0}, {"key": "y", "sleep": 0.0}]
+    out = rc.schedule(
+        specs,
+        sw.timed_worker,
+        workers=2,
+        timeout_of=lambda s: 30.0,
+        depends_on=lambda s: {"x": "y", "y": "x"}[s["key"]],
+    )
+    assert [r["status"] for r in out] == ["ok", "ok"]
+
+
 # --------------------------------------------------------------------------- #
 # bn_ode timing config (T1.2): built from the engine's accessors, not guessed
 # --------------------------------------------------------------------------- #
