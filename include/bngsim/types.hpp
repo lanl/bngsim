@@ -1461,22 +1461,27 @@ struct SteadyStateResult {
     std::string linear_solver;
     // jacobian_source: how J in dY_ss/dp = -J⁻¹·(∂f/∂p) was built —
     // "codegen" (compiled analytical), "analytical" (interpreted analytical),
-    // "finite-difference", or "" when no sensitivity was requested.
+    // "automatic-differentiation" (exact, by dual numbers through the
+    // interpreter, where there is no closed form or jacobian="fd" asked for
+    // none; issue #1330), "finite-difference" (a model with no dual
+    // evaluation), or "" when no sensitivity was requested.
     std::string sens_jacobian_source;
     // dfdp_source: how ∂f/∂p was built — "codegen" (the analytical
-    // ∂f/∂p the codegen sensitivity RHS emits) or "finite-difference"; ""
-    // when no sensitivity was requested.
+    // ∂f/∂p the codegen sensitivity RHS emits), "automatic-differentiation"
+    // (where it emits none; issue #1330) or "finite-difference"; "" when no
+    // sensitivity was requested.
     std::string sens_dfdp_source;
-    // output_source: how much of the d(func)/dp block below the compiled
-    // bngsim_codegen_output_sens chain rule answered (issues #75, #1002), over
-    // the functions a result returns (not the auto-generated _rateLawN):
-    // "codegen" (every one), "partial" (some; the rest are NaN rows), or
-    // "none" (not one: each declined or NaN for its own reason, no symbol, or a
-    // whole-model decline). A row
-    // the chain rule does not answer is not differenced. "" when no
-    // sensitivity was requested or the model has no function a result
-    // returns. The observable block is an exact linear projection either way
-    // and is not covered by this field.
+    // output_source: what answered the d(func)/dp block below (issues #75,
+    // #1002, #1330), over the functions a result returns (not the
+    // auto-generated _rateLawN): "codegen" (the compiled
+    // bngsim_codegen_output_sens chain rule, every one),
+    // "automatic-differentiation" (dual numbers, every one: rows the chain
+    // rule declines, or a model with none), "codegen+automatic-differentiation"
+    // (every one, by the two), "partial" (some; the rest are NaN rows), or
+    // "none" (not one: each NaN for its own reason). A row is not differenced.
+    // "" when no sensitivity was requested or the model has no function a
+    // result returns. The observable block is an exact linear projection
+    // either way and is not covered by this field.
     std::string sens_output_source;
     // Whether that chain rule was called at all: false where the artifact has
     // none (no symbol, a whole-model decline), so that a refusal of a NaN row
@@ -1616,6 +1621,45 @@ struct SteadyStateResult {
     double sens_fd_own_step = 0.0;
     double sens_fd_half_step = 0.0;
 
+    // ─── A state where a law changes branch (issue #1330) ───────────────────
+    // Where J or ∂f/∂p was taken by dual numbers and the steady state sits
+    // where a law changes branch (`if(X > c, …)` at X = c, abs(X) or max(X, 0)
+    // at X = 0, a step of floor()), the derivative of the branch the state is
+    // on is one of two one-sided ones (bngsim/dual.hpp). The columns are then
+    // solved again with the matrices from each side. Where an entry of either
+    // is further from the first than 1e-8 of itself (1e-10 of its column's
+    // largest, at least), sens_tie_species and sens_tie_param are the entry
+    // furthest apart (0-based species and column into sens_param_names; -1
+    // where none is), sens_tie_value its value in `sensitivity`, and
+    // sens_tie_above / sens_tie_below its values from the two sides (NaN where
+    // a side has none). steady_state() refuses it: there is no derivative.
+    // sens_tie_jump is set where the entry is refused because a law's value
+    // jumps along that species there and the parameter moves the species, so
+    // that the steady state crosses the jump (both sides may agree then).
+    int sens_tie_species = -1;
+    int sens_tie_param = -1;
+    double sens_tie_value = 0.0;
+    double sens_tie_above = 0.0;
+    double sens_tie_below = 0.0;
+    bool sens_tie_jump = false;
+    // A state held on a jump: a Newton step from the state, to the root of the
+    // branches its laws take, changes some law's branch (where the model has a
+    // dual evaluation, however J was taken) and leaves a residual larger than
+    // the one it started from (each over its species' terms, Σ|J_ij|·|y_j|,
+    // at least 1e-9 of the largest species', and over 1e-14 of them), and the
+    // branch moves the species whose residual grew most. The state is then
+    // within the solver's tolerance of a jump in a law's value
+    // that no root of its branch is beside: `f` jumps across 0 there, and the
+    // state is held on the jump (2·k2·rint(X·1e12)/1e12·X, a staircase whose
+    // steps are under the tolerance), where it does not move as the branch
+    // would. sens_held_species is the species whose residual the step left
+    // largest (0-based; -1 where none), and sens_held_before /
+    // sens_held_after the largest residual before and after the step, each
+    // over its terms. steady_state() refuses it.
+    int sens_held_species = -1;
+    double sens_held_before = 0.0;
+    double sens_held_after = 0.0;
+
     // ─── Observable / function output sensitivities at steady state (GH #12) ───
     // The chain-rule projection of the species dY_ss/dp above onto the model's
     // observables and global functions, so a gradient consumer can read
@@ -1644,6 +1688,11 @@ struct SteadyStateResult {
     // rule afterwards). -1 where it reads no such species, and for every row
     // the compiled evaluator answered; empty when function_sensitivity is.
     std::vector<int> function_sens_missing_species;
+    // For each raw function, 1 where its row was left NaN because its
+    // derivative by dual numbers depends on the side the state is approached
+    // from (issue #1330; see sens_tie_species); else 0. Empty when
+    // function_sensitivity is.
+    std::vector<int> function_sens_tied;
 
     // ─── What the convergence test covered, and why it failed (issue #74) ─────
     // How many species entered ||f||₂/n — n_species unless

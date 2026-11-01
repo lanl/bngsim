@@ -168,7 +168,13 @@ def _max_rhs_delta(a_model: Model, b_model: Model) -> float:
     return worst
 
 
-def _ar_report_delta(model: Model, back_model: Model | None = None) -> float:
+def _ar_report_delta(
+    model: Model,
+    back_model: Model | None = None,
+    *,
+    back_names: dict[str, str] | None = None,
+    back_perm: list[int] | None = None,
+) -> float:
     """Largest scale-relative difference in what the two models *report* for an
     AssignmentRule-target species.
 
@@ -188,6 +194,10 @@ def _ar_report_delta(model: Model, back_model: Model | None = None) -> float:
 
     Without ``back_model`` the reload is taken to report every AR-target frozen at
     its initial value — the source-only question this probe used to ask (GH #18).
+    ``back_names`` maps a source species' name to the reload's, where they differ
+    (a BNG2.pl ``.net`` names a species as a pattern; issue #1400), and
+    ``back_perm`` the source's species index to the reload's, where BNG2.pl
+    reordered them: the reload is read at the same state, in its own order.
     Returns ``0.0`` when the source has no AR-target species, ``inf`` when a rule
     cannot be evaluated (conservatively unfaithful).
     """
@@ -249,7 +259,14 @@ def _ar_report_delta(model: Model, back_model: Model | None = None) -> float:
         frozen = source.reported(name, states[0][0], 0, states[0][1])
         for k, (t, y) in enumerate(states):
             a = source.reported(name, t, k, y)
-            b = back.reported(name, t, k, y) if back is not None else frozen
+            if back is not None:
+                yb = y
+                if back_perm is not None:
+                    yb = np.empty_like(y)
+                    yb[back_perm] = y
+                b = back.reported((back_names or {}).get(name, name), t, k, yb)
+            else:
+                b = frozen
             if a is None or b is None:
                 return float("inf")  # can't establish the reported value → unfaithful
             scale = max(abs(a), 1.0)

@@ -75,20 +75,24 @@ CRASH = {
 # that moves from a refusal to one of these traded a loud failure for a silent one.
 WRONG_ANSWER = {"sbml-suite": {"value_mismatch", "var_missing", "shape_mismatch"}}
 
-# bngsim ``solver_stats`` counters kept per case. The first three are compared;
-# the rest are kept so a regression report can say *why* the work grew.
+# bngsim ``solver_stats`` counters kept per case. Those in WORK_ALERT_KEYS are
+# compared; the rest are kept so a regression report can say *why* the work grew.
 WORK_KEYS = (
     "n_steps",
     "n_rhs_evals",
     "n_jac_evals",
+    "n_jac_rhs_evals",
     "n_nonlin_iters",
     "n_err_test_fails",
     "n_nonlin_conv_fails",
 )
-WORK_ALERT_KEYS = ("n_steps", "n_rhs_evals", "n_jac_evals")
+# n_jac_rhs_evals (issue #1333) is what a difference-quotient Jacobian costs in
+# f calls, which n_rhs_evals does not count; a baseline that predates it has no
+# value to compare, and is skipped until it is re-recorded.
+WORK_ALERT_KEYS = ("n_steps", "n_rhs_evals", "n_jac_evals", "n_jac_rhs_evals")
 # A per-case increase must clear this absolute floor too, so a 3 -> 5 Jacobian
 # count on a trivial model does not alert.
-WORK_MIN_DELTA = {"n_steps": 25, "n_rhs_evals": 50, "n_jac_evals": 10}
+WORK_MIN_DELTA = {"n_steps": 25, "n_rhs_evals": 50, "n_jac_evals": 10, "n_jac_rhs_evals": 50}
 # And the wall total must grow by this many seconds too, so a fixed cost on a
 # total that is near zero does not alert as a blowup: before issue #901 the
 # stochastic legs' ``bngsim_sec`` was only the load phase, 0.011 s over bng_nf's
@@ -356,6 +360,38 @@ def load_verdicts(path: Path) -> dict:
 # --------------------------------------------------------------------------- #
 # diff
 # --------------------------------------------------------------------------- #
+def rebaselined(then: dict, now: dict) -> dict[str, dict]:
+    """The cases the committed baseline re-recorded between two of its versions:
+    case id -> its record in ``now``, where ``then`` held another verdict, other
+    solver work, or none."""
+    old = then["cases"]
+    return {
+        cid: rec
+        for cid, rec in now["cases"].items()
+        if cid not in old
+        or _verdict(old[cid]) != _verdict(rec)
+        or old[cid].get("work") != rec.get("work")
+    }
+
+
+def _verdict(rec: dict) -> tuple:
+    return rec["outcome"], rec.get("subclass")
+
+
+def _within_recorded_work(fresh: dict, recorded: dict | None, work_ratio: float) -> bool:
+    """Whether ``fresh``'s solver work stays within ``recorded``'s, by the
+    per-case alert rule, on every counter both carry."""
+    if not recorded or not recorded.get("work"):
+        return False
+    for key in WORK_ALERT_KEYS:
+        vr, vf = recorded["work"].get(key), fresh["work"].get(key)
+        if vr is None or vf is None:
+            continue
+        if vf > vr * work_ratio and vf - vr >= WORK_MIN_DELTA[key]:
+            return False
+    return True
+
+
 def _label(rec: dict | None) -> str:
     if rec is None:
         return "MISSING"
@@ -377,6 +413,7 @@ def diff(
     flaky: dict[str, str] | None = None,
     timeout_flips_info: bool = False,
     phases_may_differ: bool = False,
+    rebaselined: dict[str, dict] | None = None,
 ) -> dict:
     """Compare two verdict files of the same kind. Returns a JSON-able result.
 
@@ -393,8 +430,19 @@ def diff(
     time. Against the committed baseline that alerts, since the check would stay
     off until someone re-extracted it; ``phases_may_differ`` only reports it,
     which is right for two single nights across a change to BNGSIM_PHASES.
+
+    ``rebaselined`` maps the cases the committed baseline re-recorded since
+    ``base`` was run (:func:`rebaselined`) to their new records. Between two
+    nights, a change into the verdict the baseline now records was reviewed when
+    it was recorded, so it is reported, not alerted: a pull request that makes a
+    check stricter re-records the rows it moves, and they would otherwise alert
+    on its own run and on the first night after it merges. A fix that regresses
+    before anyone re-baselined it is not among them, and still alerts. The same
+    goes for solver work: a case whose work was re-recorded, and which tonight
+    does not exceed, is left out of the work comparison (``rebaselined_work``).
     """
     flaky = flaky or {}
+    rebaselined = rebaselined or {}
     if base["kind"] != fresh["kind"]:
         raise ValueError(f"kind mismatch: baseline {base['kind']} vs fresh {fresh['kind']}")
     kind = base["kind"]
@@ -417,6 +465,8 @@ def diff(
         soft = None
         if cid in flaky:
             soft = f"flaky: {flaky[cid]}"
+        elif cid in rebaselined and _verdict(rebaselined[cid]) == _verdict(fr):
+            soft = "re-baselined since that night"
         elif timeout_flips_info and "TIMEOUT" in (bo, fo) and bo != fo:
             soft = "timeout flip between two nights (runner speed)"
         if soft and (bo, br.get("subclass")) != (fo, fr.get("subclass")):
@@ -435,6 +485,13 @@ def diff(
     # Efficiency: only where both runs are good and both carry counters.
     both_good = [c for c in b if c in f and b[c]["outcome"] in good and f[c]["outcome"] in good]
     work_cases = [c for c in both_good if b[c].get("work") and f[c].get("work")]
+    # A case whose work the committed baseline re-recorded since the earlier
+    # night, and which tonight does not exceed, is that reviewed work: it is
+    # left out of the comparison, per case and in the totals (#1434).
+    rebaselined_work = sorted(
+        c for c in work_cases if _within_recorded_work(f[c], rebaselined.get(c), work_ratio)
+    )
+    work_cases = [c for c in work_cases if c not in set(rebaselined_work)]
     work_items = []
     totals = {}
     for key in WORK_ALERT_KEYS:
@@ -533,6 +590,7 @@ def diff(
         "regressed": regressed,
         "new_crash": new_crash,
         "efficiency": work_items,
+        "rebaselined_work": rebaselined_work,
         "work_totals": totals,
         "wall": wall,
         "backend_miss": backend_miss,
@@ -732,6 +790,13 @@ def render_md(result: dict, label: str = "", limit: int = 40) -> str:
             cols.append("note")
         lines += _table(result["efficiency"], cols, limit)
         lines.append("")
+    if result.get("rebaselined_work"):
+        n = len(result["rebaselined_work"])
+        lines += [
+            f"Work on {n} case(s) the committed baseline re-recorded since then, which "
+            "tonight does not exceed, is not compared.",
+            "",
+        ]
     tot = result["work_totals"]
     if any(t["before"] for t in tot.values()):
         lines.append("Total bngsim work over cases good in both runs:")
@@ -795,6 +860,14 @@ def _cmd_extract(args) -> int:
     return 0
 
 
+def _rebaselined_from(then: str, now: str) -> dict[str, dict]:
+    """:func:`rebaselined` between two committed baseline files; nothing when
+    either is not given or not there (the run it describes predates the suite)."""
+    if not (then and now and Path(then).exists() and Path(now).exists()):
+        return {}
+    return rebaselined(load_verdicts(Path(then)), load_verdicts(Path(now)))
+
+
 def _cmd_diff(args) -> int:
     fresh = load_verdicts(Path(args.fresh))
     base_path = Path(args.baseline)
@@ -836,6 +909,7 @@ def _cmd_diff(args) -> int:
         flaky=flaky,
         timeout_flips_info=args.timeout_flips_info,
         phases_may_differ=args.phases_may_differ,
+        rebaselined=_rebaselined_from(args.baseline_then, args.baseline_now),
     )
     result["label"] = args.label
     md = render_md(result, args.label)
@@ -966,6 +1040,14 @@ def main(argv=None) -> int:
         action="store_true",
         help="report (do not alert on) the two files' bngsim_sec summing different phases",
     )
+    d.add_argument(
+        "--baseline-then",
+        default="",
+        help="the committed baseline as of the --baseline run's commit; with "
+        "--baseline-now, a change into a verdict the baseline re-recorded since "
+        "then is reported, not alerted",
+    )
+    d.add_argument("--baseline-now", default="", help="the committed baseline now")
     d.add_argument(
         "--allow-missing-baseline",
         action="store_true",

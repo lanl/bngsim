@@ -9515,15 +9515,29 @@ def _build_model_from_sbml_doc_in_context(doc):
         # A concentration the size reads in a compartment whose own size reads a
         # rate: each compartment's rate needs the next one's, so a ring of them
         # (a compartment reading its own concentration is one) has no first.
-        def _reads_in(a: str, b: str, reads: dict[str, set[str]] | None = None) -> list[str]:
-            # The diluted concentrations in compartment b that a's rate (or, over
-            # `reads`, a's conditions) reads.
-            source = _comp_rated if reads is None else reads
-            return sorted(leaf for leaf in source[a] if _diluted(leaf) and species_comp[leaf] == b)
+        # Each size's links, built once: (a, b) -> how a reads concentrations in
+        # b, through its value or its jump conditions, -> the ones it reads. A
+        # condition that reads its own compartment is no link (a ring of one,
+        # below).
+        _links: dict[tuple[str, str], dict[str, str]] = {}
+        for how, reads in (("value", _comp_rated), ("condition", _cond_reads)):
+            for a, read in reads.items():
+                in_comp: dict[str, list[str]] = {}
+                for leaf in sorted(read):
+                    if _diluted(leaf):
+                        in_comp.setdefault(species_comp[leaf], []).append(leaf)
+                for b, leaves in in_comp.items():
+                    if how == "value" or b != a:
+                        _links.setdefault((a, b), {})[how] = ", ".join(leaves)
 
-        def _first_ring(needs: dict[str, list[str]]) -> list[str]:
-            # The first ring of compartments, each needing the next, as a path
-            # that ends where it starts; [] where there is none.
+        def _first_ring(how: str | None) -> list[str]:
+            # The first ring of compartments, each needing the next through
+            # `how` (either, where None), as a path that ends where it starts;
+            # [] where there is none.
+            needs: dict[str, list[str]] = {}
+            for (a, b), via in sorted(_links.items()):
+                if how is None or how in via:
+                    needs.setdefault(a, []).append(b)
             state: dict[str, int] = {}  # 1 on the walk, 2 finished
             for start in sorted(needs):
                 if state.get(start):
@@ -9543,30 +9557,35 @@ def _build_model_from_sbml_doc_in_context(doc):
                         walk.append(iter(needs[nxt]))
             return []
 
-        _ring = _first_ring(
-            {
-                comp: sorted({species_comp[leaf] for leaf in rated if _diluted(leaf)})
-                for comp, rated in _comp_rated.items()
-                if rated
-            }
-        )
+        def _ring_refusal(
+            ring: list[str], how: str, link: Callable[[str, str], str], why: str
+        ) -> str:
+            # "the sizes of compartments" in the ring, how each reads the next,
+            # each link, and why that is refused.
+            return (
+                "the sizes of compartments "
+                + ", ".join(f"{c} ({_size_text(c)})" for c in ring[:-1])
+                + f" {how} ("
+                + "; ".join(link(a, b) for a, b in zip(ring, ring[1:], strict=False))
+                + f"), {why}"
+            )
+
+        _ring = _first_ring("value")
         if len(_ring) == 2:  # a compartment reading its own concentration
             c = _ring[0]
             _refusals.append(
-                f"compartment {c} ({_size_text(c)}) reads {', '.join(_reads_in(c, c))}, a "
+                f"compartment {c} ({_size_text(c)}) reads {_links[(c, c)]['value']}, a "
                 f"concentration in {c} itself: a concentration is the amount over the size, "
                 "so the two define each other, and bngsim does not solve that"
             )
         elif _ring:
             _refusals.append(
-                "the sizes of compartments "
-                + ", ".join(f"{c} ({_size_text(c)})" for c in _ring[:-1])
-                + " each read a concentration in the next ("
-                + "; ".join(
-                    f"{a} reads {', '.join(_reads_in(a, b))} in {b}"
-                    for a, b in zip(_ring, _ring[1:], strict=False)
+                _ring_refusal(
+                    _ring,
+                    "each read a concentration in the next",
+                    lambda a, b: f"{a} reads {_links[(a, b)]['value']} in {b}",
+                    "so the sizes define each other, and bngsim does not solve that",
                 )
-                + "), so the sizes define each other, and bngsim does not solve that"
             )
         # The same ring through the sizes' jump conditions alone (issue #1124,
         # item 3). Each size's condition reads the next one's concentration,
@@ -9576,25 +9595,16 @@ def _build_model_from_sbml_doc_in_context(doc):
         # model says which. libRoadRunner refuses the model.
         # bngsim kept the sizes from before the instant, with no word of it.
         # (A ring with a link through a size's value as well is refused below.)
-        _cond_ring = _first_ring(
-            {
-                comp: sorted({species_comp[leaf] for leaf in read} - {comp})
-                for comp, read in _cond_reads.items()
-                if {species_comp[leaf] for leaf in read} - {comp}
-            }
-        )
-
+        _cond_ring = _first_ring("condition")
         if _cond_ring:
             _refusals.append(
-                "the sizes of compartments "
-                + ", ".join(f"{c} ({_size_text(c)})" for c in _cond_ring[:-1])
-                + " each jump on a condition that reads a concentration in the next ("
-                + "; ".join(
-                    f"{a} reads {', '.join(_reads_in(a, b, _cond_reads))} in {b}"
-                    for a, b in zip(_cond_ring, _cond_ring[1:], strict=False)
+                _ring_refusal(
+                    _cond_ring,
+                    "each jump on a condition that reads a concentration in the next",
+                    lambda a, b: f"{a} reads {_links[(a, b)]['condition']} in {b}",
+                    "so where a jump flips those conditions the sizes after it can be read "
+                    "more than one way, and bngsim does not choose",
                 )
-                + "), so where a jump flips those conditions the sizes after it can be read "
-                "more than one way, and bngsim does not choose"
             )
         # A ring through both kinds of link (issue #1185, item 2): a size whose
         # value reads the next one's concentration, and a size whose jump
@@ -9610,34 +9620,25 @@ def _build_model_from_sbml_doc_in_context(doc):
         # piecewise(5, time >= 2 && cv < 2, 1)` beside `cv := 1 + [Sw]` reads
         # [Sw], and runs, keeping the state it is in.
         if not _ring and not _cond_ring:
-            _links: dict[tuple[str, str], str] = {}
-            for a, rated in _comp_rated.items():
-                for b in sorted({species_comp[leaf] for leaf in rated if _diluted(leaf)}):
-                    _links[(a, b)] = f"{a}'s size reads {', '.join(_reads_in(a, b))} in {b}"
-            for a, read in _cond_reads.items():
-                for b in sorted({species_comp[leaf] for leaf in read} - {a}):
-                    _links.setdefault(
-                        (a, b),
-                        f"{a}'s jump condition reads {', '.join(_reads_in(a, b, _cond_reads))} "
-                        f"in {b}",
-                    )
-            _mixed_ring = _first_ring(
-                {
-                    a: sorted({b for (x, b) in _links if x == a})
-                    for a in sorted({x for x, _ in _links})
-                }
-            )
+
+            def _either(a: str, b: str) -> str:
+                # A link through a size's value, where it has one, is the one named.
+                via = _links[(a, b)]
+                if "value" in via:
+                    return f"{a}'s size reads {via['value']} in {b}"
+                return f"{a}'s jump condition reads {via['condition']} in {b}"
+
+            _mixed_ring = _first_ring(None)
             if _mixed_ring:
                 _refusals.append(
-                    "the sizes of compartments "
-                    + ", ".join(f"{c} ({_size_text(c)})" for c in _mixed_ring[:-1])
-                    + " each read a concentration in the next, through their values and "
-                    "their jump conditions ("
-                    + "; ".join(
-                        _links[(a, b)] for a, b in zip(_mixed_ring, _mixed_ring[1:], strict=False)
+                    _ring_refusal(
+                        _mixed_ring,
+                        "each read a concentration in the next, through their values and "
+                        "their jump conditions",
+                        _either,
+                        "so where a jump flips one of those conditions, the sizes after it "
+                        "can be read more than one way, and bngsim does not choose",
                     )
-                    + "), so where a jump flips one of those conditions, the sizes after it "
-                    "can be read more than one way, and bngsim does not choose"
                 )
         if _refusals:
             from bngsim._exceptions import ModelError

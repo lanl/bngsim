@@ -28,14 +28,20 @@ tolerances, says where the march stops. These tests cover:
 from __future__ import annotations
 
 import math
+import os
 import platform
 import re
+import shutil
 import sys
 from pathlib import Path
 
 import bngsim
 import numpy as np
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import threshold_forced  # noqa: E402
 
 # X' = -k·x·(x - a)·(x - u), x = X/s: roots 0 and u = 1 stable, a = 0.3 not.
 CUBIC_NET = """begin parameters
@@ -1806,8 +1812,16 @@ def test_a_march_the_step_cannot_stop_returns_the_state_the_residual_test_passed
     # to a residual of 2e16 with a species at -1.8e5. It returns the state the
     # residual test passed, main's, where the eigenvalues have a positive real
     # part (0.13) and a run from it leaves.
+    #
+    # The interpreted march, pinned (issue #1217): near an unstable state,
+    # whether a march passes the residual test before it runs away is in the
+    # last digits. On x86-64 Linux, interpreted with the closed form it passes
+    # (3.9e-10), and so does compiled with jacobian="fd" (1.8e-10). Interpreted
+    # with jacobian="fd" it runs away (2.6e8), and so does compiled with the
+    # compiled closed form (4.6e17), never passing, so a forced codegen run had
+    # no passed state to return.
     path = str(data_dir / "BIOMD0000000463.xml")
-    ss = bngsim.Simulator(bngsim.Model.from_sbml(path), method="ode").steady_state()
+    ss = bngsim.Simulator(bngsim.Model.from_sbml(path), method="ode", codegen=False).steady_state()
     assert not ss.converged
     assert ss.residual < 1e-9
     assert np.min(ss.concentrations) > -1e-6
@@ -1921,6 +1935,10 @@ def test_a_singular_jacobian_is_singular_on_every_platform(tmp_path, jacobian):
     assert list(ss.concentrations[1:]) == pytest.approx([0.75, 0.25], rel=1e-9)
 
 
+# Compiled, the march comes to the same root without its integrator failing
+# (residual 1.05e-15, within 1.6e-6 of the interpreter's state), so it is not
+# retried: this pins the arm64 interpreter's route there, not its answer.
+@threshold_forced
 def test_a_march_whose_integrator_fails_is_still_retried_on_difference_quotients(data_dir):
     # MODEL1712050008's march passes the residual test, goes on, and its
     # integrator fails; the step does not take the state it passed (202
@@ -1939,3 +1957,88 @@ def test_a_march_whose_integrator_fails_is_still_retried_on_difference_quotients
     if sys.platform == "darwin" and platform.machine() == "arm64":
         assert ss.solver_jacobian_retried
         assert ss.converged
+
+
+_CC_ON_PATH = any(shutil.which(c) for c in ("cc", "gcc", "clang"))
+
+
+@pytest.mark.skipif(not _CC_ON_PATH, reason="no C compiler on PATH for the codegen leg")
+def test_a_compiled_march_to_a_fractional_power_at_zero_is_not_refused(data_dir):
+    """Issue #1357. glioblastoma-egfrviii raises AKT(s~P) to 3.5, and the march
+    on the compiled right-hand side comes to it at 0 or within 1e-52 of it, at
+    residual 2e-39. A corrector iterate an ulp below 0 makes the power NaN, so
+    the run test could not be taken to its time (at t = 3.9e5 on arm64 macOS,
+    at its first step on x86-64 Linux), and the state was refused with a run
+    measure of inf. The run test now integrates as the time course does, which
+    takes f again at the clamped state where it is NaN (GH #135). No retry is
+    the answer's."""
+    path = str(data_dir / "glioblastoma_egfrviii_seed.net")
+    compiled = bngsim.Simulator(
+        bngsim.Model.from_net(path), method="ode", codegen=True
+    ).steady_state(method="integration")
+    assert compiled.converged
+    assert compiled.continued_run_distance <= 1.0
+    assert compiled.solver_jacobian_source == "codegen"
+    assert not compiled.solver_jacobian_retried
+    interpreted = bngsim.Simulator(bngsim.Model.from_net(path), method="ode").steady_state(
+        method="integration"
+    )
+    # At the march's own tolerances (rtol and atol 1e-8): AKT(s~P) is 0 here
+    # and 1e-9 there, and the rest agree to the digit.
+    np.testing.assert_allclose(
+        compiled.concentrations, interpreted.concentrations, rtol=1e-8, atol=1e-8
+    )
+
+
+# Where the compiled march ended on x86-64 Linux, to the bit: AKT(s~P), the
+# last, and Oncogenic_Output() are exactly 0, and the residual is 1.56e-40.
+_GLIOBLASTOMA_AT_ZERO = [
+    -4.5627044333513721e-44,
+    2.0000000000000088e02,
+    1.0000000000000007e03,
+    -2.8516902708446076e-45,
+    0.0,
+    -6.0212043388956984e-45,
+    -4.2897249239143463e-42,
+    2.7026996748452282e-45,
+    4.0693707403992688e-42,
+    0.0,
+]
+
+
+@pytest.mark.parametrize(
+    ("jacobian", "sparse"),
+    [
+        pytest.param("auto", False, id="auto"),
+        pytest.param("fd", False, id="fd"),
+        # A KLU-off build factors the march densely whatever is forced.
+        pytest.param(
+            "fd",
+            True,
+            id="fd colored",
+            marks=pytest.mark.skipif(not bngsim.HAS_KLU, reason="KLU not compiled"),
+        ),
+    ],
+)
+def test_a_run_test_from_a_fractional_power_at_zero_is_taken_to_its_time(
+    data_dir, jacobian, sparse
+):
+    """Issue #1357, on every platform: a solve started where the Linux march
+    ended. On difference quotients, CVODE could not take the march or the run
+    test one step from it (the corrector's iterate put AKT(s~P) below 0, where
+    AKT(s~P)^3.5 is NaN), and the state was refused at residual 1.56e-40. A
+    time course from it moves nothing. `fd colored` is the quotient KLU
+    factors, formed from the same f."""
+    path = str(data_dir / "glioblastoma_egfrviii_seed.net")
+    sim = bngsim.Simulator(
+        bngsim.Model.from_net(path),
+        method="ode",
+        jacobian=jacobian,
+        force_sparse_linear_solver=sparse,
+    )
+    sim.set_state(np.array(_GLIOBLASTOMA_AT_ZERO))
+    ss = sim.steady_state(method="integration")
+    assert (ss.linear_solver == "klu") == sparse
+    assert ss.converged
+    assert ss.continued_run_distance <= 1.0
+    np.testing.assert_allclose(ss.concentrations, _GLIOBLASTOMA_AT_ZERO, rtol=1e-8, atol=1e-8)

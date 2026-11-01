@@ -252,6 +252,7 @@ jobs:
             python/tests/test_periodic_step_stops.py \
             python/tests/test_codegen_mratio.py \
             python/tests/test_codegen_jit_prelude.py \
+            python/tests/test_codegen_exprtk_functions.py \
             python/tests/test_codegen_alias_rule.py \
             python/tests/test_codegen_name_scan.py \
             python/tests/test_ssa_propensity_export.py \

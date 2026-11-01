@@ -21,7 +21,9 @@
 #include "bngsim/lapack_dense_linsol.hpp"
 #include "bngsim/mm_jacobian.hpp"
 #include "bngsim/model.hpp"
+#include "bngsim/nonneg_clamp.hpp"
 #include "bngsim/platform_compat.hpp" // POSIX ssize_t shim for Windows (GH #150)
+#include "bngsim/refusals.hpp"
 #include "bngsim/result.hpp"
 #include "bngsim/simulator.hpp"
 #include "bngsim/sparse_jacobian.hpp"
@@ -698,6 +700,11 @@ struct CvodeUserData {
     // test evaluates.
     void *dq_cvode_mem = nullptr;
     CVRhsFn dq_rhs = nullptr;
+    // The right-hand-side evaluations a Jacobian is formed from (issue #1333):
+    // the dense quotient's, its jump test's side points, and the colored
+    // quotient's. CVODE's own count (n_rhs_evals) has none of them. Points at
+    // the run's counter on Impl; null where nothing counts.
+    long *jac_rhs_evals = nullptr;
     std::vector<double> dq_scratch;
     bool dq_debug = false;
 
@@ -863,27 +870,12 @@ static void record_clamp_tolerances(CvodeUserData &data, void *cvode_mem, double
     }
 }
 
+// The rule is nonneg_clamp_mask_of (bngsim/nonneg_clamp.hpp), which the
+// steady-state march shares (issue #1357).
 static const std::vector<char> &nonneg_clamp_mask(CvodeUserData *data) {
-    const NetworkModel &model = *data->model;
-    const int ns = model.n_species();
-    if (data->rhs_nonneg_mask.size() == static_cast<std::size_t>(ns))
-        return data->rhs_nonneg_mask;
-    std::vector<char> mask(ns, 1);
-    const auto &species = model.species();
-    for (int i = 0; i < ns; ++i) {
-        const Species &sp = species[i];
-        if (sp.fixed || !sp.reported || sp.declared_negative)
-            mask[i] = 0;
-    }
-    for (const Reaction &rxn : model.reactions()) {
-        if (!rxn.is_rate_rule_ode)
-            continue;
-        for (int si : rxn.product_indices) {
-            if (si >= 1 && si <= ns)
-                mask[si - 1] = 0;
-        }
-    }
-    data->rhs_nonneg_mask = std::move(mask);
+    const int ns = data->model->n_species();
+    if (data->rhs_nonneg_mask.size() != static_cast<std::size_t>(ns))
+        data->rhs_nonneg_mask = nonneg_clamp_mask_of(*data->model);
     return data->rhs_nonneg_mask;
 }
 
@@ -962,32 +954,14 @@ static void mark_far_at_step_start(CvodeUserData *data, N_Vector y) {
 }
 
 // The state `y` with its masked slots below 0 set to 0, but for those `spare`
-// marks. Returns the (lazily sized) scratch.
+// marks (clamp_nonneg_into, which the steady-state run test shares, issue
+// #1357). Returns the (lazily sized) scratch. What a reading of it was is
+// read_values, from the same header.
 static inline double *clamp_state_nonneg(CvodeUserData *data, N_Vector y,
                                          const char *spare = nullptr) {
-    const int ns = data->model->n_species();
-    if (data->rhs_nonneg_scratch.size() != static_cast<std::size_t>(ns))
-        data->rhs_nonneg_scratch.assign(ns, 0.0);
-    double *s = data->rhs_nonneg_scratch.data();
-    const double *y_ptr = N_VGetArrayPointer(y);
-    const std::vector<char> &mask = nonneg_clamp_mask(data);
-    for (int i = 0; i < ns; ++i)
-        s[i] = (y_ptr[i] > 0.0 || !mask[i] || (spare != nullptr && spare[i])) ? y_ptr[i] : 0.0;
-    return s;
-}
-
-// What an evaluation of the right-hand side or of a closed-form Jacobian read:
-// all finite, a NaN and no infinity, or an infinity.
-enum class ClampReading { finite, nan_only, infinite };
-
-static ClampReading read_values(const double *v, std::size_t n) {
-    bool nan = false;
-    for (std::size_t k = 0; k < n; ++k) {
-        if (std::isinf(v[k]))
-            return ClampReading::infinite;
-        nan = nan || std::isnan(v[k]);
-    }
-    return nan ? ClampReading::nan_only : ClampReading::finite;
+    clamp_nonneg_into(nonneg_clamp_mask(data), N_VGetArrayPointer(y), data->rhs_nonneg_scratch,
+                      spare);
+    return data->rhs_nonneg_scratch.data();
 }
 
 // The slots the clamp leaves alone at `y`: where `values` (the right-hand side
@@ -2176,6 +2150,9 @@ static bool dq_side_point(CvodeUserData *data, sunrealtype t, N_Vector y, N_Vect
     const bool had_witness = data->nonfinite_witness.captured;
     const bool had_error = static_cast<bool>(data->callback_error);
     const bool had_refusal = !data->below_zero_refusal.empty();
+    if (data->jac_rhs_evals != nullptr) {
+        ++*data->jac_rhs_evals;
+    }
     const int rc = data->dq_rhs(t, y, f, data);
     data->x_max = x_max;
     if (!had_refusal) {
@@ -2206,7 +2183,12 @@ static int cvode_dense_dq_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMa
     int mended = 0;
     const int rc = cvode_dense_dq_past_jumps(
         data->dq_cvode_mem, y, fy, J, tmp1, tmp2, tmp3, data->dq_scratch,
-        [&](N_Vector out) { return data->dq_rhs(t, y, out, user_data); },
+        [&](N_Vector out) {
+            if (data->jac_rhs_evals != nullptr) {
+                ++*data->jac_rhs_evals;
+            }
+            return data->dq_rhs(t, y, out, user_data);
+        },
         [&](N_Vector out) { return dq_side_point(data, t, y, out); }, &mended);
     if (mended > 0 && data->dq_debug) {
         std::fprintf(stderr, "[jac] dense DQ t=%.17g: %d entries step across a jump\n",
@@ -2476,6 +2458,9 @@ static int cvode_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMat
         }
         model->compute_derivs(static_cast<double>(t), y_data, data->colored_jac_f_base.data());
         f_base = data->colored_jac_f_base.data();
+        if (data->jac_rhs_evals != nullptr) {
+            ++*data->jac_rhs_evals;
+        }
     }
 
     if (data->colored_jac_jump_rows.size() != 4 * static_cast<std::size_t>(ns)) {
@@ -2484,7 +2469,12 @@ static int cvode_colored_jac_body(sunrealtype t, N_Vector y, N_Vector fy, SUNMat
     int mended = 0;
     colored_fd_jacobian(
         sp, ns, static_cast<double>(t), y_data, f_base, jac_data, y_pert, fy_pert, h_vals,
-        [model](double tt, const double *yy, double *ydot) { model->compute_derivs(tt, yy, ydot); },
+        [model, counter = data->jac_rhs_evals](double tt, const double *yy, double *ydot) {
+            if (counter != nullptr) {
+                ++*counter;
+            }
+            model->compute_derivs(tt, yy, ydot);
+        },
         data->colored_jac_jump_rows.data(), &mended, ewt, min_inc);
     if (mended > 0 && data->dq_debug) {
         std::fprintf(stderr, "[jac] colored DQ t=%.17g: %d entries step across a jump\n",
@@ -2877,6 +2867,9 @@ struct ExecutedEventFire {
 // treat them as one instant (issue #737). The Python detector groups crossings
 // by the same reach (`_switch_sensitivity._same_instant`).
 constexpr double kSwitchInstantUlps = 64.0;
+// Issue #947: how many times the step back that tells a crossing from a jump
+// is doubled, past where a residual moves by less than its own rounding.
+constexpr int kHeldProbeDoublings = 20;
 // Issue #1025: a state crossing and a fire or a clock's switch, closer than
 // the window and further than one step's tolerances, are confirmed against a
 // plain run at 1/kOrderTighten of the tolerances. The window takes the
@@ -3049,6 +3042,11 @@ constexpr double kEventShiftFloor = 1e-9;
 // How many instants after a switch stop an event root still counts as on it.
 // CVODE places a root within 100·ε·(|t| + |h|) of where it is.
 constexpr double kEventRootSlack = 4.0;
+// That many instants at t: how far after a stop an event root on it is reported.
+inline double event_root_reach(double t) {
+    return kEventRootSlack * kSwitchInstantUlps * std::numeric_limits<double>::epsilon() *
+           std::max(std::fabs(t), 1.0);
+}
 
 struct SwitchJumpScratch {
     std::vector<double> f_minus;
@@ -3113,6 +3111,15 @@ struct CvodeSimulator::Impl {
         // re-inits alongside the state's, for the same reason (#182).
         long int sens_conv_fails = 0;
         long int sens_err_test_fails = 0;
+        // CVODE's own difference-quotient Jacobian's f calls, where it forms
+        // one (CVodeGetNumLinRhsEvals; issue #1333). Every run gives it a
+        // callback of bngsim's, so this is 0 today; it is read so that a path
+        // that one day leaves CVODE to its own quotient is counted too.
+        long int lin_rhs_evals = 0;
+        // The Jacobians CVODE asked for (CVodeGetNumJacEvals), where
+        // n_jac_evals counts the linear-solver setups, which can reuse one
+        // (issue #1333).
+        long int jac_formations = 0;
 
         void operator+=(const SegmentCounters &o) {
             steps += o.steps;
@@ -3123,9 +3130,14 @@ struct CvodeSimulator::Impl {
             err_test_fails += o.err_test_fails;
             sens_conv_fails += o.sens_conv_fails;
             sens_err_test_fails += o.sens_err_test_fails;
+            lin_rhs_evals += o.lin_rhs_evals;
+            jac_formations += o.jac_formations;
         }
     };
     SegmentCounters closed_segments;
+    // bngsim's own Jacobian quotients' f calls this run (CvodeUserData::
+    // jac_rhs_evals points here), reset with closed_segments (issue #1333).
+    long jac_rhs_evals = 0;
 
     // Whether CVODES forward sensitivity analysis is switched on for the CVODE
     // memory these counters are read from (issue #447). Set when CVodeSensInit1
@@ -3692,6 +3704,10 @@ struct CvodeSimulator::Impl {
         // Which fire of which event this was, and how many fires came before.
         std::vector<std::pair<int, long>> occurrences;
         long fires_before = 0;
+        // How far each column moves that fire, and the event named for it:
+        // the one that moves, or the first that fired (issue #1277).
+        std::vector<double> tau;
+        int event = -1;
     };
     std::vector<EventFire> event_fires;
     struct StateCrossing {
@@ -4293,7 +4309,7 @@ void CvodeSimulator::Impl::setup_linsol_and_jac(void *cvode_mem, SUNContext ctx,
             // no column to perturb and nothing for KLU to factorize. sparse_ok
             // only rejects n == 0, so a model with species but no reactions can
             // still get here under the flag.
-            throw std::runtime_error(
+            throw SparseJacobianUnavailable(
                 "force_sparse_linear_solver: this model cannot supply a sparse "
                 "Jacobian — its analytical Jacobian is unavailable" +
                 std::string(jac_strategy == "fd" ? " (suppressed by jacobian=\"fd\")" : "") +
@@ -4510,6 +4526,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         w.user_data = CvodeUserData{&model};
         CVRhsFn rhs_fn = setup_codegen_rhs(opts, w.user_data, w.codegen_param_buf);
         w.user_data.dq_rhs = rhs_fn;
+        w.user_data.jac_rhs_evals = &jac_rhs_evals;
 
         int flag = CVodeInit(w.cvode_mem, rhs_fn, times.t_start, w.y);
         if (flag != CV_SUCCESS) {
@@ -4591,6 +4608,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // (Nothing re-inits mid-run here — the warm path takes no events — so this
     // stays 0 through to record_solver_stats.)
     closed_segments = SegmentCounters{};
+    jac_rhs_evals = 0;
     // This path never runs forward sensitivities (it is excluded from the warm
     // fast path in run()), so the counters read below must leave the two
     // sensitivity fields alone — issue #447.
@@ -4762,6 +4780,15 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         }
         const double final_t = (check_ss && ss_reached) ? t_out[last_recorded_index] : times.t_end;
         model.set_current_time(final_t);
+        // The functions, and the parameters assignment rules set, at the state
+        // the run ends on, as run() leaves them by its refresh at each row
+        // (issue #1358). A parameter an assignment rule sets is written by the
+        // interpreter's evaluate_functions; the compiled right-hand side
+        // computes the rule in its own func[] and writes nothing back, and the
+        // rows here read the functions through fill_row without writing them
+        // either. So after a compiled run get_param read the value at load
+        // (q 1.0, where an interpreted run read 0.0183).
+        sync_model_at(final_t, y_data, ns);
 
         // GH #210 — the warm path never computes sensitivities, so it advances
         // the state (carry-over) without tracking dx/dθ: mark the state dirty
@@ -4889,6 +4916,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     CVRhsFn rhs_fn = setup_codegen_rhs(opts, user_data, codegen_param_buf);
     run_rhs_fn = rhs_fn;
     user_data.dq_rhs = rhs_fn;
+    user_data.jac_rhs_evals = &jac_rhs_evals;
 
     int flag = CVodeInit(cvode_mem, rhs_fn, times.t_start, y);
     if (flag != CV_SUCCESS) {
@@ -4897,6 +4925,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     // Fresh CVODE memory, so its own counters start at 0; the carried half of
     // the run's totals is an Impl member and has to be cleared (issue #182).
     closed_segments = SegmentCounters{};
+    jac_rhs_evals = 0;
     blas_factor_base = 0; // a fresh solver: its count starts at 0
     // Fresh CVODE memory has no forward sensitivities on it either, whatever a
     // previous run left behind (issue #447). setup_forward_sensitivities sets
@@ -6053,6 +6082,18 @@ CvodeSimulator::Impl::read_segment_counters(void *cvode_mem) const {
     CVodeGetNumNonlinSolvIters(cvode_mem, &c.nonlin_iters);
     CVodeGetNumNonlinSolvConvFails(cvode_mem, &c.nonlin_conv_fails);
     CVodeGetNumErrTestFails(cvode_mem, &c.err_test_fails);
+    CVodeGetNumLinRhsEvals(cvode_mem, &c.lin_rhs_evals);
+    CVodeGetNumJacEvals(cvode_mem, &c.jac_formations);
+    // The linear solver's counters restart at the first CVode call after a
+    // (re-)init (cvLsInitialize, from cvInitialSetup), not at CVodeReInit, which
+    // zeroes the rest. Until that call they still hold the segment before, which
+    // was banked: a re-init at the run's last instant counted its Jacobians
+    // twice (issue #1333). No f call yet is no call yet, so none of them are
+    // this segment's.
+    if (c.rhs_evals == 0) {
+        c.lin_rhs_evals = 0;
+        c.jac_formations = 0;
+    }
     // Only ask for the sensitivity counters when this run actually switched
     // forward sensitivities on (issue #447). Both getters return CV_NO_SENS
     // otherwise, which would leave the two fields at 0 — the honest answer for
@@ -6104,6 +6145,8 @@ void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver 
     result.solver_stats().n_steps = static_cast<int>(total.steps);
     result.solver_stats().n_rhs_evals = static_cast<int>(total.rhs_evals);
     result.solver_stats().n_jac_evals = static_cast<int>(total.lin_solv_setups);
+    result.solver_stats().n_jac_rhs_evals = static_cast<int>(total.lin_rhs_evals + jac_rhs_evals);
+    result.solver_stats().n_jac_formations = static_cast<int>(total.jac_formations);
     result.solver_stats().n_nonlin_iters = static_cast<int>(total.nonlin_iters);
     result.solver_stats().n_nonlin_conv_fails = static_cast<int>(total.nonlin_conv_fails);
     result.solver_stats().n_err_test_fails = static_cast<int>(total.err_test_fails);
@@ -8270,11 +8313,80 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             "' where the order of the two is confirmed, and the fire cannot be named to "
             "confirm it (issues #945, #1025). Drop sensitivities for this run.");
     }
+    // Shifts are compared column by column, in the column's own units: a shift
+    // times the parameter is how far the time moves per unit relative change of
+    // it. One column's large shift says nothing about another's, and a
+    // finite-difference ∂t*/∂p of 1e-17 beside an exact 0 is no shift.
+    // Against the event's own time, not a time unit: an event at t = 1e-9
+    // moved by its own parameter moves by 1e-9 per unit relative change.
+    const double time_size = t_evt != 0.0 ? std::fabs(t_evt) : 1.0;
+    auto unit_of = [&](int c) {
+        const double value =
+            c < n_sens_p ? std::fabs(params[static_cast<size_t>(sens_param_indices[c])].value)
+                         : 0.0;
+        return value > 0.0 ? value : 1.0;
+    };
+    auto moves = [&](int c, double shift) {
+        return std::fabs(shift) * unit_of(c) > kEventShiftFloor * time_size;
+    };
+    auto same_shift = [&](int c, double a, double b) {
+        const double gap = std::fabs(a - b) * unit_of(c);
+        return gap <= kEventShiftFloor * time_size ||
+               std::fabs(a - b) <= kEventShiftRelTol * std::max(std::fabs(a), std::fabs(b));
+    };
+    // Issue #1277: #49's refusals, here and below, of two events on one instant
+    // whose times move differently, asked across batches too. A fire on the
+    // clock at a fixed time and one a requested column moves cross on one
+    // instant and fire as two batches, a root's slack apart. #49 asks one batch
+    // and sees neither with the other. Their order flips with the parameter,
+    // the result jumps there, and the run returned one side's slope with no
+    // error: dS/dk = 1.25 where S(3) goes from 3.75 to 4.25 across k = 1. Two
+    // fires that both move, and not together, flip the same way: with the
+    // clock's time requested beside k, the run gave that 1.25 again.
+    const int named = fire_moves && tau_event >= 0 ? tau_event : fired.front();
+    {
+        const double slack = 2.0 * event_root_reach(t_evt);
+        for (const EventFire &earlier : event_fires) {
+            if (!(std::fabs(t_evt - earlier.t) <= slack)) {
+                continue;
+            }
+            bool together = earlier.moves == fire_moves;
+            for (int c = 0; together && fire_moves && c < n_sens; ++c) {
+                const auto u = static_cast<std::size_t>(c);
+                together = same_shift(c, u < earlier.tau.size() ? earlier.tau[u] : 0.0, tau[u]);
+            }
+            if (together) {
+                continue;
+            }
+            const auto name = [&](int ei) {
+                return "'" +
+                       (ei >= 0 && !events_outer[ei].id.empty() ? events_outer[ei].id
+                                                                : std::to_string(ei)) +
+                       "'";
+            };
+            const std::string before = name(earlier.event);
+            const std::string now = name(named);
+            std::ostringstream msg;
+            msg << "Forward sensitivity: events " << before << " and " << now
+                << " fire on one instant, t=" << t_evt << ", in two batches, and their times "
+                << "move differently with the requested parameters: ";
+            if (earlier.moves && fire_moves) {
+                msg << "both move, and not together";
+            } else {
+                msg << (fire_moves ? before : now) << " does not move and "
+                    << (fire_moves ? now : before) << " does";
+            }
+            msg << ". Their order flips across the parameter, so the result jumps there "
+                   "and has no derivative (issues #49, #1277). Separate the trigger times, or "
+                   "drop the parameters that move them from sensitivity_params.";
+            throw std::runtime_error(msg.str());
+        }
+    }
     if (event_fires.size() >= kFiresKept) {
         event_fires.erase(event_fires.begin());
     }
-    event_fires.push_back(
-        {t_evt, fired_reads, fire_moves, x_minus, fire_window, occurrences, fires_before});
+    event_fires.push_back({t_evt, fired_reads, fire_moves, x_minus, fire_window, occurrences,
+                           fires_before, tau, named});
     // The light record of the fire that a crossing later in the run is asked
     // against: the residual of every switch where the state was.
     if (!state_switch_all.empty() && !occurrences.empty()) {
@@ -8484,27 +8596,6 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         probes.push_back(std::move(probe));
     };
 
-    // Shifts are compared column by column, in the column's own units: a shift
-    // times the parameter is how far the time moves per unit relative change of
-    // it. One column's large shift says nothing about another's, and a
-    // finite-difference ∂t*/∂p of 1e-17 beside an exact 0 is no shift.
-    // Against the event's own time, not a time unit: an event at t = 1e-9
-    // moved by its own parameter moves by 1e-9 per unit relative change.
-    const double time_size = t_evt != 0.0 ? std::fabs(t_evt) : 1.0;
-    auto unit_of = [&](int c) {
-        const double value =
-            c < n_sens_p ? std::fabs(params[static_cast<size_t>(sens_param_indices[c])].value)
-                         : 0.0;
-        return value > 0.0 ? value : 1.0;
-    };
-    auto moves = [&](int c, double shift) {
-        return std::fabs(shift) * unit_of(c) > kEventShiftFloor * time_size;
-    };
-    auto same_shift = [&](int c, double a, double b) {
-        const double gap = std::fabs(a - b) * unit_of(c);
-        return gap <= kEventShiftFloor * time_size ||
-               std::fabs(a - b) <= kEventShiftRelTol * std::max(std::fabs(a), std::fabs(b));
-    };
     auto one_instant = [eps_d](double a, double b) {
         return std::fabs(a - b) <=
                kSwitchInstantUlps * eps_d * std::max({std::fabs(a), std::fabs(b), 1.0});
@@ -15115,7 +15206,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     };
 
-    auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in) -> bool {
+    // `on_crossing` is false where the seeds were read true at the run's start
+    // rather than seen turning true (see held_strict below).
+    auto process_firing_batch = [&](double t_now, const std::vector<int> &firing_in,
+                                    bool on_crossing = true) -> bool {
         const bool any_due = t_now >= earliest_pending();
         if (firing_in.empty() && !any_due)
             return false;
@@ -15189,6 +15283,163 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // and delay. Read with the others at the start of the batch,
         // `at (time >= 2): X = Sn` beside `cv := piecewise(1, time < 2, 5)`
         // and [Sn] = 5 before it gave X = 5 where [Sn] at t = 2 is 1.
+        //
+        // Issue #947. A strict comparison and the non-strict one on the same
+        // residual that both turn true at one read were one batch. In exact
+        // arithmetic the non-strict one is true on the crossing and the strict
+        // one only past it, but the read lands on the crossing or a rounding
+        // past it, as the threshold rounds: `0.1*time > tau` beside `0.1*time
+        // >= tau`, by priority in one batch, left X at 0.50 for some tau and
+        // 0.15, the sequence, for the rest. So the strict one is held back to a
+        // second sub-instant of this one: it is triggered (its values from the
+        // trigger time and its delay read), and executes, once everything the
+        // first has triggered has settled, at the state that left.
+        //
+        // Only on a crossing: a step back along the run the non-strict trigger
+        // is false, and the residual moves over that step as it moves over the
+        // step before it. A residual that jumps there (a `piecewise` of the
+        // time, a function that switches) turns both true at one instant with
+        // none between, and they stay one batch. Not the loader's size jumps,
+        // on either side, which order their own instant (issue #1054).
+        std::vector<std::pair<int, int>> held_strict; // (strict, its non-strict twin)
+        if (on_crossing && firing_in.size() > 1) {
+            std::vector<int> pairable;
+            for (int ei : firing_in)
+                if (events_outer[ei].size_jump_compartment.empty())
+                    pairable.push_back(ei);
+            held_strict = model.strict_beside_non_strict(pairable);
+        }
+        if (!held_strict.empty()) {
+            // The state a step back is read from the integrator's interpolant
+            // over its last step, the trajectory that arrived here, and only
+            // past that along the flow here, which a rate law that switches on
+            // this instant no longer has.
+            const std::vector<double> x_now(y_data, y_data + ns);
+            std::vector<double> f; // read once, where the interpolant does not reach
+            sunrealtype h_last = 0.0;
+            sunrealtype t_cur = 0.0;
+            CVodeGetLastStep(cvode_mem, &h_last);
+            CVodeGetCurrentTime(cvode_mem, &t_cur);
+            const double step_from =
+                static_cast<double>(t_cur) - std::fabs(static_cast<double>(h_last));
+            NVectorGuard x_dky(N_VClone(y));
+            const double eps = std::numeric_limits<double>::epsilon();
+            const double delta0 =
+                2.0 *
+                std::max(100.0 * eps * (std::fabs(t_now) + std::fabs(static_cast<double>(h_last))),
+                         kSwitchInstantUlps * eps * std::max(std::fabs(t_now), 1.0));
+            std::vector<double> x_back(static_cast<std::size_t>(ns), 0.0);
+            auto back = [&](double d) {
+                const double tb = t_now - d;
+                if (h_last != 0.0 && tb >= step_from && tb <= static_cast<double>(t_cur) &&
+                    CVodeGetDky(cvode_mem, tb, 0, x_dky) == CV_SUCCESS) {
+                    impl_->sync_model_at(tb, x_dky.data(), ns);
+                    return;
+                }
+                if (f.empty()) {
+                    f.assign(static_cast<std::size_t>(ns), 0.0);
+                    model.compute_derivs(t_now, x_now.data(), f.data());
+                }
+                for (int si = 0; si < ns; ++si)
+                    x_back[static_cast<std::size_t>(si)] =
+                        x_now[static_cast<std::size_t>(si)] - d * f[static_cast<std::size_t>(si)];
+                impl_->sync_model_at(tb, x_back.data(), ns);
+            };
+            std::vector<std::pair<int, int>> crossing;
+            for (const auto &[ei, twin] : held_strict) {
+                // Where the residual moves by less than its own rounding over
+                // the first step back, or the twin is still true there, the
+                // step doubles, up to 2^kHeldProbeDoublings times the first.
+                const double g0 = residual_now(ei);
+                bool on_it = false;
+                double d = delta0;
+                for (int k = 0; k <= kHeldProbeDoublings && !on_it; ++k, d *= 2.0) {
+                    back(d);
+                    const bool twin_before =
+                        eval_ref_outer.evaluate(events_outer[twin].trigger_expr_idx) > 0.5;
+                    const double g1 = residual_now(ei);
+                    back(2.0 * d);
+                    const double g2 = residual_now(ei);
+                    const double d1 = g0 - g1;
+                    const double d2 = g1 - g2;
+                    on_it = !twin_before && d1 * d2 > 0.0 &&
+                            std::fabs(d1 - d2) <= 0.5 * std::max(std::fabs(d1), std::fabs(d2));
+                }
+                impl_->sync_model_at(t_now, x_now.data(), ns);
+                if (on_it)
+                    crossing.emplace_back(ei, twin);
+            }
+            held_strict = std::move(crossing);
+        }
+        // Still held: cleared where the trigger changes before the first
+        // sub-instant has settled, which then triggers it as any other event.
+        // Also where an event of the first moves its residual, which it reads
+        // true and is held at: on the crossing the residual is 0 and the
+        // strict trigger false, so a write that moves it raises it there, a
+        // cascade with the priority it has. Held to the end, `A > tau` of
+        // priority 5 ran after an event of priority 1 where one of priority
+        // 10 on `A >= tau` wrote `A = A + 1`, as the threshold rounded.
+        std::vector<char> held;
+        std::vector<double> held_at;
+        if (!held_strict.empty()) {
+            held.assign(static_cast<std::size_t>(n_events), 0);
+            held_at.assign(static_cast<std::size_t>(n_events), 0.0);
+            for (const auto &pair : held_strict) {
+                held[static_cast<std::size_t>(pair.first)] = 1;
+                held_at[static_cast<std::size_t>(pair.first)] = residual_now(pair.first);
+            }
+        }
+        // A held trigger triggered in a sensitivity run. Where it reads
+        // nothing the first sub-instant wrote and writes nothing it wrote, the
+        // sequence leaves what the batch left, and the sensitivity jump
+        // composes it as one of the batch. Otherwise it is a second jump at
+        // the instant, which has none.
+        auto refuse_held_jump = [&](int ei) {
+            if (sens.n_total == 0)
+                return;
+            std::vector<char> written(static_cast<std::size_t>(ns), 0);
+            for (std::size_t fi = batch_fires_from; fi < executed_fires.size(); ++fi)
+                for (const auto &asg : events_outer[executed_fires[fi].event_idx].assignments)
+                    if (asg.first >= 0 && asg.first < ns)
+                        written[static_cast<std::size_t>(asg.first)] = 1;
+            bool touches = false;
+            const Event &hev = events_outer[ei];
+            auto reads_written = [&](int expr) {
+                std::vector<int> reads;
+                model.expression_support(expr, &reads, nullptr);
+                return std::any_of(reads.begin(), reads.end(), [&](int j) {
+                    return j >= 0 && j < ns && written[static_cast<std::size_t>(j)];
+                });
+            };
+            for (std::size_t a = 0; a < hev.assignments.size(); ++a) {
+                const auto &asg = hev.assignments[a];
+                touches = touches || (asg.first >= 0 && asg.first < ns &&
+                                      written[static_cast<std::size_t>(asg.first)]);
+                touches = touches || reads_written(asg.second);
+                if (a < hev.assignment_rescale_size_expr.size() &&
+                    hev.assignment_rescale_size_expr[a] >= 0)
+                    touches = touches || reads_written(hev.assignment_rescale_size_expr[a]);
+            }
+            if (!touches)
+                return;
+            const auto pair = std::find_if(held_strict.begin(), held_strict.end(),
+                                           [&](const auto &p) { return p.first == ei; });
+            const int twin = pair != held_strict.end() ? pair->second : ei;
+            auto id_of = [&](int e) {
+                return events_outer[e].id.empty() ? std::to_string(e) : events_outer[e].id;
+            };
+            throw std::runtime_error(
+                "Forward sensitivity: event '" + id_of(ei) + "', a strict comparison, and event '" +
+                id_of(twin) +
+                "', the non-strict one on the same residual, turn true together on its crossing "
+                "at t=" +
+                diag_number(t_now) + ". The run triggers '" + id_of(ei) +
+                "' only once events of that instant have executed (issue #947), and '" + id_of(ei) +
+                "' reads or writes a species they wrote: a second state jump at the same "
+                "instant, which bngsim has no sensitivity jump to compose with the first (issue "
+                "#144). Separate the thresholds, or drop sensitivities for this run.");
+        };
+
         std::vector<ExecInstance> queue;
         queue.reserve(firing_in.size());
         const bool jumps_seeded =
@@ -15196,6 +15447,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 return !events_outer[ei].size_jump_compartment.empty();
             });
         for (int ei : firing_in) {
+            if (!held.empty() && held[static_cast<std::size_t>(ei)] != 0)
+                continue;
             if (jumps_seeded && events_outer[ei].size_jump_compartment.empty()) {
                 ExecInstance inst;
                 inst.event_idx = ei;
@@ -15333,8 +15586,26 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     ties.push_back(k);
                 }
             }
-            if (ties.empty())
+            if (ties.empty()) {
+                // The first sub-instant has settled: the strict comparisons
+                // held back are triggered now, at the state it left (issue
+                // #947), and drained as a second one.
+                bool queued_held = false;
+                for (const auto &pair : held_strict) {
+                    const int ei = pair.first;
+                    const auto hi = static_cast<std::size_t>(ei);
+                    if (held[hi] == 0 || !prev[hi])
+                        continue;
+                    held[hi] = 0;
+                    refuse_held_jump(ei);
+                    queue.push_back(make_instance(ei));
+                    queued_held = true;
+                }
+                held_strict.clear();
+                if (queued_held)
+                    continue;
                 break;
+            }
 
             // Random tie-break among equal-max-priority instances (GH #242).
             // A single candidate consumes no randomness (byte-identical to the
@@ -15668,6 +15939,25 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         // a trigger that one event dropped and the next raised
                         // again kept the execution it had lost (SBML §4.11.3).
                         drop_pending_of(ei);
+                    }
+                }
+                const auto hi = static_cast<std::size_t>(ei);
+                if (!held.empty() && held[hi] != 0) {
+                    if (now_true != was) {
+                        held[hi] = 0;
+                    } else if (now_true && residual_now(ei) != held_at[hi]) {
+                        // Raised by this write (see held_at): a cascade.
+                        held[hi] = 0;
+                        refuse_held_jump(ei);
+                        if (!ev.size_jump_compartment.empty()) {
+                            ExecInstance inst;
+                            inst.event_idx = ei;
+                            inst.delay = 0.0;
+                            inst.awaits_jumps = true;
+                            queue.push_back(std::move(inst));
+                        } else {
+                            queue.push_back(make_instance(ei));
+                        }
                     }
                 }
                 prev[ei] = now_true;
@@ -16095,7 +16385,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             }
 
             executed_fires.clear();
-            bool t0_immediate_fired = process_firing_batch(times.t_start, t0_firing);
+            bool t0_immediate_fired =
+                process_firing_batch(times.t_start, t0_firing, /*on_crossing=*/false);
 
             if (t0_immediate_fired) {
                 // Refresh observables/functions after t=0 fires so the
@@ -16610,13 +16901,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // ulp-scale, so a trigger that rises ON a switch time is reported up to
         // that long after the stop there.
         const double since = t - switches_applied_t;
-        if (since >= 0.0 && since <= kEventRootSlack * kSwitchInstantUlps *
-                                         std::numeric_limits<double>::epsilon() *
-                                         std::max(std::fabs(t), 1.0)) {
+        const double reach = event_root_reach(t);
+        if (since >= 0.0 && since <= reach) {
             clocks.applied = switches_applied;
         }
-        const double reach = kEventRootSlack * kSwitchInstantUlps *
-                             std::numeric_limits<double>::epsilon() * std::max(std::fabs(t), 1.0);
         for (const SwitchTimeSens *one : switch_list) {
             if (std::fabs(one->t_star - t) <= 2.0 * reach) {
                 clocks.within_reach.push_back(one);
