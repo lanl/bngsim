@@ -220,10 +220,17 @@ def _stacklevel_outside_bngsim() -> int:
     is right from one entry point only: the same warning reached through
     ``run_until``, a scan or a :class:`~bngsim.ReactionKernel` would name a
     line of bngsim's own, and every caller would share its one-shot slot.
+
+    JAX's frames are passed over too: :func:`bngsim.jax.differentiable_solve`
+    solves from inside JAX's custom-JVP machinery, between two frames of
+    bngsim's, and a warning stopped there named a line of
+    ``jax/_src/api_util.py`` for every call (issue #1420).
     """
+    jax_file = getattr(sys.modules.get("jax"), "__file__", None)
+    inside = (_PACKAGE_DIR, os.path.dirname(jax_file) + os.sep) if jax_file else (_PACKAGE_DIR,)
     frame: FrameType | None = sys._getframe(1)
     level = 1
-    while frame is not None and frame.f_code.co_filename.startswith(_PACKAGE_DIR):
+    while frame is not None and frame.f_code.co_filename.startswith(inside):
         frame = frame.f_back
         level += 1
     return level
