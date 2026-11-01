@@ -396,7 +396,8 @@ jobs:
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp, roadrunner; print('bngsim', bngsim.__version__, 'roadrunner', roadrunner.__version__); bp.print_identity()"
       # --timeout 300 rather than the runner's 120 s: four models sit at 115-118 s on
       # an M1 Max (RoadRunner's JIT load dominates), and a timeout that flips with
-      # runner speed would alert as a regression.
+      # runner speed would alert as a regression. Three CellML models libRoadRunner
+      # 2.11.0 takes ~550 s to load run to their own 1200 s (rr_run.py SLOW_LOAD_CAP).
       # Two passes. The 23 SBML files over 1 MB (up to 6,047 species) run on their
       # own: four of them at once, each auto-compiling ~20 MB of generated C in
       # parallel shards, killed the runner on the first run.

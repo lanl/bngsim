@@ -1,5 +1,9 @@
 {
   "_comment": "Cases whose verdict or solver work measurably depends on the runner, per suite. A change of one of these, in outcome or in work, is reported and never alerts, in both the baseline and the previous-night comparison. Add a case only with the measurement that shows it changes on identical code; remove it once it is stable.",
+  "rr_ode": {
+    "BIOMD0000000385|ode": "Its analytical Jacobian derives in 13.5-14.4 s on an AMD EPYC 9V45 and 27.5-28.0 s on an EPYC 7763, either side of the 20 s budget: analytical (n_jac_rhs_evals 0) on runs 40196532864, 40899940910, 41320113549 and 41327259571, finite differences (n_jac_rhs_evals 60) on 41290236261, 41313484937 and 41338298541, by CPU alone across 2e571027-022c1d57",
+    "BIOMD0000000628|ode": "Its analytical Jacobian derives in 12.2 s on an AMD EPYC 9V45 and at its budget on an EPYC 7763: 23.3 s and kept on run 41290236261 (0456a928), cut off at 20.0 s and finite differences on 41338298541 (022c1d57), n_jac_rhs_evals 0 -> 3310, where nothing between them touches its derivation"
+  },
   "bng_ssa": {
     "glacial/rulehub/Published/Lin2019/prion_model.bngl|stochastic": "TIMEOUT (bngsim per-replicate wall cap, 88.5 s) on runs 35946475284 and 35954625712, PASS (925 s, scored against libRoadRunner after run_network failed) on 35962708844, all on identical code"
   },
