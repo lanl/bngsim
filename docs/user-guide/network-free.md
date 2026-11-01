@@ -354,3 +354,11 @@ RuleWorld/bionetgen#347 and RuleWorld/nfsim#105).
 **PyBNF integration**: When `bngsim` is installed, `method=>"nf"` / `"nfsim"`
 routes through the in-process NFsim backend, and `method=>"rm"` / `"rulemonkey"`
 / `"nf_exact"` routes through RuleMonkey when RuleMonkey support is compiled in.
+
+### What an NFsim run changes in your process
+
+NFsim is a library that bngsim runs inside your own process, so its effects on process-wide state are yours to know about (issue #1314):
+
+- **The working directory is not changed.** NFsim opens a TFUN's `file=` table by the path as written. bngsim makes each relative `file=` absolute against the directory of the XML you gave, in the copy NFsim reads, so a table beside the XML loads whatever your working directory is. A failed load leaves the directory as it was, and its error names the file.
+- **C++ `std::cout` and `std::cerr` are redirected during an NFsim call.** NFsim prints freely. bngsim captures that output, for the error messages it raises, and restores both streams when the call ends, however it ends. While the call runs, C++ output written to those streams from another thread in your process is captured too. C `stdio` (`printf`) is not redirected, and Python's `print` is not affected.
+- **One random-number stream is shared.** Which molecule a rule fires on, among those it could, is drawn from NFsim's process-wide generator, which every `initialize()` and `run()` reseeds; the rest of a run draws from its own session's. A session stepped over several `simulate()` calls therefore draws differently if another session is prepared between them. Where the molecules a rule can fire on are interchangeable this does not show, but in an aggregation model (BLBR, TLBR) it does. For same-seed reproducibility, run sessions one after another or in separate processes.
