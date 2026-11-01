@@ -72,6 +72,54 @@ def test_an_explicit_scalar_resolves_species_below_it(tmp_path):
     assert _off_by(exact, reference) > 0.1
 
 
+def _antimony(src, **kw):
+    pytest.importorskip("antimony")
+    return bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode", **kw)
+
+
+# BIOMD0000000857 (Larbat 2016), each species' production and consumption summed
+# into one law. Ephe is made at about 9.4 and consumed at 9.8·Ephe/(1e-6 + Ephe),
+# which holds it near 1e-5 until sucrose makes more than 9.8 can take.
+LARBAT = """
+sucr = 0.7; EtrioseP = 8.06; Ephe = 1e-5; N = 5; starch = 0; Next = 500;
+Enitrate = 0.075; trioseP = 1.1; Estarch = 1e-4;
+F: trioseP -> sucr; EtrioseP*trioseP;
+P: sucr -> ; sucr*Ephe*0.2/(0.2 + N) + 8*sucr*N/(1 + N) + 0.4*sucr;
+S: starch -> sucr; 0.1*starch*Estarch;
+T: -> EtrioseP; 1 - sucr*EtrioseP/(1e-5 + EtrioseP);
+E: -> Ephe; 10*sucr*1000/(1000 + N) - 9.8*Ephe/(1e-6 + Ephe);
+U: Next -> N; 0.2*Next*Enitrate;
+V: N -> ; 1.5*N;
+W: -> Enitrate; 0.5 - 0.1*N*Enitrate/(1e-6 + Enitrate);
+X: trioseP -> starch; 10*trioseP;
+Y: -> trioseP; 10.1*N/(1e-11 + N);
+Z: -> Estarch; 9.8 - 10*sucr*Estarch/(1e-4 + Estarch);
+"""
+
+
+def test_a_species_below_the_floor_keeps_a_scale_of_its_own():
+    """Ephe, at 1e-5 beside Next at 500, is under the floor of 1e-6 of the
+    largest, 5e-4, but 1e-6 of it is far above what double precision resolves
+    beside 500. It keeps its own 1e-11 and Estarch its 1e-10; starch, at 0,
+    takes 1e-6 of the floor."""
+    sim = _antimony(LARBAT)
+    own = dict(zip(sim.model.species_names, sim._run_atol(1e-9, 1e-6).vector, strict=True))
+    assert own["Ephe"] == pytest.approx(1e-11, rel=1e-15)
+    assert own["Estarch"] == pytest.approx(1e-10, rel=1e-15)
+    assert own["starch"] == pytest.approx(5e-10, rel=1e-15)
+
+
+def test_a_species_held_to_its_own_scale_integrates_on_every_grid():
+    """At SED-ML's rtol 1e-6 and atol 1e-9, held as though at the floor, Ephe
+    took 5e-10 for its 1e-11, and CVODE stopped with CV_ERR_FAILURE on 8 of
+    these 40 grids: it left Ephe 1.4e-6 off the level its consumption holds
+    it at, then failed the next step's error test seven times (#1439). The
+    analytical Jacobian alone, as the finite-difference retry hides some."""
+    for n in range(101, 141):
+        sim = _antimony(LARBAT, jacobian="analytical")
+        sim.run(t_span=(0, 200), n_points=n, rtol=1e-6, atol=1e-9)
+
+
 def test_a_scalar_no_species_is_below_stays_the_scalar(tmp_path):
     """Molecule counts: every species takes the number, on the scalar's path."""
     sim = _sim(tmp_path, a=1000, b=2000)
