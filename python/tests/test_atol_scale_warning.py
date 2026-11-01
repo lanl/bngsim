@@ -1,13 +1,18 @@
 """Issue #1361: an ODE run says when the default atol is above species that matter.
 
-The default ``atol`` is the scalar ``1e-8``, BNG2.pl's, for species held as
+The default ``atol`` was the scalar ``1e-8``, BNG2.pl's, for species held as
 molecule counts. A species that stays below it all run has no error control but
 the tolerance: the issue's binding model, species near 1e-9 M, returned A =
 -8.7e-10 for 4.1e-10 at t = 5000, and BIOMD0000000002 (ligand at 1e-5 M,
-complexes at 3e-10 to 7e-9 M) errors of 1e-2, both with no word. ``run()`` now
-raises :class:`bngsim.AtolScaleWarning`, naming the species, where the caller
-gave no atol and a species stays below it while reaching at least 1e-6 of the
-run's largest species. The default itself is unchanged.
+complexes at 3e-10 to 7e-9 M) errors of 1e-2, both with no word. ``run()`` raises
+:class:`bngsim.AtolScaleWarning`, naming the species, where the caller gave no
+atol and a species stays below its tolerance while reaching at least 1e-6 of the
+run's largest species.
+
+Since issue #1420 the default takes each species' scale from the start
+(``test_default_atol.py``), and both of those models are right and quiet. What
+is left to warn of is a species the start gives no scale: here, a model whose
+species all start at 0 and settle near 1e-9.
 """
 
 from __future__ import annotations
@@ -37,10 +42,40 @@ end reactions
 """
 
 
+# A made at 1e-12 per second from nothing and lost at 1e-3, half of it into B:
+# A settles at 1e-9 and B at 5e-10, from a start where every species is 0.
+FROM_ZERO = """begin parameters
+ 1 kp 1e-12
+ 2 kd 1e-3
+end parameters
+begin species
+ 1 A() 0
+ 2 B() 0
+end species
+begin reactions
+ 1 0 1 kp
+ 2 1 0 kd
+ 3 1 1,2 kd
+ 4 2 0 kd
+end reactions
+"""
+
+
 def _sim(tmp_path, a=1e-9, b=2e-9):
     path = tmp_path / "binding.net"
     path.write_text(NET.format(a=a, b=b))
     return bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+
+
+def _from_zero(tmp_path):
+    path = tmp_path / "from_zero.net"
+    path.write_text(FROM_ZERO)
+    return bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+
+
+def _off_by(result, reference):
+    x, ref = np.asarray(result.species), np.asarray(reference.species)
+    return float((np.abs(x - ref).max(axis=0) / np.abs(ref).max(axis=0)).max())
 
 
 def _warned(sim, **kw):
@@ -50,28 +85,40 @@ def _warned(sim, **kw):
     return result, [w for w in caught if issubclass(w.category, bngsim.AtolScaleWarning)]
 
 
-def test_a_molar_model_at_the_default_atol_is_warned(tmp_path):
-    """The issue's model: at the default it ends at a negative A, and says so."""
-    result, caught = _warned(_sim(tmp_path))
-    assert np.asarray(result.species)[-1, 0] < 0.0
+def test_a_model_whose_species_all_start_at_0_is_warned(tmp_path):
+    """No species starts with a scale, so the default is the scalar, and A and
+    B, under it all run, are a quarter off; the warning names both."""
+    reference = _from_zero(tmp_path).run(t_span=(0, 5000), n_points=51, rtol=1e-12, atol=1e-22)
+    result, caught = _warned(_from_zero(tmp_path))
+    assert _off_by(result, reference) > 0.1
     assert len(caught) == 1
     message = str(caught[0].message)
-    assert "atol=1e-08" in message and "'A()'" in message and "atol='auto'" in message
+    assert "atol=1e-08" in message and "'A()', 'B()'" in message
+    assert "atol='tracking'" in message
 
 
 def test_the_remedy_it_names_is_right_and_quiet(tmp_path):
-    """Control: atol='auto' gives the reference to 1e-5 of the peak, with no warning."""
-    reference = _sim(tmp_path).run(t_span=(0, 5000), n_points=51, rtol=1e-10, atol=1e-16)
-    result, caught = _warned(_sim(tmp_path), atol="auto")
+    """Control: atol='tracking' gives the reference to 1e-5 of the peak, with no warning."""
+    reference = _from_zero(tmp_path).run(t_span=(0, 5000), n_points=51, rtol=1e-12, atol=1e-22)
+    result, caught = _warned(_from_zero(tmp_path), atol="tracking")
     assert caught == []
-    ref = np.asarray(reference.species)
-    err = np.abs(np.asarray(result.species) - ref).max(axis=0) / np.abs(ref).max(axis=0)
-    assert err.max() < 1e-5
+    assert _off_by(result, reference) < 1e-5
+
+
+def test_the_issues_molar_model_is_right_and_quiet_at_the_default(tmp_path):
+    """#1361's binding model: under the scalar it ended at a negative A, 2.2
+    of its peak off. Its species' own tolerances (#1420) give the reference."""
+    reference = _sim(tmp_path).run(t_span=(0, 5000), n_points=51, rtol=1e-12, atol=1e-22)
+    result, caught = _warned(_sim(tmp_path))
+    assert caught == []
+    assert _off_by(result, reference) < 1e-5
+    scalar, _ = _warned(_sim(tmp_path), atol=bngsim.ExactAtol(1e-8))
+    assert np.asarray(scalar.species)[-1, 0] < 0.0
 
 
 @pytest.mark.parametrize("how", ["run", "set_tolerances"])
 def test_an_atol_the_caller_chose_is_not_second_guessed(tmp_path, how):
-    sim = _sim(tmp_path)
+    sim = _from_zero(tmp_path)
     if how == "run":
         _, caught = _warned(sim, atol=1e-8)
     else:
@@ -101,17 +148,28 @@ def test_a_species_at_the_noise_of_a_count_model_is_not_warned(tmp_path):
     assert caught == []
 
 
-def test_a_mixed_scale_biomodel_is_warned():
-    """BIOMD0000000002: L at 1e-5 is above atol; complexes at 3e-10 to 7e-9
-    are below it and are part of the model. A whole-run test would pass it."""
+def test_a_mixed_scale_biomodel_is_right_and_quiet_at_the_default():
+    """BIOMD0000000002: L at 1e-5 is above the scalar; complexes at 3e-10 to
+    7e-9 are below it and are part of the model, and under it were 2.2e-2 of
+    their peak off, with 'BL' warned. Each species' own tolerance gives 2e-7."""
     pytest.importorskip("libsbml")
-    sim = bngsim.Simulator(bngsim.Model.from_sbml(str(DATA / "BIOMD0000000002.xml")), method="ode")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        sim.run(t_span=(0, 500), n_points=51)
-    hits = [w for w in caught if issubclass(w.category, bngsim.AtolScaleWarning)]
-    assert len(hits) == 1
-    assert "'BL'" in str(hits[0].message)
+
+    def run(**kw):
+        sim = bngsim.Simulator(
+            bngsim.Model.from_sbml(str(DATA / "BIOMD0000000002.xml")), method="ode"
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = sim.run(t_span=(0, 500), n_points=51, **kw)
+        return result, [w for w in caught if issubclass(w.category, bngsim.AtolScaleWarning)]
+
+    reference, _ = run(rtol=1e-12, atol=1e-22)
+    result, hits = run()
+    assert hits == []
+    ref, x = np.asarray(reference.species), np.asarray(result.species)
+    peak = np.abs(ref).max(axis=0)
+    keep = peak >= 1e-6 * peak.max()
+    assert (np.abs(x - ref).max(axis=0)[keep] / peak[keep]).max() < 1e-5
 
 
 def test_ssa_is_not_warned():
@@ -134,18 +192,17 @@ def test_a_call_of_many_runs_is_warned_once(tmp_path, call):
     """A scan froze the default into the float 1e-8 before run() saw it, and a
     batch or a sensitivity tensor never asked: each returned the issue's
     negative A with no word. One warning per call, at the caller's line."""
-    sim = _sim(tmp_path)
+    sim = _from_zero(tmp_path)
     span = {"t_span": (0, 5000), "n_points": 51}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         if call == "parameter_scan":
-            results = sim.parameter_scan("kr", [1e-3, 2e-3], **span)
+            sim.parameter_scan("kd", [1e-3, 2e-3], **span)
         elif call == "run_batch":
-            results = sim.run_batch(params=[{"kr": 1e-3}, {"kr": 2e-3}], **span)
+            sim.run_batch(params=[{"kd": 1e-3}, {"kd": 2e-3}], **span)
         else:
-            results = [sim.compute_all_sensitivities(**span)]
+            sim.compute_all_sensitivities(**span)
     hits = [w for w in caught if issubclass(w.category, bngsim.AtolScaleWarning)]
-    assert np.asarray(results[0].species)[-1, 0] < 0.0
     assert len(hits) == 1
     assert "'A()'" in str(hits[0].message)
     assert hits[0].filename == __file__
@@ -153,16 +210,19 @@ def test_a_call_of_many_runs_is_warned_once(tmp_path, call):
 
 def test_a_species_the_solver_does_not_integrate_is_not_named():
     """A $-fixed species and an assignment-rule target below atol are exact
-    (or as good as their rule's inputs): no tolerance makes them wrong."""
+    (or as good as their rule's inputs): no tolerance makes them wrong. At rtol
+    1e-4 the default gives each the scalar, 1e-8, which each stays below: it
+    takes no part in the floor, which is the integrated X's 1e-3."""
     pytest.importorskip("antimony")
     for src, name in (
         ("$L = 5e-9; X = 1e-3; k = 1; R: L -> X; k*L; D: X -> ; 0.1*X;", "L"),
         ("species X = 1e-3; species Y; Y := 5e-6*X; D: X -> ; 0.1*X;", "Y"),
     ):
         sim = bngsim.Simulator(bngsim.Model.from_antimony_string(src), method="ode")
+        assert sim._run_atol(None, 1e-4) is None
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = sim.run(t_span=(0, 100), n_points=21)
+            result = sim.run(t_span=(0, 100), n_points=21, rtol=1e-4)
         peaks = np.abs(np.asarray(result.species)).max(axis=0)
         # In the band a species the solver integrates is named for.
         peak = peaks[result.species_names.index(name)]
@@ -187,7 +247,7 @@ def test_the_steps_of_a_loop_are_warned_once(tmp_path):
     """The text carries nothing that moves from run to run, so the default
     filter shows it once at the caller's line; peaks in the text made 20
     run_until steps print it 11 times, from a line of bngsim's own."""
-    sim = _sim(tmp_path)
+    sim = _from_zero(tmp_path)
     with warnings.catch_warnings(record=True) as caught:
         warnings.resetwarnings()
         warnings.simplefilter("default")

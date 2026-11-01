@@ -296,8 +296,12 @@ jobs:
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log
 
+      # The log is a copy of what the step above printed, which the job's own log
+      # holds too. On 2026-10-31 GitHub's artifact service timed out five times on
+      # macos-15-intel and failed a run whose suite had passed.
       - name: Upload pytest log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: mir-log-${{ matrix.os }}

@@ -98,6 +98,36 @@ double TableFunction::evaluate_at(double x) const {
     return y0 + frac * (y1 - y0);
 }
 
+double TableFunction::slope_at(double x) const {
+    if (std::isnan(x))
+        return std::numeric_limits<double>::quiet_NaN();
+    // At the first knot itself the value is the first interval's left end, and
+    // the slope to its right is that interval's (left_slope_at is 0 there).
+    if (method_ == InterpolationMethod::Step || x < xs_.front() || x >= xs_.back())
+        return 0.0;
+    // evaluate_at's interval, found as it finds it.
+    auto it = std::upper_bound(xs_.begin(), xs_.end(), x);
+    const int last = static_cast<int>(xs_.size()) - 2;
+    const int i = std::clamp(static_cast<int>(it - xs_.begin()) - 1, 0, last);
+    return (ys_[i + 1] - ys_[i]) / (xs_[i + 1] - xs_[i]);
+}
+
+double TableFunction::left_slope_at(double x) const {
+    if (std::isnan(x))
+        return std::numeric_limits<double>::quiet_NaN();
+    if (method_ == InterpolationMethod::Step || x <= xs_.front() || x > xs_.back())
+        return 0.0;
+    // The first knot at or above x closes the interval (x0, x1] that holds it.
+    auto it = std::lower_bound(xs_.begin(), xs_.end(), x);
+    const int i =
+        std::clamp(static_cast<int>(it - xs_.begin()), 1, static_cast<int>(xs_.size()) - 1);
+    return (ys_[i] - ys_[i - 1]) / (xs_[i] - xs_[i - 1]);
+}
+
+bool TableFunction::is_knot(double x) const {
+    return std::binary_search(xs_.begin(), xs_.end(), x);
+}
+
 double TableFunction::evaluate() const {
     if (index_ptr_ == nullptr) {
         return ys_.front(); // fallback: return first value

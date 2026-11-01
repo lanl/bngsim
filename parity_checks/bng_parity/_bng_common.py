@@ -643,6 +643,9 @@ def bn_ode_net(
     # solve) feeds the parity verdict; then up to _warm_rep_count(cold) warm
     # solves reuse the built model (reset() restores IC). warm-min = marginal
     # per-integration cost; cold = first-solve cost of a fresh Simulator.
+    # BNG2.pl's run_network holds `-a atol` exactly for every species; bngsim reads
+    # a float as a per-species ceiling (issue #1420), so parity holds it exactly too.
+    atol = bngsim.ExactAtol(atol)
     t1 = time.perf_counter()
     r = sim.run(t_span=(t_start, t_end), n_points=n_points, rtol=rtol, atol=atol)
     cold_sec = time.perf_counter() - t1
@@ -1580,16 +1583,24 @@ def _canonical_species_key(s: str):
 def resolve_species_name(name: str, canonical_names) -> str:
     """Map a ``setConcentration`` pattern to the canonical ``.net`` species name (GH #182).
 
-    Exact name -> unchanged. Otherwise, for a concrete bond-free species, the UNIQUE
-    canonical species sharing its structural key. If there is no match, the match is
+    Exact name -> unchanged. A fixed-species ``$`` is dropped, as BNG2.pl drops it.
+    Otherwise, for a concrete bond-free species, the UNIQUE canonical species sharing
+    its structural key. If there is no match, the match is
     ambiguous, or the pattern is non-concrete/malformed, returns ``name`` unchanged so
     the caller's exact-name ``set_concentration`` raises and the replay falls back —
     we never substitute a guessed species.
     """
     canonical = list(canonical_names)
-    if name in set(canonical):
+    names = set(canonical)
+    if name in names:
         return name
-    key = _canonical_species_key(name)
+    # BNG2.pl ignores a fixed-species `$` here, and bngsim's .net names never hold
+    # one, so `$X()` and `@c::$X()` are looked up without it.
+    m = re.match(r"^(@\w+::?)?\$(.*)$", name.strip())
+    bare = (m.group(1) or "") + m.group(2) if m else name
+    if bare in names:
+        return bare
+    key = _canonical_species_key(bare)
     if key is None:
         return name
     matches = [c for c in canonical if _canonical_species_key(c) == key]
@@ -1730,7 +1741,11 @@ def multi_segment_replay(
             run_kw: dict = {}
             if method in _ODE_METHODS:
                 run_kw["rtol"] = float(st["rtol"] or rtol)
-                run_kw["atol"] = float(st["atol"] or atol)
+                # As run_network reads it, exactly (see bn_ode_net; issue #1420).
+                # Read as a ceiling, transport_v2.bngl came out 1.3e-7 of its
+                # peak off a tight reference where run_network is 2.2% off, and
+                # parity measured the difference as bngsim's.
+                run_kw["atol"] = bngsim.ExactAtol(float(st["atol"] or atol))
             else:  # ssa / psa — seeded for a reproducible golden trajectory
                 run_kw["seed"] = int(seed if seed is not None else 1)
             _reeval_symbolic_ics()  # GH #181: re-init parameter-expression ICs (writeNetwork)

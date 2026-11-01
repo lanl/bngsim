@@ -396,7 +396,8 @@ jobs:
         run: uv run --no-sync python -c "import bngsim, bngsim._build_provenance as bp, roadrunner; print('bngsim', bngsim.__version__, 'roadrunner', roadrunner.__version__); bp.print_identity()"
       # --timeout 300 rather than the runner's 120 s: four models sit at 115-118 s on
       # an M1 Max (RoadRunner's JIT load dominates), and a timeout that flips with
-      # runner speed would alert as a regression.
+      # runner speed would alert as a regression. Three CellML models libRoadRunner
+      # 2.11.0 takes ~550 s to load run to their own 1200 s (rr_run.py SLOW_LOAD_CAP).
       # Two passes. The 23 SBML files over 1 MB (up to 6,047 species) run on their
       # own: four of them at once, each auto-compiling ~20 MB of generated C in
       # parallel shards, killed the runner on the first run.
@@ -989,8 +990,10 @@ jobs:
           retention-days: 90
 
   # ------------------------------------------------------------------------- #
-  # One summary for the whole night; on a scheduled or manual run with any alert
-  # (or any job that could not run), open or update the tracking issue.
+  # One summary for the whole night; on a scheduled or manual run of main with any
+  # alert (or any job that could not run), open or update the tracking issue. A
+  # manual run of another branch is a check of that branch, which alerts on
+  # exactly what it changes, so it reports in its own summary and does not post.
   # ------------------------------------------------------------------------- #
   report:
     name: Report
@@ -1021,7 +1024,7 @@ jobs:
           cat body.md >> "$GITHUB_STEP_SUMMARY"
           echo "alert=$([ "$rc" -ne 0 ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
       - name: Open or update the tracking issue
-        if: steps.sum.outputs.alert == '1' && github.event_name != 'pull_request'
+        if: steps.sum.outputs.alert == '1' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           TITLE: "Nightly parity: regressions detected"

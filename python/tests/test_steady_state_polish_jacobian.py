@@ -16,11 +16,17 @@ Jacobian at one RHS evaluation per unknown per setup — measured here as the
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import bngsim
 import numpy as np
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import threshold_forced  # noqa: E402
 
 _NETS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "models" / "net" / "ode"
 _SHP2 = "SHP2_base_model.net"  # 149 species, 2 conservation laws -> 147 unknowns
@@ -80,6 +86,7 @@ def _seeded_polish(jacobian: str):
     return ss, model._core.rhs_eval_count - ss.n_rhs_evals, n_unknowns
 
 
+@threshold_forced
 def test_polish_installs_the_closed_form_jacobian():
     """No difference-quotient columns: KINSOL is handed the matrix instead."""
     ss, dq_evals, n_unknowns = _seeded_polish("auto")
@@ -91,12 +98,29 @@ def test_polish_installs_the_closed_form_jacobian():
     )
 
 
+@threshold_forced
 def test_jacobian_fd_still_differences_the_polish():
-    """``jacobian="fd"`` is the escape hatch, and it still reaches KINSOL.
+    """``jacobian="fd"`` is the escape hatch, and it still reaches KINSOL:
+    no closed form is installed (``solver_jacobian_source``).
 
-    This is the pre-#127 behavior, kept selectable: one RHS evaluation per
-    unknown per Jacobian setup.
+    Seeded at the root, KINSOL forms no Jacobian of its own; the columns
+    counted are the #78 certificate's at the root, which with ``jacobian="fd"``
+    is exact by dual numbers now (issue #1330) and takes none.
     """
+    ss, dq_evals, n_unknowns = _seeded_polish("fd")
+
+    assert ss.solver_jacobian_source == "finite-difference"
+    assert dq_evals < n_unknowns, (
+        f"{dq_evals} RHS evaluations beyond KINSOL's own over {n_unknowns} unknowns: "
+        "the certificate's matrix was differenced."
+    )
+
+
+@threshold_forced
+def test_jacobian_fd_with_no_dual_evaluation_differences_the_certificate(monkeypatch):
+    """With no dual evaluation the certificate's matrix at the root is a
+    difference quotient: one RHS evaluation per unknown."""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
     ss, dq_evals, n_unknowns = _seeded_polish("fd")
 
     assert ss.solver_jacobian_source == "finite-difference"
@@ -110,6 +134,7 @@ def test_jacobian_fd_still_differences_the_polish():
     )
 
 
+@threshold_forced
 def test_march_installs_the_closed_form_jacobian():
     """The CVODE march too — its setups are the other half of issue #127.
 

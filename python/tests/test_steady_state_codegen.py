@@ -187,7 +187,9 @@ class TestSensitivityUsesAnalyticalRhs:
         # against a re-solve at kcat, Km ± h, which agrees to solver noise.
         assert np.max(np.abs(np.asarray(ss.sensitivity))) < 1e-8
 
-    def test_a_model_that_still_declines_differences_dfdp_and_says_so(self, tmp_path, caplog):
+    def test_a_model_that_still_declines_differences_dfdp_and_says_so(
+        self, tmp_path, caplog, monkeypatch
+    ):
         """The FD fallback has not gone away — a Functional law with a kink
         (``abs()`` written with ``clamp()``; abs itself has one since issue #1126)
         has no analytic ∂f/∂p at any stage of #55 — and when it is
@@ -217,12 +219,22 @@ end groups
 """
         path = tmp_path / "kink.net"
         path.write_text(text)
+        # Where the model has dual numbers the factor is exact (issue #1330),
+        # with no warning; the fallback is a model with none.
         sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
         with caplog.at_level(logging.WARNING, logger="bngsim"):
             ss = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-10)
-        assert ss.converged
-        assert ss.sens_dfdp_source == "finite-difference"
+        assert ss.sens_dfdp_source == "automatic-differentiation"
+        assert not any("no analytical ∂f/∂p" in r.message for r in caplog.records)
+        caplog.clear()
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            fd = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-10)
+        assert fd.converged
+        assert fd.sens_dfdp_source == "finite-difference"
         assert any("no analytical ∂f/∂p" in r.message for r in caplog.records)
+        np.testing.assert_allclose(ss.sensitivity, fd.sensitivity, rtol=1e-5)
 
 
 # ── 3. The closed-form assembly is numerically right ──────────────────────────
@@ -244,12 +256,13 @@ def _core_sensitivity(net_path, params, *, so_path="", jacobian="auto"):
 
 
 class TestSensitivityNumerics:
-    def test_closed_form_matches_the_finite_difference_assembly(self):
+    def test_closed_form_matches_the_finite_difference_assembly(self, monkeypatch):
         """The two factors' closed forms must agree with the all-FD path they
         replace, to FD's own accuracy — including through the conservation-law
         reduced-space solve, which this model exercises (2 laws, and law 1's
         coefficient row references law 0's dependent species, so the sequential
-        chain rule matters)."""
+        chain rule matters). And with the dual numbers that take the FD path's
+        place where a model has them (issue #1330), to rounding."""
         path = net("two_species_reversible.net")
         warm = bngsim.Model.from_net(path)
         warm.prepare_analytical_jacobian()
@@ -258,8 +271,16 @@ class TestSensitivityNumerics:
         warm._want_output_sens = True
         so = str(prepare_model_codegen(warm))
 
-        fd = _core_sensitivity(path, ["kf", "kr"], jacobian="fd")
+        ad = _core_sensitivity(path, ["kf", "kr"], jacobian="fd")
+        with monkeypatch.context() as mp:
+            mp.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+            fd = _core_sensitivity(path, ["kf", "kr"], jacobian="fd")
         closed = _core_sensitivity(path, ["kf", "kr"], so_path=so, jacobian="auto")
+        assert ad.sens_jacobian_source == "automatic-differentiation"
+        assert ad.sens_dfdp_source == "automatic-differentiation"
+        np.testing.assert_allclose(
+            np.array(ad.sensitivity_data), np.array(closed.sensitivity_data), rtol=1e-12
+        )
 
         assert fd.sens_jacobian_source == "finite-difference"
         assert fd.sens_dfdp_source == "finite-difference"
@@ -471,9 +492,15 @@ end groups
         assert ss.converged
         assert np.all(np.isfinite(ss.sensitivity))
 
-    def test_jacobian_fd_still_pins_the_difference_quotient(self, reversible):
-        """jacobian="fd" is the escape hatch everywhere else; keep it meaningful
-        here so the closed-form path stays A/B-checkable."""
+    def test_jacobian_fd_takes_the_matrix_without_the_closed_form(self, reversible):
+        """jacobian="fd" is the escape hatch everywhere else; here it asks for
+        the matrix without the closed form, which dual numbers take, exactly
+        (issue #1330): an A/B check of the closed form by another mechanism."""
         sim = bngsim.Simulator(reversible, method="ode", jacobian="fd")
         ss = sim.steady_state(sensitivity_params=["kf"], tol=1e-11)
-        assert ss.sens_jacobian_source == "finite-difference"
+        assert ss.sens_jacobian_source == "automatic-differentiation"
+        closed = bngsim.Simulator(reversible, method="ode").steady_state(
+            sensitivity_params=["kf"], tol=1e-11
+        )
+        assert closed.sens_jacobian_source != "automatic-differentiation"
+        np.testing.assert_allclose(ss.sensitivity, closed.sensitivity, rtol=1e-9)

@@ -130,14 +130,19 @@ class TestTheFixtureIsTestingWhatItClaims:
         """CVODES' difference quotient never evaluates the emitted derivative —
         it perturbs parameters and calls the *value* RHS, which is finite here —
         so it cannot reach this defect, and a run that fell back to it would
-        make every row below vacuous."""
+        make every row below vacuous. Under the codegen JIT (issue #1217) the
+        artifact is C source, which names the symbol only where it defines it."""
         import ctypes
 
         model = bngsim.Model.from_net(_net(tmp_path, NUMERICALLY_ZERO))
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
+        src = sim._codegen_c_source or getattr(model, "_codegen_c_source", "")
         so = sim._codegen_so_path or getattr(model, "_codegen_so_path", "")
-        assert so, "no compiled artifact: the sensitivity run would use CVODES' DQ"
-        assert hasattr(ctypes.CDLL(str(so)), "bngsim_codegen_sens_rhs")
+        assert src or so, "no compiled artifact: the sensitivity run would use CVODES' DQ"
+        if src:
+            assert "bngsim_codegen_sens_rhs" in src
+        else:
+            assert hasattr(ctypes.CDLL(str(so)), "bngsim_codegen_sens_rhs")
 
 
 class TestABaseThatIsNumericallyZero:

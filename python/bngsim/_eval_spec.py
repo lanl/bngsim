@@ -45,6 +45,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from bngsim._atol import ExactAtol
+
 if TYPE_CHECKING:  # avoid import cycles at module load
     from bngsim._model import Model
     from bngsim._result import Result
@@ -102,6 +104,9 @@ class EvaluationSpec:
         issue #213 at its default depth — a token, so it round-trips too.
         A :class:`bngsim.TrackingAtol` with a non-default depth or an explicit
         ceiling does **not**: it is not JSON, and a spec is a wire format.
+        A float is read as a ceiling, as :meth:`bngsim.Simulator.run` reads
+        one (issue #1420); a :class:`bngsim.ExactAtol` holds every species to
+        it exactly, and goes out as ``{"exact": value}``.
         Distribute the token, or the ceiling as a plain sequence.
     max_steps : int, optional
         Max internal solver steps per output point. ``None`` uses the default.
@@ -123,7 +128,7 @@ class EvaluationSpec:
     sensitivity_method: str = "staggered"
     outputs: Sequence[str] = ()
     rtol: float | None = None
-    atol: float | Sequence[float] | str | None = None
+    atol: float | Sequence[float] | str | ExactAtol | None = None
     max_steps: int | None = None
     model_sha256: str | None = None
 
@@ -151,7 +156,7 @@ class EvaluationSpec:
         # list/array from a caller; canonicalize to a tuple of floats so a spec
         # built either way compares equal and hashes the same. A float or the
         # "auto" token passes through untouched.
-        if self.atol is not None and not isinstance(self.atol, (str, int, float)):
+        if self.atol is not None and not isinstance(self.atol, (str, int, float, ExactAtol)):
             object.__setattr__(self, "atol", tuple(float(v) for v in self.atol))
 
     # ─── Serialization ─────────────────────────────────────────────
@@ -177,7 +182,13 @@ class EvaluationSpec:
             "rtol": self.rtol,
             # A per-species atol goes out as a JSON array; from_dict's tuple
             # normalization is what brings it back identical (issue #196).
-            "atol": list(self.atol) if isinstance(self.atol, tuple) else self.atol,
+            "atol": (
+                list(self.atol)
+                if isinstance(self.atol, tuple)
+                else {"exact": self.atol.value}
+                if isinstance(self.atol, ExactAtol)
+                else self.atol
+            ),
             "max_steps": self.max_steps,
             "model_sha256": self.model_sha256,
         }
@@ -205,6 +216,13 @@ class EvaluationSpec:
         if unknown:
             raise ValueError(f"Unknown EvaluationSpec field(s): {sorted(unknown)}")
         kwargs = {k: data[k] for k in known if k in data}
+        if isinstance(kwargs.get("atol"), Mapping):
+            atol = kwargs["atol"]
+            if set(atol) != {"exact"}:
+                raise ValueError(
+                    f"Unknown atol mapping {dict(atol)!r}; expected {{'exact': value}}."
+                )
+            kwargs["atol"] = ExactAtol(atol["exact"])
         if "t_span" in kwargs:
             kwargs["t_span"] = tuple(kwargs["t_span"])
         return cls(**kwargs)

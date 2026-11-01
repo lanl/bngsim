@@ -24,6 +24,7 @@ import contextlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import bngsim
@@ -32,6 +33,10 @@ import numpy as np
 import pytest
 from bngsim import _jacobian
 from bngsim import cache as cache_mod
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import under_jit_no_cc_artifact  # noqa: E402
 
 # Tables added after load here are fixtures that nothing in the model reads,
 # which add_table_function warns about (issue #772).
@@ -100,6 +105,7 @@ def _artifacts(cache_dir: Path) -> list[Path]:
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_a_later_process_raises_the_reason_the_build_was_cut_for(isolated_cache):
     """The first run's analysis is cut after ``scaled``; the second is not cut
     and is handed the first one's compiled code. It returned NaN for
@@ -133,6 +139,7 @@ def test_a_build_that_was_not_cut_is_read_as_supported(isolated_cache):
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_the_other_way_round_the_artifact_that_was_not_cut_is_not_refused(isolated_cache):
     """The first run is not cut and writes the artifact; the second one's
     analysis would be cut. It is handed code that holds every derivative, and
@@ -145,6 +152,7 @@ def test_the_other_way_round_the_artifact_that_was_not_cut_is_not_refused(isolat
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_a_build_that_finds_the_artifact_installed_leaves_its_note(isolated_cache, monkeypatch):
     """Two processes can miss the cache together. One that reaches the
     compiler after the other has installed the artifact is handed that one,
@@ -172,6 +180,7 @@ def test_a_build_that_finds_the_artifact_installed_leaves_its_note(isolated_cach
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_the_model_that_built_the_artifact_answers_for_it_itself(isolated_cache):
     """Two processes that both compile each install their own artifact, and
     the note beside the one that lands can be the other's. The model whose
@@ -204,6 +213,7 @@ def test_the_model_that_built_the_artifact_answers_for_it_itself(isolated_cache)
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_the_registry_does_not_keep_an_analysis_alive(isolated_cache, caplog):
     """What the process remembers of an artifact it built is a weak
     reference: the analysis goes with its models. (A DEBUG record of the run
@@ -242,6 +252,7 @@ def _refused_a_table_after_a_run(model, name="ratio"):
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_a_model_refused_a_table_function_keeps_what_the_note_says(isolated_cache):
     """A table function with a function's name took that function's place in
     the compiled code, where it has no derivative (issue #979), while the
@@ -278,6 +289,7 @@ def test_the_builder_refused_a_table_function_answers_from_what_it_built(isolate
 
 @needs_cc
 @pytest.mark.parametrize("who", ["the builder", "a model handed the artifact"])
+@under_jit_no_cc_artifact
 def test_what_a_cut_build_has_no_derivative_for_holds_under_another_key(isolated_cache, who):
     """The build was cut after ``scaled``. The model is then given a table
     function that is named for none of its functions, which is enough for it
@@ -324,6 +336,7 @@ def _handed_a_cut_artifact_then_given_a_table_over(name):
 
 @needs_cc
 @pytest.mark.parametrize("over", ["scaled", "ratio"])
+@under_jit_no_cc_artifact
 def test_a_table_over_a_function_of_a_cut_build_is_refused(isolated_cache, over):
     """The table is over ``scaled``, which the build has a derivative for, or
     over ``ratio``, which it was cut before. It is refused (issue #772), and
@@ -339,6 +352,7 @@ def test_a_table_over_a_function_of_a_cut_build_is_refused(isolated_cache, over)
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_the_builds_reasons_hold_where_the_model_cannot_be_analysed(isolated_cache, monkeypatch):
     """The same model, and its own analysis fails: what the note says the
     build has no derivative for is what there is to go by."""
@@ -355,6 +369,7 @@ def test_the_builds_reasons_hold_where_the_model_cannot_be_analysed(isolated_cac
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_a_note_is_read_by_its_builders_key(isolated_cache):
     """The note names what its builder's analysis was keyed by, and reads as
     no note under any other key."""
@@ -371,6 +386,7 @@ def test_a_note_is_read_by_its_builders_key(isolated_cache):
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_a_note_that_cannot_be_installed_does_not_fail_the_build(isolated_cache):
     """Something that is no file sits where the note goes: the artifact is
     built, the run returns, and the map is worked out from the model."""
@@ -390,6 +406,7 @@ def test_a_note_that_cannot_be_installed_does_not_fail_the_build(isolated_cache)
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_the_note_is_written_beside_the_artifact_it_is_of(isolated_cache):
     with _cut_after_the_first():
         sim, _result = _run()
@@ -404,6 +421,7 @@ def test_the_note_is_written_beside_the_artifact_it_is_of(isolated_cache):
 
 
 @needs_cc
+@under_jit_no_cc_artifact
 def test_a_process_that_is_handed_the_artifact_does_not_analyse_the_model(
     isolated_cache, monkeypatch
 ):
@@ -438,6 +456,7 @@ def test_a_process_that_is_handed_the_artifact_does_not_analyse_the_model(
         "a name twice",
     ],
 )
+@under_jit_no_cc_artifact
 def test_an_artifact_with_no_note_to_read_is_analysed_as_before(
     isolated_cache, monkeypatch, damage
 ):

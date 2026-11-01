@@ -2,7 +2,9 @@
 """cBNGL BNG2.pl round-trip validator (GH #224).
 
 For each given model: sbml_to_bngl (cBNGL) → BNG2.pl generate_network → .net →
-from_net → name-aligned ODE-RHS delta vs the source. This is the cBNGL
+from_net → name-aligned ODE-RHS delta vs the source, and the delta in what each
+species an assignment rule sets reports, which the RHS cannot see (issue #1400).
+This is the cBNGL
 faithfulness oracle (no in-tree cBNGL reader by design — see the
 no-intree-cbngl-reader decision). Mirrors python/tests/test_sbml_to_bngl.py's
 round-trip helpers so a corpus-wide sweep uses the same measure the unit tests do.
@@ -42,7 +44,7 @@ def _corpus_xml(model_id: str) -> Path | None:
 def validate_one(model_id: str, timeout: int = 120) -> dict:
     import bngsim
     from bngsim.convert import sbml_to_bngl
-    from bngsim.convert._bng2 import roundtrip_rhs_delta
+    from bngsim.convert._bng2 import roundtrip_deltas
 
     xml = _corpus_xml(model_id)
     if xml is None:
@@ -67,10 +69,13 @@ def validate_one(model_id: str, timeout: int = 120) -> dict:
         }
 
     # Reuse the shipped oracle so the harness measures faithfulness exactly as the
-    # production sbml_to_bngl(validate="bng2") gate does. Map its failure modes
-    # (timeout / no-net / unalignable) back to the harness's status taxonomy.
+    # production sbml_to_bngl(validate="bng2") gate does: the right-hand side and
+    # the assignment-rule species' reported column, which a held species hides
+    # from the right-hand side (dy/dt = 0 on both sides; issue #1400). Map its
+    # failure modes (timeout / no-net / unalignable) back to the harness's status
+    # taxonomy; a species count BNG2.pl changed is unalignable.
     try:
-        delta, n_rl = roundtrip_rhs_delta(
+        delta, ar_delta, _ = roundtrip_deltas(
             src, bngl_text, stem=model_id, timeout=timeout, bng2=_BNG2
         )
     except ConversionError as e:
@@ -82,17 +87,13 @@ def validate_one(model_id: str, timeout: int = 120) -> dict:
         if "align" in msg:
             return {"model_id": model_id, "status": "species_mismatch", "reason": msg[:160]}
         return {"model_id": model_id, "status": "reload_error", "reason": msg[:160]}
-    if n_rl != src.n_species:
-        return {
-            "model_id": model_id,
-            "status": "species_mismatch",
-            "reason": f"{src.n_species}->{n_rl}",
-        }
-    return {
-        "model_id": model_id,
-        "status": "faithful" if delta <= 1e-6 else "rhs_mismatch",
-        "delta": delta,
-    }
+    if delta > 1e-6:
+        status = "rhs_mismatch"
+    elif ar_delta > 1e-6:
+        status = "ar_report_mismatch"
+    else:
+        status = "faithful"
+    return {"model_id": model_id, "status": status, "delta": delta, "ar_delta": ar_delta}
 
 
 def main() -> int:
@@ -124,7 +125,7 @@ def main() -> int:
     for i, mid in enumerate(ids):
         r = validate_one(mid, timeout=args.timeout)
         rows.append(r)
-        d = f" delta={r['delta']:.2e}" if "delta" in r else ""
+        d = f" delta={r['delta']:.2e} ar_delta={r['ar_delta']:.2e}" if "delta" in r else ""
         print(
             f"[{i + 1}/{len(ids)}] {mid}: {r['status']}{d}"
             + (f"  {r.get('reason', '')}" if r.get("reason") else ""),

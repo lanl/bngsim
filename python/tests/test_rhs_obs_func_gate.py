@@ -20,12 +20,19 @@ this gate lives in.
 from __future__ import annotations
 
 import math
+import os
+import sys
 from pathlib import Path
 
 import pytest
 from bngsim import Model, Simulator
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from _codegen_backend import threshold_forced  # noqa: E402
+
+
+@threshold_forced
 def test_mass_action_skips_rhs_obs_func_eval(simple_decay_net: Path) -> None:
     """A pure mass-action model must never run the observable/function passes."""
     model = Model.from_net(simple_decay_net)
@@ -47,6 +54,7 @@ def test_mass_action_skips_rhs_obs_func_eval(simple_decay_net: Path) -> None:
         assert result.species[i, 0] == pytest.approx(100.0 * math.exp(-0.1 * t), abs=1e-4)
 
 
+@threshold_forced
 def test_functional_model_runs_rhs_obs_func_eval(time_func_net: Path) -> None:
     """A model with functions must run both passes on every RHS evaluation."""
     model = Model.from_net(time_func_net)
@@ -61,6 +69,7 @@ def test_functional_model_runs_rhs_obs_func_eval(time_func_net: Path) -> None:
     assert model._core.rhs_observable_eval_count == model._core.rhs_eval_count
 
 
+@threshold_forced
 def test_reset_rhs_counters(simple_decay_net: Path) -> None:
     """reset_rhs_counters() zeroes both counters."""
     model = Model.from_net(simple_decay_net)

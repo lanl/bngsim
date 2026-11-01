@@ -23,13 +23,21 @@ import importlib.util as _importlib_util
 import logging
 from typing import Any
 
-from bngsim._atol import AUTO, TRACKING, TrackingAtol, derive_atol, normalize_atol_vector
+from bngsim._atol import (
+    AUTO,
+    TRACKING,
+    ExactAtol,
+    TrackingAtol,
+    derive_atol,
+    normalize_atol_vector,
+)
 from bngsim._codegen import prepare_codegen
 from bngsim._eval_spec import EvaluationSpec
 from bngsim._evaluators import JacobianMatrix
 from bngsim._exceptions import (
     AtolScaleWarning,
     BngsimError,
+    CodegenDeclinedError,
     ConversionError,
     ConversionWarning,
     DenseSolverFallbackWarning,
@@ -39,6 +47,7 @@ from bngsim._exceptions import (
     SensitivityUnsupportedError,
     SimulationError,
     SimulationTimeout,
+    SparseJacobianUnavailableError,
     SsaBoundaryWarning,
     SsaRoundingWarning,
     SsaValidationError,
@@ -384,12 +393,14 @@ __all__ = [
     "JacobianMatrix",
     # Exceptions
     "BngsimError",
+    "CodegenDeclinedError",
     "ConversionError",
     "ConversionWarning",
     "ModelError",
     "ParameterError",
     "SimulationError",
     "SimulationTimeout",
+    "SparseJacobianUnavailableError",
     "SsaBoundaryWarning",
     "SsaRoundingWarning",
     "DenseSolverFallbackWarning",
@@ -422,6 +433,8 @@ __all__ = [
     # order one and decays to something tiny needs the second one said.
     "TRACKING",
     "TrackingAtol",
+    # Issue #1420 — a scalar atol held exactly, not read as a ceiling.
+    "ExactAtol",
     # PSA diagnostics (GH #15)
     "psa_cost_decision",
     # Feature flags
