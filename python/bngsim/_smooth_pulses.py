@@ -19,31 +19,47 @@ rtol 1e-6 and 1e-12 (within the tolerance of a max_step reference throughout),
 and were two restarts more. A stop costs a restart and changes nothing else,
 so a bump found where none matters (wide, or never reached) costs only that.
 
+A bump centred past the end of the run with its rise inside the run gets a stop
+at the end instead. The step that reaches the last output is taken past it and
+read back, and taken over the rise and the peak it read 0 at both ends: with the
+centre a width past t = 30, Y(30) was 0 for 0.386.
+
 Recognized, after the run's parameter values are put in:
 
 - ``exp(q)`` with ``q`` a quadratic in one clock with a negative leading
-  coefficient (a Gaussian, at any scale and offset);
-- ``cosh(u)``, ``sech(u)`` and ``tanh(u)`` with ``u`` affine in one clock
-  (sech², spelled ``1/cosh(u)^2`` or ``1 - tanh(u)^2``, whose tanh saturates
-  to exactly 1; a tanh step is one stop's worth of restarts more).
+  coefficient (a Gaussian, at any scale and offset), also spelled ``_e^q`` or
+  ``pow(_e, q)``;
+- ``cosh(u)`` and ``tanh(u)`` with ``u`` affine in one clock (sech², spelled
+  ``1/cosh(u)^2`` or ``1 - tanh(u)^2``, whose tanh saturates to exactly 1; a
+  tanh step is one stop's worth of restarts more). ExprTk has no ``sech``.
 
 A clock is literal ``time()``, or an observable whose species all change at a
-constant rate (a counter fed at ``k_clock``, at any rate). Its value at ``t`` is
-read from the run's start and that rate.
+constant rate on two probes of the right-hand side (a counter fed at
+``k_clock``, at any rate; not a feed that reads the state). Its value at ``t``
+is read from the run's start and that rate, which holds until an event assigns
+the counter: a counter an event resets has its bump stopped on where it first
+reaches it, and a warning says the passes after a reset are not.
 """
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import math
 import re
+import warnings
+import weakref
 from typing import Any
 
-# A rate law with none of these spells no bump, and is not parsed.
-_BUMP_CALL = re.compile(r"(?<![A-Za-z0-9_.])(?:exp|cosh|sech|tanh)\s*\(")
-# Where the stops go, in widths from the centre: the peak.
-_STOP_WIDTHS = (0.0,)
-_TIME_SYMBOL = "_bngsim_time_csymbol"
+# A rate law with none of these spells no bump, and is not parsed. `_e^q` and
+# `pow(_e, q)` are parsed as exp(q).
+_BUMP_CALL = re.compile(r"(?<![A-Za-z0-9_.])(?:(?:exp|cosh|tanh)\s*\(|_e\s*\^|pow\s*\(\s*_e\s*,)")
+# How far from its centre, in widths, a bump is still more than a rounding of
+# its peak: exp(-6^2) is 2.3e-16 of it, and sech² and 1 - tanh² fall as
+# 4·e^(-2u), 1.2e-16 at u = 19. A bump centred past the end of the run by less
+# than this has its rise inside the run.
+_REACH_EXP = 6.0
+_REACH_HYPERBOLIC = 19.0
 
 
 @functools.lru_cache(maxsize=4096)
@@ -53,30 +69,14 @@ def _parsed(text: str):
     return _exprtk_to_sympy(text)
 
 
-def _rate_law_texts(core) -> list[str]:
-    """Each functional rate law with functions inlined, as the switch scanners
-    read it."""
-    from bngsim._jacobian import _inline_functions
-    from bngsim._switch_sensitivity import _scan_function_map, _spell_mod
-
-    data = core.codegen_data()
-    func_map = _scan_function_map(core.functional_jacobian_context())
-    out: list[str] = []
-    for rxn in data["reactions"]:
-        if rxn.get("type") != "functional":
-            continue
-        fname = rxn.get("function_name")
-        body = func_map.get(fname) if fname else _spell_mod(rxn.get("rate_expression") or "")
-        if body:
-            out.append(_inline_functions(body, func_map) or body)
-    return out
-
-
-def _counter_clocks(core, t_start: float) -> dict[str, tuple[float, float]]:
-    """Observable name -> ``(value at t_start, rate)`` for each observable all
-    of whose species change at one constant rate, read from two probes of the
+def _counter_clocks(core, t_start: float, spelled) -> dict[str, tuple[float, float, bool]]:
+    """Observable name, as *spelled* in a parse -> ``(value at t_start, rate,
+    whether an event assigns one of its species)`` for each observable all of
+    whose species change at one constant rate, read from two probes of the
     right-hand side at shifted states and times."""
     import numpy as np
+
+    from bngsim._codegen import _amount_volume_factors
 
     data = core.codegen_data()
     try:
@@ -86,20 +86,32 @@ def _counter_clocks(core, t_start: float) -> dict[str, tuple[float, float]]:
     except Exception:  # pragma: no cover - defensive
         return {}
     constant = {i for i in range(len(d1)) if d1[i] == d2[i] and np.isfinite(d1[i])}
-    out: dict[str, tuple[float, float]] = {}
+    # An observable reads an amount-valued (SBML substance-units) species as its
+    # stored value times its compartment's size (GH #75). A counter so declared
+    # in a compartment of size 2 moves at twice its stored rate, and read at the
+    # stored one its bump's stop came at twice the bump's time.
+    factor, live = _amount_volume_factors(data["species"])
+    names = list(core.param_names)
+    factor.update({i: float(core.get_param(names[k])) for i, k in live.items()})
+    assigned = set(core.event_assigned_species)
+    out: dict[str, tuple[float, float, bool]] = {}
     for obs in data["observables"]:
-        entries = obs.get("entries") or []
+        entries = [(si, w * factor.get(si, 1.0)) for si, w in obs.get("entries") or []]
         if not entries or not all(si in constant for si, _w in entries):
             continue
         rate = sum(w * float(d1[si]) for si, w in entries)
         if rate == 0.0 or not math.isfinite(rate):
             continue
-        out[obs["name"]] = (sum(w * float(conc[si]) for si, w in entries), rate)
+        out[spelled(obs["name"])] = (
+            sum(w * float(conc[si]) for si, w in entries),
+            rate,
+            any(si in assigned for si, _w in entries),
+        )
     return out
 
 
 def _value_calls(expr, sp) -> list[Any]:
-    """The ``exp``/``cosh``/``sech``/``tanh`` calls of *expr* that are part of
+    """The ``exp``/``cosh``/``tanh`` calls of *expr* that are part of
     its value, not of a condition. A bump inside a condition (``if(exp(...) >
     0.5, ...)``, a threshold written with ``tanh``) is a crossing, which the
     condition scan places or declines (#904, #1068); a stop here would change
@@ -108,7 +120,7 @@ def _value_calls(expr, sp) -> list[Any]:
     stack = [expr]
     while stack:
         node = stack.pop()
-        if isinstance(node, (sp.exp, sp.cosh, sp.sech, sp.tanh)):
+        if isinstance(node, (sp.exp, sp.cosh, sp.tanh)):
             calls.append(node)
         if isinstance(node, sp.Piecewise):
             stack.extend(value for value, _cond in node.args)
@@ -119,39 +131,47 @@ def _value_calls(expr, sp) -> list[Any]:
     return calls
 
 
-def _bumps(expr, clocks: set[str], sp) -> list[tuple[str, float, float]]:
-    """``(clock, centre, width)`` in the clock's units, for each bump of *expr*
-    in one clock."""
-    found: list[tuple[str, float, float]] = []
+def _bumps(expr, sp) -> list[tuple[str, float, float, float]]:
+    """``(symbol, centre, width, reach)`` in the symbol's units, for each bump
+    of *expr* in one symbol. The reach is how far from the centre the bump is
+    more than a rounding of its peak."""
+    found: list[tuple[str, float, float, float]] = []
     for node in _value_calls(expr, sp):
         arg = node.args[0]
-        names = {str(s) for s in arg.free_symbols}
-        if len(names) != 1 or not names <= clocks:
+        if len(arg.free_symbols) != 1:
             continue
-        (clock,) = names
-        sym = sp.Symbol(clock)
+        (sym,) = arg.free_symbols
         try:
             poly = sp.Poly(sp.expand(arg), sym)
-        except sp.PolynomialError:
+            coeffs = [float(c) for c in poly.all_coeffs()]
+        except (sp.polys.polyerrors.BasePolynomialError, TypeError, ValueError):
+            # Not a polynomial in it, or one with a coefficient that is no real
+            # number: a width of 0 at a scan point puts zoo in the argument, and
+            # raised out of the whole model's stops, every run.
             continue
-        coeffs = [float(c) for c in poly.all_coeffs()]
         if isinstance(node, sp.exp):
             if poly.degree() != 2 or not coeffs[0] < 0.0:
                 continue
             a, b = coeffs[0], coeffs[1]
-            found.append((clock, -b / (2.0 * a), 1.0 / math.sqrt(-a)))
+            centre, width, reach = -b / (2.0 * a), 1.0 / math.sqrt(-a), _REACH_EXP
         else:
             if poly.degree() != 1 or coeffs[0] == 0.0:
                 continue
             a, b = coeffs
-            found.append((clock, -b / a, 1.0 / abs(a)))
-    return [f for f in found if all(math.isfinite(x) for x in f[1:]) and f[2] > 0.0]
+            centre, width, reach = -b / a, 1.0 / abs(a), _REACH_HYPERBOLIC
+        if math.isfinite(centre) and math.isfinite(width) and width > 0.0:
+            found.append((sym.name, centre, width, reach * width))
+    return found
 
 
-# The stops of a model at its values, keyed by everything they read: a run, a
-# scan point or a fit evaluation at the same values asks again for nothing.
-_STOPS_CACHE: dict[tuple, list[Any]] = {}
-_STOPS_CACHE_MAX = 1024
+# The stops each model was asked for, by everything else they read: a run, a
+# scan point or a fit evaluation at the same values asks again for nothing. Kept
+# per model, whose rate laws and reactions are its core's for its life: two
+# models with the same functions, values and state are not one model. Keyed on
+# those alone, a model whose counter is fed at 1 was handed the stop of one fed
+# at 2, at half its bump's time, and stepped over the bump.
+_STOPS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_STOPS_MOST = 64
 
 
 def smooth_pulse_stops(core, t_start: float, t_end: float) -> list[Any]:
@@ -170,46 +190,106 @@ def smooth_pulse_stops(core, t_start: float, t_end: float) -> list[Any]:
         float(t_start),
         float(t_end),
     )
-    hit = _STOPS_CACHE.get(key)
-    if hit is not None:
-        return list(hit)
-    stops = _resolve(core, float(t_start), float(t_end))
-    if len(_STOPS_CACHE) >= _STOPS_CACHE_MAX:
-        _STOPS_CACHE.clear()
-    _STOPS_CACHE[key] = stops
+    asked: dict[tuple, list[Any]] = {}
+    with contextlib.suppress(TypeError):  # a core that takes no weak reference
+        asked = _STOPS.setdefault(core, asked)
+    stops = asked.get(key)
+    if stops is None:
+        stops = _resolve(core, float(t_start), float(t_end))
+        if len(asked) >= _STOPS_MOST:
+            asked.clear()
+        asked[key] = stops
     return list(stops)
 
 
 def _resolve(core, t_start: float, t_end: float) -> list[Any]:
-    texts = [t for t in _rate_law_texts(core) if _BUMP_CALL.search(t)]
+    from bngsim._switch_sensitivity import _rate_law_flat_parts, _write_flats
+
+    made = _rate_law_flat_parts(core)
+    texts = [t for t in _write_flats(core, made)[: made[1]] if _BUMP_CALL.search(t)]
     if not texts:
         return []
     try:
         import sympy as sp
     except ImportError:  # pragma: no cover
         return []
-    from bngsim._codegen import _inline_derived_param_refs
-    from bngsim._switch_sensitivity import CrossingStop, switch_condition_scope
+    from bngsim._codegen import (
+        _PY_KEYWORD_PARAM_NAMES,
+        _alias_keyword_param,
+        _inline_derived_param_refs,
+    )
+    from bngsim._jacobian import _TIME_SYM
+    from bngsim._switch_sensitivity import CrossingStop
 
-    derived = dict(switch_condition_scope(core).derived_exprs)
-    values = {n: float(core.get_param(n)) for n in core.param_names}
-    counters = _counter_clocks(core, t_start)
-    clocks = {_TIME_SYMBOL, *counters}
-    times: set[float] = set()
+    def spelled(name: str) -> str:
+        """*name* as the parse spells it: a Python keyword is aliased (GH #108),
+        and a width named `lambda` was left in the argument unread."""
+        return _alias_keyword_param(name) if name in _PY_KEYWORD_PARAM_NAMES else name
+
+    names = list(core.param_names)
+    derived = {
+        n: e
+        for n, is_expr, e in zip(
+            names, core.param_is_expression, core.param_expressions, strict=True
+        )
+        if is_expr and e
+    }
+    values = {spelled(n): float(core.get_param(n)) for n in names}
+    bumps: list[tuple[str, float, float, float]] = []
     for text in texts:
         expr = _parsed(_inline_derived_param_refs(text, derived))
         if expr is None:
             continue
-        subs = {s: values[str(s)] for s in expr.free_symbols if str(s) in values}
-        expr = expr.subs(subs) if subs else expr
-        for clock, centre, width in _bumps(expr, clocks, sp):
-            for k in _STOP_WIDTHS:
-                value = centre + k * width
-                if clock == _TIME_SYMBOL:
-                    when = value
-                else:
-                    v0, rate = counters[clock]
-                    when = t_start + (value - v0) / rate
-                if math.isfinite(when) and t_start < when <= t_end:
-                    times.add(when)
+        subs = {s: values[s.name] for s in expr.free_symbols if s.name in values}
+        bumps.extend(_bumps(expr.subs(subs) if subs else expr, sp))
+    counters = (
+        _counter_clocks(core, t_start, spelled)
+        if any(bump[0] != _TIME_SYM for bump in bumps)
+        else {}
+    )
+    times: set[float] = set()
+    for sym, centre, width, reach in bumps:
+        if sym == _TIME_SYM:
+            when, span = centre, reach
+        elif sym in counters:
+            v0, rate, reset = counters[sym]
+            when, span = t_start + (centre - v0) / rate, reach / abs(rate)
+            if reset:
+                warnings.warn(
+                    f"A smooth bump of {sym} at {sym} = {centre:g} is stopped on "
+                    f"where {sym} first reaches it, from its value at the start of "
+                    f"the run and its rate; an event assigns {sym}, and a pass "
+                    "through the bump after that is not stopped on and may be "
+                    "stepped over (issue #1286). Pass max_step no larger than the "
+                    f"bump's width in time, {width / abs(rate):g}.",
+                    stacklevel=2,
+                )
+        else:
+            continue
+        if not math.isfinite(when):
+            continue
+        if t_start < when <= t_end:
+            times.add(when)
+        elif t_end < when < t_end + span:
+            times.add(t_end)
     return [CrossingStop(t, -1, 0.0) for t in sorted(times)]
+
+
+def apart_from(pulses: list[Any], stops: list[Any], floor: float) -> list[Any]:
+    """Those of *pulses* not on the instant of one of *stops* (time-ordered).
+
+    A bump needs a step to end on its instant, not on any particular double,
+    and a stop already there is one. Merged as the later of two on literal time,
+    a bump centred on a switch took the switch's stop off the double before its
+    flip (#1226): Y(20) was 10.0005 for 10 at rtol 1e-2."""
+    import bisect
+
+    from bngsim._switch_sensitivity import _same_instant
+
+    times = [stop.time for stop in stops]
+
+    def on_one(t: float) -> bool:
+        i = bisect.bisect_left(times, t)
+        return any(_same_instant(t, times[j], floor) for j in (i - 1, i) if 0 <= j < len(times))
+
+    return [pulse for pulse in pulses if not on_one(pulse.time)]

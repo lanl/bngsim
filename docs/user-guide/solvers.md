@@ -509,6 +509,16 @@ the run, stops the integration on each, and restarts there. That covers:
 - the breakpoints of a table function over time;
 - the same conditions written on a unit-rate counter species.
 
+A smooth pulse with no switch in it has the same trouble. A narrow Gaussian
+`exp(-((time()-t0)/s)^2)` is exactly 0 in doubles away from itself, so a step
+spanned it whole. bngsim stops on the centre of each such bump in the value of
+a rate law (issue #1286). It reads `exp` of a quadratic in the clock with a
+negative leading term (also written `_e^` or `pow(_e, ...)`), and `cosh` or
+`tanh` of a linear function of it, which covers sech² written `1/cosh(u)^2` or
+`1 - tanh(u)^2`. The clock is `time()` or a counter species fed at a constant
+rate, at any rate. A bump centred just past the end of the run, with its rise
+inside the run, gets a stop at the end.
+
 A condition is first read exactly where it has a shape bngsim knows (linear in
 time, a repeating schedule, a step of a linear argument, a sinusoid, a
 polynomial). Any other is evaluated over the run window with the model's own
@@ -519,10 +529,12 @@ way.
 
 What this does not cover:
 
-- **A smooth pulse with no switch in it**, such as a narrow Gaussian
-  `exp(-((time()-t0)/s)^2)` feeding a model that is otherwise at rest. Nothing
-  changes branch, so there is nothing to stop at. Pass `max_step` no larger
-  than the pulse's width.
+- **A smooth pulse of a shape not listed above**, such as the derivative of a
+  logistic, `exp(-u)/(1+exp(-u))^2`, or a bump of a counter whose feed reads
+  the state or is changed by an event. Nothing changes branch, so there is
+  nothing to stop at. Pass `max_step` no larger than the pulse's width. A
+  counter that an event resets has its bump stopped on only where it first
+  reaches it, and a warning says so.
 - **A window narrower than 1/8,192 of the run that no sample has any sign
   of**: one made by a smooth residual that is flat to the last bit outside the
   window (`exp(-((time()-t0)/s)^2) > 0.5` with `s` a millionth of the run), or

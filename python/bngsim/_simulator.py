@@ -2355,9 +2355,26 @@ class Simulator:
             # unseen. The stop lands a little past the crossing; to the event
             # sensitivity jump the crossing is one more fixed one on its instant.
             stops = merge_crossing_stops(
-                sorted([*crossings, *periodic, *knots, *pulses], key=lambda stop: stop.time),
+                sorted([*crossings, *periodic, *knots], key=lambda stop: stop.time),
                 floor=1.0 if sensitivities else _PLAIN_INSTANT_FLOOR,
             )
+            # The stops on smooth bumps join after the instants something
+            # switches at are counted (issue #1286). The probes below are handed
+            # over where an instant has more than one crossing, and a bump's stop
+            # crosses nothing: counted with them, one bump elsewhere in the run
+            # dropped the probes, and an event on the instant of two fixed
+            # switches, the one the event does not commute with lost, returned a
+            # sensitivity in place of the #767 refusal. A bump on the instant of
+            # a stop is that stop, which keeps the double its resolver chose.
+            switch_instants = len(stops)
+            if pulses:
+                from bngsim._smooth_pulses import apart_from
+
+                floor = 1.0 if sensitivities else _PLAIN_INSTANT_FLOOR
+                stops = merge_crossing_stops(
+                    sorted([*stops, *apart_from(pulses, stops, floor)], key=lambda s: s.time),
+                    floor=floor,
+                )
             if periodic_at:
                 crossings = sorted([*crossings, *periodic_at], key=lambda stop: stop.time)
         except (TriggerEqualityNeverHolds, StopsMoveWithAnEvent) as e:
@@ -2390,7 +2407,7 @@ class Simulator:
                 (stop.time, stop.clock_species_idx, stop.threshold) for stop in crossings
             )
             opts.set_crossing_probes(
-                list(probes) if len(probes) > len(stops) or periodic_at else []
+                list(probes) if len(probes) > switch_instants or periodic_at else []
             )
         over_budget = self._switches_the_run(model, over_budget)
         if over_budget:

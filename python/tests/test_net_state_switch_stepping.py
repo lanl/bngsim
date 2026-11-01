@@ -1364,11 +1364,12 @@ def test_a_released_hold_logs_what_main_logs(tmp_path):
     run last returned, so the times are not compared."""
     path = tmp_path / "leave.net"
     path.write_text(_SLIDE_LEAVE_NET.format(**_HOLD_CASES["leaves its band, then crosses"]))
-    # v() is a Gaussian of the clock, which issue #1286 stops on. A run with a
-    # crossing stop takes the stretch it has not looked inside one step at a
-    # time (#998), and a step at a time ends no batch, so there is nothing for
-    # the log to show either way (#1389). This is asked of the run without that
-    # stop, the run it was written for.
+    # v() is a Gaussian of the clock, which issue #1286 stops on. With that
+    # stop the hold still gives the log back where it does without it (t =
+    # 0.730069 in both), but the held run then takes the stretch it has not
+    # looked inside one step at a time (#998), and a step at a time ends no
+    # batch: there is nothing for its log to show (#1389). This is asked of the
+    # run without that stop, the run it was written for.
     assert _batch_ends_between(path, "0", 1.0, 2.4, pulse_stops=False)
     assert _batch_ends_between(path, "1", 1.0, 2.4, pulse_stops=False)
 
