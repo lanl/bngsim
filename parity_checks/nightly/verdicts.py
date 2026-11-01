@@ -420,7 +420,10 @@ def diff(
     ``flaky`` maps case ids whose verdict or work measurably depends on the runner
     to the reason; any change of theirs is reported, never alerted: an outcome
     change under ``changed``, a per-case work increase under ``efficiency`` with
-    the reason beside it (GH #1153). Their work still counts in the totals.
+    the reason beside it (GH #1153). Their work is left out of the totals, which
+    one of them can move on its own: ``n_jac_rhs_evals`` totalled 12,661 over
+    rr_ode's good cases, and BIOMD0000000385 alone took it x1.27 between runner
+    CPUs (its Jacobian's derivation straddles the budget).
     ``timeout_flips_info`` does the same for every transition into or out of
     TIMEOUT: right for comparing two single nights, which may land on runner CPUs
     of different speed, and wrong for the committed baseline, where PASS ->
@@ -500,8 +503,9 @@ def diff(
             vb, vf = b[c]["work"].get(key), f[c]["work"].get(key)
             if vb is None or vf is None:
                 continue
-            tb += vb
-            tf += vf
+            if c not in flaky:
+                tb += vb
+                tf += vf
             if vf > vb * work_ratio and vf - vb >= WORK_MIN_DELTA[key]:
                 item = {
                     "case": c,

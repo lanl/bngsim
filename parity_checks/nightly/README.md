@@ -93,8 +93,8 @@ clock. Against the committed baseline PASS -> TIMEOUT still alerts.
 
 `flaky.json` lists cases whose verdict or solver work measurably changes on
 identical code (with the runs that show it); their changes are reported and never
-alert, in both comparisons. A flaky case's work still counts in the totals. Add one
-only with that evidence.
+alert, in both comparisons. A flaky case's work is left out of the totals too, which
+one such case can move on its own. Add one only with that evidence.
 
 ## When it alerts
 
