@@ -18,10 +18,14 @@
 // into the same variable and produces incorrect trajectories.
 #define exprtk_disable_caseinsensitivity
 // ExprTk on dual numbers too (issue #1330): what has to be declared before
-// exprtk.hpp, then the overloads its templates find for a Dual.
-#include "exprtk.hpp"
-#include "exprtk_dual.hpp"
+// exprtk.hpp, then exprtk.hpp, then the overloads its templates find for a
+// Dual. The order is the point, so each is its own block: clang-format sorts
+// the includes within a block, and sorted, the first comes last.
 #include "exprtk_dual_pre.hpp"
+
+#include "exprtk.hpp"
+
+#include "exprtk_dual.hpp"
 
 #include "bngsim/c_locale_numbers.hpp"
 #include "bngsim/expr_compat.hpp"
