@@ -43,6 +43,9 @@ atol_i = min(atol, rtol * max(|x_i(0)|, floor))
 floor  = max(smallest start of a species the solver integrates, 1e-6 * the largest)
 ```
 
+A species that starts below the floor keeps `rtol * |x_i(0)|` wherever that is
+more than double precision resolves beside the largest start (`ε`, 2.2e-16, of it).
+
 `x(0)` is the state the call starts from. To hold every species to the number
 exactly instead, pass `atol=bngsim.ExactAtol(value)` (see below). The scalar was chosen for species held
 as molecule counts. A species that stays below `atol` for the whole run has no
@@ -62,7 +65,11 @@ longer, nearly all of it on models that had been wrong.
 - **The floor** is where a species with no scale of its own (one that starts at
   0) is held as though it were. It is never under 1e-6 of the largest species:
   a model that declares a species at 1e-31 beside one at 10 does not integrate
-  with every species at 0 held to 1e-39. Where every species the solver
+  with every species at 0 held to 1e-39. A species with a scale of its own
+  below the floor keeps it, where double precision resolves `rtol` of it: held
+  as though at the floor, BIOMD0000000857's Ephe, at 1e-5 beside a pool at 500,
+  stopped CVODE on 14 of 381 output grids at `rtol=1e-6, atol=1e-9` (issue
+  #1439). Where every species the solver
   integrates starts at 0, the floor is the smallest start of any species, a
   `$`-fixed one too, and where every species starts at 0 the default is the
   scalar.

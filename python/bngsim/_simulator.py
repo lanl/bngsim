@@ -4790,16 +4790,32 @@ class Simulator:
         integrated species of BIOMD0000000495 starts at 0 beside two ``$``-fixed
         ones at 5e-5 and 1e-4, and took the scalar, 9.4% off, until it did. A
         value that is not finite (an assignment rule at 1/0) gives no scale.
+
+        The floor is for a species with no scale of its own. One the solver
+        integrates below it keeps its own value wherever ``rtol`` of that is more
+        than double precision resolves beside the largest (ε of it), as a
+        species at 1e-31 beside one at 10 does not (MODEL2003200002). A
+        ``$``-fixed species is not integrated, so no tolerance makes it wrong,
+        and it keeps the floor. BIOMD0000000857's Ephe, at 1e-5 beside
+        a pool at 500, was held as though at the floor, 5e-4: at ``rtol`` 1e-6 and
+        ``atol`` 1e-9, to 5e-10 for its 1e-11. CVODE then left it 1.4e-6 off the
+        level its fast consumption holds it at, failed the next step's error
+        test seven times, and stopped on 14 of 381 output grids (#1439).
         """
         if not (np.isfinite(rtol) and rtol > 0.0):
             return None
         values = np.abs(np.asarray(state, dtype=float))
         values[~np.isfinite(values)] = 0.0
-        free = values[~np.asarray(self._model._core.species_is_fixed, dtype=bool)]
+        integrated = ~np.asarray(self._model._core.species_is_fixed, dtype=bool)
+        free = values[integrated]
         largest = float(free.max(initial=0.0))
         positive = free[free > 0.0]
         floor = max(float(positive.min()), share * largest) if positive.size else None
         own = np.minimum(derive_atol(values, rtol, floor=floor), scalar)
+        if floor is not None:
+            resolved = rtol * values > np.finfo(float).eps * largest
+            kept = integrated & (values < floor) & resolved
+            own[kept] = np.minimum(rtol * values[kept], scalar)
         if np.all(own == scalar):
             return None
         return [float(v) for v in own]
@@ -5063,7 +5079,9 @@ class Simulator:
             starts from (a :meth:`run_until` step keeps the one its trajectory
             started with), where ``floor`` is the smallest value of a species
             the solver integrates, but not under 1e-6 of the largest (issue
-            #1420). That is the number itself wherever the number is a
+            #1420). A species below the floor keeps its own value wherever
+            ``rtol`` of it is more than double precision resolves beside the
+            largest (issue #1439). That is the number itself wherever the number is a
             tolerance for the species, and in a model of counts, whose species
             start at 0 or at least 1, it is the scalar on the scalar's path. In
             a model in molar units it is what keeps a species at 1e-9 from
@@ -5546,7 +5564,8 @@ class Simulator:
     # largest species (issue #1361); in a model of molecule counts, a species
     # that stays near 0 is rounding, 1e-17 of the rest, and is left alone. The
     # default atol's floor is the same share (issue #1420): a species below it
-    # is held as though it were at it.
+    # is held as though it were at it, unless rtol of its own value is more
+    # than double precision resolves beside the largest (issue #1439).
     _ATOL_SCALE_RELEVANT = 1e-6
 
     def _atol_is_default(self, atol: AtolLike | None) -> bool:
