@@ -775,12 +775,6 @@ struct CvodeUserData {
     // is what turns the retry off.
     std::vector<double> sens_zero_atol;
     std::vector<double> sens_zero_scratch;
-
-    // The value RHS's counterpart (issue #1340): the per-species absolute
-    // tolerance below which a slot the nonnegative clamp leaves alone (a
-    // rate-rule target, a fixed or promoted slot) is still numerically zero on
-    // the non-finite retry. Filled on every run, with or without sensitivities.
-    std::vector<double> rhs_zero_atol;
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -953,23 +947,21 @@ static inline double *clamp_state_nonneg(CvodeUserData *data, N_Vector y,
                                          const char *spare = nullptr) {
     clamp_nonneg_into(nonneg_clamp_mask(data), N_VGetArrayPointer(y), data->rhs_nonneg_scratch,
                       spare);
-    double *s = data->rhs_nonneg_scratch.data();
-    // A slot the mask leaves alone may be negative by design (V = -61), but one
-    // negative by less than its own atol is the boundary value with rounding
-    // under it: a rate-rule target at an exact equilibrium of 0 that one order
-    // of the RHS's sums put at -3.6e-27, where `a*P^z` is NaN, and the other at
-    // exactly 0 (issue #1340, MODEL1812040005). The sensitivity RHS reads such a
-    // state the same way (GH #392, clamp_state_numerically_zero).
-    const std::vector<double> &tol = data->rhs_zero_atol;
-    const std::vector<char> &mask = nonneg_clamp_mask(data);
-    const double *y_ptr = N_VGetArrayPointer(y);
-    if (tol.size() == mask.size()) {
-        for (std::size_t i = 0; i < mask.size(); ++i) {
-            if (!mask[i] && y_ptr[i] <= 0.0 && y_ptr[i] > -tol[i])
-                s[i] = 0.0;
-        }
-    }
-    return s;
+    return data->rhs_nonneg_scratch.data();
+}
+
+// The retry's second reading (issue #1340; read_near_zero_into), for where the
+// reading at clamp_state_nonneg is still non-finite: that state, and each slot
+// the mask leaves alone (a rate-rule target, a fixed or promoted slot, a
+// species declared negative) that is below 0 by less than its atol (the run's
+// clamp_atol) read at 0 besides. Null where no slot is in that band, so a run
+// with none reads nothing more.
+static double *clamp_state_near_zero(CvodeUserData *data, N_Vector y, const char *spare) {
+    clamp_state_nonneg(data, y, spare);
+    if (!read_near_zero_into(nonneg_clamp_mask(data), N_VGetArrayPointer(y), data->clamp_atol,
+                             data->rhs_nonneg_scratch))
+        return nullptr;
+    return data->rhs_nonneg_scratch.data();
 }
 
 // The slots the clamp leaves alone at `y`: where `values` (the right-hand side
@@ -1075,6 +1067,91 @@ static bool followed_below_zero(CvodeUserData *data, N_Vector y, double t, const
         "own laws carried it to a pole of a rate law, as at an unstable equilibrium at 0 "
         "(BIOMD0000000338's XIIa). Tighter tolerances, or a model that keeps the species "
         "nonnegative, may avoid it.";
+    data->nonfinite_witness = NonFiniteWitness{};
+    data->nonfinite_witness.capture(src, t, N_VGetArrayPointer(y), ns);
+    return true;
+}
+
+// Has the run carried a slot the mask leaves alone through the band its
+// second reading takes as 0 (clamp_state_near_zero), from inside it to past
+// it? The callbacks ask where the reading is still non-finite after that one.
+// The band is for rounding of 0, which stays inside it. A slot the model's own
+// laws take on down is not: each step that puts it past the band is
+// non-finite, CVODE cuts the step, and the cut one lands back inside and is
+// accepted. A rate-rule target drained at 1e-10 past atol 1e-12 ran that way at
+// steps of 1e-16 to 1e-19, each moving t by a few ulps, which the stall test
+// counts as progress, so only the wall-clock timeout ended it, where a run
+// without the band failed at once. True where the step started with such a
+// slot inside its band and at its edge, within a relative 2^-20 of -atol (the
+// hair spare_at_pole reads a pole at), it is past the band now, and the
+// reading `read_at` gives turns finite once it too is read at 0 (`spare` as
+// the retry had it): the run ends there, as followed_below_zero ends one, with
+// the slots named. Not from further inside: a step tried too long for the band
+// is cut, and the shorter one is accepted inside it. Refused from anywhere in
+// the band, the same drain at 1e-10 past atol 1e-9 was refused at t = 3.8, on a
+// step that would have reached t = 38, where the slot leaves the band at t = 10.
+template <class ReadAt>
+static bool drained_through_band(CvodeUserData *data, N_Vector y, double t, const char *src,
+                                 const char *spare, ReadAt &&read_at) {
+    const int ns = data->model->n_species();
+    const auto uns = static_cast<std::size_t>(ns);
+    const std::vector<double> &atol = data->clamp_atol;
+    if (data->clamp_cvode_mem == nullptr || atol.size() != uns)
+        return false;
+    const std::vector<char> &mask = nonneg_clamp_mask(data);
+    const double *y_ptr = N_VGetArrayPointer(y);
+    bool past = false;
+    for (std::size_t i = 0; i < uns && !past; ++i)
+        past = !mask[i] && y_ptr[i] <= -atol[i];
+    if (!past)
+        return false;
+    std::vector<std::pair<double, int>> drained; // (where the step started, slot)
+    N_Vector start = N_VClone(y);
+    if (start == nullptr)
+        return false;
+    if (step_start_state(data->clamp_cvode_mem, y, start)) {
+        const double *y0 = N_VGetArrayPointer(start);
+        for (std::size_t i = 0; i < uns; ++i) {
+            if (!mask[i] && y_ptr[i] <= -atol[i] && y0[i] > -atol[i] &&
+                y0[i] <= -(1.0 - 0x1p-20) * atol[i])
+                drained.emplace_back(y0[i], static_cast<int>(i));
+        }
+    }
+    N_VDestroy(start);
+    if (drained.empty())
+        return false;
+    double *x = clamp_state_nonneg(data, y, spare);
+    read_near_zero_into(mask, y_ptr, atol, data->rhs_nonneg_scratch);
+    for (const auto &d : drained)
+        x[static_cast<std::size_t>(d.second)] = 0.0;
+    if (read_at(x) != ClampReading::finite)
+        return false;
+    if (!data->below_zero_refusal.empty())
+        return true;
+    sunrealtype tn = 0.0;
+    sunrealtype h = 0.0;
+    CVodeGetCurrentTime(data->clamp_cvode_mem, &tn);
+    CVodeGetCurrentStep(data->clamp_cvode_mem, &h);
+    std::string named;
+    constexpr std::size_t kMaxNamed = 3;
+    for (std::size_t e = 0; e < drained.size() && e < kMaxNamed; ++e) {
+        const auto ui = static_cast<std::size_t>(drained[e].second);
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "' from %.9g to %.9g (its atol %.3g)", drained[e].first,
+                      y_ptr[ui], atol[ui]);
+        named +=
+            std::string(e == 0 ? "concentration '" : ", '") + data->model->species()[ui].name + buf;
+    }
+    if (drained.size() > kMaxNamed)
+        named += ", ...";
+    char at[64];
+    std::snprintf(at, sizeof(at), " by t=%.9g", static_cast<double>(tn - h));
+    data->below_zero_refusal =
+        std::string(src) + " has no finite value where the run has carried " + named + at +
+        ". A slot that may be negative by design is read at 0 only within its atol of 0, "
+        "where its value is rounding of 0 (issue #1340); this one is going on below that, "
+        "and stepping it at ever shorter steps would not end, so the run is refused. A rate "
+        "law that reads it has no value there, so the model has to keep it at or above 0.";
     data->nonfinite_witness = NonFiniteWitness{};
     data->nonfinite_witness.capture(src, t, N_VGetArrayPointer(y), ns);
     return true;
@@ -1705,13 +1782,20 @@ static int cvode_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void *user_d
             data, y, ydot_ptr, static_cast<std::size_t>(data->model->n_species()), read_at);
         data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                     ydot_ptr);
+        // Still non-finite: once more, with the slots the mask leaves alone that
+        // are below 0 by less than their atol read at 0 (issue #1340).
+        if (rhs_has_nonfinite(data, ydot_ptr)) {
+            if (const double *z = clamp_state_near_zero(data, y, spare))
+                data->model->compute_derivs(static_cast<double>(t), z, ydot_ptr);
+        }
         if (rhs_has_nonfinite(data, ydot_ptr)) {
             // Nothing left to clamp: keep the state as evidence in case the run
             // does not survive this (GH #336), then hand CVODE the recoverable
             // code it has always had.
             data->nonfinite_witness.capture("The RHS", static_cast<double>(t), y_ptr,
                                             data->model->n_species());
-            if (followed_below_zero(data, y, static_cast<double>(t), "The RHS", read_at))
+            if (followed_below_zero(data, y, static_cast<double>(t), "The RHS", read_at) ||
+                drained_through_band(data, y, static_cast<double>(t), "The RHS", spare, read_at))
                 return -1;
             return 1; // still non-finite (e.g. inf from 1/conc) -> recoverable
         }
@@ -1827,13 +1911,24 @@ static int cvode_codegen_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void
                               &data->codegen_so_data);
         if (rc != 0)
             return rc;
+        // Still non-finite: once more, with the slots the mask leaves alone that
+        // are below 0 by less than their atol read at 0 (issue #1340).
+        if (rhs_has_nonfinite(data, ydot_ptr)) {
+            if (double *z = clamp_state_near_zero(data, y, spare)) {
+                rc = data->codegen_fn(static_cast<double>(t), z, ydot_ptr, &data->codegen_so_data);
+                if (rc != 0)
+                    return rc;
+            }
+        }
         if (rhs_has_nonfinite(data, ydot_ptr)) {
             // See cvode_rhs: the clamp is spent, so keep the state for the
             // failure message the compiled path would otherwise not have
             // (GH #336).
             data->nonfinite_witness.capture("The compiled RHS", static_cast<double>(t), y_ptr,
                                             data->model->n_species());
-            if (followed_below_zero(data, y, static_cast<double>(t), "The compiled RHS", read_at))
+            if (followed_below_zero(data, y, static_cast<double>(t), "The compiled RHS", read_at) ||
+                drained_through_band(data, y, static_cast<double>(t), "The compiled RHS", spare,
+                                     read_at))
                 return -1;
             return 1; // still non-finite -> recoverable
         }
@@ -2056,10 +2151,18 @@ static int cvode_analytical_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /
         const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
         model->fill_dense_analytical_jacobian(static_cast<double>(t),
                                               clamp_state_nonneg(data, y, spare), jac);
+        // Still non-finite: once more, with the slots the mask leaves alone that
+        // are below 0 by less than their atol read at 0 (issue #1340).
+        if (jac_has_nonfinite(jac, n * n)) {
+            if (const double *z = clamp_state_near_zero(data, y, spare))
+                model->fill_dense_analytical_jacobian(static_cast<double>(t), z, jac);
+        }
         if (jac_has_nonfinite(jac, n * n)) {
             data->nonfinite_witness.capture("The Jacobian", static_cast<double>(t), y_ptr,
                                             model->n_species()); // GH #336
-            if (followed_below_zero(data, y, static_cast<double>(t), "The Jacobian", read_at))
+            if (followed_below_zero(data, y, static_cast<double>(t), "The Jacobian", read_at) ||
+                drained_through_band(data, y, static_cast<double>(t), "The Jacobian", spare,
+                                     read_at))
                 return -1;
             return 1; // still non-finite: recoverable, not a silent success (issue #867)
         }
@@ -2113,11 +2216,19 @@ static int cvode_codegen_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy
         const char *spare = spare_at_pole(data, y, jac, n * n, read_at);
         rc = data->codegen_jac_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare), jac,
                                   &data->codegen_so_data);
+        // Still non-finite: once more, with the slots the mask leaves alone that
+        // are below 0 by less than their atol read at 0 (issue #1340).
+        if (rc == 0 && jac_has_nonfinite(jac, n * n)) {
+            if (double *z = clamp_state_near_zero(data, y, spare))
+                rc = data->codegen_jac_fn(static_cast<double>(t), z, jac, &data->codegen_so_data);
+        }
         if (rc == 0 && jac_has_nonfinite(jac, n * n)) {
             data->nonfinite_witness.capture("The compiled Jacobian", static_cast<double>(t), y_ptr,
                                             data->model->n_species()); // GH #336
             if (followed_below_zero(data, y, static_cast<double>(t), "The compiled Jacobian",
-                                    read_at))
+                                    read_at) ||
+                drained_through_band(data, y, static_cast<double>(t), "The compiled Jacobian",
+                                     spare, read_at))
                 return -1;
             return 1; // still non-finite: recoverable, not a silent success (issue #867)
         }
@@ -2299,10 +2410,18 @@ static int cvode_analytical_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/,
             spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
         model->fill_sparse_analytical_jacobian(static_cast<double>(t),
                                                clamp_state_nonneg(data, y, spare), jac_data);
+        // Still non-finite: once more, with the slots the mask leaves alone that
+        // are below 0 by less than their atol read at 0 (issue #1340).
+        if (jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz))) {
+            if (const double *z = clamp_state_near_zero(data, y, spare))
+                model->fill_sparse_analytical_jacobian(static_cast<double>(t), z, jac_data);
+        }
         if (jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz))) {
             data->nonfinite_witness.capture("The Jacobian", static_cast<double>(t), conc,
                                             model->n_species()); // GH #336
-            if (followed_below_zero(data, y, static_cast<double>(t), "The Jacobian", read_at))
+            if (followed_below_zero(data, y, static_cast<double>(t), "The Jacobian", read_at) ||
+                drained_through_band(data, y, static_cast<double>(t), "The Jacobian", spare,
+                                     read_at))
                 return -1;
             return 1; // still non-finite: recoverable, not a silent success (issue #867)
         }
@@ -2362,11 +2481,20 @@ static int cvode_codegen_sparse_jac_body(sunrealtype t, N_Vector y, N_Vector /*f
             spare_at_pole(data, y, jac_data, static_cast<std::size_t>(sp.nnz), read_at);
         rc = data->codegen_jac_sparse_fn(static_cast<double>(t), clamp_state_nonneg(data, y, spare),
                                          jac_data, &data->codegen_so_data);
+        // Still non-finite: once more, with the slots the mask leaves alone that
+        // are below 0 by less than their atol read at 0 (issue #1340).
+        if (rc == 0 && jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz))) {
+            if (double *z = clamp_state_near_zero(data, y, spare))
+                rc = data->codegen_jac_sparse_fn(static_cast<double>(t), z, jac_data,
+                                                 &data->codegen_so_data);
+        }
         if (rc == 0 && jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz))) {
             data->nonfinite_witness.capture("The compiled Jacobian", static_cast<double>(t), y_ptr,
                                             model->n_species()); // GH #336
             if (followed_below_zero(data, y, static_cast<double>(t), "The compiled Jacobian",
-                                    read_at))
+                                    read_at) ||
+                drained_through_band(data, y, static_cast<double>(t), "The compiled Jacobian",
+                                     spare, read_at))
                 return -1;
             return 1; // still non-finite: recoverable, not a silent success (issue #867)
         }
@@ -4498,8 +4626,6 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
             throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
         }
         w.user_data.atol_tracking = make_atol_tracking(rtol, atol_v, opts.atol_track_decades);
-        w.user_data.rhs_zero_atol =
-            atol_v.empty() ? std::vector<double>(static_cast<std::size_t>(ns), atol) : atol_v;
         apply_cvode_tolerances(w.cvode_mem, w.ctx, rtol, atol, atol_v, ns,
                                w.user_data.atol_tracking.active() ? cvode_tracking_ewt : nullptr);
         record_clamp_tolerances(w.user_data, w.cvode_mem, atol, atol_v, ns);
@@ -4904,8 +5030,6 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     // CVodeWFtolerances that installs the callback — are one block. Depth 0
     // leaves both empty and the SS/SV dispatch below exactly as it was.
     user_data.atol_tracking = make_atol_tracking(rtol, atol_v, opts.atol_track_decades);
-    user_data.rhs_zero_atol =
-        atol_v.empty() ? std::vector<double>(static_cast<std::size_t>(ns), atol) : atol_v;
     apply_cvode_tolerances(cvode_mem, ctx, rtol, atol, atol_v, ns,
                            user_data.atol_tracking.active() ? cvode_tracking_ewt : nullptr);
     record_clamp_tolerances(user_data, cvode_mem, atol, atol_v, ns);

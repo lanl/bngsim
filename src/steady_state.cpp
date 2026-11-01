@@ -398,10 +398,13 @@ struct SteadyStateUserData {
     AtolTracking atol_tracking;
     // The run test's GH #135 retry (issue #1357): on for the run test alone,
     // which then integrates as the time course does; see ss_eval_rhs. Its
-    // slots and clamped state are built on the first NaN f or Jacobian.
+    // slots and clamped state are built on the first NaN f or Jacobian, and
+    // nonneg_atol, the march's atol per slot, is the band its second reading
+    // takes as 0 (issue #1340).
     bool clamp_nonfinite = false;
     std::vector<char> nonneg_mask;
     std::vector<double> nonneg_scratch;
+    std::vector<double> nonneg_atol;
     // What a callback threw, if one did (issue #589). SUNDIALS is C, so an
     // exception must not unwind through its frames; guard_ss_callback parks the
     // first one here and returns the unrecoverable-failure code, and the solve
@@ -854,6 +857,20 @@ static const double *ss_clamped_state(SteadyStateUserData *data, const double *y
     return data->nonneg_scratch.data();
 }
 
+// The time course's second reading (clamp_state_near_zero, issue #1340), for
+// where f or the Jacobian at ss_clamped_state is still NaN: that state, with
+// each slot the mask leaves alone that is below 0 by less than the march's
+// atol read at 0 too. Null where no slot is in that band. The run test is
+// taken over a budget of steps (take_on_for), so a slot taken on down through
+// the band there ends with those steps, not on a wall clock, and it needs no
+// counterpart to the time course's drained_through_band.
+static const double *ss_near_zero_state(SteadyStateUserData *data, const double *y) {
+    ss_clamped_state(data, y);
+    if (!read_near_zero_into(data->nonneg_mask, y, data->nonneg_atol, data->nonneg_scratch))
+        return nullptr;
+    return data->nonneg_scratch.data();
+}
+
 // A NaN, and no infinity, in v: the reading the run test retries
 // (bngsim/nonneg_clamp.hpp's read_values, which the time course reads too).
 static bool ss_reads_nan_only(const double *v, std::size_t n) {
@@ -877,8 +894,13 @@ static bool ss_reads_nan_only(const double *v, std::size_t n) {
 static void ss_eval_rhs(SteadyStateUserData *data, double t, const double *y, double *ydot) {
     data->rhs->eval(t, y, ydot);
     const auto un = static_cast<std::size_t>(data->model->n_species());
-    if (data->clamp_nonfinite && ss_reads_nan_only(ydot, un))
+    if (data->clamp_nonfinite && ss_reads_nan_only(ydot, un)) {
         data->rhs->eval(t, ss_clamped_state(data, y), ydot);
+        if (ss_reads_nan_only(ydot, un)) {
+            if (const double *z = ss_near_zero_state(data, y))
+                data->rhs->eval(t, z, ydot);
+        }
+    }
 }
 
 static int cvode_ss_rhs_body(sunrealtype t, N_Vector y, N_Vector ydot, void *ud) {
@@ -912,10 +934,15 @@ static int cvode_ss_dense_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/, S
     const auto un = static_cast<std::size_t>(data->model->n_species());
     data->rhs->fill_dense_jacobian(static_cast<double>(t), N_VGetArrayPointer(y),
                                    SUNDenseMatrix_Data(J));
-    if (data->clamp_nonfinite && ss_reads_nan_only(SUNDenseMatrix_Data(J), un * un))
+    if (data->clamp_nonfinite && ss_reads_nan_only(SUNDenseMatrix_Data(J), un * un)) {
         data->rhs->fill_dense_jacobian(static_cast<double>(t),
                                        ss_clamped_state(data, N_VGetArrayPointer(y)),
                                        SUNDenseMatrix_Data(J));
+        if (ss_reads_nan_only(SUNDenseMatrix_Data(J), un * un)) {
+            if (const double *z = ss_near_zero_state(data, N_VGetArrayPointer(y)))
+                data->rhs->fill_dense_jacobian(static_cast<double>(t), z, SUNDenseMatrix_Data(J));
+        }
+    }
     return 0;
 }
 
@@ -991,11 +1018,16 @@ static int cvode_ss_sparse_jac_body(sunrealtype t, N_Vector y, N_Vector /*fy*/, 
     install_csc_structure(SUNSparseMatrix_IndexPointers(J), SUNSparseMatrix_IndexValues(J), sp);
     data->rhs->fill_sparse_jacobian(static_cast<double>(t), N_VGetArrayPointer(y),
                                     SUNSparseMatrix_Data(J));
-    if (data->clamp_nonfinite &&
-        ss_reads_nan_only(SUNSparseMatrix_Data(J), static_cast<std::size_t>(sp.nnz)))
+    const auto nnz = static_cast<std::size_t>(sp.nnz);
+    if (data->clamp_nonfinite && ss_reads_nan_only(SUNSparseMatrix_Data(J), nnz)) {
         data->rhs->fill_sparse_jacobian(static_cast<double>(t),
                                         ss_clamped_state(data, N_VGetArrayPointer(y)),
                                         SUNSparseMatrix_Data(J));
+        if (ss_reads_nan_only(SUNSparseMatrix_Data(J), nnz)) {
+            if (const double *z = ss_near_zero_state(data, N_VGetArrayPointer(y)))
+                data->rhs->fill_sparse_jacobian(static_cast<double>(t), z, SUNSparseMatrix_Data(J));
+        }
+    }
     return 0;
 }
 
@@ -1162,6 +1194,9 @@ class SteadyStateMarcher {
         ud_.atol_tracking = make_atol_tracking(opts.rtol, opts.atol_vec, opts.atol_track_decades);
         apply_cvode_tolerances(cvode_mem_, ctx_, opts.rtol, opts.atol, opts.atol_vec, ns_,
                                ud_.atol_tracking.active() ? ss_tracking_ewt : nullptr);
+        ud_.nonneg_atol.resize(static_cast<std::size_t>(ns_));
+        for (int i = 0; i < ns_; ++i)
+            ud_.nonneg_atol[static_cast<std::size_t>(i)] = ss_species_atol(opts, i);
         CVodeSetUserData(cvode_mem_, &ud_);
         CVodeSetMaxNumSteps(cvode_mem_, opts.max_steps);
 

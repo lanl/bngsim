@@ -4,8 +4,9 @@
 // One rule, two integrators (issue #1357). The time course (cvode_simulator.cpp)
 // has retried a non-finite RHS and Jacobian on the nonnegative-clamped state
 // since GH #135, over the slots issue #706 allows. The steady-state run test
-// (steady_state.cpp) now retries the same way, so the slots, the clamp and the
-// reading that triggers it are defined here, once.
+// (steady_state.cpp) now retries the same way, so the slots, the clamp, its
+// second reading near 0 (issue #1340) and the reading that triggers them are
+// defined here, once.
 #pragma once
 
 #include "bngsim/model.hpp"
@@ -50,6 +51,33 @@ inline void clamp_nonneg_into(const std::vector<char> &mask, const double *y,
         out.assign(n, 0.0);
     for (std::size_t i = 0; i < n; ++i)
         out[i] = (y[i] > 0.0 || !mask[i] || (spare != nullptr && spare[i])) ? y[i] : 0.0;
+}
+
+// The second reading of the retry (issue #1340), for where the clamp above
+// leaves f or the Jacobian non-finite: in `out`, which holds that clamp's
+// reading of `y`, each slot the mask leaves alone that is below 0 by less than
+// its own `atol` put at 0. Such a slot may be negative by design (a membrane
+// potential at -61), but inside its atol of 0 it is the boundary value with
+// rounding under it: MODEL1812040005's P, a rate-rule target at an exact
+// equilibrium of 0, which one order of the RHS's sums puts at exactly 0 and the
+// other at -3.6e-27, where `a*P^z` is NaN. Taken second, so a slot negative by
+// design is moved only where the reading has no value with it as the run has
+// it: beside a masked slot whose clamp alone makes f finite, it is read at its
+// value. The sensitivity RHS reads its state at the same band (GH #392). True
+// where a slot moved; an `atol` not sized to the mask moves none.
+inline bool read_near_zero_into(const std::vector<char> &mask, const double *y,
+                                const std::vector<double> &atol, std::vector<double> &out) {
+    const std::size_t n = mask.size();
+    if (atol.size() != n || out.size() != n)
+        return false;
+    bool moved = false;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!mask[i] && y[i] < 0.0 && y[i] > -atol[i]) {
+            out[i] = 0.0;
+            moved = true;
+        }
+    }
+    return moved;
 }
 
 // What an evaluation of the right-hand side or of a closed-form Jacobian read:
