@@ -4029,6 +4029,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("sens_tie_above", &bngsim::SteadyStateResult::sens_tie_above)
         .def_readonly("sens_tie_below", &bngsim::SteadyStateResult::sens_tie_below)
         .def_readonly("sens_tie_jump", &bngsim::SteadyStateResult::sens_tie_jump)
+        .def_readonly("sens_held_species", &bngsim::SteadyStateResult::sens_held_species)
+        .def_readonly("sens_held_before", &bngsim::SteadyStateResult::sens_held_before)
+        .def_readonly("sens_held_after", &bngsim::SteadyStateResult::sens_held_after)
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::SteadyStateResult &r) {

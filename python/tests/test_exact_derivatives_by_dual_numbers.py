@@ -483,6 +483,88 @@ def test_a_state_moved_across_a_jump_is_refused(tmp_path):
         sim.steady_state(sensitivity_params=["s"])
 
 
+# #1330's comment: X's loss written as a staircase, 2·k2·rint(X·1e12)/1e12·X,
+# with steps of 1e-12 in X, under the solver's tolerance.
+_STAIRCASE = """begin parameters
+    1 s   1.3
+    2 k1  0.21
+    3 k2  0.73
+    4 p   1.0
+    5 q   {q!r}
+    6 c   1e8
+    7 dg  1.0
+    8 xp  q*p
+    9 gp  c*p
+end parameters
+begin functions
+    1 loss() 2*k2*rint(Xo*1e12)/1e12
+end functions
+begin species
+    1 X() 0
+    2 G() 1e8
+end species
+begin groups
+    1 Xo 1
+end groups
+begin reactions
+    1 0 1 s
+    2 0 1 xp
+    3 1 0 k1
+    4 1 0 loss
+    5 0 2 gp
+    6 2 0 dg
+end reactions
+"""
+
+
+def test_a_state_held_on_a_jump_is_refused(tmp_path):
+    """At q = 1e-3 the step the state is on has no root: f jumps across 0 at
+    its edge, and the state is held there, within the tolerance. The branch's
+    dX*/dp, q/(k1 + 2·k2·rint(X·1e12)/1e12) = 6.7e-4, is not the held state's,
+    and was returned."""
+    path = tmp_path / "stair.net"
+    path.write_text(_STAIRCASE.format(q=1e-3))
+    sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"#1330.*held on a jump.*of X\(\)"):
+        sim.steady_state(sensitivity_params=["p"])
+
+
+def test_a_root_on_a_step_is_returned(tmp_path):
+    """At q = 0.1 the root is inside a step, and dX*/dp is the step's: the
+    staircase's own derivative, not the quadratic's it approximates."""
+    path = tmp_path / "stair.net"
+    path.write_text(_STAIRCASE.format(q=0.1))
+    out = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode").steady_state(
+        sensitivity_params=["p"]
+    )
+    assert out.sens_jacobian_source == "automatic-differentiation"
+    assert out.sens_held_species is None
+    on_step = round(float(out.concentrations[0]) * 1e12) / 1e12
+    np.testing.assert_allclose(
+        np.asarray(out.sensitivity)[0, 0], 0.1 / (0.21 + 2 * 0.73 * on_step), rtol=1e-10
+    )
+
+
+def test_a_linear_tables_knot_is_not_a_jump(tmp_path):
+    """At the first knot of response(A), with B at 0 so that B's terms are all
+    nothing, a side's value was the one a rounding past the knot reads (50·ulp)
+    and read as a jump. The table is continuous there; its slope is 0 from
+    below and 50 from above (issue #1330's review)."""
+    (tmp_path / "dose_response.tfun").write_text((_DATA / "dose_response.tfun").read_text())
+    path = tmp_path / "t.net"
+    path.write_text(
+        "begin parameters\n 1 one 1.0\nend parameters\n"
+        "begin functions\n 1 response() tfun('dose_response.tfun', drug_conc)\nend functions\n"
+        "begin species\n 1 A() 0\n 2 B() 0\nend species\n"
+        "begin groups\n 1 drug_conc 1\nend groups\n"
+        "begin reactions\n 1 0 2 response\n 2 2 0 one\nend reactions\n"
+    )
+    model = bngsim.Model.from_net(str(path))
+    assert not any(model._core.fill_dense_dual_jacobian(0.0, [0.0, 0.0], s)[2] for s in (1, -1))
+    with pytest.raises(bngsim.SimulationError, match=r"is 50 from one side and 0 from the other"):
+        model.jacobian([0.0, 0.0])
+
+
 class TestWhereThereIsNoDualEvaluation:
     def test_rateof(self):
         model = bngsim.Model.from_antimony_string(

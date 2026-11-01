@@ -8561,7 +8561,25 @@ class Simulator:
         entry differs by more than 1e-8 of itself (1e-10 of its column's
         largest, at least) the steady state has no derivative, and it is
         refused.
+
+        A state held on a jump in a law's value is refused too: one within the
+        solver's tolerance of a jump that no root of its branch is beside,
+        where a Newton step to that branch's root leaves a larger residual
+        than it started from. The branch's derivative is not the state's
+        there.
         """
+        if result.sens_held_species is not None:
+            raise SimulationError(
+                "steady_state(sensitivity_params=...) does not return dY_ss/dp for this "
+                "model at this steady state (issue #1330): the state is held on a jump in "
+                "a rate law's value (a comparison, if(), a step of floor() or rint()) that "
+                "is within the solver's tolerance of it. A Newton step from it, to the root "
+                "of the branches its derivatives are taken on, takes the residual of "
+                f"{result.sens_held_species} from {result.sens_held_before:.3g} to "
+                f"{result.sens_held_after:.3g} of its terms: that branch has no root here, "
+                "and a state held on a jump does not move with a parameter as the branch "
+                "would."
+            )
         if result.sens_tie_species is None:
             return
         if result.sens_tie_jump:
@@ -11751,6 +11769,16 @@ class SteadyStateResult:
         Whether that entry was refused because a rate law's value jumps along
         its species there and the parameter moves the species, so that the
         steady state crosses the jump (the two sides may agree then).
+    sens_held_species : str or None
+        Where ``J`` or ``∂f/∂p`` was taken by dual numbers and the state is
+        held on a jump in a rate law's value within the solver's tolerance of
+        it, with no root of its branch beside it: a Newton step to that
+        branch's root left a larger residual than it started from. The species
+        whose residual the step left largest (issue #1330); ``steady_state``
+        raises where there is one. None where the step took the residual down.
+    sens_held_before, sens_held_after : float
+        The largest residual before and after that step, each over its
+        species' terms.
 
     Notes
     -----
@@ -11842,6 +11870,9 @@ class SteadyStateResult:
         "sens_tie_above",
         "sens_tie_below",
         "sens_tie_jump",
+        "sens_held_species",
+        "sens_held_before",
+        "sens_held_after",
         "_sensitivity",
         "_sens_param_names",
         "_observable_names",
@@ -11983,6 +12014,9 @@ class SteadyStateResult:
         self.sens_tie_above = getattr(core, "sens_tie_above", 0.0)
         self.sens_tie_below = getattr(core, "sens_tie_below", 0.0)
         self.sens_tie_jump = bool(getattr(core, "sens_tie_jump", False))
+        self.sens_held_species = _named(species, getattr(core, "sens_held_species", -1))
+        self.sens_held_before = getattr(core, "sens_held_before", 0.0)
+        self.sens_held_after = getattr(core, "sens_held_after", 0.0)
 
         self._sensitivity: np.ndarray | None
         if core.n_sens_params > 0:

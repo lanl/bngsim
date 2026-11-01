@@ -103,10 +103,15 @@ Dual dual_table(const TableFunction &tf, const Dual &x) {
     }
     DualContext &ctx = dual_context();
     ctx.tied = true;
+    // A linear table is continuous at its knots: a side's value is the knot's,
+    // not the one a rounding past it reads (slope·ulp, which beside a species
+    // whose terms are nothing would read as a jump).
     const auto side = [&](bool up) {
         const double past = std::nextafter(x.v, up ? std::numeric_limits<double>::infinity()
                                                    : -std::numeric_limits<double>::infinity());
-        return Dual(tf.evaluate_at(past), (up ? tf.slope_at(x.v) : tf.left_slope_at(x.v)) * x.d);
+        const double side_value =
+            tf.method() == InterpolationMethod::Step ? tf.evaluate_at(past) : value;
+        return Dual(side_value, (up ? tf.slope_at(x.v) : tf.left_slope_at(x.v)) * x.d);
     };
     switch (ctx.tie) {
     case DualTie::Above:

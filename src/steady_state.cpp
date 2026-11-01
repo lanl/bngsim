@@ -4328,13 +4328,58 @@ struct SsColumnSystem {
     double horizon = 0.0; // the time the solve was given to settle in (max_time)
 };
 
+// Issue #1330: J and ∂f/∂p by dual numbers are those of the branch each law
+// takes at the state. Where the state is within the solver's tolerance of a
+// jump in a law's value and no root of its branch is beside it, `f` jumps
+// across 0 at the jump and the state is held there: 2·k2·rint(X·1e12)/1e12·X,
+// a staircase whose steps are under the tolerance, at q = 1e-3 in #1330's
+// comment. Held on the jump, the state does not move as the branch would
+// (dX*/dp = 6.7e-4 from the branch, nothing on the jump). A Newton step from
+// it, to the root of the branch, crosses the jump, and the residual it leads
+// to is no smaller than the one it left; from a root of the branch the step
+// takes the residual down by a factor of the residual. Each species' residual
+// is taken over its terms (rhs_term_scale), and one under kRoundingShare of
+// them is what rounding left at either state. `f` is the right-hand side at
+// the returned state and `to` the state the step leads to. Leaves the
+// right-hand side's caches as an evaluation at the returned state leaves them.
+static void ss_measure_held_on_a_jump(SteadyStateRhs &rhs, SteadyStateResult &result,
+                                      const double *J, int ns, const std::vector<int> &unknowns,
+                                      const ResidualSubspace &sub, const std::vector<double> &f,
+                                      const std::vector<double> &to) {
+    const double *y_ss = result.concentrations.data();
+    std::vector<double> terms, f_to(static_cast<size_t>(ns), 0.0);
+    rhs_term_scale(J, y_ss, ns, terms);
+    rhs.eval(0.0, to.data(), f_to.data());
+    double before = 0.0, after = 0.0;
+    int at = -1;
+    for (const int i : unknowns) {
+        if (!sub.includes(i)) {
+            continue;
+        }
+        const size_t k = static_cast<size_t>(i);
+        const double over = terms[k] > 0.0 ? terms[k] : 1.0;
+        before = std::max(before, std::abs(f[k]) / over);
+        const double r = std::abs(f_to[k]) / over;
+        if (!(r <= after)) {
+            after = r;
+            at = i;
+        }
+    }
+    rhs.eval(0.0, y_ss, f_to.data());
+    if (after > std::max(before, kRoundingShare)) {
+        result.sens_held_species = at;
+        result.sens_held_before = before;
+        result.sens_held_after = after;
+    }
+}
+
 // The measurements described above, written to the result. `J` is the full
 // Jacobian at the returned state and `dfdp` the ∂f/∂p the columns were solved
 // from. Leaves the right-hand side's caches as an evaluation at the returned
 // state leaves them.
 static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, const double *J, int ns,
                             int np, const SsColumnSystem &sys, const ResidualSubspace &sub,
-                            bool want_analytical) {
+                            bool want_analytical, bool by_dual) {
     const ConservationLaws &laws = *sys.laws;
     const std::vector<int> &unknowns = *sys.unknowns;
     const int n = static_cast<int>(unknowns.size());
@@ -4489,6 +4534,9 @@ static void ss_measure_root(SteadyStateRhs &rhs, SteadyStateResult &result, cons
         result.sens_root_column_shift = inf;
         result.sens_root_relaxation = inf;
         return;
+    }
+    if (by_dual) {
+        ss_measure_held_on_a_jump(rhs, result, J, ns, unknowns, sub, f, stepped.to);
     }
     const auto all_finite = [](const std::vector<double> &v) {
         for (const double x : v) {
@@ -5361,6 +5409,12 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
 
     // Issue #995: what ss_measure_root needs to solve the columns again.
     SsColumnSystem column_system;
+    // Whether the columns' J or ∂f/∂p was taken by dual numbers (issue #1330),
+    // asked when the columns have been solved.
+    const auto by_dual = [&result]() {
+        return result.sens_jacobian_source == kAutomaticDifferentiation ||
+               result.sens_dfdp_source == kAutomaticDifferentiation;
+    };
     column_system.fill_dfdp = fill_dfdp;
     column_system.model = &model;
     column_system.start = &start_state;
@@ -5636,7 +5690,8 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
             }
             return add;
         };
-        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical);
+        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical,
+                        by_dual());
 
         // A masked-out species was held fixed above, which is what made the
         // system solvable — but "held fixed" is not a gradient. Its row read 0
@@ -5695,7 +5750,8 @@ compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs, SteadyStateResu
         column_system.laws = &all_laws;
         column_system.unknowns = &every_species;
         column_system.forcing = [](const double *, int, int) { return 0.0; };
-        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical);
+        ss_measure_root(rhs, result, J.data(), ns, np, column_system, sub, want_analytical,
+                        by_dual());
 
         // RAII guards handle cleanup
     }

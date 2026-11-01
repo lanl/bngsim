@@ -1614,6 +1614,21 @@ struct SteadyStateResult {
     double sens_tie_above = 0.0;
     double sens_tie_below = 0.0;
     bool sens_tie_jump = false;
+    // A state held on a jump: where J or ∂f/∂p was taken by dual numbers, a
+    // Newton step from the state, to the root of the branches those derivatives
+    // are of, left a residual larger than the one it started from (each over
+    // its species' terms, Σ|J_ij|·|y_j|, and over 1e-13 of them). The state is
+    // then within the solver's tolerance of a jump that no root of its branch
+    // is beside: `f` jumps across 0 there, and the state is held on the jump
+    // (2·k2·rint(X·1e12)/1e12·X, a staircase whose steps are under the
+    // tolerance), where it does not move as the branch would.
+    // sens_held_species is the species whose residual the step left largest
+    // (0-based; -1 where none), and sens_held_before / sens_held_after the
+    // largest residual before and after the step, each over its terms.
+    // steady_state() refuses it.
+    int sens_held_species = -1;
+    double sens_held_before = 0.0;
+    double sens_held_after = 0.0;
 
     // ─── Observable / function output sensitivities at steady state (GH #12) ───
     // The chain-rule projection of the species dY_ss/dp above onto the model's
