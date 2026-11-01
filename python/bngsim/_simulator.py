@@ -2934,9 +2934,9 @@ class Simulator:
         RHS, so the columns are CVODES' difference quotient, which can still
         read a narrow one wrong (issue #1126).
 
-        A rate-law equality over state that the run starts on, at *t_start*, and
-        stays on is refused first (issue #1228): leaving it is a switch nothing
-        locates.
+        A rate-law equality over state is rooted where the state leaves its
+        surface, and the run refused there where that is a switch nothing jumps
+        (issues #1228, #1279; :meth:`_apply_held_equalities`).
 
         A no-op for any model with no conditional rate law and no step or bend
         call over state, which leaves the root set — and the whole integration —
@@ -2944,39 +2944,18 @@ class Simulator:
         """
         from bngsim._switch_sensitivity import (
             _surface_key,
-            equalities_held_at_start,
             state_switch_conditions,
             state_switch_reactions,
             state_switch_residual,
         )
 
-        # A rate-law equality the run starts on holds for a stretch, and leaving
-        # it is a switch nothing locates (issue #1228): refused by name, as the
-        # same switch written `<=` is refused at its tangency. The context is
-        # built once for this and the conditions below.
+        # The model's context, built once for the equalities and the conditions.
         ctx = None
-        try:
-            if core.n_functions:
+        if core.n_functions:
+            try:
                 ctx = core.functional_jacobian_context()
-            held = equalities_held_at_start(core, ctx, t0=t_start)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("Equality-at-start detection failed (%s) (issue #1228).", e)
-            held = []
-        if held:
-            raise SensitivityUnsupportedError(
-                "Forward sensitivity is not supported for this model: a rate law branches "
-                f"on {held[0]!r}, and the state starts on that equality's surface and stays "
-                "on it, so the condition holds one value for a stretch rather than an "
-                "instant. Leaving the surface is a switch bngsim does not locate: an "
-                "equality is not rooted, since one the state crosses holds for an instant, "
-                "and either side of its surface reads false, so the columns of whatever "
-                "ends the stretch would come back 0 with no jump (issue #1228). Write the "
-                "switch as the crossing that ends the stretch, which is located and "
-                "jumped (`if(Aobs>q, kb, 0)` for `if(Bobs==0, kb, 0)` in that issue's "
-                "model, where B is made only once A falls to q). The same switch as an "
-                "inequality, `Bobs<=0`, is refused at its tangency. Or drop sensitivities "
-                "for this run."
-            )
+            except Exception:  # pragma: no cover - defensive; each detector builds its own
+                ctx = None
 
         try:
             conditions = state_switch_conditions(core, ctx)
@@ -2992,7 +2971,12 @@ class Simulator:
                 "(issue #150).",
                 e,
             )
+            # The equalities are found on their own, and are watched with no
+            # switch inside them to cover a leaving: #1228's start check did not
+            # need the conditions either, and a stretch unwatched is silent.
+            self._apply_held_equalities(opts, core, ctx, [])
             return
+        self._apply_held_equalities(opts, core, ctx, conditions)
         stops: list[str] = []
         calls = (
             () if model is None or covered is None else model._state_switch_stops_beside(covered)
@@ -3037,6 +3021,79 @@ class Simulator:
                 # #1128), so the solver applies its jump. A bend lists none, so
                 # its crossing is taken as continuous, which it is.
                 opts.set_state_switch_reactions(reactions)
+
+    @staticmethod
+    def _apply_held_equalities(opts, core, ctx, conditions) -> None:
+        """Root the leaving of each rate-law equality over state (issue #1279).
+
+        A state that sits on an equality's surface (`Bobs==0`) holds its branch
+        for a stretch, and leaving the surface is a switch no root locates or
+        jumps: the columns of what ends the stretch came back 0 with no warning
+        (issue #1228). The solver roots where each equality's residual leaves
+        exactly 0, whether the run started on the surface or an event put it
+        there, and refuses there only where the rate laws reading it change and
+        no jump at that instant covers the change. Each equality goes with the
+        reactions that read it, whose flux is what can change there, and the
+        state-switch *conditions* written inside it, whose crossing covers a
+        leaving at its own instant. A stretch the run never leaves, or leaves
+        only at an event, runs.
+
+        Only finding the equalities can leave them unwatched. Without the
+        reaction map the solver reads every reaction's flux, and without the
+        inner switches it covers no leaving by one: either refuses more, where
+        dropping the equalities with them gave the washout's columns as 0 again.
+        """
+        from bngsim._switch_sensitivity import (
+            _iter_condition_atoms,
+            _surface_key,
+            rate_law_equalities,
+            state_switch_reactions,
+            state_switch_residual,
+        )
+
+        try:
+            equalities = [atom for atom, _ in rate_law_equalities(core, ctx)]
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                "Rate-law equality detection failed (%s); a state that leaves one is not "
+                "watched (issue #1279).",
+                e,
+            )
+            return
+        if not equalities:
+            return
+        opts.set_held_equality_conditions(equalities)
+        try:
+            switched = {
+                _surface_key(r) for r in (state_switch_residual(core, c) for c in conditions) if r
+            }
+            inner = [
+                [
+                    atom
+                    for atom in _iter_condition_atoms(equality)
+                    if (residual := state_switch_residual(core, atom))
+                    and _surface_key(residual) in switched
+                ]
+                for equality in equalities
+            ]
+        except Exception as e:
+            logger.warning(
+                "The state switches inside a rate-law equality were not found (%s); a "
+                "leaving at one's crossing is refused (issue #1279).",
+                e,
+            )
+        else:
+            opts.set_held_equality_inner(inner)
+        try:
+            reactions = state_switch_reactions(core, equalities, ctx)
+        except Exception as e:
+            logger.warning(
+                "Rate-law equality reaction map failed (%s); a leaving is judged over "
+                "every reaction's flux (issue #1279).",
+                e,
+            )
+        else:
+            opts.set_held_equality_reactions(reactions)
 
     def _apply_state_switch_roots(self, opts, model, covered=None) -> None:
         """Root the rate-law conditions over model state for a plain run (issue #897).
@@ -5521,10 +5578,11 @@ class Simulator:
             # ValueError: before it was typed the refusal was a plain ValueError
             # and fell past the RuntimeError arm below untouched, so adding the
             # BngsimError base silently routed it INTO the wrapper. Only the
-            # switch-time site (_switch_sensitivity, issue #48) raises from
+            # switch-time site (_switch_sensitivity, issue #48) raised from
             # inside this try — the event and codegen refusals are raised during
             # setup and never reach here — which is why one site regressed and
-            # the other two did not.
+            # the other two did not. The solver's own refusal where the state
+            # leaves a rate-law equality (issue #1279) arrives here typed too.
             raise
         except RuntimeError as e:
             raise SimulationError(f"Simulation failed: {e}{_tracking_hint(track_decades)}") from e
@@ -7878,6 +7936,10 @@ class Simulator:
 
         try:
             core_result = sim.run(ts, opts)
+        except SensitivityUnsupportedError:
+            # The solver's refusal of the model mid-run (issue #1279), typed as
+            # one raised while the chunk sets up: no column runs alone either.
+            raise
         except RuntimeError as e:
             raise SimulationError(f"Sensitivity chunk failed (params={sens_params}): {e}") from e
 
