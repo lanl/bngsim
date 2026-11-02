@@ -160,6 +160,16 @@ def _scale_run_timeouts() -> None:
             kwargs["timeout"] = timeout * scale
         return run(self, *args, **kwargs)
 
+    # bngsim points a warning at the first frame outside its own files, the
+    # caller's line. run_until calls self.run, so this wrapper sat between two
+    # of bngsim's frames and took the warning: an AtolScaleWarning from a
+    # run_until loop named this file, in that job alone
+    # (test_the_steps_of_a_loop_are_warned_once, red there from 2026-10-31).
+    # Filed under bngsim's directory, a path no file holds, the walk passes
+    # over it as over bngsim's own frames.
+    run_with_scaled_timeout.__code__ = run_with_scaled_timeout.__code__.replace(
+        co_filename=os.path.join(os.path.dirname(bngsim.__file__), "_test_timeout_scale.py")
+    )
     bngsim.Simulator.run = run_with_scaled_timeout
 
 
