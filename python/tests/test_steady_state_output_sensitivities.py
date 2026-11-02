@@ -487,11 +487,29 @@ class TestCompiledOutputSensPath:
         cg_got = cg.output_sensitivities(["expression:flux"])[0]
         np.testing.assert_allclose(cg_got, exact, rtol=1e-8)
 
-    def test_no_symbol_is_refused_by_name_not_differenced(self):
+    def test_no_symbol_is_answered_by_dual_numbers(self):
         """With no symbol every function row was differenced before issue
-        #1002. A quotient of a function over the state can be wrong with
-        nothing to show it, so none is taken: the solve returns dY_ss/dp, the
-        rows are NaN, and ``output_sensitivities`` refuses each by name."""
+        #1002, and NaN after it. Each is exact now, by dual numbers through the
+        interpreter (issue #1330): the rows the compiled chain rule gives."""
+        params = ["k1", "k3", "amp", "Km"]
+        with _as_before_75():
+            ad = _steady_state(CLOSED_NET, params)
+        cg = _steady_state(CLOSED_NET, params)
+        assert ad.sens_output_source == "automatic-differentiation"
+        assert cg.sens_output_source == "codegen"
+        selection = ["expression:satA", "expression:lin"]
+        np.testing.assert_allclose(
+            ad.output_sensitivities(selection),
+            cg.output_sensitivities(selection),
+            rtol=1e-12,
+            atol=1e-15,
+        )
+
+    def test_no_symbol_is_refused_by_name_not_differenced(self, monkeypatch):
+        """With no dual evaluation either, the rows are NaN, and
+        ``output_sensitivities`` refuses each by name: a quotient of a function
+        over the state can be wrong with nothing to show it."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         params = ["k1", "k3", "amp", "Km"]
         with _as_before_75():
             fd = _steady_state(CLOSED_NET, params)
@@ -517,7 +535,9 @@ class TestCompiledOutputSensPath:
         If that rebuild fails, the drop must not turn a call that used to succeed
         into a refusal — the old artifact goes back. Its block has no chain
         rule, and is not differenced (issue #1002): the solve returns, and the
-        function rows are refused by name."""
+        function rows are refused by name. (With no dual evaluation: with one,
+        they are exact, issue #1330.)"""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         m = bngsim.Model.from_net(DERIVED_NET)
         sim = bngsim.Simulator(m, method="ode", codegen=True)
 
@@ -589,13 +609,26 @@ class TestCompiledOutputSensPath:
             "_rateLaw2": {"kon": 0.0, "chi": 0.0, "koff": 1.0, "gain": 0.0},
         }
 
-    def test_mixed_block_is_reported_and_correct(self):
+    def test_mixed_block_is_exact(self):
         """One solve, one function of each #198 status. The compiled evaluator
-        answers ``flux``; ``capA`` (``max()``) comes back as a NaN sentinel and
+        answers ``flux``; ``capA`` (``max()``) it leaves, and dual numbers give
+        it exactly (issue #1330); both are their closed forms."""
+        params = ["kon", "chi", "koff", "gain"]
+        m = bngsim.Model.from_net(MIXED_NET)
+        ss = bngsim.Simulator(m, method="ode").steady_state(sensitivity_params=params)
+        assert ss.sens_output_source == "codegen+automatic-differentiation"
+        cf = self._mixed_closed_form()
+        got = ss.output_sensitivities(["expression:flux", "expression:capA"])
+        want = [[cf[f][p] for p in params] for f in ("flux", "capA")]
+        np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-8)
+
+    def test_mixed_block_is_reported_and_correct(self, monkeypatch):
+        """With no dual evaluation: ``capA`` comes back as a NaN sentinel and
         ``_rateLaw2`` (outside the differentiated closure) is left untouched.
         ``capA`` was differenced before issue #1002, and is refused by name now,
         with the construct; ``flux`` is returned, and neither row is a silent 0.
         """
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         params = ["kon", "chi", "koff", "gain"]
         m = bngsim.Model.from_net(MIXED_NET)
         sim = bngsim.Simulator(m, method="ode")
@@ -611,15 +644,26 @@ class TestCompiledOutputSensPath:
             ss.output_sensitivities(["expression:flux", "expression:capA"])
         assert np.isnan(ss.sensitivities_expressions[1]).all()
 
-    def test_skipped_row_is_not_a_confident_zero(self):
+    def test_skipped_row_is_exact(self):
         """The emitter leaves a function outside the user closure at whatever the
-        caller pre-filled. Pre-filled with zero, the RAW block would read a
-        confident 0.0 for ``d(_rateLaw2)/dkoff``, which is 1.0. It is NaN: the
-        pre-fill, which nothing differences now (issue #1002).
+        caller pre-filled; dual numbers give it, ``d(_rateLaw2)/dθ`` = (0, 0,
+        1, 0) (issue #1330), not a confident 0.0 for dkoff. The skipped row is
+        filtered out of the user-facing block, so this reads the core result's
+        ``raw_expression_*`` directly."""
+        params = ["kon", "chi", "koff", "gain"]
+        core = _core_steady_state(MIXED_NET, params)
+        raw_names = list(core.raw_expression_names)
+        np.testing.assert_array_equal(
+            core.raw_expression_sensitivity_data[raw_names.index("_rateLaw2")],
+            [self._mixed_closed_form()["_rateLaw2"][p] for p in params],
+        )
 
-        The skipped row is filtered out of the user-facing block, so this reads
-        the core result's ``raw_expression_*`` directly.
+    def test_skipped_row_is_not_a_confident_zero(self, monkeypatch):
+        """With no dual evaluation, pre-filled with zero, the RAW block would
+        read a confident 0.0 for ``d(_rateLaw2)/dkoff``, which is 1.0. It is
+        NaN: the pre-fill, which nothing differences now (issue #1002).
         """
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         params = ["kon", "chi", "koff", "gain"]
         core = _core_steady_state(MIXED_NET, params)
         assert core.sens_output_source == "partial"
@@ -822,10 +866,19 @@ class TestFunctionBlockBesideARowlessSpecies:
         )
         np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
 
-    def test_a_declined_expression_beside_a_rule_target_is_refused_by_name(self):
-        """``W := piecewise(P, ...)`` has no compiled derivative. It was
-        differenced (and right here); it is refused by name now, and T's row is
-        its rule's (issue #1002)."""
+    def test_a_declined_expression_beside_a_rule_target_is_exact(self):
+        """``W := piecewise(P, ...)`` has no compiled derivative; dual numbers
+        give it, d(W)/dθ = dP*/dθ on the branch P* = 5 is on (issue #1330), and
+        T's row is its rule's."""
+        text = _MADE_AND_LOST + "W := piecewise(P, P < 100, 2*P);\nspecies T in D; T := 2*P;\n"
+        ss = _ant_steady_state(text)
+        np.testing.assert_allclose(ss.output_sensitivities(["expression:W"])[0], _DP, rtol=1e-7)
+        np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
+
+    def test_a_declined_expression_beside_a_rule_target_is_refused_by_name(self, monkeypatch):
+        """With no dual evaluation it is refused by name, and T's row is its
+        rule's (issue #1002)."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         text = _MADE_AND_LOST + "W := piecewise(P, P < 100, 2*P);\nspecies T in D; T := 2*P;\n"
         ss = _ant_steady_state(text)
         assert ss.sens_output_source == "none"
@@ -833,10 +886,18 @@ class TestFunctionBlockBesideARowlessSpecies:
             ss.output_sensitivities(["expression:W"])
         np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
 
-    def test_a_rule_target_whose_rule_is_declined_is_refused_by_name(self):
-        """``T := piecewise(2*P, ...)``: T's row is its rule's, and the rule has
-        no compiled derivative, so T's row is NaN and ``species:T`` is refused
+    def test_a_rule_target_whose_rule_is_declined_is_exact(self):
+        """``T := piecewise(2*P, ...)``: T's row is its rule's, which dual
+        numbers give, 2·dP*/dθ on the branch P* = 5 is on (issue #1330)."""
+        text = _MADE_AND_LOST + "species T in D; T := piecewise(2*P, P < 100, 3*P);\n"
+        ss = _ant_steady_state(text)
+        np.testing.assert_allclose(ss.output_sensitivities(["species:T"])[0], 2 * _DP, rtol=1e-7)
+        np.testing.assert_allclose(ss.output_sensitivities(["species:P"])[0], _DP, rtol=1e-7)
+
+    def test_a_rule_target_whose_rule_is_declined_is_refused_by_name(self, monkeypatch):
+        """With no dual evaluation T's row is NaN and ``species:T`` is refused
         naming the rule (issue #1002). It was differenced before."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         text = _MADE_AND_LOST + "species T in D; T := piecewise(2*P, P < 100, 3*P);\n"
         ss = _ant_steady_state(text)
         assert np.isnan(np.asarray(ss.sensitivity)[ss.species_names.index("T")]).all()
@@ -898,10 +959,23 @@ class TestFunctionBlockBesideARowlessSpecies:
         np.testing.assert_allclose(got, 2 / 36 * _DP, rtol=1e-7)
         np.testing.assert_allclose(got, _central_row(text, lambda s: s["T"]), rtol=1e-6)
 
-    def test_a_size_by_a_declined_rule_is_refused_by_name(self):
-        """``C := piecewise(1 + P, ...)`` has no compiled derivative. It was
-        differenced, and T's row with it; the solve is refused now, naming the
-        size and the construct (issue #1002)."""
+    def test_a_size_by_a_declined_rule_is_exact(self):
+        """``C := piecewise(1 + P, ...)`` has no compiled derivative; dual
+        numbers give it (issue #1330), and T = 2P in C = 1 + P is the
+        concentration 2P/(1 + P), whose row is 2/(1 + P)²·dP*/dθ."""
+        text = _MADE_AND_LOST + (
+            "C := piecewise(1 + P, P < 100, 2 + P);\nsubstanceOnly species T in C; T := 2*P;\n"
+        )
+        ss = _ant_steady_state(text)
+        np.testing.assert_allclose(
+            ss.output_sensitivities(["species:T"])[0], 2 / 36 * _DP, rtol=1e-7
+        )
+
+    def test_a_size_by_a_declined_rule_is_refused_by_name(self, monkeypatch):
+        """With no dual evaluation it was differenced, and T's row with it; the
+        solve is refused now, naming the size and the construct (issue
+        #1002)."""
+        monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
         text = _MADE_AND_LOST + (
             "C := piecewise(1 + P, P < 100, 2 + P);\nsubstanceOnly species T in C; T := 2*P;\n"
         )

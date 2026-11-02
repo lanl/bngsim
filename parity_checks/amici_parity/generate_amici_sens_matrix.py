@@ -276,7 +276,9 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         # scannable ("everything that says bngsim-params:ModelError").
         detail = _escape(r.get("comment") or r.get("exception") or "")
         exc_cls = r.get("exception_class")
-        if exc_cls and not r.get("comment"):
+        # A BAD_TEST row with a comment (no column judged, #1261) leads with
+        # its key too.
+        if exc_cls and (not r.get("comment") or r.get("outcome") == "BAD_TEST"):
             detail = f"[{_escape(exc_cls)}] {detail}"
         rows.append(
             f"<tr class='{cls}'>"
@@ -405,8 +407,9 @@ moves in a way it cannot compute, or because a rate law does not differentiate t
 It is matched by exception <b>type</b>, never by message text, and is a documented capability gap
 rather than a bug, so bucketing it with EXCEPTION would only dilute that signal.
 REFERENCE_FAILED means AMICI could not produce an oracle (bngsim is untested, not vindicated).
-BAD_TEST means either both engines failed, or the model has no parameter both engines can
-differentiate — there is nothing to compare, which is not a verdict about bngsim.</p>
+BAD_TEST means both engines failed, or the model has no parameter both engines can
+differentiate, or no parameter's sensitivity is 20x over the solver's resolution while the
+tensor as a whole agrees — there is nothing to compare, which is not a verdict about bngsim.</p>
 <p><b>REF INVALID</b> is a REFERENCE_FAILED reached by an authored disposition rather than by an
 AMICI crash (issue #380): AMICI <i>ran</i> and returned finite numbers, but a defect in its own
 handling of the model makes them unusable as an oracle, established against an independent third

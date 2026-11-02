@@ -1228,6 +1228,21 @@ def rr_ssa_nonfinite_rate(
 # --------------------------------------------------------------------------- #
 # Process-isolation scheduler (kill-on-overrun)
 # --------------------------------------------------------------------------- #
+# Issue #1290: a recording (--write-reference-archive) kills a job later than its
+# cap, so RoadRunner has time to save its side of the job, and still judges the
+# row at the cap. Never later than this: the nightly's longest cap, rr_ode's giant
+# pass. RoadRunner alone took 1331 s and 14 GB on MODEL1504130000, so a later kill
+# records no giant that times out at 600 s, and it keeps two such processes alive
+# on a 16 GB runner.
+RECORD_KILL_CEILING = 600.0
+
+
+def recording_kill_after(cap: float) -> float:
+    """When a recording kills a job whose cap is ``cap``: at twice the cap, up to
+    ``RECORD_KILL_CEILING``, and never before the cap."""
+    return max(cap, min(2 * cap, RECORD_KILL_CEILING))
+
+
 def schedule(
     specs: list[dict],
     target,

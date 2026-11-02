@@ -93,6 +93,10 @@ class RuleMonkeySimulator {
     // Configuration.
     void set_param(const std::string &name, double value);
     void clear_param_overrides();
+    // Seed amounts for the next run, keyed by `<Species id=>`, replacing any
+    // set before; rounded half-up like every seed and outranking a parameter
+    // override the species reads (issue #1373). Empty seeds from the XML.
+    void set_species_amounts(const std::unordered_map<std::string, double> &amounts);
     void set_molecule_limit(int limit);
     void set_block_same_complex_binding(bool enabled);
 

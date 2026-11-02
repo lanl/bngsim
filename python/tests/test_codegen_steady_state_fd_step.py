@@ -27,6 +27,12 @@ Each model here has a closed-form steady state AND a closed-form gradient
 derived in its ``.net`` header, so the assertions owe the solver nothing. Every
 one of them fails on the step rule it is about — by 79-94% for #76, and by 100%
 (a fabricated exact zero) for #123.
+
+Since issue #1330 these factors are exact by dual numbers wherever the model
+has a dual evaluation, and the probes run only for one that has none; this
+module switches the dual one off (BNGSIM_NO_DUAL_NUMBERS) to keep them tested.
+test_exact_derivatives_by_dual_numbers.py holds the dual path to the same
+closed forms.
 """
 
 from __future__ import annotations
@@ -40,6 +46,13 @@ from bngsim import _codegen as cg
 from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
 
 _DATA = Path(__file__).resolve().parents[2] / "tests" / "data"
+
+
+@pytest.fixture(autouse=True)
+def _differenced(monkeypatch):
+    """Every model of this module on the difference quotients (issue #1330)."""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+
 
 # A <-> B with the forward rate constant derived as kf = kon/KD, KD = 1e-9 — the
 # shape ode/before_bunching carries, and the reason the RHS depends on KD

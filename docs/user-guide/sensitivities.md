@@ -514,17 +514,21 @@ step to cross (issue #952): `if(A > thr, kb, 0)` with `A` rising at 1e-10 a unit
 of time. The step that moves `A` by one ulp fails its error test on the jump,
 so no crossing is located and there is no crossing time for the sensitivities
 to move with. A run without sensitivities is carried across.
-So is a run that starts on an equality's surface and stays on it (issue #1228):
-`if(Bobs == 0, kb, 0)` with B held at 0 until A falls to q holds the branch
-for a stretch. An equality is not rooted, since one the state crosses holds
-for an instant, and either side of its surface reads false, so leaving it is
-a switch nothing locates. Write the switch as the crossing that ends the stretch,
-`if(Aobs > q, kb, 0)` there. `Bobs <= 0` names the same surface and is refused
-at its tangency. The start is read at the run's start time. A state that an
-event puts on the surface mid-run is not yet seen. A stretch is refused all
-the same where nothing in the run ends it, where only an event ends it (the
-event's own jump would have been right), or where the rest of a conjunction
-never holds (issue #1279).
+So is a state that leaves an equality's surface it sat on, where that changes a
+rate law (issues #1228, #1279): `if(Bobs == 0, kb, 0)` with B held at 0 until A
+falls to q holds the branch for a stretch. An equality is not rooted as a
+crossing, since one the state crosses holds for an instant, and the state leaves
+this surface with no first-order motion, so there is no crossing time to
+differentiate. The solver roots where the state leaves, whether the run started
+on the surface or an event put it there, and refuses there. Write the switch as
+the crossing that ends the stretch, `if(Aobs > q, kb, 0)` there. `Bobs <= 0`
+names the same surface and is refused at its tangency. A stretch that outlasts
+the run, or that only an event ends, runs, and so does a leaving that changes no
+rate law (the rest of a conjunction does not hold there), one a state switch
+written inside the equality jumps at that instant, and one at the run's start or
+at an event whose time no column moves, where the state held the surface for no
+time. A state an event at a moving time leaves on the surface for no time is
+refused: the event's jump would read the flow on the surface.
 A conjunction or a negation is split into its comparisons first. What the
 analytic path declines is a crossing nothing can locate: a comparison outside any
 `if()`, such as `k*(X > 1)`, and one whose sides

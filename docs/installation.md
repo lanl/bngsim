@@ -56,6 +56,12 @@ Managed builds fetch the pinned SUNDIALS release archive recorded in
 Set `-DBNGSIM_USE_SYSTEM_SUNDIALS=ON` to use an environment-managed SUNDIALS
 install instead. See `scripts/SUNDIALS_VENDORING.md` for the supported
 refresh/check workflow.
+The vendored release is the one CI tests. Against a system SUNDIALS of another
+major.minor release, the dense difference quotient bngsim forms for `jacobian="fd"` (or
+for a model whose closed-form Jacobian is declined) still reproduces the vendored
+CVODE's, not that release's. Results stay valid, but can differ from that CVODE's
+own in the last digits, and the configure step warns. A patch release of the
+vendored one does not warn: 7.2.0 to 7.2.1 left CVODE's quotient as it was.
 
 ## Sparse solver (SuiteSparse / KLU) — required for large / genome-scale models
 

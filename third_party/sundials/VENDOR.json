@@ -89,7 +89,18 @@
       ]
     }
   },
-  "local_carries": [],
+  "local_carries": [
+    {
+      "file": "src/cvodes/cvodes.c",
+      "function": "cvStep",
+      "marker": "BNGSIM LOCAL CARRY (lanl/bngsim#1301, r3)",
+      "issue": "https://github.com/lanl/bngsim/issues/1301",
+      "applied_by": "third_party/sundials/carry_cvodes_staggered_restore.cmake",
+      "upstream_status": "Fix and unit test proposed upstream as https://github.com/LLNL/sundials/pull/1073 (2026-10-29), against develop, where the code is unchanged (v7.9.0 and after). IDAS has the same pattern, reported as https://github.com/LLNL/sundials/issues/1074. Drop this carry once #1073 (or an equivalent) is merged and the pin moves past it.",
+      "summary": "In cvStep's staggered sensitivity corrector, CVODES evaluates f at the converged state, and a recoverable failure there goes back round the step loop as `nflag = PREV_CONV_FAIL; continue;`, with neither cvRestore nor a smaller step. The next attempt predicts again from the advanced tn, so the step covers 2h, its first h is crossed by the uncorrected predictor, and the error test and the root search see only the second. CV_NORMAL can then return a tout that the last step does not span, without reading the state there. On MODEL2001200002 (Mpekris 2017) with sensitivities this happened 2,333 times in one run, leaving the state 9e-3 and the sensitivities 1.4e-2 off, with no error. The carry sends the failure through cvHandleNFlag as RHSFUNC_RECVR, which restores the prediction and cuts the step as every other recoverable failure in cvStep does. The step's limit is checked against ncfS, which a step keeps across its attempts, and the failure is counted in cv_ncfn, as https://github.com/LLNL/sundials/pull/1073 does (r2 counted it in cv_ncfnS; BNGsim reads neither). BNGSIM_SUNDIALS_STAGGERED_RESTORE=0 takes the upstream path, for an A/B only.",
+      "reapply": "The carry is applied at fetch time, as the PATCH_COMMAND of the FetchContent declaration in CMakeLists.txt, and the configure fails if the fetched cvodes.c lacks the marker afterwards. Bump the marker revision on any change to the carried code: CMakeLists.txt names it, so every build tree reconfigures, and one whose fetched cvodes.c lacks it discards that fetch first and fetches again (third_party/sundials/discard_stale_fetch.cmake). A refresh whose cvodes.c no longer holds the upstream block exactly once fails the patch step: re-derive the carry against the new cvStep, or drop it, this entry and both scripts once upstream fixes it (lanl/bngsim#1410). python/tests/test_sens_staggered_corrector_restore.py is the behavioral regression."
+    }
+  ],
   "notes": [
     "BNGsim does not check SUNDIALS source into the repository.",
     "Managed builds fetch the official SUNDIALS release tarball pinned here via CMake FetchContent URL + URL_HASH.",
