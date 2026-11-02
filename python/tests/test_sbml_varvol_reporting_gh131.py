@@ -39,6 +39,13 @@ pytest.importorskip("antimony")
 G = 0.4
 
 
+def _stored(r):
+    """The species columns as stored, ``amount/V_static``: :attr:`Result.state`
+    by name. :attr:`Result.species` reports ``amount/V_live`` (issue #1368)."""
+    cols = [list(r.state_names).index(n) for n in r.species_names]
+    return np.asarray(r.state)[:, cols]
+
+
 def _rate_rule_model(v0, hosu_boundary):
     """A rate-rule compartment with a conserved boundary species (hOSU per the
     flag) plus an all-hOSU=false p=1 mass-action reaction so the model is
@@ -103,14 +110,16 @@ def test_rate_rule_reacting_species_ssa_invariant(v0):
     t = np.asarray(r.time)
     v_live = v0 + G * t
     names = list(r.species_names)
-    raw = np.asarray(r.species)
+    raw = _stored(r)
     for x in ("A", "B", "P"):
         conc = r.as_roadrunner([f"[{x}]"])[:, 0]
         amount = r.as_roadrunner([x])[:, 0]
-        # Reported concentration is the reported amount over the live volume.
+        # Reported concentration is the reported amount over the live volume,
+        # and Result.species reports it too (issue #1368).
         np.testing.assert_allclose(conc * v_live, amount, rtol=1e-9, atol=1e-9)
-        # The bare amount is the conserved integer count (raw·V_static); the raw
-        # SSA column is the count/V_static, so amount must be integer-valued.
+        np.testing.assert_allclose(np.asarray(r.species)[:, names.index(x)], conc, rtol=1e-12)
+        # The bare amount is the conserved integer count (raw·V_static); the
+        # stored SSA column is the count/V_static, so amount must be integer-valued.
         np.testing.assert_allclose(amount, raw[:, names.index(x)] * v0, rtol=1e-9, atol=1e-9)
         np.testing.assert_allclose(amount, np.round(amount), atol=1e-9)
 
@@ -176,11 +185,12 @@ def test_event_resize_hosu_false_ssa_reporting():
     r = _run(model, "ssa")
     v_live = np.asarray(r.observables)[:, list(r.observable_names).index("Cc")]
     names = list(r.species_names)
-    raw = np.asarray(r.species)
+    raw = _stored(r)
     for x in ("A", "B", "P"):
         conc = r.as_roadrunner([f"[{x}]"])[:, 0]
         amount = r.as_roadrunner([x])[:, 0]
         np.testing.assert_allclose(conc * v_live, amount, rtol=1e-9, atol=1e-9)
+        np.testing.assert_allclose(np.asarray(r.species)[:, names.index(x)], conc, rtol=1e-12)
         # V_static == 2 here, so the bare amount is raw·2 (the conserved count).
         np.testing.assert_allclose(amount, raw[:, names.index(x)] * 2.0, rtol=1e-9, atol=1e-9)
         np.testing.assert_allclose(amount, np.round(amount), atol=1e-9)

@@ -504,14 +504,15 @@ class Result:
         self._varvol_live_vol: dict[int, int] | None = None
 
         # GH #131: species_idx → per-sample concentration factor V_static/V_live(t)
-        # for a variable-volume species whose raw column is LEFT as the conserved
-        # count amount/V_static (the stochastic convention) rather than rescaled
-        # in place. as_roadrunner() multiplies it into the ``[S]`` (concentration)
-        # selector so [S] reports amount/V_live, while the bare ``S`` (amount)
-        # selector recovers the amount as raw·V_static via the volume factor.
-        # Also carries the hOSU=true event-resize concentration correction, which
-        # applies under ODE too (raw stays amount/V_static there as well). None ⇒
-        # no such species.
+        # for a variable-volume species whose raw column was LEFT as the conserved
+        # count amount/V_static rather than rescaled in place. as_roadrunner()
+        # multiplies it into the ``[S]`` (concentration) selector so [S] reports
+        # amount/V_live, while the bare ``S`` (amount) selector recovers the
+        # amount as raw·V_static via the volume factor. bngsim recorded it under
+        # SSA, and for an hOSU=true event-resized species under ODE too, until
+        # issue #1368, which rescales those columns in place under every method:
+        # only a result loaded from a file an older bngsim saved carries one.
+        # None ⇒ no such species.
         self._varvol_conc_factor: dict[int, np.ndarray] | None = None
 
         # GH #131: species_idx → per-sample live-volume V_live(t) for a species
@@ -551,7 +552,8 @@ class Result:
         self._ar_sens_map: dict[str, tuple[str, str, float, str]] = {}
 
         # GH #205: AR-species names whose reported value also carries a
-        # time-varying volume rescale (variable-volume compartment, #85/#87). The
+        # time-varying volume rescale (variable-volume compartment, #85/#87; an
+        # event-resized one since issue #1368). The
         # redirect above accounts only for the constant vdiv, so a selector for
         # one of them reads its own row of the species tensor, which is put
         # through the quotient rule with the size's row (issue #787).
@@ -2594,10 +2596,10 @@ class Result:
                 cf = self._varvol_conc_factor
                 if cf is not None and idx in cf:
                     # GH #131: the raw column is the conserved count amount/V_static
-                    # (the stochastic convention, and the ODE convention for an
-                    # hOSU=true event-resized species), so the live concentration
-                    # amount/V_live = raw · (V_static/V_live) is reported by
-                    # multiplying the stored per-sample factor.
+                    # (what an older bngsim left under SSA, and under ODE for an
+                    # hOSU=true event-resized species, before issue #1368), so the
+                    # live concentration amount/V_live = raw · (V_static/V_live) is
+                    # reported by multiplying the stored per-sample factor.
                     col = col * cf[idx]
                 cols.append(col)
                 continue
