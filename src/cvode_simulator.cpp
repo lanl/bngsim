@@ -10484,10 +10484,23 @@ static constexpr double kStateSwitchTauAgreeTol = 1e-4;
 // smallest subnormal.
 static constexpr double kStateSwitchZeroHold = 0x1p-49;
 
-// How many bands the restart test asks a crossing to clear: 10 sqrt(N), because
-// the WRMS error test lets a single component carry sqrt(N) of the tolerance.
+// How many bands the restart test asks a crossing to clear: 4·√N, N counting
+// every species (issue #907). The WRMS error test lets a single component
+// carry √N of the tolerance, and species that never move are no exception:
+// their share goes to those that do. A slide shows it. Its crossings overshoot
+// by what each step's error leaves: 6 to 7 bands at rtol 1e-8 in
+// Hawse_reduced, a Boolean network of 22 species, and with 100 species that
+// never move added to it, a bar of 8 or 12 bands restarted them instead of
+// leaving them to the #908 hold, for 21 and 24 times main's steps to t = 8,
+// where 20 bands took 1.2 times. So the bar keeps √N. Its margin was 10, which lost a window 10
+// bands wide at N = 3, and one 250 bands wide beside a thousand idle species.
+// GH #176's parked fixture and its five twins, whose crossings the bar is
+// there to decline, go past the surface by at most 0.35 bands, at rtol 3e-6 to
+// 3e-11 under either Jacobian. A margin of 4 keeps twice the slides' overshoot
+// and catches both windows: 6.9 bands at N = 3, and 127 at N = 1003.
+static constexpr double kStateSwitchResolveMargin = 4.0;
 static double state_switch_resolve_factor(int ns) {
-    return 10.0 * std::sqrt(static_cast<double>(ns));
+    return kStateSwitchResolveMargin * std::sqrt(static_cast<double>(ns));
 }
 // Issue #907: the restart test reads the step after a root at this many even
 // points, and then at halvings of it toward the root, down to 2^-40 of it at
@@ -10548,18 +10561,19 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
     // 0.16 off, silently, where main is right. So first the crossing has to be
     // RESOLVED: somewhere between the root and the end of the step, the
     // solver's own trajectory (CVODE's interpolant, sampled) must go beyond the
-    // surface by more than the bar, 10·√N times the band the tolerance leaves
+    // surface by more than the bar, 4·√N times the band the tolerance leaves
     // the residual,
     //     δg = sqrt(Σ_j (∂g/∂x_j·u_j)²),
     // because the WRMS error test lets a single component carry √N of the
-    // tolerance. u_j is what the error weight's own rule holds x_j to there,
-    // rtol·|x_j| + atol_j, a tracking atol's where the run tracks (and then no
-    // tighter than the weights the step was tested with); and the terms add in
-    // quadrature, which is what the WRMS norm bounds (issue #907). Read from
-    // the run's ceiling, the bar lost a 5e-9 window of a species held to
-    // 2e-14; summed one by one over an observable of a thousand species of
-    // 1e-3, the band was 1e-5 and the bar 3.2e-3, past the window's whole
-    // excursion of 1e-3. A crossing inside the bar is one the requested
+    // tolerance (kStateSwitchResolveMargin). u_j is what the error weight's
+    // own rule holds x_j to there, rtol·|x_j| + atol_j, a tracking atol's where
+    // the run tracks, and no tighter than the weights the step was tested
+    // with; and the terms add in quadrature, as the WRMS norm adds them (issue
+    // #907). Read from the run's ceiling, the bar lost a 5e-9 window of a
+    // species held to 2e-14; summed one by one over an observable of a
+    // thousand species of 1e-3, the band was 1e-5 and the bar 3.2e-3, past the
+    // window's whole excursion of 1e-3; at 10·√N bands it lost a window 10
+    // bands wide at N = 3. A crossing inside the bar is one the requested
     // tolerance cannot decide, and it steps on. The whole step is sampled
     // rather than its end: a window can open and close inside one step, and a
     // curved residual (3u − u³) can cross and come back, so the end may be on
@@ -10571,13 +10585,14 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
     // even readings straddled the cubic's: its window, caught over (0, 5), was
     // lost over (0, 4), (0, 10) and (0, 20). The halvings stop where no species
     // the residual reads can move a tolerance band from the root, nor the clock
-    // move the residual a band: a reading there cannot clear 10·√N bands. The
-    // interpolant is a polynomial, so its derivatives at the root bound how far
+    // move the residual a band: a reading there is at most 1 + √n bands past
+    // the surface, n ≤ N the species the residual reads, under its bar of 4·√N.
+    // The interpolant is a polynomial, so its derivatives at the root bound how far
     // each species moves; a residual that reads the clock adds dg/dt read at
     // the root's state. A hump that only just clears its bar does so over a
     // core narrower than the readings' spacing, so the best reading is then
     // refined between its two neighbours where it is within a quarter of its
-    // bar: near rtol 5e-4 the cubic's window was lost on 25 runs of 242
+    // bar: near rtol 1.2e-3 the cubic's window was lost on 8 runs of 14
     // without it. More readings can only find an excursion the solver's own
     // trajectory makes, so a crossing inside the band is still declined.
     //
@@ -10631,16 +10646,15 @@ bool CvodeSimulator::Impl::flow_carries_state_switch(
     if (t_end > t) {
         const double span = t_end - t;
         // What species j is held to at x_j (issue #907): the error weight's own
-        // rule, so a tracking atol's, not its ceiling's. A tracking atol moves
-        // with the state, and CVODE tested the step with the weights it held at
-        // the step's start; read at a state the species has fallen to since,
-        // the rule alone could hold it tighter than CVODE did. So under
-        // tracking the unit is no narrower than those weights. Without
-        // tracking the atol floors both, and the rule alone is main's band.
-        // The weights land in scratch, which nothing has read yet, and are
-        // copied out before the first reading writes it.
+        // rule, so a tracking atol's, not its ceiling's, and no tighter than
+        // the weights CVODE tested the step with. Those are set at the step's
+        // start; read at a state the species has fallen to since, the rule
+        // alone holds it tighter than CVODE did, by up to `decades` orders of
+        // magnitude under a tracking atol and by its fall in rtol·|x_j| under
+        // any other. The weights land in scratch, which nothing has read yet,
+        // and are copied out before the first reading writes it.
         std::vector<double> step_unit;
-        if (tracking.active() && CVodeGetErrWeights(cvode_mem, scratch) == CV_SUCCESS) {
+        if (CVodeGetErrWeights(cvode_mem, scratch) == CV_SUCCESS) {
             const double *w = N_VGetArrayPointer(scratch);
             step_unit.assign(static_cast<std::size_t>(ns), 0.0);
             for (int i = 0; i < ns; ++i) {
@@ -18471,11 +18485,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 units.push_back(unit);
                             }
                             // Half the restart test's band at the root (issue #907):
-                            // the error weight's rule, in quadrature. Under a
-                            // tracking atol the test also floors each unit at the
-                            // step's error weights and this does not, so it is at
-                            // most half, the side that keeps the band under the
-                            // test's.
+                            // the error weight's rule, in quadrature. The test
+                            // also floors each unit at the step's error weights
+                            // and this does not, so it is at most half, the side
+                            // that keeps the band under the test's.
                             const double band = state_switch_band(terms.size(), [&](std::size_t s) {
                                 return terms[s].weight * units[s];
                             });
