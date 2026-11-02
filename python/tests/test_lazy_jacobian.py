@@ -21,6 +21,7 @@ Newton, codegen's analytical-Jacobian emitter), so deferral is answer-invariant.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -28,6 +29,10 @@ import bngsim
 import bngsim._codegen as _codegen
 import bngsim._jacobian as _jacobian
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _codegen_backend import threshold_forced  # noqa: E402
 
 # A small genuinely-Functional model (saturating Michaelis–Menten-shaped kinetic
 # law): rate = k*S/(Km+S). Only Functional rate laws hit the SymPy derivation;
@@ -287,6 +292,7 @@ def test_auto_codegen_runs_after_attach(monkeypatch):
         assert seen["complete_at_codegen"] is True
 
 
+@threshold_forced
 def test_below_threshold_does_not_auto_codegen():
     m = _functional_model()  # 2 species, default threshold 256
     bngsim.Simulator(m, method="ode")

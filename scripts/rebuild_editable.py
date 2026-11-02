@@ -62,6 +62,9 @@ just configured differently (GH #459). So this script names **every** feature
 option on the configure line rather than inheriting any of them
 (:data:`_FEATURE_OPTION_DEFAULTS`), and refuses to build on a tree whose cache
 disagrees with what it is about to ask for (:func:`_configuration_conflicts`).
+Settings that tune a feature without deciding whether it is compiled in
+(:data:`_TUNING_SETTING_DEFAULTS`) are named on the configure line too, but a
+tree that differs in one is reconfigured rather than refused.
 Setting a same-named environment variable to a CMake boolean overrides one
 option for one rebuild — ``BNGSIM_ENABLE_MIR=1`` is the long-standing spelling of
 that, and it is now how every option in the table is asked for.
@@ -300,7 +303,8 @@ Or rebuild through uv's own isolated build env, which needs no local pybind11
 #:
 #: ``test_rebuild_editable_feature_options.py`` holds these defaults to
 #: CMakeLists.txt, and fails if an option is added there without being
-#: classified here or in :data:`_PINNED_OPTION_VALUES`.
+#: classified here or in :data:`_PINNED_OPTION_VALUES` (and a ``CACHE STRING``
+#: without being classified in :data:`_TUNING_SETTING_DEFAULTS`).
 _FEATURE_OPTION_DEFAULTS: dict[str, str] = {
     "BNGSIM_ENABLE_KLU": "ON",
     "BNGSIM_REQUIRE_KLU": "OFF",
@@ -310,6 +314,19 @@ _FEATURE_OPTION_DEFAULTS: dict[str, str] = {
     "BNGSIM_BUILD_RULEMONKEY": "ON",
     "BNGSIM_ENABLE_MIR": "OFF",
     "BNGSIM_ENABLE_LAPACK_DENSE": "ON",
+}
+
+#: CMake settings that tune a feature without deciding whether it is compiled
+#: in, each mapped to its ``CACHE STRING`` default in CMakeLists.txt; every
+#: value is a whole number. Named on the configure line for the same reason the
+#: feature options are (GH #459), and overridable the same way, by a same-named
+#: environment variable. But never compared with the cache: a different value
+#: only recompiles what reads it, so reconfiguring in place is all it needs,
+#: and the delete-the-tree remedy :func:`_configuration_conflicts` exists for
+#: would be wrong advice.
+_TUNING_SETTING_DEFAULTS: dict[str, str] = {
+    # Issue #1215: address space, in MB, each MIR context reserves for its code.
+    "BNGSIM_MIR_CODE_RESERVE_MB": "32",
 }
 
 #: Options whose value follows from what this script *is* — an incremental
@@ -463,6 +480,22 @@ def _resolve_cmake_settings(
             setting = _Setting(value, _ORIGIN_ENVIRONMENT)
         resolved[name] = setting
 
+    for name, default in _TUNING_SETTING_DEFAULTS.items():
+        setting = _Setting(default, _ORIGIN_DEFAULT)
+        if name in declared:
+            if not re.fullmatch(r"[0-9]+", declared[name].strip()):
+                raise SystemExit(
+                    f"pyproject.toml sets {name} = {declared[name]!r}, which is not a "
+                    f"whole number."
+                )
+            setting = _Setting(declared[name].strip(), _ORIGIN_PYPROJECT)
+        requested = environ.get(name, "").strip()
+        if requested:
+            if not re.fullmatch(r"[0-9]+", requested):
+                raise SystemExit(f"{name}={requested!r} in the environment is not a whole number.")
+            setting = _Setting(requested, _ORIGIN_ENVIRONMENT)
+        resolved[name] = setting
+
     return resolved
 
 
@@ -507,12 +540,14 @@ def _configuration_conflicts(
     Settings this invocation asked for by environment variable are excluded: a
     disagreement there is the requested change, not drift, and reconfiguring for
     it is exactly what ``BNGSIM_ENABLE_MIR=1 python scripts/rebuild_editable.py``
-    has always meant. What is left is a tree that says something nobody in this
+    has always meant. So are the :data:`_TUNING_SETTING_DEFAULTS`: the configure
+    line still pins them, and a different value needs only that reconfigure, not
+    a deleted tree. What is left is a tree that says something nobody in this
     run asked for, which is the GH #459 signature.
     """
     conflicts: list[tuple[str, str, str]] = []
     for name, setting in settings.items():
-        if setting.origin == _ORIGIN_ENVIRONMENT:
+        if setting.origin == _ORIGIN_ENVIRONMENT or name in _TUNING_SETTING_DEFAULTS:
             continue
         cached_value = cached.get(name)
         if cached_value is None or cached_value == setting.value:

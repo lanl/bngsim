@@ -32,6 +32,13 @@ those columns, and those of species at 0, taken whole at half the floored
 step, which a secant moves with and a slope does not.
 
 Every expected value is a closed form.
+
+Since issue #1330 a model the dual evaluation follows takes these derivatives
+exactly instead, by dual numbers through the interpreter, and none of them is
+differenced: test_exact_derivatives_by_dual_numbers.py holds it to the same
+closed forms. The differences above still run for a model with no dual
+evaluation (a ring of functions that read each other, rateOf), so this module
+switches the dual one off (BNGSIM_NO_DUAL_NUMBERS) to keep their checks tested.
 """
 
 from __future__ import annotations
@@ -42,6 +49,13 @@ import warnings
 import bngsim
 import numpy as np
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _differenced(monkeypatch):
+    """Every model of this module on the difference quotients (issue #1330)."""
+    monkeypatch.setenv("BNGSIM_NO_DUAL_NUMBERS", "1")
+
 
 S, K1, K2, KD = 1.3, 0.21, 0.73, 0.5
 # 0 -> X at s, X -> 0 at k1, X + X -> D at k2 (a net loss of 2*k2*X^2), D -> 0.

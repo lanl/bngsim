@@ -140,6 +140,9 @@ def test_the_value_blocks_are_the_full_run_s_prefix(net, block):
 # `_core` is deliberately absent (a truncated result owns no C++ handle, which
 # is why the fields above have to be forwarded by hand in the first place).
 _NOT_FORWARDED = {"_core"}
+# The one field a stop sets rather than carries: the condition the result was
+# cut at, None on the full run (issue #1369). Checked on its own below.
+_SET_BY_THE_STOP = {"_stop_condition"}
 
 
 def _same(got, want):
@@ -169,8 +172,9 @@ def test_every_field_is_carried_over(net, kw):
     partial, full = _stopped(net, **kw)
     n = partial.time.shape[0]
     missing = []
+    assert partial.stop_condition == "half" and full.stop_condition is None
     for name in Result.__slots__:
-        if name in _NOT_FORWARDED:
+        if name in _NOT_FORWARDED or name in _SET_BY_THE_STOP:
             continue
         want = getattr(full, name)
         got = getattr(partial, name)
