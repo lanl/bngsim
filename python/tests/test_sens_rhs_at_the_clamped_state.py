@@ -20,7 +20,10 @@ plain run's steps.
 
 Where ``f(y)`` is finite at the negative base, the run integrates ``f(y)``, and
 a column read at ``clamp(y)`` would be another state's; that NaN still goes to
-the GH #384/#386 refusal (the control below).
+the GH #384/#386 refusal (the control below). So does a state where a slot the
+value RHS read at 0 is driven further below 0 by the flow there, or sits far
+below 0: J at the clamped state keeps its slope at 0 in that slot, which the
+flow does not have, and the columns read there were silently wrong.
 """
 
 from __future__ import annotations
@@ -148,38 +151,40 @@ def test_the_simultaneous_run_takes_about_the_plain_runs_steps():
 
 def test_with_the_reading_off_the_run_fails_as_it_did(monkeypatch):
     """BNGSIM_SENS_AT_VALUE_STATE=0 turns the reading at the value RHS's state
-    off (the #1301 guard sets it), and the simultaneous run fails at t = 22
+    off (the #1301 tests set it), and the simultaneous run fails at t = 22
     again."""
     monkeypatch.setenv("BNGSIM_SENS_AT_VALUE_STATE", "0")
     with pytest.raises(SimulationError, match="CV_REPTD_SRHSFUNC_ERR"):
         _sens("simultaneous", jacobian="analytical")
 
 
-# S is masked, drained far below 0 by a zero-order sink and read by S^1.5; P is a
-# rate-rule target sinking from 0 at 1e-30, inside its atol, read by P^1.5 in B's
-# law. Where S is below 0, the value RHS's clamp reads S at 0, its reading is
-# still NaN for P^1.5, and the reading near 0 after it (#1340) reads P at 0 too:
-# the run integrates B' = -kb*B, so B = exp(-kb*t) and dB/dkb = -t*B exactly.
-# #392's retry reads P at 0 but S where it is, and a reading at the clamped state
-# alone reads S at 0 but P where it is: both were NaN, and the run was refused.
-BAND = """
-model band
+# S is masked, left 1e-6 below 0 by an event (a thousand atols: past #392's
+# band, inside the clamp's noise band) and read by S^1.5; P is a rate-rule
+# target held at -1e-30, inside its atol, read by P^1.5 in B's law. Nothing
+# drives either further. From t = 1 the value RHS's clamp reads S at 0, its
+# reading is still NaN for P^1.5, and the reading near 0 after it (#1340) reads
+# P at 0 too: the run integrates B' = -kb*B, so B = exp(-kb*t) and
+# dB/dkb = -t*B exactly. #392's retry reads P at 0 but S where it is, and a
+# reading at the clamped state alone reads S at 0 but P where it is: both are
+# NaN there, and main refuses the run.
+NEAR = """
+model near
   species S = 1, A = 1, B = 1;
-  P = 0; P' = -c;
-  cs = 1; k = 0.1; kb = 0.2; c = 1e-30;
-  J1: S -> ; cs;
+  P = -1e-30; P' = 0;
+  k = 0.1; kb = 0.2;
   J2: A -> ; k*A*S^1.5;
   J3: B -> ; kb*B*P^1.5 + kb*B;
+  E1: at (time >= 1): S = -1e-6;
 end
 """
 
 
 @pytest.mark.parametrize("method", ["staggered", "simultaneous"])
 def test_the_columns_are_read_where_the_reading_near_zero_reads_too(method):
-    """The column is -t*B to within 1e-5 of itself (3e-7 measured, at rtol
+    """The column is -t*B to within 1e-5 of itself (3.5e-7 measured, at rtol
     1e-8, where CVODES does not hold the columns to the run's own tolerance)."""
     sim = bngsim.Simulator(
-        bngsim.Model.from_antimony_string(BAND),
+        bngsim.Model.from_antimony_string(NEAR),
         method="ode",
         sensitivity_params=["kb"],
         sensitivity_method=method,
@@ -191,6 +196,56 @@ def test_the_columns_are_read_where_the_reading_near_zero_reads_too(method):
     np.testing.assert_allclose(b, np.exp(-0.2 * t), rtol=1e-6)
     s = np.asarray(run.sensitivities)[:, names.index("B"), 0]
     np.testing.assert_allclose(s, -t * b, rtol=1e-5, atol=1e-12)
+
+
+# Where the flow the run integrates drives a slot it reads at 0 further below 0,
+# or the slot sits far below 0, J at the clamped state keeps its slope at 0 and
+# carries the slot's column into the rest, which the flow does not: main's
+# refusal stands there. S is drained at a constant rate cs beside S^1.5 and a
+# mass-action S -> P at k4*S; past t_c = ln(1 + k4/cs)/k4 = 49.7 the run reads S
+# at 0, so P stops and S falls at cs. It stays within the clamp's noise band
+# (5e5 atols at t = 55), so only its being driven decides. Read there, the
+# columns came back with dS/dcs = -3.33 and dP/dcs = -51.7 at t = 55, for -8.62
+# and -46.4, with no error.
+SLOW = """
+model slow
+  species S = 1, A = 1, P = 0;
+  cs = 1e-7; k = 0.1; k4 = 0.3;
+  J1: S -> ; cs;
+  J2: A -> ; k*A*S^1.5;
+  J4: S -> P; k4*S;
+end
+"""
+
+# An event leaves S at -e0, five hundred million atols below 0, where nothing
+# moves it: P stops, and dP/de0 is 0 and dS/de0 is -1 from t = 1. Read at the
+# clamped state, they came back -0.93 and -0.07 at t = 10, with no error.
+FAR = """
+model far
+  species S = 1, A = 1, P = 0;
+  k = 0.1; k4 = 0.3; e0 = 0.5;
+  J2: A -> ; k*A*S^1.5;
+  J4: S -> P; k4*S;
+  E1: at (time >= 1): S = -e0;
+end
+"""
+
+
+@pytest.mark.parametrize("method", ["staggered", "simultaneous"])
+@pytest.mark.parametrize(
+    "src, param, t_end, atol",
+    [(SLOW, "cs", 55.0, 1e-12), (FAR, "e0", 10.0, 1e-9)],
+    ids=["driven", "far"],
+)
+def test_a_slot_below_zero_the_flow_does_not_read_is_refused(method, src, param, t_end, atol):
+    sim = bngsim.Simulator(
+        bngsim.Model.from_antimony_string(src),
+        method="ode",
+        sensitivity_params=[param],
+        sensitivity_method=method,
+    )
+    with pytest.raises(SimulationError, match="sensitivity RHS returned a non-finite"):
+        sim.run(t_span=(0.0, t_end), n_points=12, rtol=1e-8, atol=atol)
 
 
 # A drained to -1 at a constant rate. Its rate law in B, vmax*A^4/(Kd + A^4),

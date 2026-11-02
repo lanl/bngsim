@@ -1032,6 +1032,33 @@ static void note_value_rhs_state(CvodeUserData *data, sunrealtype t, const doubl
     data->off_y_valid = true;
 }
 
+// Whether the sensitivity RHS may read its columns at `at`, the state the value
+// RHS read f at for y (value_rhs_state_off_y), `f` being the f it read there.
+// Not where a slot `at` moved off y is driven further below 0 by that f, or sits
+// more than kClampNoiseAtols of its atol below 0. There the slot is below 0 in
+// the run, which reads it at 0 under any small change of y, while J at `at`
+// keeps its slope at 0 and carries the slot's column into the rest: S drained
+// at a constant rate cs, beside S^1.5 and a mass-action S -> P at k4*S, came
+// back with dS/dcs = -3.17 and dP/dcs = -6.83 at t = 10, for -9.89 and -0.105,
+// with no error. Holding those rows of s at 0 instead got that right, and
+// MODEL5952308332's BPG, a hair below 0 for most of its run, 6 times its own
+// column's peak off a central difference: such a slot is 0 to within the run's
+// error, and J at 0 is the flow just above it, as read here.
+static bool sens_may_read_at(const CvodeUserData *data, const double *y_ptr, const double *at,
+                             const double *f) {
+    const auto n = static_cast<std::size_t>(data->model->n_species());
+    const std::vector<double> &atol = data->clamp_atol;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (at[i] == y_ptr[i])
+            continue;
+        if (f[i] < 0.0)
+            return false;
+        if (atol.size() == n && y_ptr[i] < -kClampNoiseAtols * atol[i])
+            return false;
+    }
+    return true;
+}
+
 // The slots the clamp leaves alone at `y`: where `values` (the right-hand side
 // or a closed-form Jacobian, `count` of them, as first evaluated there) has an
 // infinite entry, those the step started far below 0 whose own reading is
@@ -2202,9 +2229,11 @@ static int cvode_codegen_sens_rhs_body(int Ns, sunrealtype t, N_Vector y, N_Vect
         // read. Where it read f at y itself, finite at a negative base,
         // nothing is recorded, and a column NaN there still goes to the
         // refusal (#392's `pow(x, 4.0)` beside `log(x)`), as does a slot the
-        // clamp leaves alone past its atol (#706). Off with
-        // BNGSIM_SENS_AT_VALUE_STATE=0.
-        if (double *at = value_rhs_state_off_y(data, t, y_ptr)) {
+        // clamp leaves alone past its atol (#706), and so does a state with a
+        // slot that state moved driven further below 0, or far below it
+        // (sens_may_read_at). Off with BNGSIM_SENS_AT_VALUE_STATE=0.
+        double *at = value_rhs_state_off_y(data, t, y_ptr);
+        if (at != nullptr && sens_may_read_at(data, y_ptr, at, N_VGetArrayPointer(ydot))) {
             rc = sens_fn(Ns, static_cast<double>(t), at, N_VGetArrayPointer(ydot), iS,
                          N_VGetArrayPointer(yS), ySdot_ptr, &so_data, N_VGetArrayPointer(tmp1),
                          N_VGetArrayPointer(tmp2));
