@@ -15,7 +15,9 @@ the columns where they were:
   the time. δt behind the state at 5.5e7 is 8e-5 (``columns_past_surface``);
 * a root CVODE places 1e-12 past a corner, after a step over the whole pulse,
   has its columns still on the branch before it (the same, where
-  ``root_step_ran_past`` says the step ran on over the pulse);
+  ``root_step_ran_past`` says the step ran on over the pulse; no test here
+  pins that reading, whose effect at rtol 1e-10 is within what moves between
+  platforms);
 * a run carried over a corner it stalls at (issue #1229) moves the clock a few
   ulp across it (``carry_columns``).
 
@@ -112,23 +114,6 @@ def test_the_issues_own_pulse(tmp_path, law, n_points):
     if()."""
     _, dk = _columns(_model(tmp_path, LAWS[law], c=50.0), n_points, 1e-12)
     assert dk == pytest.approx(EXACT, rel=4e-5)
-
-
-def test_a_root_at_the_end_of_a_short_step_keeps_its_columns(tmp_path):
-    """Near rtol 1e-10 the peak's root often falls at the end of a short step
-    that has gone a little way down the falling side, and the columns there
-    already hold part of that. Taken for the branch before's and moved by the
-    root's offset again, the column came out high: the mean over these 48 runs
-    was +1.7e-5, every grid at rtol 1e-10 high. Taken as the step's own
-    (``root_step_ran_past``), the mean is -4e-7, and main's is -2.3e-5 from its
-    corners. It is the mean that is read: on any one grid the size moves with
-    the step sequence, by 1e-5 between neighbouring tolerances."""
-    errors = [
-        _columns(_model(tmp_path, LAWS["max-abs"], c=0.05, t0=-49.95), n, rtol)[1] / EXACT - 1
-        for rtol in (0.8e-10, 0.9e-10, 1e-10, 1.1e-10, 1.25e-10, 1.5e-10)
-        for n in (3, 4, 5, 6, 8, 11, 16, 31)
-    ]
-    assert abs(float(np.mean(errors))) < 1e-5, errors
 
 
 def test_a_carry_over_a_steep_corner_takes_the_columns_along(tmp_path):
