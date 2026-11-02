@@ -16,6 +16,14 @@ def echo_worker(spec: dict, q) -> None:
     q.put({**spec, "status": "ok", "doubled": spec["value"] * 2})
 
 
+def timed_worker(spec: dict, q) -> None:
+    """Sleep ``spec["sleep"]`` seconds and say when it started and ended, so a
+    test can read which jobs overlapped (issue #1386)."""
+    start = time.time()
+    time.sleep(spec.get("sleep", 0.0))
+    q.put({**spec, "status": "ok", "start": start, "end": time.time()})
+
+
 def hang_worker(spec: dict, q) -> None:
     """Sleep past any sane cap so the parent must kill it (TIMEOUT path)."""
     time.sleep(30)
